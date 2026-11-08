@@ -19,6 +19,9 @@ Assigning an existing value to a binding that keeps its initializer's layout, to
 The refusal covers a short-circuit assignment that stores the value (`&&=`, or `??=` on a binding that can be nullish) like the plain assignment it stands for.
 A member of another binding that kept its initializer's layout carries that layout into the store, so no refusal is reported when the two layouts already match.
 Bracket writes such as `alias["k"] = v` write the field in the kept layout, like their dotted spelling.
+The members of a union type that share one value of its discriminant property, such as two `{ type: "retry" }` members with different other properties, are stored as one record that has the properties of all of them, and a value of one of those member types is that record: it keeps its identity when it is stored in the union, narrowed, or passed as the member type.
+A value whose type is not one of those members but has the properties of one, such as an object held in a binding whose type was inferred, would be copied into that record, so `scriptc build` reports `SC1090` for it; declaring the value with the union's type or the member's type compiles.
+Reading a property that one of those members requires, from a value that an assertion claimed to be that member and that lacks the property, throws a `TypeError` where Node.js answers `undefined`.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
 An empty array literal with no element type of its own, such as the `files` of `{ files: [] }` or `const NONE = [] as const`, takes its element type from the declared types its value reaches and is the same array under every name.

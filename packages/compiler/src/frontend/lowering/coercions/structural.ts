@@ -156,6 +156,9 @@ export function applyWidthLift(
         dst.unionId,
         loc,
         new Set(lift.trappable),
+        undefined,
+        false,
+        lift.byPresence === true,
       );
       if (!retag)
         throw new InternalCompilerError("lowerer bug: planned checked retag lift failed to intern");

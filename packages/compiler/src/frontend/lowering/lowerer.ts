@@ -67,6 +67,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
+import type { UnionClassState } from "../union-classes.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -209,6 +210,7 @@ import {
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
 import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
+import { refuseClassRecordCopy } from "./coercions/class-records.js";
 import {
   boxBuiltinValuesChecked,
   shareBuiltinValueIdentities,
@@ -1265,6 +1267,12 @@ export interface LowerOptions {
    * program-authored signature-only ambient function with the callback
    * teaching instead of the ambient ReferenceError lowering. */
   libraryCallbacks?: boolean;
+  /** LIBRARY mode: the record types of a union that share a discriminant
+   * literal keep their own layouts instead of becoming one record
+   * (union-classes.ts). The sidecar names every occurrence of a composed
+   * union's repeated arm and tracks an integer obligation per occurrence
+   * (library/sidecar.ts), which needs a layout per occurrence. */
+  separateUnionMembers?: boolean;
   /** Coverage-only external host type surfaces. Their declarations inform
    * the checker, while every runtime value use remains an SC1010 fence. */
   externalTypes?: ReadonlyMap<string, string>;
@@ -1620,7 +1628,9 @@ function lowerToIrWithIslands(
   // in their mode flags, so every fact they derive from the program alone is
   // computed once here and shared (lowering-facts.ts); per-pass state stays
   // private to the pass.
-  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
+  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile, {
+    ...(options.separateUnionMembers === true ? { separateUnionMembers: true } : {}),
+  });
   // The push-down pass of a stream program exists only to learn the stream
   // mode it asks for, and the general stream pass of a program that needs
   // checked-dynamic stream slots only to ask for them: the pass that
@@ -6762,6 +6772,24 @@ export class Lowerer {
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
     const jsDynamic = this.facts.jsDynamicDeclarations();
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
+    // Record types that share a discriminant literal in a declared union
+    // are one record (union-classes.ts). Each pass maps a class once, the
+    // first time one of its types is mapped.
+    const unionClasses = this.facts.unionClasses();
+    if (unionClasses.size > 0) {
+      const states = new Map<readonly ts.Type[], UnionClassState>();
+      this.typeCtx.unionClassRecords = new Map();
+      this.typeCtx.unionClassOf = (type) => {
+        const members = unionClasses.get(type);
+        if (members === undefined) return undefined;
+        let state = states.get(members);
+        if (state === undefined) {
+          state = { members, state: "unmapped", record: null, owning: null, reentered: false };
+          states.set(members, state);
+        }
+        return state;
+      };
+    }
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
@@ -16642,8 +16670,9 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    byPresence = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked, byPresence);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -16712,6 +16741,7 @@ export class Lowerer {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
     const proxy = expected.kind === "dyn" ? null : nativeProxyEntering(this, expr);
     if (proxy) refuseProxyInTypedSlot(this, expr.loc, expected, proxy.trapless);
+    refuseClassRecordCopy(this, node, expr.type, expected);
     // A binding the checker types as the console object (`const c =
     // console`, a `Console` parameter) into a record of its members: the
     // same member-by-name copy the direct `console` spelling takes
@@ -16887,9 +16917,23 @@ export class Lowerer {
     // node's CHECKER type proves those arms away, they trap instead — the
     // sub-union narrowing bridge (narrowedRetagHelper).
     if (e.type.kind === "union" && expected.kind === "union" && !typeEquals(e.type, expected)) {
+      // An assertion is erased, so the value is its operand's: the arms the
+      // checker proved away at the operand (`event.type === "end" ? … :
+      // (event as Session)`) are as absent under the assertion as without it.
+      let operand: ts.Node = node;
+      while (
+        ts.isParenthesizedExpression(operand) ||
+        ts.isAsExpression(operand) ||
+        ts.isTypeAssertion(operand) ||
+        ts.isSatisfiesExpression(operand)
+      )
+        operand = operand.expression;
       const helper =
         this.narrowedRetagHelper(node, e.type.unionId, expected.unionId, e.loc) ??
-        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc);
+        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc) ??
+        (operand === node
+          ? null
+          : this.narrowedRetagHelper(operand, e.type.unionId, expected.unionId, e.loc));
       if (helper) {
         e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
       }

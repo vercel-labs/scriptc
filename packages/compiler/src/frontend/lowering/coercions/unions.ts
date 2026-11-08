@@ -376,6 +376,7 @@ export function unionRetagHelper(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checked = false,
+  byPresence = false,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
@@ -387,7 +388,7 @@ export function unionRetagHelper(
           .sort((a, b) => a[0] - b[0])
           .map(([tag, routes]) => `${tag}>${routes.map((route) => route.tag).join(".")}`)
           .join(";");
-  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}`;
+  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}${byPresence ? ":presence" : ""}`;
   const cached = lowerer.coercions.copyRetags.get(request);
   if (
     cached &&
@@ -407,6 +408,8 @@ export function unionRetagHelper(
     trappable,
     classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
+    undefined,
+    byPresence,
   );
   if (plan === null) return null;
   // The registry pair determines every route; only checker-proven
@@ -416,7 +419,10 @@ export function unionRetagHelper(
   plan.forEach((arm, tag) => {
     if (arm.kind === "trap") stranded.push(tag);
   });
-  const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}${checked ? ":checked" : ""}`;
+  // A plan that routes an arm by the value's properties is another helper
+  // than the plan of the same pair that does not.
+  const routed = plan.some((arm) => arm.kind === "presence");
+  const key = `${fromId}:${toId}:${stranded.join(".")}:${routeKey}${checked ? ":checked" : ""}${routed ? ":presence" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   const name = existing ?? keyedHelperName(lowerer, ROUTING_HELPERS.retag, key);
   if (!existing) {
@@ -442,7 +448,7 @@ export function unionRetagHelper(
         arm.kind === "classRoute" ||
         (arm.kind === "direct"
           ? arm.route.lift.how === "copy"
-          : arm.routes.every((route) => route.lift.how === "copy")),
+          : arm.kind === "discriminant" && arm.routes.every((route) => route.lift.how === "copy")),
     )
   ) {
     lowerer.coercions.copyRetags.set(request, {

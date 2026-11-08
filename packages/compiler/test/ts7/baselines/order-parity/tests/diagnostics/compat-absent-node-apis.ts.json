@@ -1,0 +1,185 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-node-apis.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:async_hooks\"' has no exported member 'AsyncResource'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 238,
+    "end": 251
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:dns\"' has no exported member 'Resolver'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 288,
+    "end": 296
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:events\"' has no exported member 'EventEmitterAsyncResource'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 325,
+    "end": 350
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:fs\"' has no exported member 'openAsBlob'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 382,
+    "end": 392
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:module\"' has no exported member 'findPackageJSON'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 420,
+    "end": 435
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:module\"' has no exported member 'register'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 437,
+    "end": 445
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"node:perf_hooks\"' has no exported member 'PerformanceObserver'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 477,
+    "end": 496
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'toWeb' does not exist on type 'typeof Readable'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 662,
+    "end": 667
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'toWeb' does not exist on type 'typeof Writable'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 720,
+    "end": 725
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'createObjectURL' does not exist on type '{ new (input: string | { toString: () => string; }, base?: string | URL | undefined): URL; canParse(input: string | URL, base?: string | URL | undefined): boolean; parse(input: string | URL, base?: string | ... 1 more ... | undefined): URL | null; revokeObjectURL(url: string | URL): void; }'. Did you mean 'revokeObjectURL'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 888,
+    "end": 903
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'close' does not exist on type 'Timeout'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 999,
+    "end": 1004
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'timeOrigin' does not exist on type 'Performance'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1082,
+    "end": 1092
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'setSourceMapsEnabled' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1278,
+    "end": 1298
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'hasUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1326,
+    "end": 1361
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'hasUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'setUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1374,
+    "end": 1409
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1429,
+    "end": 1441
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'ref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1480,
+    "end": 1483
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'ref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'unref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
+    "start": 1500,
+    "end": 1505
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'unref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

@@ -41,12 +41,16 @@ export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerR
   )
     return ELEMENT_RANGES[e.receiver.type.elem] ?? null;
   // ToNumber of an Int32[] element read: the stored int32, or NaN for a
-  // hole, a present undefined or a missing index.
+  // hole, a present undefined or a missing index. The test is read into a
+  // local first: called as `host.int32Elements(…)` it is a member call,
+  // which hands the function the emitter as its receiver, a dynamic value
+  // (LlEmitter.integerCloneHost).
+  const int32Elements = host.int32Elements;
   if (
     e.kind === "arrIntrinsic" &&
     e.method === "getNumber" &&
-    host.int32Elements !== null &&
-    host.int32Elements(e.receiver)
+    int32Elements !== null &&
+    int32Elements(e.receiver)
   )
     return ELEMENT_RANGES.i32!;
   // A UTF-16 code unit, or NaN past either end.

@@ -5,10 +5,14 @@
  *
  * The scan is deliberately narrow: a finding needs both the construct that
  * differs AND evidence in the program that the difference is observable
- * (a write or identity comparison through a copied object, an
- * order-observing call on the type whose literal is reordered, ...).
+ * (an order-observing call on the type whose literal is reordered, ...).
  * Ordinary code produces no findings. Syntactic prefilters run first so the
  * checker is only consulted for candidate sites.
+ *
+ * Width copies (SC6001) are not found here: the lowering knows where it
+ * copied, and width-copies.ts reports from the lowered program. The
+ * binding scans below (bindingIdentityUse, bindingWrite, assertionViewCopy)
+ * remain what the lowering asks when it decides how to lower a binding.
  */
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
@@ -18,7 +22,6 @@ import {
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
-  widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
 import { typeEquals, type IrType } from "../../ir/ir.js";
@@ -54,14 +57,6 @@ export function scanDivergences(
   // ── pass 1: syntactic collection ────────────────────────────────────
   const fnsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
   const calls: ts.CallExpression[] = [];
-  const typedDecls: ts.VariableDeclaration[] = [];
-  /** `const v = r as T` (also through `unknown`): the binding views `r`. */
-  const castDecls: { decl: ts.VariableDeclaration; source: ts.Expression; type: ts.TypeNode }[] =
-    [];
-  /** `v = r` into a binding declared elsewhere with a type. */
-  const assignments: ts.BinaryExpression[] = [];
-  /** `const list: T[] = [r, ...]`: each existing element is stored as T. */
-  const arrayDecls: { decl: ts.VariableDeclaration; element: ts.TypeNode }[] = [];
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
@@ -117,36 +112,11 @@ export function scanDivergences(
     } else if (ts.isVariableDeclaration(node)) {
       if (islands && node.type !== undefined && node.initializer !== undefined)
         annotatedDecls.push(node);
-      if (
-        node.type !== undefined &&
-        node.initializer !== undefined &&
-        isExistingObjectExpression(node.initializer) &&
-        ts.isIdentifier(node.name)
-      )
-        typedDecls.push(node);
-      else if (node.initializer !== undefined && ts.isIdentifier(node.name)) {
-        const cast = castView(node.initializer);
-        if (cast !== null && node.type === undefined) castDecls.push({ decl: node, ...cast });
-        const element = node.type === undefined ? undefined : arrayElementTypeNode(node.type);
-        if (
-          element !== undefined &&
-          ts.isArrayLiteralExpression(node.initializer) &&
-          node.initializer.elements.nodes.some(isExistingObjectExpression)
-        )
-          arrayDecls.push({ decl: node, element });
-      }
     } else if (ts.isObjectLiteralExpression(node)) {
       if (node.properties.nodes.length >= 1 && node.properties.nodes.every(isPlainProperty))
         literals.push(node);
     } else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
       casts.push(node);
-    } else if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isIdentifier(node.left) &&
-      isExistingObjectExpression(node.right)
-    ) {
-      assignments.push(node);
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -160,131 +130,6 @@ export function scanDivergences(
   };
   // Iterative: absurdly deep nesting must reach the lowering's own fence.
   for (const sf of own) ts.walkPreorder(sf, visit);
-
-  // ── width copies: writes or identity comparisons through a copy ─────
-  const usesByFn = new Map<ts.FunctionLikeDeclaration, (IdentityUse | null)[]>();
-  const identityUsesOf = (fn: ts.FunctionLikeDeclaration): (IdentityUse | null)[] => {
-    let uses = usesByFn.get(fn);
-    if (uses === undefined) {
-      uses = fn.parameters.nodes.map((p) =>
-        ts.isIdentifier(p.name) && fn.body !== undefined ? identityUse(fn.body, p.name.text) : null,
-      );
-      usesByFn.set(fn, uses);
-    }
-    return uses;
-  };
-  for (const call of calls) {
-    const name = calleeName(call);
-    if (name === null) continue;
-    const candidates = fnsByName.get(name);
-    if (candidates === undefined) continue;
-    if (!candidates.some((fn) => identityUsesOf(fn).some((u) => u !== null))) continue;
-    const signature = safely(() => checker.getResolvedSignature(call));
-    if (signature === undefined) continue;
-    const decl = safely(() => signature.declaration);
-    if (decl === undefined || !candidates.includes(decl as ts.FunctionLikeDeclaration)) continue;
-    const fn = decl as ts.FunctionLikeDeclaration;
-    const uses = identityUsesOf(fn);
-    call.arguments.nodes.forEach((arg, i) => {
-      const use = uses[i];
-      const param = fn.parameters.nodes[i];
-      if (use === null || use === undefined || param === undefined || param.type === undefined)
-        return;
-      if (!isExistingObjectExpression(arg)) return;
-      // The call kept the argument's layout: the callee has the value itself.
-      if (lowerer.layoutKeptNodes.has(arg)) return;
-      const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
-      if (copy === undefined || copy === null) return;
-      out.push(
-        widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "call", locOf(arg)),
-      );
-    });
-  }
-  for (const decl of typedDecls) {
-    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, name, decl.end);
-    if (use === null) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, decl.initializer!, decl.type!));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(
-        copy.source,
-        copy.target,
-        use.kind,
-        use.text,
-        "declaration",
-        locOf(decl.initializer!),
-      ),
-    );
-  }
-
-  for (const { decl, source, type } of castDecls) {
-    // An assertion of the global object keeps that object: no copy.
-    if (keptIdentityAssertion(lowerer, decl.initializer!) !== undefined) continue;
-    // The assertion kept the value's storage (`tagged as Labeled`, a union
-    // arm extracted for a projection): the binding holds the object itself,
-    // so there is no copy to report (lowerVarDecl marks the kept node).
-    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, name, decl.end, symbolMatcher(decl, checker), (target) =>
-      writeLandsOnCopy(lowerer, name, decl.initializer!, target),
-    );
-    // A write through a member the copy shares reaches the value, and a
-    // shadowing declaration's write is not a use of this binding; either
-    // leaves the copy unobservable.
-    if (use === null || (use.kind === "write" && use.copy === false)) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, source, type));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "cast", locOf(source)),
-    );
-  }
-  for (const assignment of assignments) {
-    const left = assignment.left as ts.Identifier;
-    const symbol = safely(() => checker.getSymbolAtLocation(left));
-    if (symbol === undefined) continue;
-    const decl = symbol.declarations.find(
-      (d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d) && d.type !== undefined,
-    );
-    if (decl === undefined) continue;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, left.text, assignment.end);
-    if (use === null) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, assignment.right, decl.type!));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(
-        copy.source,
-        copy.target,
-        use.kind,
-        use.text,
-        "declaration",
-        locOf(assignment.right),
-      ),
-    );
-  }
-  for (const { decl, element } of arrayDecls) {
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = elementWrite(scope, name, decl.end);
-    if (use === null) continue;
-    for (const item of (decl.initializer as ts.ArrayLiteralExpression).elements.nodes) {
-      if (!isExistingObjectExpression(item)) continue;
-      const copy = safely(() => widthCopyBetween(lowerer, item, element));
-      if (copy === undefined || copy === null) continue;
-      out.push(
-        widthCopyDivergenceDiag(copy.source, copy.target, "write", use, "element", locOf(item)),
-      );
-      break;
-    }
-  }
 
   // ── key order: a reordered literal that reaches an order observer ───
   // Local flow only: the observer's argument is the literal itself, or a
@@ -860,74 +705,6 @@ function castView(expr: ts.Expression): { source: ts.Expression; type: ts.TypeNo
     break;
   }
   return isExistingObjectExpression(inner) ? { source: inner, type } : null;
-}
-
-/** The element type node of `T[]`, `readonly T[]` or `Array<T>`. */
-function arrayElementTypeNode(node: ts.TypeNode): ts.TypeNode | undefined {
-  if (ts.isTypeOperatorNode(node)) node = node.type;
-  if (ts.isArrayTypeNode(node)) return node.elementType;
-  if (
-    ts.isTypeReferenceNode(node) &&
-    ts.isIdentifier(node.typeName) &&
-    (node.typeName.text === "Array" || node.typeName.text === "ReadonlyArray") &&
-    node.typeArguments?.nodes.length === 1
-  )
-    return node.typeArguments.nodes[0];
-  return undefined;
-}
-
-/** The first write through an element of the array binding `name`
- * (`list[i].p = v`, or through a for-of variable over it) after `from`. */
-function elementWrite(root: ts.Node, name: string, from: number): string | null {
-  const throughElement = (node: ts.Expression): boolean => {
-    let cur = node;
-    while (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
-      const inner = cur.expression;
-      if (ts.isElementAccessExpression(inner) && ts.isIdentifier(inner.expression))
-        return inner.expression.text === name;
-      cur = inner;
-    }
-    return false;
-  };
-  let found: string | null = null;
-  ts.walkPreorder(root, (node) => {
-    if (found !== null) return "stop";
-    if (node.end <= from) return "skip";
-    let target: ts.Expression | undefined;
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    )
-      target = node.left;
-    else if (
-      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-      (node.operator === ts.SyntaxKind.PlusPlusToken ||
-        node.operator === ts.SyntaxKind.MinusMinusToken)
-    )
-      target = node.operand;
-    if (target !== undefined && throughElement(target)) {
-      found = ts.getTextOfNode(target);
-      return "stop";
-    }
-    if (
-      ts.isForOfStatement(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === name &&
-      ts.isVariableDeclarationList(node.initializer)
-    ) {
-      const binding = node.initializer.declarations.nodes[0]?.name;
-      if (binding !== undefined && ts.isIdentifier(binding)) {
-        const use = identityUse(node.statement, binding.text);
-        if (use?.kind === "write") {
-          found = use.text;
-          return "stop";
-        }
-      }
-    }
-    return undefined;
-  });
-  return found;
 }
 
 function testsInstanceof(root: ts.Node, name: string): boolean {

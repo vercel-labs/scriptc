@@ -10,6 +10,10 @@ export interface BuiltinModuleMemberCensus {
   readonly ownNames: readonly string[];
   /** Names inherited from the exports object's prototype chain. */
   readonly inherited: readonly string[];
+  /** The own members that are functions, each with Node's `length`: `name=length`, space-separated. */
+  readonly functions: string;
+  /** `typeof` of every other own member: `name=typeof`, space-separated ("throws" for a getter that throws). */
+  readonly values: string;
 }
 
 /** The CommonJS exports object of every supported builtin module. */
@@ -19,287 +23,576 @@ export const BUILTIN_MODULE_MEMBERS: Readonly<Record<string, BuiltinModuleMember
     keys: ["appendFile", "appendFileSync", "access", "accessSync", "chown", "chownSync", "chmod", "chmodSync", "close", "closeSync", "copyFile", "copyFileSync", "cp", "cpSync", "createReadStream", "createWriteStream", "exists", "existsSync", "fchown", "fchownSync", "fchmod", "fchmodSync", "fdatasync", "fdatasyncSync", "fstat", "fstatSync", "fsync", "fsyncSync", "ftruncate", "ftruncateSync", "futimes", "futimesSync", "glob", "globSync", "lchown", "lchownSync", "lchmod", "lchmodSync", "link", "linkSync", "lstat", "lstatSync", "lutimes", "lutimesSync", "mkdir", "mkdirSync", "mkdtemp", "mkdtempSync", "mkdtempDisposableSync", "open", "openSync", "openAsBlob", "readdir", "readdirSync", "read", "readSync", "readv", "readvSync", "readFile", "readFileSync", "readlink", "readlinkSync", "realpath", "realpathSync", "rename", "renameSync", "rm", "rmSync", "rmdir", "rmdirSync", "stat", "statfs", "statSync", "statfsSync", "symlink", "symlinkSync", "truncate", "truncateSync", "unwatchFile", "unlink", "unlinkSync", "utimes", "utimesSync", "watch", "watchFile", "writeFile", "writeFileSync", "write", "writeSync", "writev", "writevSync", "Dirent", "Stats", "ReadStream", "WriteStream", "FileReadStream", "FileWriteStream", "Utf8Stream", "_toUnixTimestamp", "Dir", "opendir", "opendirSync", "constants", "promises"],
     ownNames: ["appendFile", "appendFileSync", "access", "accessSync", "chown", "chownSync", "chmod", "chmodSync", "close", "closeSync", "copyFile", "copyFileSync", "cp", "cpSync", "createReadStream", "createWriteStream", "exists", "existsSync", "fchown", "fchownSync", "fchmod", "fchmodSync", "fdatasync", "fdatasyncSync", "fstat", "fstatSync", "fsync", "fsyncSync", "ftruncate", "ftruncateSync", "futimes", "futimesSync", "glob", "globSync", "lchown", "lchownSync", "lchmod", "lchmodSync", "link", "linkSync", "lstat", "lstatSync", "lutimes", "lutimesSync", "mkdir", "mkdirSync", "mkdtemp", "mkdtempSync", "mkdtempDisposableSync", "open", "openSync", "openAsBlob", "readdir", "readdirSync", "read", "readSync", "readv", "readvSync", "readFile", "readFileSync", "readlink", "readlinkSync", "realpath", "realpathSync", "rename", "renameSync", "rm", "rmSync", "rmdir", "rmdirSync", "stat", "statfs", "statSync", "statfsSync", "symlink", "symlinkSync", "truncate", "truncateSync", "unwatchFile", "unlink", "unlinkSync", "utimes", "utimesSync", "watch", "watchFile", "writeFile", "writeFileSync", "write", "writeSync", "writev", "writevSync", "Dirent", "Stats", "ReadStream", "WriteStream", "FileReadStream", "FileWriteStream", "Utf8Stream", "_toUnixTimestamp", "Dir", "opendir", "opendirSync", "F_OK", "R_OK", "W_OK", "X_OK", "constants", "promises"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "appendFile=4 appendFileSync=3 access=3 accessSync=2 chown=4 chownSync=3 chmod=3 chmodSync=2 close=1 closeSync=1 copyFile=4 copyFileSync=3 cp=4 cpSync=3 createReadStream=2 createWriteStream=2 exists=2 existsSync=1 fchown=4 fchownSync=3 fchmod=3 fchmodSync=2 fdatasync=2 fdatasyncSync=1 fstat=1 fstatSync=1 fsync=2 fsyncSync=1 ftruncate=1 ftruncateSync=1 futimes=4 futimesSync=3 glob=3 globSync=2 lchown=4 lchownSync=3 link=3 linkSync=2 lstat=1 lstatSync=1 lutimes=4 lutimesSync=3 mkdir=3 mkdirSync=2 mkdtemp=3 mkdtempSync=2 mkdtempDisposableSync=2 open=4 openSync=3 openAsBlob=1 readdir=3 readdirSync=2 read=6 readSync=5 readv=4 readvSync=3 readFile=3 readFileSync=2 readlink=3 readlinkSync=2 realpath=3 realpathSync=2 rename=3 renameSync=2 rm=3 rmSync=2 rmdir=3 rmdirSync=2 stat=1 statfs=1 statSync=1 statfsSync=1 symlink=4 symlinkSync=3 truncate=3 truncateSync=2 unwatchFile=2 unlink=2 unlinkSync=1 utimes=4 utimesSync=3 watch=3 watchFile=3 writeFile=4 writeFileSync=3 write=6 writeSync=5 writev=4 writevSync=3 Dirent=3 Stats=14 ReadStream=2 WriteStream=2 FileReadStream=2 FileWriteStream=2 Utf8Stream=0 _toUnixTimestamp=1 Dir=3 opendir=3 opendirSync=2",
+    values: "lchmod=platform lchmodSync=platform F_OK=number R_OK=number W_OK=number X_OK=number constants=object promises=object",
   },
   "path": {
     callable: false,
     keys: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     ownNames: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "resolve=0 normalize=1 isAbsolute=1 join=0 relative=2 toNamespacedPath=1 dirname=1 basename=2 extname=1 format=1 parse=1 matchesGlob=2 _makeLong=1",
+    values: "sep=string delimiter=string win32=object posix=object",
   },
   "path/posix": {
     callable: false,
     keys: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     ownNames: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "resolve=0 normalize=1 isAbsolute=1 join=0 relative=2 toNamespacedPath=1 dirname=1 basename=2 extname=1 format=1 parse=1 matchesGlob=2 _makeLong=1",
+    values: "sep=string delimiter=string win32=object posix=object",
   },
   "path/win32": {
     callable: false,
     keys: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     ownNames: ["resolve", "normalize", "isAbsolute", "join", "relative", "toNamespacedPath", "dirname", "basename", "extname", "format", "parse", "matchesGlob", "sep", "delimiter", "win32", "posix", "_makeLong"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "resolve=0 normalize=1 isAbsolute=1 join=0 relative=2 toNamespacedPath=1 dirname=1 basename=2 extname=1 format=1 parse=1 matchesGlob=2 _makeLong=1",
+    values: "sep=string delimiter=string win32=object posix=object",
   },
   "os": {
     callable: false,
     keys: ["arch", "availableParallelism", "cpus", "endianness", "freemem", "getPriority", "homedir", "hostname", "loadavg", "networkInterfaces", "platform", "release", "setPriority", "tmpdir", "totalmem", "type", "userInfo", "uptime", "version", "machine", "constants", "EOL", "devNull"],
     ownNames: ["arch", "availableParallelism", "cpus", "endianness", "freemem", "getPriority", "homedir", "hostname", "loadavg", "networkInterfaces", "platform", "release", "setPriority", "tmpdir", "totalmem", "type", "userInfo", "uptime", "version", "machine", "constants", "EOL", "devNull"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "arch=0 availableParallelism=0 cpus=0 endianness=0 freemem=0 getPriority=1 homedir=0 hostname=0 loadavg=0 networkInterfaces=0 platform=0 release=0 setPriority=2 tmpdir=0 totalmem=0 type=0 userInfo=1 uptime=0 version=0 machine=0",
+    values: "constants=object EOL=string devNull=string",
   },
   "url": {
     callable: false,
     keys: ["Url", "parse", "resolve", "resolveObject", "format", "URL", "URLPattern", "URLSearchParams", "domainToASCII", "domainToUnicode", "pathToFileURL", "fileURLToPath", "fileURLToPathBuffer", "urlToHttpOptions"],
     ownNames: ["Url", "parse", "resolve", "resolveObject", "format", "URL", "URLPattern", "URLSearchParams", "domainToASCII", "domainToUnicode", "pathToFileURL", "fileURLToPath", "fileURLToPathBuffer", "urlToHttpOptions"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Url=0 parse=3 resolve=2 resolveObject=2 format=2 URL=1 URLPattern=0 URLSearchParams=0 domainToASCII=1 domainToUnicode=1 pathToFileURL=2 fileURLToPath=1 fileURLToPathBuffer=1 urlToHttpOptions=1",
+    values: "",
   },
   "fs/promises": {
     callable: false,
     keys: ["access", "copyFile", "cp", "glob", "open", "opendir", "rename", "truncate", "rm", "rmdir", "mkdir", "readdir", "readlink", "symlink", "lstat", "stat", "statfs", "link", "unlink", "chmod", "lchmod", "lchown", "chown", "utimes", "lutimes", "realpath", "mkdtemp", "mkdtempDisposable", "writeFile", "appendFile", "readFile", "watch", "constants"],
     ownNames: ["access", "copyFile", "cp", "glob", "open", "opendir", "rename", "truncate", "rm", "rmdir", "mkdir", "readdir", "readlink", "symlink", "lstat", "stat", "statfs", "link", "unlink", "chmod", "lchmod", "lchown", "chown", "utimes", "lutimes", "realpath", "mkdtemp", "mkdtempDisposable", "writeFile", "appendFile", "readFile", "watch", "constants"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "access=1 copyFile=3 cp=3 glob=2 open=3 opendir=3 rename=2 truncate=1 rm=2 rmdir=2 mkdir=2 readdir=2 readlink=2 symlink=3 lstat=1 stat=1 statfs=1 link=2 unlink=1 chmod=2 lchmod=2 lchown=3 chown=3 utimes=3 lutimes=3 realpath=2 mkdtemp=2 mkdtempDisposable=2 writeFile=3 appendFile=3 readFile=2 watch=1",
+    values: "constants=object",
   },
   "crypto": {
     callable: false,
     keys: ["argon2", "argon2Sync", "checkPrime", "checkPrimeSync", "createCipheriv", "createDecipheriv", "createDiffieHellman", "createDiffieHellmanGroup", "createECDH", "createHash", "createHmac", "createMac", "createPrivateKey", "createPublicKey", "createSecretKey", "createSign", "createVerify", "diffieHellman", "generatePrime", "generatePrimeSync", "getCiphers", "getCipherInfo", "getCurves", "getDiffieHellman", "getHashes", "getMacs", "hkdf", "hkdfSync", "parsePKCS12", "pbkdf2", "pbkdf2Sync", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "privateDecrypt", "privateEncrypt", "publicDecrypt", "publicEncrypt", "randomBytes", "randomFill", "randomFillSync", "randomInt", "randomUUID", "randomUUIDv7", "scrypt", "scryptSync", "sign", "setEngine", "timingSafeEqual", "getFips", "setFips", "verify", "hash", "encapsulate", "decapsulate", "Certificate", "Cipheriv", "Decipheriv", "DiffieHellman", "DiffieHellmanGroup", "ECDH", "Hash", "Hmac", "KeyObject", "Sign", "Verify", "X509Certificate", "secureHeapUsed", "constants", "webcrypto", "subtle", "getRandomValues"],
     ownNames: ["argon2", "argon2Sync", "checkPrime", "checkPrimeSync", "createCipheriv", "createDecipheriv", "createDiffieHellman", "createDiffieHellmanGroup", "createECDH", "createHash", "createHmac", "createMac", "createPrivateKey", "createPublicKey", "createSecretKey", "createSign", "createVerify", "diffieHellman", "generatePrime", "generatePrimeSync", "getCiphers", "getCipherInfo", "getCurves", "getDiffieHellman", "getHashes", "getMacs", "hkdf", "hkdfSync", "parsePKCS12", "pbkdf2", "pbkdf2Sync", "generateKeyPair", "generateKeyPairSync", "generateKey", "generateKeySync", "privateDecrypt", "privateEncrypt", "publicDecrypt", "publicEncrypt", "randomBytes", "randomFill", "randomFillSync", "randomInt", "randomUUID", "randomUUIDv7", "scrypt", "scryptSync", "sign", "setEngine", "timingSafeEqual", "getFips", "setFips", "verify", "hash", "encapsulate", "decapsulate", "Certificate", "Cipheriv", "Decipheriv", "DiffieHellman", "DiffieHellmanGroup", "ECDH", "Hash", "Hmac", "KeyObject", "Sign", "Verify", "X509Certificate", "secureHeapUsed", "fips", "constants", "webcrypto", "subtle", "getRandomValues", "prng", "pseudoRandomBytes", "rng"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "argon2=3 argon2Sync=2 checkPrime=1 checkPrimeSync=1 createCipheriv=4 createDecipheriv=4 createDiffieHellman=4 createDiffieHellmanGroup=1 createECDH=1 createHash=2 createHmac=3 createMac=3 createPrivateKey=1 createPublicKey=1 createSecretKey=2 createSign=2 createVerify=2 diffieHellman=2 generatePrime=3 generatePrimeSync=1 getCiphers=0 getCipherInfo=2 getCurves=0 getDiffieHellman=1 getHashes=0 getMacs=0 hkdf=6 hkdfSync=5 parsePKCS12=1 pbkdf2=6 pbkdf2Sync=5 generateKeyPair=3 generateKeyPairSync=2 generateKey=3 generateKeySync=2 privateDecrypt=2 privateEncrypt=2 publicDecrypt=2 publicEncrypt=2 randomBytes=2 randomFill=4 randomFillSync=1 randomInt=3 randomUUID=1 randomUUIDv7=1 scrypt=4 scryptSync=3 sign=4 setEngine=2 timingSafeEqual=0 getFips=0 setFips=1 verify=5 hash=3 encapsulate=2 decapsulate=3 Certificate=0 Cipheriv=4 Decipheriv=4 DiffieHellman=4 DiffieHellmanGroup=1 ECDH=1 Hash=2 Hmac=3 KeyObject=2 Sign=2 Verify=2 X509Certificate=1 secureHeapUsed=0 getRandomValues=1 prng=2 pseudoRandomBytes=2 rng=2",
+    values: "fips=number constants=object webcrypto=object subtle=object",
   },
   "zlib": {
     callable: false,
     keys: ["crc32", "Deflate", "Inflate", "Gzip", "Gunzip", "DeflateRaw", "InflateRaw", "Unzip", "BrotliCompress", "BrotliDecompress", "ZstdCompress", "ZstdDecompress", "deflate", "deflateSync", "gzip", "gzipSync", "deflateRaw", "deflateRawSync", "unzip", "unzipSync", "inflate", "inflateSync", "gunzip", "gunzipSync", "inflateRaw", "inflateRawSync", "brotliCompress", "brotliCompressSync", "brotliDecompress", "brotliDecompressSync", "zstdCompress", "zstdCompressSync", "zstdDecompress", "zstdDecompressSync", "createDeflate", "createInflate", "createDeflateRaw", "createInflateRaw", "createGzip", "createGunzip", "createUnzip", "createBrotliCompress", "createBrotliDecompress", "createZstdCompress", "createZstdDecompress", "constants", "codes"],
     ownNames: ["crc32", "Deflate", "Inflate", "Gzip", "Gunzip", "DeflateRaw", "InflateRaw", "Unzip", "BrotliCompress", "BrotliDecompress", "ZstdCompress", "ZstdDecompress", "deflate", "deflateSync", "gzip", "gzipSync", "deflateRaw", "deflateRawSync", "unzip", "unzipSync", "inflate", "inflateSync", "gunzip", "gunzipSync", "inflateRaw", "inflateRawSync", "brotliCompress", "brotliCompressSync", "brotliDecompress", "brotliDecompressSync", "zstdCompress", "zstdCompressSync", "zstdDecompress", "zstdDecompressSync", "createDeflate", "createInflate", "createDeflateRaw", "createInflateRaw", "createGzip", "createGunzip", "createUnzip", "createBrotliCompress", "createBrotliDecompress", "createZstdCompress", "createZstdDecompress", "constants", "codes", "Z_NO_FLUSH", "Z_PARTIAL_FLUSH", "Z_SYNC_FLUSH", "Z_FULL_FLUSH", "Z_FINISH", "Z_BLOCK", "Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_ERRNO", "Z_STREAM_ERROR", "Z_DATA_ERROR", "Z_MEM_ERROR", "Z_BUF_ERROR", "Z_VERSION_ERROR", "Z_NO_COMPRESSION", "Z_BEST_SPEED", "Z_BEST_COMPRESSION", "Z_DEFAULT_COMPRESSION", "Z_FILTERED", "Z_HUFFMAN_ONLY", "Z_RLE", "Z_FIXED", "Z_DEFAULT_STRATEGY", "ZLIB_VERNUM", "DEFLATE", "INFLATE", "GZIP", "GUNZIP", "DEFLATERAW", "INFLATERAW", "UNZIP", "ZSTD_DECOMPRESS", "ZSTD_COMPRESS", "Z_MIN_WINDOWBITS", "Z_MAX_WINDOWBITS", "Z_DEFAULT_WINDOWBITS", "Z_MIN_CHUNK", "Z_MAX_CHUNK", "Z_DEFAULT_CHUNK", "Z_MIN_MEMLEVEL", "Z_MAX_MEMLEVEL", "Z_DEFAULT_MEMLEVEL", "Z_MIN_LEVEL", "Z_MAX_LEVEL", "Z_DEFAULT_LEVEL", "ZSTD_e_continue", "ZSTD_e_flush", "ZSTD_e_end", "ZSTD_fast", "ZSTD_dfast", "ZSTD_greedy", "ZSTD_lazy", "ZSTD_lazy2", "ZSTD_btlazy2", "ZSTD_btopt", "ZSTD_btultra", "ZSTD_btultra2", "ZSTD_c_compressionLevel", "ZSTD_c_windowLog", "ZSTD_c_hashLog", "ZSTD_c_chainLog", "ZSTD_c_searchLog", "ZSTD_c_minMatch", "ZSTD_c_targetLength", "ZSTD_c_strategy", "ZSTD_c_enableLongDistanceMatching", "ZSTD_c_ldmHashLog", "ZSTD_c_ldmMinMatch", "ZSTD_c_ldmBucketSizeLog", "ZSTD_c_ldmHashRateLog", "ZSTD_c_contentSizeFlag", "ZSTD_c_checksumFlag", "ZSTD_c_dictIDFlag", "ZSTD_c_nbWorkers", "ZSTD_c_jobSize", "ZSTD_c_overlapLog", "ZSTD_d_windowLogMax", "ZSTD_CLEVEL_DEFAULT", "ZSTD_error_no_error", "ZSTD_error_GENERIC", "ZSTD_error_prefix_unknown", "ZSTD_error_version_unsupported", "ZSTD_error_frameParameter_unsupported", "ZSTD_error_frameParameter_windowTooLarge", "ZSTD_error_corruption_detected", "ZSTD_error_checksum_wrong", "ZSTD_error_literals_headerWrong", "ZSTD_error_dictionary_corrupted", "ZSTD_error_dictionary_wrong", "ZSTD_error_dictionaryCreation_failed", "ZSTD_error_parameter_unsupported", "ZSTD_error_parameter_combination_unsupported", "ZSTD_error_parameter_outOfBound", "ZSTD_error_tableLog_tooLarge", "ZSTD_error_maxSymbolValue_tooLarge", "ZSTD_error_maxSymbolValue_tooSmall", "ZSTD_error_stabilityCondition_notRespected", "ZSTD_error_stage_wrong", "ZSTD_error_init_missing", "ZSTD_error_memory_allocation", "ZSTD_error_workSpace_tooSmall", "ZSTD_error_dstSize_tooSmall", "ZSTD_error_srcSize_wrong", "ZSTD_error_dstBuffer_null", "ZSTD_error_noForwardProgress_destFull", "ZSTD_error_noForwardProgress_inputEmpty"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "crc32=1 Deflate=1 Inflate=1 Gzip=1 Gunzip=1 DeflateRaw=1 InflateRaw=1 Unzip=1 BrotliCompress=1 BrotliDecompress=1 ZstdCompress=1 ZstdDecompress=1 deflate=3 deflateSync=2 gzip=3 gzipSync=2 deflateRaw=3 deflateRawSync=2 unzip=3 unzipSync=2 inflate=3 inflateSync=2 gunzip=3 gunzipSync=2 inflateRaw=3 inflateRawSync=2 brotliCompress=3 brotliCompressSync=2 brotliDecompress=3 brotliDecompressSync=2 zstdCompress=3 zstdCompressSync=2 zstdDecompress=3 zstdDecompressSync=2 createDeflate=1 createInflate=1 createDeflateRaw=1 createInflateRaw=1 createGzip=1 createGunzip=1 createUnzip=1 createBrotliCompress=1 createBrotliDecompress=1 createZstdCompress=1 createZstdDecompress=1",
+    values: "constants=object codes=object Z_NO_FLUSH=number Z_PARTIAL_FLUSH=number Z_SYNC_FLUSH=number Z_FULL_FLUSH=number Z_FINISH=number Z_BLOCK=number Z_OK=number Z_STREAM_END=number Z_NEED_DICT=number Z_ERRNO=number Z_STREAM_ERROR=number Z_DATA_ERROR=number Z_MEM_ERROR=number Z_BUF_ERROR=number Z_VERSION_ERROR=number Z_NO_COMPRESSION=number Z_BEST_SPEED=number Z_BEST_COMPRESSION=number Z_DEFAULT_COMPRESSION=number Z_FILTERED=number Z_HUFFMAN_ONLY=number Z_RLE=number Z_FIXED=number Z_DEFAULT_STRATEGY=number ZLIB_VERNUM=number DEFLATE=number INFLATE=number GZIP=number GUNZIP=number DEFLATERAW=number INFLATERAW=number UNZIP=number ZSTD_DECOMPRESS=number ZSTD_COMPRESS=number Z_MIN_WINDOWBITS=number Z_MAX_WINDOWBITS=number Z_DEFAULT_WINDOWBITS=number Z_MIN_CHUNK=number Z_MAX_CHUNK=number Z_DEFAULT_CHUNK=number Z_MIN_MEMLEVEL=number Z_MAX_MEMLEVEL=number Z_DEFAULT_MEMLEVEL=number Z_MIN_LEVEL=number Z_MAX_LEVEL=number Z_DEFAULT_LEVEL=number ZSTD_e_continue=number ZSTD_e_flush=number ZSTD_e_end=number ZSTD_fast=number ZSTD_dfast=number ZSTD_greedy=number ZSTD_lazy=number ZSTD_lazy2=number ZSTD_btlazy2=number ZSTD_btopt=number ZSTD_btultra=number ZSTD_btultra2=number ZSTD_c_compressionLevel=number ZSTD_c_windowLog=number ZSTD_c_hashLog=number ZSTD_c_chainLog=number ZSTD_c_searchLog=number ZSTD_c_minMatch=number ZSTD_c_targetLength=number ZSTD_c_strategy=number ZSTD_c_enableLongDistanceMatching=number ZSTD_c_ldmHashLog=number ZSTD_c_ldmMinMatch=number ZSTD_c_ldmBucketSizeLog=number ZSTD_c_ldmHashRateLog=number ZSTD_c_contentSizeFlag=number ZSTD_c_checksumFlag=number ZSTD_c_dictIDFlag=number ZSTD_c_nbWorkers=number ZSTD_c_jobSize=number ZSTD_c_overlapLog=number ZSTD_d_windowLogMax=number ZSTD_CLEVEL_DEFAULT=number ZSTD_error_no_error=number ZSTD_error_GENERIC=number ZSTD_error_prefix_unknown=number ZSTD_error_version_unsupported=number ZSTD_error_frameParameter_unsupported=number ZSTD_error_frameParameter_windowTooLarge=number ZSTD_error_corruption_detected=number ZSTD_error_checksum_wrong=number ZSTD_error_literals_headerWrong=number ZSTD_error_dictionary_corrupted=number ZSTD_error_dictionary_wrong=number ZSTD_error_dictionaryCreation_failed=number ZSTD_error_parameter_unsupported=number ZSTD_error_parameter_combination_unsupported=number ZSTD_error_parameter_outOfBound=number ZSTD_error_tableLog_tooLarge=number ZSTD_error_maxSymbolValue_tooLarge=number ZSTD_error_maxSymbolValue_tooSmall=number ZSTD_error_stabilityCondition_notRespected=number ZSTD_error_stage_wrong=number ZSTD_error_init_missing=number ZSTD_error_memory_allocation=number ZSTD_error_workSpace_tooSmall=number ZSTD_error_dstSize_tooSmall=number ZSTD_error_srcSize_wrong=number ZSTD_error_dstBuffer_null=number ZSTD_error_noForwardProgress_destFull=number ZSTD_error_noForwardProgress_inputEmpty=number",
   },
   "child_process": {
     callable: false,
     keys: ["_forkChild", "ChildProcess", "exec", "execFile", "execFileSync", "execSync", "fork", "spawn", "spawnSync"],
     ownNames: ["_forkChild", "ChildProcess", "exec", "execFile", "execFileSync", "execSync", "fork", "spawn", "spawnSync"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_forkChild=2 ChildProcess=0 exec=3 execFile=4 execFileSync=3 execSync=2 fork=1 spawn=3 spawnSync=3",
+    values: "",
   },
   "net": {
     callable: false,
     keys: ["_createServerHandle", "_normalizeArgs", "_TransferredBoundSocket", "BlockList", "SocketAddress", "BoundSocket", "connect", "createConnection", "createServer", "isIP", "isIPv4", "isIPv6", "Server", "Socket", "Stream", "getDefaultAutoSelectFamily", "setDefaultAutoSelectFamily", "getDefaultAutoSelectFamilyAttemptTimeout", "setDefaultAutoSelectFamilyAttemptTimeout"],
     ownNames: ["_createServerHandle", "_normalizeArgs", "_TransferredBoundSocket", "BlockList", "SocketAddress", "BoundSocket", "connect", "createConnection", "createServer", "isIP", "isIPv4", "isIPv6", "Server", "Socket", "Stream", "getDefaultAutoSelectFamily", "setDefaultAutoSelectFamily", "getDefaultAutoSelectFamilyAttemptTimeout", "setDefaultAutoSelectFamilyAttemptTimeout"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_createServerHandle=5 _normalizeArgs=1 _TransferredBoundSocket=0 BlockList=0 SocketAddress=0 BoundSocket=0 connect=0 createConnection=0 createServer=2 isIP=1 isIPv4=1 isIPv6=1 Server=2 Socket=1 Stream=1 getDefaultAutoSelectFamily=0 setDefaultAutoSelectFamily=1 getDefaultAutoSelectFamilyAttemptTimeout=0 setDefaultAutoSelectFamilyAttemptTimeout=1",
+    values: "",
   },
   "http": {
     callable: false,
     keys: ["_connectionListener", "METHODS", "STATUS_CODES", "Agent", "ClientRequest", "IncomingMessage", "OutgoingMessage", "Server", "ServerResponse", "createServer", "validateHeaderName", "validateHeaderValue", "get", "request", "setMaxIdleHTTPParsers", "setGlobalProxyFromEnv", "maxHeaderSize", "globalAgent", "WebSocket", "CloseEvent", "MessageEvent"],
     ownNames: ["_connectionListener", "METHODS", "STATUS_CODES", "Agent", "ClientRequest", "IncomingMessage", "OutgoingMessage", "Server", "ServerResponse", "createServer", "validateHeaderName", "validateHeaderValue", "get", "request", "setMaxIdleHTTPParsers", "setGlobalProxyFromEnv", "maxHeaderSize", "globalAgent", "WebSocket", "CloseEvent", "MessageEvent"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_connectionListener=1 Agent=1 ClientRequest=3 IncomingMessage=1 OutgoingMessage=1 Server=2 ServerResponse=2 createServer=2 validateHeaderName=0 validateHeaderValue=0 get=3 request=3 setMaxIdleHTTPParsers=1 setGlobalProxyFromEnv=0 WebSocket=1 CloseEvent=1 MessageEvent=1",
+    values: "METHODS=object STATUS_CODES=object maxHeaderSize=number globalAgent=object",
   },
   "tls": {
     callable: false,
     keys: ["CLIENT_RENEG_LIMIT", "CLIENT_RENEG_WINDOW", "DEFAULT_CIPHERS", "DEFAULT_ECDH_CURVE", "DEFAULT_MIN_VERSION", "DEFAULT_MAX_VERSION", "getCiphers", "getCertificateCompressionAlgorithms", "rootCertificates", "getCACertificates", "setDefaultCACertificates", "convertALPNProtocols", "checkServerIdentity", "createSecureContext", "SecureContext", "TLSSocket", "Server", "createServer", "connect"],
     ownNames: ["CLIENT_RENEG_LIMIT", "CLIENT_RENEG_WINDOW", "DEFAULT_CIPHERS", "DEFAULT_ECDH_CURVE", "DEFAULT_MIN_VERSION", "DEFAULT_MAX_VERSION", "getCiphers", "getCertificateCompressionAlgorithms", "rootCertificates", "getCACertificates", "setDefaultCACertificates", "convertALPNProtocols", "checkServerIdentity", "createSecureContext", "SecureContext", "TLSSocket", "Server", "createServer", "connect"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "getCiphers=0 getCertificateCompressionAlgorithms=0 getCACertificates=0 setDefaultCACertificates=1 convertALPNProtocols=2 checkServerIdentity=2 createSecureContext=1 SecureContext=4 TLSSocket=2 Server=2 createServer=2 connect=0",
+    values: "CLIENT_RENEG_LIMIT=number CLIENT_RENEG_WINDOW=number DEFAULT_CIPHERS=string DEFAULT_ECDH_CURVE=string DEFAULT_MIN_VERSION=string DEFAULT_MAX_VERSION=string rootCertificates=object",
   },
   "https": {
     callable: false,
     keys: ["Agent", "globalAgent", "Server", "createServer", "get", "request"],
     ownNames: ["Agent", "globalAgent", "Server", "createServer", "get", "request"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Agent=1 Server=2 createServer=2 get=3 request=0",
+    values: "globalAgent=object",
   },
   "dgram": {
     callable: false,
     keys: ["_createSocketHandle", "createSocket", "Socket"],
     ownNames: ["_createSocketHandle", "createSocket", "Socket"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_createSocketHandle=5 createSocket=2 Socket=2",
+    values: "",
   },
   "dns": {
     callable: false,
     keys: ["lookup", "lookupService", "Resolver", "getDefaultResultOrder", "setDefaultResultOrder", "setServers", "ADDRCONFIG", "ALL", "V4MAPPED", "NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY", "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS", "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED", "getServers", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "promises"],
     ownNames: ["lookup", "lookupService", "Resolver", "getDefaultResultOrder", "setDefaultResultOrder", "setServers", "ADDRCONFIG", "ALL", "V4MAPPED", "NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY", "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS", "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED", "getServers", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse", "promises"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "lookup=3 lookupService=3 Resolver=0 getDefaultResultOrder=0 setDefaultResultOrder=1 setServers=1 getServers=0 resolve=3 resolve4=2 resolve6=2 resolveAny=2 resolveCaa=2 resolveCname=2 resolveMx=2 resolveNaptr=2 resolveNs=2 resolvePtr=2 resolveSoa=2 resolveSrv=2 resolveTlsa=2 resolveTxt=2 reverse=2",
+    values: "ADDRCONFIG=number ALL=number V4MAPPED=number NODATA=string FORMERR=string SERVFAIL=string NOTFOUND=string NOTIMP=string REFUSED=string BADQUERY=string BADNAME=string BADFAMILY=string BADRESP=string CONNREFUSED=string TIMEOUT=string EOF=string FILE=string NOMEM=string DESTRUCTION=string BADSTR=string BADFLAGS=string NONAME=string BADHINTS=string NOTINITIALIZED=string LOADIPHLPAPI=string ADDRGETNETWORKPARAMS=string CANCELLED=string promises=object",
   },
   "util": {
     callable: false,
     keys: ["_errnoException", "_exceptionWithHostPort", "_extend", "callbackify", "convertProcessSignalToExitCode", "debug", "debuglog", "deprecate", "format", "styleText", "formatWithOptions", "getCallSites", "getSystemErrorMap", "getSystemErrorName", "getSystemErrorMessage", "inherits", "inspect", "isArray", "isDeepStrictEqual", "markPromiseAsHandled", "promisify", "stripVTControlCharacters", "toUSVString", "transferableAbortSignal", "transferableAbortController", "aborted", "types", "parseEnv", "parseArgs", "TextDecoder", "TextEncoder", "MIMEType", "MIMEParams", "diff", "debounce", "throttle", "setTraceSigInt"],
     ownNames: ["_errnoException", "_exceptionWithHostPort", "_extend", "callbackify", "convertProcessSignalToExitCode", "debug", "debuglog", "deprecate", "format", "styleText", "formatWithOptions", "getCallSites", "getSystemErrorMap", "getSystemErrorName", "getSystemErrorMessage", "inherits", "inspect", "isArray", "isDeepStrictEqual", "markPromiseAsHandled", "promisify", "stripVTControlCharacters", "toUSVString", "transferableAbortSignal", "transferableAbortController", "aborted", "types", "parseEnv", "parseArgs", "TextDecoder", "TextEncoder", "MIMEType", "MIMEParams", "diff", "debounce", "throttle", "setTraceSigInt"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_errnoException=0 _exceptionWithHostPort=0 _extend=2 callbackify=1 convertProcessSignalToExitCode=1 debug=2 debuglog=2 deprecate=3 format=0 styleText=3 formatWithOptions=1 getCallSites=0 getSystemErrorMap=0 getSystemErrorName=1 getSystemErrorMessage=1 inherits=2 inspect=2 isArray=1 isDeepStrictEqual=3 markPromiseAsHandled=1 promisify=1 stripVTControlCharacters=1 toUSVString=1 transferableAbortSignal=1 transferableAbortController=0 aborted=2 parseEnv=1 parseArgs=0 TextDecoder=0 TextEncoder=0 MIMEType=1 MIMEParams=0 diff=2 debounce=2 throttle=3 setTraceSigInt=1",
+    values: "types=object",
   },
   "util/types": {
     callable: false,
     keys: ["isArgumentsObject", "isArrayBuffer", "isAsyncFunction", "isBigIntObject", "isBooleanObject", "isDate", "isExternal", "isGeneratorFunction", "isGeneratorObject", "isMap", "isMapIterator", "isModuleNamespaceObject", "isNativeError", "isNumberObject", "isPromise", "isProxy", "isRegExp", "isSet", "isSetIterator", "isSharedArrayBuffer", "isStringObject", "isSymbolObject", "isWeakMap", "isWeakSet", "isAnyArrayBuffer", "isBoxedPrimitive", "isArrayBufferView", "isDataView", "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array", "isInt8Array", "isInt16Array", "isInt32Array", "isFloat16Array", "isFloat32Array", "isFloat64Array", "isBigInt64Array", "isBigUint64Array", "isKeyObject", "isCryptoKey"],
     ownNames: ["isArgumentsObject", "isArrayBuffer", "isAsyncFunction", "isBigIntObject", "isBooleanObject", "isDate", "isExternal", "isGeneratorFunction", "isGeneratorObject", "isMap", "isMapIterator", "isModuleNamespaceObject", "isNativeError", "isNumberObject", "isPromise", "isProxy", "isRegExp", "isSet", "isSetIterator", "isSharedArrayBuffer", "isStringObject", "isSymbolObject", "isWeakMap", "isWeakSet", "isAnyArrayBuffer", "isBoxedPrimitive", "isArrayBufferView", "isDataView", "isTypedArray", "isUint8Array", "isUint8ClampedArray", "isUint16Array", "isUint32Array", "isInt8Array", "isInt16Array", "isInt32Array", "isFloat16Array", "isFloat32Array", "isFloat64Array", "isBigInt64Array", "isBigUint64Array", "isKeyObject", "isCryptoKey"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "isArgumentsObject=0 isArrayBuffer=0 isAsyncFunction=0 isBigIntObject=0 isBooleanObject=0 isDate=0 isExternal=0 isGeneratorFunction=0 isGeneratorObject=0 isMap=0 isMapIterator=0 isModuleNamespaceObject=0 isNativeError=0 isNumberObject=0 isPromise=0 isProxy=0 isRegExp=0 isSet=0 isSetIterator=0 isSharedArrayBuffer=0 isStringObject=0 isSymbolObject=0 isWeakMap=0 isWeakSet=0 isAnyArrayBuffer=0 isBoxedPrimitive=0 isArrayBufferView=1 isDataView=1 isTypedArray=1 isUint8Array=1 isUint8ClampedArray=1 isUint16Array=1 isUint32Array=1 isInt8Array=1 isInt16Array=1 isInt32Array=1 isFloat16Array=1 isFloat32Array=1 isFloat64Array=1 isBigInt64Array=1 isBigUint64Array=1 isKeyObject=1 isCryptoKey=1",
+    values: "",
   },
   "string_decoder": {
     callable: false,
     keys: ["StringDecoder"],
     ownNames: ["StringDecoder"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "StringDecoder=1",
+    values: "",
   },
   "querystring": {
     callable: false,
     keys: ["unescapeBuffer", "unescape", "escape", "stringify", "encode", "parse", "decode"],
     ownNames: ["unescapeBuffer", "unescape", "escape", "stringify", "encode", "parse", "decode"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "unescapeBuffer=2 unescape=2 escape=1 stringify=4 encode=4 parse=4 decode=4",
+    values: "",
   },
   "readline": {
     callable: false,
     keys: ["Interface", "clearLine", "clearScreenDown", "createInterface", "cursorTo", "emitKeypressEvents", "moveCursor", "promises"],
     ownNames: ["Interface", "clearLine", "clearScreenDown", "createInterface", "cursorTo", "emitKeypressEvents", "moveCursor", "promises"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Interface=4 clearLine=3 clearScreenDown=2 createInterface=4 cursorTo=4 emitKeypressEvents=1 moveCursor=4",
+    values: "promises=object",
   },
   "readline/promises": {
     callable: false,
     keys: ["Interface", "Readline", "createInterface"],
     ownNames: ["Interface", "Readline", "createInterface"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Interface=0 Readline=1 createInterface=4",
+    values: "",
   },
   "http2": {
     callable: false,
     keys: ["connect", "constants", "createServer", "createSecureServer", "getDefaultSettings", "getPackedSettings", "getUnpackedSettings", "performServerHandshake", "sensitiveHeaders", "Http2ServerRequest", "Http2ServerResponse"],
     ownNames: ["connect", "constants", "createServer", "createSecureServer", "getDefaultSettings", "getPackedSettings", "getUnpackedSettings", "performServerHandshake", "sensitiveHeaders", "Http2ServerRequest", "Http2ServerResponse"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "connect=3 createServer=2 createSecureServer=2 getDefaultSettings=0 getPackedSettings=1 getUnpackedSettings=1 performServerHandshake=1 Http2ServerRequest=4 Http2ServerResponse=2",
+    values: "constants=object sensitiveHeaders=symbol",
   },
   "assert": {
     callable: true,
     keys: ["AssertionError", "CallTracker", "ok", "fail", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual", "notDeepStrictEqual", "strictEqual", "notStrictEqual", "partialDeepStrictEqual", "match", "doesNotMatch", "throws", "rejects", "doesNotThrow", "doesNotReject", "ifError", "strict", "Assert"],
     ownNames: ["length", "name", "prototype", "AssertionError", "CallTracker", "ok", "fail", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual", "notDeepStrictEqual", "strictEqual", "notStrictEqual", "partialDeepStrictEqual", "match", "doesNotMatch", "throws", "rejects", "doesNotThrow", "doesNotReject", "ifError", "strict", "Assert"],
     inherited: ["arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "AssertionError=1 CallTracker=0 ok=0 fail=5 equal=3 notEqual=3 deepEqual=3 notDeepEqual=3 deepStrictEqual=3 notDeepStrictEqual=3 strictEqual=3 notStrictEqual=3 partialDeepStrictEqual=3 match=3 doesNotMatch=3 throws=1 rejects=1 doesNotThrow=1 doesNotReject=1 ifError=1 strict=0 Assert=1",
+    values: "length=number name=string prototype=object",
   },
   "assert/strict": {
     callable: true,
     keys: ["AssertionError", "CallTracker", "ok", "fail", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual", "notDeepStrictEqual", "strictEqual", "notStrictEqual", "partialDeepStrictEqual", "match", "doesNotMatch", "throws", "rejects", "doesNotThrow", "doesNotReject", "ifError", "Assert", "strict"],
     ownNames: ["length", "name", "prototype", "AssertionError", "CallTracker", "ok", "fail", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual", "notDeepStrictEqual", "strictEqual", "notStrictEqual", "partialDeepStrictEqual", "match", "doesNotMatch", "throws", "rejects", "doesNotThrow", "doesNotReject", "ifError", "Assert", "strict"],
     inherited: ["arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "AssertionError=1 CallTracker=0 ok=0 fail=5 equal=3 notEqual=3 deepEqual=3 notDeepEqual=3 deepStrictEqual=3 notDeepStrictEqual=3 strictEqual=3 notStrictEqual=3 partialDeepStrictEqual=3 match=3 doesNotMatch=3 throws=1 rejects=1 doesNotThrow=1 doesNotReject=1 ifError=1 Assert=1 strict=0",
+    values: "length=number name=string prototype=object",
   },
   "worker_threads": {
     callable: false,
     keys: ["isInternalThread", "isMainThread", "MessagePort", "MessageChannel", "markAsUncloneable", "markAsUntransferable", "isMarkedAsUntransferable", "moveMessagePortToContext", "receiveMessageOnPort", "resourceLimits", "postMessageToThread", "threadId", "threadName", "SHARE_ENV", "Worker", "parentPort", "workerData", "BroadcastChannel", "setEnvironmentData", "getEnvironmentData", "locks"],
     ownNames: ["isInternalThread", "isMainThread", "MessagePort", "MessageChannel", "markAsUncloneable", "markAsUntransferable", "isMarkedAsUntransferable", "moveMessagePortToContext", "receiveMessageOnPort", "resourceLimits", "postMessageToThread", "threadId", "threadName", "SHARE_ENV", "Worker", "parentPort", "workerData", "BroadcastChannel", "setEnvironmentData", "getEnvironmentData", "locks"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "MessagePort=0 MessageChannel=0 markAsUncloneable=1 markAsUntransferable=1 isMarkedAsUntransferable=1 moveMessagePortToContext=0 receiveMessageOnPort=1 postMessageToThread=4 Worker=1 BroadcastChannel=1 setEnvironmentData=2 getEnvironmentData=1",
+    values: "isInternalThread=boolean isMainThread=boolean resourceLimits=object threadId=number threadName=string SHARE_ENV=symbol parentPort=object workerData=object locks=object",
   },
   "buffer": {
     callable: false,
     keys: ["Buffer", "SlowBuffer", "transcode", "isUtf8", "isAscii", "kMaxLength", "kStringMaxLength", "btoa", "atob", "constants", "INSPECT_MAX_BYTES", "Blob", "resolveObjectURL", "File"],
     ownNames: ["Buffer", "SlowBuffer", "transcode", "isUtf8", "isAscii", "kMaxLength", "kStringMaxLength", "btoa", "atob", "constants", "INSPECT_MAX_BYTES", "Blob", "resolveObjectURL", "File"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Buffer=3 SlowBuffer=1 transcode=3 isUtf8=1 isAscii=1 btoa=1 atob=1 Blob=0 resolveObjectURL=1 File=2",
+    values: "kMaxLength=number kStringMaxLength=number constants=object INSPECT_MAX_BYTES=number",
   },
   "cluster": {
     callable: false,
     keys: ["_events", "_eventsCount", "_maxListeners", "isWorker", "isMaster", "isPrimary", "Worker", "workers", "settings", "SCHED_NONE", "SCHED_RR", "schedulingPolicy", "setupPrimary", "setupMaster", "fork", "disconnect"],
     ownNames: ["_events", "_eventsCount", "_maxListeners", "isWorker", "isMaster", "isPrimary", "Worker", "workers", "settings", "SCHED_NONE", "SCHED_RR", "schedulingPolicy", "setupPrimary", "setupMaster", "fork", "disconnect"],
     inherited: ["constructor", "setMaxListeners", "getMaxListeners", "emit", "addListener", "on", "prependListener", "once", "prependOnceListener", "removeListener", "off", "removeAllListeners", "listeners", "rawListeners", "listenerCount", "eventNames", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Worker=1 setupPrimary=1 setupMaster=1 fork=1 disconnect=1",
+    values: "_events=object _eventsCount=number _maxListeners=undefined isWorker=boolean isMaster=boolean isPrimary=boolean workers=object settings=object SCHED_NONE=number SCHED_RR=number schedulingPolicy=number",
   },
   "tty": {
     callable: false,
     keys: ["isatty", "ReadStream", "WriteStream"],
     ownNames: ["isatty", "ReadStream", "WriteStream"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "isatty=1 ReadStream=2 WriteStream=1",
+    values: "",
   },
   "async_hooks": {
     callable: false,
     keys: ["AsyncLocalStorage", "createHook", "executionAsyncId", "triggerAsyncId", "executionAsyncResource", "asyncWrapProviders", "AsyncResource"],
     ownNames: ["AsyncLocalStorage", "createHook", "executionAsyncId", "triggerAsyncId", "executionAsyncResource", "asyncWrapProviders", "AsyncResource"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "AsyncLocalStorage=0 createHook=1 executionAsyncId=0 triggerAsyncId=0 executionAsyncResource=0 AsyncResource=1",
+    values: "asyncWrapProviders=object",
   },
   "events": {
     callable: true,
     keys: ["addAbortListener", "once", "on", "getEventListeners", "getMaxListeners", "listenerCount", "EventEmitter", "usingDomains", "captureRejectionSymbol", "captureRejections", "EventEmitterAsyncResource", "errorMonitor", "defaultMaxListeners", "setMaxListeners", "init"],
     ownNames: ["length", "name", "prototype", "addAbortListener", "once", "on", "getEventListeners", "getMaxListeners", "listenerCount", "EventEmitter", "usingDomains", "captureRejectionSymbol", "captureRejections", "EventEmitterAsyncResource", "errorMonitor", "defaultMaxListeners", "kMaxEventTargetListeners", "kMaxEventTargetListenersWarned", "setMaxListeners", "init"],
     inherited: ["arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "addAbortListener=2 once=2 on=2 getEventListeners=2 getMaxListeners=1 listenerCount=2 EventEmitter=1 EventEmitterAsyncResource=0 setMaxListeners=0 init=1",
+    values: "length=number name=string prototype=object usingDomains=boolean captureRejectionSymbol=symbol captureRejections=boolean errorMonitor=symbol defaultMaxListeners=number kMaxEventTargetListeners=symbol kMaxEventTargetListenersWarned=symbol",
   },
   "stream": {
     callable: true,
     keys: ["isDestroyed", "isDisturbed", "isErrored", "isReadable", "isWritable", "Readable", "Writable", "Duplex", "Transform", "PassThrough", "duplexPair", "pipeline", "addAbortSignal", "finished", "destroy", "compose", "setDefaultHighWaterMark", "getDefaultHighWaterMark", "promises", "Stream", "_isArrayBufferView", "_isUint8Array", "_uint8ArrayToBuffer"],
     ownNames: ["length", "name", "prototype", "isDestroyed", "isDisturbed", "isErrored", "isReadable", "isWritable", "Readable", "Writable", "Duplex", "Transform", "PassThrough", "duplexPair", "pipeline", "addAbortSignal", "finished", "destroy", "compose", "setDefaultHighWaterMark", "getDefaultHighWaterMark", "promises", "Stream", "_isArrayBufferView", "_isUint8Array", "_uint8ArrayToBuffer"],
     inherited: ["addAbortListener", "once", "on", "getEventListeners", "getMaxListeners", "listenerCount", "EventEmitter", "usingDomains", "captureRejectionSymbol", "captureRejections", "EventEmitterAsyncResource", "errorMonitor", "defaultMaxListeners", "kMaxEventTargetListeners", "kMaxEventTargetListenersWarned", "setMaxListeners", "init", "arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "isDestroyed=1 isDisturbed=1 isErrored=1 isReadable=1 isWritable=1 Readable=1 Writable=1 Duplex=1 Transform=1 PassThrough=1 duplexPair=1 pipeline=0 addAbortSignal=2 finished=3 destroy=2 compose=0 setDefaultHighWaterMark=2 getDefaultHighWaterMark=1 Stream=1 _isArrayBufferView=1 _isUint8Array=1 _uint8ArrayToBuffer=1",
+    values: "length=number name=string prototype=object promises=object",
   },
   "stream/promises": {
     callable: false,
     keys: ["finished", "pipeline"],
     ownNames: ["finished", "pipeline"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "finished=2 pipeline=0",
+    values: "",
   },
   "stream/consumers": {
     callable: false,
     keys: ["arrayBuffer", "blob", "buffer", "bytes", "text", "json"],
     ownNames: ["arrayBuffer", "blob", "buffer", "bytes", "text", "json"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "arrayBuffer=1 blob=1 buffer=1 bytes=1 text=1 json=1",
+    values: "",
   },
   "test": {
     callable: true,
     keys: ["expectFailure", "skip", "todo", "only", "after", "afterEach", "before", "beforeEach", "describe", "getTestContext", "it", "run", "suite", "test", "mock", "snapshot", "assert"],
     ownNames: ["length", "name", "expectFailure", "skip", "todo", "only", "after", "afterEach", "before", "beforeEach", "describe", "getTestContext", "it", "run", "suite", "test", "mock", "snapshot", "assert"],
     inherited: ["arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "expectFailure=3 skip=3 todo=3 only=3 after=2 afterEach=2 before=2 beforeEach=2 describe=3 getTestContext=0 it=3 run=0 suite=3 test=3",
+    values: "length=number name=string mock=object snapshot=object assert=object",
   },
   "timers": {
     callable: false,
     keys: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate", "setInterval", "clearInterval", "promises"],
     ownNames: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate", "setInterval", "clearInterval", "promises"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "setTimeout=2 clearTimeout=1 setImmediate=1 clearImmediate=1 setInterval=2 clearInterval=1",
+    values: "promises=object",
   },
   "timers/promises": {
     callable: false,
     keys: ["setTimeout", "setImmediate", "setInterval", "scheduler"],
     ownNames: ["setTimeout", "setImmediate", "setInterval", "scheduler"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "setTimeout=2 setImmediate=1 setInterval=2",
+    values: "scheduler=object",
   },
   "diagnostics_channel": {
     callable: false,
     keys: ["channel", "hasSubscribers", "subscribe", "tracingChannel", "unsubscribe", "Channel"],
     ownNames: ["channel", "hasSubscribers", "subscribe", "tracingChannel", "unsubscribe", "Channel"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "channel=1 hasSubscribers=1 subscribe=2 tracingChannel=1 unsubscribe=2 Channel=1",
+    values: "",
   },
   "perf_hooks": {
     callable: false,
     keys: ["Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceResourceTiming", "monitorEventLoopDelay", "eventLoopUtilization", "timerify", "createHistogram", "createSlidingWindowHistogram", "importHistogram", "performance", "constants"],
     ownNames: ["Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceResourceTiming", "monitorEventLoopDelay", "eventLoopUtilization", "timerify", "createHistogram", "createSlidingWindowHistogram", "importHistogram", "performance", "constants"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "Performance=0 PerformanceEntry=0 PerformanceMark=1 PerformanceMeasure=0 PerformanceObserver=1 PerformanceObserverEntryList=0 PerformanceResourceTiming=0 monitorEventLoopDelay=0 eventLoopUtilization=2 timerify=1 createHistogram=0 createSlidingWindowHistogram=1 importHistogram=1",
+    values: "performance=object constants=object",
   },
   "module": {
     callable: true,
     keys: ["_cache", "_pathCache", "_extensions", "globalPaths", "_debug", "isBuiltin", "_findPath", "_nodeModulePaths", "_resolveLookupPaths", "_load", "_resolveFilename", "createRequire", "_initPaths", "_preloadModules", "syncBuiltinESMExports", "Module", "registerHooks", "builtinModules", "runMain", "register", "constants", "enableCompileCache", "findPackageJSON", "flushCompileCache", "getCompileCacheDir", "stripTypeScriptTypes", "findSourceMap", "SourceMap", "getSourceMapsSupport", "setSourceMapsSupport"],
     ownNames: ["length", "name", "prototype", "_stat", "_cache", "_pathCache", "_extensions", "globalPaths", "wrap", "wrapper", "_debug", "isBuiltin", "_readPackage", "_findPath", "_nodeModulePaths", "_resolveLookupPaths", "_load", "_resolveFilename", "createRequire", "_initPaths", "_preloadModules", "syncBuiltinESMExports", "Module", "registerHooks", "builtinModules", "runMain", "register", "constants", "enableCompileCache", "findPackageJSON", "flushCompileCache", "getCompileCacheDir", "stripTypeScriptTypes", "findSourceMap", "SourceMap", "getSourceMapsSupport", "setSourceMapsSupport"],
     inherited: ["arguments", "caller", "constructor", "apply", "bind", "call", "toString", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_stat=1 wrap=1 _debug=0 isBuiltin=1 _readPackage=1 _findPath=3 _nodeModulePaths=1 _resolveLookupPaths=2 _load=3 _resolveFilename=4 createRequire=1 _initPaths=0 _preloadModules=1 syncBuiltinESMExports=0 Module=0 registerHooks=1 runMain=0 register=1 enableCompileCache=1 findPackageJSON=1 flushCompileCache=0 getCompileCacheDir=0 stripTypeScriptTypes=1 findSourceMap=1 SourceMap=1 getSourceMapsSupport=0 setSourceMapsSupport=1",
+    values: "length=number name=string prototype=object _cache=object _pathCache=object _extensions=object globalPaths=object wrapper=object builtinModules=object constants=object",
   },
   "console": {
     callable: false,
     keys: ["log", "info", "debug", "warn", "error", "dir", "time", "timeEnd", "timeLog", "trace", "assert", "clear", "count", "countReset", "group", "groupEnd", "table", "dirxml", "groupCollapsed", "Console", "profile", "profileEnd", "timeStamp", "context", "createTask"],
     ownNames: ["log", "info", "debug", "warn", "error", "dir", "time", "timeEnd", "timeLog", "trace", "assert", "clear", "count", "countReset", "group", "groupEnd", "table", "dirxml", "groupCollapsed", "_stdoutErrorHandler", "_stderrErrorHandler", "_ignoreErrors", "_times", "Console", "profile", "profileEnd", "timeStamp", "context", "createTask", "_stdout", "_stderr"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "log=0 info=0 debug=0 warn=0 error=0 dir=0 time=0 timeEnd=0 timeLog=0 trace=0 assert=0 clear=0 count=0 countReset=0 group=0 groupEnd=0 table=0 dirxml=0 groupCollapsed=0 _stdoutErrorHandler=1 _stderrErrorHandler=1 Console=1 profile=0 profileEnd=0 timeStamp=0 context=1 createTask=0",
+    values: "_ignoreErrors=boolean _times=object _stdout=object _stderr=object",
   },
   "process": {
     callable: false,
     keys: ["version", "versions", "arch", "platform", "release", "_rawDebug", "moduleLoadList", "binding", "_linkedBinding", "_events", "_eventsCount", "_maxListeners", "domain", "_exiting", "exitCode", "config", "dlopen", "uptime", "_getActiveRequests", "_getActiveHandles", "getActiveResourcesInfo", "reallyExit", "_kill", "loadEnvFile", "cpuUsage", "threadCpuUsage", "resourceUsage", "memoryUsage", "constrainedMemory", "availableMemory", "kill", "exit", "execve", "ref", "unref", "finalization", "hrtime", "openStdin", "getuid", "geteuid", "getgid", "getegid", "getgroups", "allowedNodeEnvironmentFlags", "features", "_fatalException", "setUncaughtExceptionCaptureCallback", "hasUncaughtExceptionCaptureCallback", "emitWarning", "nextTick", "_tickCallback", "sourceMapsEnabled", "setSourceMapsEnabled", "getBuiltinModule", "_debugProcess", "_debugEnd", "_startProfilerIdleNotifier", "_stopProfilerIdleNotifier", "stdout", "stdin", "stderr", "abort", "umask", "chdir", "cwd", "initgroups", "setgroups", "setegid", "seteuid", "setgid", "setuid", "env", "title", "argv", "execArgv", "pid", "ppid", "execPath", "debugPort", "argv0", "_preload_modules", "report"],
     ownNames: ["version", "versions", "arch", "platform", "release", "_rawDebug", "moduleLoadList", "binding", "_linkedBinding", "_events", "_eventsCount", "_maxListeners", "domain", "_exiting", "exitCode", "config", "dlopen", "uptime", "_getActiveRequests", "_getActiveHandles", "getActiveResourcesInfo", "reallyExit", "_kill", "loadEnvFile", "cpuUsage", "threadCpuUsage", "resourceUsage", "memoryUsage", "constrainedMemory", "availableMemory", "kill", "exit", "execve", "ref", "unref", "finalization", "hrtime", "openStdin", "getuid", "geteuid", "getgid", "getegid", "getgroups", "allowedNodeEnvironmentFlags", "features", "_fatalException", "setUncaughtExceptionCaptureCallback", "hasUncaughtExceptionCaptureCallback", "emitWarning", "nextTick", "_tickCallback", "sourceMapsEnabled", "setSourceMapsEnabled", "getBuiltinModule", "_debugProcess", "_debugEnd", "_startProfilerIdleNotifier", "_stopProfilerIdleNotifier", "stdout", "stdin", "stderr", "abort", "umask", "chdir", "cwd", "initgroups", "setgroups", "setegid", "seteuid", "setgid", "setuid", "env", "title", "argv", "execArgv", "pid", "ppid", "execPath", "debugPort", "argv0", "_preload_modules", "report"],
     inherited: ["constructor", "setMaxListeners", "getMaxListeners", "emit", "addListener", "on", "prependListener", "once", "prependOnceListener", "removeListener", "off", "removeAllListeners", "listeners", "rawListeners", "listenerCount", "eventNames", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "_rawDebug=0 binding=1 _linkedBinding=1 dlopen=0 uptime=0 _getActiveRequests=0 _getActiveHandles=0 getActiveResourcesInfo=0 reallyExit=0 _kill=0 loadEnvFile=0 cpuUsage=1 threadCpuUsage=1 resourceUsage=0 memoryUsage=0 constrainedMemory=0 availableMemory=0 kill=2 exit=1 execve=1 ref=1 unref=1 hrtime=1 openStdin=0 getuid=0 geteuid=0 getgid=0 getegid=0 getgroups=0 _fatalException=2 setUncaughtExceptionCaptureCallback=1 hasUncaughtExceptionCaptureCallback=0 emitWarning=4 nextTick=1 _tickCallback=0 setSourceMapsEnabled=1 getBuiltinModule=1 _debugProcess=0 _debugEnd=0 _startProfilerIdleNotifier=0 _stopProfilerIdleNotifier=0 abort=0 umask=1 chdir=1 cwd=0 initgroups=2 setgroups=1 setegid=1 seteuid=1 setgid=1 setuid=1",
+    values: "version=string versions=object arch=string platform=string release=object moduleLoadList=object _events=object _eventsCount=number _maxListeners=undefined domain=object _exiting=boolean exitCode=undefined config=object finalization=object allowedNodeEnvironmentFlags=object features=object sourceMapsEnabled=boolean stdout=object stdin=object stderr=object env=object title=string argv=object execArgv=object pid=number ppid=number execPath=string debugPort=number argv0=string _preload_modules=object report=object",
   },
   "v8": {
     callable: false,
     keys: ["cachedDataVersionTag", "getHeapSnapshot", "getHeapStatistics", "getHeapSpaceStatistics", "getHeapCodeStatistics", "getCppHeapStatistics", "setFlagsFromString", "Serializer", "Deserializer", "DefaultSerializer", "DefaultDeserializer", "deserialize", "takeCoverage", "stopCoverage", "serialize", "writeHeapSnapshot", "promiseHooks", "queryObjects", "startupSnapshot", "setHeapSnapshotNearHeapLimit", "GCProfiler", "isStringOneByteRepresentation", "startCpuProfile"],
     ownNames: ["cachedDataVersionTag", "getHeapSnapshot", "getHeapStatistics", "getHeapSpaceStatistics", "getHeapCodeStatistics", "getCppHeapStatistics", "setFlagsFromString", "Serializer", "Deserializer", "DefaultSerializer", "DefaultDeserializer", "deserialize", "takeCoverage", "stopCoverage", "serialize", "writeHeapSnapshot", "promiseHooks", "queryObjects", "startupSnapshot", "setHeapSnapshotNearHeapLimit", "GCProfiler", "isStringOneByteRepresentation", "startCpuProfile"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "cachedDataVersionTag=0 getHeapSnapshot=1 getHeapStatistics=0 getHeapSpaceStatistics=0 getHeapCodeStatistics=0 getCppHeapStatistics=0 setFlagsFromString=1 Serializer=0 Deserializer=1 DefaultSerializer=0 DefaultDeserializer=0 deserialize=1 takeCoverage=0 stopCoverage=0 serialize=1 writeHeapSnapshot=2 queryObjects=1 setHeapSnapshotNearHeapLimit=1 GCProfiler=0 isStringOneByteRepresentation=1 startCpuProfile=0",
+    values: "promiseHooks=object startupSnapshot=object",
   },
   "stream/web": {
     callable: false,
     keys: ["ReadableStream", "ReadableStreamTee", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableByteStreamController", "ReadableStreamDefaultController", "TransformStream", "TransformStreamDefaultController", "WritableStream", "WritableStreamDefaultWriter", "WritableStreamDefaultController", "ByteLengthQueuingStrategy", "CountQueuingStrategy", "TextEncoderStream", "TextDecoderStream", "CompressionStream", "DecompressionStream"],
     ownNames: ["ReadableStream", "ReadableStreamTee", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader", "ReadableStreamBYOBRequest", "ReadableByteStreamController", "ReadableStreamDefaultController", "TransformStream", "TransformStreamDefaultController", "WritableStream", "WritableStreamDefaultWriter", "WritableStreamDefaultController", "ByteLengthQueuingStrategy", "CountQueuingStrategy", "TextEncoderStream", "TextDecoderStream", "CompressionStream", "DecompressionStream"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "ReadableStream=0 ReadableStreamTee=1 ReadableStreamDefaultReader=1 ReadableStreamBYOBReader=1 ReadableStreamBYOBRequest=0 ReadableByteStreamController=0 ReadableStreamDefaultController=0 TransformStream=0 TransformStreamDefaultController=0 WritableStream=0 WritableStreamDefaultWriter=1 WritableStreamDefaultController=0 ByteLengthQueuingStrategy=1 CountQueuingStrategy=1 TextEncoderStream=0 TextDecoderStream=0 CompressionStream=1 DecompressionStream=1",
+    values: "",
   },
   "dns/promises": {
     callable: false,
     keys: ["lookup", "lookupService", "Resolver", "getDefaultResultOrder", "setDefaultResultOrder", "setServers", "NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY", "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS", "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED", "getServers", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
     ownNames: ["lookup", "lookupService", "Resolver", "getDefaultResultOrder", "setDefaultResultOrder", "setServers", "NODATA", "FORMERR", "SERVFAIL", "NOTFOUND", "NOTIMP", "REFUSED", "BADQUERY", "BADNAME", "BADFAMILY", "BADRESP", "CONNREFUSED", "TIMEOUT", "EOF", "FILE", "NOMEM", "DESTRUCTION", "BADSTR", "BADFLAGS", "NONAME", "BADHINTS", "NOTINITIALIZED", "LOADIPHLPAPI", "ADDRGETNETWORKPARAMS", "CANCELLED", "getServers", "resolve", "resolve4", "resolve6", "resolveAny", "resolveCaa", "resolveCname", "resolveMx", "resolveNaptr", "resolveNs", "resolvePtr", "resolveSoa", "resolveSrv", "resolveTlsa", "resolveTxt", "reverse"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "lookup=2 lookupService=2 Resolver=0 getDefaultResultOrder=0 setDefaultResultOrder=1 setServers=1 getServers=0 resolve=2 resolve4=2 resolve6=2 resolveAny=2 resolveCaa=2 resolveCname=2 resolveMx=2 resolveNaptr=2 resolveNs=2 resolvePtr=2 resolveSoa=2 resolveSrv=2 resolveTlsa=2 resolveTxt=2 reverse=2",
+    values: "NODATA=string FORMERR=string SERVFAIL=string NOTFOUND=string NOTIMP=string REFUSED=string BADQUERY=string BADNAME=string BADFAMILY=string BADRESP=string CONNREFUSED=string TIMEOUT=string EOF=string FILE=string NOMEM=string DESTRUCTION=string BADSTR=string BADFLAGS=string NONAME=string BADHINTS=string NOTINITIALIZED=string LOADIPHLPAPI=string ADDRGETNETWORKPARAMS=string CANCELLED=string",
   },
   "punycode": {
     callable: false,
     keys: ["version", "ucs2", "decode", "encode", "toASCII", "toUnicode"],
     ownNames: ["version", "ucs2", "decode", "encode", "toASCII", "toUnicode"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "decode=1 encode=1 toASCII=1 toUnicode=1",
+    values: "version=string ucs2=object",
   },
   "constants": {
     callable: false,
     keys: ["RTLD_LAZY", "RTLD_NOW", "RTLD_GLOBAL", "RTLD_LOCAL", "RTLD_DEEPBIND", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL", "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG", "EBUSY", "ECANCELED", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EDEADLK", "EDESTADDRREQ", "EDOM", "EDQUOT", "EEXIST", "EFAULT", "EFBIG", "EHOSTUNREACH", "EIDRM", "EILSEQ", "EINPROGRESS", "EINTR", "EINVAL", "EIO", "EISCONN", "EISDIR", "ELOOP", "EMFILE", "EMLINK", "EMSGSIZE", "EMULTIHOP", "ENAMETOOLONG", "ENETDOWN", "ENETRESET", "ENETUNREACH", "ENFILE", "ENOBUFS", "ENODATA", "ENODEV", "ENOENT", "ENOEXEC", "ENOLCK", "ENOLINK", "ENOMEM", "ENOMSG", "ENOPROTOOPT", "ENOSPC", "ENOSR", "ENOSTR", "ENOSYS", "ENOTCONN", "ENOTDIR", "ENOTEMPTY", "ENOTSOCK", "ENOTSUP", "ENOTTY", "ENXIO", "EOPNOTSUPP", "EOVERFLOW", "EPERM", "EPIPE", "EPROTO", "EPROTONOSUPPORT", "EPROTOTYPE", "ERANGE", "EROFS", "ESPIPE", "ESRCH", "ESTALE", "ETIME", "ETIMEDOUT", "ETXTBSY", "EWOULDBLOCK", "EXDEV", "PRIORITY_LOW", "PRIORITY_BELOW_NORMAL", "PRIORITY_NORMAL", "PRIORITY_ABOVE_NORMAL", "PRIORITY_HIGH", "PRIORITY_HIGHEST", "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGCHLD", "SIGSTKFLT", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO", "SIGPOLL", "SIGPWR", "SIGSYS", "UV_FS_SYMLINK_DIR", "UV_FS_SYMLINK_JUNCTION", "O_RDONLY", "O_WRONLY", "O_RDWR", "UV_DIRENT_UNKNOWN", "UV_DIRENT_FILE", "UV_DIRENT_DIR", "UV_DIRENT_LINK", "UV_DIRENT_FIFO", "UV_DIRENT_SOCKET", "UV_DIRENT_CHAR", "UV_DIRENT_BLOCK", "S_IFMT", "S_IFREG", "S_IFDIR", "S_IFCHR", "S_IFBLK", "S_IFIFO", "S_IFLNK", "S_IFSOCK", "O_CREAT", "O_EXCL", "UV_FS_O_FILEMAP", "UV_FS_O_TEMPORARY", "UV_FS_O_SHORT_LIVED", "UV_FS_O_SEQUENTIAL", "UV_FS_O_RANDOM", "O_NOCTTY", "O_TRUNC", "O_APPEND", "O_DIRECTORY", "O_NOATIME", "O_NOFOLLOW", "O_SYNC", "O_DSYNC", "O_DIRECT", "O_NONBLOCK", "S_IRWXU", "S_IRUSR", "S_IWUSR", "S_IXUSR", "S_IRWXG", "S_IRGRP", "S_IWGRP", "S_IXGRP", "S_IRWXO", "S_IROTH", "S_IWOTH", "S_IXOTH", "F_OK", "R_OK", "W_OK", "X_OK", "UV_FS_COPYFILE_EXCL", "COPYFILE_EXCL", "UV_FS_COPYFILE_FICLONE", "COPYFILE_FICLONE", "UV_FS_COPYFILE_FICLONE_FORCE", "COPYFILE_FICLONE_FORCE", "OPENSSL_VERSION_NUMBER", "SSL_OP_ALL", "SSL_OP_ALLOW_NO_DHE_KEX", "SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION", "SSL_OP_CIPHER_SERVER_PREFERENCE", "SSL_OP_CISCO_ANYCONNECT", "SSL_OP_COOKIE_EXCHANGE", "SSL_OP_CRYPTOPRO_TLSEXT_BUG", "SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS", "SSL_OP_LEGACY_SERVER_CONNECT", "SSL_OP_NO_COMPRESSION", "SSL_OP_NO_ENCRYPT_THEN_MAC", "SSL_OP_NO_QUERY_MTU", "SSL_OP_NO_RENEGOTIATION", "SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION", "SSL_OP_NO_SSLv2", "SSL_OP_NO_SSLv3", "SSL_OP_NO_TICKET", "SSL_OP_NO_TLSv1", "SSL_OP_NO_TLSv1_1", "SSL_OP_NO_TLSv1_2", "SSL_OP_NO_TLSv1_3", "SSL_OP_PRIORITIZE_CHACHA", "SSL_OP_TLS_ROLLBACK_BUG", "ENGINE_METHOD_RSA", "ENGINE_METHOD_DSA", "ENGINE_METHOD_DH", "ENGINE_METHOD_RAND", "ENGINE_METHOD_EC", "ENGINE_METHOD_CIPHERS", "ENGINE_METHOD_DIGESTS", "ENGINE_METHOD_PKEY_METHS", "ENGINE_METHOD_PKEY_ASN1_METHS", "ENGINE_METHOD_ALL", "ENGINE_METHOD_NONE", "DH_CHECK_P_NOT_SAFE_PRIME", "DH_CHECK_P_NOT_PRIME", "DH_UNABLE_TO_CHECK_GENERATOR", "DH_NOT_SUITABLE_GENERATOR", "RSA_PKCS1_PADDING", "RSA_SSLV23_PADDING", "RSA_NO_PADDING", "RSA_PKCS1_OAEP_PADDING", "RSA_X931_PADDING", "RSA_PKCS1_PSS_PADDING", "RSA_PSS_SALTLEN_DIGEST", "RSA_PSS_SALTLEN_MAX_SIGN", "RSA_PSS_SALTLEN_AUTO", "defaultCoreCipherList", "TLS1_VERSION", "TLS1_1_VERSION", "TLS1_2_VERSION", "TLS1_3_VERSION", "POINT_CONVERSION_COMPRESSED", "POINT_CONVERSION_UNCOMPRESSED", "POINT_CONVERSION_HYBRID", "defaultCipherList"],
     ownNames: ["RTLD_LAZY", "RTLD_NOW", "RTLD_GLOBAL", "RTLD_LOCAL", "RTLD_DEEPBIND", "E2BIG", "EACCES", "EADDRINUSE", "EADDRNOTAVAIL", "EAFNOSUPPORT", "EAGAIN", "EALREADY", "EBADF", "EBADMSG", "EBUSY", "ECANCELED", "ECHILD", "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EDEADLK", "EDESTADDRREQ", "EDOM", "EDQUOT", "EEXIST", "EFAULT", "EFBIG", "EHOSTUNREACH", "EIDRM", "EILSEQ", "EINPROGRESS", "EINTR", "EINVAL", "EIO", "EISCONN", "EISDIR", "ELOOP", "EMFILE", "EMLINK", "EMSGSIZE", "EMULTIHOP", "ENAMETOOLONG", "ENETDOWN", "ENETRESET", "ENETUNREACH", "ENFILE", "ENOBUFS", "ENODATA", "ENODEV", "ENOENT", "ENOEXEC", "ENOLCK", "ENOLINK", "ENOMEM", "ENOMSG", "ENOPROTOOPT", "ENOSPC", "ENOSR", "ENOSTR", "ENOSYS", "ENOTCONN", "ENOTDIR", "ENOTEMPTY", "ENOTSOCK", "ENOTSUP", "ENOTTY", "ENXIO", "EOPNOTSUPP", "EOVERFLOW", "EPERM", "EPIPE", "EPROTO", "EPROTONOSUPPORT", "EPROTOTYPE", "ERANGE", "EROFS", "ESPIPE", "ESRCH", "ESTALE", "ETIME", "ETIMEDOUT", "ETXTBSY", "EWOULDBLOCK", "EXDEV", "PRIORITY_LOW", "PRIORITY_BELOW_NORMAL", "PRIORITY_NORMAL", "PRIORITY_ABOVE_NORMAL", "PRIORITY_HIGH", "PRIORITY_HIGHEST", "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGIOT", "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGCHLD", "SIGSTKFLT", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO", "SIGPOLL", "SIGPWR", "SIGSYS", "UV_FS_SYMLINK_DIR", "UV_FS_SYMLINK_JUNCTION", "O_RDONLY", "O_WRONLY", "O_RDWR", "UV_DIRENT_UNKNOWN", "UV_DIRENT_FILE", "UV_DIRENT_DIR", "UV_DIRENT_LINK", "UV_DIRENT_FIFO", "UV_DIRENT_SOCKET", "UV_DIRENT_CHAR", "UV_DIRENT_BLOCK", "S_IFMT", "S_IFREG", "S_IFDIR", "S_IFCHR", "S_IFBLK", "S_IFIFO", "S_IFLNK", "S_IFSOCK", "O_CREAT", "O_EXCL", "UV_FS_O_FILEMAP", "UV_FS_O_TEMPORARY", "UV_FS_O_SHORT_LIVED", "UV_FS_O_SEQUENTIAL", "UV_FS_O_RANDOM", "O_NOCTTY", "O_TRUNC", "O_APPEND", "O_DIRECTORY", "O_NOATIME", "O_NOFOLLOW", "O_SYNC", "O_DSYNC", "O_DIRECT", "O_NONBLOCK", "S_IRWXU", "S_IRUSR", "S_IWUSR", "S_IXUSR", "S_IRWXG", "S_IRGRP", "S_IWGRP", "S_IXGRP", "S_IRWXO", "S_IROTH", "S_IWOTH", "S_IXOTH", "F_OK", "R_OK", "W_OK", "X_OK", "UV_FS_COPYFILE_EXCL", "COPYFILE_EXCL", "UV_FS_COPYFILE_FICLONE", "COPYFILE_FICLONE", "UV_FS_COPYFILE_FICLONE_FORCE", "COPYFILE_FICLONE_FORCE", "OPENSSL_VERSION_NUMBER", "SSL_OP_ALL", "SSL_OP_ALLOW_NO_DHE_KEX", "SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION", "SSL_OP_CIPHER_SERVER_PREFERENCE", "SSL_OP_CISCO_ANYCONNECT", "SSL_OP_COOKIE_EXCHANGE", "SSL_OP_CRYPTOPRO_TLSEXT_BUG", "SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS", "SSL_OP_LEGACY_SERVER_CONNECT", "SSL_OP_NO_COMPRESSION", "SSL_OP_NO_ENCRYPT_THEN_MAC", "SSL_OP_NO_QUERY_MTU", "SSL_OP_NO_RENEGOTIATION", "SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION", "SSL_OP_NO_SSLv2", "SSL_OP_NO_SSLv3", "SSL_OP_NO_TICKET", "SSL_OP_NO_TLSv1", "SSL_OP_NO_TLSv1_1", "SSL_OP_NO_TLSv1_2", "SSL_OP_NO_TLSv1_3", "SSL_OP_PRIORITIZE_CHACHA", "SSL_OP_TLS_ROLLBACK_BUG", "ENGINE_METHOD_RSA", "ENGINE_METHOD_DSA", "ENGINE_METHOD_DH", "ENGINE_METHOD_RAND", "ENGINE_METHOD_EC", "ENGINE_METHOD_CIPHERS", "ENGINE_METHOD_DIGESTS", "ENGINE_METHOD_PKEY_METHS", "ENGINE_METHOD_PKEY_ASN1_METHS", "ENGINE_METHOD_ALL", "ENGINE_METHOD_NONE", "DH_CHECK_P_NOT_SAFE_PRIME", "DH_CHECK_P_NOT_PRIME", "DH_UNABLE_TO_CHECK_GENERATOR", "DH_NOT_SUITABLE_GENERATOR", "RSA_PKCS1_PADDING", "RSA_SSLV23_PADDING", "RSA_NO_PADDING", "RSA_PKCS1_OAEP_PADDING", "RSA_X931_PADDING", "RSA_PKCS1_PSS_PADDING", "RSA_PSS_SALTLEN_DIGEST", "RSA_PSS_SALTLEN_MAX_SIGN", "RSA_PSS_SALTLEN_AUTO", "defaultCoreCipherList", "TLS1_VERSION", "TLS1_1_VERSION", "TLS1_2_VERSION", "TLS1_3_VERSION", "POINT_CONVERSION_COMPRESSED", "POINT_CONVERSION_UNCOMPRESSED", "POINT_CONVERSION_HYBRID", "defaultCipherList"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "",
+    values: "RTLD_LAZY=number RTLD_NOW=number RTLD_GLOBAL=number RTLD_LOCAL=number RTLD_DEEPBIND=number E2BIG=number EACCES=number EADDRINUSE=number EADDRNOTAVAIL=number EAFNOSUPPORT=number EAGAIN=number EALREADY=number EBADF=number EBADMSG=number EBUSY=number ECANCELED=number ECHILD=number ECONNABORTED=number ECONNREFUSED=number ECONNRESET=number EDEADLK=number EDESTADDRREQ=number EDOM=number EDQUOT=number EEXIST=number EFAULT=number EFBIG=number EHOSTUNREACH=number EIDRM=number EILSEQ=number EINPROGRESS=number EINTR=number EINVAL=number EIO=number EISCONN=number EISDIR=number ELOOP=number EMFILE=number EMLINK=number EMSGSIZE=number EMULTIHOP=number ENAMETOOLONG=number ENETDOWN=number ENETRESET=number ENETUNREACH=number ENFILE=number ENOBUFS=number ENODATA=number ENODEV=number ENOENT=number ENOEXEC=number ENOLCK=number ENOLINK=number ENOMEM=number ENOMSG=number ENOPROTOOPT=number ENOSPC=number ENOSR=number ENOSTR=number ENOSYS=number ENOTCONN=number ENOTDIR=number ENOTEMPTY=number ENOTSOCK=number ENOTSUP=number ENOTTY=number ENXIO=number EOPNOTSUPP=number EOVERFLOW=number EPERM=number EPIPE=number EPROTO=number EPROTONOSUPPORT=number EPROTOTYPE=number ERANGE=number EROFS=number ESPIPE=number ESRCH=number ESTALE=number ETIME=number ETIMEDOUT=number ETXTBSY=number EWOULDBLOCK=number EXDEV=number PRIORITY_LOW=number PRIORITY_BELOW_NORMAL=number PRIORITY_NORMAL=number PRIORITY_ABOVE_NORMAL=number PRIORITY_HIGH=number PRIORITY_HIGHEST=number SIGHUP=number SIGINT=number SIGQUIT=number SIGILL=number SIGTRAP=number SIGABRT=number SIGIOT=number SIGBUS=number SIGFPE=number SIGKILL=number SIGUSR1=number SIGSEGV=number SIGUSR2=number SIGPIPE=number SIGALRM=number SIGTERM=number SIGCHLD=number SIGSTKFLT=number SIGCONT=number SIGSTOP=number SIGTSTP=number SIGTTIN=number SIGTTOU=number SIGURG=number SIGXCPU=number SIGXFSZ=number SIGVTALRM=number SIGPROF=number SIGWINCH=number SIGIO=number SIGPOLL=number SIGPWR=number SIGSYS=number UV_FS_SYMLINK_DIR=number UV_FS_SYMLINK_JUNCTION=number O_RDONLY=number O_WRONLY=number O_RDWR=number UV_DIRENT_UNKNOWN=number UV_DIRENT_FILE=number UV_DIRENT_DIR=number UV_DIRENT_LINK=number UV_DIRENT_FIFO=number UV_DIRENT_SOCKET=number UV_DIRENT_CHAR=number UV_DIRENT_BLOCK=number S_IFMT=number S_IFREG=number S_IFDIR=number S_IFCHR=number S_IFBLK=number S_IFIFO=number S_IFLNK=number S_IFSOCK=number O_CREAT=number O_EXCL=number UV_FS_O_FILEMAP=number UV_FS_O_TEMPORARY=number UV_FS_O_SHORT_LIVED=number UV_FS_O_SEQUENTIAL=number UV_FS_O_RANDOM=number O_NOCTTY=number O_TRUNC=number O_APPEND=number O_DIRECTORY=number O_NOATIME=number O_NOFOLLOW=number O_SYNC=number O_DSYNC=number O_DIRECT=number O_NONBLOCK=number S_IRWXU=number S_IRUSR=number S_IWUSR=number S_IXUSR=number S_IRWXG=number S_IRGRP=number S_IWGRP=number S_IXGRP=number S_IRWXO=number S_IROTH=number S_IWOTH=number S_IXOTH=number F_OK=number R_OK=number W_OK=number X_OK=number UV_FS_COPYFILE_EXCL=number COPYFILE_EXCL=number UV_FS_COPYFILE_FICLONE=number COPYFILE_FICLONE=number UV_FS_COPYFILE_FICLONE_FORCE=number COPYFILE_FICLONE_FORCE=number OPENSSL_VERSION_NUMBER=number SSL_OP_ALL=number SSL_OP_ALLOW_NO_DHE_KEX=number SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION=number SSL_OP_CIPHER_SERVER_PREFERENCE=number SSL_OP_CISCO_ANYCONNECT=number SSL_OP_COOKIE_EXCHANGE=number SSL_OP_CRYPTOPRO_TLSEXT_BUG=number SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS=number SSL_OP_LEGACY_SERVER_CONNECT=number SSL_OP_NO_COMPRESSION=number SSL_OP_NO_ENCRYPT_THEN_MAC=number SSL_OP_NO_QUERY_MTU=number SSL_OP_NO_RENEGOTIATION=number SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION=number SSL_OP_NO_SSLv2=number SSL_OP_NO_SSLv3=number SSL_OP_NO_TICKET=number SSL_OP_NO_TLSv1=number SSL_OP_NO_TLSv1_1=number SSL_OP_NO_TLSv1_2=number SSL_OP_NO_TLSv1_3=number SSL_OP_PRIORITIZE_CHACHA=number SSL_OP_TLS_ROLLBACK_BUG=number ENGINE_METHOD_RSA=number ENGINE_METHOD_DSA=number ENGINE_METHOD_DH=number ENGINE_METHOD_RAND=number ENGINE_METHOD_EC=number ENGINE_METHOD_CIPHERS=number ENGINE_METHOD_DIGESTS=number ENGINE_METHOD_PKEY_METHS=number ENGINE_METHOD_PKEY_ASN1_METHS=number ENGINE_METHOD_ALL=number ENGINE_METHOD_NONE=number DH_CHECK_P_NOT_SAFE_PRIME=number DH_CHECK_P_NOT_PRIME=number DH_UNABLE_TO_CHECK_GENERATOR=number DH_NOT_SUITABLE_GENERATOR=number RSA_PKCS1_PADDING=number RSA_SSLV23_PADDING=number RSA_NO_PADDING=number RSA_PKCS1_OAEP_PADDING=number RSA_X931_PADDING=number RSA_PKCS1_PSS_PADDING=number RSA_PSS_SALTLEN_DIGEST=number RSA_PSS_SALTLEN_MAX_SIGN=number RSA_PSS_SALTLEN_AUTO=number defaultCoreCipherList=string TLS1_VERSION=number TLS1_1_VERSION=number TLS1_2_VERSION=number TLS1_3_VERSION=number POINT_CONVERSION_COMPRESSED=number POINT_CONVERSION_UNCOMPRESSED=number POINT_CONVERSION_HYBRID=number defaultCipherList=string",
   },
   "sea": {
     callable: false,
     keys: ["isSea", "getAsset", "getRawAsset", "getAssetAsBlob", "getAssetKeys"],
     ownNames: ["isSea", "getAsset", "getRawAsset", "getAssetAsBlob", "getAssetKeys"],
     inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "isSea=0 getAsset=2 getRawAsset=1 getAssetAsBlob=2 getAssetKeys=0",
+    values: "",
   },
 };
+
+/** What the members of one Node object are, in the encoding above. */
+export interface NodeMemberCensus {
+  readonly functions: string;
+  readonly values: string;
+}
+
+/** The global object's own properties in Node. A name absent here is one Node does not define by default. */
+export const NODE_GLOBALS: NodeMemberCensus = {
+  functions: "Object=1 Function=1 Array=1 Number=1 parseFloat=1 parseInt=2 Boolean=1 String=1 Symbol=0 Date=7 Promise=1 RegExp=2 Error=1 AggregateError=2 EvalError=1 RangeError=1 ReferenceError=1 SyntaxError=1 TypeError=1 URIError=1 ArrayBuffer=1 Uint8Array=3 Int8Array=3 Uint16Array=3 Int16Array=3 Uint32Array=3 Int32Array=3 BigUint64Array=3 BigInt64Array=3 Uint8ClampedArray=3 Float32Array=3 Float64Array=3 DataView=1 Map=0 BigInt=1 Set=0 Iterator=0 WeakMap=0 WeakSet=0 Proxy=2 FinalizationRegistry=1 WeakRef=1 decodeURI=1 decodeURIComponent=1 encodeURI=1 encodeURIComponent=1 escape=1 unescape=1 eval=1 isFinite=1 isNaN=1 Buffer=3 clearImmediate=1 setImmediate=1 URL=1 URLSearchParams=0 DOMException=0 AbortController=0 AbortSignal=0 Event=1 EventTarget=0 CustomEvent=1 TextEncoder=0 TextDecoder=0 TransformStream=0 TransformStreamDefaultController=0 WritableStream=0 WritableStreamDefaultController=0 WritableStreamDefaultWriter=1 ReadableStream=0 ReadableStreamDefaultReader=1 ReadableStreamBYOBReader=1 ReadableStreamBYOBRequest=0 ReadableByteStreamController=0 ReadableStreamDefaultController=0 ByteLengthQueuingStrategy=1 CountQueuingStrategy=1 TextEncoderStream=0 TextDecoderStream=0 CompressionStream=1 DecompressionStream=1 clearInterval=1 clearTimeout=1 setInterval=2 setTimeout=2 queueMicrotask=1 structuredClone=2 atob=1 btoa=1 BroadcastChannel=1 MessageChannel=0 MessagePort=0 Blob=0 File=2 Performance=0 PerformanceEntry=0 PerformanceMark=1 PerformanceMeasure=0 PerformanceObserver=1 PerformanceObserverEntryList=0 PerformanceResourceTiming=0 URLPattern=0 fetch=1 FormData=0 Headers=0 Request=1 Response=0 MessageEvent=1 CloseEvent=1 WebSocket=1 Crypto=0 CryptoKey=0 SubtleCrypto=0 SuppressedError=3 DisposableStack=0 AsyncDisposableStack=0 Float16Array=3 SharedArrayBuffer=1 Navigator=0",
+  values: "Infinity=number NaN=number undefined=undefined globalThis=object JSON=object Math=object Intl=object Atomics=object Reflect=object console=object process=object global=object performance=object crypto=object WebAssembly=object navigator=object",
+};
+
+/** The members, own and inherited, of the global objects that are Node's, and the own properties (statics and `prototype`) of the global functions that have statics. */
+export const NODE_GLOBAL_OBJECT_MEMBERS: Readonly<Record<string, NodeMemberCensus>> = {
+  "console": {
+    functions: "log=0 info=0 debug=0 warn=0 error=0 dir=0 time=0 timeEnd=0 timeLog=0 trace=0 assert=0 clear=0 count=0 countReset=0 group=0 groupEnd=0 table=0 dirxml=0 groupCollapsed=0 _stdoutErrorHandler=1 _stderrErrorHandler=1 Console=1 profile=0 profileEnd=0 timeStamp=0 context=1 createTask=0 constructor=1 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "_ignoreErrors=boolean _times=object _stdout=object _stderr=object __proto__=object",
+  },
+  "process": {
+    functions: "_rawDebug=0 binding=1 _linkedBinding=1 dlopen=0 uptime=0 _getActiveRequests=0 _getActiveHandles=0 getActiveResourcesInfo=0 reallyExit=0 _kill=0 loadEnvFile=0 cpuUsage=1 threadCpuUsage=1 resourceUsage=0 memoryUsage=0 constrainedMemory=0 availableMemory=0 kill=2 exit=1 execve=1 ref=1 unref=1 hrtime=1 openStdin=0 getuid=0 geteuid=0 getgid=0 getegid=0 getgroups=0 _fatalException=2 setUncaughtExceptionCaptureCallback=1 hasUncaughtExceptionCaptureCallback=0 emitWarning=4 nextTick=1 _tickCallback=0 setSourceMapsEnabled=1 getBuiltinModule=1 _debugProcess=0 _debugEnd=0 _startProfilerIdleNotifier=0 _stopProfilerIdleNotifier=0 abort=0 umask=1 chdir=1 cwd=0 initgroups=2 setgroups=1 setegid=1 seteuid=1 setgid=1 setuid=1 constructor=0 setMaxListeners=1 getMaxListeners=0 emit=1 addListener=2 on=2 prependListener=2 once=2 prependOnceListener=2 removeListener=2 off=2 removeAllListeners=1 listeners=1 rawListeners=1 listenerCount=2 eventNames=0 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "version=string versions=object arch=string platform=string release=object moduleLoadList=object _events=object _eventsCount=number _maxListeners=undefined domain=object _exiting=boolean exitCode=undefined config=object finalization=object allowedNodeEnvironmentFlags=object features=object sourceMapsEnabled=boolean stdout=object stdin=object stderr=object env=object title=string argv=object execArgv=object pid=number ppid=number execPath=string debugPort=number argv0=string _preload_modules=object report=object __proto__=object",
+  },
+  "performance": {
+    functions: "constructor=0 clearMarks=0 clearMeasures=0 clearResourceTimings=0 getEntries=0 getEntriesByName=1 getEntriesByType=1 mark=1 measure=1 now=0 setResourceTimingBufferSize=1 toJSON=0 eventLoopUtilization=2 markResourceTiming=7 timerify=1 addEventListener=2 removeEventListener=2 dispatchEvent=1 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "timeOrigin=number nodeTiming=object onresourcetimingbufferfull=object __proto__=object",
+  },
+  "crypto": {
+    functions: "constructor=0 getRandomValues=1 randomUUID=0 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "subtle=object __proto__=object",
+  },
+  "navigator": {
+    functions: "constructor=0 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "hardwareConcurrency=number locks=object language=string languages=object userAgent=string platform=string __proto__=object",
+  },
+  "Object": {
+    functions: "assign=2 getOwnPropertyDescriptor=2 getOwnPropertyDescriptors=1 getOwnPropertyNames=1 getOwnPropertySymbols=1 hasOwn=2 is=2 preventExtensions=1 seal=1 create=2 defineProperties=2 defineProperty=3 freeze=1 getPrototypeOf=1 setPrototypeOf=2 isExtensible=1 isFrozen=1 isSealed=1 keys=1 entries=1 fromEntries=1 values=1 groupBy=2",
+    values: "prototype=object",
+  },
+  "Array": {
+    functions: "isArray=1 from=1 fromAsync=1 of=0",
+    values: "prototype=object",
+  },
+  "Number": {
+    functions: "isFinite=1 isInteger=1 isNaN=1 isSafeInteger=1 parseFloat=1 parseInt=2",
+    values: "prototype=object MAX_VALUE=number MIN_VALUE=number NaN=number NEGATIVE_INFINITY=number POSITIVE_INFINITY=number MAX_SAFE_INTEGER=number MIN_SAFE_INTEGER=number EPSILON=number",
+  },
+  "String": {
+    functions: "fromCharCode=1 fromCodePoint=1 raw=1",
+    values: "prototype=object",
+  },
+  "Symbol": {
+    functions: "for=1 keyFor=1",
+    values: "prototype=object asyncIterator=symbol hasInstance=symbol isConcatSpreadable=symbol iterator=symbol match=symbol matchAll=symbol replace=symbol search=symbol species=symbol split=symbol toPrimitive=symbol toStringTag=symbol unscopables=symbol dispose=symbol asyncDispose=symbol",
+  },
+  "Date": {
+    functions: "now=0 parse=1 UTC=7",
+    values: "prototype=object",
+  },
+  "Promise": {
+    functions: "all=1 allSettled=1 any=1 race=1 resolve=1 reject=1 withResolvers=0 try=1",
+    values: "prototype=object",
+  },
+  "RegExp": {
+    functions: "escape=1",
+    values: "prototype=object input=string $_=string lastMatch=string $&=string lastParen=string $+=string leftContext=string $`=string rightContext=string $'=string $1=string $2=string $3=string $4=string $5=string $6=string $7=string $8=string $9=string",
+  },
+  "Error": {
+    functions: "captureStackTrace=2 prepareStackTrace=2 isError=1",
+    values: "prototype=object stackTraceLimit=number",
+  },
+  "ArrayBuffer": {
+    functions: "isView=1",
+    values: "prototype=object",
+  },
+  "Uint8Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Int8Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Uint16Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Int16Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Uint32Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Int32Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "BigUint64Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "BigInt64Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Uint8ClampedArray": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Float32Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Float64Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "Map": {
+    functions: "groupBy=2",
+    values: "prototype=object",
+  },
+  "BigInt": {
+    functions: "asUintN=2 asIntN=2",
+    values: "prototype=object",
+  },
+  "Iterator": {
+    functions: "from=1",
+    values: "prototype=object",
+  },
+  "Proxy": {
+    functions: "revocable=2",
+    values: "",
+  },
+  "Buffer": {
+    functions: "from=3 copyBytesFrom=3 of=0 alloc=3 allocUnsafe=1 allocUnsafeSlow=1 isBuffer=1 compare=2 isEncoding=1 concat=2 byteLength=2",
+    values: "prototype=object poolSize=number",
+  },
+  "URL": {
+    functions: "parse=1 canParse=1 createObjectURL=1 revokeObjectURL=1",
+    values: "prototype=object",
+  },
+  "DOMException": {
+    functions: "",
+    values: "prototype=object INDEX_SIZE_ERR=number DOMSTRING_SIZE_ERR=number HIERARCHY_REQUEST_ERR=number WRONG_DOCUMENT_ERR=number INVALID_CHARACTER_ERR=number NO_DATA_ALLOWED_ERR=number NO_MODIFICATION_ALLOWED_ERR=number NOT_FOUND_ERR=number NOT_SUPPORTED_ERR=number INUSE_ATTRIBUTE_ERR=number INVALID_STATE_ERR=number SYNTAX_ERR=number INVALID_MODIFICATION_ERR=number NAMESPACE_ERR=number INVALID_ACCESS_ERR=number VALIDATION_ERR=number TYPE_MISMATCH_ERR=number SECURITY_ERR=number NETWORK_ERR=number ABORT_ERR=number URL_MISMATCH_ERR=number QUOTA_EXCEEDED_ERR=number TIMEOUT_ERR=number INVALID_NODE_TYPE_ERR=number DATA_CLONE_ERR=number",
+  },
+  "AbortSignal": {
+    functions: "abort=0 timeout=1 any=1",
+    values: "prototype=object",
+  },
+  "Event": {
+    functions: "",
+    values: "prototype=object NONE=number CAPTURING_PHASE=number AT_TARGET=number BUBBLING_PHASE=number",
+  },
+  "ReadableStream": {
+    functions: "from=1",
+    values: "prototype=object",
+  },
+  "PerformanceObserver": {
+    functions: "",
+    values: "prototype=object supportedEntryTypes=object",
+  },
+  "Response": {
+    functions: "error=0 json=1 redirect=1",
+    values: "prototype=object",
+  },
+  "WebSocket": {
+    functions: "",
+    values: "prototype=object CONNECTING=number OPEN=number CLOSING=number CLOSED=number",
+  },
+  "SubtleCrypto": {
+    functions: "supports=2",
+    values: "prototype=object",
+  },
+  "Float16Array": {
+    functions: "",
+    values: "prototype=object BYTES_PER_ELEMENT=number",
+  },
+  "crypto.subtle": {
+    functions: "constructor=0 encrypt=3 decrypt=3 sign=3 verify=4 digest=2 generateKey=3 deriveKey=5 deriveBits=2 importKey=5 exportKey=2 wrapKey=4 unwrapKey=7 getPublicKey=2 encapsulateBits=2 encapsulateKey=5 decapsulateBits=3 decapsulateKey=6 __defineGetter__=2 __defineSetter__=2 hasOwnProperty=1 __lookupGetter__=1 __lookupSetter__=1 isPrototypeOf=1 propertyIsEnumerable=1 toString=0 valueOf=0 toLocaleString=0",
+    values: "__proto__=object",
+  },
+};
+
+/** Object.prototype's own names, space-separated: every object above inherits them. */
+export const NODE_OBJECT_PROTOTYPE_MEMBERS = "constructor __defineGetter__ __defineSetter__ hasOwnProperty __lookupGetter__ __lookupSetter__ isPrototypeOf propertyIsEnumerable toString valueOf __proto__ toLocaleString";
+
+/** Members the process object has only with an IPC channel, space-separated. */
+export const NODE_PROCESS_IPC_MEMBERS = "_channel _disconnect _handleQueue _pendingMessage _send channel connected disconnect send";
+
+/** Members the process object has only when the entry module is CommonJS, space-separated. */
+export const NODE_PROCESS_COMMONJS_MAIN_MEMBERS = "mainModule";

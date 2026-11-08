@@ -96,6 +96,9 @@ function projection(child: Node, parent: Node | undefined): boolean {
         same(parent.receiver, child) &&
         (parent.method === "get" || parent.method === "iterKey" || parent.method === "iterValue")
       );
+    // A removed element is still one of the array's values.
+    case "arrIntrinsic":
+      return same(parent.receiver, child) && (parent.method === "pop" || parent.method === "shift");
     default:
       return false;
   }
@@ -243,11 +246,25 @@ export function contentOf(value: Node, parent: Node): boolean {
 }
 
 /** Whether `parent` is a fresh array holding the elements of `child`, an
- * array of references (`xs.slice()`, `a.concat(b)`): the elements share the
- * fate of the copy. Strings are leaves, not members. */
+ * array of references (`xs.slice()`, `a.concat(b)`, the elements a splice
+ * removed), or a fresh collection holding the keys or values of the Map or
+ * Set `child` (`new Map(m)`, `new Set(m.values())`, `[...s]`): the elements
+ * share the fate of the copy. Strings are leaves, not members. */
 function copiesElements(child: Node, parent: Node | undefined): boolean {
-  if (parent === undefined || parent.kind !== "arrIntrinsic" || !isExpr(child)) return false;
-  if (!FRESH_ARRAY_METHODS.has(parent.method) && !SPREAD_METHODS.has(parent.method)) return false;
+  if (parent === undefined || !isExpr(child)) return false;
+  if (parent.kind === "mapIntrinsic" || parent.kind === "setIntrinsic") {
+    if (!same(parent.receiver, child) || !COLLECTION_COPIES.has(parent.method)) return false;
+    const t = child.type;
+    if (t.kind === "map") return refType(t.key) || refType(t.value);
+    return t.kind === "set" && refType(t.elem);
+  }
+  if (parent.kind !== "arrIntrinsic") return false;
+  if (
+    !FRESH_ARRAY_METHODS.has(parent.method) &&
+    !SPREAD_METHODS.has(parent.method) &&
+    parent.method !== "spliceInsert"
+  )
+    return false;
   if (
     !same(parent.receiver, child) &&
     !(parent.method === "concatSpread" && indexOfNode(parent.args, child) >= 0)
@@ -259,6 +276,10 @@ function copiesElements(child: Node, parent: Node | undefined): boolean {
 
 /** Array intrinsics that copy their array arguments' elements. */
 const SPREAD_METHODS = new Set(["pushSpread", "unshiftSpread", "concatSpread"]);
+
+/** Map and Set intrinsics that answer a fresh collection of what the
+ * receiver holds. */
+const COLLECTION_COPIES = new Set(["clone", "keySet", "valueSet", "toArray"]);
 
 /** Array intrinsics that call their function-typed arguments natively. */
 const CALLBACK_INTRINSICS = new Set(["sortDense", "sortValues"]);
@@ -401,7 +422,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
 
   /** How the value of `node` (`parents` its ancestors) is used, after the
    * expressions that pass it on (and, with `projections`, the reads of a
-   * reference out of it). */
+   * reference out of it). A reference read out of a value is one of the
+   * values its group holds, so where it goes counts as a use of the value:
+   * only the rule for a root bound to a local asks without `projections`,
+   * because that local must hold the root's own value. */
   const useOf = (node: Node, parents: readonly Node[], projections: boolean, out: UseInfo): Use => {
     let value: Node = node;
     let at = parents.length - 1;
@@ -453,12 +477,18 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   };
 
   /** How the result of the call at `parents[at]` is used, through calls
-   * that keep it in their own results (`report(select(load()))`). */
-  const resultUse = (at: number, parents: readonly Node[], out: UseInfo): Use => {
+   * that keep it in their own results (`report(select(load()))`), and with
+   * `projections` through the reads of a reference out of it. */
+  const resultUse = (
+    at: number,
+    parents: readonly Node[],
+    projections: boolean,
+    out: UseInfo,
+  ): Use => {
     let index = at;
     for (let i = 0; i < 64; i++) {
       const info: UseInfo = {};
-      const use = useOf(parents[index]!, parents.slice(0, index), false, info);
+      const use = useOf(parents[index]!, parents.slice(0, index), projections, info);
       if (use !== "internal") {
         // Field by field: an Object.assign onto a record makes the
         // self-hosted compiler read class and record properties dynamically.
@@ -559,7 +589,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         // (`visited = new Map(); this.visited = visited`). A `slice` of a
         // local in the class holds only what the class held.
         const info: UseInfo = {};
-        const use = useOf(node, parents, false, info);
+        const use = useOf(node, parents, true, info);
         if (use === "stored" && info.target) filled.add(info.target);
         if (use === "bound" && !(node.kind === "arrIntrinsic" && node.method === "slice"))
           filled.add(info.bound!);
@@ -583,7 +613,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         // in this frame while the result does (a module global needs no
         // frame to hold it).
         const result: UseInfo = {};
-        const r = resultUse(info.at!, parents, result);
+        const r = resultUse(info.at!, parents, true, result);
         if (r === "bound" && own.has(result.bound!)) {
           if (own.has(id)) unite(id, result.bound!);
         } else if (r !== "kept") add(id);
@@ -975,7 +1005,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       if (!calleesClean(node)) clean = false;
       if (source(node)) {
         const info: UseInfo = {};
-        const use = useOf(node, parents, false, info);
+        const use = useOf(node, parents, true, info);
         if (use === "bound") {
           if (esc.has(info.bound!) || !fn.locals.some((l) => l.id === info.bound)) {
             clean = false;
@@ -1068,7 +1098,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         const checked = node.kind === "dynCheck" && same(node.value, n);
         if (source(n) && !checked) {
           const info: UseInfo = {};
-          const use = useOf(n, stack, false, info);
+          const use = useOf(n, stack, true, info);
           const at = info.at ?? -1;
           if (
             !(use === "kept" || use === "content" || (use === "internal" && at >= parents.length))
@@ -1085,6 +1115,27 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     };
     visit(node);
     return ok;
+  };
+  /** Whether the value of `node` is, where it is made (or handed back by a
+   * call that keeps it in its result), the array or collection a method
+   * stores a reference into. */
+  const storesInPlace = (node: Node, parents: readonly Node[]): boolean => {
+    let value: Node = node;
+    for (let at = parents.length - 1; at >= 0; at--) {
+      const p = parents[at]!;
+      if (
+        (p.kind === "arrIntrinsic" || p.kind === "mapIntrinsic" || p.kind === "setIntrinsic") &&
+        same(p.receiver, value) &&
+        (ADDING_METHODS.has(p.method) || p.method === "spliceInsert" || p.method === "fill") &&
+        p.args.some((arg) => refType(arg.type))
+      )
+        return true;
+      const handedBack =
+        p.kind === "call" && internal.get(p.callee)?.has(indexOfNode(p.args, value)) === true;
+      if (!transparent(value, p) && !handedBack) return false;
+      value = p;
+    }
+    return false;
   };
   const drops = new Map<Node, string | null>();
   const rootLocals = new Map<Node, Set<string>>();
@@ -1158,7 +1209,20 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       if (isRoot && clean) {
         const info: UseInfo = {};
         let use = useOf(node, parents, false, info);
-        if (use === "internal") use = resultUse(info.at!, parents, info);
+        if (use === "internal") use = resultUse(info.at!, parents, false, info);
+        // A value used in place is dropped at the end of its statement, and
+        // the references read out of it with it (`new Slot(rows()).held`,
+        // `rows()[1]`): each must be kept in the statement too.
+        if (use === "kept") {
+          const reads: UseInfo = {};
+          let read = useOf(node, parents, true, reads);
+          if (read === "internal") read = resultUse(reads.at!, parents, true, reads);
+          if (read !== "kept") use = "escapes";
+        }
+        // A reference stored into the value where it is made
+        // (`rows().push(row)`, `rows().splice(1, 2, row)`) is held by a
+        // group no local names: nothing would release it with the arena.
+        if (storesInPlace(node, parents)) use = "escapes";
         rootFunction.set(node, fn);
         if (use === "kept" && statementSync(parents)) {
           roots.add(node);
@@ -1429,7 +1493,17 @@ export function analyzeClosedGroups(
     siteMemo.set(fn.name, out);
     const walk = (node: Node, parent: Node | undefined): void => {
       if (parent !== undefined && isExpr(node)) {
-        const target = storeOf(node, parent);
+        // An item a splice inserts and the value a fill writes go into their
+        // array too. Elsewhere they count as leaving the frame; here the
+        // array's group holds a reference to them that its arena must release.
+        const target =
+          storeOf(node, parent) ??
+          (parent.kind === "arrIntrinsic" &&
+          (parent.method === "spliceInsert" || parent.method === "fill") &&
+          refType(node.type) &&
+          indexOfNode(parent.args, node) >= 0
+            ? parent.receiver
+            : undefined);
         if (target !== undefined) out.push({ value: node, target: storeTarget(target) });
         else if (contentOf(node, parent) && parent.kind !== "new")
           out.push({ value: node, target: null });

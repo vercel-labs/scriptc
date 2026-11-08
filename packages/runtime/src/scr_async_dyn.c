@@ -663,6 +663,24 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
+#ifdef SCR_WORKERS
+  /* A worker reports an uncaught error to its parent through this hook
+   * (scr_exc_print_uncaught), which the main context never has. */
+  bool fatal = !ok && scr_context_report_error == NULL;
+#else
+  bool fatal = !ok;
+#endif
+  if (fatal) {
+    /* A listener itself threw: Node leaves through its fatal exit (status
+     * 7), which emits no 'exit' event and runs nothing else. The report
+     * and the exit are the ones a throwing 'exit' listener takes
+     * (scr_run_exit_listeners). */
+    scr_caught_release(caught);
+    scr_exc_print_uncaught();
+    scr_stdout_settle();
+    fflush(stdout);
+    _Exit(7);
+  }
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
   SCR_PE_LEAVE();
@@ -955,6 +973,62 @@ void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *r
   scr_box_release(target);
 }
 
+/* ── new Promise(executor) of a typed value, resolved with a promise ───
+ * The typed half of the same procedure. A typed promise's resolve function
+ * is the closure scr_make_resolve / scr_make_resolve_fn built, which
+ * fulfils. Where the static type of a value it is given has a promise arm,
+ * emitted code tests the arm and hands the promise here, so the value
+ * itself is never asked.
+ *
+ * The promise is adopted as JavaScript does it: one job calls its `then`
+ * (scr_promise_race_join: the reaction runs one turn after the source
+ * settles, copies a fulfilment and a rejection alike, and marks the source
+ * handled), so the target settles two turns after an already settled
+ * source. From the call on the target is resolved although it is still
+ * pending: the box both closures share points at a settled promise nobody
+ * observes, exactly as scr_resolve_dyn_thunk leaves it. */
+static void scr_resolve_adopt_job(ScrClosure *job) {
+  ScrPromise *target = (ScrPromise *)scr_box_get_ref(job->caps[0]);
+  ScrPromise *source = (ScrPromise *)scr_box_get_ref(job->caps[1]);
+  scr_promise_race_join(target, source, scr_promise_adapt_copy);
+  scr_promise_release(source);
+  scr_promise_release(target);
+}
+
+/* The reject closure of the same promise joins the resolve closure's box
+ * (scr_make_resolve_dyn does this for the pair it builds). Borrows both. */
+void scr_resolve_join(ScrClosure *resolve, ScrClosure *reject) {
+  scr_box_release(reject->caps[0]);
+  reject->caps[0] = scr_box_retain(resolve->caps[0]);
+}
+
+/* `resolve(source)`: `resolve` is a typed promise's resolve closure and
+ * `source` a promise of the same payload type. Borrows both. */
+void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
+  ScrBox *box = resolve->caps[0];
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(box);
+  if (scr_promise_is_pending(p)) {
+    if (source == p) {
+      static const char message[] = "Chaining cycle detected for promise #<Promise>";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      scr_promise_reject_pending(p);
+    } else {
+      ScrClosure *job = scr_closure_new((void *)&scr_resolve_adopt_job, 2);
+      job->caps[0] =
+          scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+      scr_box_set_ref(job->caps[0], scr_promise_retain(p));
+      job->caps[1] =
+          scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+      scr_box_set_ref(job->caps[1], scr_promise_retain(source));
+      scr_queue_microtask(job);
+      ScrPromise *resolved = scr_promise_new();
+      scr_promise_fulfill_void(resolved);
+      scr_box_set_ref(box, resolved);
+    }
+  }
+  scr_promise_release(p);
+}
+
 /* `await v` where v is a CHECKED-DYNAMIC value: a dyn promise adopts
  * (the boxed promise awaits — rejections re-throw); every other kind is
  * JS's await-of-a-non-thenable — one microtask hop, the value itself
@@ -1131,6 +1205,16 @@ static bool scr_warning_is_deprecation(const ScrDyn *w) {
   return deprecation;
 }
 
+/* NODE_NO_WARNINGS=1: Node reads it once at startup (a value whose first
+ * character is "1") and leaves out its default report, while 'warning'
+ * listeners still run. The process's own environment table is not the
+ * program's `process.env`, so an assignment at run time changes nothing
+ * here, as in Node. */
+static bool scr_warnings_silenced(void) {
+  const char *value = getenv("NODE_NO_WARNINGS");
+  return value != NULL && value[0] == '1';
+}
+
 /* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
@@ -1158,6 +1242,7 @@ static void scr_warning_dispatch(ScrDyn *w) {
    * and skips deprecations while process.noDeprecation is set. */
   bool deprecation = scr_warning_is_deprecation(w);
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
+  if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);

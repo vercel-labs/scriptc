@@ -565,6 +565,7 @@ function restPackingAdapter(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.signatureAdapters.set(name, "");
   lowerer.freshClosureAdapters.add(name);
   const fixed = fromT.params.length - 1;
   const restT = fromT.params[fixed] as IrType & { kind: "array" };
@@ -856,11 +857,13 @@ export function funcCoerceAdapter(
     strandRet = false;
   // A record result the slot's result is a structural width of.
   if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
-  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${lowerer.coercions.checkedRetags > 0 ? ":checked" : ""}`;
+  const checked = lowerer.coercions.checkedRetags > 0;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${checked ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.signatureAdapters.set(name, checked ? "checked" : "");
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((t, i) => ({
     localId: `a.${i}`,
@@ -981,6 +984,54 @@ export function funcCoerceAdapter(
   lowerer.liftedFns.push(
     ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
   );
+  return name;
+}
+
+/** The adapter for a pair the general adapter has no conversion for
+ * (funcCoerceAdapter answers null): a view of the slot's type that throws
+ * the stranded TypeError when it is invoked. function-views.ts builds it
+ * where a function reaches a slot through a narrower one and the wider
+ * slot's arguments cannot be the function's (a rest parameter of another
+ * element type): JavaScript would hand the function a value its types
+ * exclude, and no native value represents that. */
+export function strandedFuncAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnstrand:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = toT.params.map((t, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type: t,
+  }));
+  const body: IrStmt[] = [
+    {
+      kind: "throw",
+      value: {
+        kind: "libCall",
+        fn: "error.new",
+        args: [
+          {
+            kind: "strLit",
+            value: `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
+            type: STRING,
+            loc,
+          },
+        ],
+        type: { kind: "object", className: "%TypeError" },
+        loc,
+      },
+      loc,
+    },
+  ];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
   return name;
 }
 

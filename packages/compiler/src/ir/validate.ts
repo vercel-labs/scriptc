@@ -1408,6 +1408,8 @@ function validateFunction(
       case "call":
       case "ffiCall":
       case "closure":
+      case "viewOf":
+      case "viewSource":
       case "callValue":
         return checkCallExpr(e);
       case "selfRef":
@@ -2810,7 +2812,9 @@ function validateFunction(
     }
   }
 
-  function checkCallExpr(e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "callValue" }): void {
+  function checkCallExpr(
+    e: IrExpr & { kind: "call" | "ffiCall" | "closure" | "viewOf" | "viewSource" | "callValue" },
+  ): void {
     switch (e.kind) {
       case "call": {
         for (const a of e.args) checkExpr(a);
@@ -2855,6 +2859,32 @@ function validateFunction(
         const expected = ffiClassType(entry.returns);
         if (!typeEquals(e.type, expected)) {
           err(`FFI call ${e.import} type ${e.type.kind} != return class ${entry.returns}`, e.loc);
+        }
+        break;
+      }
+      case "viewOf":
+      case "viewSource": {
+        checkExpr(e.value);
+        if (e.value.type.kind !== "func") {
+          err(`${e.kind} of a non-function ${e.value.type.kind}`, e.loc);
+          break;
+        }
+        if (e.kind === "viewOf" && e.type.kind !== "bool") err("viewOf must be bool-typed", e.loc);
+        if (e.adapter === null) {
+          // The checked-dynamic boundary's view holds the callable itself.
+          if (e.kind === "viewSource" && e.type.kind !== "dyn")
+            err("viewSource of a checked-dynamic view must be dyn-typed", e.loc);
+          break;
+        }
+        // The adapter's body: its first capture is the function the view
+        // forwards to, which is what viewSource reads.
+        const source = functions.get(e.adapter)?.captures?.[0]?.type;
+        if (source?.kind !== "func") {
+          err(`${e.kind}: "${e.adapter}" is not a signature adapter's body`, e.loc);
+          break;
+        }
+        if (e.kind === "viewSource" && !typeEquals(e.type, source)) {
+          err(`viewSource type ${e.type.kind} is not the type "${e.adapter}" forwards to`, e.loc);
         }
         break;
       }
@@ -4795,6 +4825,18 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.clientOnInformation") {
+      // The information listener: void, no params or exactly (info: dyn).
+      const cbT = e.args[1]?.type;
+      const ok =
+        cbT?.kind === "func" &&
+        cbT.ret.kind === "void" &&
+        (cbT.params.length === 0 || (cbT.params.length === 1 && cbT.params[0]!.kind === "dyn"));
+      if (!ok) {
+        err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "http.reqOnError" || e.fn === "http.clientOnError") {
       // The error listener: void, no params or exactly (err: %Error).
       const cbT = e.args[1]?.type;
@@ -4824,6 +4866,7 @@ function validateFunction(
     if (
       e.fn === "http.serverOnUpgrade" ||
       e.fn === "http.clientOnUpgrade" ||
+      e.fn === "http.clientOnConnect" ||
       e.fn === "http.serverOnConnect"
     ) {
       // (req, socket, head) or any shorter prefix, void return. The
@@ -5575,6 +5618,19 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.childFlowing") {
+      // readableFlowing: the interned `boolean | null` union.
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "bool") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall stream.childFlowing must return the 'boolean | null' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "child.pid" || e.fn === "child.exitCode") {
       // pid: the interned `number | undefined`; exitCode: `number | null`.
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
@@ -6224,6 +6280,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||
         e.fn === "stream.decodeStrings" ||
         e.fn === "stream.optionValues" ||
@@ -6764,11 +6821,8 @@ function validateFunction(
           err("newPromise executor must be (resolve?, reject?) => void", e.loc);
           break;
         }
-        if (e.resolves === true && (inner.kind !== "dyn" || exec.params.length === 0)) {
-          err(
-            "newPromise resolves only a checked-dynamic value, through a resolve function",
-            e.loc,
-          );
+        if (e.resolves === true && exec.params.length === 0) {
+          err("newPromise resolves only through a resolve function", e.loc);
         }
         if (exec.params.length === 2) {
           // The reject closure's shapes: (reason: %Error) => void, and the

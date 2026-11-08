@@ -581,6 +581,16 @@ export function eachStringField(
       visit(node.localId, "localId");
       return;
     }
+    case "viewOf": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
+    case "viewSource": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
     case "virtualCall": {
       visit(node.kind, "kind");
       visit(node.className, "className");
@@ -1584,6 +1594,28 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "varRef": {
       walker.string(node.kind);
       walker.string(node.localId);
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
+    case "viewOf": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
+    case "viewSource": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }
@@ -3103,6 +3135,20 @@ export function replaceChildExpr(node: IrExpr | IrStmt, from: IrExpr, to: IrExpr
       }
       return false;
     }
+    case "viewOf": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "viewSource": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
     case "virtualCall": {
       for (let index192 = 0; index192 < node.args.length; index192++) {
         const item191 = node.args[index192]!;
@@ -3293,6 +3339,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "unitLit" }>, "kind" | "unit" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "upcast" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "varRef" }>, "kind" | "localId" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewOf" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewSource" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "virtualCall" }>, "kind" | "className" | "method" | "args" | "type" | "loc" | "targets">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["captureCompletion"]>, object>, "returnType">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "yieldExpr" }>, "kind" | "value" | "awaited" | "delegated" | "captureCompletion" | "type" | "loc">>,
@@ -3327,7 +3375,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "rethrow" }>, "kind" | "localId" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "return" }>, "kind" | "value" | "awaited" | "loc">>,
   Unread<ValuesNotRead<Extract<IrStmt, { kind: "return" }>["awaited"]>>,
-  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "guarded" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrStmt, { kind: "runtimeFence" }>["guarded"]>>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrStmt, { kind: "switch" }>["cases"]>, readonly unknown[]>[number]>, object>, "test" | "body">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "switch" }>, "kind" | "disc" | "cases" | "labels" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "throw" }>, "kind" | "value" | "loc">>,

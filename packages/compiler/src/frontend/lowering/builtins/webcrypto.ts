@@ -40,11 +40,14 @@ const SUBTLE_HINT =
 
 /** Whether `node` is a SubtleCrypto object: `subtle` on a WebCrypto
  * Crypto object (the global, globalThis.crypto or node:crypto's
- * `webcrypto`) or node:crypto's own `subtle` export, named or through
- * the namespace. */
+ * `webcrypto`), a binding destructured from one, or node:crypto's own
+ * `subtle` export, named or through the namespace. */
 function isSubtleReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(node)) node = node.expression;
   if (ts.isIdentifier(node)) {
+    // `const { subtle } = crypto`: the destructured binding names the
+    // member (lower-stmts.ts stdlibGlobalMemberDestructure).
+    if (stdlibGlobalNameOf(lowerer, node) === "crypto.subtle") return true;
     const imported = lowerer.builtinImportOf(node);
     return imported?.module === "crypto" && imported.member === "subtle";
   }

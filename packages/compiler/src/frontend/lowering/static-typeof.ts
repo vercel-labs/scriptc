@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { hostGlobalNameOfIdentifier } from "./host-globals.js";
+import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
 import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
@@ -18,6 +19,9 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return null;
   if (hostGlobalNameOfIdentifier(lowerer, e) !== null) return "function";
+  // The exports object of a CommonJS module is a value, read where it is
+  // tested (cjs-exports-object.ts), not an undeclared name.
+  if (isUnresolvedCjsExports(lowerer, e)) return null;
   if (lowerer.checker.getSymbolAtLocation(e) === undefined) return "undefined";
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";

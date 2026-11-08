@@ -6,6 +6,7 @@ import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
 import type { LowerStats } from "./frontend/lowering/lowerer.js";
+import type { WidthCopyFact } from "./frontend/lowering/width-copies.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
 import type { NodeIslandOptions } from "./node-islands/policy.js";
 import type { Defines } from "./frontend/defines.js";
@@ -286,4 +287,7 @@ export interface AnalyzeOptions {
 export interface AnalyzeResult {
   coverage: CoverageInput;
   sourceTexts: Map<string, string>;
+  /** The conversions of the lowered program that build a new object
+   * (frontend/lowering/width-copies.ts), present when it has any. */
+  widthCopies?: WidthCopyFact[];
 }

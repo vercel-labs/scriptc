@@ -134,6 +134,19 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["namesWebStreamClass"],
   },
   {
+    name: "reads-node-object-value",
+    file: `${SRC}/frontend/lowering/node-value-reads.ts`,
+    symbol: "programReadsGlobalValue",
+    source: "symbols",
+    scope: "program",
+    setBy: "a read of `process` or `performance` as a value in a JavaScript source",
+    gates:
+      "computed reads of the global object answer the object the value read answers, which the program then carries",
+    narrower: "the name read",
+    tracked: null,
+    lowererFields: ["nodeObjectValueReads"],
+  },
+  {
     name: "web-stream-only-members",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesWebStreamOnlyMembers",
@@ -291,6 +304,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "builtin-member-native-readers",
+    file: `${SRC}/frontend/lowering/builtin-member-readers.ts`,
+    symbol: "refuseUnseenBuiltinMemberWrites",
+    source: "types",
+    scope: "program",
+    setBy:
+      "a use of a built-in member that does not read it from its object (a native call, a conversion, an iteration, a decided feature test), anywhere in a program that also writes that member",
+    gates:
+      "the write is refused at its own site (SC1092); a program without such a use keeps the write's lowering",
+    narrower:
+      "the reader: a mark on the member that only its native readers test at run time, which every typed call of the member would pay for",
+    tracked: "pi-decisions 2026-11-07 (replacing a built-in member)",
+    lowererFields: [],
+  },
+  {
     name: "node-stream-modes",
     file: `${SRC}/frontend/lowering/lowerer.ts`,
     symbol: "requiresGeneralNodeStreams",
@@ -367,6 +395,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "function-views",
+    file: `${SRC}/frontend/lowering/function-views.ts`,
+    symbol: "FunctionViews",
+    source: "ir",
+    scope: "type",
+    setBy:
+      "one signature adapter that holds a function with more parameters, or a rest parameter, at a function type",
+    gates:
+      "every conversion of that function type to one with more parameters, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
+    narrower:
+      "the value, at run time: an entry on the closure that takes an argument count, which needs a closure field and dynamic arguments",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07 (fn-slot-widening)",
+    lowererFields: [],
+  },
+  {
     name: "record-view-targets",
     file: `${SRC}/backend/llvm/record-views.ts`,
     symbol: "planRecordViews",
@@ -376,6 +419,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     gates: "every field access of that shape tests the view mark",
     narrower: "by design: identity through views",
     tracked: "object-model S1 D1",
+    lowererFields: [],
+  },
+  {
+    name: "width-copy-observation",
+    file: `${SRC}/frontend/lowering/width-copies.ts`,
+    symbol: "Observations",
+    source: "ir",
+    scope: "type",
+    setBy:
+      "one write to a field or element of a record, array or class layout, one identity comparison of its values, or one value of it that reaches untyped code or the runtime",
+    gates:
+      "SC6001 at every conversion that copies an aliasable value into or out of that layout, and the SC1090 refusal of an aliasable record converted to a class instance; no emitted code",
+    narrower:
+      "the copied value's own path: a copy nothing writes, compares or lets out, whose source is not written while it lives; conversions that keep the object need no report",
+    tracked: "pi-decisions DECISIONS.md 2026-11-07 (divergence-soundness); object-model S1 D1",
     lowererFields: [],
   },
   {
@@ -437,6 +495,34 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     gates: "the views registry is armed and every view's length is recomputed",
     narrower: "the buffer",
     tracked: "designs/t262-dc",
+    lowererFields: [],
+  },
+  {
+    name: "generic-call-array-holes",
+    file: `${SRC}/frontend/lowering/runtime-optional-elements.ts`,
+    symbol: "scanGenericCall",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an array that can hold holes, reachable by a call of a generic function that builds arrays from generic ones",
+    gates:
+      "arrays of every element type that call can reach, and of its result, read as possibly holding a hole or undefined",
+    narrower: "the element type of the callee's instance, where the instance builds the array",
+    tracked: "FOLLOWUPS 2026-11-07 (holed-array-generics)",
+    lowererFields: [],
+  },
+  {
+    name: "generic-built-array-elements",
+    file: `${SRC}/frontend/lowering/runtime-optional-elements.ts`,
+    symbol: "elementsPresent",
+    source: "types",
+    scope: "program",
+    setBy: "one array that can hold a hole or undefined, anywhere in the program",
+    gates:
+      "callbacks and index reads over an array with a concrete element type that generic code built from a generic array take the element or undefined",
+    narrower:
+      "the element type each instance gives the generic array, asked when the instance lowers, as the for-of decision is",
+    tracked: "FOLLOWUPS 2026-11-07 (holed-array-generics)",
     lowererFields: [],
   },
 ];
@@ -549,6 +635,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "web-stream-only-members",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
+    1,
+    "closed-world",
+    "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
     1,
     "prefilter",
@@ -583,6 +675,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "closed-world",
     "whether one enum is ever used as a value; the text test skips files that spell none of its names",
+  ),
+  scan(
+    "frontend/lowering/empty-array-places.ts#Search",
+    2,
+    "inference",
+    "the element type of one untyped empty array literal, from the reads of its property or binding; a file that never spells the name does not read it by that name",
   ),
   scan(
     "frontend/lowering/expressions/property-access.ts#globalThisWrittenNames",

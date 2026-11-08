@@ -414,15 +414,10 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   }
   if (dst.kind === "array" && src.kind === "array") {
     if (lowerer.widthLiftPlan(src.elem, dst.elem) !== null) return { how: "arr" };
-    // The EMPTY-array lift: a unit-only element type (`readonly []`
-    // mapped as the unit-element array, `(null | undefined)[]`) has no
-    // per-element conversion into a data element — but the only value
-    // such a slot honestly holds in the width family is EMPTY, so the
-    // lift is a fresh empty array of the target type, guarded by a
-    // runtime non-empty trap (the checked-extraction stance).
-    if (lowerer.unitOnlyElem(src.elem) && !lowerer.unitOnlyElem(dst.elem)) {
-      return { how: "emptyArr" };
-    }
+    // A unit-only element array (`never[]`, `readonly []`) into a data
+    // element array has no plan: an empty array is one array under every
+    // name, so it is typed where it is written (empty-array-places.ts)
+    // and never converted to another element type afterwards.
     return null;
   }
   // A TUPLE flowing into an array FIELD/ELEMENT (`aliases: ["ls"]` into
@@ -778,7 +773,14 @@ export function describeRecordWidthBlocker(
 
 /** Plan a record projection from plain class fields, including inherited
  * fields and absent optional fields. Methods, accessors, reserved slots and
- * builtin runtime layouts cannot be read as ordinary emitted storage. */
+ * builtin runtime layouts cannot be read as ordinary emitted storage: a
+ * class rooted in a runtime-provided class (an emitter, an error, a stream)
+ * projects the fields its program classes declare, which follow the runtime
+ * prefix in the emitted struct, and declines a member the runtime class
+ * itself holds. Such a class projects no absent optional field either: the
+ * runtime class holds members outside its declared field list (an error's
+ * stack, a stream's state), so a name no program class declares is not known
+ * to be absent on the instance. */
 export function objToRecordPlan(
   lowerer: Lowerer,
   className: string,
@@ -790,9 +792,12 @@ export function objToRecordPlan(
   // Reserved slots (%call hybrids, %get:/%set: accessor closures) are
   // not projectable storage.
   if (to.fields.some((f) => f.name.startsWith("%"))) return null;
+  let runtimeRooted = false;
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime)
-      return null;
+    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime) {
+      if (c === info || to.fields.some((f) => c.fields.has(f.name))) return null;
+      runtimeRooted = true;
+    }
   }
   const key = `obj:${className}:${toId}`;
   if (lowerer.coercions.planning.has(key)) return new Map();
@@ -811,7 +816,7 @@ export function objToRecordPlan(
       }
       const ft = info.fields.get(tf.name);
       if (ft === undefined) {
-        if (tf.type.kind !== "union") return null;
+        if (runtimeRooted || tf.type.kind !== "union") return null;
         const def = lowerer.unions.get(tf.type.unionId);
         const utag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
         if (utag < 0) return null;

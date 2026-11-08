@@ -69,6 +69,7 @@ import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
 import { frameText } from "./frame-positions.js";
+import { isLazyGroupRun } from "../lazy-initializers.js";
 
 /** The function attribute of a fallback body that the LLVM helper's
  * partitioner places by its own name (isPlacedByName, partition.cpp): it
@@ -787,6 +788,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // A keyed record read's inherited-method miss path (record-inherited.ts)
   // stays out of line, so the hit path keeps its own small frame.
   else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
+  // A deferred group's run (lazy-initializers.ts) is called once, from
+  // whichever guard fires first, and holds the loops that walk the group's
+  // list. Inlined into a guard it would put those loops inside every loop
+  // around a guarded read; out of line, a guard is a flag test and a call.
+  else if (isLazyGroupRun(fn.name)) attrs = `noinline cold ${attrs}`;
   // The original body of a function versioned for int32 loop bounds runs
   // only for a bound that is not an int32 (parameter-versions.ts). It stays
   // out of line, and FALLBACK_PLACEMENT_ATTR lets the helper's partitioner
@@ -815,13 +821,14 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
-    body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
+    const cloneHost = emitter.integerCloneHost();
+    body += "\n" + emitIntegerClone(fn, cloneHost, emitter.stackChecks?.has(fn.name) === true);
     if (emitter.integerClones.dispatched.has(fn.name))
       body +=
         "\n" +
         emitIntegerDispatcher(
           fn,
-          emitter,
+          cloneHost,
           `${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}`,
           int32Abi?.params ?? [],
           int32Abi?.result === true,

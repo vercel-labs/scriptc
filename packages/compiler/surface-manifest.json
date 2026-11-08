@@ -135,14 +135,6 @@
       "note": "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives"
     },
     {
-      "id": "diagnostic.sc1063",
-      "kind": "diagnostic-fence",
-      "name": "this use of a catch binding",
-      "status": "unsupported",
-      "code": "SC1063",
-      "note": "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is"
-    },
-    {
       "id": "diagnostic.sc1070",
       "kind": "diagnostic-fence",
       "name": "async/await",
@@ -301,6 +293,13 @@
       "code": "SC2014"
     },
     {
+      "id": "diagnostic.sc2015",
+      "kind": "diagnostic-fence",
+      "name": "an empty array literal used at an element type that was not decided where it is written",
+      "status": "unsupported",
+      "code": "SC2015"
+    },
+    {
       "id": "diagnostic.sc2020",
       "kind": "diagnostic-fence",
       "name": "standard-library or @types/node surface with no lowering",
@@ -441,7 +440,7 @@
       "name": "child_process.execFile",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
+      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
     },
     {
       "id": "node-builtin.child_process.execFileSync",
@@ -1774,12 +1773,37 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.module.constants",
+      "kind": "node-builtin",
+      "name": "module.constants",
+      "status": "static",
+      "note": "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED"
+    },
+    {
       "id": "node-builtin.module.createRequire",
       "kind": "node-builtin",
       "name": "module.createRequire",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered shape is a const binding (or a proven stable top-level let/var) over createRequire(import.meta.url) (or __filename) whose require calls take STATIC string literals — builtins, project modules (including #imports), relative .json documents and natively compiled npm packages resolve at build time; dynamic specifiers cannot exist in a compiled binary's fixed module graph"
+    },
+    {
+      "id": "node-builtin.module.enableCompileCache",
+      "kind": "node-builtin",
+      "name": "module.enableCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.flushCompileCache",
+      "kind": "node-builtin",
+      "name": "module.flushCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.getCompileCacheDir",
+      "kind": "node-builtin",
+      "name": "module.getCompileCacheDir",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.isBuiltin",
@@ -2436,6 +2460,13 @@
       "name": "process.exitCode",
       "status": "static",
       "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
+    },
+    {
+      "id": "node-builtin.process.features",
+      "kind": "node-builtin",
+      "name": "process.features",
+      "status": "static",
+      "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",

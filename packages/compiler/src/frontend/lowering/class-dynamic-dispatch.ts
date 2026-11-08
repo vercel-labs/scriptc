@@ -3,7 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -4776,7 +4776,7 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result = constructedValue(lowerer, info, {
+        const result = constructedDynValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
@@ -4792,7 +4792,7 @@ export class ClassDynamicDispatch {
             type: BOOL,
             loc,
           },
-          then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+          then: [{ kind: "return", value: result, loc }],
           else_: null,
           loc,
         });

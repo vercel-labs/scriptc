@@ -1488,6 +1488,9 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_deferred_fence.c): a runtimeFence whose message carries its
    * diagnostic's tag (deferred-fence.ts). */
   deferredFence: rule({ initial: moduleHasDeferredFence }),
+  /** `fn.constructor = value` where the checker sees a function: the write
+   * into the function's own property table (scr_dyn_fn_own.c). */
+  functionOwnWrite: rule({ fns: ["dyn.fnOwnSet"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -2135,6 +2138,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
     deferredFence: false,
+    functionOwnWrite: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,

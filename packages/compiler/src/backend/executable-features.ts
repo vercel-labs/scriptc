@@ -104,6 +104,7 @@ export function executableLinkFeatures(
     ...(features.dataViewPrototypeValue ? { dataViewPrototypeValue: true } : {}),
     ...(features.hostAbsentGlobals ? { hostAbsentGlobals: true } : {}),
     ...(features.deferredFence ? { deferredFence: true } : {}),
+    ...(features.functionOwnWrite ? { functionOwnWrite: true } : {}),
     ...(features.arrayLikeDispatch ? { arrayLikeDispatch: true } : {}),
     ...(features.builtinMethodValue ? { builtinMethodValue: true } : {}),
     ...(features.computedRequire ? { computedRequire: true } : {}),

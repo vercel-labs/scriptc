@@ -18,19 +18,23 @@
  * promises, one mirror per V8 promise while it lives, which reacts to the
  * V8 promise once native code reacts to it and runs the native reactions
  * inside V8's reaction job.
- * Typed arrays and Buffers cross as ScrBytes over the same memory (the V8
- * backing store, kept alive by the bridge while the runtime holds the
- * bytes), and runtime bytes cross into V8 as a backing store over the
- * runtime's memory. Island errors thrown into the program become ScrErrors
+ * Typed arrays, Buffers, DataViews and ArrayBuffers cross as ScrBytes
+ * over the same memory, one object per view and one per ArrayBuffer on each
+ * side (below, "byte views"). Symbols cross as symbols: an island symbol is
+ * a native symbol paired with it, the registry's and the well-known ones
+ * by key and by name. Island errors thrown into the program become ScrErrors
  * with V8's name, message, stack and code, and become the original V8
  * error again when they cross back. Native errors cross by reference the
  * other way: one V8 Error per native error (an export), which is the
  * native error again when it crosses back.
  *
- * Runtime objects that represent a V8 value (a promise, an error, bytes)
- * are "pinned": the table below holds the object and its ref, and a lazy
- * sweep at bridge entries releases both once the table holds the object's
- * last reference. Native objects and arrays that are not island values
+ * Runtime objects paired with a V8 value (a promise, an error, a byte view,
+ * the storage of an ArrayBuffer, a symbol) are "pinned": the table below
+ * holds the object and its ref, and a lazy sweep at bridge entries releases
+ * both once the table holds the object's last reference. While the program
+ * holds the object, the import is a root for V8, so each half of the pair
+ * crosses as the other and identity holds in both directions. Native
+ * objects and arrays that are not island values
  * cross by JSON copy until NI-5's exports (a documented NI-4 shortcut). */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
@@ -59,6 +63,7 @@ typedef struct ScrNodeRef {
   /* NI-5d: a native subclass of an island class not created yet: the
    * seven subclass arguments (retained), created on first need. */
   ScrDyn **lazy;
+  uint32_t pin; /* 1 + the index of the pin that pairs it with a runtime object; 0: none */
   /* An island function's identity root (owned, made on first need): the
    * closure every typed view of the function adopts as its identity. It is
    * only ever compared, never called, retained or released, so it is a
@@ -78,31 +83,155 @@ static const ScrNodeBridge *nh_bridge(void) { return scr_ni_bridge(); }
 
 /* ── pinned runtime objects ──────────────────────────────────────────── */
 
+/* NH_PIN_BYTES pairs a view object with a V8 view; NH_PIN_BUFFER pairs the
+ * owner of a storage with a V8 ArrayBuffer. An owner typed array is both a
+ * view and its own storage, so one ScrBytes can carry one pin of each. It
+ * usually carries only the view's: the V8 ArrayBuffer made with its view
+ * needs no handle of its own until V8 hands it back, and is then known by
+ * its memory (`keyed`). */
 /* NH_PIN_NATIVE_ERROR: an error native code made, pinned to the V8 error it
- * crossed as (scr_ni_error_link). The other three are views of V8 values. */
-enum { NH_PIN_PROMISE = 1, NH_PIN_ERROR = 2, NH_PIN_BYTES = 3, NH_PIN_NATIVE_ERROR = 4 };
+ * crossed as (scr_ni_error_link). The others are views of V8 values. */
+enum {
+  NH_PIN_PROMISE = 1,
+  NH_PIN_ERROR = 2,
+  NH_PIN_BYTES = 3,
+  NH_PIN_BUFFER = 4,
+  NH_PIN_SYMBOL = 5,
+  NH_PIN_NATIVE_ERROR = 6,
+};
 
 typedef struct {
   void *obj; /* retained; its reference count is the first word */
   ScrNodeRef *ref; /* retained */
   int kind;
+  /* Bytes: the V8 backing stores over this storage, each of which holds
+   * one reference to it until V8 frees the store (scr_ni_bytes_free).
+   * Counted on the storage's pin, or on the object's view pin when that
+   * is the only one. */
+  uint32_t stores;
+  /* A view pin that stands for its storage too: the index also finds it by
+   * the storage's memory. */
+  bool keyed;
+  /* The storage of an island buffer: a view was made over it since it was
+   * last found without one (nh_idle_storage). */
+  bool used;
 } NhPin;
 
 static NhPin *nh_pins = NULL;
 static size_t nh_npins = 0, nh_pins_cap = 0, nh_sweep_at = 64;
+/* Pins from here on were made since the last entry (nh_enter). Most pair a
+ * value that crossed once and is dropped again at once, a chunk of a
+ * stream: the next entry looks at these alone, so their V8 halves stop
+ * being roots while V8 still counts them young. */
+static size_t nh_young = 0;
+/* The storage of an island buffer whose last view went at the previous
+ * entry (borrowed: its pin holds it). It keeps its pin for one more entry,
+ * so the next chunk an island cuts from the same buffer (Node's pooled
+ * Buffers, a library's own slab) finds it again instead of pairing the
+ * buffer anew; unused by then, it goes. */
+static ScrBytes *nh_idle_storage = NULL;
+
+/* Pinned object -> its pin, open addressing over a power-of-two table at
+ * most half full. The key is the object's address; a storage pin sets the
+ * low bit (objects are allocations, so the bit is free), which keeps the
+ * two pins of an owner typed array apart. */
+typedef struct {
+  uintptr_t key; /* 0: empty */
+  uint32_t pin;  /* 1 + index into nh_pins */
+} NhPinSlot;
+static NhPinSlot *nh_pin_index = NULL;
+static size_t nh_pin_index_cap = 0, nh_pin_index_len = 0;
 
 static void nh_ref_release(ScrNodeRef *ref);
+static ScrNodeRef *nh_ref(uint32_t id, uint32_t flags);
+
+static uintptr_t nh_pin_key(const void *obj, int kind) {
+  return (uintptr_t)obj | (kind == NH_PIN_BUFFER ? 1u : 0u);
+}
+
+/* The key of the memory a storage owns (an allocation of its own, so the
+ * second bit is free and no object's key equals it). */
+static uintptr_t nh_data_key(const void *data) { return (uintptr_t)data | 2u; }
+
+static size_t nh_pin_hash(uintptr_t x) {
+  x ^= x >> 33;
+  x *= (uintptr_t)0xff51afd7ed558ccdULL;
+  x ^= x >> 29;
+  return (size_t)x;
+}
+
+static NhPinSlot *nh_pin_slot(uintptr_t key) {
+  if (nh_pin_index_cap == 0) return NULL;
+  size_t mask = nh_pin_index_cap - 1;
+  for (size_t i = nh_pin_hash(key) & mask;; i = (i + 1) & mask) {
+    if (nh_pin_index[i].key == 0) return NULL;
+    if (nh_pin_index[i].key == key) return &nh_pin_index[i];
+  }
+}
+
+static void nh_pin_index_put(uintptr_t key, uint32_t pin) {
+  if ((nh_pin_index_len + 1) * 2 > nh_pin_index_cap) {
+    size_t cap = nh_pin_index_cap ? nh_pin_index_cap * 2 : 64;
+    NhPinSlot *grown = calloc(cap, sizeof *grown);
+    if (grown == NULL) nh_oom();
+    for (size_t i = 0; i < nh_pin_index_cap; i++) {
+      if (nh_pin_index[i].key == 0) continue;
+      size_t j = nh_pin_hash(nh_pin_index[i].key) & (cap - 1);
+      while (grown[j].key != 0) j = (j + 1) & (cap - 1);
+      grown[j] = nh_pin_index[i];
+    }
+    free(nh_pin_index);
+    nh_pin_index = grown;
+    nh_pin_index_cap = cap;
+  }
+  size_t mask = nh_pin_index_cap - 1;
+  size_t i = nh_pin_hash(key) & mask;
+  while (nh_pin_index[i].key != 0) i = (i + 1) & mask;
+  nh_pin_index[i] = (NhPinSlot){key, pin};
+  nh_pin_index_len++;
+}
+
+/* Removes a key, closing the gap so every later entry of its run is still
+ * reachable from its home slot. */
+static void nh_pin_index_del(uintptr_t key) {
+  NhPinSlot *found = nh_pin_slot(key);
+  if (found == NULL) return;
+  size_t mask = nh_pin_index_cap - 1;
+  size_t hole = (size_t)(found - nh_pin_index);
+  for (size_t j = (hole + 1) & mask; nh_pin_index[j].key != 0; j = (j + 1) & mask) {
+    size_t home = nh_pin_hash(nh_pin_index[j].key) & mask;
+    if (((j - home) & mask) >= ((j - hole) & mask)) {
+      nh_pin_index[hole] = nh_pin_index[j];
+      hole = j;
+    }
+  }
+  nh_pin_index[hole].key = 0;
+  nh_pin_index_len--;
+}
+
+static void nh_pin_retain_obj(void *obj, int kind) {
+  switch (kind) {
+  case NH_PIN_PROMISE: scr_promise_retain((ScrPromise *)obj); break;
+  case NH_PIN_ERROR:
+  case NH_PIN_NATIVE_ERROR: scr_error_retain((ScrError *)obj); break;
+  case NH_PIN_BYTES:
+  case NH_PIN_BUFFER: scr_bytes_retain((ScrBytes *)obj); break;
+  case NH_PIN_SYMBOL: scr_sym_retain((ScrSym *)obj); break;
+  }
+}
 
 static void nh_pin_release_obj(NhPin *pin) {
   switch (pin->kind) {
   case NH_PIN_PROMISE: scr_promise_release((ScrPromise *)pin->obj); break;
   case NH_PIN_ERROR:
   case NH_PIN_NATIVE_ERROR: scr_error_release((ScrError *)pin->obj); break;
-  case NH_PIN_BYTES: scr_bytes_release((ScrBytes *)pin->obj); break;
+  case NH_PIN_BYTES:
+  case NH_PIN_BUFFER: scr_bytes_release((ScrBytes *)pin->obj); break;
+  case NH_PIN_SYMBOL: scr_sym_release((ScrSym *)pin->obj); break;
   }
 }
 
-static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
+static NhPin *nh_pin(void *obj, int kind, ScrNodeRef *ref) {
   if (nh_npins == nh_pins_cap) {
     size_t cap = nh_pins_cap ? nh_pins_cap * 2 : 16;
     NhPin *grown = realloc(nh_pins, cap * sizeof *grown);
@@ -110,38 +239,91 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
     nh_pins = grown;
     nh_pins_cap = cap;
   }
-  switch (kind) {
-  case NH_PIN_PROMISE: scr_promise_retain((ScrPromise *)obj); break;
-  case NH_PIN_ERROR:
-  case NH_PIN_NATIVE_ERROR: scr_error_retain((ScrError *)obj); break;
-  case NH_PIN_BYTES: scr_bytes_retain((ScrBytes *)obj); break;
-  }
+  nh_pin_retain_obj(obj, kind);
   ref->rc++;
-  nh_pins[nh_npins++] = (NhPin){obj, ref, kind};
+  nh_pin_index_put(nh_pin_key(obj, kind), (uint32_t)nh_npins + 1);
+  ref->pin = (uint32_t)nh_npins + 1;
+  nh_pins[nh_npins] = (NhPin){obj, ref, kind, 0, false, true};
+  return &nh_pins[nh_npins++];
+}
+
+/* The pin of a runtime object, or NULL. */
+static NhPin *nh_pin_of(const void *obj, int kind) {
+  NhPinSlot *slot = nh_pin_slot(nh_pin_key(obj, kind));
+  if (slot == NULL) return NULL;
+  NhPin *pin = &nh_pins[slot->pin - 1];
+  return pin->kind == kind ? pin : NULL;
 }
 
 /* The ref a pinned runtime object represents, or NULL. */
 static ScrNodeRef *nh_pinned(const void *obj, int kind) {
-  for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].obj == obj && nh_pins[i].kind == kind) return nh_pins[i].ref;
-  return NULL;
+  NhPin *pin = nh_pin_of(obj, kind);
+  return pin != NULL ? pin->ref : NULL;
 }
 
 /* The pinned object of a ref, or NULL. */
 static void *nh_pinned_obj(const ScrNodeRef *ref, int kind) {
-  for (size_t i = 0; i < nh_npins; i++)
-    if (nh_pins[i].ref == ref && nh_pins[i].kind == kind) return nh_pins[i].obj;
-  return NULL;
+  if (ref->pin == 0) return NULL;
+  NhPin *pin = &nh_pins[ref->pin - 1];
+  return pin->kind == kind ? pin->obj : NULL;
 }
 
-/* Whether nothing but the pin table holds the object of `pin`. A pinned
- * error the program read as a dynamic value also has a view, and the
- * error-view cache (scr_json.c) holds the error and the view until nothing
- * else does. That pair is not a holder: counted as one, the table and the
- * cache keep each other's entry for the rest of the run. */
-static bool nh_pin_unheld(const NhPin *pin) {
+/* Moves a pin to another place of the table. */
+static void nh_pin_move(size_t to, size_t from) {
+  if (to == from) return;
+  nh_pins[to] = nh_pins[from];
+  nh_pins[to].ref->pin = (uint32_t)to + 1;
+  nh_pin_slot(nh_pin_key(nh_pins[to].obj, nh_pins[to].kind))->pin = (uint32_t)to + 1;
+  if (nh_pins[to].keyed)
+    nh_pin_slot(nh_data_key(((ScrBytes *)nh_pins[to].obj)->data))->pin = (uint32_t)to + 1;
+}
+
+/* Takes pin `i` out of the table and releases what it held. The gap is
+ * closed so that the pins made since the last entry (from nh_young on)
+ * stay behind the older ones. */
+static void nh_unpin(size_t i) {
+  NhPin pin = nh_pins[i];
+  if (pin.obj == nh_idle_storage && pin.kind == NH_PIN_BUFFER) nh_idle_storage = NULL;
+  if (pin.stores > 0) {
+    /* The stores outlive this pin: the object's other pin counts them. */
+    NhPin *twin = nh_pin_of(pin.obj, pin.kind == NH_PIN_BYTES ? NH_PIN_BUFFER : NH_PIN_BYTES);
+    if (twin != NULL) twin->stores += pin.stores;
+  }
+  if (pin.keyed) nh_pin_index_del(nh_data_key(((ScrBytes *)pin.obj)->data));
+  nh_pin_index_del(nh_pin_key(pin.obj, pin.kind));
+  pin.ref->pin = 0;
+  if (i < nh_young) {
+    nh_pin_move(i, nh_young - 1);
+    i = --nh_young;
+  }
+  nh_pin_move(i, nh_npins - 1);
+  nh_npins--;
+  nh_pin_release_obj(&pin);
+  nh_ref_release(pin.ref);
+}
+
+/* The references to a pinned object that are not the program's: the pin's
+ * own, the V8 backing stores over a storage, and for bytes the same of the
+ * object's other pin (an owner typed array is a view and a storage). */
+static size_t nh_pin_held(const NhPin *pin) {
+  size_t n = 1 + pin->stores;
+  /* A view over another object's storage is not a storage itself. */
+  if (pin->kind == NH_PIN_BYTES && ((const ScrBytes *)pin->obj)->backing != NULL) return n;
+  if (pin->kind == NH_PIN_BYTES || pin->kind == NH_PIN_BUFFER) {
+    const NhPin *twin = nh_pin_of(pin->obj, pin->kind == NH_PIN_BYTES ? NH_PIN_BUFFER : NH_PIN_BYTES);
+    if (twin != NULL) n += 1 + twin->stores;
+  }
+  return n;
+}
+
+/* Whether only the table (and V8, for a storage) still holds a pin's
+ * object. A pinned error the program read as a dynamic value also has a
+ * view, and the error-view cache (scr_json.c) holds the error and the view
+ * until nothing else does. That pair is not a holder: counted as one, the
+ * table and the cache keep each other's entry for the rest of the run. */
+static bool nh_pin_dead(const NhPin *pin) {
   size_t rc = *(size_t *)pin->obj;
-  if (rc == 1) return true;
+  if (rc == nh_pin_held(pin)) return true;
   if (pin->kind != NH_PIN_ERROR || rc != 2) return false;
   const ScrDyn *view = scr_errdyn_view_of(pin->obj);
   if (view == NULL || view->kind != SCR_DYN_OBJ) return false;
@@ -151,26 +333,163 @@ static bool nh_pin_unheld(const NhPin *pin) {
   return SCR_RC_COUNT(view) == 1 + self;
 }
 
-/* Releases every pin whose object only the table still holds. Releasing a
- * pin can free objects that held other pinned objects, so it repeats until
- * a pass frees nothing. */
-static void nh_sweep(void) {
+/* Releases every pin (`full`), or every byte view and symbol pinned since
+ * the last entry, whose object only the table (and V8, for a storage) still
+ * holds.
+ * Releasing a pin can free objects that held other pinned objects (a view
+ * holds its storage), so it repeats until a pass frees nothing. A sweep of
+ * the young pins leaves the storage of an island buffer one entry of grace
+ * (nh_idle_storage). */
+static void nh_sweep_pins(bool full) {
+  if (!full && nh_idle_storage != NULL) {
+    NhPin *idle = nh_pin_of(nh_idle_storage, NH_PIN_BUFFER);
+    nh_idle_storage = NULL;
+    if (idle != NULL && !idle->used && nh_pin_dead(idle)) nh_unpin((size_t)(idle - nh_pins));
+  }
+  size_t from = full ? 0 : nh_young;
   bool freed = true;
   while (freed) {
     freed = false;
-    for (size_t i = 0; i < nh_npins;) {
-      if (nh_pin_unheld(&nh_pins[i])) {
-        NhPin pin = nh_pins[i];
-        nh_pins[i] = nh_pins[--nh_npins];
-        nh_pin_release_obj(&pin);
-        nh_ref_release(pin.ref);
-        freed = true;
-      } else {
+    for (size_t i = from; i < nh_npins;) {
+      NhPin *pin = &nh_pins[i];
+      /* What a sweep of the young pins leaves for a full one: the storage
+       * of an island buffer (below), and promises and errors, whose typed
+       * views in the program are made from the pinned object each time the
+       * island value crosses and share its identity only through it. */
+      bool later = pin->kind == NH_PIN_PROMISE || pin->kind == NH_PIN_ERROR ||
+                   pin->kind == NH_PIN_NATIVE_ERROR ||
+                   (pin->kind == NH_PIN_BUFFER && ((ScrBytes *)pin->obj)->external);
+      if (!nh_pin_dead(pin) || (!full && later)) {
         i++;
+        continue;
+      }
+      /* The storage a view of an island buffer leaves behind. */
+      ScrBytes *storage = pin->kind == NH_PIN_BYTES ? ((ScrBytes *)pin->obj)->backing : NULL;
+      if (storage != NULL && !storage->external) storage = NULL;
+      nh_unpin(i);
+      freed = true;
+      if (!full && storage != NULL) {
+        NhPin *left = nh_pin_of(storage, NH_PIN_BUFFER);
+        if (left != NULL && nh_pin_dead(left)) {
+          left->used = false;
+          nh_idle_storage = storage;
+        }
       }
     }
   }
+  nh_young = nh_npins;
+}
+
+static void nh_sweep(void) {
+  nh_sweep_pins(true);
   nh_sweep_at = nh_npins * 2 > 64 ? nh_npins * 2 : 64;
+}
+
+/* ── young views ──────────────────────────────────────────────────────
+ * A program view that crosses for the first time is "young" until the next
+ * entry: the bridge keeps its V8 view alive and this unit holds the view
+ * object, in the same order, and that is all. Most such views are a chunk
+ * of a stream, dropped by the program right after the call that carried
+ * them; a pin, an import and their release for each would cost more than
+ * the crossing. The next entry pins the ones the program still holds and
+ * lets the others go (nh_young_flush). A young view is found by its handle
+ * (SCR_NODE_YOUNG | position) coming out of V8 and by its object going in,
+ * so its identity holds from the first crossing on. */
+typedef struct {
+  ScrBytes *obj; /* retained */
+  bool store;    /* a V8 backing store over it holds it too (it is its own storage) */
+} NhYoungView;
+
+static NhYoungView *nh_young_views = NULL;
+static size_t nh_nyoung_views = 0, nh_young_views_cap = 0;
+
+/* The young handle of a view object, or 0. */
+static uint32_t nh_young_handle(const ScrBytes *b) {
+  for (size_t i = 0; i < nh_nyoung_views; i++)
+    if (nh_young_views[i].obj == b) return SCR_NODE_YOUNG | (uint32_t)i;
+  return 0;
+}
+
+/* The view object of a young handle (borrowed), or NULL. */
+static ScrBytes *nh_young_obj(uint32_t handle) {
+  size_t i = handle & ~SCR_NODE_YOUNG;
+  return (handle & SCR_NODE_YOUNG) && i < nh_nyoung_views ? nh_young_views[i].obj : NULL;
+}
+
+static void nh_young_add(ScrBytes *b, bool store) {
+  if (nh_nyoung_views == nh_young_views_cap) {
+    size_t cap = nh_young_views_cap ? nh_young_views_cap * 2 : 8;
+    NhYoungView *grown = realloc(nh_young_views, cap * sizeof *grown);
+    if (grown == NULL) nh_oom();
+    nh_young_views = grown;
+    nh_young_views_cap = cap;
+  }
+  nh_young_views[nh_nyoung_views++] = (NhYoungView){scr_bytes_retain(b), store};
+}
+
+typedef struct {
+  const uint8_t *keep;
+  size_t n;
+  uint32_t *ids;
+} NhYoungFlush;
+
+static void nh_young_flush_job(void *p) {
+  NhYoungFlush *f = p;
+  scr_ni_bridge_loaded()->young_flush(f->keep, f->n, f->ids);
+}
+
+/* Ends the young views. One the program still holds (its count exceeds
+ * this unit's hold, the store's and its storage pin's) is pinned to the
+ * handle the bridge gives its V8 view; any other is released, and V8
+ * collects its view unless island code kept it. */
+static void nh_young_flush(void) {
+  size_t n = nh_nyoung_views;
+  if (n == 0) return;
+  uint8_t keep_small[16];
+  uint32_t ids_small[16];
+  bool kept = false;
+  uint8_t *keep = n <= 16 ? keep_small : malloc(n);
+  uint32_t *ids = n <= 16 ? ids_small : malloc(n * sizeof *ids);
+  if (keep == NULL || ids == NULL) nh_oom();
+  for (size_t i = 0; i < n; i++) {
+    const NhYoungView *y = &nh_young_views[i];
+    size_t held = 1 + (y->store ? 1 : 0);
+    const NhPin *storage = nh_pin_of(y->obj, NH_PIN_BUFFER);
+    if (storage != NULL) held += 1 + storage->stores;
+    keep[i] = *(size_t *)y->obj > held;
+    kept = kept || keep[i];
+    ids[i] = 0;
+  }
+  const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
+  if (bridge != NULL && !ni_stopped) {
+    /* Giving a view a handle can allocate in V8, and so collect: that
+     * runs on Node's stack, like every operation (V8 scans the stack it
+     * believes it is on). Letting the views go allocates nothing. */
+    NhYoungFlush flush = {keep, n, ids};
+    if (kept) scr_ni_on_node_stack(nh_young_flush_job, &flush);
+    else bridge->young_flush(keep, n, ids);
+  }
+  nh_nyoung_views = 0;
+  for (size_t i = 0; i < n; i++) {
+    NhYoungView y = nh_young_views[i];
+    if (keep[i] && ids[i] != 0) {
+      ScrNodeRef *ref = nh_ref(ids[i], 0);
+      if (ref->pin == 0) {
+        NhPin *pin = nh_pin(y.obj, NH_PIN_BYTES, ref);
+        if (y.store) {
+          /* It is its own storage: the pin counts the store, and the index
+           * finds it by the storage's memory (nh_buffer_root). */
+          pin->stores = 1;
+          pin->keyed = true;
+          nh_pin_index_put(nh_data_key(y.obj->data), (uint32_t)(pin - nh_pins) + 1);
+        }
+      }
+      nh_ref_release(ref);
+    }
+    scr_bytes_release(y.obj);
+  }
+  if (keep != keep_small) free(keep);
+  if (ids != ids_small) free(ids);
 }
 
 /* ── runtime bytes V8 freed (any thread) ─────────────────────────────── */
@@ -198,6 +517,10 @@ static void nh_drain_freed(void) {
     void *owner = nh_nfreed > 0 ? nh_freed[--nh_nfreed] : NULL;
     pthread_mutex_unlock(&nh_freed_lock);
     if (owner == NULL) return;
+    /* The store is gone: its reference no longer counts as V8's. */
+    NhPin *pin = nh_pin_of(owner, NH_PIN_BUFFER);
+    if (pin == NULL || pin->stores == 0) pin = nh_pin_of(owner, NH_PIN_BYTES);
+    if (pin != NULL && pin->stores > 0) pin->stores--;
     scr_bytes_release((ScrBytes *)owner);
   }
 }
@@ -205,9 +528,17 @@ static void nh_drain_freed(void) {
 /* Housekeeping at every operation: bytes V8 freed, and the pin sweep once
  * the table has grown. */
 static void nh_enter(void) {
+  if (nh_nyoung_views > 0) nh_young_flush();
   if (nh_nfreed > 0) nh_drain_freed();
   if (nh_npins >= nh_sweep_at) nh_sweep();
+  else if (nh_young < nh_npins || nh_idle_storage != NULL) nh_sweep_pins(false);
 }
+
+/* The same when island code calls into the program (a listener an island
+ * loop calls with a chunk each time enters no operation of this unit).
+ * Only once every value of the call has been converted: until then a view
+ * the bridge named by its handle alone is held by its pin only. */
+void scr_ni_called_in(void) { nh_enter(); }
 
 /* ── refs ─────────────────────────────────────────────────────────────── */
 
@@ -484,22 +815,142 @@ static void nh_promise_subscribe(ScrPromise *p) {
   }
 }
 
-/* Bytes from V8: an external root over the V8 store's memory, one per V8
- * view while the program holds it. */
+/* ── byte views ───────────────────────────────────────────────────────
+ * JavaScript has two objects, the ArrayBuffer and the view, and so do both
+ * sides here. The storage of an ArrayBuffer is a root ScrBytes (the
+ * runtime's own allocation, or an external root over a V8 backing store),
+ * pinned to the V8 ArrayBuffer; a view is a ScrBytes over its root, pinned
+ * to the V8 view. Bytes are never copied: both sides read and write one
+ * memory.
+ *
+ * Who keeps what alive. Memory V8 owns: the bridge's slot of the
+ * ArrayBuffer holds its backing store, and the runtime holds that slot for
+ * as long as the root lives, which every native view of it ensures. Memory
+ * the runtime owns: the V8 backing store over it holds one reference to
+ * the root until V8 frees the store, so island views outlive the program's
+ * use of the bytes. A pin goes when the program no longer holds the
+ * object; its V8 half is then V8's to collect, and a later crossing of
+ * either half makes a new pair that nothing can tell from the old one. */
+
+/* The storage of the ArrayBuffer a BYTES value names (borrowed: its pin
+ * holds it). */
+static ScrBytes *nh_buffer_root(const ScrNodeValue *v) {
+  /* The ArrayBuffer of a young view of a typed array that is its own
+   * storage: that array. */
+  if (v->u.bytes.buffer & SCR_NODE_YOUNG) return nh_young_obj(v->u.bytes.buffer);
+  ScrNodeRef *ref = nh_ref(v->u.bytes.buffer, 0);
+  ScrBytes *root = nh_pinned_obj(ref, NH_PIN_BUFFER);
+  if (root != NULL) nh_pins[ref->pin - 1].used = true;
+  uint8_t *base = v->u.bytes.data != NULL ? v->u.bytes.data - v->u.bytes.offset : NULL;
+  if (root == NULL && base != NULL) {
+    /* The ArrayBuffer V8 made with the view of one of the program's typed
+     * arrays: the store is over that array's own memory. It has a handle
+     * of its own from here on. */
+    NhPinSlot *slot = nh_pin_slot(nh_data_key(base));
+    if (slot != NULL) {
+      root = nh_pins[slot->pin - 1].obj;
+      nh_pin(root, NH_PIN_BUFFER, ref);
+    }
+  }
+  if (root == NULL) {
+    root = scr_bytes_from_external(v->u.bytes.buffer_len > 0 ? base : NULL, v->u.bytes.buffer_len);
+    /* The island owns this memory: the program cannot detach it. */
+    root->untransferable = true;
+    nh_pin(root, NH_PIN_BUFFER, ref);
+    scr_bytes_release(root); /* the pin holds it */
+  }
+  nh_ref_release(ref);
+  return root;
+}
+
+/* Bytes from V8: the view object paired with the V8 view, made over the
+ * ArrayBuffer's storage at the view's own offset on first sight. NULL with
+ * an exception pending when the view cannot be made. */
 static ScrDyn *nh_bytes_box(const ScrNodeValue *v) {
-  ScrNodeRef *ref = nh_ref(v->u.bytes.handle, v->flags);
+  if (v->flags & SCR_NVF_ARRAYBUFFER) {
+    ScrBytes *root = nh_buffer_root(v);
+    if (root == NULL) scr_trap("scriptc: internal error: an island ArrayBuffer named a view that is gone\n");
+    return scr_array_buffer_from_bytes(root);
+  }
+  if (v->u.bytes.handle & SCR_NODE_YOUNG) {
+    /* A program view coming back before the flush: itself. */
+    ScrBytes *young = nh_young_obj(v->u.bytes.handle);
+    if (young == NULL) scr_trap("scriptc: internal error: an island byte view named a view that is gone\n");
+    ScrDyn *d = scr_dyn_new_bytes(young);
+    d->buffer = young->is_buffer;
+    return d;
+  }
+  ScrNodeRef *ref = nh_ref(v->u.bytes.handle, 0);
   ScrBytes *b = nh_pinned_obj(ref, NH_PIN_BYTES);
   if (b == NULL) {
-    b = scr_bytes_from_external(v->u.bytes.data, v->u.bytes.len);
-    b->elem = (ScrBytesElem)v->u.bytes.elem;
+    if (v->u.bytes.buffer == 0) {
+      /* The bridge names a view the runtime does not hold. */
+      nh_ref_release(ref);
+      scr_trap("scriptc: internal error: an island byte view crossed without its buffer\n");
+    }
+    ScrBytes *root = nh_buffer_root(v);
+    if (root == NULL) {
+      nh_ref_release(ref);
+      scr_trap("scriptc: internal error: an island byte view named a buffer that is gone\n");
+    }
+    size_t width = scr_bytes_elem_size((ScrBytesElem)v->u.bytes.elem);
+    b = (v->flags & SCR_NVF_DATAVIEW)
+            ? scr_dataview_new(root, (double)v->u.bytes.offset, true, (double)(v->u.bytes.len * width))
+            : scr_bytes_buffer_view(root, (ScrBytesElem)v->u.bytes.elem, (double)v->u.bytes.offset,
+                                    true, (double)v->u.bytes.len);
+    if (b == NULL) {
+      nh_ref_release(ref);
+      return NULL;
+    }
     b->is_buffer = (v->flags & SCR_NVF_BUFFER) != 0;
-    b->is_data_view = (v->flags & SCR_NVF_DATAVIEW) != 0;
     nh_pin(b, NH_PIN_BYTES, ref);
     scr_bytes_release(b); /* the pin holds it */
   }
   nh_ref_release(ref);
   ScrDyn *d = scr_dyn_new_bytes(b);
   d->buffer = b->is_buffer;
+  return d;
+}
+
+/* The storage a view or ArrayBuffer crossing into V8 stands on: the
+ * handle of its ArrayBuffer when one is bound, else what the bridge needs
+ * to make and bind one. False with the refusal pending for storage V8
+ * cannot alias. */
+static bool nh_storage_out(ScrBytes *root, ScrNodeValue *out);
+
+/* ── symbols ──────────────────────────────────────────────────────────
+ * A symbol is one identity on both sides: Symbol.for symbols pair by key,
+ * the well-known ones by name, every other symbol with one symbol the
+ * other side makes for it, of the same description. The pin keeps the pair
+ * while the program holds the native symbol. */
+
+static const char *const nh_well_known[] = {
+    "asyncDispose", "asyncIterator", "dispose",  "hasInstance", "isConcatSpreadable",
+    "iterator",     "match",         "matchAll", "replace",     "search",
+    "species",      "split",         "toPrimitive", "toStringTag", "unscopables",
+};
+
+static void nh_symbol_info(uint32_t id, ScrNodeSymbolInfo *info);
+
+/* An island symbol as the native symbol paired with it (+1 box). */
+static ScrDyn *nh_symbol_box(ScrNodeRef *ref) {
+  ScrSym *sym = nh_pinned_obj(ref, NH_PIN_SYMBOL);
+  if (sym != NULL) return scr_dyn_new_symbol(sym);
+  ScrNodeSymbolInfo info;
+  nh_symbol_info(ref->id, &info);
+  ScrStr *text = info.text != NULL ? nh_str(info.text, info.len) : scr_str_new("", 0);
+  switch (info.kind) {
+  case SCR_NODE_SYMBOL_REGISTERED: sym = scr_sym_for(text); break;
+  case SCR_NODE_SYMBOL_WELL_KNOWN: sym = scr_sym_well_known(text); break;
+  case SCR_NODE_SYMBOL_UNIQUE: sym = scr_sym_new(text); break;
+  default: sym = scr_sym_new(NULL); break;
+  }
+  scr_str_release(text);
+  /* A registered or well-known symbol the program already sent across is
+   * paired with that same island symbol, which has this ref. */
+  if (nh_pin_of(sym, NH_PIN_SYMBOL) == NULL) nh_pin(sym, NH_PIN_SYMBOL, ref);
+  ScrDyn *d = scr_dyn_new_symbol(sym);
+  scr_sym_release(sym);
   return d;
 }
 
@@ -541,7 +992,8 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
         return scr_dyn_from_error(pinned);
       }
     }
-    ScrDyn *d = (ref->flags & SCR_NVF_PROMISE) ? nh_promise_box(ref)
+    ScrDyn *d = (ref->flags & SCR_NVF_PROMISE)  ? nh_promise_box(ref)
+                : (ref->flags & SCR_NVF_SYMBOL) ? nh_symbol_box(ref)
                                                 : scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
     nh_ref_release(ref);
     /* An island object of a twin class (an AbortSignal the island made):
@@ -777,8 +1229,63 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   switch (v->kind) {
   case SCR_DYN_FUNC: return nh_refuse("a function");
   case SCR_DYN_PROMISE: return nh_refuse("a native promise");
-  case SCR_DYN_SYMBOL: return nh_refuse("a native symbol");
   default: return nh_refuse("this native object");
+  }
+}
+
+static bool nh_storage_out(ScrBytes *root, ScrNodeValue *out) {
+  if (root->shared != NULL) return nh_refuse("shared memory");
+#ifdef SCR_JS_OBJECT_MODEL
+  /* A buffer that can move or shrink has no fixed memory for V8 to alias. */
+  if (scr_js_buffer_ops != NULL &&
+      (scr_js_buffer_ops->owner_resizable(root) || scr_js_buffer_ops->owner_detached(root)))
+    return nh_refuse("a resizable or detached ArrayBuffer");
+#endif
+  ScrNodeRef *ref = nh_pinned(root, NH_PIN_BUFFER);
+  out->u.bytes.buffer = ref != NULL ? ref->id : 0;
+  out->u.bytes.root = root;
+  out->u.bytes.buffer_len = root->len * scr_bytes_elem_size(root->elem);
+  return true;
+}
+
+/* A native symbol with no island symbol bound yet: what the bridge needs
+ * to find or make one. */
+static void nh_symbol_out(ScrSym *sym, ScrNodeValue *out, NhKeep *keep) {
+  out->tag = SCR_NV_SYMBOL;
+  out->u.sym.owner = sym;
+  ScrStr *key = scr_sym_key_for(sym);
+  if (key != NULL) {
+    nh_keep(keep, key, nh_str_release_v);
+    out->u.sym.kind = SCR_NODE_SYMBOL_REGISTERED;
+    out->u.sym.text = key->data;
+    out->u.sym.len = key->len;
+    return;
+  }
+  ScrStr *desc = scr_sym_desc(sym);
+  if (desc == NULL) {
+    out->u.sym.kind = SCR_NODE_SYMBOL_NO_DESCRIPTION;
+    return;
+  }
+  nh_keep(keep, desc, nh_str_release_v);
+  out->u.sym.kind = SCR_NODE_SYMBOL_UNIQUE;
+  out->u.sym.text = desc->data;
+  out->u.sym.len = desc->len;
+  if (desc->len <= 7 || memcmp(desc->data, "Symbol.", 7) != 0) return;
+  for (size_t i = 0; i < sizeof nh_well_known / sizeof *nh_well_known; i++) {
+    size_t n = strlen(nh_well_known[i]);
+    if (desc->len - 7 != n || memcmp(desc->data + 7, nh_well_known[i], n) != 0) continue;
+    /* The description of a well-known symbol: it is one when it is the
+     * symbol the runtime keeps under that name. */
+    ScrStr *name = scr_str_new(nh_well_known[i], n);
+    ScrSym *known = scr_sym_well_known(name);
+    scr_str_release(name);
+    if (known == sym) {
+      out->u.sym.kind = SCR_NODE_SYMBOL_WELL_KNOWN;
+      out->u.sym.text = nh_well_known[i];
+      out->u.sym.len = n;
+    }
+    scr_sym_release(known);
+    return;
   }
 }
 
@@ -828,7 +1335,28 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
       out->u.handle = ref->id;
       return true;
     }
+    if (v->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || v->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
+      /* An ArrayBuffer is its storage: the buffer bound to it, or one the
+       * bridge makes over it now. */
+      ScrBytes *root = v->v.handle.ptr;
+      out->tag = SCR_NV_BYTES;
+      out->flags = SCR_NVF_ARRAYBUFFER;
+      out->u.bytes.data = root->data;
+      return nh_storage_out(root, out);
+    }
     return nh_export_value(v, out, keep);
+  case SCR_DYN_SYMBOL: {
+    ScrSym *sym = v->v.symbol.value;
+    ScrNodeRef *ref = nh_pinned(sym, NH_PIN_SYMBOL);
+    if (ref != NULL) {
+      out->tag = SCR_NV_HANDLE;
+      out->flags = ref->flags;
+      out->u.handle = ref->id;
+      return true;
+    }
+    nh_symbol_out(sym, out, keep);
+    return true;
+  }
   case SCR_DYN_PROMISE: {
     ScrNodeRef *ref = nh_pinned(v->v.promise, NH_PIN_PROMISE);
     if (ref == NULL) return nh_export_value(v, out, keep);
@@ -839,21 +1367,24 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   }
   case SCR_DYN_BYTES: {
     ScrBytes *b = v->v.bytes;
-    ScrBytes *root = b->backing != NULL ? b->backing : b;
     ScrNodeRef *ref = nh_pinned(b, NH_PIN_BYTES);
     out->tag = SCR_NV_BYTES;
+    if (ref != NULL) {
+      out->u.bytes.handle = ref->id; /* the V8 view paired with it */
+      return true;
+    }
+    if (nh_nyoung_views > 0 && (out->u.bytes.handle = nh_young_handle(b)) != 0) return true;
+    /* Its first crossing: the bridge makes the V8 view over the storage's
+     * ArrayBuffer, at the view's own offset, and binds it to this object. */
+    ScrBytes *root = b->backing != NULL ? b->backing : b;
+    if (!nh_storage_out(root, out)) return false;
+    out->u.bytes.owner = b;
     out->u.bytes.elem = (uint32_t)b->elem;
     out->u.bytes.len = b->len;
     out->u.bytes.data = b->data;
+    out->u.bytes.offset = (size_t)(b->data - root->data);
     if (b->is_buffer || v->buffer) out->flags |= SCR_NVF_BUFFER;
     if (b->is_data_view) out->flags |= SCR_NVF_DATAVIEW;
-    if (ref != NULL) {
-      out->u.bytes.handle = ref->id; /* the same V8 view */
-      return true;
-    }
-    if (root->shared != NULL) return nh_refuse("shared memory");
-    /* V8 frees the store through host->bytes_free, which releases this. */
-    out->u.bytes.owner = scr_bytes_retain(root);
     return true;
   }
   default: break;
@@ -894,7 +1425,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
 
 enum {
   NH_LOAD, NH_GET, NH_SET, NH_HAS, NH_DEL, NH_INVOKE, NH_INVOKE_METHOD, NH_CONSTRUCT,
-  NH_INSTANCEOF, NH_KEYS, NH_THEN,
+  NH_INSTANCEOF, NH_KEYS, NH_THEN, NH_SYMBOL_INFO,
 };
 
 typedef struct {
@@ -907,6 +1438,7 @@ typedef struct {
   size_t argc;
   uint32_t token;
   ScrNodeValue *out;
+  ScrNodeSymbolInfo *info;
   int threw;
 } NhCall;
 
@@ -925,6 +1457,7 @@ static void nh_call_job(void *p) {
   case NH_INSTANCEOF: c->threw = b->instance_of(c->a, c->h, c->out); break;
   case NH_KEYS: c->threw = b->own_keys(c->h, c->mode, c->out); break;
   case NH_THEN: c->threw = b->then(c->a, c->token, c->out); break;
+  case NH_SYMBOL_INFO: b->symbol_info(c->h, c->info); break;
   }
 }
 
@@ -937,6 +1470,56 @@ static int nh_run(NhCall *c) {
 static int nh_then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *thrown) {
   NhCall c = {.op = NH_THEN, .a = value, .token = token, .out = thrown};
   return nh_run(&c);
+}
+
+static void nh_symbol_info(uint32_t id, ScrNodeSymbolInfo *info) {
+  NhCall c = {.op = NH_SYMBOL_INFO, .h = id, .info = info};
+  scr_ni_on_node_stack(nh_call_job, &c);
+}
+
+/* ── the bridge binds V8 values to runtime objects (host callbacks) ───── */
+
+static int nh_bind_kind(uint32_t kind) {
+  return kind == SCR_NODE_BIND_VIEW     ? NH_PIN_BYTES
+         : kind == SCR_NODE_BIND_BUFFER ? NH_PIN_BUFFER
+                                        : NH_PIN_SYMBOL;
+}
+
+uint32_t scr_ni_host_bound(uint32_t kind, void *owner) {
+  ScrNodeRef *ref = nh_pinned(owner, nh_bind_kind(kind));
+  if (ref != NULL) return ref->id;
+  return kind == SCR_NODE_BIND_VIEW ? nh_young_handle(owner) : 0;
+}
+
+void scr_ni_host_bind(uint32_t kind, void *owner, uint32_t handle, int store) {
+  if (store) {
+    /* A V8 backing store now aliases this storage and holds it until V8
+     * frees the store. The program's views do not follow a detach, so the
+     * buffer is not one the program can detach either. */
+    ScrBytes *root = owner;
+    scr_bytes_retain(root);
+    root->untransferable = true;
+  }
+  if (kind == SCR_NODE_BIND_VIEW) {
+    /* A view's first crossing: young until the next entry. The bridge
+     * numbers its young views as this unit does. */
+    if ((handle & ~SCR_NODE_YOUNG) != nh_nyoung_views)
+      scr_trap("scriptc: internal error: the bridge's young views are out of step\n");
+    nh_young_add(owner, store != 0);
+    return;
+  }
+  int pk = nh_bind_kind(kind);
+  NhPin *pin = nh_pin_of(owner, pk);
+  if (pin == NULL) {
+    ScrNodeRef *ref = nh_ref(handle, kind == SCR_NODE_BIND_SYMBOL ? SCR_NVF_SYMBOL : 0);
+    if (ref->pin == 0) pin = nh_pin(owner, pk, ref);
+    nh_ref_release(ref);
+  }
+  if (store && pin != NULL) pin->stores++;
+}
+
+int scr_ni_host_holds(uint32_t handle) {
+  return handle != 0 && handle < ni_refs_cap && ni_refs[handle] != NULL && ni_refs[handle]->pin != 0;
 }
 
 /* The outcome of a call as a dyn value (+1), or NULL with the thrown
@@ -1126,6 +1709,32 @@ int scr_ni_has(ScrDyn *obj, ScrDyn *key) { return nh_bool_op(NH_HAS, obj, key, "
 
 int scr_ni_delete(ScrDyn *obj, ScrDyn *key) { return nh_bool_op(NH_DEL, obj, key, "delete"); }
 
+/* The host's Object.hasOwn and Object.prototype.propertyIsEnumerable,
+ * loaded once. */
+static ScrDyn *nh_has_own_fn = NULL;
+static ScrDyn *nh_is_enumerable_fn = NULL;
+
+/* Whether an island object has an own property `key`, or an own enumerable
+ * one, answered by Node's intrinsics: the object's own method of either
+ * name is shadowed or absent on a null-prototype object, and it decides
+ * nothing either way. 1 or 0, -1 with the exception pending. */
+int scr_ni_has_own(ScrDyn *obj, ScrDyn *key, int enumerable) {
+  ScrDyn **slot = enumerable ? &nh_is_enumerable_fn : &nh_has_own_fn;
+  if (*slot == NULL) {
+    ScrStr *name = enumerable ? scr_str_new("scriptc:isEnumerable", 20)
+                              : scr_str_new("scriptc:hasOwn", 14);
+    *slot = nh_load(name, 0);
+    scr_str_release(name);
+    if (*slot == NULL) return -1;
+  }
+  ScrDyn *args[2] = {obj, key};
+  ScrDyn *answer = scr_ni_call(*slot, scr_dyn_undefined(), args, 2);
+  if (answer == NULL) return -1;
+  int found = answer->kind == SCR_DYN_BOOL && answer->v.b ? 1 : 0;
+  scr_dyn_release(answer);
+  return found;
+}
+
 /* Converts call arguments; NULL with an exception pending on failure. */
 static ScrNodeValue *nh_args(ScrDyn *const *args, size_t argc, ScrNodeValue *small, NhKeep *keep) {
   ScrNodeValue *values = argc <= 8 ? small : malloc(argc * sizeof *values);
@@ -1190,9 +1799,7 @@ ScrDyn *scr_ni_construct(ScrDyn *ctor, ScrDyn *const *args, size_t argc) {
 ScrStr *scr_ni_typeof(ScrDyn *value) {
   ScrNodeRef *ref = nh_ref_of(value);
   if (ref == NULL) return scr_dyn_typeof(value);
-  const char *s = (ref->flags & SCR_NVF_FUNCTION) ? "function"
-                  : (ref->flags & SCR_NVF_SYMBOL) ? "symbol"
-                                                  : "object";
+  const char *s = (ref->flags & SCR_NVF_FUNCTION) ? "function" : "object";
   return scr_str_new(s, strlen(s));
 }
 
@@ -1456,13 +2063,18 @@ size_t scr_ni_gc_pins(void ***objs, void ***refs) {
     if (gr == NULL) nh_oom();
     r = gr;
   }
+  /* Bytes and symbols hold nothing and no trace visits them, so the walk
+   * never asks for their pins: their imports stay roots while pinned. */
+  size_t n = 0;
   for (size_t i = 0; i < nh_npins; i++) {
-    o[i] = nh_pins[i].obj;
-    r[i] = nh_pins[i].ref;
+    int kind = nh_pins[i].kind;
+    if (kind != NH_PIN_PROMISE && kind != NH_PIN_ERROR && kind != NH_PIN_NATIVE_ERROR) continue;
+    o[n] = nh_pins[i].obj;
+    r[n++] = nh_pins[i].ref;
   }
   *objs = o;
   *refs = r;
-  return nh_npins;
+  return n;
 }
 
 /* NI-8: the ref an island handle box holds, its reference count and its
@@ -1535,6 +2147,7 @@ ScrPromise *scr_node_island_await_copy(ScrDyn *value) {
 uint32_t scr_ni_live_handles(void) {
   const ScrNodeBridge *b = scr_ni_bridge_loaded();
   if (b == NULL) return 0;
+  nh_young_flush();
   nh_drain_freed();
   nh_sweep();
   return b->live_handles();
@@ -1602,7 +2215,7 @@ static ScrDyn *nh_op_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *c
 }
 
 static ScrDyn *nh_op_symbol_get(void *h, const ScrDyn *key) {
-  if (!scr_ni_is_handle(key)) return NULL;
+  if (key == NULL || key->kind != SCR_DYN_SYMBOL) return NULL;
   ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
   ScrDyn *result = scr_ni_get(box, (ScrDyn *)key);
   scr_dyn_release(box);
@@ -1748,18 +2361,34 @@ static void nh_cleanup(void) {
     scr_dyn_release(nh_object_tag_fn);
     nh_object_tag_fn = NULL;
   }
+  if (nh_has_own_fn != NULL) {
+    scr_dyn_release(nh_has_own_fn);
+    nh_has_own_fn = NULL;
+  }
+  if (nh_is_enumerable_fn != NULL) {
+    scr_dyn_release(nh_is_enumerable_fn);
+    nh_is_enumerable_fn = NULL;
+  }
   if (nh_spread_fn != NULL) {
     scr_dyn_release(nh_spread_fn);
     nh_spread_fn = NULL;
   }
+  while (nh_nyoung_views > 0) scr_bytes_release(nh_young_views[--nh_nyoung_views].obj);
+  free(nh_young_views);
+  nh_young_views = NULL;
+  nh_young_views_cap = 0;
   while (nh_npins > 0) {
     NhPin pin = nh_pins[--nh_npins];
+    pin.ref->pin = 0;
     nh_pin_release_obj(&pin);
     nh_ref_release(pin.ref);
   }
   while (nh_nwaiters > 0) scr_promise_release(nh_waiters[--nh_nwaiters].promise);
   free(nh_pins);
+  free(nh_pin_index);
   free(nh_waiters);
+  nh_pin_index = NULL;
+  nh_pin_index_cap = nh_pin_index_len = 0;
   nh_pins = NULL;
   nh_waiters = NULL;
   nh_pins_cap = nh_waiters_cap = 0;
@@ -2053,6 +2682,8 @@ static const ScrNiDynOps nh_dyn_ops = {
     .promise_get = nh_promise_get,
     .promise_has = nh_promise_has,
     .promise_set = nh_promise_set,
+    .set = scr_ni_set,
+    .has_own = scr_ni_has_own,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

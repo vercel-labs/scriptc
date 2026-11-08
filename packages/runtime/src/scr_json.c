@@ -10830,6 +10830,13 @@ static bool scr_bytes_symbol_write(ScrDyn *value, const ScrDyn *key, bool assign
 }
 
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
+  /* A symbol crosses into an island as the symbol paired with it, so the
+   * property is the island object's own: Node stores it. An island handle
+   * exists only where the island units installed their table. */
+  if (scr_ni_dyn_handle(value)) {
+    (void)scr_ni_dyn_ops->set(value, key, stored);
+    return;
+  }
   if (scr_dyn_error_prototype_fence(value)) return;
   if (value->kind == SCR_DYN_BYTES && !scr_bytes_symbol_write(value, key, true)) return;
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
@@ -10947,6 +10954,15 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
     scr_dyn_release(key);
     return out;
   }
+  /* A symbol key of an island object: Node answers `in`, and the own and
+   * enumerable probes by its intrinsics, which a null-prototype object or
+   * one that shadows those names does not change. */
+  if (scr_ni_dyn_handle(value)) {
+    bool found = mode == 0 ? scr_ni_dyn_ops->has((ScrDyn *)value, key) == 1
+                           : scr_ni_dyn_ops->has_own((ScrDyn *)value, key, mode == 2) == 1;
+    scr_dyn_release(key);
+    return found;
+  }
   if (scr_dyn_generator(value)) {
     bool found = mode == 0 && scr_dyn_generator_symbol(value, key);
     scr_dyn_release(key);
@@ -11013,6 +11029,11 @@ void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool stri
   if (!key) return;
   if (key->kind != SCR_DYN_SYMBOL) {
     scr_dyn_key_delete(value, key->v.str, strict);
+    scr_dyn_release(key);
+    return;
+  }
+  if (scr_ni_dyn_handle(value)) {
+    (void)scr_ni_dyn_ops->delete_key(value, key);
     scr_dyn_release(key);
     return;
   }

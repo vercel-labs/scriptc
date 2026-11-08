@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/runtime-rooted-class-optional-member.ts"
+ ],
+ "diags": []
+}

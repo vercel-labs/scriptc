@@ -663,6 +663,24 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
+#ifdef SCR_WORKERS
+  /* A worker reports an uncaught error to its parent through this hook
+   * (scr_exc_print_uncaught), which the main context never has. */
+  bool fatal = !ok && scr_context_report_error == NULL;
+#else
+  bool fatal = !ok;
+#endif
+  if (fatal) {
+    /* A listener itself threw: Node leaves through its fatal exit (status
+     * 7), which emits no 'exit' event and runs nothing else. The report
+     * and the exit are the ones a throwing 'exit' listener takes
+     * (scr_run_exit_listeners). */
+    scr_caught_release(caught);
+    scr_exc_print_uncaught();
+    scr_stdout_settle();
+    fflush(stdout);
+    _Exit(7);
+  }
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
   SCR_PE_LEAVE();
@@ -1187,6 +1205,16 @@ static bool scr_warning_is_deprecation(const ScrDyn *w) {
   return deprecation;
 }
 
+/* NODE_NO_WARNINGS=1: Node reads it once at startup (a value whose first
+ * character is "1") and leaves out its default report, while 'warning'
+ * listeners still run. The process's own environment table is not the
+ * program's `process.env`, so an assignment at run time changes nothing
+ * here, as in Node. */
+static bool scr_warnings_silenced(void) {
+  const char *value = getenv("NODE_NO_WARNINGS");
+  return value != NULL && value[0] == '1';
+}
+
 /* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
@@ -1214,6 +1242,7 @@ static void scr_warning_dispatch(ScrDyn *w) {
    * and skips deprecations while process.noDeprecation is set. */
   bool deprecation = scr_warning_is_deprecation(w);
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
+  if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
@@ -1958,10 +1987,14 @@ ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
    * (scr_dyn_call calls an island function with the ambient receiver), so
    * every resolution adopts it: Promise.resolve, a combinator's entry, an
    * async function's return, an executor's resolve, and the operand of
-   * `await` (scr_node_island_adopt_thenable). Node runs on the main thread
-   * only. */
+   * `await` (scr_node_island_adopt_thenable). A worker thread holds island
+   * values too: its read of `then` is routed to the island's thread like
+   * every read, and its thenable job rejects by name, because the resolving
+   * functions it would pass are this thread's and cannot cross
+   * (ERR_SCRIPTC_ISLAND_WORKER_VALUE). Answering "not a thenable" there
+   * would fulfil with the thenable itself, where Node adopts it. */
   if (scr_ni_dyn_handle(value)) {
-    if (scr_ni_dyn_ops == NULL || !scr_context_is_main()) return NULL;
+    if (scr_ni_dyn_ops == NULL) return NULL;
     ScrDyn *island_then = scr_ni_dyn_ops->get_str((ScrDyn *)value, "then", 4);
     if (island_then != NULL && scr_dyn_is_callable(island_then)) return island_then;
     scr_dyn_release(island_then);

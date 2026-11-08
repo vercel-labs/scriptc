@@ -17,6 +17,7 @@ import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
 import { builtinMethodRecord } from "./builtin-method-records.js";
 import type { Lowerer } from "../lowerer.js";
 import { recordLinkPair, registerLinkSite } from "../record-links.js";
+import { carryAbsentFieldsFromSource, type AbsentSourceField } from "../record-sources.js";
 
 /** Convert structural values by copying their supported fields or elements.
  * Unlike JavaScript width subtyping, these conversions create fresh storage
@@ -583,7 +584,7 @@ export function recordWidthHelper(
   // Interned BEFORE the body builds: a recursive nested-width field
   // (self-referential shapes) resolves to this helper itself.
   lowerer.valueHelpers.set(key, name);
-  const fromT: IrType = { kind: "record", shapeId: fromId };
+  const fromT: IrType & { kind: "record" } = { kind: "record", shapeId: fromId };
   const outerNode = lowerer.coercionOriginNode;
   const outerField = lowerer.coercionFieldOrigin;
   // Nested conversions see only their own field's origin.
@@ -592,11 +593,21 @@ export function recordWidthHelper(
   try {
     lowerer.coercions.methodFieldDepth++;
     try {
-      lowerer.liftedFns.push(
-        buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
-          declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
-        ),
+      const projection = buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
+        declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
       );
+      lowerer.liftedFns.push(projection);
+      // A target field the source type does not declare can still be a kept
+      // key of the source record: the copy reads it from that record's view
+      // when the program converts kept sources into the source type
+      // (record-sources.ts carryAbsentFieldsFromSource).
+      const absent: AbsentSourceField[] = [];
+      for (const field of to.fields) {
+        const conversion = plan.get(field.name);
+        if (conversion !== undefined && ("absent" in conversion || "absentDyn" in conversion))
+          absent.push({ name: field.name, type: field.type });
+      }
+      carryAbsentFieldsFromSource(lowerer, projection, fromT, absent, loc);
     } finally {
       lowerer.coercions.methodFieldDepth--;
     }

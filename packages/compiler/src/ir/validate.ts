@@ -2906,16 +2906,19 @@ function validateFunction(
             e.loc,
           );
         }
+        // An adapter reports the length of the function it adapts. Any other
+        // closure may record its own: fewer than its type's parameters (a
+        // literal lowered with a slot's parameter list) or more (a method
+        // whose class inherits a shorter slot).
         if (
           e.length !== undefined &&
           (e.adapts === true ||
-            target.captures === undefined ||
             !Number.isInteger(e.length) ||
             e.length < 0 ||
-            e.length >= e.type.params.length)
+            e.length > 0xffffffff)
         ) {
           err(
-            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            `closure ${e.fnName}: length ${e.length} must be a function length (a 32-bit count) on a closure that is not an adapter`,
             e.loc,
           );
         }
@@ -4824,6 +4827,18 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http.clientOnInformation") {
+      // The information listener: void, no params or exactly (info: dyn).
+      const cbT = e.args[1]?.type;
+      const ok =
+        cbT?.kind === "func" &&
+        cbT.ret.kind === "void" &&
+        (cbT.params.length === 0 || (cbT.params.length === 1 && cbT.params[0]!.kind === "dyn"));
+      if (!ok) {
+        err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "http.reqOnError" || e.fn === "http.clientOnError") {
       // The error listener: void, no params or exactly (err: %Error).
       const cbT = e.args[1]?.type;
@@ -4853,6 +4868,7 @@ function validateFunction(
     if (
       e.fn === "http.serverOnUpgrade" ||
       e.fn === "http.clientOnUpgrade" ||
+      e.fn === "http.clientOnConnect" ||
       e.fn === "http.serverOnConnect"
     ) {
       // (req, socket, head) or any shorter prefix, void return. The
@@ -5604,6 +5620,19 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.childFlowing") {
+      // readableFlowing: the interned `boolean | null` union.
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "bool") &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) {
+        err(`libCall stream.childFlowing must return the 'boolean | null' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "child.pid" || e.fn === "child.exitCode") {
       // pid: the interned `number | undefined`; exitCode: `number | null`.
       const wantUnit = e.fn === "child.pid" ? "undefinedT" : "nullT";
@@ -6253,6 +6282,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||
         e.fn === "stream.decodeStrings" ||
         e.fn === "stream.optionValues" ||

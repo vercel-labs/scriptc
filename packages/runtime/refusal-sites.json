@@ -486,6 +486,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_dyn_fn_own.c",
+  "function": "scr_dyn_fn_own_set",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_dyn_handle_props.c",
   "function": "hp_props_of_box",
   "message": "own properties on a %s are not supported yet",
@@ -745,6 +751,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_res_on_prefinish",
+  "message": "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"
@@ -765,6 +777,24 @@
   "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_settings_validate",
+  "message": "HTTP/2 customSettings are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_read",
+  "message": "reading '%s' from an %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_call",
+  "message": "'%s' on an %s is not supported yet",
   "code": "SC2020"
  },
  {
@@ -924,6 +954,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_intl.c",
+  "function": "scr_intl_refuse",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_js_promise_generic.c",
   "function": "scr_js_promise_generic_call",
   "message": "Promise static is not supported",
@@ -1045,6 +1081,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_typed_ref_string_view",
+  "message": "String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_bytes_instanceof_at",
   "message": "instanceof against this native constructor is not supported yet",
   "code": "SC1090"
@@ -1129,6 +1171,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_define_property",
   "message": "Object.defineProperty on a numeric property of a native array is not supported yet",
   "code": "SC2020"
@@ -1198,6 +1246,18 @@
   "function": "scr_function_constructor_call",
   "message": "constructing functions from source text is not supported in static code",
   "code": "SC2010"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_receiver",
+  "message": " on a callable that is not a function value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_to_string_call",
+  "message": "'Function.prototype.toString' on a dynamic value is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",
@@ -1464,10 +1524,22 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_node_island.c",
+  "function": "ni_async_main_thread",
+  "message": "asynchronous island calls from a worker thread are not supported; call the island synchronously (@scriptc/node callSync) from the worker [SC8012]",
+  "code": "SC8012"
+ },
+ {
   "file": "scr_node_island_export.c",
   "function": "scr_ni_host_shared_get",
   "message": "scriptc: an array exported by a shared module cannot cross into a Node island yet",
   "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_worker_await_refusal",
+  "message": "awaiting an island value from a worker thread is not supported; await it on the main thread, which owns the Node island [SC8012]",
+  "code": "SC8012"
  },
  {
   "file": "scr_node_island_handle.c",
@@ -1701,6 +1773,18 @@
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_stage_returned_stream",
   "message": "pipeline function stages that return a stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_su_foreign_refuse",
+  "message": "%s over a child process or process stdio stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_util_is_value",
+  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
   "code": "SC2020"
  },
  {

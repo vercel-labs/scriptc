@@ -303,6 +303,43 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
     return { name: t, type: e.type };
   }
+  if (e.fn === "record.sourceHasKey") {
+    // Own-key presence in the kept source: a key the source lacks must leave
+    // the converted field absent, not hold the undefined value.
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceHasKey key is not a literal");
+    host.declare(`declare zeroext i1 @scr_record_source_has_key(ptr, ptr, ${host.sizeType})`);
+    const present = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${present} = call zeroext i1 @scr_record_source_has_key(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length})`,
+    );
+    return { name: present, type: e.type };
+  }
+  if (e.fn === "record.sourceGet") {
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceGet key is not a literal");
+    // The kept source's own-key read (+1): a record→record conversion answers
+    // a field the source type does not declare from here, without building
+    // the record's capsule (which would reach the dynamic tier).
+    host.declare(`declare ptr @scr_record_source_get(ptr, ptr, ${host.sizeType})`);
+    const value = B.tmp();
+    const length = Buffer.byteLength(key.value, "utf8");
+    B.line(
+      `${value} = call ptr @scr_record_source_get(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${length}) ; +1`,
+    );
+    // The read runs the view's accessor: a getter that throws leaves the
+    // exception pending and answers NULL, which must unwind here rather
+    // than reach the dynamic-value consumer as a value. The temp joins its
+    // frame first, so the unwind releases it as every other call's does.
+    const out = host.own({ name: value, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "record.sourceDelete") {
     // `delete rec.key` of a key the declared layout does not hold: the key
     // lives in the record's kept source, and the runtime removes it there
@@ -1050,14 +1087,16 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         ? "scr_dyn_builtin_stream_unbox"
         : e.fn === "stream.unboxDynStage" && host.usesDynBuiltinStream
           ? "scr_dyn_builtin_stream_unbox_stage"
-          : // for await over a checked-dynamic value iterates a native
-            // stream behind it (scr_dyn_for_await_stream.c)
-            e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
-            ? "scr_stream_dyn_async_iterator_open"
-            : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
-                host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
-              ? `${LIB_FN_SYMS[e.fn]}_sloppy`
-              : LIB_FN_SYMS[e.fn]);
+          : e.fn === "stream.isDyn" && host.usesDynBuiltinStream
+            ? "scr_dyn_builtin_stream_util_is"
+            : // for await over a checked-dynamic value iterates a native
+              // stream behind it (scr_dyn_for_await_stream.c)
+              e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
+              ? "scr_stream_dyn_async_iterator_open"
+              : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
+                  host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
+                ? `${LIB_FN_SYMS[e.fn]}_sloppy`
+                : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,
@@ -1724,6 +1763,7 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
           `  %failed = call zeroext i1 @scr_exc_pending()`,
           `  br i1 %failed, label %reject, label %fulfill`,
           `reject:`,
+          ...host.pendingBailReleaseLines(tuple, "%tuple"),
           `  call void @scr_promise_reject_pending(ptr %dst)`,
           `  ret void`,
           `fulfill:`,

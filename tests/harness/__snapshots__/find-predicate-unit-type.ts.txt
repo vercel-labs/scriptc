@@ -1,0 +1,20 @@
+find-predicate-unit-type.ts:6:24 - error SC1090: narrowing '.find' to 'null' with a written type predicate (a 'null | string | undefined' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type) is not supported yet
+
+  5 | const seats: (string | null)[] = ["A1", null, "B2"];
+  6 | const gap = seats.find((seat): seat is null => seat === null);
+    |                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 | const lastGap = seats.findLast((seat): seat is null => seat === null);
+
+find-predicate-unit-type.ts:7:32 - error SC1090: narrowing '.findLast' to 'null' with a written type predicate (a 'null | string | undefined' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type) is not supported yet
+
+  6 | const gap = seats.find((seat): seat is null => seat === null);
+  7 | const lastGap = seats.findLast((seat): seat is null => seat === null);
+    |                                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 | const doors: (number | null | undefined)[] = [1, undefined, null];
+
+find-predicate-unit-type.ts:9:25 - error SC1090: narrowing '.find' to 'null' with a written type predicate (a 'number | null | undefined' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type) is not supported yet
+
+   8 | const doors: (number | null | undefined)[] = [1, undefined, null];
+   9 | const shut = doors.find((door): door is null | undefined => door == null);
+     |                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | const taken = seats.find((seat): seat is string | null => seat !== "A1");

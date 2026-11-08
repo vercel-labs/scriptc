@@ -134,6 +134,19 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["namesWebStreamClass"],
   },
   {
+    name: "reads-node-object-value",
+    file: `${SRC}/frontend/lowering/node-value-reads.ts`,
+    symbol: "programReadsGlobalValue",
+    source: "symbols",
+    scope: "program",
+    setBy: "a read of `process` or `performance` as a value in a JavaScript source",
+    gates:
+      "computed reads of the global object answer the object the value read answers, which the program then carries",
+    narrower: "the name read",
+    tracked: null,
+    lowererFields: ["nodeObjectValueReads"],
+  },
+  {
     name: "web-stream-only-members",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesWebStreamOnlyMembers",
@@ -388,9 +401,9 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     source: "ir",
     scope: "type",
     setBy:
-      "one signature adapter that holds a function with more parameters, or a rest parameter, at a function type",
+      "one signature adapter that holds a function with more parameters, a rest parameter, or another parameter type, at a function type",
     gates:
-      "every conversion of that function type to one with more parameters, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
+      "every conversion of that function type to one with more parameters or a wider parameter type, and every boxing of it, tests whether the value is such a view and starts from the function it forwards to",
     narrower:
       "the value, at run time: an entry on the closure that takes an argument count, which needs a closure field and dynamic arguments",
     tracked: "pi-decisions DECISIONS.md 2026-11-07 (fn-slot-widening)",
@@ -622,6 +635,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "web-stream-only-members",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
+    1,
+    "closed-world",
+    "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",
     1,
     "prefilter",
@@ -668,6 +687,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     2,
     "closed-world",
     "the names the program assigns on the global object; only reads of those names change",
+  ),
+  scan(
+    "frontend/lowering/global-object-writes.ts#globalObjectWrites",
+    2,
+    "closed-world",
+    "every write of the global object by any spelling; only calls and reads of a built-in through the global object change",
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
@@ -798,6 +823,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots named by createRequire calls",
+  ),
+  scan(
+    "frontend/program.ts#boundedDynamicImportRoots7",
+    1,
+    "discovery",
+    "program roots named only by a bounded dynamic import()",
   ),
   scan(
     "frontend/program.ts#entryPackageProgramRoots7",

@@ -2,6 +2,7 @@ import {
   BIGINT_BYTES_NAMES,
   type IrClassDef,
   type IrExpr,
+  type IrFunction,
   type IrModule,
   type IrRecordShape,
   type IrType,
@@ -256,6 +257,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "fileHandle.createReadStreamSignal",
+  "fileHandle.createWriteStreamSignal",
+  "fs.createReadStreamSignal",
+  "fs.createWriteStreamSignal",
   "http.clientSignal",
   "http.requestDyn",
   "http.requestDynCb",
@@ -301,9 +306,13 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashStream",
   "crypto.hashStreamPiped",
   "fileHandle.createReadStream",
+  "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStream",
+  "fileHandle.createWriteStreamSignal",
   "fs.createReadStream",
+  "fs.createReadStreamSignal",
   "fs.createWriteStream",
+  "fs.createWriteStreamSignal",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
   "sp.finished",
@@ -317,6 +326,10 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNative",
   "stream.dynNativePipe",
   "stream.errored",
+  "stream.is",
+  "stream.isDyn",
+  "stream.stateDyn",
+  "stream.asyncDispose",
   "stream.pipeDyn",
   "stream.prop",
   "stream.stdioWritable",
@@ -1283,6 +1296,214 @@ export function jsObjectModelFact(features: {
   );
 }
 
+/** The Function.prototype and Object.prototype members a function's own
+ * data property can shadow, the names the runtime's function-property write
+ * path creates and its call/apply/bind and valueOf dispatch read first
+ * (`fn.call = f`). Mirrors the reserved list in
+ * packages/runtime/src/scr_json.c. */
+const FN_OWN_MEMBER_NAMES: ReadonlySet<string> = new Set([
+  "apply",
+  "bind",
+  "call",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "valueOf",
+]);
+
+/** The keyed operations that create or remove an own property; the member
+ * name is the second argument. */
+const FN_MEMBER_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.defineProperty",
+  "dyn.definePropertyShapes",
+  "dyn.keyDelete",
+  "dyn.keyDeleteComputed",
+  "dyn.keySet",
+  "dyn.keySetComputed",
+]);
+
+/** The lifted helper every `Object.defineProperty` on a dynamic target
+ * becomes (class-dynamic-dispatch.ts). Its body forwards to
+ * dyn.defineProperty through parameters, so the key a call site spells is
+ * visible only at the call into it, not at the library call inside. */
+const FN_OWN_DEFINE_HELPER = "%dyn.class.defineProperty";
+
+/** The target and key of a node that creates or removes an own property:
+ * the keyed library calls, or a call into the lifted define helper. Whether
+ * the node is a definition (whose receiver must be able to be a function) or
+ * a keyed write or delete (which names the shadow itself once its key
+ * spells it). */
+function ownMemberOp(
+  node: IrExpr,
+): { target: IrExpr | undefined; key: IrExpr | undefined; definition: boolean } | undefined {
+  if (node.kind === "libCall") {
+    if (!FN_MEMBER_KEY_LIB_FNS.has(node.fn)) return undefined;
+    return {
+      target: node.args[0],
+      key: node.args[1],
+      definition: node.fn.startsWith("dyn.define"),
+    };
+  }
+  if (node.kind === "call" && node.callee === FN_OWN_DEFINE_HELPER)
+    return { target: node.args[0], key: node.args[1], definition: true };
+  return undefined;
+}
+
+/** The name a key expression spells, followed through the hidden local a
+ * keyed operation evaluates it into (lower-exprs.ts lowerDynMemberAssignment
+ * and the definition paths store the member name in a local first) and the
+ * dynamic box a string key takes. Undefined when the key is not a literal
+ * the source spells. */
+function spelledMemberName(expr: IrExpr, definitions: Map<string, IrExpr>): string | undefined {
+  let node: IrExpr | undefined = expr;
+  for (let step = 0; node !== undefined && step < 8; step++) {
+    if (node.kind === "strLit") return node.value;
+    if (node.kind === "dynFrom") node = node.value;
+    else if (node.kind === "varRef") node = definitions.get(node.localId);
+    else return undefined;
+  }
+  return undefined;
+}
+
+/** Whether a value of this type can reach the write path as a function: the
+ * typed callables (`func`, and a class value, whose runtime node is its
+ * constructor function) and the unchecked dynamic tiers, where the program
+ * stores whatever it likes. Every other type boxes to an object or a
+ * primitive, whose property table is the ordinary one. */
+function typeHoldsCallable(type: IrType): boolean {
+  return (
+    type.kind === "func" || type.kind === "classval" || type.kind === "dyn" || type.kind === "jsval"
+  );
+}
+
+/** Whether the receiver of a definition can be a function at run time. A
+ * TYPED operand names its own kind (callable-properties.ts callableBox keeps
+ * the boxed value's type); a checked-dynamic operand names nothing, so an
+ * any-typed function among the values it holds reaches the write as one and
+ * the definition must select the build that admits the own property. */
+function mayHoldCallable(expr: IrExpr | undefined): boolean {
+  if (expr === undefined) return false;
+  return typeHoldsCallable(expr.kind === "dynFrom" ? expr.value.type : expr.type);
+}
+
+/** The inherited members only the SCR_FN_MEMBER_PROPS build of scr_json.c
+ * has a VALUE for (scr_fn_inherited_value), which a read that spells them
+ * selects: the default build answers their member calls through the native
+ * lowering and reads the member itself as undefined, where a function
+ * inherits it. `apply` has a value in every build. `toString` has one only
+ * in that build too, but a spelled read of it cannot select the build: the
+ * string conversion of a dynamic value (`String(value)`) lowers to that
+ * very read, in programs that never name the member. */
+const FN_INHERITED_VALUE_NAMES: ReadonlySet<string> = new Set(["bind", "call"]);
+
+/** Members whose DELETE selects the build: the default build stores an own
+ * `toString` on a function like any expando, and a delete then reveals the
+ * inherited member, which only that build has a value for. */
+const FN_REVEALED_BY_DELETE: ReadonlySet<string> = new Set(["toString"]);
+
+/** The literal a read's key spells: bare for a dotted read, boxed for a
+ * literal bracket (`fn["call"]` evaluates its key into the dynamic tier). */
+function spelledReadKey(key: IrExpr): string | undefined {
+  if (key.kind === "strLit") return key.value;
+  return key.kind === "dynFrom" && key.value.kind === "strLit" ? key.value.value : undefined;
+}
+
+/** Whether the function reads one of those members as a value through the
+ * checked-dynamic tier (`typeof fn.call`, `const c = fn.bind`, `fn["call"]`
+ * on a value that may be a function): a keyed read whose key the source
+ * spells. A key computed at run time cannot be proven one of the names, so
+ * it keeps the build the rest of the program selects. */
+function functionReadsInheritedMember(fn: IrFunction): boolean {
+  let found = false;
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      if (!found && node.kind === "dynKeyGet") {
+        const name = spelledReadKey(node.key);
+        if (name !== undefined && FN_INHERITED_VALUE_NAMES.has(name)) found = true;
+      }
+      return !found;
+    },
+    stmt: () => !found,
+  });
+  return found;
+}
+
+/** Whether the module creates or removes an own property on a function:
+ * `fn.call = f`, `Object.defineProperty(fn, "bind", …)`, `delete fn.apply`,
+ * which JS answers with an own data property that shadows the inherited
+ * member, or reads as a value an inherited member only that build
+ * materializes (functionReadsInheritedMember), or deletes a `toString`
+ * (FN_REVEALED_BY_DELETE). Such a program links the
+ * SCR_FN_MEMBER_PROPS builds of scr_json.c (the member write/define/delete,
+ * own-valueOf and inherited-value paths) and scr_dyn_invoke.c
+ * (the own call/apply/bind dispatch), selected by the fnMemberProps rule;
+ * every other program keeps those units' default objects, byte for byte. A
+ * keyed write whose key spells one of the names counts even on a
+ * checked-dynamic receiver, because the closure's table is the only object
+ * kind those names shadow. A definition counts on a receiver that can be a
+ * function: a typed callable, a class value, or a checked-dynamic value,
+ * which may hold an any-typed function. Only a boxed non-callable (a record,
+ * bytes, a handle) proves the definition never reaches the function path, so
+ * a definition on one of those selects the default objects. */
+function moduleShadowsFunctionMember(mod: IrModule): boolean {
+  return mod.functions.some((fn) => functionShadowsMember(fn) || functionReadsInheritedMember(fn));
+}
+
+/** One function's nodes: its hidden key locals are function-scope, and the
+ * same `%setKey.0` id names a different value in every function, so the
+ * definitions map must not cross a function boundary. */
+function functionShadowsMember(fn: IrFunction): boolean {
+  const definitions = new Map<string, IrExpr>();
+  const assigns = new Map<string, IrExpr[]>();
+  everyStmtList(fn.body, {
+    expr: () => true,
+    stmt: (node) => {
+      if (node.kind === "assign") {
+        const taken = assigns.get(node.localId);
+        if (taken === undefined) assigns.set(node.localId, [node.value]);
+        else taken.push(node.value);
+        return true;
+      }
+      if (node.kind === "varDecl" && node.init !== null) definitions.set(node.localId, node.init);
+      return true;
+    },
+  });
+  for (const [localId, values] of assigns) {
+    // A local assigned more than once could hold anything by the write.
+    if (values.length === 1) definitions.set(localId, values[0]!);
+    else definitions.delete(localId);
+  }
+  let found = false;
+  everyStmtList(fn.body, {
+    expr: (node) => {
+      if (found) return false;
+      const op = ownMemberOp(node);
+      if (op === undefined) return true;
+      const name = op.key === undefined ? undefined : spelledMemberName(op.key, definitions);
+      if (name !== undefined && FN_REVEALED_BY_DELETE.has(name)) {
+        found =
+          node.kind === "libCall" &&
+          (node.fn === "dyn.keyDelete" || node.fn === "dyn.keyDeleteComputed");
+        return !found;
+      }
+      if (name === undefined || !FN_OWN_MEMBER_NAMES.has(name)) return true;
+      // A definition also has to name a receiver that can be a function. A
+      // typed record, bytes value, handle or collection boxes to an object,
+      // but class and object lowering also define `constructor` on plain
+      // objects, so a boxed non-callable proves the function-property path
+      // never sees it. A checked-dynamic receiver proves nothing: an
+      // any-typed function is one of the values it holds. A keyed write is
+      // the shadow itself once it spells the name.
+      found = op.definition ? mayHoldCallable(op.target) : true;
+      return !found;
+    },
+    stmt: () => !found,
+  });
+  return found;
+}
+
 /** One rule per runtime feature, sorted by name. A new feature is an
  * entry here and its line in noRuntimeFeatures; RuntimeFeatures, the scan
  * and its early exit derive from this table. The lists above keep one
@@ -1325,6 +1546,11 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** process.features read as a value (an alias, `in`, Object.keys): the
+   * stable flags object of scr_process_features.c, a unit of its own so
+   * every other program keeps scr_lib.c's object. A member read
+   * (`process.features.tls`) is a constant and links nothing. */
+  processFeatures: rule({ fns: ["process.features"] }),
   /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
    * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
    * own, so a program that never passes those options keeps the default
@@ -1346,6 +1572,14 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** pause(), resume(), isPaused() and readableFlowing on a child's output
+   * stream: Node's flowing state lives on the handle in a build of
+   * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
+   * calls them keeps the default object, where a stream reads its pipe only
+   * while it has a 'data' listener and holds nothing back. */
+  childStreamFlow: rule({
+    fns: ["stream.childPause", "stream.childResume", "stream.childIsPaused", "stream.childFlowing"],
+  }),
   /** The program can register an 'error' listener on a ChildProcess: a
    * typed or an untyped registration, or a child that converts to an
    * untyped value, whose `on` the handle table serves. Such a program
@@ -1471,6 +1705,9 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_deferred_fence.c): a runtimeFence whose message carries its
    * diagnostic's tag (deferred-fence.ts). */
   deferredFence: rule({ initial: moduleHasDeferredFence }),
+  /** `fn.constructor = value` where the checker sees a function: the write
+   * into the function's own property table (scr_dyn_fn_own.c). */
+  functionOwnWrite: rule({ fns: ["dyn.fnOwnSet"] }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1789,6 +2026,12 @@ const RUNTIME_FEATURE_RULES = {
   processEvents: rule({ fns: [...PROCESS_EVENT_LIB_FNS, "util.styleText"], types: ["procStream"] }),
   /** scr_url_legacy.c parses and stringifies queries. */
   qs: rule({ fns: [...QS_LIB_FNS, ...LEGACY_URL_LIB_FNS] }),
+  /** The kept-source read of a record-to-record conversion: a field the
+   * target type declares and the source type does not answers the key the
+   * source object carries, after asking whether the source holds the key
+   * (scr_record_source_get.c). A unit of its own so a program that only
+   * casts records keeps its base runtime objects byte for byte. */
+  recordSourceGet: rule({ fns: ["record.sourceGet", "record.sourceHasKey"] }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
    * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
    * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
@@ -1820,6 +2063,52 @@ const RUNTIME_FEATURE_RULES = {
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
+   * and compose() in every form, a call of a member named pipe or unpipe
+   * (or a computed member) on an untyped value, which can reach a native
+   * stream's own method, and either name as a string. It links
+   * scr_stream_pipe_events.c, which installs Node's pipe lifecycle into
+   * the stream unit: the destination hears 'unpipe' when it finishes,
+   * closes or errors, and unpipe pauses the source as Node's does. A
+   * program that never pipes links none of it. */
+  streamPipeEvents: rule({
+    fns: [
+      "readable.pipe",
+      "readable.pipeGeneral",
+      "readable.unpipe",
+      "stream.pipeline",
+      "stream.pipelineDyn",
+      "stream.pipelineStages",
+      "stream.pipelineStagesDyn",
+      "stream.compose",
+      "stream.composeStages",
+      "sp.pipeline",
+      "sp.pipelineOpts",
+      "sp.pipelineOptsSignal",
+      "sp.pipelineStages",
+      "sp.pipelineStagesOpts",
+    ],
+    expr: (node) =>
+      (node.kind === "dynInvoke" &&
+        (node.method === "pipe" ||
+          node.method === "unpipe" ||
+          node.calleeNameValue !== undefined)) ||
+      (node.kind === "strLit" && (node.value === "pipe" || node.value === "unpipe")),
+  }),
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`
+   * (the options name it, or their type admits it): the
+   * SCR_FS_STREAM_SIGNAL build of scr_fs_stream.c applies the signal as
+   * Node's stream constructors do. The same calls link the event-target
+   * unit (ABORT_SIGNAL_LIB_FNS), whose addAbortListener that build calls.
+   * Every other program keeps the default fs stream unit, byte for byte. */
+  fsStreamSignal: rule({
+    fns: [
+      "fs.createReadStreamSignal",
+      "fs.createWriteStreamSignal",
+      "fileHandle.createReadStreamSignal",
+      "fileHandle.createWriteStreamSignal",
+    ],
+  }),
 
   /** The program holds a process output stream as a value: the
    * process.stdio lib call, process.stdioSlot for the write method's own
@@ -2000,6 +2289,17 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
+  /** A program that writes, defines or deletes one of a function's
+   * inherited member names (`fn.call = f`, `Object.defineProperty(fn,
+   * "bind", …)`, `delete fn.apply`), reads `call` or `bind` as a value
+   * through a spelled dynamic key (`typeof fn.call`), or deletes a
+   * `toString`: the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c (the member
+   * write/define/delete, own-valueOf and inherited-value paths) and
+   * scr_dyn_invoke.c (own call/apply/bind dispatch before the native
+   * lowering). Every other program keeps both units' default objects, byte
+   * for byte. */
+  fnMemberProps: rule({ initial: (mod) => moduleShadowsFunctionMember(mod) }),
   /** writeFile's options record (`encoding`, `mode`, `flag`), appendFile's
    * three-argument form and copyFile's mode argument: scr_fs_flags.c and
    * the SCR_FS_FLAGS build of scr_fs_cp.c. Programs that never pass them
@@ -2086,6 +2386,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
     deferredFence: false,
+    functionOwnWrite: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,
@@ -2098,6 +2399,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,
     moduleCompileCache: false,
@@ -2129,11 +2431,14 @@ function noRuntimeFeatures(): RuntimeFeatures {
     processEvents: false,
     processExtras: false,
     qs: false,
+    recordSourceGet: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
     stdioObject: false,
     streamWriteErrors: false,
+    streamPipeEvents: false,
+    fsStreamSignal: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
@@ -2144,9 +2449,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    processFeatures: false,
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childStreamFlow: false,
     childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,

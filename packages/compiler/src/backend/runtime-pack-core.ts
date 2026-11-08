@@ -95,9 +95,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  processFeatures: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
+  childStreamFlow: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   conversionTrace: boolean;
@@ -109,6 +111,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
+  recordSourceGet: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -131,6 +134,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A runtimeFence that stands for a deferred diagnostic
    * (scr_deferred_fence.c). */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value (scr_dyn_fn_own.c). */
+  functionOwnWrite?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -155,6 +160,11 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
    * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
    * scr_node_island.c. */
   stdioObject: boolean;
+  /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
+  streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -372,9 +382,11 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    processFeatures: features.processFeatures === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
+    childStreamFlow: features.childStreamFlow === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     conversionTrace: features.conversionTrace === true,
@@ -386,6 +398,7 @@ export function effectiveRuntimeFeatures(
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
+    recordSourceGet: features.recordSourceGet === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
@@ -400,6 +413,7 @@ export function effectiveRuntimeFeatures(
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
     deferredFence: features.deferredFence === true,
+    functionOwnWrite: features.functionOwnWrite === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
@@ -410,6 +424,8 @@ export function effectiveRuntimeFeatures(
     bigintBytes: features.bigintBytes === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
+    streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

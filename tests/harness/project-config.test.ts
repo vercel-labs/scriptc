@@ -73,6 +73,29 @@ test("node-types: Headers, Request and Response members typed by undici-types ru
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a type derived from the undici-types Response class is the native handle", async () => {
+  const outDir = outDirFor("builtin-class-derived-types");
+  const entry = join(nodeTypesDir, "builtin-class-derived-types.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32"
+        ? "builtin-class-derived-types.exe"
+        : "builtin-class-derived-types",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: fetch's string | URL | Request input and a custom fetch cast to typeof fetch", async () => {
   const outDir = outDirFor("fetch-input-unions");
   const entry = join(nodeTypesDir, "fetch-input-unions.ts");
@@ -107,6 +130,14 @@ for (const [name, title] of [
   [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
   ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
@@ -839,6 +870,22 @@ test("node-types: exec's numeric ExecException.code remains a named fence", asyn
   for (const diagnostic of result.diagnostics) {
     expect(diagnostic.message).toContain("ExecException.code");
   }
+});
+
+test("node-types: subprocess.stdio is a named fence, also under .length", async () => {
+  // The declared 5-tuple's arity must not answer for Node's array, which
+  // has one entry per configured stdio slot.
+  const dir = outDirFor("node-child-stdio-fences");
+  const entry = join(nodeTypesDir, "child-stdio-fences.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-stdio-fences"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
+  expect(result.diagnostics[0]!.message).toContain("ChildProcess.stdio");
 });
 
 test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {

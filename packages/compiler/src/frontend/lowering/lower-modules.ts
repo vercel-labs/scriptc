@@ -36,6 +36,7 @@ import {
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
+import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
 import {
   canonicalBuiltinModule,
   cjsChainedExportValueOf,
@@ -58,7 +59,9 @@ import {
 } from "../program.js";
 import type { CycleEdge, StartupCrash } from "../program.js";
 import { isUnloadedPackage } from "../package-shims.js";
-import { boundSpecifier } from "../specifier-bounds.js";
+import { boundSpecifier, specifierBoundContextOf } from "../specifier-bounds.js";
+import type { SpecifierBoundContext } from "../specifier-bounds.js";
+import { moduleSourceCandidates } from "../module-source-candidates.js";
 import {
   markCycleEarlyBindings,
   withClassInitFlag,
@@ -163,6 +166,7 @@ import {
 } from "./lower-namespaces.js";
 import { collectEnumObjects, registerEnumObjectGlobals } from "./enum-objects.js";
 import { collectExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, isFunduleMemberStatement, lowerFunduleFnStore } from "./lower-fundule.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -205,6 +209,31 @@ export interface AppendGraph {
   inlineCycleCalls?: Set<ts.Node>;
   /** LoadResult.dynamicImportRejections: import() roots that never load. */
   rejected?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
+}
+
+/** Every module a worker entry can run on its thread: the entries and the
+ * modules they reach through static imports, requires and literal import()
+ * calls. A Node island belongs to the main thread, so an island module one
+ * of these loads is the main thread's instance, not one of the worker's
+ * own (SC6011). */
+export function workerThreadModules(
+  program: ts.Program,
+  roots: readonly ts.SourceFile[],
+  graph?: AppendGraph,
+): ReadonlySet<ts.SourceFile> {
+  const out = new Set<ts.SourceFile>();
+  if (roots.length === 0) return out;
+  const edgesOf = appendedEdgesOf(program, graph);
+  const ctx = specifierBoundContextOf(program);
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const sf = stack.pop()!;
+    if (out.has(sf)) continue;
+    out.add(sf);
+    for (const edge of edgesOf(sf)) stack.push(edge.dep);
+    for (const dep of dynamicProgramImportsOf(ctx, sf)) stack.push(dep);
+  }
+  return out;
 }
 
 /** An appended module's edges: its import and export declarations, then
@@ -387,8 +416,17 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
       // instantiated bodies FLATTEN into this file's parts (functions/
       // classes hoist under namespace-qualified names, statements join
       // the init body in source order) — lower-namespaces.ts.
-      else if (ts.isModuleDeclaration(stmt)) collectNamespaceStmt(lowerer, stmt, fp);
-      else if (
+      else if (ts.isModuleDeclaration(stmt)) {
+        try {
+          collectNamespaceStmt(lowerer, stmt, fp);
+        } catch (error) {
+          // A collection-time refusal (a merged namespace exporting a member
+          // this lowering cannot store on the function object) already
+          // pushed its diagnostic; the block contributes nothing and the
+          // compilation stops on that diagnostic.
+          if (!(error instanceof PoisonError)) throw error;
+        }
+      } else if (
         ts.isInterfaceDeclaration(stmt) ||
         ts.isTypeAliasDeclaration(stmt) ||
         ts.isImportDeclaration(stmt) ||
@@ -414,34 +452,58 @@ function dynamicImportProgramTargetOf(
   sf: ts.SourceFile,
   spec: string,
 ): ts.SourceFile | null {
-  const dep = resolveImport(program, sf, spec);
+  return orderableDynamicTarget(program, resolveImport(program, sf, spec));
+}
+
+/** The module a dynamic-import target may add to the module order: a
+ * compiled ES module of the program (JSON documents keep their own path,
+ * CommonJS modules their own fences). */
+function orderableDynamicTarget(
+  program: ts.Program,
+  dep: ts.SourceFile | null,
+): ts.SourceFile | null {
   if (!dep || dep.isDeclarationFile) return null;
   if (dep.fileName.endsWith(".json") || dep.fileName.endsWith(".cts")) return null;
   if (isCjsJsFile(dep, program)) return null;
   return dep;
 }
 
-/** Every distinct program module a file's `import("literal")` sites name
- * (source order, deduped). The parser lists the specifier of every such call
- * in the file's module references, in source order after the static imports,
- * so the file's nodes need no walk. */
-function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.SourceFile[] {
+/** Every distinct program module a file's `import()` sites name (source
+ * order, deduped). The parser lists the specifier of every such call in the
+ * file's module references, in source order after the static imports, so the
+ * file's nodes need no walk for a literal site. A computed site is absent
+ * from that list — its argument is no string literal — so it contributes one
+ * target per value its bounder proves (SPEC §3.1, §4.1): the module order
+ * closes over bounded edges exactly as over literal ones. */
+function dynamicProgramImportsOf(ctx: SpecifierBoundContext, sf: ts.SourceFile): ts.SourceFile[] {
   const out: ts.SourceFile[] = [];
   const seen = new Set<ts.SourceFile>();
+  const add = (dep: ts.SourceFile | null): void => {
+    if (dep === null || seen.has(dep)) return;
+    seen.add(dep);
+    out.push(dep);
+  };
   for (const specifier of sf.imports) {
     const call = specifier.parent;
     if (
       call === undefined ||
       !ts.isCallExpression(call) ||
       call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-      call.arguments.nodes[0] !== specifier ||
-      !ts.isStringLiteralLike(specifier)
+      call.arguments.nodes[0] !== specifier
     )
       continue;
-    const dep = dynamicImportProgramTargetOf(program, sf, specifier.text);
-    if (dep && !seen.has(dep)) {
-      seen.add(dep);
-      out.push(dep);
+    if (!ts.isStringLiteralLike(specifier)) continue;
+    add(dynamicImportProgramTargetOf(ctx.program, sf, specifier.text));
+  }
+  for (const call of moduleSourceCandidates(ctx.program, sf).calls) {
+    if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) continue;
+    const arg = call.arguments.nodes[0];
+    if (arg === undefined || ts.isStringLiteralLike(arg)) continue;
+    const bound = boundSpecifier(ctx, arg as ts.Expression);
+    if (bound.kind !== "set") continue;
+    for (const value of bound.values) {
+      if (!isPathSpecifier(value)) continue;
+      add(orderableDynamicTarget(ctx.program, boundedProgramTargetOf(ctx.program, sf, value)));
     }
   }
   return out;
@@ -454,6 +516,7 @@ export function appendDynamicImportModules(
   graph?: AppendGraph,
 ): void {
   if (order.length === 0) return; // no preflight order — sites keep their fences
+  const ctx = specifierBoundContextOf(program);
   const state = new Map<ts.SourceFile, "visiting" | "done">();
   for (const sf of order) state.set(sf, "done");
   const added: ts.SourceFile[] = [];
@@ -502,7 +565,7 @@ export function appendDynamicImportModules(
     if (scan.length === 0) break;
     for (const sf of scan) {
       scanned.add(sf);
-      for (const dep of dynamicProgramImportsOf(program, sf))
+      for (const dep of dynamicProgramImportsOf(ctx, sf))
         if (graph?.rejected?.has(dep) !== true) visit(dep);
     }
   }
@@ -852,7 +915,22 @@ function dynamicImportRejectionOf(
   );
 }
 
+/** The `dynImports` key of one specifier text at a site. A literal site's
+ * entry answers the checker's build-time module ("./a.js" is a.ts); a
+ * bounded value of the same text names the file Node loads at run time
+ * ("./a.js" is a.js or nothing), so the two are recorded apart and one text
+ * can carry both answers in one file. */
+export function dynImportKey(fileName: string, spec: string, bounded: boolean): string {
+  return bounded ? `${fileName}\u0000bounded\u0000${spec}` : `${fileName}\u0000${spec}`;
+}
+
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
+  // Literal sites first: their entries are the ones a literal site reads
+  // back, and a computed site that spells the same specifier in the same
+  // file records under the bounded key instead. A literal "./a.js" the
+  // checker mapped to a.ts keeps that answer, whatever a bounded value of
+  // the same text resolves to at run time.
+  const computed: { node: ts.CallExpression; arg: ts.Expression; spec: string | null }[] = [];
   ts.walkPreorder(sf, (node) => {
     if (
       ts.isCallExpression(node) &&
@@ -861,41 +939,83 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
       node.arguments.nodes[0] !== undefined
     ) {
       const arg = node.arguments.nodes[0];
-      // A constant expression names its module as surely as a literal; a
-      // computed specifier contributes one literal edge per value the
-      // bounder proves it may take (SPEC §3.1). Top and the unimplemented
-      // glob form contribute nothing here: the per-site lowering reports
-      // the refusal.
-      const folded = staticString(lowerer, arg);
-      const specs: string[] =
-        folded !== null
-          ? [folded]
-          : (() => {
-              const bound = boundSpecifier(lowerer, arg);
-              return bound.kind === "set" ? bound.values : [];
-            })();
-      for (const spec of specs) collectOneDynamicImport(lowerer, sf, spec, node);
+      if (ts.isStringLiteralLike(arg)) collectOneDynamicImport(lowerer, sf, arg.text, node);
+      else {
+        // A constant expression (`import("node:" + "fs")`, `import(FS)`)
+        // names its module at build time as surely as a literal, and the
+        // lowering keys the table by that same folded text.
+        computed.push({ node, arg: arg as ts.Expression, spec: staticString(lowerer, arg) });
+      }
     }
     return undefined;
   });
+  // Then one literal edge per value each computed site may take (SPEC §3.1).
+  // A folded constant contributes its text; any other form needs the bounder.
+  // The argument's SHAPE still decides how a relative value resolves: a
+  // written literal above asked the checker (which already mapped
+  // "./helper.js" to helper.ts), while a folded or otherwise computed value
+  // names its module at run time and follows Node's exact-file rules. Top and
+  // the unimplemented glob form contribute nothing here: the per-site
+  // lowering reports the refusal.
+  // The bounder takes a record of what it reads, never the Lowerer
+  // (Lowerer.specifierBoundContext).
+  let ctx: SpecifierBoundContext | null = null;
+  for (const { node, arg, spec } of computed) {
+    if (spec !== null) {
+      collectOneDynamicImport(lowerer, sf, spec, node, true);
+      continue;
+    }
+    ctx ??= lowerer.specifierBoundContext();
+    const bound = boundSpecifier(ctx, arg);
+    if (bound.kind !== "set") continue;
+    for (const value of bound.values) collectOneDynamicImport(lowerer, sf, value, node, true);
+  }
 }
 
 /** One literal edge of a dynamic-import site: the program's OWN modules
- * first, by the checker's resolution (tsc already resolved "./helper.js" to
- * helper.ts): a compiled module has no runtime namespace object — the
- * per-site fence says so. Only non-declaration source files count; a sibling
+ * first: a compiled module has no runtime namespace object — the per-site
+ * fence says so. Only non-declaration source files count; a sibling
  * .d.mts typing shipped JS is the EMBED case, not this one. A package the
  * project marks never loaded, or a module whose static graph Node's
- * resolution refuses: the import() rejects. */
+ * resolution refuses: the import() rejects.
+ *
+ * A LITERAL specifier asks the checker, which already mapped "./helper.js"
+ * to helper.ts at build time. A BOUNDED value (one the bounder produced)
+ * names its module at run time, so it follows Node's exact-file resolution
+ * instead: './a.js' is a.js or ERR_MODULE_NOT_FOUND, never a.ts. */
 function collectOneDynamicImport(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   spec: string,
   node: ts.CallExpression,
+  bounded = false,
 ): void {
   if (lowerer.externalTypes.has(spec)) return;
-  const mapKey = `${sf.fileName}\u0000${spec}`;
+  const mapKey = dynImportKey(sf.fileName, spec, bounded);
   if (lowerer.dynImports.has(mapKey)) return;
+  if (bounded && isPathSpecifier(spec)) {
+    const dep = boundedProgramTargetOf(lowerer.program, sf, spec);
+    if (dep === null || dep.isDeclarationFile) {
+      // Node finds no such file at run time (a missing .js twin of a .ts
+      // source is the common case): the load rejects with its error.
+      lowerer.dynImports.set(mapKey, {
+        kind: "rejected",
+        crash: {
+          message: `Cannot find module '${resolvePath(dirnamePath(sf.fileName), spec)}' imported from ${resolvePath(sf.fileName)}`,
+          className: "%Error",
+          code: "ERR_MODULE_NOT_FOUND",
+          loc: locOf(node),
+        },
+      });
+      return;
+    }
+    const rejection = lowerer.dynamicImportRejections.get(dep) ?? null;
+    lowerer.dynImports.set(
+      mapKey,
+      rejection !== null ? { kind: "rejected", crash: rejection } : { kind: "program-module", dep },
+    );
+    return;
+  }
   // A package the project marks never loaded, or a module whose static
   // graph Node's resolution refuses: the import() rejects.
   const rejection = dynamicImportRejectionOf(lowerer, sf, spec, node);
@@ -929,6 +1049,18 @@ function collectOneDynamicImport(
       : undefined;
   if (res === undefined) return;
   lowerer.dynImports.set(mapKey, res);
+}
+
+/** The program module a BOUNDED specifier value names at run time: Node's
+ * exact-file resolution, then the program source file at that path. Null
+ * when Node would find no such file or the program does not compile it. */
+function boundedProgramTargetOf(
+  program: ts.Program,
+  sf: ts.SourceFile,
+  spec: string,
+): ts.SourceFile | null {
+  const path = resolveNodeRuntimeModule(sf.fileName, spec);
+  return path === null ? null : (program.getSourceFile(path) ?? null);
 }
 
 /** JSON module default imports (`import pkg from "../package.json"`):
@@ -2107,9 +2239,10 @@ export function collectGlobals(
         continue;
       }
     }
-    // `import x = N.y` where the target is a MUTABLE binding: Node's
-    // transform emits `var x = N.y` — a SNAPSHOT taken when the alias
-    // statement runs — so the alias gets its own const storage, keyed by
+    // `import x = N.y` where the target is a MUTABLE binding, or a member
+    // of a function+namespace merge (a property, always replaceable):
+    // Node's transform emits `var x = N.y` — a SNAPSHOT taken when the
+    // alias statement runs — so the alias gets its own const storage, keyed by
     // the alias's PRE-alias symbol (resolveValueSymbol stops at alias
     // symbols with registered storage instead of chasing them to the
     // live target). lowerImportEquals assigns it at the statement's
@@ -2133,7 +2266,12 @@ export function collectGlobals(
         ts.isVariableDeclaration(vd) &&
         !ts.getSourceFileOfNode(vd).isDeclarationFile &&
         (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
-      if (!mutableVar) continue;
+      // A member of a function+namespace merge is a property of the
+      // function object, and a property can be replaced whatever its
+      // declaration says (`Object.assign(fmt, { digits: 4 })` for a
+      // `const`, for a function): its alias is a snapshot too, of the
+      // property rather than of a module global (lower-fundule.ts).
+      if (!mutableVar && funduleMemberOf(lowerer, target) === null) continue;
       const diagsBefore = lowerer.diags.length;
       try {
         let type = lowerer.irTypeOf(stmt.name);
@@ -2209,6 +2347,10 @@ export function collectGlobals(
       continue;
     const list = stmt.declarationList;
     if ((list.flags & ts.NodeFlags.Using) !== 0) continue; // fenced at the statement lowering
+    // An EXPORTED member of a function+namespace merge has no module global:
+    // its storage is the merged function's own-property table, written at
+    // the statement's position (lower-fundule.ts).
+    if (isFunduleMemberStatement(lowerer, stmt)) continue;
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     // `var` registers a mutable module global exactly like `let` — the
     // hoisting difference (binding exists from module entry, undefined
@@ -3592,7 +3734,7 @@ export function lowerFileInit(
     // A module that reads builtin globals through the global object, by
     // computed names or through a sloppy-mode function's `this`, installs
     // the program's lookup before its body runs.
-    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0, sf));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);
@@ -3840,8 +3982,27 @@ export function lowerFileInit(
       if (ms && ms.sf === sf) statics.push({ pos: ms.pos, info: c });
     }
     statics.sort((a, b) => a.pos - b.pos);
+    // Function+namespace merges: the merged block's exported FUNCTIONS
+    // join the function object at their declaration's source position
+    // (`fmt.helper = helper` in Node's emit), which fixes the members'
+    // own-key order among a block's statements (lower-fundule.ts).
+    const funduleFns = [...(lowerer.funduleFnStores.get(sf) ?? [])].sort(
+      (a, b) => ts.tokenStartOfNode(a) - ts.tokenStartOfNode(b),
+    );
+    // A member function whose type has no value form (badType) has pushed
+    // its diagnostic: the store contributes nothing and the compilation
+    // stops on that diagnostic, as for a statement.
+    const funduleFnStoreAt = (decl: ts.FunctionDeclaration): IrStmt[] => {
+      try {
+        return lowerFunduleFnStore(lowerer, decl);
+      } catch (e) {
+        if (!(e instanceof PoisonError)) throw e;
+        return [];
+      }
+    };
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
+    let funduleAt = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
       // — its statics run mid-statement in JS (the call), before
@@ -3851,6 +4012,15 @@ export function lowerFileInit(
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(...lowerStaticsAt(statics[at]!));
         at++;
+      }
+      // A hoisted function member's property assignment runs where its
+      // declaration stands, before the next statement's own code.
+      while (
+        funduleAt < funduleFns.length &&
+        ts.tokenStartOfNode(funduleFns[funduleAt]!) <= ts.tokenStartOfNode(stmt)
+      ) {
+        body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
+        funduleAt++;
       }
       // A constant the island evaluates loads its generated module where
       // it is declared, and a statement the island evaluates is that load
@@ -3878,6 +4048,10 @@ export function lowerFileInit(
     while (at < statics.length) {
       body.push(...lowerStaticsAt(statics[at]!));
       at++;
+    }
+    while (funduleAt < funduleFns.length) {
+      body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
+      funduleAt++;
     }
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;
@@ -3973,8 +4147,9 @@ function importRetryModules(lowerer: Lowerer): ReadonlySet<ts.SourceFile> {
       if (dep !== null && dep !== sf) visit(dep);
     }
   };
+  const ctx = lowerer.specifierBoundContext();
   for (const sf of lowerer.moduleOrder) {
-    for (const dep of dynamicProgramImportsOf(lowerer.program, sf)) visit(dep);
+    for (const dep of dynamicProgramImportsOf(ctx, sf)) visit(dep);
   }
   lowerer.importRetryModules = out;
   return out;

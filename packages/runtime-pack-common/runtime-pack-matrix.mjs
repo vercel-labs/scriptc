@@ -64,6 +64,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_gen_bind.c", "genBind"],
   // The receiver a generator function's body reads (dyn.generatorThis).
   ["scr_gen_receiver.c", "genReceiver"],
+  // The kept-source read a record width copy emits; a unit of its own so a
+  // program that only casts records keeps scr_json.o byte-identical.
+  ["scr_record_source_get.c", "recordSourceGet"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -208,6 +211,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // Node's pipe lifecycle, installed into the stream unit for programs
+  // that pipe, unpipe or build a pipeline.
+  ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
@@ -234,6 +240,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_lifecycle.c", "childLifecycle"],
   // The spawnSync capture Buffers; a unit of its own for the same reason.
   ["scr_child_capture.c", "spawnCaptureBytes"],
+  // process.features as a value: the stable flags object.
+  ["scr_process_features.c", "processFeatures"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // The report of failed checked conversions; dev executables link it.
@@ -307,7 +315,29 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The stderr report of a deferred diagnostic that fires: only a program
   // that contains one links it, so no other executable changes.
   ["scr_deferred_fence.c", "deferredFence"],
+  // `fn.constructor = value` on a value the checker types as a function: the
+  // write into the function's own property table (lower-stmts.ts,
+  // lowerFunctionConstructorWrite).
+  ["scr_dyn_fn_own.c", "functionOwnWrite"],
 ];
+
+/** One more build column for a unit: a twin, with `define`, of every build
+ * the unit has so far, selected by `feature`. A program links one build per
+ * unit, so a unit whose builds are keyed on several features needs a build
+ * for every combination of them; listing a column's builds by hand names
+ * only the columns its author knew, and a program with a combination nobody
+ * listed would link a build without one of its defines. Doubling what is
+ * there keeps every combination, whichever order the columns were added. */
+function withBuildColumn(variants, id, feature, define) {
+  for (const { id: other, when, defines } of variants.slice()) {
+    variants.push({
+      id: other === "default" ? id : `${id}-${other}`,
+      when: { ...when, [feature]: true },
+      defines: [...defines, define],
+    });
+  }
+  return variants;
+}
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
  * object model features reach (t262-da §J). Every such feature is inert
@@ -336,6 +366,16 @@ export function variantsFor(source) {
   // A full view holds an offset for every target field, so the NULL case is
   // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
+    // A program that writes, defines or deletes one of a function's
+    // inherited member names (`fn.call = f`, `Object.defineProperty(fn,
+    // "bind", …)`, `delete fn.apply`) keeps the own data property JS
+    // creates: scr_json.c's member write/define/delete and own-valueOf
+    // paths answer it, and scr_dyn_invoke.c's own call/apply/bind dispatch
+    // reads it first. The column is a twin of every build above, so a
+    // program with it and any of their features links one build that
+    // carries each define; the object model twins below double it in turn.
+    // Every other program keeps the default object, byte for byte.
+    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
     // The JavaScript object model build (t262-da §J): every runtime feature
     // reached only from JavaScript-source facts — builtin intrinsics, array
     // attributes, BigInt views, handle property tables, buffer views —
@@ -390,6 +430,15 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+  }
+  // A function's own call/apply/bind shadows the inherited member: the
+  // FUNC dispatch of a method call reads the closure's table first, which
+  // only the fnMemberProps programs can populate (scr_json.c's write path,
+  // the same variant). The column is a twin of the builds above, so a
+  // program with it and a Node island links one build that carries both
+  // defines. Every other program keeps the default object, byte for byte.
+  if (source === "scr_dyn_invoke.c") {
+    withBuildColumn(variants, "fn-member-props", "fnMemberProps", "SCR_FN_MEMBER_PROPS");
   }
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
@@ -578,6 +627,16 @@ export function variantsFor(source) {
       defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
   }
+  // fs.ReadStream / fs.WriteStream options that can hold a `signal`: the
+  // fs stream unit applies it, with the event-target unit's abort listener;
+  // every other program keeps the default object, byte for byte.
+  if (source === "scr_fs_stream.c") {
+    variants.push({
+      id: "signal",
+      when: { fsStreamSignal: true },
+      defines: ["SCR_FS_STREAM_SIGNAL"],
+    });
+  }
   if (source === "scr_cycle.c") {
     // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
     // nursery collections; programs built without it link the default.
@@ -617,6 +676,30 @@ export function variantsFor(source) {
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
+    // pause(), resume(), isPaused() and readableFlowing on a child's output
+    // stream: the build where the stream handle keeps Node's flowing state
+    // (scr_child_flow.h). A program that never calls them keeps the default
+    // object. The combinations with the builds above need their own objects,
+    // since the variant with the most conditions is the one selected.
+    for (const [id, when, defines] of [
+      ["stream-flow", { childStreamFlow: true }, ["SCR_CHILD_STREAM_FLOW"]],
+      [
+        "cp-options-stream-flow",
+        { childOptionExt: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "err-fields-stream-flow",
+        { childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "cp-options-err-fields-stream-flow",
+        { childOptionExt: true, childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // A static executable cannot load NSS modules, so the os unit's passwd
   // fallback (os.homedir() with HOME unset, and os.userInfo()) reads

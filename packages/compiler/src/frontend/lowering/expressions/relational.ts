@@ -527,6 +527,26 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // never promises (scriptc promises are all native, and no data arm
     // can hold one). A promise-typed operand answers true after its
     // evaluation; a checked-dynamic one asks the runtime.
+    // A catch binding holds a thrown promise as its checked-dynamic value.
+    {
+      const caughtPromise =
+        ts.isIdentifier(expr.right) && lowerer.isStdlibGlobal(expr.right, "Promise")
+          ? lowerer.caughtLocalOf(expr.left)
+          : null;
+      if (caughtPromise)
+        return {
+          kind: "dynTest",
+          test: "promise",
+          value: {
+            kind: "caughtToDyn",
+            value: varRef(caughtPromise.id, CAUGHT, loc),
+            type: DYN,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+    }
     if (
       ts.isIdentifier(expr.right) &&
       lowerer.isStdlibGlobal(expr.right, "Promise") &&

@@ -34,8 +34,8 @@ const nativeHost = globalThis.__scriptcNodeIslandHost;
 // cache. Node writes the entries of the modules a run compiled when it
 // stops, and the runtime writes them when native code calls process.exit();
 // a program that is only ever ended by a signal reaches neither, so they are
-// also written once, a second after the start: late enough to delay no
-// program's first output, and by a timer that keeps no program alive.
+// also written once, a second after the start, when a program that is still
+// running has its start behind it, by a timer that keeps no program alive.
 const compileCache = globalThis.__scriptcNodeIslandCompileCache;
 delete globalThis.__scriptcNodeIslandCompileCache;
 if (typeof compileCache === "string") enableCompileCache(compileCache);

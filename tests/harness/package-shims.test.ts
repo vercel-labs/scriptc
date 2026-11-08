@@ -24,6 +24,9 @@
  * - a CommonJS package's require() of a shimmed package (fs-extra, required
  *   by an installed package's JavaScript) compiles the shim, and matches
  *   Node running the real package;
+ * - the undici 5.x shim's ProxyAgent sends what undici 5.29 sends through a
+ *   proxy in the test process (the CONNECT request, credentials, a refused
+ *   tunnel), and its fetch takes the global RequestInit;
  * - the undici shim compiles under a project tsconfig with
  *   strictPropertyInitialization off.
  */
@@ -413,6 +416,58 @@ describe("package shims", () => {
         '"ok.test" 204',
         '"a\\r\\nX-Injected: 1" InvalidArgumentError UND_ERR_INVALID_ARG invalid host header',
         '"a\\nb" InvalidArgumentError UND_ERR_INVALID_ARG invalid host header',
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: ProxyAgent tunnels every request through HTTP CONNECT", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-proxy-agent.ts");
+    // undici 5.29.0's output under Node 24 (the vendored fixture is 5.12).
+    expect(await run(binary, [], dir)).toBe(
+      [
+        "true false false",
+        "200 GET /one host=127.0.0.1:<target> x=a",
+        "200 GET /two host=127.0.0.1:<target> x=a",
+        "2 CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close",
+        "200 POST /post host=127.0.0.1:<target> x=-",
+        "200 GET /fetched host=127.0.0.1:<target> x=f 0",
+        "true true",
+        "200 GET /token host=127.0.0.1:<target> x=-",
+        "200 GET /user host=127.0.0.1:<target> x=-",
+        "200 GET /auth host=127.0.0.1:<target> x=-",
+        "CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | x-via: fixture | proxy-authorization: Bearer secret || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYSBzcw== || CONNECT 127.0.0.1:<target> HTTP/1.1 | host: 127.0.0.1:<proxy> | connection: close | proxy-authorization: Basic dXNlcjpwYXNz",
+        "200 GET /global host=127.0.0.1:<target> x=- true 1",
+        "AbortError UND_ERR_ABORTED Proxy response (407) !== 200 when HTTP Tunneling",
+        "TypeError fetch failed cause: Error Request was cancelled.",
+        "true 2",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy opts.uri is mandatory",
+        "InvalidArgumentError UND_ERR_INVALID_ARG opts.auth cannot be used in combination with opts.token",
+        "TypeError Invalid URL",
+        "InvalidArgumentError UND_ERR_INVALID_ARG Proxy-Authorization should be sent in ProxyAgent constructor",
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: fetch takes the global RequestInit and sends byte bodies", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-fetch-init.ts");
+    // undici 5.29.0's output under Node 24.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'variable: 200 POST station=north tide=high type=text/plain;charset=UTF-8 bytes=9 "0612 4.2m"',
+        'pairs: 200 PUT station=north tide=low type=text/plain;charset=UTF-8 bytes=9 "1240 0.9m"',
+        'headers object: 200 POST station=south tide=slack type=text/plain;charset=UTF-8 bytes=1 "-"',
+        'nothing: 200 GET station=south tide=- type=- bytes=0 ""',
+        'signal and redirect: 200 GET station=east tide=- type=- bytes=0 ""',
+        'typed array: 200 POST station=west tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'array buffer: 200 POST station=- tide=- type=- bytes=3 "hi!"',
+        'data view: 200 POST station=- tide=- type=- bytes=2 "\\n\u00ff"',
+        'dispatcher: 200 POST station=pier tide=ebb type=text/plain;charset=UTF-8 bytes=9 "1903 1.4m"',
+        'dispatcher bytes: 200 POST station=pier tide=- type=- bytes=5 "hi!\\n\u00ff"',
+        'other method: 200 PROPFIND station=pier tide=- type=- bytes=0 ""',
+        'request: 200 REPORT station=pier tide=- type=- bytes=0 ""',
+        "aborted: AbortError",
         "",
       ].join("\n"),
     );

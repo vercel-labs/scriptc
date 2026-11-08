@@ -16,10 +16,30 @@ export type UndiciHeaders = Record<string, string | string[] | undefined> | stri
  * bodies are outside the implemented subset. */
 export type RequestBody = string | Buffer | Uint8Array | null;
 
-export interface DispatchOptions {
+/** The request methods undici's declarations name (HttpMethod in
+ * types/dispatcher.d.ts). 7.x's declaration also admits any other string;
+ * request() takes one here in both entries (RequestOptions). */
+export type HttpMethod =
+  | "GET"
+  | "HEAD"
+  | "POST"
+  | "PUT"
+  | "DELETE"
+  | "CONNECT"
+  | "OPTIONS"
+  | "TRACE"
+  | "PATCH";
+
+/** undici's Dispatcher.DispatchOptions. dispatch() declares the method the
+ * way undici does, so that this record is one of what a project's own
+ * undici-types declare (the dispatcher of the global fetch's init is typed
+ * by those, and a program hands it to a slot typed by this package).
+ * `Method` is `string` for the callers that pass any token on:
+ * request() and fetch(). */
+export interface DispatchOptions<Method extends string = HttpMethod> {
   origin?: string | URL;
   path: string;
-  method: string;
+  method: Method;
   body?: RequestBody;
   headers?: UndiciHeaders;
   idempotent?: boolean;

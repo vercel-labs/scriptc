@@ -21,8 +21,8 @@ import type {
 } from "./types.ts";
 
 /** Dispatcher.RequestOptions: the dispatch options (which carry the
- * request members, see DispatchOptions). */
-export type RequestOptions = DispatchOptions;
+ * request members, see DispatchOptions) with any method token. */
+export type RequestOptions = DispatchOptions<string>;
 
 export interface ResponseData {
   statusCode: number;
@@ -239,7 +239,9 @@ export function requestThrough(
     };
     try {
       const handler = createRequestHandler(options, profile, callback);
-      dispatcher.dispatch(options, handler);
+      // request() hands dispatch() whatever method token it was given, as
+      // undici's does.
+      dispatcher.dispatch(options as DispatchOptions, handler);
     } catch (err) {
       queueMicrotask(() => callback(err as Error, null));
     }
@@ -565,7 +567,7 @@ export declare namespace Dispatcher {
   type DispatchController = import("./types.ts").DispatchController;
   type DispatchInterceptor = import("./types.ts").DispatchInterceptor;
   type Dispatch = import("./types.ts").DispatchFn;
-  type HttpMethod = string;
+  type HttpMethod = import("./types.ts").HttpMethod;
   type UndiciHeaders = import("./types.ts").UndiciHeaders;
   // The 7.x spellings take an opaque type parameter; the opaque value is
   // `unknown` here.

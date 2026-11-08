@@ -17,9 +17,10 @@
   },
   "neverDynamicClasses": {
     "value": [
-      "Lowerer"
+      "Lowerer",
+      "LlEmitter"
     ],
-    "reason": "The Lowerer is the receiver of the whole frontend, and its fields reach most of the compiler's classes. When one call hands it over where an interface it satisfies is declared, it becomes a dynamic value and the compiler's own build gains about 9,000 functions (6%): #2878, #3192 and #2567 each did that through one helper's parameter type, and #3394 took the last one out. tests/harness/compiler-host-arguments.test.ts reads the source for such calls in every pull request; this is the build's own answer."
+    "reason": "The Lowerer is the receiver of the whole frontend and the LlEmitter of the whole backend, and their fields reach most of the compiler's classes. When one call hands one over where an interface it satisfies is declared, it becomes a dynamic value and the compiler's own build gains thousands of functions: about 9,000 (6%) for the Lowerer, which #2878, #3192 and #2567 each did through one helper's parameter type and #3394 undid; 6,400 (4.6%) for the LlEmitter, through the integer clone emitter's host and one function-valued member called as a method, undone with this entry. tests/harness/compiler-host-arguments.test.ts reads the source for such calls of the Lowerer in every pull request; this is the build's own answer for both."
   },
   "sourceCostAllowance": {
     "value": 0,

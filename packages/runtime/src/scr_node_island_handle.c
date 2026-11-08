@@ -575,6 +575,11 @@ static void nh_sweep_pins(int mode) {
     freed = false;
     for (size_t i = from; i < nh_npins;) {
       NhPin *pin = &nh_pins[i];
+      /* Another thread's pin: nothing of its object is read here. */
+      if (!nh_pin_mine(pin)) {
+        i++;
+        continue;
+      }
       /* What a sweep of the young pins leaves for a full one: the storage
        * of an island buffer (below), and promises and errors, whose typed
        * views in the program are made from the pinned object each time the
@@ -582,8 +587,7 @@ static void nh_sweep_pins(int mode) {
       bool later = pin->kind == NH_PIN_PROMISE || pin->kind == NH_PIN_ERROR ||
                    pin->kind == NH_PIN_NATIVE_ERROR ||
                    (pin->kind == NH_PIN_BUFFER && ((ScrBytes *)pin->obj)->external);
-      if (!nh_pin_mine(pin) ||
-          (mode != NH_SWEEP_ALL && (!nh_pin_dead(pin) || (!full && later)))) {
+      if (mode != NH_SWEEP_ALL && (!nh_pin_dead(pin) || (!full && later))) {
         i++;
         continue;
       }
@@ -3238,7 +3242,10 @@ static void nh_caches_release(void) {
 static void nh_thread_exit(void) {
   nh_routed_done();
   nh_caches_release();
-  nh_sweep_pins(NH_SWEEP_ALL);
+  /* A thread with pins has shared the tables. One that was cut off before
+   * its first operation (nh_cut_off) has none, and must not walk a table
+   * the island's thread may still be changing unlocked. */
+  if (nh_mine() > 0) nh_sweep_pins(NH_SWEEP_ALL);
 }
 
 static void nh_cleanup(void) {

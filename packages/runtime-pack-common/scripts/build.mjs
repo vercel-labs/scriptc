@@ -19,6 +19,7 @@ import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./ru
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
+import { profileMatchSummary } from "./profile-match.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
@@ -563,14 +564,7 @@ async function build() {
         // (scripts/refresh-runtime-profile.mjs refreshes it).
         ...(profileMatches.length === 0
           ? {}
-          : {
-              runtime_profile: {
-                annotated: profileMatches.reduce((sum, match) => sum + match.annotated, 0),
-                mismatched: profileMatches.reduce((sum, match) => sum + match.mismatched, 0),
-                missing: profileMatches.reduce((sum, match) => sum + match.missing, 0),
-                ...profileWeights(profileMatches),
-              },
-            }),
+          : { runtime_profile: profileMatchSummary(profileMatches) }),
       };
     }
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
@@ -806,15 +800,14 @@ async function build() {
         executable: [
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
-          "SCR_STDIO_EXTENDED",
           "SCR_STREAM_WRITE_ERRORS",
-          "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
           "SCR_NODE_ISLANDS",
+          "SCR_NODE_ISLAND_STDIO",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",
@@ -855,32 +848,3 @@ async function build() {
   }
 }
 await withBuildLock(join(packageRoot, ".runtime-pack-build.lock"), build);
-
-/** The profile's counters on the functions the speed units' annotation
- * matched (annotated_counts) and on the functions whose control flow changed
- * since the profile was collected (mismatched_counts), from helpers that
- * report them per function. A function the profile describes for one unit
- * variant (default or workers) only reads as mismatched in the other one, so
- * a name annotated in any unit counts as annotated. `stale` names the
- * mismatched functions with the most counts. */
-function profileWeights(matches) {
-  if (!matches.every((match) => match.annotated_counts !== undefined)) return {};
-  const annotated = new Map();
-  const mismatched = new Map();
-  for (const match of matches) {
-    for (const [name, counts] of Object.entries(match.annotated_counts))
-      annotated.set(name, counts);
-    for (const [name, counts] of Object.entries(match.mismatched_counts))
-      mismatched.set(name, counts);
-  }
-  for (const name of annotated.keys()) mismatched.delete(name);
-  const sum = (map) => [...map.values()].reduce((total, counts) => total + counts, 0);
-  return {
-    annotated_counts: sum(annotated),
-    mismatched_counts: sum(mismatched),
-    stale: [...mismatched]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name]) => name),
-  };
-}

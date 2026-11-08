@@ -669,7 +669,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const bi = lowerer.builtinImportOf(expr);
     if (bi) {
       if (bi.module === "worker_threads") {
-        const value = lowerWorkerMetadata(bi.member, loc);
+        const value = lowerWorkerMetadata(lowerer, bi.member, loc);
         if (value) return value;
       }
       // A named import of defaultMaxListeners reads the ES module

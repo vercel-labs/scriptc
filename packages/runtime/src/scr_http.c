@@ -300,7 +300,7 @@ void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "setEncoding('%s') is not supported yet (only 'utf8' here)",
                        known[i]);
-      scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
       return;
     }
   }
@@ -1579,7 +1579,7 @@ static bool scr_http_res_informational_h1(ScrHttpRes *r, const char *method) {
   if (r->h2_stream == NULL) return true;
   char msg[128];
   int n = snprintf(msg, sizeof msg, "Http2ServerResponse.%s is not supported by the static runtime yet", method);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
   return false;
 }
 
@@ -7031,7 +7031,7 @@ static void scr_http_dynh_unsupported(const char *cls, const char *member, const
   char msg[160];
   int n = snprintf(msg, sizeof msg, "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
                    cls, member, what ? " — " : "", what ? what : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 static void scr_http_dynh_not_fn(const char *what) {
@@ -7050,7 +7050,7 @@ static void scr_http_dynh_event_unsupported(const char *cls, const ScrDyn *name)
   scr_jb_puts(&b, "' on a dynamic ");
   scr_jb_puts(&b, cls);
   scr_jb_puts(&b, " is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 static bool scr_http_dynh_name_is(const ScrDyn *name, const char *lit) {
@@ -8374,7 +8374,7 @@ void scr_http_req_opts_fence(const char *api, const char *key, const char *hint)
   scr_jb_puts(&b, key);
   scr_jb_puts(&b, "' has no static lowering — ");
   scr_jb_puts(&b, hint);
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
 }
 
 void scr_http_req_opts_free(ScrHttpReqOpts *o) {

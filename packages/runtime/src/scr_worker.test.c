@@ -96,7 +96,7 @@ int main(void) {
     scr_dyn_release(input);
     assert(wire && !scr_exc_pending());
     ScrStr *name = scr_str_new("WorkerThread", 12);
-    workers[i] = scr_worker_thread_start(entry, i, wire, false, mailbox, NULL, 0, name, 0);
+    workers[i] = scr_worker_thread_start(entry, i, wire, false, mailbox, NULL, 0, name, 0, NULL, false);
     scr_str_release(name);
     assert(workers[i] && !scr_exc_pending());
     assert(scr_worker_thread_id(workers[i]) != 0);

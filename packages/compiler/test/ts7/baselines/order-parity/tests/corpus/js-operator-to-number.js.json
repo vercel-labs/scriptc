@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-operator-to-number.js"
+ ],
+ "diags": []
+}

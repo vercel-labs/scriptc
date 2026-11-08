@@ -21,6 +21,7 @@ import {
   islandValueCopyDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
+  promiseMemberWriteDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
@@ -66,6 +67,17 @@ export function scanDivergences(
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
+  /** Member writes (`x.m = v`), looked at only in a program that declares a
+   * type adding members to the library Promise (extendsPromise). */
+  const memberWrites: ts.PropertyAccessExpression[] = [];
+  let extendsPromise = false;
+  const namesPromise = (type: ts.Node): boolean =>
+    (ts.isTypeReferenceNode(type) &&
+      ts.isIdentifier(type.typeName) &&
+      type.typeName.text === "Promise") ||
+    (ts.isExpressionWithTypeArguments(type) &&
+      ts.isIdentifier(type.expression) &&
+      type.expression.text === "Promise");
 
   const visit = (node: ts.Node): void => {
     if (
@@ -120,12 +132,18 @@ export function scanDivergences(
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isPropertyAccessExpression(node.left) &&
-      ts.isIdentifier(node.left.expression)
+      ts.isPropertyAccessExpression(node.left)
     ) {
-      const names = assignedMembers.get(node.left.expression.text) ?? new Set<string>();
-      names.add(node.left.name.text);
-      assignedMembers.set(node.left.expression.text, names);
+      memberWrites.push(node.left);
+      if (ts.isIdentifier(node.left.expression)) {
+        const names = assignedMembers.get(node.left.expression.text) ?? new Set<string>();
+        names.add(node.left.name.text);
+        assignedMembers.set(node.left.expression.text, names);
+      }
+    } else if (ts.isIntersectionTypeNode(node)) {
+      if (node.types.nodes.some(namesPromise)) extendsPromise = true;
+    } else if (ts.isHeritageClause(node)) {
+      if (node.types.nodes.some(namesPromise)) extendsPromise = true;
     }
   };
   // Iterative: absurdly deep nesting must reach the lowering's own fence.
@@ -180,6 +198,32 @@ export function scanDivergences(
           finding.detail,
           locOf(lit),
         ),
+      );
+    }
+  }
+
+  // ── a member the program added to the library Promise, written ────────
+  // `tracked.status = "pending"` where `tracked: Promise<T> & { status?: … }`
+  // (or an interface that extends Promise): the receiver's type has the
+  // library's `then`, and the written member is one the program declared.
+  if (extendsPromise) {
+    const declaredByLibrary = (symbol: ts.Symbol | undefined): boolean =>
+      symbol !== undefined &&
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)));
+    for (const write of memberWrites) {
+      if (!ts.isIdentifier(write.name)) continue;
+      const type = safely(() =>
+        checker.getNonNullableType(checker.getTypeAtLocation(write.expression)),
+      );
+      if (type === undefined || type.isUnionType()) continue;
+      const then = safely(() => checker.getPropertyOfType(type, "then"));
+      const settled = safely(() => checker.getPropertyOfType(type, "finally"));
+      if (!declaredByLibrary(then) || !declaredByLibrary(settled)) continue;
+      const member = safely(() => checker.getPropertyOfType(type, write.name.text));
+      if (member === undefined || declaredByLibrary(member)) continue;
+      out.push(
+        promiseMemberWriteDivergenceDiag(write.name.text, checker.typeToString(type), locOf(write)),
       );
     }
   }

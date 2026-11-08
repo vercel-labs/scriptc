@@ -14879,6 +14879,23 @@ export class Lowerer {
     // STANDARD-LIBRARY nominal types with no lowering at all: the SC2020
     // story, naming the type — and for the families with a WHY, the same
     // pointed reason the identifier/constructor chokepoints teach.
+    // The library's PromiseLike names no value of its own: it is the type of
+    // every object with a `then` method, a promise or one the program wrote.
+    // A slot declared with it holds such a value as it is, checked-dynamic
+    // (localized failure), and `await`, `Promise.resolve` and `.then` ask
+    // the value.
+    if (stdlibNominal && ts.symbolNameOf(stdlibOwnSym) === "PromiseLike") {
+      this.typeFail(
+        node,
+        type,
+        "thenable",
+        noLoweringDiag(
+          this.checker.typeToString(type),
+          locOf(node),
+          "a PromiseLike value is any object with a then method, so it has no static representation: a declared slot holds it as a checked-dynamic value, and Promise<T> keeps the slot static",
+        ),
+      );
+    }
     if (stdlibNominal) {
       const intlHint =
         "Intl formatter values have no representation — the COMPOSED forms lower: " +
@@ -15544,7 +15561,7 @@ export class Lowerer {
     // A never-tainted JS type (neverTaintedJsType) maps — never rides as
     // f64 — but must not: pre-empt the mapping so the JS fallback below
     // answers instead.
-    const mapped = neverTaintedJsType(this, node, t) ? null : this.mapTypeOf(t);
+    let mapped = neverTaintedJsType(this, node, t) ? null : this.mapTypeOf(t);
     if (mapped !== null && this.degradedTypes.size > 0) this.noteDegradedSlot(node, t);
     if (!mapped) {
       const argumentsType = jsArgumentsFunctionType(this, t);
@@ -15562,7 +15579,17 @@ export class Lowerer {
       // lower.
       const dyn = dynFallbackType(this, node, t);
       if (dyn) return dyn;
-      this.badType(node, t);
+      // Localized failure: asking the fallbacks above can flush a deferred
+      // declaration (the function the initializer calls), whose retry
+      // degraded this very type. It maps now, as it does for every later
+      // slot that names it.
+      const degraded =
+        this.degradedTypes.size > 0 && !neverTaintedJsType(this, node, t)
+          ? this.mapTypeOf(t)
+          : null;
+      if (degraded === null) this.badType(node, t);
+      this.noteDegradedSlot(node, t);
+      mapped = degraded;
     }
     // A JavaScript binding whose inferred type holds a union of functions
     // and arrays (a test table of `[fn, cases]` rows, or one row
@@ -15720,7 +15747,7 @@ export class Lowerer {
       const detail =
         actual.kind === "record" && expected.kind === "record"
           ? (this.describeRecordWidthBlocker(actual.shapeId, expected.shapeId) ?? undefined)
-          : undefined;
+          : this.promiseIntoThenableRecord(actual, expected);
       this.pushDiag(
         recordShapeMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node), detail),
       );
@@ -16841,7 +16868,70 @@ export class Lowerer {
    * directly when the expression was already lowered. In package files, a
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
+  /** A promise given to one of the program's own types with a `then`
+   * method: what the SC2002 says beside the two shapes. The type is a record
+   * of its members, which a class instance or an object literal becomes with
+   * its identity; a promise does not, since a record made from it would
+   * answer `instanceof Promise` and `===` for a copy. */
+  private promiseIntoThenableRecord(actual: IrType, expected: IrType): string | undefined {
+    if (actual.kind !== "promise" || expected.kind !== "record") return undefined;
+    const then = this.shapes.get(expected.shapeId)?.fields.find((f) => f.name === "then");
+    if (then === undefined || then.type.kind !== "func") return undefined;
+    return "a promise is not a value of the program's own type with a 'then' method (that type is a record of its members and cannot hold the promise itself); declare the slot PromiseLike<T>, which takes promises and the program's own thenables, or Promise<T> | YourType narrowed with instanceof";
+  }
+
+  /** Whether `node` is the key argument of `set`, `get`, `has`, `delete` or
+   * `add` on a WeakMap or a WeakSet. A key with a promise type is boxed as
+   * the promise itself (weakMap.promiseKey in coerceInto). */
+  private isWeakKeyArgument(node: ts.Node): boolean {
+    let key: ts.Node = node;
+    while (
+      key.parent !== undefined &&
+      (ts.isParenthesizedExpression(key.parent) || ts.isSatisfiesExpression(key.parent))
+    )
+      key = key.parent;
+    const call = key.parent;
+    if (call === undefined || !ts.isCallExpression(call) || call.arguments.nodes[0] !== key)
+      return false;
+    const access = call.expression;
+    if (!ts.isPropertyAccessExpression(access) || !ts.isIdentifier(access.name)) return false;
+    const method = access.name.text;
+    if (
+      method !== "set" &&
+      method !== "get" &&
+      method !== "has" &&
+      method !== "delete" &&
+      method !== "add"
+    )
+      return false;
+    const symbol = this.checker.getNonNullableType(this.typeOf(access.expression)).getSymbol();
+    const name = ts.symbolNameOf(symbol);
+    return (
+      symbol !== undefined &&
+      (name === "WeakMap" || name === "WeakSet") &&
+      this.isStdlibSymbol(symbol)
+    );
+  }
+
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    // A typed promise as the key of a weak collection: the collection reads
+    // the key for its identity alone, which is the promise's own. Boxing it
+    // as other checked-dynamic uses do would make an adapter promise for a
+    // value nobody settles through, and the adapter of a rejected promise
+    // would be reported as an unhandled rejection of its own.
+    if (
+      expected.kind === "dyn" &&
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind !== "dyn" &&
+      this.isWeakKeyArgument(node)
+    ) {
+      const loc = expr.loc;
+      const key: IrExpr =
+        expr.type.inner.kind === "void"
+          ? expr
+          : { kind: "promiseVoidWiden", value: expr, type: { kind: "promise", inner: VOID }, loc };
+      return { kind: "libCall", fn: "weakMap.promiseKey", args: [key], type: DYN, loc };
+    }
     const outerNode = this.slotSiteNode;
     const outerType = this.slotSiteType;
     this.slotSiteNode = node;
@@ -18649,6 +18739,20 @@ export class Lowerer {
         }
         const type = failure === undefined ? undefined : this.failedTypes.get(failure);
         const id = (type as { id?: number } | undefined)?.id;
+        // The failing type was degraded since this diagnostic was deferred
+        // (another declaration that names it retried first): the collection
+        // has not run with it, so the first round runs it.
+        if (
+          round === 0 &&
+          failure !== undefined &&
+          id !== undefined &&
+          failure.degradable &&
+          DECLARATION_SLOTS.has(failure.slot) &&
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+        ) {
+          retriable = true;
+          continue;
+        }
         if (
           failure === undefined ||
           type === undefined ||

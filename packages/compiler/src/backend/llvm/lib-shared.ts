@@ -74,6 +74,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "icu.i18nSupport": "scr_intl_i18n_support",
   "icu.dateLocaleString": "scr_intl_date_locale_string",
   "icu.dateLocaleTimeString": "scr_intl_date_locale_time_string",
+  "weakMap.promiseKey": "scr_dyn_new_promise",
   "weakMap.is": "scr_weak_map_is",
   "weakSet.is": "scr_weak_set_is",
   "weakMap.new": "scr_weak_map_new",

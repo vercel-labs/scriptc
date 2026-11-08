@@ -1,16 +1,17 @@
-// A package compiled from its JavaScript is called with a record the program
+// A package compiled from its JavaScript is called with records the program
 // built. Inside the package the checker types every read through the untyped
 // parameter `any`; the member's own kind (a number, a Date, a Set, a Map, a
 // RegExp, a bigint, a boolean, a URL, a record with a method) has to decide
 // how a method call or a read on it compiles, as it does for a parameter that
-// is the value itself.
+// is the value itself. Each record here has a static layout, so each function
+// is compiled for that layout.
 import {
   concise,
   depth,
   flag,
   host,
   inCallback,
-  lastTag,
+  lastName,
   matches,
   precise,
   price,
@@ -21,39 +22,48 @@ import {
   tagged,
   throughChain,
   throughLocals,
-  type Entry,
 } from "shelf-kit";
 
-const entry: Entry = {
-  amount: 12.3456,
-  at: new Date(86_400_000),
-  tags: new Set(["new", "fragile"]),
+const priced = { id: "priced", amount: 12.3456 };
+console.log(price(priced), "|", precise(priced));
+
+const dated = { id: "dated", at: new Date(86_400_000) };
+console.log(stamp(dated));
+
+const labelled = { id: "labelled", tags: new Set(["new", "fragile"]) };
+const counted = {
+  id: "counted",
   counts: new Map([
     ["a", 3],
     ["b", 4],
   ]),
-  pattern: /shelf-\d+/,
-  serial: 9007199254740993n,
-  open: true,
-  link: new URL("https://depot.example/shelves?row=4"),
+};
+const matched = { id: "matched", pattern: /shelf-\d+/ };
+console.log(tagged(labelled), stock(counted), matches(matched));
+
+const numbered = { id: "numbered", serial: 9007199254740993n };
+const gated = { id: "gated", open: true };
+const linked = { id: "linked", link: new URL("https://depot.example/shelves?row=4") };
+console.log(serial(numbered), flag(gated), host(linked));
+
+const described = {
+  id: "described",
   label: {
-    render() {
+    render(): string {
       return "label of the entry";
     },
   },
-  box: { size: { depth: 0.75 } },
-  names: ["first", "last"],
 };
+const boxed = { id: "boxed", box: { size: { depth: 0.75 } } };
+console.log(rendered(described), depth(boxed));
 
-console.log(price(entry), "|", precise(entry));
-console.log(stamp(entry));
-console.log(tagged(entry), stock(entry), matches(entry));
-console.log(serial(entry), flag(entry), host(entry));
-console.log(rendered(entry), depth(entry));
-console.log(throughLocals(entry), throughChain(entry), concise(entry));
-console.log(inCallback(entry), lastTag(entry));
+const both = { id: "both", amount: 12.3456, at: new Date(86_400_000) };
+console.log(throughLocals(both), throughChain(priced), concise(priced));
 
-// The same functions with another record of the same type: the members are
-// read from the value passed, not from the first one.
-const other: Entry = { ...entry, amount: 0.5, open: false, names: ["only"] };
-console.log(price(other), flag(other), lastTag(other), inCallback(other));
+const named = { id: "named", names: ["first", "last"] };
+console.log(inCallback(priced), lastName(named));
+
+// The same functions with other records of the same layouts: the members are
+// read from the value passed.
+console.log(price({ id: "half", amount: 0.5 }), flag({ id: "shut", open: false }));
+console.log(lastName({ id: "one", names: ["only"] }), inCallback({ id: "half", amount: 0.5 }));

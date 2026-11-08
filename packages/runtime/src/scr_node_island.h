@@ -44,6 +44,10 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 bool scr_ni_remote_pending(void);
 int scr_ni_remote_pollfd(void);
 void scr_ni_remote_dispatch(void);
+/* The operation the calling thread posted last did not run, because the
+ * thread was asked to stop first: its termination is pending and the
+ * operation's out-values are as the caller initialized them. */
+extern SCR_TL bool scr_ni_unserved;
 
 /* Whether a thread other than the island's has used the island: until
  * then the island tables take no locks (scr_node_island_handle.c). */

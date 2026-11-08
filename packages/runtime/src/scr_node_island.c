@@ -73,6 +73,7 @@
 #include <sys/stat.h>
 #include <ucontext.h>
 #include <pthread.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/auxv.h>
@@ -1404,8 +1405,13 @@ typedef struct NiRoute {
   void (*job)(void *);
   void *arg;
   pthread_cond_t cond;
+  bool taken; /* the island's thread took it off the queue: it runs to its end */
   bool done;
 } NiRoute;
+
+/* The operation this thread posted last did not run: the thread was asked
+ * to stop before the island's thread took it (ni_route). */
+SCR_TL bool scr_ni_unserved = false;
 
 static pthread_mutex_t ni_route_lock = PTHREAD_MUTEX_INITIALIZER;
 static NiRoute *ni_route_head = NULL, *ni_route_tail = NULL;
@@ -1429,9 +1435,37 @@ static void ni_route_open(void) {
   }
 }
 
-/* Runs `job` on the island's thread and returns once it has. */
+/* Runs `job` on the island's thread and returns once it has.
+ *
+ * A thread that is asked to stop does not wait for an operation the
+ * island's thread has not taken. Its owner asked (worker.terminate()), or
+ * the process is ending: the main thread then joins its workers and serves
+ * nothing any more, so a worker that waited here for its answer was never
+ * joined (a worker without a reference that was still calling the island
+ * when the main thread's loop ran dry kept the process from ending). The
+ * wait therefore looks at the stop request every few milliseconds; when it
+ * is set and the operation is still queued, the operation is withdrawn, the
+ * thread's termination is made pending as at any checkpoint, and the
+ * caller gets no answer (scr_ni_unserved; its out-values keep what it
+ * initialized them to). An operation already taken runs to its end. */
+#define NI_ROUTE_STOP_POLL_NS 5000000L /* 5 ms */
+/* Only a worker thread posts, and only an executable with workers has one. */
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+#define NI_STOP_ASKED() (!scr_context_quiet())
+#define NI_STOP_PENDING() ((void)scr_context_checkpoint())
+#else
+#define NI_STOP_ASKED() false
+#define NI_STOP_PENDING() ((void)0)
+#endif
+
 static void ni_route(void (*job)(void *), void *arg) {
-  NiRoute request = {NULL, job, arg, {0}, false};
+  scr_ni_unserved = false;
+  if (NI_STOP_ASKED()) {
+    scr_ni_unserved = true;
+    NI_STOP_PENDING();
+    return;
+  }
+  NiRoute request = {NULL, job, arg, {0}, false, false};
   if (pthread_cond_init(&request.cond, NULL) != 0) ni_oom();
   pthread_mutex_lock(&ni_route_lock);
   ni_route_open();
@@ -1445,9 +1479,29 @@ static void ni_route(void (*job)(void *), void *arg) {
      * this one. */
     (void)write(ni_route_wake[1], &byte, 1);
   }
-  while (!request.done) pthread_cond_wait(&request.cond, &ni_route_lock);
+  while (!request.done) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += NI_ROUTE_STOP_POLL_NS;
+    if (until.tv_nsec >= 1000000000L) {
+      until.tv_sec++;
+      until.tv_nsec -= 1000000000L;
+    }
+    int waited = pthread_cond_timedwait(&request.cond, &ni_route_lock, &until);
+    if (waited != ETIMEDOUT || request.done || request.taken || !NI_STOP_ASKED()) continue;
+    /* Asked to stop, and still queued: withdrawn. */
+    NiRoute *before = NULL;
+    for (NiRoute *at = ni_route_head; at != NULL && at != &request; at = at->next) before = at;
+    if (before != NULL) before->next = request.next;
+    else ni_route_head = request.next;
+    if (ni_route_tail == &request) ni_route_tail = before;
+    atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
+    scr_ni_unserved = true;
+    break;
+  }
   pthread_mutex_unlock(&ni_route_lock);
   pthread_cond_destroy(&request.cond);
+  if (scr_ni_unserved) NI_STOP_PENDING();
 }
 
 bool scr_ni_remote_pending(void) {
@@ -1509,6 +1563,7 @@ void scr_ni_remote_dispatch(void) {
       if (request != NULL) {
         ni_route_head = request->next;
         if (ni_route_head == NULL) ni_route_tail = NULL;
+        request->taken = true;
         atomic_fetch_sub_explicit(&ni_route_pending, 1, memory_order_release);
       }
       pthread_mutex_unlock(&ni_route_lock);
@@ -2304,6 +2359,11 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
     size_t repairs = ni_repaired;
     size_t len = 0;
     char *outcome = ni_call(0, true, file, specifier, name, json, &len);
+    if (outcome == NULL && scr_ni_unserved) {
+      /* This thread was asked to stop before the call ran. */
+      scr_dyn_release(json);
+      return NULL;
+    }
     if (outcome == NULL) ni_fatal("scriptc: the libnode bridge answered no outcome\n");
     ni_load_failed = false;
     result = ni_outcome(outcome, len);

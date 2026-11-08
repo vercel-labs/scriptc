@@ -130,6 +130,9 @@ static void nh_share_job(void *p) {
  * or another thread that has shared the tables (nh_share). */
 enum { NH_THREAD_UNSEEN, NH_THREAD_ISLAND, NH_THREAD_OTHER };
 static SCR_TL uint8_t nh_thread = NH_THREAD_UNSEEN;
+/* A thread that was asked to stop before its first island operation ran
+ * (nh_thread_first): it never shared the tables and must not read them. */
+static SCR_TL bool nh_cut_off = false;
 
 void scr_ni_handles_install(void);
 
@@ -145,6 +148,10 @@ SCR_COLD static void nh_thread_first(void) {
    * switches the tables to shared mode. */
   nh_thread = NH_THREAD_OTHER;
   scr_ni_on_node_stack(nh_share_job, NULL);
+  /* Asked to stop before the island's thread got to it: the tables may be
+   * unshared still. The thread holds no island value and gets none (its
+   * operations get no answer either), so it reads no table from here on. */
+  if (scr_ni_unserved) nh_cut_off = true;
 }
 
 /* Every island operation starts here, before it touches a table. */
@@ -237,7 +244,7 @@ static void nh_pin(void *obj, int kind, ScrNodeRef *ref) {
 static ScrNodeRef *nh_pinned(const void *obj, int kind) {
   /* A thread that never used the island holds no island value (and must
    * not read the table the island's thread is changing unlocked). */
-  if (nh_thread == NH_THREAD_UNSEEN && !scr_context_is_main()) return NULL;
+  if ((nh_thread == NH_THREAD_UNSEEN && !scr_context_is_main()) || nh_cut_off) return NULL;
   ScrNodeRef *ref = NULL;
   bool held = nh_lock(&nh_pins_lock);
   const void *self = nh_self();
@@ -1503,6 +1510,10 @@ __attribute__((noinline)) static int nh_run_routed(NhCall *c) {
    * answer without nh_outcome never converted it. */
   nh_routed_done();
   NhRouted r = {c, &nh_routed_copy, NULL, 0};
+  /* What the caller reads when the thread is asked to stop before the
+   * operation runs (scr_ni_unserved): nothing thrown, undefined. */
+  c->threw = 0;
+  memset(c->out, 0, sizeof *c->out);
   scr_ni_on_node_stack(nh_call_job_routed, &r);
   nh_routed_ref = r.ref;
   nh_routed_id = r.ref_id;

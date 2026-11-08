@@ -6,7 +6,9 @@ import { analyze } from "../src/index.js";
 
 // These refusals protect native layouts: an asserted predicate cannot
 // establish which union arm was found, and a second Error.cause slot would
-// disagree with accesses through the Error base class.
+// disagree with accesses through the Error base class. (A `cause` field of
+// any declared type is not a second slot: it is the error's own cause, read
+// at the declared type.)
 test.each([
   [
     "annotated find predicate",
@@ -31,15 +33,6 @@ test.each([
     console.log((["wrong", 1] as (number | string)[]).find(isNumber));
   `,
     "inline callback with an inferred predicate",
-  ],
-  [
-    "cause field",
-    `
-    class Own extends Error { override cause = "own"; }
-    const error: Error = new Own("message", { cause: "constructor" });
-    console.log(error.cause);
-  `,
-    "redeclaring Error.cause",
   ],
   [
     "cause parameter property",

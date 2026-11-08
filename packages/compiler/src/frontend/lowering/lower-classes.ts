@@ -3071,8 +3071,11 @@ export function collectClassShapeInner(
           // initializer) after super() returns. `declare` and `abstract`
           // declarations are erased and define nothing. Every `.cause`
           // read of an Error-rooted class is the checked-dynamic property
-          // (fieldTarget's errorCause container), so only types that read
-          // back unchanged from it are accepted.
+          // (fieldTarget's errorCause container). A declared type other
+          // than 'unknown' or 'object' (`cause: Error`) is what each read
+          // is checked against: a read of the field before the constructor
+          // assigns it, or of a value written through the base class's
+          // `unknown`, throws where the type does not admit the value.
           if (!isJsSourceFile(ts.getSourceFileOfNode(member))) {
             if (
               modifiers?.some(
@@ -3082,11 +3085,14 @@ export function collectClassShapeInner(
               )
             )
               continue;
-            if (!lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)))
+            if (
+              !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
+              lowerer.mapTypeOf(lowerer.typeOf(member.name)) === null
+            )
               lowerer.unsupported(
                 "SC1090",
                 memberName,
-                "redeclaring Error.cause with a type other than 'unknown' or 'object' (declare it 'cause?: unknown' and narrow at the read)",
+                "redeclaring Error.cause with a type that does not compile (declare it 'cause?: unknown' and narrow at the read)",
               );
           }
           // The first declaration in the chain creates the property: its

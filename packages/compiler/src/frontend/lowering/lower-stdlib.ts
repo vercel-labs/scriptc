@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
-import { resolveImport } from "../program.js";
+import { resolveImport, resolveNpmImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
@@ -40,6 +40,7 @@ import {
 } from "./surfaces.js";
 import {
   unsupportedNativeApiDiag,
+  unsupportedPackageImportDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
@@ -2315,7 +2316,20 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
     );
   }
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
-  if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+  if (res === undefined) {
+    // A package nothing imports statically was never judged by the
+    // selection, so the program does not compile it. The call gets the
+    // refusal a static import of that package gets, which names the
+    // package: under the automatic policy the package then runs in a Node
+    // island (node-islands/growth.ts) and the next round loads it at this
+    // call (lower-node-island.ts, lowerIslandLoadCall).
+    const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
+    if (npm !== null) {
+      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call)));
+      throw new PoisonError();
+    }
+    lowerer.refuseUnsupportedApi("'import()'", call);
+  }
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, specifier);

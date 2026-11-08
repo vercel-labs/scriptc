@@ -14,10 +14,6 @@ import type { IrLibFn } from "./builtin-signatures.js";
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
-  // scr_node_island_iter_view and scr_node_island_iter_pair read and
-  // write the island unit's pin table; neither enters the island.
-  "nodeIsland.iterView",
-  "nodeIsland.iterPair",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.

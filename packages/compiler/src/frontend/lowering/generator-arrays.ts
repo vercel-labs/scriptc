@@ -16,31 +16,24 @@
  * it through the checked cast, which answers the same object. A program
  * without such an array keeps its adapter calls as they are.
  *
- * A program that uses a Node island asks the same question of every
- * adapter call, for the generator it handed to the island and got back, and
- * one more: whether the value is an island iterator that already has a
- * generator of the slot's type. The runtime keeps that pair
- * (scr_node_island_iter_pair), so an island iterator is one generator in
- * the program however often it crosses, and the generator is the island's
- * iterator again when it becomes a dynamic value (the backend boxes a
- * generator through scr_node_island_iter_ref in such a program).
- *
- * The array form stays refused beside an island: a build that runs one
- * keeps the array type these slots had before, which has no storage. Each
- * use that was refused by name is refused by the same rule, and a program
- * that reaches the end of lowering with such a slot, where the backend
- * stopped with an internal error, is refused here. */
+ * A generator that crosses into a Node island is not the same value on the
+ * other side yet, in either direction: the island value matrix pins that
+ * for parameters and fields. The array form would add silent cases of it
+ * (`[made].indexOf(kept)`, an element handed back to the island). A build
+ * that runs an island therefore keeps the array type these slots had
+ * before, which has no storage: each use that was refused by name is
+ * refused by the same rule, and a program that reaches the end of lowering
+ * with such a slot, where the backend stopped with an internal error, is
+ * refused here. */
 import { nodeIslandGeneratorArrayDiag } from "../../diagnostics/diagnostic.js";
 import { varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
   STRING,
-  VOID,
   typeKey,
   type IrExpr,
   type IrFunction,
-  type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
@@ -51,20 +44,14 @@ import { keyedHelperName } from "./stable-names.js";
 /** Completes the slots that hold an array of generators
  * (DegradedType.generatorArray): refuses them in a program that can hand a
  * value to a Node island, and otherwise makes the conversions into
- * generator-typed slots keep a native generator's identity. A program that
- * uses an island keeps it in every such conversion, and an island
- * iterator's with it. */
+ * generator-typed slots keep a native generator's identity. */
 export function finalizeGeneratorArrays(lowerer: Lowerer, functions: IrFunction[]): void {
   const slots = [...lowerer.degradedTypes.values()].flatMap((degraded) =>
     degraded.generatorArray === undefined ? [] : [degraded.generatorArray],
   );
-  const island = lowerer.usesNodeIsland;
-  if (slots.length === 0) {
-    if (island) takeNativeGenerators(lowerer, functions, true);
-    return;
-  }
+  if (slots.length === 0) return;
   const islands = lowerer.hasNodeIslands();
-  if (islands || island) {
+  if (islands || lowerer.usesNodeIsland) {
     // With an island set the slots kept their array type, and the uses the
     // lowering refused are the program's diagnostics, as before.
     if (islands && lowerer.diags.length > 0) return;
@@ -78,22 +65,13 @@ export function finalizeGeneratorArrays(lowerer: Lowerer, functions: IrFunction[
     }
     return;
   }
-  takeNativeGenerators(lowerer, functions, false);
+  takeNativeGenerators(lowerer, functions);
 }
 
 /** Replaces each call of an iterator adapter over a checked-dynamic value
  * by a call of `%iter.exact.<n>(source)`: the source itself when it is the
- * native generator of the slot's type, else the adapter over it.
- *
- * With `island`, the helper first takes the source as the generator the
- * program already holds it as (nodeIsland.iterView: the generator paired
- * with an island iterator), and pairs the adapter it makes over an island
- * iterator. (A checked cast into a generator type asks the same question
- * in the backend, so a generator that became a dynamic value, its island
- * iterator's handle, is that generator again.) And an adapter steps an
- * island value's own iterator (nodeIsland.iterator), where `dyn.iterator`
- * would read every value out of it first. */
-function takeNativeGenerators(lowerer: Lowerer, functions: IrFunction[], island: boolean): void {
+ * native generator of the slot's type, else the adapter over it. */
+function takeNativeGenerators(lowerer: Lowerer, functions: IrFunction[]): void {
   const adapters = new Set<string>();
   for (const [key, name] of lowerer.valueHelpers)
     if (key.startsWith(ITERATOR_ADAPTER_KEY)) adapters.add(name);
@@ -104,16 +82,6 @@ function takeNativeGenerators(lowerer: Lowerer, functions: IrFunction[], island:
     e.args.length === 1 &&
     e.args[0]!.type.kind === "dyn" &&
     e.type.kind === "generator";
-  const viewOf = (value: IrExpr, type: IrType): IrExpr => ({
-    kind: "libCall",
-    fn: "nodeIsland.iterView",
-    args: [value, { kind: "strLit", value: typeKey(type), type: STRING, loc: value.loc }],
-    type: DYN,
-    loc: value.loc,
-  });
-  /** An adapter's `dyn.iterator(source)`, beside an island. */
-  const opens = (e: IrExpr): e is IrExpr & { kind: "libCall" } =>
-    island && e.kind === "libCall" && e.fn === "dyn.iterator";
   const locs = new Map(
     functions.flatMap((fn) => (adapters.has(fn.name) ? [[fn.name, fn.loc]] : [])),
   );
@@ -125,70 +93,48 @@ function takeNativeGenerators(lowerer: Lowerer, functions: IrFunction[], island:
     // needs it first.
     const loc = locs.get(adapter) ?? call.loc;
     const source = varRef("source.0", DYN, loc);
-    const key: IrExpr = { kind: "strLit", value: typeKey(expected), type: STRING, loc };
-    /** `value` itself when it is the native generator of the slot's type. */
-    const taken = (value: IrExpr): IrStmt => ({
-      kind: "if",
-      cond: { kind: "libCall", fn: "dyn.typedRefIs", args: [value, key], type: BOOL, loc },
-      then: [{ kind: "return", value: { kind: "dynCheck", value, type: expected, loc }, loc }],
-      else_: null,
-      loc,
-    });
-    const fresh: IrExpr = { kind: "call", callee: adapter, args: [source], type: expected, loc };
-    const view = varRef("view.0", DYN, loc);
-    const made = varRef("made.0", expected, loc);
     const fn: IrFunction = {
       name: keyedHelperName(lowerer, "%iter.exact", `iterExact:${typeKey(expected)}`),
       params: [{ localId: "source.0", name: "source", type: DYN }],
       returnType: expected,
-      locals: [
-        { id: "source.0", name: "source", type: DYN, mutable: false },
-        ...(island
-          ? [
-              { id: "view.0", name: "view", type: DYN, mutable: false },
-              { id: "made.0", name: "made", type: expected, mutable: false },
-            ]
-          : []),
-      ],
-      body: island
-        ? [
-            { kind: "varDecl", localId: "view.0", init: viewOf(source, expected), loc },
-            taken(view),
-            { kind: "varDecl", localId: "made.0", init: fresh, loc },
+      locals: [{ id: "source.0", name: "source", type: DYN, mutable: false }],
+      body: [
+        {
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "dyn.typedRefIs",
+            args: [source, { kind: "strLit", value: typeKey(expected), type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          then: [
             {
-              kind: "exprStmt",
-              expr: {
-                kind: "libCall",
-                fn: "nodeIsland.iterPair",
-                args: [source, { kind: "dynFrom", value: made, type: DYN, loc }],
-                type: VOID,
-                loc,
-              },
+              kind: "return",
+              value: { kind: "dynCheck", value: source, type: expected, loc },
               loc,
             },
-            { kind: "return", value: made, loc },
-          ]
-        : [taken(source), { kind: "return", value: fresh, loc }],
+          ],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "return",
+          value: { kind: "call", callee: adapter, args: [source], type: expected, loc },
+          loc,
+        },
+      ],
       loc,
     };
     helpers.set(adapter, fn);
     return fn.name;
   };
   for (const fn of functions) {
-    const adapter = adapters.has(fn.name);
-    const untouched = everyStmtList(fn.body, {
-      stmt: () => true,
-      expr: (e) => !adapted(e) && !(adapter && opens(e)),
-    });
-    if (untouched) continue;
+    const calls = !everyStmtList(fn.body, { stmt: () => true, expr: (e) => !adapted(e) });
+    if (!calls) continue;
     fn.body = transformStmtList(fn.body, {
       stmt: (s) => s,
-      expr: (e) =>
-        adapted(e)
-          ? { ...e, callee: exact(e.callee, e.type, e) }
-          : adapter && opens(e)
-            ? { ...e, fn: "nodeIsland.iterator" }
-            : e,
+      expr: (e) => (adapted(e) ? { ...e, callee: exact(e.callee, e.type, e) } : e),
     });
   }
   for (const fn of helpers.values()) {

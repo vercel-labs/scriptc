@@ -2964,33 +2964,6 @@ export class LlDyn {
         break;
       }
       case "generator":
-        if (this.islandReads()) {
-          // An island iterator the program already holds as a generator of
-          // this type is that generator (scr_node_island_iter_view; any
-          // other value is itself there, and fails below).
-          const key = typeKey(t);
-          host.declare(`declare ptr @scr_node_island_iter_view(ptr, ptr)`);
-          host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${host.sizeType})`);
-          host.declare(`declare void @scr_dyn_release(ptr)`);
-          const view = B.tmp(),
-            paired = B.tmp();
-          B.line(
-            `${view} = call ptr @scr_node_island_iter_view(ptr %d, ptr ${host.internLiteral(key)})`,
-          );
-          B.line(
-            `${paired} = call zeroext i1 @scr_dyn_typed_ref_is(ptr ${view}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")})`,
-          );
-          const yes = B.newLabel("dc.iter"),
-            no = B.newLabel("dc.iter.fail");
-          B.condBr(paired, yes, no);
-          B.startBlock(yes);
-          const generator = B.tmp();
-          B.line(`${generator} = call ptr @scr_dyn_typed_ref_unbox(ptr ${view})`);
-          B.line(`call void @scr_dyn_release(ptr ${view})`);
-          B.terminate(`ret ptr ${generator}`);
-          B.startBlock(no);
-          B.line(`call void @scr_dyn_release(ptr ${view})`);
-        }
         B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);
         B.terminate(`ret ptr null`);
         break;

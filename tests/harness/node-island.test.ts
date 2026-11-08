@@ -911,6 +911,51 @@ export function probe(): string {
       });
     }, 300_000);
 
+    test("statements, a loop and a constant after a builtin patch are evaluated where they are written", async () => {
+      // Each of these is an island operation the island could evaluate from
+      // a module the build writes (closed-island-init.ts). Node would read
+      // that module through the patched fs.readFileSync, so in a program
+      // with a module that patches a builtin none of them moves.
+      const dir = copyCorpus(
+        "closed-after-patch",
+        `import { installPatch, mark, word } from "./patch.ts";
+installPatch();
+mark("statement");
+for (const name of ["first", "second"]) mark(name);
+const made = word("constant");
+console.log(made);
+`,
+        {
+          "patch.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+export function installPatch(): void {
+  Object.defineProperty(fs, "readFileSync", {
+    value: (() => "patched") as unknown as typeof fs.readFileSync,
+    writable: true,
+    configurable: true,
+  });
+}
+export function mark(name: string): void {
+  console.log("island " + name);
+}
+export function word(name: string): string {
+  return "island " + name;
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      const env = { ...process.env, XDG_CACHE_HOME: join(dir, "cache") };
+      expect(await run(join(dir, "main"), [], env)).toEqual({
+        stdout: "island statement\nisland first\nisland second\nisland constant\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 300_000);
+
     // A package that reads the patched member joins the island set, where the
     // patch exists. A package marked native stays native: the island does not
     // take it, and the read is SC8003 rather than a build whose package sees

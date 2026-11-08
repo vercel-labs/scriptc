@@ -557,6 +557,32 @@ function closedText(scan: Scan, node: ts.Expression): string | null {
   return refuse(scan, node, "an expression the island cannot take as written");
 }
 
+/** Whether a module of the program patches a builtin module, which keeps
+ * `source` where it is written (traced). A closed constant or statement is
+ * a module the build writes, which Node loads when the program reaches it.
+ * A module of the program that patches a builtin module
+ * (`fs.readFileSync`, say) has run by then, and Node's loader reads the
+ * generated file through the patch: the program would evaluate what the
+ * patch returns, where Node evaluated an expression in place. Such a
+ * program keeps its initializers, statements and loops where they are
+ * written; a table is the island's only through a statement that is
+ * (privateTable), so it stays native with them. */
+function readThroughPatch(
+  lowerer: Lowerer,
+  source: ts.VariableDeclaration | ts.ExpressionStatement | ts.ForOfStatement,
+): boolean {
+  for (const module of lowerer.nodeIslands!.modules.values())
+    if (module.patchesBuiltin === true) {
+      traceClosed(
+        lowerer,
+        source,
+        `${module.file} patches a builtin module, and Node would read the generated module through the patch`,
+      );
+      return true;
+    }
+  return false;
+}
+
 /** The closed constant `declaration` of `statement` declares, or null. */
 function closedDeclaration(
   lowerer: Lowerer,
@@ -577,22 +603,7 @@ function closedDeclaration(
   )
     return null;
   if (!islandRooted(lowerer, initializer)) return null;
-  // A closed constant is a module the build writes, which Node loads when
-  // the program reaches the declaration. A module of the program that
-  // patches a builtin module (`fs.readFileSync`, say) has run by then, and
-  // Node's loader reads the generated file through the patch: the program
-  // would evaluate what the patch returns, where Node evaluated an
-  // expression in place. Such a program keeps its initializers where they
-  // are written.
-  for (const module of lowerer.nodeIslands!.modules.values())
-    if (module.patchesBuiltin === true) {
-      traceClosed(
-        lowerer,
-        declaration,
-        `${module.file} patches a builtin module, and Node would read the generated module through the patch`,
-      );
-      return null;
-    }
+  if (readThroughPatch(lowerer, declaration)) return null;
   if (!sharedWithIsland(lowerer, declaration, initializer)) {
     const type = lowerer.checker.typeToString(lowerer.typeOf(declaration.name));
     traceClosed(lowerer, declaration, `its value becomes native data of type '${type}'`);
@@ -637,6 +648,7 @@ function closedExpressionStatement(
   const expression = withoutParenthesesTypeWrappers(statement.expression);
   if (!ts.isCallExpression(expression) && !ts.isNewExpression(expression)) return null;
   if (!islandRooted(lowerer, expression)) return null;
+  if (readThroughPatch(lowerer, statement)) return null;
   const scan = newScan(lowerer, statement);
   const text = closedText(scan, expression);
   if (text === null) {
@@ -848,6 +860,7 @@ function closedLoop(lowerer: Lowerer, statement: ts.ForOfStatement): ClosedConst
   }
   // An island operation today: some call of the body is one.
   if (!calls.some((call) => islandRooted(lowerer, call))) return null;
+  if (readThroughPatch(lowerer, statement)) return null;
   const scan = newScan(lowerer, statement);
   // The iterable evaluates before the bindings exist.
   const iterable = closedText(scan, statement.expression);

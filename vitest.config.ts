@@ -93,6 +93,13 @@ export default defineConfig({
       // for byte, so the binaries they spawn run with the report off;
       // tests/harness/deferred-fence-report.test.ts turns it back on.
       SCRIPTC_DEFERRED_REPORT: "0",
+      // The variadic check that runs when lowering ends is skipped for a
+      // program lowering knows to hold no variadic function
+      // (variadic-functions.ts). With this, every build of the suites walks
+      // such a program anyway and fails when the walk finds what the skip
+      // would have missed, so a pass that breaks the skip's premise fails
+      // here first. The walk is the one every build ran before the skip.
+      SCRIPTC_CHECK_VARIADIC_SKIP: "1",
     },
     ...(workers !== undefined && workers !== ""
       ? { maxWorkers: Number(workers), minWorkers: 1 }

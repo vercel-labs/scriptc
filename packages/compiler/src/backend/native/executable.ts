@@ -167,6 +167,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
   // A generator function that reads `this` (scr_gen_receiver.c).
   unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
+  // The kept-source read a record width copy emits (scr_record_source_get.c).
+  unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -519,6 +521,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The stderr report of a deferred diagnostic that fires
   // (ir/deferred-fence.ts).
   unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
+  // `fn.constructor = value` on a value the checker types as a function.
+  unit((u) => u.opts.functionOwnWrite === true, "scr_dyn_fn_own.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -560,12 +564,19 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_HTTP_SERVER_META", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_json.c's function-property write/define/delete paths and
+  // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must
+  // name the builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_FN_MEMBER_PROPS", when: (opts) => opts.fnMemberProps },
   // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
   // entries.
   { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
+  // scr_fs_stream.c's `signal` option, whose abort listener comes from the
+  // event-target unit.
+  { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.

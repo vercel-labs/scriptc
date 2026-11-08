@@ -852,6 +852,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_net_sock_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name})`,
     );
+    // The runtime raises ERR_OUT_OF_RANGE for a delay out of range: the
+    // caller sees it here, before the statement after the call runs.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   return host.emitGenericLibCall(e);

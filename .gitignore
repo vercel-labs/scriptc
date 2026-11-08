@@ -8,6 +8,8 @@ node_modules/
 !tests/diagnostics/retired-engine-import-refusal/node_modules/
 !tests/diagnostics/package-value-shape-refusal/node_modules/
 !tests/diagnostics/node-island-function-value/node_modules/
+!tests/diagnostics/umd-export-forced-native/node_modules/
+!tests/diagnostics/worker-island-value/node_modules/
 !tests/fixtures/commander-calc/node_modules/
 !tests/fixtures/npm/node_modules/
 !tests/corpus/*/node_modules/

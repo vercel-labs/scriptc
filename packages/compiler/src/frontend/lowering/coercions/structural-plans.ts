@@ -261,6 +261,17 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       if (exact.length === 1) selected = exact;
       else if (exact.length === 0 && lossless.length === 1) selected = lossless;
     }
+    // The same question asked of the records the fields hold: several arms
+    // keep every field of the record itself, and one alone also keeps every
+    // field of each record inside it (`{ shape: { a; b; c } }` into
+    // `{ shape: { a; b; c; d?: undefined } } | { shape: { a; d } }`, the
+    // element types the checker gives an array of object literals). The
+    // others would drop members the value has, so that arm is its layout.
+    // Asked only of a selection the rules above left with several arms.
+    if (selected.length > 1 && src.kind === "record") {
+      const whole = selected.filter(({ arm }) => keepsEveryMember(lowerer, src, arm, new Set()));
+      if (whole.length === 1) selected = whole;
+    }
     // Arms no READ can tell apart for THIS value: each source field lands
     // on a same-typed field of every arm, and everything the arms add is a
     // field the source lacks that the completion rule already fills with
@@ -497,6 +508,54 @@ function keepsEveryField(
     !target.tuple &&
     source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
   );
+}
+
+/** True when a value of type `source` converted to `target` keeps every
+ * member it declares, at every depth: a record's fields all have a field of
+ * their name in the target record, whose type keeps theirs the same way; an
+ * array's elements keep theirs; a union keeps an arm when one of its own
+ * arms does. Types that hold no record (and equal types) lose nothing.
+ * Tuples, index signatures and accessor slots have other layouts and
+ * answer false. `seen` holds the record pairs being compared: a recursive
+ * layout that reaches itself has lost nothing on the way. */
+function keepsEveryMember(
+  lowerer: Lowerer,
+  source: IrType,
+  target: IrType,
+  seen: Set<string>,
+): boolean {
+  if (typeEquals(source, target)) return true;
+  if (source.kind === "union") {
+    const arms = lowerer.unions.get(source.unionId)?.arms;
+    return (
+      arms !== undefined &&
+      arms.every((arm) => isUnitType(arm) || keepsEveryMember(lowerer, arm, target, seen))
+    );
+  }
+  if (target.kind === "union") {
+    const arms = lowerer.unions.get(target.unionId)?.arms;
+    return (
+      arms !== undefined &&
+      arms.some((arm) => !isUnitType(arm) && keepsEveryMember(lowerer, source, arm, seen))
+    );
+  }
+  if (source.kind === "array")
+    return target.kind === "array" && keepsEveryMember(lowerer, source.elem, target.elem, seen);
+  if (source.kind !== "record") return true;
+  if (target.kind !== "record") return false;
+  const from = lowerer.shapes.get(source.shapeId);
+  const to = lowerer.shapes.get(target.shapeId);
+  if (!from || !to) return false;
+  if (from.tuple || to.tuple || from.indexValue !== undefined || to.indexValue !== undefined)
+    return false;
+  if (shapeHasAccessorSlots(from) || shapeHasAccessorSlots(to)) return false;
+  const pair = `${from.id}>${to.id}`;
+  if (seen.has(pair)) return true;
+  seen.add(pair);
+  return from.fields.every((field) => {
+    const kept = to.fields.find((candidate) => candidate.name === field.name);
+    return kept !== undefined && keepsEveryMember(lowerer, field.type, kept.type, seen);
+  });
 }
 
 /** Whether width-lifting this source record into ANY of the candidate arms
@@ -763,7 +822,14 @@ export function describeRecordWidthBlocker(
 
 /** Plan a record projection from plain class fields, including inherited
  * fields and absent optional fields. Methods, accessors, reserved slots and
- * builtin runtime layouts cannot be read as ordinary emitted storage. */
+ * builtin runtime layouts cannot be read as ordinary emitted storage: a
+ * class rooted in a runtime-provided class (an emitter, an error, a stream)
+ * projects the fields its program classes declare, which follow the runtime
+ * prefix in the emitted struct, and declines a member the runtime class
+ * itself holds. Such a class projects no absent optional field either: the
+ * runtime class holds members outside its declared field list (an error's
+ * stack, a stream's state), so a name no program class declares is not known
+ * to be absent on the instance. */
 export function objToRecordPlan(
   lowerer: Lowerer,
   className: string,
@@ -775,9 +841,12 @@ export function objToRecordPlan(
   // Reserved slots (%call hybrids, %get:/%set: accessor closures) are
   // not projectable storage.
   if (to.fields.some((f) => f.name.startsWith("%"))) return null;
+  let runtimeRooted = false;
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime)
-      return null;
+    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime) {
+      if (c === info || to.fields.some((f) => c.fields.has(f.name))) return null;
+      runtimeRooted = true;
+    }
   }
   const key = `obj:${className}:${toId}`;
   if (lowerer.coercions.planning.has(key)) return new Map();
@@ -796,7 +865,7 @@ export function objToRecordPlan(
       }
       const ft = info.fields.get(tf.name);
       if (ft === undefined) {
-        if (tf.type.kind !== "union") return null;
+        if (runtimeRooted || tf.type.kind !== "union") return null;
         const def = lowerer.unions.get(tf.type.unionId);
         const utag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
         if (utag < 0) return null;

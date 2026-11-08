@@ -2906,16 +2906,19 @@ function validateFunction(
             e.loc,
           );
         }
+        // An adapter reports the length of the function it adapts. Any other
+        // closure may record its own: fewer than its type's parameters (a
+        // literal lowered with a slot's parameter list) or more (a method
+        // whose class inherits a shorter slot).
         if (
           e.length !== undefined &&
           (e.adapts === true ||
-            target.captures === undefined ||
             !Number.isInteger(e.length) ||
             e.length < 0 ||
-            e.length >= e.type.params.length)
+            e.length > 0xffffffff)
         ) {
           err(
-            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            `closure ${e.fnName}: length ${e.length} must be a function length (a 32-bit count) on a closure that is not an adapter`,
             e.loc,
           );
         }
@@ -5728,7 +5731,13 @@ function validateFunction(
         err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
       return true;
     }
-    if (e.fn === "promise.allTuple") {
+    if (e.fn === "promise.entryRejected" || e.fn === "promise.entryReason") {
+      const promise = e.args[0]?.type;
+      if (promise?.kind !== "promise" || promise.inner.kind !== "void")
+        err(`libCall ${e.fn} must read a Promise<void> entry`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple" || e.fn === "promise.allSettledTuple") {
       const [entries, build] = e.args;
       if (
         entries?.type.kind !== "array" ||

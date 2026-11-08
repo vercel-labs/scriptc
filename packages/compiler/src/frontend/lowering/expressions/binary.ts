@@ -96,7 +96,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
-import { emptyArrayLiteralArm } from "./array-literals.js";
+import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -499,7 +499,9 @@ export function lowerNullishPair(
     // Both sides live in the checked-dynamic tree — the right converts through
     // the usual boundary and evaluates lazily in its branch; a default
     // with no dyn representation keeps the fence.
-    const right = lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
+    const right =
+      dynamicArrayOperand(lowerer, expr.right, expr) ??
+      lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
     if (right.type.kind !== "dyn") {
       lowerer.unsupported(
         "SC1100",
@@ -773,6 +775,19 @@ export function lowerNullishPair(
       lowerer.nullishFuncResults.add(expr);
       return { kind: "nullish", left, right, type: present, loc };
     }
+  }
+  // A left side that holds only null or undefined (a value asserted or
+  // declared `undefined`): the default is the answer, after the left's
+  // evaluation.
+  if (rest.length === 0) {
+    const right = lowerer.lowerExprExpecting(expr.right, type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: left, loc }],
+      result: right,
+      type: right.type,
+      loc,
+    };
   }
   lowerer.unsupported(
     "SC1090",
@@ -3220,7 +3235,9 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  let right = lowerer.lowerExpr(expr.right);
+  let right =
+    (left.type.kind === "dyn" ? dynamicArrayOperand(lowerer, expr.right, expr) : null) ??
+    lowerer.lowerExpr(expr.right);
   // `logger || console` over an optional record: console flows into the
   // record the left operand holds (console-records.ts), so the pair stays
   // typed, as the checker's own result type is.
@@ -3308,6 +3325,13 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
             target = withUnitArm(target, arm.kind, lowerer.unions) ?? target;
         }
       }
+    }
+    // `a && b` whose left can be a read the checker narrowed to `null` or
+    // `undefined` and the lowering restored (restoredAndResult): the pair's
+    // checker type says nothing about `b`.
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const restored = restoredAndResult(lowerer, expr, left.type, right.type, target);
+      if (restored !== null) target = restored;
     }
     // A broad-JSDoc npm-static body can leave the CHECKER result `any`
     // even after declaration-backed specialization has recovered both
@@ -3627,6 +3651,39 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     type: left.type,
     loc,
   };
+}
+
+/** The type of `a && b` where `a` can evaluate to a read the checker
+ * narrowed to nothing but `null` or `undefined` and whose stored value the
+ * lowering reads instead (NarrowingStability.restoredNothingRead: a `let`
+ * that only a closure assigns, a member a callback sets). The checker typed
+ * the pair as that nothing, so `b` has no part in its type although `b` is
+ * what the pair answers once the binding holds a value. The pair then holds
+ * what its operands leave: the left's values that can be falsy, and the
+ * right's. Null when the checker's type (`target`) already takes every
+ * value of the right operand, which leaves every pair that lowered before
+ * as it was, and when an operand has no value to hold. */
+function restoredAndResult(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  left: IrType,
+  right: IrType,
+  target: IrType | null,
+): IrType | null {
+  const armsOf = (type: IrType): readonly IrType[] | null =>
+    type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? null) : [type];
+  const kept = armsOf(left);
+  const answered = armsOf(right);
+  if (kept === null || answered === null) return null;
+  if ([...kept, ...answered].some((arm) => arm.kind === "void" || arm.kind === "dyn")) return null;
+  const held = target === null ? [] : (armsOf(target) ?? []);
+  if (answered.every((arm) => held.some((other) => typeEquals(other, arm)))) return null;
+  if (lowerer.narrowing.restoredNothingRead(expr.left) === null) return null;
+  const byKey = new Map<string, IrType>();
+  for (const arm of kept) if (!REF_TRUTHY_KINDS.has(arm.kind)) byKey.set(typeKey(arm), arm);
+  for (const arm of answered) byKey.set(typeKey(arm), arm);
+  const arms = sortArms([...byKey.values()]);
+  return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
 /** Whether the checker leaves any non-unit value of `type` that can be

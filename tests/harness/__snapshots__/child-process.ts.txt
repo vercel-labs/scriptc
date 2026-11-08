@@ -75,7 +75,7 @@ child-process.ts:54:24 - error SC2020: 'execFile option 'killSignal'' is part of
      |                        ^~~~~~~~~~~~~~~~~~~~~
   55 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
-  hint: encoding: 'utf8', maxBuffer, cwd, and shell: true are the supported options in the callback form
+  hint: encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
 
 child-process.ts:55:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
 

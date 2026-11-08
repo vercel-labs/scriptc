@@ -599,10 +599,16 @@ export class LlWalkers {
         return true;
       case "array":
         return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
-      case "union":
+      case "union": {
+        // A union can reach itself through an array arm; its other arms
+        // are already being asked.
+        const key = `union:${t.unionId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
         );
+      }
       case "record": {
         if (seen.has(t.shapeId)) return false;
         seen.add(t.shapeId);

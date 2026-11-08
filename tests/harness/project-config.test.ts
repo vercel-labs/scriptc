@@ -73,6 +73,29 @@ test("node-types: Headers, Request and Response members typed by undici-types ru
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a type derived from the undici-types Response class is the native handle", async () => {
+  const outDir = outDirFor("builtin-class-derived-types");
+  const entry = join(nodeTypesDir, "builtin-class-derived-types.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32"
+        ? "builtin-class-derived-types.exe"
+        : "builtin-class-derived-types",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: fetch's string | URL | Request input and a custom fetch cast to typeof fetch", async () => {
   const outDir = outDirFor("fetch-input-unions");
   const entry = join(nodeTypesDir, "fetch-input-unions.ts");
@@ -107,6 +130,18 @@ for (const [name, title] of [
   [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
+  [
+    "process-stream-member-writes",
+    "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
+  ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
   ],
 ] as const) {
   test(`node-types: ${title}`, async () => {

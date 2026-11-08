@@ -6630,6 +6630,7 @@ static void scr_net_cleanup_atexit(void) {
     scr_net_ls_drop(&s->err_ls);
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
+    scr_net_ls_drop(&s->new_listener_ls);
     scr_closure_release(s->close_override);
     s->close_override = NULL;
     scr_net_server_unregister(s);

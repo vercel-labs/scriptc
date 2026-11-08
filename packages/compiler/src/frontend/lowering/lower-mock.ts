@@ -35,7 +35,8 @@ import {
 } from "../../ir/ir.js";
 import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
-import { mockType as mockHybridType } from "../mock-shapes.js";
+import { mockContextType } from "../mock-shapes.js";
+import { callableBox } from "./callable-properties.js";
 import { locOf } from "../program.js";
 import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
@@ -599,33 +600,67 @@ function mockContextLiteral(
   };
 }
 
-/** The Mock<F> record over a context: { %call: wrapper, mock: context }. */
-function mockRecord(
+/** The Mock<F> value: the wrapper closure, carrying its context as the
+ * `mock` own property of the function. That is the one representation Node
+ * gives `Mock<F> = F & { mock }` — the mock IS the function object, so
+ * `typeof` answers "function" and every alias observes the same context.
+ * Node serves the context through a proxy: it is invisible to `Object.keys`
+ * and answers only on a read of `mockFn.mock`. The property is therefore
+ * defined with a non-enumerable data descriptor rather than stored as an
+ * enumerable table entry, so `Object.keys` stays empty. A proxy has no own
+ * property to report, so Node answers `"mock" in mockFn` false and
+ * `Object.getOwnPropertyNames` without it; an own property answers the
+ * other way. That reflection difference is the documented divergence.
+ * The wrapper goes into a hidden local so the descriptor and the result
+ * name the same closure. */
+function defineMockProps(
   lowerer: Lowerer,
-  mockType: IrType,
-  ctxType: IrType,
+  stmts: IrStmt[],
+  call: ts.CallExpression,
+  wrapper: IrExpr,
   ctx: IrExpr,
   loc: SrcLoc,
-): IrExpr {
-  const { fn } = mockContextFields(lowerer, ctxType)!;
-  return {
-    kind: "recordLit",
-    fields: [
-      {
-        name: "%call",
-        value: {
-          kind: "call",
-          callee: mockWrapperFactory(lowerer, ctxType, loc),
-          args: [ctx],
-          type: fn,
+): void {
+  const boxed = callableBox(lowerer, wrapper);
+  if (!boxed) {
+    lowerer.noLowering(
+      "mock functions of this type",
+      call,
+      "the wrapper closure must be boxable as an object to carry the mock context",
+    );
+  }
+  const dyn = (value: IrExpr): IrExpr => lowerer.coerceToExpected(value, DYN);
+  const flag = (value: boolean): IrExpr => ({
+    kind: "dynFrom",
+    value: { kind: "boolLit", value, type: BOOL, loc },
+    type: DYN,
+    loc,
+  });
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [
+        boxed,
+        dyn(strLit("mock", loc)),
+        {
+          kind: "dynObjLit",
+          fields: [
+            { key: strLit("value", loc), value: dyn(ctx) },
+            { key: strLit("writable", loc), value: flag(true) },
+            { key: strLit("enumerable", loc), value: flag(false) },
+            { key: strLit("configurable", loc), value: flag(true) },
+          ],
+          type: DYN,
           loc,
         },
-      },
-      { name: "mock", value: ctx },
-    ],
-    type: mockType,
+      ],
+      type: DYN,
+      loc,
+    },
     loc,
-  };
+  });
 }
 
 /** A union return type needs an undefined arm: the calls log records
@@ -683,17 +718,11 @@ export function lowerMockFn(
   tracker: MockTracker,
 ): IrExpr {
   const loc = locOf(call);
+  // `Mock<F>` maps to F's func type: the mock IS the wrapper closure.
   const mockType = lowerer.mapTypeOf(lowerer.typeOf(call));
-  const shape = mockType?.kind === "record" ? lowerer.shapes.get(mockType.shapeId) : undefined;
-  const ctxType = shape?.fields.find((f) => f.name === "mock")?.type;
-  if (
-    !mockType ||
-    !shape ||
-    shape.fields.length !== 2 ||
-    !shape.fields.some((f) => f.name === "%call") ||
-    !ctxType ||
-    !isMockContextType(lowerer, ctxType)
-  ) {
+  const fn = mockType?.kind === "func" ? mockType : null;
+  const ctxType = fn ? mockContextType(fn, lowerer.typeCtx) : null;
+  if (!fn || !ctxType || !isMockContextType(lowerer, ctxType)) {
     lowerer.noLowering(
       `${what} of this function type`,
       call,
@@ -701,7 +730,6 @@ export function lowerMockFn(
     );
   }
   const fields = mockContextFields(lowerer, ctxType!)!;
-  const { fn } = fields;
   requireUndefinedResultArm(lowerer, fields, call, what);
   const args = call.arguments.nodes;
   if (args.length > 2 || args.some(ts.isSpreadElement)) {
@@ -749,13 +777,22 @@ export function lowerMockFn(
     },
     trackMock(lowerer, tracker, ctxType!, ctx(), loc),
   );
-  return {
-    kind: "seqExpr",
-    stmts,
-    result: mockRecord(lowerer, mockType!, ctxType!, ctx(), loc),
-    type: mockType!,
+  const wrapperLocal = lowerer.declareHiddenLocal("%mockWrapper", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: wrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
+      type: fn,
+      loc,
+    },
     loc,
-  };
+  });
+  const wrapper = varRef(wrapperLocal.id, fn, loc);
+  defineMockProps(lowerer, stmts, call, wrapper, ctx(), loc);
+  return { kind: "seqExpr", stmts, result: wrapper, type: fn, loc };
 }
 
 const METHOD_HINT =
@@ -807,12 +844,8 @@ export function lowerMockMethod(
       METHOD_HINT,
     );
   }
-  const mockType = mockHybridType(fn as FuncType, lowerer.typeCtx);
-  const ctxType =
-    mockType?.kind === "record"
-      ? lowerer.shapes.get(mockType.shapeId)?.fields.find((f) => f.name === "mock")?.type
-      : undefined;
-  if (!mockType || !ctxType || !isMockContextType(lowerer, ctxType)) {
+  const ctxType = mockContextType(fn as FuncType, lowerer.typeCtx);
+  if (!ctxType || !isMockContextType(lowerer, ctxType)) {
     lowerer.noLowering(
       `${what} of a '${lowerer.fmt(fn!)}' method`,
       call,
@@ -821,7 +854,7 @@ export function lowerMockMethod(
   }
   if (!resultIsDiscarded(call)) {
     const resultType = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (!resultType || typeKey(resultType) !== typeKey(mockType!)) {
+    if (!resultType || typeKey(resultType) !== typeKey(fn)) {
       lowerer.noLowering(
         `${what} with an implementation of another type`,
         args[2] ?? call,
@@ -867,27 +900,43 @@ export function lowerMockMethod(
       loc,
     },
     trackMock(lowerer, tracker, ctxType!, ctx(), loc),
-    // The object's field: the wrapper that records the object as `this`.
-    recordSet(
-      obj(),
-      field,
-      {
-        kind: "call",
-        callee: mockWrapperFactory(lowerer, ctxType!, loc, true),
-        args: [ctx(), lowerer.coerceToExpected(obj(), DYN)],
-        type: fn!,
-        loc,
-      },
-      loc,
-    ),
   );
-  return {
-    kind: "seqExpr",
-    stmts,
-    result: mockRecord(lowerer, mockType!, ctxType!, ctx(), loc),
-    type: mockType!,
+  // The object's field: the wrapper that records the object as `this`.
+  const fieldWrapperLocal = lowerer.declareHiddenLocal("%mockFieldWrapper", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: fieldWrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc, true),
+      args: [ctx(), lowerer.coerceToExpected(obj(), DYN)],
+      type: fn!,
+      loc,
+    },
     loc,
-  };
+  });
+  const fieldWrapper = varRef(fieldWrapperLocal.id, fn!, loc);
+  stmts.push(recordSet(obj(), field, fieldWrapper, loc));
+  defineMockProps(lowerer, stmts, call, fieldWrapper, ctx(), loc);
+  // The returned mock: a wrapper that records `this` as undefined, the way
+  // Node's bare call of the returned function does (the field's wrapper
+  // records the object). Both carry the same context as `mock`.
+  const wrapperLocal = lowerer.declareHiddenLocal("%mockWrapper", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: wrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
+      type: fn!,
+      loc,
+    },
+    loc,
+  });
+  const wrapper = varRef(wrapperLocal.id, fn!, loc);
+  defineMockProps(lowerer, stmts, call, wrapper, ctx(), loc);
+  return { kind: "seqExpr", stmts, result: wrapper, type: fn!, loc };
 }
 
 /** The trackers' restoreAll() and reset(): `mock.restoreAll()`,

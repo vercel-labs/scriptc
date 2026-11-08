@@ -59,6 +59,11 @@ export interface NativeLinkFeatures {
   fsExistsValue?: boolean;
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** The program writes, defines or deletes a function's inherited member
+   * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
+   * and scr_dyn_invoke.c. Absent for every other program, so their objects
+   * stay identical. */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -80,6 +85,10 @@ export interface NativeLinkFeatures {
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`:
+   * links the SCR_FS_STREAM_SIGNAL build of the fs stream unit, and the
+   * event-target unit its abort listener comes from. */
+  fsStreamSignal?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -170,6 +179,12 @@ export interface NativeLinkFeatures {
   /** A generator function that reads `this`: scr_gen_receiver.c. Absent
    * (false) for programs without one. */
   genReceiver?: boolean;
+  /** A record-to-record conversion reads a field the source type does not
+   * declare through the kept-source table (frontend/lowering/
+   * record-sources.ts): scr_record_source_get.c. Absent (false) for every
+   * program, including one that only casts records, so a cast alone keeps
+   * its runtime objects byte for byte. */
+  recordSourceGet?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
@@ -215,6 +230,9 @@ export interface NativeLinkFeatures {
   /** A runtimeFence that stands for a deferred diagnostic links
    * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value links scr_dyn_fn_own.c;
+   * absent (false) otherwise. */
+  functionOwnWrite?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

@@ -241,6 +241,9 @@ typedef enum {
   X(WEB_WRITABLE, 74) /* a TransformStream's WritableStream (scr_fetch.c) */ \
   X(WEB_WRITER, 75) /* WritableStreamDefaultWriter (scr_fetch.c) */ \
   X(WORKER, 35) \
+  X(WS_BYOB_CONTROLLER, 100) /* ReadableByteStreamController (scr_webstreams.c) */ \
+  X(WS_BYOB_READER, 101) /* ReadableStreamBYOBReader (scr_webstreams.c) */ \
+  X(WS_BYOB_REQUEST, 102) /* ReadableStreamBYOBRequest (scr_webstreams.c) */ \
   X(WS_BYTE_STRATEGY, 85) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
   X(WS_COUNT_STRATEGY, 86) /* CountQueuingStrategy (scr_webstreams.c) */ \
   X(WS_RCONTROLLER, 87) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
@@ -254,13 +257,12 @@ typedef enum {
   X(WS_WRITABLE, 95) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
   X(WS_WRITER, 96) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
-/* Tags added since the last pin, by name only (see above). The words
- * segmenter and its result are pinned above (97, 98); the byte-stream
- * objects are new. */
+/* Tags added since the last pin, by name only (see above). The byte-stream
+ * objects are pinned above at the values they had (100 to 102), so the two
+ * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
-  Y(WS_BYOB_CONTROLLER) /* ReadableByteStreamController (scr_webstreams.c) */ \
-  Y(WS_BYOB_READER) /* ReadableStreamBYOBReader (scr_webstreams.c) */ \
-  Y(WS_BYOB_REQUEST) /* ReadableStreamBYOBRequest (scr_webstreams.c) */
+  Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
+  Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -2906,5 +2908,13 @@ void scr_record_marked_freeze(void *record);
  * its record is frozen. */
 void *scr_dyn_record_view_kept(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
                                const char *key, size_t key_len, void *(*alloc)(void));
+
+/* `fn.constructor = value` where the compiler sees a function receiver
+ * (dyn.fnOwnSet): the write into the function's own property table, past
+ * the refusal scr_dyn_key_set keeps for a receiver known only at run time
+ * (scr_dyn_fn_own.c, linked only into programs with such a write).
+ * Declared last: a line added above would move every later line of this
+ * header in the units that include it. */
+void scr_dyn_fn_own_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 
 #endif /* SCR_DYN_H */

@@ -2642,12 +2642,118 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       isForeignExpr(lowerer, left.expression)
     ) {
       const cop = COMPOUND_ASSIGN_OPS[op];
-      if (cop === undefined)
-        boundaryFail(lowerer, "a logical assignment to an island object's member", expr);
+      if (cop === undefined) return islandLogicalAssign(lowerer, expr, left, op, loc);
       return islandCompoundAssign(lowerer, expr, left, cop, loc);
     }
   }
   return null;
+}
+
+/** `obj.k ??= v`, `obj.k ||= v`, `obj.k &&= v` (and `obj[k] ??= v`, …) on
+ * an island object, in JavaScript's order: the receiver and the key
+ * evaluate once, the member is read once, and only where the operator
+ * selects the right side does that side run and get written (a member that
+ * keeps its value is not written at all, which a setter or a proxy in the
+ * island observes). The expression answers the value the member kept, or
+ * the value written, at the expression's declared type. */
+function islandLogicalAssign(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  op: ts.SyntaxKind,
+  loc: SrcLoc,
+): IrExpr {
+  lowerer.usesNodeIsland = true;
+  const stmts: IrStmt[] = [];
+  const holdIn = (into: IrStmt[], name: string, init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, DYN);
+    into.push({ kind: "varDecl", localId: local.id, init, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  // `(p as V).k ??= v`: the view is erased, so the handle is the receiver.
+  const target = holdIn(
+    stmts,
+    "%islandObj",
+    lowerer.coerceToExpected(
+      lowerer.lowerExpr(withoutParenthesesTypeWrappers(left.expression)),
+      DYN,
+    ),
+  );
+  const key = ts.isPropertyAccessExpression(left)
+    ? null
+    : holdIn(stmts, "%islandKey", toIsland(lowerer, left.argumentExpression));
+  const name: IrExpr | null = ts.isPropertyAccessExpression(left)
+    ? { kind: "strLit", value: left.name.text, type: STRING, loc }
+    : null;
+  const old = holdIn(
+    stmts,
+    "%islandOld",
+    name !== null
+      ? { kind: "libCall", fn: "nodeIsland.get", args: [target, name], type: DYN, loc }
+      : { kind: "libCall", fn: "nodeIsland.getKey", args: [target, key!], type: DYN, loc },
+  );
+  // The selected branch: the right side, then the write.
+  const writeStmts: IrStmt[] = [];
+  const next = holdIn(writeStmts, "%islandNext", toIsland(lowerer, expr.right));
+  writeStmts.push({
+    kind: "exprStmt",
+    expr:
+      name !== null
+        ? {
+            kind: "libCall",
+            fn: "nodeIsland.set",
+            args: [target, name, next],
+            type: { kind: "void" },
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "nodeIsland.setKey",
+            args: [target, key!, next],
+            type: { kind: "void" },
+            loc,
+          },
+    loc,
+  });
+  const write: IrExpr = { kind: "seqExpr", stmts: writeStmts, result: next, type: DYN, loc };
+  const unit = (which: "null" | "undefined"): IrExpr => ({
+    kind: "dynScalarEq",
+    left: old,
+    right:
+      which === "null"
+        ? {
+            kind: "dynFrom",
+            value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+            type: DYN,
+            loc,
+          }
+        : dynUndefinedExpr(loc),
+    type: BOOL,
+    loc,
+  });
+  const truthy: IrExpr = { kind: "dynTest", test: "truthy", value: old, type: BOOL, loc };
+  const value: IrExpr =
+    op === ts.SyntaxKind.QuestionQuestionEqualsToken
+      ? {
+          kind: "ternary",
+          cond: {
+            kind: "logical",
+            op: "||",
+            left: unit("null"),
+            right: unit("undefined"),
+            type: BOOL,
+            loc,
+          },
+          then: write,
+          else_: old,
+          type: DYN,
+          loc,
+        }
+      : op === ts.SyntaxKind.BarBarEqualsToken
+        ? { kind: "ternary", cond: truthy, then: old, else_: write, type: DYN, loc }
+        : { kind: "ternary", cond: truthy, then: write, else_: old, type: DYN, loc };
+  const result = islandValueAt(lowerer, holdIn(stmts, "%islandKept", value), expr);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 /** `obj.k op= v` / `obj[k] op= v` on an island object: the receiver and

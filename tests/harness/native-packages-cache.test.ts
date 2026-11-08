@@ -73,3 +73,17 @@ test("the runtime pack's cache key names the LLVM helper's inputs", () => {
   const runtime = keyPatterns("runtime");
   expect(keyPatterns("helper").filter((pattern) => !runtime.includes(pattern))).toEqual([]);
 });
+
+test("test jobs restore the cache of ICU's archives that the pack build saves", () => {
+  // A cache is found by its key and its path list together, so the read-only
+  // restore in .github/actions/icu-downloads repeats both exactly.
+  type Step = { id?: string; uses?: string; with?: { key?: string; path?: string } };
+  const restore = (
+    load(readFileSync(join(repoRoot, ".github/actions/icu-downloads/action.yml"), "utf8")) as {
+      runs: { steps: Step[] };
+    }
+  ).runs.steps.find((step) => step.uses?.startsWith("actions/cache/restore@"));
+  const saved = (action.runs.steps as Step[]).find((step) => step.id === "icu");
+  expect(saved?.with?.key).toContain("icu-downloads-");
+  expect(restore?.with).toEqual(saved?.with);
+});

@@ -1,0 +1,21 @@
+name: ICU release archives
+description: Restore the pack build's download cache for tests that read ICU's pinned inputs
+runs:
+  using: composite
+  steps:
+    # Two tests read ICU's release archives as the pack build does
+    # (tests/harness/icu-data-filter.test.ts the data zip,
+    # packages/runtime/test/common-symbols.test.ts the sources). A test job
+    # gets the built pack as an artifact, not the archives, so each of them
+    # used to download its archive from the release host, and a host that
+    # answered 504 turned the shard red. This restores the cache that
+    # .github/actions/native-packages saves, read only: the path list and the
+    # key are the same as there (the path list is part of a cache's identity).
+    # The tests verify the archives against their pins and download through
+    # the build's retry helper when the cache is absent.
+    - uses: actions/cache/restore@v4
+      with:
+        path: |
+          node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz
+          node_modules/.cache/scriptc-icu-data/icu4c-*-data-bin-l.zip
+        key: icu-downloads-v1-${{ hashFiles('packages/runtime-pack-common/scripts/icu-inputs.mjs') }}

@@ -2579,11 +2579,6 @@ export function lowerInExpression(
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
-      // The code slot, or an own `code` with another value
-      // (`err.code = undefined` is present).
-      if (key === "code") {
-        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
-      }
       // The receiver evaluates for its effects when the answer is static.
       const always = (): IrExpr =>
         recv.kind === "varRef" || recv.kind === "caughtNarrow"
@@ -2610,30 +2605,47 @@ export function lowerInExpression(
       if (staticInfo && declares(staticInfo)) return always();
       // Any other key: a descendant class that declares it (instanceof), or
       // an own property set at runtime (a throw site's extra fields,
-      // Object.assign, writes through a dynamic view). Keys built-in errors
-      // keep outside their class fields depend on the runtime error and
-      // stay fenced.
-      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
+      // Object.assign, writes through a dynamic view). `code` is such a key
+      // too: at runtime it is the error's code slot, or an own `code` with
+      // another value (`err.code = undefined` is present), and a subclass
+      // that declares a `code` field holds it in the field instead. The
+      // other keys built-in errors keep outside their class fields depend
+      // on the runtime error and stay fenced.
+      const staticName = recv.type.className;
+      const declarers: string[] = [];
+      for (const c of lowerer.classes.values()) {
+        const name = c.def.name;
+        if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
+          continue;
+        // A declaring ancestor below the static class already covers it.
+        if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
+        declarers.push(name);
+      }
+      if (key === "code" && declarers.length === 0) {
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
+      }
+      if (key === "code" || !BUILTIN_ERROR_SLOT_KEYS.has(key)) {
         const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
         const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
         const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
-        const tests: IrExpr[] = [];
-        const staticName = recv.type.className;
-        for (const c of lowerer.classes.values()) {
-          const name = c.def.name;
-          if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
-            continue;
-          // A declaring ancestor below the static class already covers it.
-          if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
-          tests.push({ kind: "instanceOf", value: ref(), className: name, type: BOOL, loc });
-        }
-        tests.push({
-          kind: "libCall",
-          fn: "error.hasKey",
-          args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+        const tests: IrExpr[] = declarers.map((className) => ({
+          kind: "instanceOf",
+          value: ref(),
+          className,
           type: BOOL,
           loc,
-        });
+        }));
+        tests.push(
+          key === "code"
+            ? { kind: "libCall", fn: "error.hasCode", args: [ref()], type: BOOL, loc }
+            : {
+                kind: "libCall",
+                fn: "error.hasKey",
+                args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+                type: BOOL,
+                loc,
+              },
+        );
         const answer = tests.reduce((acc, test) => ({
           kind: "logical",
           op: "||",

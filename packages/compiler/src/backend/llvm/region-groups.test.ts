@@ -288,3 +288,146 @@ console.log(total);
   for (const root of callsOf(mod, "tree").filter((c) => groups.roots.has(c)))
     expect(closed.has(root)).toBe(false);
 });
+
+/** The constructions of `className` in the module, in order. */
+function newsOf(mod: IrModule, className: string): IrExpr[] {
+  const out: IrExpr[] = [];
+  const visit = (node: Node): void => {
+    if (node.kind === "new" && node.className === className) out.push(node);
+    const kids: Node[] = [];
+    children(node, kids);
+    for (const k of kids) visit(k);
+  };
+  for (const fn of mod.functions) for (const s of fn.body) visit(s);
+  return out;
+}
+
+const ROWS = `
+interface Row { n: number }
+class Slot {
+  held: Row[];
+  constructor(held: Row[]) {
+    this.held = held;
+  }
+}
+function rows(k: number): Row[] {
+  const made: Row[] = [];
+  for (let i = 0; i < 4; i++) made.push({ n: k + i });
+  return made;
+}
+`;
+
+test("a value used in place whose reads stay in the statement is a root", async () => {
+  const mod = await moduleFor(`${ROWS}
+function run(): number {
+  return rows(1)[2]!.n + new Slot(rows(3)).held.length;
+}
+console.log(run());
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(callsOf(mod, "rows").some((c) => groups.roots.has(c))).toBe(true);
+  expect(newsOf(mod, "Slot").every((c) => groups.roots.has(c))).toBe(true);
+});
+
+test("a reference read out of a value used in place and kept past the statement makes it no root", async () => {
+  const mod = await moduleFor(`${ROWS}
+function sameSlot(slot: Slot): Slot {
+  return slot;
+}
+let saved: Row[] = [];
+function keep(list: Row[]): number {
+  saved = list;
+  return list.length;
+}
+function bound(): number {
+  const first = rows(1)[2]!;
+  const held = new Slot(rows(3)).held;
+  const through = sameSlot(new Slot(rows(5))).held;
+  return first.n + held.length + through.length;
+}
+function returned(): Row[] {
+  return new Slot(rows(7)).held;
+}
+function passed(): number {
+  return keep(new Slot(rows(9)).held);
+}
+console.log(bound(), returned().length, passed(), saved.length);
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(callsOf(mod, "rows").some((c) => groups.roots.has(c))).toBe(false);
+  expect(newsOf(mod, "Slot").some((c) => groups.roots.has(c))).toBe(false);
+});
+
+test("a function that stores a reference read out of what it allocates is not leak-free", async () => {
+  const mod = await moduleFor(`${ROWS}
+let saved: Row[] = [];
+let last: Row = { n: 0 };
+function stash(): void {
+  saved = new Slot(rows(1)).held;
+}
+function stashElement(): void {
+  last = rows(2)[1]!;
+}
+function count(): number {
+  return new Slot(rows(3)).held.length;
+}
+stash();
+stashElement();
+console.log(saved.length, last.n, count());
+`);
+  const groups = analyzeRegionGroups(mod);
+  expect(groups.leakFree.has("stash")).toBe(false);
+  expect(groups.leakFree.has("stashElement")).toBe(false);
+  expect(callsOf(mod, "stash").some((c) => groups.calls.has(c))).toBe(false);
+  expect(callsOf(mod, "stashElement").some((c) => groups.calls.has(c))).toBe(false);
+  expect(groups.leakFree.has("count")).toBe(true);
+});
+
+test("an element removed from a root's array, or copied out of its collection, is read out of it", async () => {
+  const mod = await moduleFor(`${ROWS}
+function byN(k: number): Map<number, Row> {
+  const m = new Map<number, Row>();
+  for (let i = 0; i < 4; i++) m.set(i, { n: k + i });
+  return m;
+}
+let last: Row = { n: 0 };
+let removed: Row[] = [];
+let copy = new Map<number, Row>();
+function popped(): number {
+  const list = rows(1);
+  last = list.pop()!;
+  return list.length;
+}
+function shifted(): number {
+  const list = rows(2);
+  last = list.shift()!;
+  return list.length;
+}
+function spliced(): number {
+  const list = rows(3);
+  removed = list.splice(0, 2, { n: 9 });
+  return list.length;
+}
+function copied(): number {
+  const m = byN(4);
+  copy = new Map(m);
+  return m.size;
+}
+function counted(): number {
+  const list = rows(5);
+  const top = list.pop()!;
+  return list.length + top.n;
+}
+console.log(popped(), shifted(), spliced(), copied(), counted(), last.n, removed.length, copy.size);
+`);
+  const groups = analyzeRegionGroups(mod);
+  const rootIn = (name: string): boolean => {
+    const fn = mod.functions.find((f) => f.name === name)!;
+    return [...groups.roots].some((root) => groups.rootFunction.get(root) === fn);
+  };
+  expect(rootIn("popped")).toBe(false);
+  expect(rootIn("shifted")).toBe(false);
+  expect(rootIn("spliced")).toBe(false);
+  expect(rootIn("copied")).toBe(false);
+  expect(rootIn("counted")).toBe(true);
+});

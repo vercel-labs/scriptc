@@ -1,5 +1,6 @@
 import {
   BIGINT_BYTES_NAMES,
+  boxesAsLiveCapsule,
   type IrClassDef,
   type IrExpr,
   type IrFunction,
@@ -923,26 +924,36 @@ const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
  * reached through a record field, an array element, a union arm, another
  * function's parameter or result): each such function's thunk converts the
  * caller's argument, and the argument adopts the converted value
- * (dynFnThunk), which boxes that parameter type as a live capsule. */
+ * (dynFuncThunkHelper), which boxes that parameter type as a live capsule.
+ * The list is the thunks' own: a parameter whose type has no live capsule
+ * adopts nothing, and neither does a typed rest parameter, which the thunk
+ * packs from the caller's tail arguments (no value of the caller's stands
+ * for it). The adoption unit is linked for these parameters alone. */
 function adoptedParameters(
   t: IrType,
   tables: TypeTables,
   seen: Set<string>,
   out: IrType[],
 ): IrType[] {
-  const holdsReference = (p: IrType): boolean =>
-    p.kind === "record" ||
-    p.kind === "array" ||
-    (p.kind === "union" &&
-      (tables.unions.get(p.unionId)?.arms.some((arm) => holdsReference(arm)) ?? false));
   switch (t.kind) {
-    case "func":
-      for (const p of t.params) {
-        if (holdsReference(p)) out.push(p);
+    case "func": {
+      const fixed =
+        t.rest === true && t.restAbi === "typed" ? t.params.length - 1 : t.params.length;
+      t.params.forEach((p, i) => {
+        if (
+          i < fixed &&
+          boxesAsLiveCapsule(
+            p,
+            (id) => tables.records.get(id),
+            (id) => tables.unions.get(id),
+          )
+        )
+          out.push(p);
         adoptedParameters(p, tables, seen, out);
-      }
+      });
       adoptedParameters(t.ret, tables, seen, out);
       break;
+    }
     case "array":
       adoptedParameters(t.elem, tables, seen, out);
       break;

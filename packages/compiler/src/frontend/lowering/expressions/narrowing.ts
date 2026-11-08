@@ -20,6 +20,7 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  boxesAsLiveCapsule,
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
@@ -2239,15 +2240,21 @@ function checkedDynCast(
  * outright. The node stays a `dynCheck` (its `shared` flag asks the backend
  * for the adoption), so every consumer that reads or rebuilds a checked
  * conversion sees the node it always saw; one that rebuilds it without the
- * flag keeps the copy. */
+ * flag keeps the copy. The flag is set only for a target the backend has a
+ * live capsule for (boxesAsLiveCapsule): the flag links the adoption unit,
+ * so it stands on a conversion only where an adoption is emitted. */
 export function sharedDynConversion(
   lowerer: Lowerer,
   value: IrExpr,
   target: IrType,
   loc: SrcLoc,
 ): IrExpr {
-  if (!holdsReference(lowerer, target) || unsharedDynValue(value))
-    return { kind: "dynCheck", value, type: target, loc };
+  const live = boxesAsLiveCapsule(
+    target,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
+  if (!live || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
   return { kind: "dynCheck", value, shared: true, type: target, loc };
 }
 

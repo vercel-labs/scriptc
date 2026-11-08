@@ -46,6 +46,7 @@ import {
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
+  boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
@@ -5995,10 +5996,13 @@ export class LlDyn {
    * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
     const host = this.host;
-    if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) return null;
+    const live = boxesAsLiveCapsule(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+    if (!live) return null;
     if (t.kind === "union") {
-      const arms = host.unionsById.get(t.unionId)?.arms ?? [];
-      if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;
       const boxed = B.tmp();
       B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${expr})`);
       return boxed;

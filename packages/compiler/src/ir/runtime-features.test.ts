@@ -10,6 +10,7 @@ import {
   type IrFunction,
   type IrModule,
   type IrLibFn,
+  type IrType,
 } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
@@ -972,5 +973,37 @@ describe("runtime feature snapshots", () => {
       childProcess: true,
       childErrorEvent: false,
     });
+  });
+
+  test("links the adoption unit only for a boxed function whose thunk adopts an argument", () => {
+    const boxes = (fn: IrType): boolean => {
+      const mod = module();
+      mod.functions[0]!.locals.push({ id: "fn", name: "fn", mutable: false, type: fn });
+      mod.functions[0]!.body.push({
+        kind: "exprStmt",
+        loc,
+        expr: {
+          kind: "dynFrom",
+          type: DYN,
+          loc,
+          value: { kind: "varRef", localId: "fn", type: fn, loc },
+        },
+      });
+      return moduleRuntimeFeatures(mod).declAdopt;
+    };
+    const names = arrayOf(STRING);
+    // An array parameter takes the caller's array: the thunk adopts it.
+    expect(boxes({ kind: "func", params: [names], ret: VOID })).toBe(true);
+    expect(boxes({ kind: "func", params: [STRING, names], ret: VOID })).toBe(true);
+    // A typed rest parameter is packed from the caller's tail arguments: no
+    // value of the caller's stands for it, the thunk adopts nothing, and the
+    // unit stays out.
+    expect(boxes({ kind: "func", params: [names], ret: VOID, rest: true, restAbi: "typed" })).toBe(
+      false,
+    );
+    expect(
+      boxes({ kind: "func", params: [names, names], ret: VOID, rest: true, restAbi: "typed" }),
+    ).toBe(true);
+    expect(boxes({ kind: "func", params: [STRING, BOOL], ret: STRING })).toBe(false);
   });
 });

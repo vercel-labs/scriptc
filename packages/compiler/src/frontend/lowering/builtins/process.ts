@@ -424,6 +424,26 @@ export function lowerProcessStreamProperty(
       loc,
     };
   }
+  // The same value through a first-class stream (`const original =
+  // out.write` where `out: NodeJS.WriteStream` holds stdout or stderr): the
+  // write slot of the stream object the value names.
+  if (
+    member === "write" &&
+    direct === null &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream"
+  ) {
+    const out = lowerer.lowerExpr(expr.expression);
+    if (out.type.kind === "procStream") {
+      return {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(out, DYN),
+        key: strLit("write", locOf(expr.name)),
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
+  }
   // `if (process.stdin.setRawMode)`: Node's stdin has the method only
   // when it is a TTY. The runtime's stream object answers the same
   // presence (the method or undefined); calls keep their direct lowering.

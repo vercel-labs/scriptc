@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/json-stringify-function-fences.ts"
+ ],
+ "diags": []
+}

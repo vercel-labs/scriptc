@@ -7,10 +7,8 @@
 // Modes: `leaf` uses only classes and records whose fields hold primitives
 // and strings (no cycle is possible); `tree` uses a class that can form a
 // cycle but never does; `linked` forms parent cycles the collector must find.
-// This is 9967-short-lived-objects.ts in a program that owns a WeakMap:
-// `seen` observes one long-lived object, so every disposal reports to the
-// weak-key table, and the `observed` mode makes one object and one record
-// per iteration a weak key.
+// This program owns no weak collection, so nothing observes a disposal;
+// 9994-short-lived-objects-weak.ts is the same loop in a program that does.
 
 class Attr {
   name: string;
@@ -77,7 +75,6 @@ class Sink {
   }
 }
 
-const seen = new WeakMap<object, number>();
 
 // ---- leaf: nothing here can be on a cycle ----
 
@@ -176,14 +173,11 @@ function renderEl(frame: Frame, sink: Sink, el: El, done: (() => number)[]): num
 
 function treeRender(frame: Frame, sink: Sink, i: number, link: boolean, observe: boolean): number {
   const root = buildEl(i, 0, link);
-  if (observe) seen.set(root, i);
-  if (observe) seen.set(root.props, i);
   frame.current = root;
   frame.lastProps = root.props;
   const done: (() => number)[] = [];
   let n = renderEl(frame, sink, root, done);
   for (const f of done) n += f();
-  if (observe) n += seen.get(root) ?? 0;
   frame.renders++;
   return n + (observe ? 1 : 0);
 }
@@ -191,14 +185,12 @@ function treeRender(frame: Frame, sink: Sink, i: number, link: boolean, observe:
 function run(mode: string, iterations: number): void {
   const frame = new Frame();
   const sink = new Sink();
-  seen.set(frame, 1);
   let total = 0;
   for (let i = 0; i < iterations; i++) {
     if (mode === "leaf") total += leafRender(frame, sink, i);
     else total += treeRender(frame, sink, i, mode === "linked", mode === "observed");
     total = total % 1000003;
   }
-  total += seen.get(frame) ?? 0;
   console.log(mode, iterations, total, sink.length, sink.hash, frame.renders, frame.depth);
 }
 
@@ -207,7 +199,6 @@ if (mode === undefined) {
   run("leaf", 300);
   run("tree", 300);
   run("linked", 300);
-  run("observed", 300);
 } else {
   run(mode, Number(process.argv[3] ?? "1000"));
 }

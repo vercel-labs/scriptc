@@ -1,5 +1,7 @@
 /* White-box memory contract: small suspended fibers must not commit their
- * whole stack, but large live frames must still survive awaits and yields. */
+ * whole stack, but large live frames must still survive awaits and yields.
+ * With the argument `timers`: the order of a loop turn's due timers and
+ * immediates. */
 #undef NDEBUG
 #include "scr_async.c"
 #include <assert.h>
@@ -80,8 +82,73 @@ static void deep_gen(ScrFiber *f, void *unused) {
   scr_gen_out_f64(scr_gen_of_fiber(f), 92);
 }
 
-int main(void) {
+/* The order of one loop turn whose timers are all due when it starts. Every
+ * deadline below has passed before the loop runs, so the heap decides the
+ * order and no clock does. */
+static char turn_order[8];
+static size_t turn_count;
+
+static void turn_note(char name) {
+  assert(turn_count < sizeof turn_order);
+  turn_order[turn_count++] = name;
+}
+
+static void timer_created_first(ScrClosure *self) {
+  (void)self;
+  turn_note('a');
+}
+
+static void immediate_queued_by_timer(ScrClosure *self) {
+  (void)self;
+  turn_note('i');
+}
+
+static void timer_created_second(ScrClosure *self) {
+  (void)self;
+  turn_note('b');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+}
+
+static void timer_created_third(ScrClosure *self) {
+  (void)self;
+  turn_note('c');
+}
+
+static void immediate_queued_by_script(ScrClosure *self) {
+  (void)self;
+  turn_note('d');
+}
+
+static void push_due_timer(void (*fn)(ScrClosure *), double deadline_ms) {
+  ScrTimer timer = {.deadline_ms = deadline_ms,
+                    .seq = scr_timer_seq++,
+                    .cb = scr_closure_new((void *)fn, 0),
+                    .reffed = true};
+  scr_timer_push(timer);
+}
+
+/* Due timers run in the order of their deadlines, whichever was created
+ * first, and timers of one deadline in the order of their creation. The
+ * immediates queued before the turn run after the due timers, and an
+ * immediate a timer's callback queues runs after those, in the same turn. */
+static void due_timers_run_by_deadline_before_immediates(void) {
+  double passed = scr_now_ms() - 1000;
+  push_due_timer(timer_created_first, passed + 20);
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_script, 0));
+  push_due_timer(timer_created_second, passed + 10);
+  push_due_timer(timer_created_third, passed + 10);
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(turn_count == 5 && memcmp(turn_order, "bcadi", 5) == 0);
+  puts("due timers run by deadline, then by creation, before the turn's immediates");
+}
+
+int main(int argc, char **argv) {
   scr_init();
+  if (argc > 1 && strcmp(argv[1], "timers") == 0) {
+    due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
   enum { COUNT = 128 };
   ScrPromise *jobs[COUNT];
   ScrGen *gens[COUNT];

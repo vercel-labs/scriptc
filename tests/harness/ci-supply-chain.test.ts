@@ -75,6 +75,16 @@ test("the pin file has one well-formed line per archive", () => {
   );
 });
 
+test("the verifier and the pin file keep LF line endings in every checkout", () => {
+  // A Windows checkout that converts line endings must not hand sh and
+  // sha256sum a carriage return at the end of every line.
+  const attributes = read(".gitattributes").split(/\r?\n/);
+  for (const path of ["scripts/verify-toolchain.sh", pinFile]) {
+    expect(attributes, path).toContain(`${path} text eol=lf`);
+    expect(read(path), path).not.toContain("\r");
+  }
+});
+
 test("every download of a toolchain archive is checked against the pin file", () => {
   // A file that fetches from one of these origins must also run the verifier.
   const origins =

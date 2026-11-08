@@ -15,15 +15,28 @@ const sown: Plot = { ...bed, rows: 4 };
 const fallow: Plot = { crop: "none", rows: 0, shade: "full" };
 console.log(Object.keys(sown).join(","), Object.keys(fallow).join(","));
 
-// Object.assign adding two optional keys to its target.
+// Object.assign adding two optional keys from a source whose own key order
+// is only known when the program runs.
 interface Hive {
   site: string;
   frames?: number;
   queen?: string;
 }
 const hive: Hive = { site: "north" };
-Object.assign(hive, { queen: "marked", frames: 10 });
+const found: { frames?: number; queen?: string } = JSON.parse('{"queen":"marked","frames":10}');
+Object.assign(hive, found);
 console.log(JSON.stringify(hive));
+
+// Object.assign from an object literal: the keys arrive in the literal's
+// order, so nothing differs.
+interface Skep {
+  site: string;
+  combs?: number;
+  straw?: string;
+}
+const skep: Skep = { site: "south" };
+Object.assign(skep, { straw: "rye", combs: 7 });
+console.log(JSON.stringify(skep));
 
 // Two optional keys assigned in an order that depends on the path taken:
 // each value records the order it took, so nothing differs.

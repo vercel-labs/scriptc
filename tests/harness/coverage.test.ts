@@ -86,6 +86,9 @@ test("divergences report as warnings, never as blockers", async () => {
     "SC6002",
     "SC6003",
     "SC6004",
+    // The key-order pass: the spread that keeps the type from recording
+    // each value's order.
+    "SC6002",
   ]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "divergences")).toBe(false);
@@ -138,8 +141,9 @@ test("a Node island value converted to a native type reports as a copy", async (
 test("a key order the compiler does not follow reports where the type is observed", () => {
   // SC6002 from the key-order pass, once per record type: a spread that
   // also sets an optional key its source lacks (in a type built in two
-  // orders), and Object.assign adding two optional keys to its target.
-  // Path-dependent assignments and literals in two orders are followed per
+  // orders), and Object.assign adding two optional keys from a source whose
+  // key order is only known at run time. Object.assign from a literal,
+  // path-dependent assignments and literals in two orders are followed per
   // value, a type with one order needs nothing, and a type whose order the
   // program never observes is not reported.
   const entry = fixture("key-order-untraced.ts");
@@ -149,7 +153,7 @@ test("a key order the compiler does not follow reports where the type is observe
   const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
   expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
     ["SC6002", 14],
-    ["SC6002", 25],
+    ["SC6002", 27],
   ]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "divergences")).toBe(false);
@@ -486,11 +490,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(6).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("5 warnings: the program compiled");
+    expect(human.stderr).toContain("6 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -1398,9 +1402,23 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // refused statement inside its own try block, and a corpus program that
     // has one is written so that Node throws there too (a guarded require
     // of a module that is not there), which is how it matches.
+    // SC6002 has two forms. The scan's names one object literal whose keys
+    // enumerate in another order than it wrote them, and stays a false
+    // positive here. The key-order pass's names a record type whose values
+    // create their keys in an order it could not follow: like SC6001 it
+    // judges the type, not the path one value takes, so a corpus program
+    // can hold one for objects whose keys happen to arrive in the type's
+    // order.
+    const literalOrder = (message: string): boolean =>
+      message.startsWith("this object's keys") || message.startsWith("a property this object");
     expect
       .soft(
-        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6012"),
+        (coverage.divergences ?? []).filter(
+          (d) =>
+            d.code !== "SC6001" &&
+            d.code !== "SC6012" &&
+            (d.code !== "SC6002" || literalOrder(d.message)),
+        ),
         file,
       )
       .toEqual([]);

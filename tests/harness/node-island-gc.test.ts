@@ -16,6 +16,8 @@
  *    their own once a GC found them live (tests/fixtures/node-island/gc-held.mjs).
  *  - A native AbortSignal's twin in the island is collected with it, and
  *    lives while either side holds the signal (tests/fixtures/node-island/gc-signals.mjs).
+ *  - A record without a cycle header (its fields cannot form a cycle) that
+ *    both sides dropped is collected (tests/fixtures/node-island/gc-records.ts).
  * Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -147,21 +149,79 @@ describe.skipIf(skip)("Node island cross-heap cycles", () => {
     });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
-    const small = await run(["10000"], {}, result.binaryPath);
-    const large = await run(["100000"], {}, result.binaryPath);
+    // Each run ends with two full collections (the fixture's second
+    // argument), so what it holds at exit is what the program keeps and not
+    // what the iterations since V8's last own collection made. That number
+    // is V8's schedule, not the collector's work: one collection that frees
+    // nothing (every export younger than its marking) lowers the bridge's
+    // estimate of an export's size, and the next one comes 85,000 exports
+    // later (measured: 2 of 120 runs with forty at once held 85,519 at exit
+    // instead of 500 to 33,000).
+    const collections = "2";
+    const small = await run(["10000", collections], {}, result.binaryPath);
+    const large = await run(["100000", collections], {}, result.binaryPath);
     // Requests, aborts the island's listeners saw, and the signals the
     // island holds that aborted: the two that follow a kept controller.
     expect(small.stdout).toBe("10000 20 2/6 0\n");
     expect(large.stdout).toBe("100000 110 2/6 0\n");
     for (const r of [small, large]) expect(r.totals["analyzed"]).toBe(r.totals["major"]);
+    // V8 scheduled collections of its own, by the exports' size, before the
+    // forced ones (14 to 20 of them for 300,000 exports).
+    expect(large.totals["major"]).toBeGreaterThan(Number(collections));
     // Three exports per iteration: the options record and the signal the
-    // program made, and the native signal that stands for the island's.
-    // What is left at the end is what the iterations since the last major
-    // collection made, which V8 schedules by the exports' size and not by
-    // their count so far: bounded, where a leak would hold all 300,000.
-    expect(large.totals["freed exports"]).toBeGreaterThan(3 * 100_000 - 40_000);
-    expect(large.totals["held exports"]).toBeLessThan(40_000);
-    expect(large.totals["representatives"]).toBeLessThan(40_000);
+    // program made, and the native signal that stands for the island's. All
+    // of them are gone after the collections, whatever the count. What is
+    // left is 18 exports: the signals of the ten controllers the program
+    // keeps, the four the island holds, and the two it holds through
+    // AbortSignal.any with the signal each of those follows (some runs hold
+    // one more). A twin that is not collected with its request leaves one
+    // export per iteration.
+    const kept = 32;
+    for (const [r, n] of [
+      [small, 10_000],
+      [large, 100_000],
+    ] as const) {
+      expect(r.totals["held exports"], `held exports of ${n}`).toBeLessThan(kept);
+      expect(r.totals["representatives"], `representatives of ${n}`).toBeLessThan(kept);
+      expect(r.totals["freed exports"], `freed exports of ${n}`).toBeGreaterThan(3 * n - kept);
+    }
+    // The measure sees what is not collected: with the cross-heap collector
+    // off every export is a root, and the same run holds all of them.
+    const leaked = await run(
+      ["10000", collections],
+      { SCRIPTC_NODE_ISLANDS_GC: "off" },
+      result.binaryPath,
+    );
+    expect(leaked.stdout).toBe(small.stdout);
+    expect(leaked.totals["held exports"]).toBeGreaterThanOrEqual(3 * 10_000);
+  }, 600_000);
+
+  test("records without a cycle header are collected with their requests", async () => {
+    // A typed record of a number and a string per request, handed to the
+    // island and dropped by both sides. The walk before a major GC cannot
+    // enter such a record (it has no trace function) and counts the one
+    // reference its capsule holds: a record nothing else holds is not a
+    // root. The ten the program keeps keep their identity in the island's
+    // WeakMap, and the four the island holds stay alive.
+    const dir = join(outDir, "gc-records");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(join(fixtures, "gc-records.ts"), {
+      outPath: join(dir, "gc-records"),
+      outDir: dir,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const large = await run(["200000"], {}, result.binaryPath);
+    expect(large.stdout).toBe(
+      "200000 1288890 r10,r11,r12,r13 10/10 1000,1001,1002,1003,1004,1005,1006,1007,1008,1009\n",
+    );
+    expect(large.totals["analyzed"]).toBe(large.totals["major"]);
+    // One export per iteration. V8 schedules a major GC per 32k of them:
+    // what is left is what the last interval made, where every record used
+    // to stay a root.
+    expect(large.totals["freed exports"]).toBeGreaterThan(200_000 - 70_000);
+    expect(large.totals["held exports"]).toBeLessThan(70_000);
   }, 600_000);
 
   test("a native object the program keeps keeps its identity in island weak maps", async () => {

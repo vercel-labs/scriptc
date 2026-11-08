@@ -1,19 +1,19 @@
 // @requires-libnode
-// A project that compiles under `moduleResolution: node` reads a package's
-// files by path, never through its `exports` map. It types a subpath export
-// with an ambient module that re-exports the file the subpath names
-// (`types/*.d.ts`), for a package that compiles natively and for one that
-// runs in a Node island; it imports a type from a file the map does not
-// list; and it imports a subpath whose declarations sit where a lookup by
-// path finds them. Node resolves what runs, with the map.
-import { type CliCommand, commands, run } from "shapes-kit/cli";
-import type { Palette } from "shapes-kit/dist/palette.mjs";
-import * as lineCli from "line-kit/cli";
-import { rule } from "rule-kit/cli";
+// Under node10 resolution tsc finds a package's files by their path and
+// never reads its `exports` map. This project declares two mapped subpaths
+// as the files behind them (shims/subpaths.d.ts): one of a package that
+// compiles natively, and one of a CommonJS package whose namespace import
+// makes the build decide a Node island. It also names a type in a file no
+// map lists, and imports a mapped subpath whose declarations lie where only
+// a lookup by path comes across them. What runs is still resolved by Node,
+// through the map.
+import { blend, titles, type Blend } from "spice-rack/blends";
+import type { Heat } from "spice-rack/lib/heat.mjs";
+import * as pot from "stock-pot/timers";
+import { rise } from "bread-proof/rise";
 
-const first: CliCommand = commands[0];
-const palette: Palette = { ink: "black", paper: "white" };
-console.log(commands.length, run(first.name));
-console.log(palette.ink, palette.paper);
-console.log(lineCli.widths.length, lineCli.rule(lineCli.widths[0]));
-console.log(rule(4));
+const heat: Heat = titles.length > 2 ? "warm" : "mild";
+const picked: Blend = blend(titles[1]);
+console.log(titles.length, picked.title, picked.parts, heat);
+console.log(pot.stages.join(","), pot.simmer(pot.stages.length * 10));
+console.log(rise(1.5));

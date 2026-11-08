@@ -627,7 +627,7 @@ export function stableBinding(lowerer: Lowerer, value: IrExpr, node: ts.Expressi
     symbol !== undefined &&
     declaration !== undefined &&
     (ts.isParameter(declaration) || ts.isVariableDeclaration(declaration)) &&
-    bindingNeverReassigned(lowerer, symbol, declaration)
+    bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration)
   );
 }
 

@@ -7,26 +7,26 @@ import { shared } from './renamed.mjs';
 import held from './default.mjs';
 
 const KEY = Symbol.for('corpus.9407.local');
-const local = globalThis[KEY] ?? { marks: [] };
+const local = globalThis[KEY] ?? { notes: [] };
 function snapshot() {
   return { local };
 }
-snapshot().local.marks.push('a');
-console.log('shorthand', snapshot().local.marks.join(','), snapshot().local === local);
+snapshot().local.notes.push('a');
+console.log('shorthand', snapshot().local.notes.join(','), snapshot().local === local);
 
 class Reader {
   view() {
-    return { local, size: local.marks.length };
+    return { local, size: local.notes.length };
   }
 }
 console.log('shorthand in a method', new Reader().view().size, new Reader().view().local === local);
 
 function add(name) {
-  state.marks.push(name);
-  shared.marks.push(name + name);
-  held.marks.push(name + '!');
+  state.notes.push(name);
+  shared.notes.push(name + name);
+  held.notes.push(name + '!');
 }
 add('b');
-console.log('export list', state.marks.join(','));
-console.log('renamed export', shared.marks.join(','));
-console.log('default export', held.marks.join(','));
+console.log('export list', state.notes.join(','));
+console.log('renamed export', shared.notes.join(','));
+console.log('default export', held.notes.join(','));

@@ -2,44 +2,44 @@
 // a union of tuples whose elements have one type answers the array
 // methods, a loop and a spread as one array of that type does, each arm
 // read in place.
-const GROUPS = {
-  'Fruit and Nuts': ['apple', 'pear', 'walnut'],
-  Vegetables: ['kale'],
-  Grains: ['rye', 'oat', 'rice', 'millet'],
+const LINES = {
+  harbour: ['pier', 'mill', 'depot'],
+  hill: ['mast'],
+  loop: ['gate', 'park', 'mill', 'quay'],
 } as const;
 
-type Name = (typeof GROUPS)[keyof typeof GROUPS][number];
+type Stop = (typeof LINES)[keyof typeof LINES][number];
 
-function lengths(key: keyof typeof GROUPS): number {
+function lengths(key: keyof typeof LINES): number {
   let n = 0;
-  for (const name of GROUPS[key]) n += name.length;
+  for (const stop of LINES[key]) n += stop.length;
   return n;
 }
-console.log(lengths('Vegetables'), lengths('Grains'), lengths('Fruit and Nuts'));
-console.log(GROUPS['Fruit and Nuts'].includes('pear'), GROUPS.Vegetables.join('+'));
+console.log(lengths('hill'), lengths('loop'), lengths('harbour'));
+console.log(LINES.harbour.includes('mill'), LINES.hill.join('+'));
 
-function find(name: Name): string {
+function find(stop: Stop): string {
   const out: string[] = [];
-  for (const [group, names] of Object.entries(GROUPS)) {
-    if (names.includes(name as never)) out.push(group);
+  for (const [line, stops] of Object.entries(LINES)) {
+    if (stops.includes(stop as never)) out.push(line);
     out.push(
-      String(names.indexOf(name as never)),
-      String(names.lastIndexOf(name as never)),
-      String(names.findIndex((x) => x === name)),
-      String(names.find((x) => x === name)),
-      String(names.some((x) => x === name)),
-      String(names.every((x) => x !== name)),
-      names.join('+'),
-      names.slice(1).join('+'),
-      names.map((x) => x.length).join(''),
-      names.filter((x) => x.length > 3).join('+'),
-      String(names.flatMap((x) => [x, x]).length),
+      String(stops.indexOf(stop as never)),
+      String(stops.lastIndexOf(stop as never)),
+      String(stops.findIndex((x) => x === stop)),
+      String(stops.find((x) => x === stop)),
+      String(stops.some((x) => x === stop)),
+      String(stops.every((x) => x !== stop)),
+      stops.join('+'),
+      stops.slice(1).join('+'),
+      stops.map((x) => x.length).join(''),
+      stops.filter((x) => x.length > 3).join('+'),
+      String(stops.flatMap((x) => [x, x]).length),
     );
-    for (const x of names) if (x === name) out.push(x + '!');
-    out.push([...names, 'end'].join('+'));
+    for (const x of stops) if (x === stop) out.push(x + '!');
+    out.push([...stops, 'end'].join('+'));
   }
   return out.join(' ');
 }
-console.log(find('kale'));
-console.log(find('millet'));
-console.log(find('apple'));
+console.log(find('mast'));
+console.log(find('quay'));
+console.log(find('pier'));

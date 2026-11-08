@@ -12870,16 +12870,40 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // `new` through a HELD primitive constructor (`new column.parse(raw)` where
   // the slot's type is `typeof String`): Node builds a wrapper object,
   // which the constructor's function value does not. Named here, where the
-  // type says what the slot holds; `new String(x)` itself lowers above.
-  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-    if (holdsPrimitiveConstructors(lowerer.typeOf(expr.expression), lowerer.typeCtx)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'new' through a held String, Number, Boolean or BigInt constructor value (it builds a wrapper object)",
-        "call the held constructor as a function for the primitive, or construct with the constructor's own name",
-      );
-    }
+  // type says what the slot holds; `new String(x)` itself lowers above. The
+  // refusal is the statement's, at run time: a program that never reaches
+  // the statement builds and runs as it does under Node.
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    holdsPrimitiveConstructors(lowerer.typeOf(expr.expression), lowerer.typeCtx)
+  ) {
+    const diag = unsupportedDiag(
+      "SC1090",
+      locOf(expr),
+      "'new' through a held String, Number, Boolean or BigInt constructor value (it builds a wrapper object)",
+      "call the held constructor as a function for the primitive, or construct with the constructor's own name",
+    );
+    lowerer.runtimeFences.push(diag);
+    const line =
+      ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), diag.loc.start).line + 1;
+    const never = lowerer.declareHiddenLocal("%never", DYN);
+    never.mutable = true;
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: never.id, init: null, loc },
+        {
+          kind: "runtimeFence",
+          code: diag.code,
+          message: `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`,
+          loc,
+        },
+      ],
+      result: varRef(never.id, DYN, loc),
+      diverges: true,
+      type: DYN,
+      loc,
+    };
   }
   // Checked construction supports emitted classes and builtin typed arrays.
   const callee = tryLowerExpression(lowerer, expr.expression);

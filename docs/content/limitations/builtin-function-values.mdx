@@ -15,7 +15,8 @@ A call through a held constructor converts its arguments to untyped values first
 A held constructor converts to a function type that has a first parameter (`(value: string, name: string) => unknown`), whoever calls it.
 Under a function type with no parameters it is called with no argument, and the store is refused when the program hands a function of that type to a caller that passes arguments, as for any function that reads its argument list.
 Through a function type whose first parameter is optional or accepts `undefined`, a call that passes `undefined` there, or omits the argument, throws a `TypeError`: a constructor answers a missing argument differently from `undefined` (`String()` is `""`), and the function type does not say which one the call passed.
-`new` through a held constructor, its `prototype`, and a `Map` or `Set` keyed by a union of several constructor types are refused.
+The `prototype` of a held constructor and a `Map` or `Set` keyed by a union of several constructor types are refused.
+`new` through a held constructor builds, and the statement throws `SC1090` when it runs.
 A constructor passed into a Node island is the island's own constructor there, and the island's comes back as the program's.
 
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.

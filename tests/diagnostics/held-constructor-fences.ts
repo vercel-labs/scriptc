@@ -1,6 +1,6 @@
 // Uses of a held primitive constructor that have no lowering, each refused
-// by name: `new` through the value (a wrapper object), its prototype, a
-// collection keyed by a union of several constructor types, and a store
+// by name: its prototype, a collection keyed by a union of several
+// constructor types, and a store
 // under a function type with no parameter in a program that hands a
 // function of that type to a caller that passes arguments (the constructor
 // would be answered as a call with none).

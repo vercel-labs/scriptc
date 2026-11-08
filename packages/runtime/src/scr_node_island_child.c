@@ -166,6 +166,7 @@ typedef struct NcListener {
   const ScrChildStreamOps *stream_ops;
   uint8_t event; /* SCR_CHILD_EV_* or NC_* */
   bool removed;  /* off() took it from the emitter: no later off() finds it */
+  bool on_close; /* NC_DYN: registered for 'close', so it runs in the emit that closes the group */
 } NcListener;
 
 static NcGroup *nc_group_retain(NcGroup *g) {
@@ -238,8 +239,9 @@ static ScrDyn *nc_listener_value(NcListener *l) {
 }
 
 /* The 'close' of an island child: the program's closures behind every
- * listener of its group are released, except those of 'close' itself, which
- * are still to run in this emit and release themselves when they have. */
+ * listener of its group are released, except those of 'close' itself, typed
+ * or untyped, which are still to run in this emit and release themselves
+ * when they have. */
 static void nc_group_close(NcGroup *group) {
   group->closed = true;
   size_t n = 0;
@@ -252,7 +254,7 @@ static void nc_group_close(NcGroup *group) {
   if (closures == NULL || dyns == NULL) nc_oom();
   size_t i = 0;
   for (NcListener *l = group->first; l != NULL; l = l->next, i++) {
-    if (l->event == SCR_CHILD_EV_CLOSE || l->event == NC_HOOK) continue;
+    if (l->event == SCR_CHILD_EV_CLOSE || l->event == NC_HOOK || l->on_close) continue;
     closures[i] = nc_closure_of(l->wrapper);
     if (closures[i] != NULL) scr_box_set_ref(l->wrapper->caps[1], NULL);
     dyns[i] = l->dyn;
@@ -317,6 +319,12 @@ static ScrDyn *nc_listener_thunk(ScrClosure *clo, ScrDyn *const *args, size_t ar
       ScrDyn *listener = scr_dyn_retain(l->dyn);
       scr_dyn_release(scr_dyn_call(listener, args, argc, "child listener"));
       scr_dyn_release(listener);
+      /* An untyped 'close' listener ran in the emit that closed the group. */
+      if (l->on_close && l->group != NULL && l->group->closed && l->dyn != NULL) {
+        ScrDyn *held = l->dyn;
+        l->dyn = NULL;
+        scr_dyn_release(held);
+      }
     }
     break;
   case NC_BRIDGE_WRITE:
@@ -517,6 +525,7 @@ static void nc_on_dyn(void *island, ScrStr *event, ScrDyn *listener) {
   NcListener *l;
   ScrDyn *function = nc_listener_new(group, NC_DYN, NULL, NULL, &l);
   l->dyn = scr_dyn_retain(listener);
+  l->on_close = event->len == 5 && memcmp(event->data, "close", 5) == 0;
   ScrDyn *args[2] = {scr_dyn_new_str(event), function};
   scr_dyn_release(scr_ni_call_method(h->object, "on", 2, args, 2));
   scr_dyn_release(args[0]);
@@ -563,6 +572,13 @@ static ScrDyn *nc_get(NcHandle *h, const char *key) {
 }
 
 static bool nc_number(void *island, int prop, double *value) {
+  if (prop == SCR_CHILD_PROP_FLOWING) { /* readableFlowing: null, false or true */
+    ScrDyn *flowing = nc_get(island, "readableFlowing");
+    bool known = flowing != NULL && flowing->kind == SCR_DYN_BOOL;
+    if (known) *value = flowing->v.b ? 1 : 0;
+    scr_dyn_release(flowing);
+    return known;
+  }
   ScrDyn *d = nc_get(island, prop == SCR_CHILD_PROP_PID ? "pid" : "exitCode");
   bool has = d != NULL && d->kind == SCR_DYN_NUM;
   if (has) *value = d->v.num;
@@ -573,6 +589,7 @@ static bool nc_number(void *island, int prop, double *value) {
 static bool nc_boolean(void *island, int prop) {
   NcHandle *h = island;
   if (prop == SCR_CHILD_PROP_CHANNEL) return nc_true(nc_island_call("channel", &h->object, 1));
+  if (prop == SCR_CHILD_PROP_PAUSED) return nc_true(scr_ni_call_method(h->object, "isPaused", 8, NULL, 0));
   return nc_true(nc_get(h, prop == SCR_CHILD_PROP_KILLED      ? "killed"
                            : prop == SCR_CHILD_PROP_CONNECTED ? "connected"
                                                               : "writable"));

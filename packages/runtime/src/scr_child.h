@@ -403,6 +403,8 @@ enum {
   SCR_CHILD_PROP_CHANNEL, /* created with an IPC channel */
   SCR_CHILD_PROP_SPAWNFILE,
   SCR_CHILD_PROP_WRITABLE, /* the writer's */
+  SCR_CHILD_PROP_PAUSED,   /* a readable's isPaused() */
+  SCR_CHILD_PROP_FLOWING,  /* a readable's readableFlowing: a number, 1 or 0; null is "no value" */
 };
 typedef struct ScrChildIslandOps {
   /* The handle that names `island` is being freed. */

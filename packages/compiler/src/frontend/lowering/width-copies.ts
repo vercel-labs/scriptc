@@ -171,6 +171,10 @@ function holdsUntyped(lowerer: Lowerer, type: IrType): boolean {
     }
     case "union":
       return (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "dyn");
+    case "object":
+      for (let info = lowerer.classes.get(type.className) ?? null; info; info = info.base)
+        for (const field of info.fields.values()) if (field.kind === "dyn") return true;
+      return false;
     default:
       return false;
   }
@@ -204,17 +208,17 @@ function copiedDictionary(
     if ((part.flags & ts.TypeFlags.Object) === 0) continue;
     for (const arm of targets) {
       if (arm.kind === "array") {
-        if (!checker.isArrayType(part)) continue;
-        const element = checker.getTypeArguments(part as ts.TypeReference)[0];
-        const inner =
-          element === undefined ? null : copiedDictionary(lowerer, element, arm.elem, depth + 1);
-        if (inner !== null) return inner;
+        if (!checker.isArrayType(part) && !checker.isTupleType(part)) continue;
+        for (const element of checker.getTypeArguments(part as ts.TypeReference)) {
+          const inner = copiedDictionary(lowerer, element, arm.elem, depth + 1);
+          if (inner !== null) return inner;
+        }
         continue;
       }
       if (arm.kind !== "record") continue;
       const shape = lowerer.shapes.get(arm.shapeId);
-      if (shape === undefined || shape.tuple) continue;
-      const value = dictionaryValueType(checker, part);
+      if (shape === undefined) continue;
+      const value = shape.tuple ? undefined : dictionaryValueType(checker, part);
       if (value !== undefined) {
         if (shape.indexValue === undefined || shape.fields.length > 0) continue;
         if (lowerer.classDictionaryView(part))
@@ -239,17 +243,25 @@ function copiedDictionary(
   return null;
 }
 
-/** Called where a slot conversion answered `converted` for the value
- * `value` of `node`: notes the conversion when it copies a dictionary that
- * keeps the object it was given. Such a dictionary is untyped in the
- * lowered program, so a conversion of typed values asks nothing, and
- * neither does a program without such a dictionary. The note is what the
- * scan reads; it changes nothing in the lowered program. */
+/** A dictionary type as a message names it, by the layout of its entries. */
+function dictionaryText(lowerer: Lowerer, type: ts.Type, entries: IrType | null): string {
+  return entries === null
+    ? lowerer.checker.typeToString(type)
+    : `{ [key: string]: ${typeText(lowerer, entries)} }`;
+}
+
+/** Called where a conversion answered `converted` (a slot's, or the checked
+ * conversion an assertion makes) for the value `value` of `node`: notes the
+ * conversion when it copies a dictionary that keeps the object it was
+ * given. Such a dictionary is untyped in the lowered program, so a
+ * conversion of typed values asks nothing, and neither does a program
+ * without such a dictionary. The note is what the scan reads; it changes
+ * nothing in the lowered program. */
 export function noteDictionaryCopy(
   lowerer: Lowerer,
   node: ts.Node,
   value: IrExpr,
-  converted: IrExpr,
+  converted: Pick<IrExpr, "kind" | "type" | "loc">,
 ): void {
   if (converted.kind !== "dynCheck" && converted.kind !== "call") return;
   if (!holdsUntyped(lowerer, value.type) || !lowerer.hasDictionaryViews()) return;
@@ -263,13 +275,53 @@ export function noteDictionaryCopy(
     slot: converted.type,
     to: copied.to,
     value: copied.value,
-    from:
-      entries === null
-        ? lowerer.checker.typeToString(copied.from)
-        : `{ [key: string]: ${typeText(lowerer, entries)} }`,
+    from: dictionaryText(lowerer, copied.from, entries),
     entries,
     depth: copied.depth === 0 ? "value" : "member",
   });
+}
+
+/** The field through which a conversion of the record `source` (lowered as
+ * `kept`) into the record `target` copies a dictionary that keeps the
+ * object it was given, with the two dictionary types, or null. Such a
+ * record is untyped where the dictionary is, so the rules that refuse a
+ * written-through record copy by comparing two layouts (the declaration,
+ * the argument of a callee that writes, the assertion's view) see no pair
+ * of fields there and ask here instead. Both types name the same fields,
+ * as those rules require of a copy that is no projection.
+ *
+ * Those rules compare the layouts of two record fields, and the field here
+ * had one, a native dictionary, until every spelling of a dictionary type
+ * became one type: so this answers for a field whose dictionary type keeps
+ * identity as another spelling of the type that does. A field declared
+ * with the very type an object entered never had a layout to compare; its
+ * conversion is reported (SC6001), not refused. */
+export function heldDictionaryCopy(
+  lowerer: Lowerer,
+  source: ts.Type,
+  kept: IrType,
+  target: IrType,
+): { field: string; from: string; to: string } | null {
+  if (target.kind !== "record" || (kept.kind !== "dyn" && kept.kind !== "record")) return null;
+  if (!holdsUntyped(lowerer, kept) || !lowerer.hasDictionaryViews()) return null;
+  const checker = lowerer.checker;
+  const shape = lowerer.shapes.get(target.shapeId);
+  if (shape === undefined || shape.tuple || shape.indexValue !== undefined) return null;
+  if ((source.flags & ts.TypeFlags.Object) === 0 || checker.isTupleType(source)) return null;
+  if (((source.getSymbol()?.flags ?? 0) & ts.SymbolFlags.Class) !== 0) return null;
+  if (checker.getPropertiesOfType(source).length !== shape.fields.length) return null;
+  for (const field of shape.fields) {
+    const property = checker.getPropertyOfType(source, field.name);
+    if (property === undefined) return null;
+    const copied = copiedDictionary(lowerer, checker.getTypeOfSymbol(property), field.type, 1);
+    if (copied === null || !lowerer.dictionaryViewBySameness(copied.from)) continue;
+    return {
+      field: field.name,
+      from: dictionaryText(lowerer, copied.from, lowerer.mapTypeOf(copied.entries)),
+      to: typeText(lowerer, copied.to),
+    };
+  }
+  return null;
 }
 
 /** One copy a helper performs on (part of) its argument. */

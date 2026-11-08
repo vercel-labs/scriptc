@@ -22,6 +22,9 @@ export class ClassProtocols {
    * identity (see markDictionaryViews), each as the one representative of
    * its spellings: the checker has a type object per anonymous spelling. */
   private readonly dictionaryViews = new Set<ts.Type>();
+  /** The value types among them whose own spelling received an existing
+   * object and is written through or observed. */
+  private readonly spelledDictionaryViews = new Set<ts.Type>();
   private readonly sameness: TypeSameness;
   /** The structural types a lib Map or Set flows into while it answers one
    * of their members (see markIdentityFlows). They keep checked identity
@@ -1501,6 +1504,7 @@ export class ClassProtocols {
     for (const value of received) {
       const type = this.sameness.canonical(value);
       if (seenTypes.has(type)) this.dictionaryViews.add(type);
+      if (seen.has(value)) this.spelledDictionaryViews.add(value);
     }
   }
 
@@ -1888,6 +1892,15 @@ export class ClassProtocols {
     if (this.dictionaryViews.size === 0) return false;
     const value = this.dictionaryValueType(type);
     return value !== undefined && this.dictionaryViews.has(this.sameness.canonical(value));
+  }
+
+  /** Whether the dictionary `type` keeps checked identity only as another
+   * spelling of a type that does: no existing object enters this spelling
+   * of it, so a value held under it was held as a dictionary before. */
+  dictionaryViewBySameness(type: ts.Type): boolean {
+    if (!this.dictionaryView(type)) return false;
+    const value = this.dictionaryValueType(type);
+    return value !== undefined && !this.spelledDictionaryViews.has(value);
   }
 
   /** Whether any dictionary type of the program keeps checked identity. */

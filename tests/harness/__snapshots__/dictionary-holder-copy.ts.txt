@@ -1,0 +1,24 @@
+dictionary-holder-copy.ts:13:34 - error SC2021: declaring a '{ ledger: { [title: string]: { days: number; }; }; }' value as '{ ledger: Notes; }' copies the object, and the program writes through it: the declared field 'ledger' holds the dictionary '{ [key: string]: { days: number } | string }' and the value's field holds the dictionary '{ [key: string]: { days: number } }', which keeps the object it was given, so a write through the declared name would reach only the copy
+
+  12 | const desk: { ledger: { [title: string]: { days: number } } } = { ledger };
+  13 | const audit: { ledger: Notes } = desk;
+     |                                  ^~~~
+  14 | audit.ledger.gazette = "lost";
+
+  hint: declare the field with the value's own dictionary type ('{ [key: string]: { days: number } }') so both names are the same object, or copy the value explicitly (a spread, 'structuredClone') so that Node copies it too
+
+dictionary-holder-copy.ts:20:10 - error SC2021: passing a '{ ledger: { [title: string]: { days: number; }; }; }' to a parameter declared '{ ledger: Notes; }' copies the object, and the program writes through it: the callee writes through 'shelf', whose field 'ledger' holds the dictionary '{ [key: string]: { days: number } | string }', and the argument's field holds the dictionary '{ [key: string]: { days: number } }', which keeps the object it was given, so the write would reach only the copy
+
+  19 | const cart: { ledger: { [title: string]: { days: number } } } = { ledger };
+  20 | annotate(cart);
+     |          ^~~~
+  21 | 
+
+  hint: declare the parameter's field with the argument's own dictionary type ('{ [key: string]: { days: number } }') so the callee receives the caller's object, or copy the argument explicitly (a spread, 'structuredClone') so that Node copies it too
+
+dictionary-holder-copy.ts:23:7 - error SC1090: writing 'review.ledger.primer' through 'review', a copy of the '{ ledger: { [title: string]: { days: number; }; }; }' value the assertion views as '{ ledger: Notes; }' (the write would land on the copy; write through the original binding, or declare the member on the value's type) is not supported yet
+
+  22 | const trolley: { ledger: { [title: string]: { days: number } } } = { ledger };
+  23 | const review = trolley as { ledger: Notes };
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 | review.ledger.primer = "rebound";

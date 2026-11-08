@@ -16,6 +16,7 @@ import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { locOf } from "../program.js";
 import { keptLayoutStoreCopyDiag, widthCopyRefusalDiag } from "../../diagnostics/diagnostic.js";
+import { heldDictionaryCopy } from "./width-copies.js";
 import { observesIdentity } from "./observable-write.js";
 
 /** Instances of a typed function for arguments that keep their own layout.
@@ -504,12 +505,19 @@ export function refuseWrittenParamCopy(
     if (declared.type.kind !== "record") return;
     const source = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
     const from = lowerer.mapTypeOf(source);
-    if (!from || from.kind !== "record" || typeEquals(from, declared.type)) return;
-    // A projection (the argument has fields the parameter's type lacks) is
-    // not the copy this refuses: the callee's layout is the only one that
-    // carries the extra fields.
-    if (!sameFieldsForCopy(lowerer, from, declared.type)) return;
-    if (lowerer.recordWidthPlan(from.shapeId, declared.type.shapeId) === null) return;
+    if (!from) return;
+    // An argument that is untyped where it holds a dictionary that keeps its
+    // object has no layout to compare: the parameter's field is a dictionary
+    // of another value type, built by copying that dictionary.
+    const held = heldDictionaryCopy(lowerer, source, from, declared.type);
+    if (held === null) {
+      if (from.kind !== "record" || typeEquals(from, declared.type)) return;
+      // A projection (the argument has fields the parameter's type lacks) is
+      // not the copy this refuses: the callee's layout is the only one that
+      // carries the extra fields.
+      if (!sameFieldsForCopy(lowerer, from, declared.type)) return;
+      if (lowerer.recordWidthPlan(from.shapeId, declared.type.shapeId) === null) return;
+    }
     const symbol = lowerer.checker.getSymbolAtLocation(param.name);
     if (!symbol || decl.body === undefined) return;
     if (!observesIdentity(lowerer, decl.body, symbol, param.name.text)) return;
@@ -520,8 +528,12 @@ export function refuseWrittenParamCopy(
         "call",
         checker.typeToString(source),
         target,
-        `the callee writes through '${param.name.text}', so the write would reach only the copy`,
-        `declare the argument with the parameter's type ('${target}') so the callee receives the caller's object, or make the shape a class`,
+        held === null
+          ? `the callee writes through '${param.name.text}', so the write would reach only the copy`
+          : `the callee writes through '${param.name.text}', whose field '${held.field}' holds the dictionary '${held.to}', and the argument's field holds the dictionary '${held.from}', which keeps the object it was given, so the write would reach only the copy`,
+        held === null
+          ? `declare the argument with the parameter's type ('${target}') so the callee receives the caller's object, or make the shape a class`
+          : `declare the parameter's field with the argument's own dictionary type ('${held.from}') so the callee receives the caller's object, or copy the argument explicitly (a spread, 'structuredClone') so that Node copies it too`,
         locOf(arg),
       ),
     );

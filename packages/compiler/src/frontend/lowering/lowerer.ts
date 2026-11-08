@@ -6868,6 +6868,12 @@ export class Lowerer {
     return this.facts.classProtocols().hasDictionaryViews();
   }
 
+  /** Whether a dictionary type keeps checked identity only as another
+   * spelling of a type that does (ClassProtocols.dictionaryViewBySameness). */
+  dictionaryViewBySameness(type: ts.Type): boolean {
+    return this.facts.classProtocols().dictionaryViewBySameness(type);
+  }
+
   /** The round's shared class protocol index (lowering-facts.ts): a pure
    * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
    * this Lowerer builds its own index and every answer is compared. */

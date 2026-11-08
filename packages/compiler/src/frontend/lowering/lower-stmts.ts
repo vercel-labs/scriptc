@@ -361,6 +361,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { compilerCrashDiag, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { observesDeclaration } from "./observable-write.js";
+import { heldDictionaryCopy } from "./width-copies.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
@@ -8064,12 +8065,33 @@ function refuseWidenedDeclaration(
   declared: IrType,
 ): void {
   const widened = widenedCopyOf(lowerer, kept, declared);
-  if (widened === null || !observesDeclaration(lowerer, decl)) return;
   const checker = lowerer.checker;
+  // A value that is untyped where it holds a dictionary that keeps its
+  // object has no field for widenedCopyOf to name: the declared field is a
+  // dictionary of another value type, built by copying that dictionary.
+  const held =
+    widened === null && lowerer.hasDictionaryViews()
+      ? heldDictionaryCopy(lowerer, checker.getTypeAtLocation(decl.initializer!), kept, declared)
+      : null;
+  if ((widened === null && held === null) || !observesDeclaration(lowerer, decl)) return;
   const sourceType = checker.getTypeAtLocation(decl.initializer!);
   const source = checker.typeToString(sourceType);
   const targetType = lowerer.typeOf(decl.name);
   const target = checker.typeToString(targetType);
+  if (held !== null) {
+    lowerer.pushDiag(
+      widthCopyRefusalDiag(
+        "declaration",
+        source,
+        target,
+        `the declared field '${held.field}' holds the dictionary '${held.to}' and the value's field holds the dictionary '${held.from}', which keeps the object it was given, so a write through the declared name would reach only the copy`,
+        `declare the field with the value's own dictionary type ('${held.from}') so both names are the same object, or copy the value explicitly (a spread, 'structuredClone') so that Node copies it too`,
+        locOf(decl.initializer!),
+      ),
+    );
+    throw new PoisonError();
+  }
+  if (widened === null) return;
   const keptField = checker.getPropertyOfType(sourceType, widened.field);
   const keptText = keptField
     ? checker.typeToString(checker.getTypeOfSymbolAtLocation(keptField, decl.initializer!))

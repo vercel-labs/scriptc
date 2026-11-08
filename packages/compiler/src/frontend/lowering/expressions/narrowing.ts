@@ -27,6 +27,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
+import { noteDictionaryCopy } from "../width-copies.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
@@ -2104,6 +2105,13 @@ function checkedDynCast(
 ): IrExpr {
   const proxy = nativeProxyEntering(lowerer, inner);
   if (proxy) refuseProxyInTypedSlot(lowerer, inner.loc, target, proxy.trapless);
+  // The checked conversion below, in either form, is a `dynCheck` at this
+  // place: one that copies a dictionary which keeps its object is noted.
+  noteDictionaryCopy(lowerer, expr.expression, inner, {
+    kind: "dynCheck",
+    type: target,
+    loc: locOf(expr),
+  });
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

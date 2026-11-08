@@ -4492,6 +4492,7 @@ function isJsonSafeAt(
   undefinedAllowed: boolean,
   visiting: Set<string>,
   nativeFields = false,
+  member = false,
 ): boolean {
   if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
@@ -4513,6 +4514,7 @@ function isJsonSafeAt(
         stringify,
         visiting,
         nativeFields,
+        true,
       );
     case "record": {
       const shape = getRecord(t.shapeId);
@@ -4537,6 +4539,7 @@ function isJsonSafeAt(
             !shape.tuple || stringify,
             visiting,
             nativeFields,
+            true,
           )
         )
           return false;
@@ -4554,6 +4557,7 @@ function isJsonSafeAt(
           true,
           visiting,
           nativeFields,
+          true,
         );
       }
       return true;
@@ -4561,7 +4565,7 @@ function isJsonSafeAt(
     case "union": {
       const def = getUnion(t.unionId);
       if (!def) return false;
-      const key = `${t.unionId}:${stringify}:${undefinedAllowed}`;
+      const key = `${t.unionId}:${stringify}:${undefinedAllowed}:${member}`;
       if (visiting.has(key)) return true; // the recursive knot, union-flavored
       visiting.add(key);
       for (const arm of def.arms) {
@@ -4576,14 +4580,25 @@ function isJsonSafeAt(
                 undefinedAllowed,
                 visiting,
                 nativeFields,
+                member,
               ))
         )
           return false;
       }
       return true;
     }
+    // A Map or a Set held by a record, an array or a tuple stringifies as
+    // the empty object, whatever it holds: it has no own enumerable
+    // property and no toJSON, so the type-directed serializer writes "{}"
+    // without reading it. As the ROOT value it stays outside the domain
+    // (`JSON.stringify(new Map())` is the same "{}" in Node: an
+    // empty-object husk, refused instead), and so does one beside untyped
+    // payloads, which the runtime traversal would have to read.
     case "set":
-      return nativeFields && !stringify && t.elem.kind === "dyn";
+      if (stringify) return member && !nativeFields;
+      return nativeFields && t.elem.kind === "dyn";
+    case "map":
+      return stringify && member && !nativeFields;
     case "bigint":
     case "regex":
     case "url":
@@ -4597,11 +4612,8 @@ function isJsonSafeAt(
       return false;
     case "func":
     // Class values stringify as "{}" husks in Node (own enumerable statics
-    // aside — not representable type-directedly); rejected like Maps.
+    // aside — not representable type-directedly); rejected.
     case "classval":
-    // Maps are not JSON (JSON.stringify(new Map()) is "{}" in Node — an
-    // empty-object husk nobody wants; stringify/dynCheck reject instead).
-    case "map":
     // URLSearchParams stringifies as the same "{}" husk — rejected; use
     // sp.toString() instead.
     case "searchParams":

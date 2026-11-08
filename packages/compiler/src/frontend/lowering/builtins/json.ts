@@ -438,7 +438,7 @@ function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): bo
  * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
  * compile time instead of throwing when the view is built or written. */
-function classFieldWithoutJsonView(
+export function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,

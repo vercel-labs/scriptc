@@ -20,7 +20,7 @@ The `prototype` of a held constructor and a `Map` or `Set` keyed by a union of s
 A constructor passed into a Node island is the island's own constructor there, and the island's comes back as the program's.
 Converted to a string (`String(c)`, a template, `+`, `c.toString()`, `%s`), a held constructor is Node's `function String() { [native code] }`.
 A program that hands a held constructor, or a table of them, to something the typed form has no lowering for (printing, `JSON.stringify`, `in`, key listing, an `any` slot, `bind`, an assertion) holds its constructors as untyped values instead, in the whole program, and builds as it did before constructors had a typed form.
-`JSON.stringify` of an object or array that contains a `Map` or `Set` of constructors is refused.
+`JSON.stringify` and `%j` write a `Map` or `Set` held by an object, an array, or a tuple as `{}`, as Node.js does, whatever it holds.
 
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.

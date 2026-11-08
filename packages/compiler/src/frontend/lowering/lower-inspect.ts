@@ -46,6 +46,7 @@ import {
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
+  isJsonStringifyDynamicType,
   accessorSlotProp,
   recordTextCodecClass,
   shapeKeyOrders,
@@ -67,6 +68,7 @@ import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 import { errorConstructionOrder } from "./error-name-order.js";
+import { classFieldWithoutJsonView } from "./builtins/json.js";
 import { builtinConstructorText } from "./held-constructors.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
@@ -5031,6 +5033,21 @@ export function lowerFormatCall(
             type: STRING,
             loc,
           };
+        }
+        // A JSON-shaped container with untyped payloads (a record with an
+        // `unknown` member, an array of such records): the runtime walk
+        // over the value's live view, as JSON.stringify takes for the same
+        // type (builtins/json.ts), with %j's "[Circular]".
+        if (
+          isJsonStringifyDynamicType(
+            value.type,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ) &&
+          classFieldWithoutJsonView(lowerer, value.type, new Set()) === null
+        ) {
+          const boxed: IrExpr = { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
+          return { kind: "libCall", fn: "insp.jsonDyn", args: [boxed], type: STRING, loc };
         }
         if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(

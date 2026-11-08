@@ -9,6 +9,8 @@
 #include "scr_dyn.h"
 #include "scr_events.h"
 
+#include <stdatomic.h>
+
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
  * its bridge must link. Both strings are static. The emitted main calls it
@@ -34,6 +36,47 @@ ScrDyn *scr_node_island_call_sync(ScrStr *file, ScrStr *specifier, ScrStr *name,
  * promise that settles with the result's copy, or rejects with the copied
  * error (also when the arguments cannot be copied). Never throws. */
 ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, ScrDyn *args);
+
+/* Whether island code can run on a thread other than the island's. Only an
+ * executable with worker threads has such a thread. SCR_WORKERS is a
+ * whole-runtime mode: every other build has one script thread, and
+ * scr_context_is_main() is the constant true there, behind a call the
+ * compiler cannot see through. The island units therefore ask through
+ * scr_ni_main_thread() and test SCR_NI_THREADS, so that in a program
+ * without workers the routing, the locks, the shared mode of the tables and
+ * every thread test are constants: an island operation runs the
+ * instructions it ran before threads could reach an island. */
+#ifdef SCR_WORKERS
+#define SCR_NI_THREADS 1
+static inline bool scr_ni_main_thread(void) { return scr_context_is_main(); }
+#else
+#define SCR_NI_THREADS 0
+static inline bool scr_ni_main_thread(void) { return true; }
+#endif
+
+/* Island operations from other threads. Node runs on the thread that
+ * started it (the main thread), so an operation another thread reaches
+ * through an island value posts itself to that thread and waits for the
+ * answer; the loop below drains the posted operations. Without worker
+ * threads nothing is ever posted, the loop tests fold away and no wake
+ * pipe is opened. */
+#if SCR_NI_THREADS
+bool scr_ni_remote_pending(void);
+int scr_ni_remote_pollfd(void);
+void scr_ni_remote_dispatch(void);
+#else
+static inline bool scr_ni_remote_pending(void) { return false; }
+static inline int scr_ni_remote_pollfd(void) { return -1; }
+static inline void scr_ni_remote_dispatch(void) {}
+#endif
+/* The operation the calling thread posted last did not run, because the
+ * thread was asked to stop first: its termination is pending and the
+ * operation's out-values are as the caller initialized them. */
+extern SCR_TL bool scr_ni_unserved;
+
+/* Whether a thread other than the island's has used the island: until
+ * then the island tables take no locks (scr_node_island_handle.c). */
+extern atomic_bool scr_ni_threads_shared;
 
 /* The hosted loop (SCR_NODE_ISLANDS build of scr_async.c, scope-B NI-3).
  * scr_loop_host moves the runtime's pending ticks, promise jobs, timers
@@ -288,6 +331,10 @@ bool scr_ni_missing_file_code(const char *code, size_t len);
 bool scr_ni_tree_named(const char *text, size_t len);
 void scr_ni_tree_repair(void);
 size_t scr_ni_tree_repairs(void);
+/* The two checks and the repair for one island error, on the island's
+ * thread whichever thread read the error (a text is NULL when absent). */
+void scr_ni_tree_lost_file(const char *code, size_t code_len, const char *message,
+                           size_t message_len, const char *stack, size_t stack_len);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);

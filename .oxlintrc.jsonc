@@ -114,6 +114,10 @@
                   "keyedHelperName",
                   "contentDigest",
                   "lowerToIr",
+                  // The member census (builtin-module-members.ts) imports
+                  // only its generated table, never the lowering graph:
+                  // program.ts links a builtin's named imports against it.
+                  "builtinModuleHasMember",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },

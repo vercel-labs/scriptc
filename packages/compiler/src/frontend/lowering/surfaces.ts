@@ -2233,6 +2233,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
     },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
+    },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
     "stream/web": {},
@@ -2448,8 +2478,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
     ],
-    // The fs stream members (bytesRead/bytesWritten, pending, path, close).
+    // The fs stream members (bytesRead/bytesWritten, pending, path, close),
+    // and the constructor's spelling for options that can hold a signal.
     createReadStream: [
+      "fs.createReadStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",
@@ -2458,6 +2490,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamCloseCb",
     ],
     createWriteStream: [
+      "fs.createWriteStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",
@@ -3008,6 +3041,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the compatibility target's release metadata as one stable read-only object",
     },
     {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
+    },
+    {
       id: "node-builtin.process.chdir",
       kind: "node-builtin",
       name: "process.chdir",
@@ -3229,6 +3269,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "os.constants",
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
+    },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
     },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.
@@ -3587,7 +3636,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   child_process: {
     execFile:
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
-      "maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
+      "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
     ...Object.fromEntries(
@@ -3784,12 +3833,11 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   ) {
     hint =
       "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: the composed " +
-      'new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default ' +
-      "options, their default-locale forms (x.toLocaleString(), d.toLocaleString(), " +
-      "d.toLocaleTimeString()), and Intl.Segmenter with grapheme or word granularity; " +
-      "sentence segmentation, resolvedOptions, and the remaining Intl constructors remain " +
-      "unsupported";
+      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
+      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
+      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
+      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
+      "resolvedOptions, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +
@@ -3983,6 +4031,40 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     return ts.symbolName(symbol) === "global" ? "globalThis" : ts.symbolName(symbol);
   }
   return null;
+}
+
+/** The name of a built-in global read directly from the global object
+ * (`globalThis.fetch`, `global.fetch`, through a binding of the global
+ * object too): the member's name node, which is an identifier whose symbol
+ * is the global's own, so everything that recognizes the bare name by text
+ * and provenance recognizes this node as well. `globalThis.fetch(…)` is
+ * then the call `fetch(…)` is, and `new globalThis.URL(…)` already takes
+ * its class this way. Null for an optional read, for a member that is no
+ * standard-library global (a script's own `var`), and for the global
+ * object's names for itself. */
+export function globalObjectMemberName(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): ts.Identifier | null {
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return null;
+  if (!ts.isIdentifier(expr.name)) return null;
+  // Most member reads have another receiver: decide those by spelling
+  // before asking the checker.
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  if (
+    ts.isIdentifier(receiver) &&
+    receiver.text !== "globalThis" &&
+    receiver.text !== "global" &&
+    lowerer.stdlibGlobalAliases.size === 0
+  )
+    return null;
+  if (!ts.isIdentifier(receiver) && !ts.isConditionalExpression(receiver)) return null;
+  if (lowerer.chainBlocked(expr)) return null;
+  if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
+  const canonical = stdlibGlobalNameOf(lowerer, expr);
+  return canonical !== null && canonical !== "globalThis" && canonical === expr.name.text
+    ? expr.name
+    : null;
 }
 
 /** True iff `expr` denotes THE standard-library global `name` — name AND

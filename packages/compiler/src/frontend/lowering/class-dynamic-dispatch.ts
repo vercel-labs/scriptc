@@ -3,7 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -40,7 +40,11 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -93,7 +97,12 @@ import {
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
+import {
+  STREAM_OPERATORS,
+  STREAM_STATE_GETTERS,
+  operatorSignalOptions,
+  reduceSignalSetup,
+} from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 /** The receiver local of a call rewritten for a getter-only name. */
@@ -162,7 +171,25 @@ const STREAM_NUM_PROPERTIES = new Set([
   "writableCorked",
 ]);
 const streamProperty = (name: string): boolean =>
-  STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+  STREAM_BOOL_PROPERTIES.has(name) ||
+  STREAM_NUM_PROPERTIES.has(name) ||
+  STREAM_STATE_GETTERS.has(name);
+/** Whether a stream class of these sides has the stream property in Node
+ * (`name in stream`): the readable ones on Readable and the classes that
+ * extend it, the writable ones on Writable and the Duplex kinds,
+ * writableAborted on Writable alone (Duplex copies a fixed list of
+ * Writable's getters), allowHalfOpen on the Duplex kinds, and destroyed
+ * and closed everywhere. */
+const streamClassHasProperty = (sides: "r" | "w" | "rw", name: string): boolean =>
+  name === "writableAborted"
+    ? sides === "w"
+    : name === "allowHalfOpen"
+      ? sides === "rw"
+      : name.startsWith("readable")
+        ? sides !== "w"
+        : name.startsWith("writable")
+          ? sides !== "r"
+          : true;
 
 /** `(instance) => string`, the string a class's inherited
  * Symbol.toStringTag getter answers, which the runtime reads for
@@ -1586,6 +1613,15 @@ function computedTableOperation(shape: {
   ].join(":");
 }
 
+/** The name prefix of every helper this pass generates for untyped code's
+ * use of class instances: keyed tables, member dispatch, checked casts. */
+export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
+
+/** The name prefix of a class's checked cast helper (`%dyn.class.cast:C`):
+ * the one function that checks a dynamic value into class `C`, which every
+ * such check in the program calls. */
+export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1606,6 +1642,11 @@ export class ClassDynamicDispatch {
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The classes whose instances the program makes dynamic values, as this
+   * pass found them (dynamic-class-report.ts reads them). */
+  boxedClasses(): ReadonlySet<string> {
+    return this.boxed;
+  }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -1728,6 +1769,8 @@ export class ClassDynamicDispatch {
     const toPrimitiveSites = new Set<IrFunction>();
     const hasKeySites = new Set<IrFunction>();
     const caughtSites = new Set<IrFunction>();
+    // dynamic-class-report.ts follows the same parts of a type to say where
+    // a class became a dynamic value: a part added here is added there.
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -2581,7 +2624,7 @@ export class ClassDynamicDispatch {
           if (!cast) {
             const loc = expr.loc;
             const fn: IrFunction = {
-              name: `%dyn.class.cast:${type.className}`,
+              name: `${CHECKED_CAST_PREFIX}${type.className}`,
               params: [{ localId: "value", name: "value", type: DYN }],
               locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
               returnType: type,
@@ -4280,6 +4323,20 @@ export class ClassDynamicDispatch {
                 loc,
               },
             ];
+          if (info.builtinStream !== undefined && streamProperty(name) && dispatch.probe)
+            return [
+              {
+                kind: "return",
+                value: {
+                  kind: "boolLit",
+                  value:
+                    dispatch.probe === "in" && streamClassHasProperty(info.builtinStream, name),
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ];
           if (
             ((info.builtinStream !== undefined && streamProperty(name)) ||
               eventTargetInheritedMember(info, name) ||
@@ -4529,7 +4586,12 @@ export class ClassDynamicDispatch {
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
         if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
         if (info.builtinStream)
-          for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
+          for (const name of [
+            ...STREAM_BOOL_PROPERTIES,
+            ...STREAM_NUM_PROPERTIES,
+            ...STREAM_STATE_GETTERS.keys(),
+          ])
+            names.add(name);
         const inherited = eventTargetApiMembers(info);
         if (inherited) for (const name of inherited) names.add(name);
         if (dateRootOf(info))
@@ -4730,7 +4792,7 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result = constructedValue(lowerer, info, {
+        const result = constructedDynValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
@@ -4746,7 +4808,7 @@ export class ClassDynamicDispatch {
             type: BOOL,
             loc,
           },
-          then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+          then: [{ kind: "return", value: result, loc }],
           else_: null,
           loc,
         });
@@ -6673,6 +6735,23 @@ export class ClassDynamicDispatch {
             loc,
           },
         ];
+      const getter = STREAM_STATE_GETTERS.get(name);
+      // The runtime answers by the stream's class: undefined where Node's
+      // prototype does not define the getter.
+      if (getter !== undefined)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "stream.stateDyn",
+              args: [receiver, numLit(getter, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
       return [
         {
           kind: "return",
@@ -7522,7 +7601,14 @@ export class ClassDynamicDispatch {
       generic &&
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
+      // A refused generic member has no instance: the call keeps the fence.
+      generic.info.refused === undefined &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -7545,7 +7631,14 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            own.refused ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7712,4 +7805,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

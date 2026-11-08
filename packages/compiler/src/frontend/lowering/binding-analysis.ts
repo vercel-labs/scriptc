@@ -348,6 +348,9 @@ export function deadUnmappableBinding(
   for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (!dead) break;
     if (file.isDeclarationFile) continue;
+    // The walk acts on identifiers spelled like the binding and on nothing
+    // else, so a file that spells the name nowhere is not walked.
+    if (!lowerer.facts.maySpellIdentifier(file, symText)) continue;
     ts.forEachChild(file, visit);
   }
   if (dead) lowerer.deadBindings.add(sym);

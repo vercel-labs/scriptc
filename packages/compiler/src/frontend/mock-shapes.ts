@@ -1,7 +1,8 @@
-/* node:test's mock function representation. A Mock<F> is the hybrid
- * record { %call: F, mock: MockFunctionContext<F> } (type-mapper.ts's
- * function-with-properties mapping). The context is a record the wrapper
- * closure and the mock field share:
+/* node:test's mock function representation. A Mock<F> is `F & { mock:
+ * MockFunctionContext<F> }`: the value IS the wrapper closure of type F,
+ * and `mock` is an entry of the closure's own-property table holding the
+ * context (lower-mock.ts). The context is a record the wrapper closure and
+ * the `mock` table entry share:
  *
  *   calls       MockFunctionCall<F>[]  the call log, read as a copy
  *   %impl       F                       the current implementation
@@ -100,16 +101,4 @@ export function mockContextType(
     { name: "calls", type: { kind: "array", elem: call } as IrType },
   ];
   return { kind: "record", shapeId: reg.shapes.intern(fields, false, undefined, ["calls"]) };
-}
-
-/** Mock<F>: the hybrid record { %call: F, mock: MockFunctionContext<F> },
- * interned as type-mapper.ts's function-with-properties mapping interns it. */
-export function mockType(fn: IrType & { kind: "func" }, reg: MockShapeRegistries): IrType | null {
-  const ctx = mockContextType(fn, reg);
-  if (ctx === null) return null;
-  const fields = [
-    { name: "%call", type: fn },
-    { name: "mock", type: ctx },
-  ];
-  return { kind: "record", shapeId: reg.shapes.intern(fields, false, undefined, ["mock"]) };
 }

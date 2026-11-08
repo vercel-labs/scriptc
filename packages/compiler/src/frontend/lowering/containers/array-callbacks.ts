@@ -26,6 +26,7 @@ import {
   isSortValuesElement,
   isUnitType,
   typeEquals,
+  canBoxFuncIntoDyn,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
@@ -71,7 +72,11 @@ import {
 } from "./array-iteration.js";
 import { dynamicReceiverThrows } from "./dynamic-receivers.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
-import { checkedFilterNarrowing, supersetGuardFields } from "./filter-predicates.js";
+import {
+  checkedFilterNarrowing,
+  checkedValueNarrowing,
+  supersetGuardFields,
+} from "./filter-predicates.js";
 import { omittableTrailingParam } from "../coercions/function-adapters.js";
 
 /** `a.map(fn)` / `a.filter(fn)` / `a.forEach(fn)` desugar to a direct
@@ -851,7 +856,15 @@ export function lowerArrayUnionHofCall(
   receiverT: IrType & { kind: "union" },
 ): IrExpr | null {
   const method = access.name.text;
-  if (method !== "map" && method !== "forEach" && method !== "filter") return null;
+  if (
+    method !== "map" &&
+    method !== "forEach" &&
+    method !== "filter" &&
+    method !== "some" &&
+    method !== "every" &&
+    method !== "findIndex"
+  )
+    return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
@@ -903,6 +916,19 @@ export function lowerArrayUnionHofCall(
     }
     lowerer.badType(call, lowerer.typeOf(call));
   }
+  // `some`, `every` and `findIndex` test the callback's answer as the array
+  // methods do; each arm runs its own array's helper.
+  const tests = method === "some" || method === "every" || method === "findIndex";
+  if (tests && !findPredicateOk(lowerer, fnRet)) {
+    if (fnRet.kind === "void") {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `'.${method}()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)`,
+      );
+    }
+    lowerer.badType(argNode, lowerer.typeOf(argNode));
+  }
   // `map` stores the callback's answer; `filter` keeps the elements its
   // predicate named. The kept element is the CHECKER's result element, which
   // for a written type predicate is narrower than every arm's own:
@@ -931,7 +957,13 @@ export function lowerArrayUnionHofCall(
       narrowing.push(helper);
     }
   }
-  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  const resultT: IrType = tests
+    ? method === "findIndex"
+      ? F64
+      : BOOL
+    : method === "forEach"
+      ? VOID
+      : arrayOf(outElem);
   for (const array of arrays) {
     const armFnT = funcOf(
       [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
@@ -965,7 +997,7 @@ export function lowerArrayUnionHofCall(
 
 function arrayUnionHofHelper(
   lowerer: Lowerer,
-  method: "map" | "forEach" | "filter",
+  method: "map" | "forEach" | "filter" | "some" | "every" | "findIndex",
   receiverT: IrType & { kind: "union" },
   arrays: (IrType & { kind: "array" })[],
   callbackT: IrType & { kind: "func" },
@@ -975,7 +1007,14 @@ function arrayUnionHofHelper(
   narrowing: (string | null)[],
   loc: SrcLoc,
 ): string {
-  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  const resultT: IrType =
+    method === "some" || method === "every"
+      ? BOOL
+      : method === "findIndex"
+        ? F64
+        : method === "forEach"
+          ? VOID
+          : arrayOf(outElem);
   // A filter's per-arm conversions are part of what the helper does, so two
   // sites that share receiver, callback and result but convert differently
   // keep their own helper. `map`/`forEach` never narrow, and leaving their
@@ -1007,15 +1046,20 @@ function arrayUnionHofHelper(
     if (!typeEquals(adapted.type, armFnT)) {
       throw new InternalCompilerError("lowerer bug: union-array callback stopped adapting");
     }
-    const callee = arrayHofHelper(
-      lowerer,
-      method,
-      array.elem,
-      fnRet,
-      arity,
-      loc,
-      method === "filter" ? array.elem : outElem,
-    );
+    const callee =
+      method === "some" || method === "every"
+        ? someEveryHelper(lowerer, method, array.elem, fnRet, arity, loc)
+        : method === "findIndex"
+          ? findIndexHelper(lowerer, array.elem, fnRet, arity, false, loc)
+          : arrayHofHelper(
+              lowerer,
+              method,
+              array.elem,
+              fnRet,
+              arity,
+              loc,
+              method === "filter" ? array.elem : outElem,
+            );
     const invoke: IrExpr = {
       kind: "call",
       callee,
@@ -1590,9 +1634,15 @@ export function lowerArrayFindLikeCall(
 }
 
 /** The retag helper that converts a found element into find's result union,
- * or null when the element converts directly. Only an inline callback with
- * an inferred predicate over its element can narrow the result; a written
- * predicate is an unchecked assertion and keeps the refusal. */
+ * or null when the element converts directly. An inline callback with an
+ * inferred predicate over its element proves the narrowing. A written
+ * predicate (`(c): c is Rich => ...`, a guard function passed as a value)
+ * is an assertion TypeScript does not check and an ordinary boolean
+ * callback at run time: the loop runs it as one, and the element it answers
+ * converts to the predicate's type checked (filter-predicates.ts). An
+ * element that is not of that type throws the TypeError of a checked
+ * extraction. The search answers the element itself, so a predicate type
+ * that only a rebuilt record could hold stays refused. */
 function findResultRetag(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1606,10 +1656,12 @@ function findResultRetag(
   const loc = locOf(call);
   const inline = ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode);
   if (!unchangedElement && (!inline || argNode.type !== undefined)) {
+    const helper = writtenPredicateRetag(lowerer, valueT, resultT, loc);
+    if (helper !== null) return helper;
     lowerer.unsupported(
       "SC1090",
       argNode,
-      `narrowing '.${method}' requires an inline callback with an inferred predicate (annotate the return ': boolean' to keep the receiver's element type)`,
+      `narrowing '.${method}' to '${lowerer.fmt(lowerer.stripUndefinedArm(resultT))}' with a written type predicate (a '${lowerer.fmt(valueT)}' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type)`,
     );
   }
   const signature = inline ? lowerer.checker.getSignatureFromDeclaration(argNode) : undefined;
@@ -1632,6 +1684,46 @@ function findResultRetag(
   )
     lowerer.unsupported("SC1090", call, `'.${method}' narrowing to an incompatible result layout`);
   return retag;
+}
+
+/** Interned `%find.narrow.<n>(v)`: the element a written predicate
+ * answered true for, as find's result union: converted checked to the
+ * predicate's type (checkedValueNarrowing), then wrapped. Null when the
+ * element has no checked conversion to that type that hands the element
+ * itself on, and for a predicate that names `null` alone: a unit has no
+ * value outside a union for the helper to convert and return. */
+function writtenPredicateRetag(
+  lowerer: Lowerer,
+  valueT: IrType,
+  resultT: IrType & { kind: "union" },
+  loc: SrcLoc,
+): string | null {
+  const present = lowerer.stripUndefinedArm(resultT);
+  if (isUnitType(present)) return null;
+  const typeText = lowerer.fmt(present);
+  const narrow = checkedValueNarrowing(lowerer, valueT, present, typeText, loc);
+  if (narrow === null) return null;
+  const key = `find.narrow:${typeKey(valueT)}:${typeKey(resultT)}:${typeText}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%find.narrow", key);
+  lowerer.valueHelpers.set(key, name);
+  const narrowed: IrExpr = {
+    kind: "call",
+    callee: narrow,
+    args: [varRef("v.0", valueT, loc)],
+    type: present,
+    loc,
+  };
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "v.0", name: "v", type: valueT }],
+    returnType: resultT,
+    locals: [{ id: "v.0", name: "v", type: valueT, mutable: false }],
+    body: [{ kind: "return", value: lowerer.coerceToExpected(narrowed, resultT), loc }],
+    loc,
+  });
+  return name;
 }
 
 /** The find-like predicate results whose ToBoolean has a static answer:
@@ -2055,19 +2147,22 @@ export function lowerArrayFlatMapCall(
   // leave an element its callback ignores unread.
   const unread = lowered.unread && !present && elementMayBeForeign(lowerer, elem);
   const fnRet = fnArg.type.ret;
+  // The runtime's flatMap over the live array, with the callback boxed: it
+  // decides per result whether to spread it, as JavaScript does.
+  const atRunTime = (): IrExpr => ({
+    kind: "dynInvoke",
+    recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
+    method: "flatMap",
+    calleeName: ts.getTextOfNode(access),
+    args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }, ...(thisArg ? [thisArg] : [])],
+    type: DYN,
+    loc,
+  });
   if (
     fnRet.kind === "dyn" ||
     (fnRet.kind === "record" && lowerer.shapes.get(fnRet.shapeId)?.tuple)
   ) {
-    return {
-      kind: "dynInvoke",
-      recv: { kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc },
-      method: "flatMap",
-      calleeName: ts.getTextOfNode(access),
-      args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }, ...(thisArg ? [thisArg] : [])],
-      type: DYN,
-      loc,
-    };
+    return atRunTime();
   }
   // Every path below calls the callback from a helper's loop.
   requireFixedArityCallback(lowerer, argNode, fnArg.type);
@@ -2096,6 +2191,17 @@ export function lowerArrayFlatMapCall(
       };
     }
     if (def?.arms.some((a) => a.kind === "array")) {
+      // No static plan for the mix of array and other results: the decision
+      // is the runtime's, when the callback's values convert to dynamic ones.
+      if (
+        canBoxFuncIntoDyn(
+          fnArg.type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        return atRunTime();
+      }
       lowerer.unsupported(
         "SC1090",
         argNode,
@@ -3349,17 +3455,31 @@ export function lowerDynArrayFlatMapCall(
   const loc = locOf(call);
   const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN, false, undefined, true);
   const ret = fnArg.type.ret;
-  // Only the dynamic-returning path boxes the callback; the helper below
-  // calls it from its loop.
-  if (ret.kind !== "dyn") requireFixedArityCallback(lowerer, argNode, fnArg.type);
+  // A callback whose result is not one typed array is boxed: a result that
+  // is dynamic already, or one that converts to a dynamic value whatever it
+  // holds at run time (`cond ? [[key, name]] : []` — a one-pair tuple or an
+  // empty array; a value or an array of them).
+  const boxes =
+    ret.kind === "dyn" ||
+    (ret.kind !== "array" &&
+      canBoxFuncIntoDyn(
+        fnArg.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      ));
+  // Only the boxing path takes any function; the helper below calls the
+  // callback from its loop.
+  if (!boxes) requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (ret.kind !== "array") {
     // A DYNAMIC-returning callback (`plugins.flatMap((plugin) =>
     // plugin.languages ?? [])` — the getSupportInfo shape, where the
     // callback's members ride the checked-dynamic tree): the call dispatches on the
     // RECEIVER's runtime kind (dynInvoke) with the callback boxed. A native
     // dyn array runs the runtime's flatMap, and non-arrays throw Node's
-    // TypeError. The result stays dyn, checked per use.
-    if (ret.kind === "dyn") {
+    // TypeError. The result stays dyn, checked per use. The runtime's
+    // flatMap decides per result, as JavaScript does: an array is spread
+    // one level, anything else is kept as one element.
+    if (boxes) {
       const boxed: IrExpr = { kind: "dynFrom", value: fnArg, type: DYN, loc };
       return {
         kind: "dynInvoke",
@@ -3903,6 +4023,158 @@ export function lowerTuplePredicateCall(
     type: arrayOf(narrowing.elem),
     loc,
   };
+}
+
+/** Tuple `reduce` / `reduceRight`. `reads` holds one element read per
+ * position, in index order, each over the helper's `a.0` receiver
+ * parameter. The helper calls the callback once per position in the
+ * method's direction and reads each position only when it is visited, so
+ * a callback's write to a position not yet visited is visible. Without an
+ * initial value the first position visited seeds the accumulator and the
+ * callback is not called for it; a tuple has no holes and at least one
+ * position here, so the empty-receiver TypeError cannot occur. The
+ * accumulator's type follows the array methods' rule: the call's checked
+ * result with an initial value, the element type without one. */
+export function lowerTupleReduceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: "reduce" | "reduceRight",
+  receiver: IrExpr,
+  elem: IrType,
+  reads: IrExpr[],
+): IrExpr {
+  const loc = locOf(call);
+  const argNode = call.arguments.nodes[0]!;
+  const hasInit = call.arguments.nodes.length === 2;
+  const accT = hasInit ? lowerer.irTypeOf(call) : elem;
+  if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    argNode,
+    [accT, elem],
+    receiver.type,
+    false,
+    accT,
+  );
+  const fnRet = fnArg.type.ret;
+  if (!accumulatorAdmitsAnswer(lowerer, accT, fnRet)) {
+    lowerer.noLowering(
+      `tuple .${method} with a callback result the accumulator's type cannot hold`,
+      argNode,
+      "return a value of the accumulator's type from every path of the callback",
+    );
+  }
+  const init = hasInit ? lowerer.lowerExprExpecting(call.arguments.nodes[1]!, accT) : null;
+  const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(accT)}:${arity}:${hasInit ? "init" : "seed"}${callbackSite(fnArg)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, `%tuple.${method}`, key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const visits = reads.map((read, index) => ({ read, index }));
+    if (method === "reduceRight") visits.reverse();
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "acc.0",
+        init: hasInit ? varRef("z.0", accT, loc) : lowerer.coerceToExpected(visits[0]!.read, accT),
+        loc,
+      },
+    ];
+    for (const { read, index } of hasInit ? visits : visits.slice(1)) {
+      body.push({
+        kind: "assign",
+        localId: "acc.0",
+        value: lowerer.coerceToExpected(
+          {
+            kind: "callValue",
+            callee: varRef("f.0", fnArg.type, loc),
+            args: [
+              accumulatorArgument(lowerer, fnArg.type.params[0], accT, loc),
+              read,
+              numLit(index, loc),
+            ].slice(0, arity),
+            type: fnRet,
+            loc,
+          },
+          accT,
+        ),
+        loc,
+      });
+    }
+    body.push({ kind: "return", value: varRef("acc.0", accT, loc), loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+        ...(hasInit ? [{ localId: "z.0", name: "z", type: accT }] : []),
+      ],
+      returnType: accT,
+      locals: [
+        { id: "a.0", name: "a", type: receiver.type, mutable: false },
+        { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+        ...(hasInit ? [{ id: "z.0", name: "z", type: accT, mutable: false }] : []),
+        { id: "acc.0", name: "acc", type: accT, mutable: true },
+      ],
+      body,
+      loc,
+    });
+  }
+  const args: IrExpr[] = [receiver, fnArg];
+  if (init) args.push(init);
+  return { kind: "call", callee: helper, args, type: accT, loc };
+}
+
+/** Tuple `forEach`: the callback runs once per position, in index order,
+ * with the value the position holds when it is visited (see
+ * lowerTuplePredicateCall) and its index. Its result is discarded. */
+export function lowerTupleForEachCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+  elem: IrType,
+  reads: IrExpr[],
+): IrExpr {
+  const loc = locOf(call);
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    call.arguments.nodes[0]!,
+    [elem],
+    receiver.type,
+  );
+  const key = `tuple.forEach:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${arity}${callbackSite(fnArg)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%tuple.forEach", key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const body: IrStmt[] = reads.map((read, index) => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "callValue",
+        callee: varRef("f.0", fnArg.type, loc),
+        args: [read, numLit(index, loc)].slice(0, arity),
+        type: fnArg.type.ret,
+        loc,
+      },
+      loc,
+    }));
+    body.push({ kind: "return", value: null, loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "a.0", name: "a", type: receiver.type, mutable: false },
+        { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+      ],
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
 }
 
 /** The `%arr.<method>` helper `name` (map, flatMap or filter) taking its

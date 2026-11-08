@@ -29,8 +29,6 @@ import {
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
-  npmStaticDepSf7,
-  resolveImport,
 } from "../program.js";
 import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
@@ -55,6 +53,20 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
         ts.isImportSpecifier(d) ||
         ts.isNamespaceImport(d) ||
         ts.isImportEqualsDeclaration(d)),
+  );
+}
+
+/** `exports` in a CommonJS JavaScript file where the checker resolves no
+ * symbol for it (the module assigns no member of it, so nothing declares
+ * the name for the checker): still the module's exports object, which Node
+ * passes to every CommonJS module, never an undeclared name. The folds that
+ * answer `typeof <undeclared name>` with "undefined" ask this first. */
+export function isUnresolvedCjsExports(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return (
+    isCjsExportsIdentifier(lowerer, inner) &&
+    lowerer.checker.getSymbolAtLocation(inner) === undefined
   );
 }
 
@@ -401,7 +413,7 @@ function esModuleExportIgnoresThis(
       !ts.isStringLiteral(stmt.moduleSpecifier)
     )
       continue;
-    const dep = resolveImport(lowerer.program, sf, stmt.moduleSpecifier.text);
+    const dep = lowerer.facts.importedModule(sf, stmt.moduleSpecifier.text);
     if (
       dep !== null &&
       !dep.isDeclarationFile &&
@@ -506,8 +518,8 @@ export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.
     const spec = importDecl.moduleSpecifier.text;
     const from = ts.getSourceFileOfNode(importDecl);
     const dep =
-      resolveImport(lowerer.program, from, spec, "import") ??
-      npmStaticDepSf7(lowerer.program, from, spec, "import");
+      lowerer.facts.importedModule(from, spec, "import") ??
+      lowerer.facts.npmStaticModule(from, spec, "import");
     if (dep === null) return null;
     return memberAliasIn(lowerer, dep, (specifier.propertyName ?? specifier.name).text, 0);
   }

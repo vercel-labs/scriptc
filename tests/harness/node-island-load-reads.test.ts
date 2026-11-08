@@ -8,7 +8,7 @@
  * corpus programs 9811 to 9817 (the differential suites run them where they
  * are built). Needs a libnode pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
@@ -284,9 +284,13 @@ describe.skipIf(skip)("island loads that read the machine or the moment", () => 
     expect(decision("ident-kit")).toMatch(/^eager .*its load reads process\.pid \(/);
     expect(decision("seed-kit")).toMatch(/^eager .*its load reads Math\.random\(\) \(/);
     // A package loaded after it reads what it left in a global: Node is
-    // running by then, and the package evaluates at its import.
-    expect(decision("echo-kit")).toMatch(/^defer /);
-    expect(decision("plain-kit")).toMatch(/^defer /);
+    // running by then, and the package evaluates at its import. The build
+    // writes no snapshot for it, or for any load after the draw: the
+    // snapshot would hold the build's draw and answer no run.
+    for (const pkg of ["echo-kit", "plain-kit"])
+      expect(decision(pkg), pkg).toMatch(
+        /^eager .*an earlier load reads Math\.random\(\) \(.* could hold the build's reading/,
+      );
     // What the recorder has no rule for keeps the load eager, with the source
     // and the place that read it.
     const odd = decision("odd-kit");
@@ -304,6 +308,23 @@ describe.skipIf(skip)("island loads that read the machine or the moment", () => 
     expect(ran.stdout).toContain("seed: number true\n");
     expect(ran.stdout).toContain("process: true true\n");
   }, 300_000);
+
+  test("two builds of a program whose loads read the moment are the same bytes", async () => {
+    // Each build draws its own random number, reads its own clock and has
+    // its own process id while it evaluates the loads. None of that may be
+    // in the executable, used or not.
+    for (const [name, entry] of [
+      ["9814-node-island-load-reads-run", "main.cjs"],
+      ["9811-node-island-load-reads-clock", "main.cjs"],
+      ["9816-node-island-load-imports-process-names", "main.mjs"],
+    ] as const) {
+      // The second build starts from an empty directory and an empty cache.
+      const first = readFileSync((await build(name, entry)).binary);
+      const second = readFileSync((await build(name, entry)).binary);
+      expect(second.length, name).toBe(first.length);
+      expect(second.equals(first), name).toBe(true);
+    }
+  }, 600_000);
 
   test('"evaluate": "lazy" defers a load that reads the machine, without the build\'s reading', async () => {
     const name = "9815-node-island-lazy-load-reads-machine";
@@ -327,7 +348,9 @@ describe.skipIf(skip)("island loads that read the machine or the moment", () => 
     expect(decision("second-kit")).toMatch(
       /^eager .*its load reads process\.pid \(an import by name in /,
     );
-    expect(decision("third-kit")).toMatch(/^defer /);
+    // Node is running once the second has evaluated: the third has no
+    // snapshot to answer from.
+    expect(decision("third-kit")).toMatch(/^eager .*an earlier load reads process\.pid \(/);
     const ran = await run(binary);
     expect(ran.stdout).toBe(await underNode(name, "main.mjs"));
     expect(ran.stdout).toContain("second: true true\n");

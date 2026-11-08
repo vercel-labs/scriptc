@@ -19,7 +19,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
@@ -55,7 +55,10 @@ async function compileAndRun(
     .slice(0, 16);
   const outDir = join(cacheDir, `dyncheck-${key}`);
   mkdirSync(outDir, { recursive: true });
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(outDir, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(outDir, name)), { recursive: true });
+    writeFileSync(join(outDir, name), text);
+  }
   const file = join(outDir, `${name}.${ext}`);
   writeFileSync(file, source);
   // Pinned: the exact TypeError text and path rendering of failed checked
@@ -190,6 +193,88 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
       "true undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n" +
         "true expected object at $.origin, got undefined\n",
     );
+    expect(r.stderr).toBe("");
+  });
+
+  test("joining an untyped array refuses an instance whose class defines toString", async () => {
+    // Node runs the class's toString for each element. The walk over an
+    // untyped array cannot call a compiled method, and "[object Object]"
+    // would be a wrong answer, so the conversion throws by name.
+    const r = await compileAndRun(
+      "untyped-join-class-to-string",
+      `
+      class Named { toString(): string { return "x"; } }
+      class Sub extends Named {}
+      class Plain { a = 1; }
+      const attempt = (label: string, go: () => unknown): void => {
+        try { console.log(label, go()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      const named: unknown[] = [new Named(), "a"];
+      const sub: unknown[] = ["a", new Sub()];
+      const nested: unknown[] = [1, [new Named()]];
+      const plain: unknown[] = [new Plain(), "a", null, undefined, 1];
+      const one: unknown = new Named();
+      attempt("join", () => named.join("+"));
+      attempt("String", () => String(named));
+      attempt("template", () => \`\${named}\`);
+      attempt("inherited", () => sub.join("+"));
+      attempt("nested", () => nested.join("+"));
+      attempt("plain", () => plain.join("+"));
+      attempt("direct", () => String(one));
+    `,
+    );
+    const refusal =
+      "Error String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known";
+    expect(r.stdout).toBe(
+      [
+        `join ${refusal}`,
+        `String ${refusal}`,
+        `template ${refusal}`,
+        `inherited ${refusal}`,
+        `nested ${refusal}`,
+        "plain [object Object]+a+++1",
+        "direct x",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  test("an untyped RegExp with properties of its own keeps the inspector's refusal", async () => {
+    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`).
+    // The untyped inspector prints a RegExp's pattern and flags only, so one
+    // the program gave properties of its own is refused by name instead of
+    // printed without them; a RegExp without any prints.
+    const r = await compileAndRun(
+      "untyped-regexp-own-properties",
+      `
+      const attempt = (label, go) => {
+        try { go(); } catch (e) { console.log(label, "threw", e.message); }
+      };
+      const withProps = /b+/i;
+      withProps.extra = 1;
+      class Box { constructor(v) { this.v = v; } }
+      const plain = JSON.parse("[]");
+      plain.push(/a+/g, [/c/]);
+      attempt("plain", () => console.log(plain));
+      attempt("set", () => console.log(new Set([withProps])));
+      attempt("class field", () => console.log(new Box(withProps)));
+      attempt("plain set", () => console.log(new Set([/d/])));
+    `,
+      "cjs",
+    );
+    expect(r.stdout).toBe(
+      [
+        "[ /a+/g, [ /c/ ] ]",
+        "set threw util.inspect of a dynamic RegExp is not supported yet",
+        "class field threw util.inspect of a dynamic RegExp is not supported yet",
+        "Set(1) { /d/ }",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe("");
   });
 
@@ -1455,6 +1540,80 @@ console.log(typeof read(), read() === undefined);
     expect(r.stdout).toBe("undefined true\nnumber false\n");
   });
 
+  test("a cast to an interface a declaration file declares is checked like one the program declares", async () => {
+    // A type has no implementation: an interface from a declarations-only
+    // package, from the project's own declaration file or from an ambient
+    // module types records the program builds, so untyped data asserted to
+    // it goes through the same checked conversion as for an interface in a
+    // `.ts` file. Node never checks an `as`; these throw.
+    const declared = "interface Book {\n  isbn: string;\n  title: string;\n  year?: number;\n}\n";
+    const exported = "export " + declared;
+    const body = `
+function scan(text: string): string {
+  try {
+    const book = JSON.parse(text) as Book;
+    return "read " + typeof book.isbn + " " + book.title;
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+function tally(text: string): string {
+  try {
+    return String((JSON.parse(text) as Book[]).length);
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+console.log(scan('{"isbn":7,"title":"Tides"}'));
+console.log(scan('{"isbn":"0-1"}'));
+console.log(scan("[1,2]"));
+console.log(scan('{"isbn":"0-1","title":"Moss"}'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3"}]'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3","title":"Ferns","year":1961}]'));
+`;
+    const expected = [
+      "TypeError: expected string at $.isbn, got number",
+      "TypeError: expected string at $.title, got undefined",
+      "TypeError: expected object at $, got array",
+      "read string Moss",
+      "TypeError: expected string at $[1].title, got undefined",
+      "2",
+      "",
+    ].join("\n");
+    const variants: [string, string, Record<string, string>][] = [
+      ["declared-cast-program", declared + body, {}],
+      [
+        "declared-cast-package",
+        `import type { Book } from "shelf-types";\n` + body,
+        {
+          "node_modules/shelf-types/package.json":
+            '{ "version": "0.4.1", "name": "shelf-types", "main": "./shelf.d.ts", "types": "./shelf.d.ts" }\n',
+          "node_modules/shelf-types/shelf.d.ts": exported,
+        },
+      ],
+      [
+        "declared-cast-file",
+        `import type { Book } from "./types.js";\n` + body,
+        { "types.d.ts": exported },
+      ],
+      [
+        "declared-cast-ambient",
+        `/// <reference path="./shims.d.ts" />\nimport type { Book } from "ambient-types";\n` +
+          body,
+        { "shims.d.ts": `declare module "ambient-types" {\n${exported}}\n` },
+      ],
+      [
+        "declared-cast-global",
+        `/// <reference path="./globals.d.ts" />\n` + body,
+        { "globals.d.ts": declared },
+      ],
+    ];
+    for (const [name, source, files] of variants) {
+      const r = await compileAndRun(name, source, "ts", false, files);
+      expect([name, r.exitCode, r.stdout, r.stderr]).toEqual([name, 0, expected, ""]);
+    }
+  });
+
   test("an untyped value returned where the result is declared undefined is checked", async () => {
     // Node hands the caller the value (5, null); a result declared
     // `undefined` has no representation for it, so the return throws.
@@ -2265,6 +2424,63 @@ try {
       [
         "x! x",
         "true a '(string, number | undefined) => string' function invoked through a '(string, string) => string' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an untyped call reaches the function behind a slot; the slot's type and the function's own still check", async () => {
+    // A function that passed through a typed slot is checked against what
+    // it declares. Three claims remain the program's and still throw where
+    // Node proceeds: a call through the slot's type, the parameter type the
+    // function itself declares, and a function whose parameter type the
+    // slot gave it.
+    const r = await compileAndRun(
+      "untyped-call-through-slot-claims",
+      `
+      interface Payload { diff: string; path: string }
+      type Show = (payload: Payload) => string;
+      function loose(payload: any): string { return "loose " + JSON.stringify(payload); }
+      function narrow(payload: { diff: string }): string { return "narrow " + payload.diff; }
+      const viaLoose: { show: Show } = { show: loose };
+      const viaNarrow: { show: Show } = { show: narrow };
+      const viaSlot: { show: Show } = { show: (payload) => "typed " + payload.diff };
+      const empty: any = {};
+      const attempt = (label: string, call: () => string): void => {
+        try { console.log(label, call()); }
+        catch (error) { console.log(label, error instanceof TypeError, (error as Error).message); }
+      };
+      // No claim on either side: the function runs.
+      const looseWide: (payload: any) => string = viaLoose.show;
+      const looseAny: any = viaLoose.show;
+      attempt("wider type:", () => looseWide(empty));
+      attempt("any:", () => looseAny(empty));
+      // The call through the slot's type.
+      attempt("slot type, asserted:", () => viaLoose.show(empty as Payload));
+      attempt("slot type, any argument:", () => viaLoose.show(empty));
+      // The function's own parameter type.
+      const narrowWide: (payload: any) => string = viaNarrow.show;
+      const narrowAny: any = viaNarrow.show;
+      attempt("own type, wider type:", () => narrowWide(empty));
+      attempt("own type, any:", () => narrowAny(empty));
+      attempt("own type, admitted:", () => narrowWide({ diff: "d" }));
+      // The function typed by the slot.
+      const slotWide: (payload: any) => string = viaSlot.show;
+      attempt("typed by the slot:", () => slotWide(empty));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "wider type: loose {}",
+        "any: loose {}",
+        "slot type, asserted: true expected string at $.diff, got undefined",
+        "slot type, any argument: true expected string at $.diff, got undefined",
+        "own type, wider type: true expected string at $.diff, got undefined",
+        "own type, any: true expected string at $[0].diff, got undefined",
+        "own type, admitted: narrow d",
+        "typed by the slot: true expected string at $.diff, got undefined",
         "",
       ].join("\n"),
     );

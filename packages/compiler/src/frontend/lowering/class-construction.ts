@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import {
   BOOL,
   DYN,
@@ -557,16 +557,16 @@ export class ClassConstructionDispatch {
           fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
-        const value = constructedValue(lowerer, info, {
+        // The result is an untyped value, so a constructor that returns an
+        // object of another kind answers that object (constructedDynValue).
+        const value = constructedDynValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
           args,
           type: { kind: "object", className: name },
           loc,
         });
-        const body: IrStmt[] = [
-          { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
-        ];
+        const body: IrStmt[] = [{ kind: "return", value, loc }];
         // A spread call's argument count is known only at run time.
         if (fence !== null && fn.name === PACKED)
           body.unshift({

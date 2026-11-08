@@ -305,6 +305,13 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0
  * payload slots; see scr_stream_emit_data), lengths count JS string
  * units. Borrows the canonical encoding name; receiver +1. */
 ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc);
+/* readableEncoding: NULL (null) without a decoder, else the `encoding`
+ * option as the program spelled it, or the decoder's canonical name after
+ * setEncoding(). +1. scr_stream_set_encoding_name records an option's
+ * spelling once its decoder is installed (name borrowed; answers the
+ * receiver +1). */
+ScrStr *scr_stream_readable_encoding(ScrStream *s);
+ScrStream *scr_stream_set_encoding_name(ScrStream *s, ScrStr *name);
 typedef struct ScrPromise ScrPromise; /* full declaration below (C11 repeat) */
 /* for-await: a +1 promise of the next chunk — buffered content (one
  * whole entry in Readable.from mode, the whole buffer otherwise —
@@ -349,6 +356,7 @@ ScrPromise *scr_sc_text(ScrStream *s);
 ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
+ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries
@@ -409,6 +417,21 @@ bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */
 ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end); /* dst +1 */
 ScrStream *scr_stream_unpipe(ScrStream *src, ScrStream *dst /*NULL = all*/); /* recv +1 */
+/* Node's pipe lifecycle: pipe() registers listeners on the destination
+ * ('unpipe', 'error', 'close', 'finish') and on a source piped with end:
+ * false ('end'), so the destination hears 'unpipe' when it finishes,
+ * closes or errors; unpipe pauses the source, with 'pause', once it pipes
+ * nowhere. scr_stream_pipe and scr_stream_unpipe call through
+ * scr_stream_pipe_ops when it is set. scr_stream_pipe_events.c sets it to
+ * scr_stream_pipe_events_ops (the implementation, in scr_stream.c beside
+ * the state it reads) in a program that pipes; any other program keeps
+ * the table NULL and links none of the implementation. */
+typedef struct ScrStreamPipeOps {
+  void (*listen)(ScrStream *src, ScrStream *dst, bool end);
+  ScrStream *(*unpipe)(ScrStream *src, ScrStream *dst);
+} ScrStreamPipeOps;
+extern const ScrStreamPipeOps *scr_stream_pipe_ops;
+extern const ScrStreamPipeOps scr_stream_pipe_events_ops;
 
 /* The writable surface. write borrows its chunk; cb (when non-NULL)
  * MOVES and fires after the chunk's user write completes. */
@@ -517,6 +540,25 @@ ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double co
                                         ScrDyn *outer, ScrAbortAddFn add);
 double scr_stream_prop(ScrStream *s, const char *name);
 ScrError *scr_stream_errored(ScrStream *s); /* +1 or NULL */
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * (`which` 0 to 4, in that order): a boolean, or null where Node answers
+ * null. scr_stream_util_is_dyn takes any checked-dynamic value: a native stream
+ * answers as scr_stream_util_is, a primitive as Node's duck typing does, and
+ * any other value throws SC2020. scr_stream_util_is_value is the same with
+ * `native_of` (NULL or a function) finding more native streams first;
+ * scr_dyn_builtin_stream_util_is (scr_dyn_builtin_stream.c) passes the
+ * constructor-function streams. +1, or NULL with the error. */
+struct ScrDyn *scr_stream_util_is(ScrStream *s, double which);
+struct ScrDyn *scr_stream_util_is_dyn(const struct ScrDyn *value, double which);
+struct ScrDyn *scr_stream_util_is_value(const struct ScrDyn *value, double which,
+                                        ScrStream *(*native_of)(const struct ScrDyn *));
+/* readableAborted, readableDidRead, readableEncoding, writableAborted
+ * (`which` 0 to 3): the getter's value, or undefined on a stream class
+ * whose prototype does not define it in Node. +1. */
+struct ScrDyn *scr_stream_state_dyn(ScrStream *s, double which);
+/* stream[Symbol.asyncDispose](): destroys an unfinished stream with an
+ * AbortError and settles when the stream has finished. +1. */
+ScrPromise *scr_stream_async_dispose(ScrStream *s);
 
 /* The underscore-method assignment surface (`r._read = fn` after
  * construction — Node's own-property shadow of the prototype method):

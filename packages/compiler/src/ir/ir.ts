@@ -376,9 +376,10 @@ export type IrType =
    * Runtime representation is a refcounted snapshot box (ScrCaught) holding
    * the taken exception: a kind tag plus the payload. Even NARROWER than
    * dyn: the only expressions a caught value may appear in are `caughtTest`
-   * (kind/instanceof tests), `caughtNarrow` (extraction under a proven
-   * test, verified at run time), and the `rethrow` statement — the frontend
-   * rejects every other use with the narrowing hint. */
+   * (kind/instanceof tests), `caughtNarrow` and `caughtCheck` (extraction
+   * under a proven test or an assertion, verified at run time),
+   * `caughtToDyn` (the checked-dynamic value every other read of the
+   * binding takes), `toString`, and the `rethrow` statement. */
   | { kind: "caught" }
   | { kind: "promise"; inner: IrType } // heap, refcounted, settled-once
   /** A sync generator object (`function*`'s result — scr_async.c's ScrGen):
@@ -2096,6 +2097,13 @@ export interface IrFunction {
    * captures that takes jsval parameters. The backend gives each function
    * value boxed from this closure a jsval call entry into it. */
   jsEntry?: string;
+  /** A view's body (frontend/lowering/function-views.ts): a closure over it
+   * stands, at this function's signature, for the function value in its
+   * first capture. Set on the views an untyped caller must see through:
+   * the backend's box builder for the signature boxes the captured
+   * function instead of the closure, so a dynamic call reaches that
+   * function with the arguments as given. */
+  boxesSource?: true;
   /** The function's execution tier (ir/tiers.ts). Absent means static: the
    * function may use dynamic values only through boundary operations
    * (dynFrom, dynCheck, kind tests) and moves, which the validator enforces
@@ -3377,7 +3385,9 @@ export type IrExpr =
    * the function's own `length` where the type's parameter list does not
    * give it: a function literal lowered with the parameter list of the slot
    * it is written into receives the slot's remaining arguments in
-   * parameters it never declared. */
+   * parameters it never declared, and a method value takes the parameter
+   * list of the slot its class inherits. On an interned closure every
+   * mention carries the same length. */
   | {
       kind: "closure";
       fnName: string;
@@ -3397,6 +3407,13 @@ export type IrExpr =
       callee: IrExpr;
       receiver?: IrExpr;
       args: IrExpr[];
+      /** The program wrote this call through `any`: the callee is a binding
+       * declared `any` that lowering knows holds a function, and an untyped
+       * argument is checked here against that function type's parameter.
+       * The source claims nothing about the argument, so where the callee
+       * is a view (function-views.ts) the check belongs to the function the
+       * view forwards to. */
+      untyped?: true;
       type: IrType;
       loc: SrcLoc;
     }

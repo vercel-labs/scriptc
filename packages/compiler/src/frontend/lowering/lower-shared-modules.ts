@@ -35,11 +35,12 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import { BOOL, DYN, STRING, VOID, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { resolveBareModule } from "../resolve.js";
 import { packageDirOf } from "../../node-islands/origin.js";
-import { requireModuleSpecifiers, scanModuleSpecifiers } from "../../node-islands/modules.js";
+import { requireModuleSpecifiers } from "../../node-islands/modules.js";
 import { readProjectConfig } from "../../project-config.js";
 import {
   sharedClassExtendedDiag,
   sharedModuleDuplicatedDiag,
+  sharedModuleWorkerInstanceDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
   classConstructHelper,
@@ -441,8 +442,9 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       continue;
     }
     // Specifiers in code only: a comment or a string that looks like an
-    // import names no module.
-    for (const spec of scanModuleSpecifiers(text).specifiers) {
+    // import names no module. A bounded argument names one module per value
+    // (SPEC §5.3): a compiled module it names is shared, not duplicated.
+    for (const spec of lowerer.facts.moduleSpecifierScans.of(file, text, true).specifiers) {
       for (const target of resolveAll(file, spec)) {
         const sf = compiled.get(target);
         if (sf !== undefined) {
@@ -511,6 +513,13 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       }
     }
     plans.push({ sf, path, exports });
+    // A worker thread that runs this module runs an instance of its own;
+    // island code reads the main thread's, whichever thread called it
+    // (the registration and the accessor are the island thread's).
+    if (lowerer.workerModules.has(sf))
+      lowerer.islandWorkerWarnings.push(
+        sharedModuleWorkerInstanceDiag(pkg?.name ?? sf.fileName, loc),
+      );
   }
   if (plans.length > 0) lowerer.usesNodeIsland = true;
   // Before island loads are lowered (the plans are computed in the first

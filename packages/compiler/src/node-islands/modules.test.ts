@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { clearVirtualSources, setVirtualSource } from "../frontend/input-tracker.js";
 import {
+  ModuleSpecifierScans,
   NodeIslandModuleCollector,
   namedDataPaths,
   nodeIslandManifest,
@@ -93,6 +94,69 @@ describe("module specifiers in JavaScript", () => {
     expect(scan.computed).toEqual([]);
   });
 
+  test("a program module's syntactically bounded loads name every value", () => {
+    expect(
+      scanModuleSpecifiers(
+        `
+        const flag = Math.random() > 0.5;
+        require(flag ? "./c.js" : "./d.js");
+        require("./a/" + "x.js");
+        require(("./b" + ".js"));
+        require(("./x" + ".js") || "./g.js");
+        require(("." + "/h.js") ?? "./i.js");
+      `,
+        undefined,
+        { bounds: true },
+      ),
+    ).toEqual({
+      specifiers: [
+        "./c.js",
+        "./d.js",
+        "./a/x.js",
+        "./b.js",
+        "./x.js",
+        "./g.js",
+        "./h.js",
+        "./i.js",
+      ],
+      computed: [],
+    });
+  });
+
+  test("a bounded scan still reports the loads it cannot bound", () => {
+    const forms = (text: string) =>
+      scanModuleSpecifiers(text, undefined, { bounds: true }).computed.map((c) => c.form);
+    expect(forms("require('./a/' + name)")).toEqual(["require() with a computed specifier"]);
+    expect(forms("import(`./x/${y}`)")).toEqual(["import() with a computed specifier"]);
+    expect(forms("require(flag ? './a.js' : name)")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    // The scan reads literals only: a bound the frontend's const analysis
+    // proves (a `process.env` branch, a no-span template) is not one here.
+    expect(forms("require(process.env.SCRIPTC_M ?? './e.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(forms("require(`./g.js`)")).toEqual(["require() with a computed specifier"]);
+    // `+` binds tighter than `||`, so this concatenates the union as a whole:
+    // no flat chain names its values (parenthesized, it would bound).
+    expect(forms("require('./a.js' || './b' + '.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(
+      scanModuleSpecifiers("require(('./a.js' || './b') + '.js')", undefined, { bounds: true }),
+    ).toEqual({
+      specifiers: ["./a.js.js", "./b.js"],
+      computed: [],
+    });
+  });
+
+  test("without bounds a computed load is neither bound nor traced", () => {
+    expect(scanModuleSpecifiers('require("./a/" + "x.js")')).toEqual({
+      specifiers: [],
+      computed: [{ at: 0, form: "require() with a computed specifier" }],
+    });
+  });
+
   test("type-only import and export declarations name no runtime module", () => {
     const text = `
       import type { A } from "./a.ts";
@@ -139,6 +203,18 @@ describe("module specifiers in JavaScript", () => {
       "require as a value",
     ]);
     expect(forms("function require(x) {} typeof require")).toEqual([]);
+  });
+
+  test("a shared scan answers for the text it was scanned from, and no other", () => {
+    const scans = new ModuleSpecifierScans();
+    const first = scans.of("/pkg/index.js", 'require("zoo");');
+    expect(first.specifiers).toEqual(["zoo"]);
+    // The same file with the same text is not scanned again.
+    expect(scans.of("/pkg/index.js", 'require("zoo");')).toBe(first);
+    // The file's text changed: the answer is the new text's.
+    expect(scans.of("/pkg/index.js", 'require("yak");').specifiers).toEqual(["yak"]);
+    // Another file with the first text has an answer of its own.
+    expect(scans.of("/pkg/other.js", 'require("zoo");').specifiers).toEqual(["zoo"]);
   });
 });
 
@@ -353,6 +429,26 @@ describe("the collected module tree", () => {
       "node_modules/zoo/index.js",
       "node_modules/zoo/package.json",
     ]);
+  });
+
+  test("collectors that share their scans build the same tree as one that does not", () => {
+    const root = project({
+      "main.ts": "",
+      "node_modules/bridge/package.json": "{}",
+      "node_modules/bridge/index.js": 'const zoo = require("zoo");\nmodule.exports = zoo;',
+      "node_modules/zoo/package.json": "{}",
+      "node_modules/zoo/index.js": "exports.a = 1;",
+    });
+    const paths = (collector: NodeIslandModuleCollector): string[] => {
+      expect(collector.addLoaded(join(root, "node_modules/bridge/index.js"))).toBeNull();
+      return collector.tree()!.files.map((f) => f.path);
+    };
+    const alone = paths(new NodeIslandModuleCollector());
+    const scans = new ModuleSpecifierScans();
+    // Two passes of one round: the second collector reads the first's scans.
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(alone).toContain("node_modules/zoo/index.js");
   });
 
   test("type-only imports ship nothing and are not traced", () => {

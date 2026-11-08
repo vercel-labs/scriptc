@@ -62,6 +62,26 @@ declare namespace NodeJS {
     (): MemoryUsage;
     rss(): number;
   }
+  /* process.features: Node's flags, each with the value that holds for a
+   * compiled binary (no inspector, not a debug build, no libuv, TLS and
+   * IPv6 present, no run-time TypeScript loading). A name Node does not
+   * define reads undefined through the index signature. */
+  interface ProcessFeatures {
+    readonly inspector: boolean;
+    readonly debug: boolean;
+    readonly uv: boolean;
+    readonly ipv6: boolean;
+    readonly tls_alpn: boolean;
+    readonly tls_sni: boolean;
+    readonly tls_ocsp: boolean;
+    readonly tls: boolean;
+    readonly openssl_is_boringssl: boolean;
+    readonly cached_builtins: boolean;
+    readonly require_module: boolean;
+    readonly quic: boolean;
+    readonly typescript: "strip" | "transform" | false;
+    readonly [name: string]: boolean | "strip" | "transform" | undefined;
+  }
   interface ProcessRelease {
     name: string;
     sourceUrl?: string | undefined;
@@ -286,10 +306,9 @@ declare var process: {
     readonly variables: { readonly [name: string]: string | number | boolean | undefined };
     readonly target_defaults?: { readonly default_configuration: string };
   };
-  /* Node's feature probes — a compiled binary has no inspector and is
-   * not a debug build; undeclared members read undefined through the
-   * index signature. */
-  readonly features: { readonly [name: string]: boolean | undefined };
+  /* Node's feature flags with the values that hold for a compiled binary
+   * (see NodeJS.ProcessFeatures). */
+  readonly features: NodeJS.ProcessFeatures;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -1389,6 +1408,11 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  /* Live iterators over the sorted list: names in byte order with their
+   * combined values, every Set-Cookie value on its own. */
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {

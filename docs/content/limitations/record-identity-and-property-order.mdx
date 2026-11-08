@@ -8,6 +8,7 @@ It judges types rather than the path one value takes, so it can name a conversio
 A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
 The same holds for an array converted to an array of another element type and for a tuple converted to an array.
 A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.
+A union value that something else can still reach is refused with `SC2003` under the same condition where one of its members fits several members of the destination union and enters the one its own discriminant names, because that conversion builds a new object where Node.js has one.
 Two conversions are not covered and copy without a report.
 A promise used as a promise of another record type, such as a `Promise<Wide>` stored as a `Promise<Narrow>`, copies its payload when it settles.
 A class stored in a record type, such as `const counter: { count: number } = Counter`, holds copies of the class's static fields.
@@ -30,6 +31,9 @@ These types use checked dynamic storage, which is slower than native record fiel
 A type whose values are only read field by field, from fields the class does not write after construction and does not implement as accessors, stays a native record and holds a copy.
 Object spread of a class instance is refused.
 Dense array literals created directly in checked storage preserve identity, and supported native handles pass by reference.
+A type derived from a built-in class whose values are native handles, such as an interface that extends `Response` or an `Omit` or `Pick` of it, an intersection with it, or a subset alias, names the built-in object itself and uses checked dynamic storage, also for an object the program makes for the type.
+A member such a type adds or declares again is read from the object by name and checked against its declared type, so reading a required member that the built-in object does not have throws a `TypeError`, where Node.js answers `undefined`.
+Assigning a member that the built-in object does not have throws, where Node.js stores it on the object.
 
 `Object.keys`, `Object.values`, `Object.entries`, `for...in`, `JSON.stringify`, and `util.inspect` enumerate a record's keys in the order the object created them, as in Node.js.
 scriptc chooses one order per record type from the order in which the program's object literals create the keys, follows object spread, rest destructuring, and record conversions back to the values they copy, and places an optional key that the program assigns after construction after the keys the object was built with.

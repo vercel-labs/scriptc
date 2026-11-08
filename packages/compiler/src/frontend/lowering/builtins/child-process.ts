@@ -8,6 +8,7 @@ import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CHILD_T,
@@ -53,6 +54,32 @@ export function lowerChildArgsArg(
  * a file, and whose list follows the module path in what Node spawns. */
 export type ChildLaunchForm = 0 | 1 | 2 | 3;
 
+/** A capturing launch's own `maxBuffer` (without one the runtime applies
+ * Node's 1 MiB default). cp.maxBuffer validates it as validateMaxBuffer
+ * does (ERR_OUT_OF_RANGE for a negative or NaN value); `arm` also makes it
+ * the limit of the next capture, which is the launch. The promisified
+ * forms arm inside their helper and only validate at the call. `sync`
+ * names the order of Node's checks: spawnSync validates the limit after
+ * normalizeSpawnArguments has checked the launch's values; execFile
+ * validates it before spawn checks them, and exec checks its command
+ * before it calls execFile. */
+export interface ChildMaxBuffer {
+  value: IrExpr;
+  arm: boolean;
+  sync: boolean;
+}
+
+/** One evaluation of a launch, for the order the source gives them: an
+ * argument of the launch by its index, "limit" for a `maxBuffer` that is
+ * not one of the arguments, or `effect`: the value of an option the launch
+ * does not read (`windowsHide`), which runs where its member sits. */
+export type ChildEvalStep = number | "limit" | { effect: IrExpr };
+
+/** The limit of a launch that arms its own capture, or none. */
+export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuffer | undefined {
+  return value === null ? undefined : { value, arm: true, sync };
+}
+
 /** Node checks what a child launch hands to the operating system before
  * it starts a process (normalizeSpawnArguments and normalizeExecArgs): a
  * NUL in the file or command, an argument, `cwd` or an environment key or
@@ -60,14 +87,34 @@ export type ChildLaunchForm = 0 | 1 | 2 | 3;
  * arguments are evaluated first, in their order, into hidden locals; the
  * may-throw cp.checkArgs call reads them; the launch follows. `launch`
  * starts with the command and the argument list; `options` picks the
- * `cwd` and environment-pairs arguments it carries, if any. A launch
- * whose checked values are all literals that pass gets no check. */
+ * `cwd` and environment-pairs arguments it carries, if any, and names a
+ * capturing launch's `maxBuffer`. A launch whose checked values are all
+ * literals that pass gets no check.
+ *
+ * The limit shares the evaluated arguments, so a capture one of them runs
+ * has finished before the limit is armed, and it is armed last: a check
+ * that throws leaves no limit behind for another capture. Its own value is
+ * evaluated with the arguments, before any check. Where both the limit and
+ * a value can be refused, the checks run in Node's order.
+ *
+ * `sourceOrder` is the order in which the source evaluates what the launch
+ * reads: its arguments by index, and "limit" for a limit that is not one of
+ * them. An options literal evaluates its members as written, so a limit
+ * written before `cwd` is evaluated before it, and the options before a
+ * callback that follows them. It applies when the limit has an evaluation
+ * of its own (anything but a number literal) or the order holds an
+ * `effect`; a launch with neither keeps the order of its arguments. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
   form: ChildLaunchForm,
-  options: (args: readonly IrExpr[]) => { cwd?: IrExpr | undefined; envPairs?: IrExpr | undefined },
+  options: (args: readonly IrExpr[]) => {
+    cwd?: IrExpr | undefined;
+    envPairs?: IrExpr | undefined;
+    maxBuffer?: ChildMaxBuffer | undefined;
+  },
   loc: SrcLoc,
+  sourceOrder?: readonly ChildEvalStep[],
 ): IrExpr {
   const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
     e === undefined ||
@@ -83,41 +130,134 @@ export function withChildArgsCheck(
       : form === 3
         ? allPass(list)
         : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
-  if (fileAndArgsPass && passes(given.cwd, true) && allPass(given.envPairs)) return launch;
+  const optionsPass = passes(given.cwd, true) && allPass(given.envPairs);
+  // A literal limit in range cannot be refused; it is still armed.
+  const limitPasses =
+    given.maxBuffer === undefined ||
+    (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
+  const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
+  const effects = sourceOrder !== undefined && sourceOrder.some((step) => typeof step === "object");
+  if (fileAndArgsPass && optionsPass && !limited && !effects) return launch;
   const stmts: IrStmt[] = [];
-  const args = launch.args.map((arg): IrExpr => {
-    // Literals and function literals have no evaluation to order, and a
-    // function-typed local read is the callback itself.
-    if (
+  // Literals and function literals have no evaluation to order, and a
+  // function-typed local read is the callback itself.
+  const evaluates = (arg: IrExpr): boolean =>
+    !(
       arg.kind === "numLit" ||
       arg.kind === "strLit" ||
       arg.kind === "boolLit" ||
       arg.kind === "closure" ||
       (arg.kind === "varRef" && arg.type.kind === "func")
-    )
-      return arg;
-    const local = lowerer.declareHiddenLocal("%childArg", arg.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: arg, loc });
-    return varRef(local.id, arg.type, loc);
+    );
+  const hold = (value: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%childArg", value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
+  };
+  // A limit that is not an argument of the launch is evaluated at its own
+  // step. (One that is an argument is evaluated as that argument.)
+  const ownLimit =
+    limited && given.maxBuffer !== undefined && !launch.args.includes(given.maxBuffer.value)
+      ? given.maxBuffer.value
+      : undefined;
+  const steps: ChildEvalStep[] = [];
+  if (
+    sourceOrder !== undefined &&
+    (effects || (given.maxBuffer !== undefined && given.maxBuffer.value.kind !== "numLit"))
+  ) {
+    // A member written twice keeps its last place, as its last value is
+    // the one the launch reads.
+    sourceOrder.forEach((step, at) => {
+      if (sourceOrder.lastIndexOf(step) === at) steps.push(step);
+    });
+  }
+  for (let i = 0; i < launch.args.length; i++) if (!steps.includes(i)) steps.push(i);
+  if (!steps.includes("limit")) steps.push("limit");
+  const args: IrExpr[] = [...launch.args];
+  let ownLimitHeld: IrExpr | undefined;
+  steps.forEach((step, at) => {
+    if (typeof step === "object") {
+      stmts.push({ kind: "exprStmt", expr: step.effect, loc });
+    } else if (step !== "limit") {
+      const arg = launch.args[step]!;
+      if (evaluates(arg)) args[step] = hold(arg);
+    } else if (ownLimit !== undefined) {
+      // A local read is held only where a later evaluation could assign
+      // the local: Node has the limit's value before it evaluates those.
+      const followed = steps
+        .slice(at + 1)
+        .some(
+          (later) =>
+            typeof later === "object" || (later !== "limit" && evaluates(launch.args[later]!)),
+        );
+      ownLimitHeld =
+        ownLimit.kind === "numLit" || (ownLimit.kind === "varRef" && !followed)
+          ? ownLimit
+          : hold(ownLimit);
+    }
   });
   const held = options(args);
-  stmts.push({
+  const noStrings = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
+  const check = (
+    checked: ChildLaunchForm,
+    file: IrExpr,
+    values: IrExpr,
+    envPairs: IrExpr | undefined,
+    cwd: IrExpr | undefined,
+  ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "libCall",
       fn: "cp.checkArgs",
-      args: [
-        numLit(form, loc),
-        form === 3 ? strLit("", loc) : args[0]!,
-        args[1]!,
-        held.envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
-        held.cwd ?? strLit("", loc),
-      ],
+      args: [numLit(checked, loc), file, values, envPairs ?? noStrings(), cwd ?? strLit("", loc)],
       type: VOID,
       loc,
     },
     loc,
   });
+  const checkAll = (): IrStmt =>
+    check(form, form === 3 ? strLit("", loc) : args[0]!, args[1]!, held.envPairs, held.cwd);
+  const maxBufferCall = (value: IrExpr, arm: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "cp.maxBuffer",
+      args: [value, boolLit(arm, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  // The limit is an option, and Node has every option's value before it
+  // checks anything: an expression that changes the argument list has done
+  // so when the list is checked. So its value was evaluated above, at its
+  // step, before the checks, and they and the launch read the local.
+  let limit = limited ? held.maxBuffer : undefined;
+  if (limit !== undefined && ownLimitHeld !== undefined) limit = { ...limit, value: ownLimitHeld };
+  if (limit === undefined) {
+    // Reached with nothing to check only for an `effect`'s order.
+    if (!(fileAndArgsPass && optionsPass)) stmts.push(checkAll());
+  } else if (fileAndArgsPass && optionsPass) {
+    stmts.push(maxBufferCall(limit.value, limit.arm));
+  } else if (limit.sync || limitPasses) {
+    stmts.push(checkAll(), maxBufferCall(limit.value, limit.arm));
+  } else {
+    // exec and execFile, callback or promisified, where the limit and a
+    // launch value can both be refused. The limit is validated first and
+    // armed after the last check.
+    const value = limit.value;
+    if (form === 1) {
+      // exec: normalizeExecArgs checks the command, execFile the limit,
+      // spawn the options. Form 3 with no list checks neither a file nor
+      // an argument, which leaves the options.
+      if (!fileAndArgsPass) stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
+      stmts.push(maxBufferCall(value, false));
+      if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+    } else {
+      stmts.push(maxBufferCall(value, false), checkAll());
+    }
+    if (limit.arm) stmts.push(maxBufferCall(value, true));
+  }
   return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
 }
 
@@ -181,6 +321,45 @@ function stdioModeChain(
     type: F64,
     loc,
   };
+}
+
+/** An option Node reads on Windows only (`windowsHide`: no console window;
+ * `windowsVerbatimArguments`: no argument quoting). On every other target
+ * it is evaluated and has no effect, as in Node. `windowsVerbatimArguments`
+ * changes what the child receives on Windows, and the runtime's launch has
+ * no unquoted form, so there it is refused unless it is literally `false`.
+ * `evaluate` takes a value whose evaluation can be observed (a call, a
+ * getter) to run where the member sits; a form with no place for it (null)
+ * refuses such a value by name instead of dropping it. */
+export function windowsOnlyOption(
+  lowerer: Lowerer,
+  what: string,
+  name: string,
+  member: ts.Node,
+  valueNode: ts.Expression,
+  evaluate: ((value: IrExpr) => void) | null,
+): void {
+  if (
+    name === "windowsVerbatimArguments" &&
+    lowerer.targetPlatform === "win32" &&
+    valueNode.kind !== ts.SyntaxKind.FalseKeyword
+  ) {
+    lowerer.noLowering(
+      `${what} option 'windowsVerbatimArguments' on a Windows target`,
+      member,
+      "the native launch always quotes arguments: pass false, or leave the option out",
+    );
+  }
+  const value = lowerer.lowerExpr(valueNode);
+  if (isSafeToDiscard(value)) return;
+  if (evaluate === null) {
+    lowerer.noLowering(
+      `${what} option '${name}' with a value that must be evaluated`,
+      member,
+      "pass a literal or a plain binding (this form has no place to run the expression)",
+    );
+  }
+  evaluate(value);
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
@@ -306,7 +485,11 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order. `stdio`
   // stands for a tuple whose slots resolve at the call.
-  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input")[] = [];
+  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input" | "windowsHide")[] = [];
+  // A `windowsHide` value whose evaluation can be observed (a call, a
+  // getter): it runs where the member sits, through the extended entry
+  // point's ordered prelude.
+  const windowsHideValues: IrExpr[] = [];
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -501,7 +684,14 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+          // Node reads it on Windows only; the value is still evaluated
+          // where the member sits.
+          windowsOnlyOption(lowerer, "spawnSync", m.name, p, m.value, (value) => {
+            windowsHideValues.push(value);
+            optionOrder.push("windowsHide");
+            extOptions = true;
+            plain = false;
+          });
           break;
         case "env":
           // A REPLACEMENT environment, as for spawn and execFileSync.
@@ -626,6 +816,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     );
   }
   if (stdioStr !== null) {
+    if (windowsHideValues.length > 0) {
+      lowerer.noLowering(
+        "spawnSync with a runtime stdio value and a windowsHide value that must be evaluated",
+        optsNode!,
+        'pass stdio as a "pipe"/"ignore"/"inherit" literal, or bind the windowsHide value to a constant before the call',
+      );
+    }
     if (extOptions) {
       lowerer.noLowering(
         "spawnSync with a runtime stdio value and cwd, input, or shell",
@@ -694,6 +891,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         if (inputRead !== null)
           prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
         else inputArg = bind("%spawnSyncInput", input);
+      } else if (option === "windowsHide") {
+        const value = windowsHideValues.shift();
+        if (value !== undefined) bind("%spawnSyncWindowsHide", value);
       }
     }
     // An `input` option makes the call read the stdin slot's runtime mode
@@ -1474,7 +1674,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+        case "windowsVerbatimArguments":
+          // Node reads them on Windows only (no console window; no
+          // argument quoting). The value is evaluated where the member sits.
+          windowsOnlyOption(lowerer, "spawn", m.name, p, m.value, (value) => {
+            bind(m.name === "windowsHide" ? "%spawnWindowsHide" : "%spawnVerbatimArguments", value);
+            plain = false;
+          });
           break;
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
@@ -1495,7 +1701,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           lowerer.noLowering(
             `spawn option '${m.name}'`,
             p,
-            "stdio, detached, env, cwd, windowsHide, and shell are the supported options",
+            "stdio, detached, env, cwd, windowsHide, windowsVerbatimArguments, and shell are the supported options",
           );
       }
     }
@@ -1711,7 +1917,10 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
           // already compiled into this artifact, so no loader starts.
           break;
         case "windowsHide":
-          lowerer.lowerExpr(member.value); // accepted platform presentation option
+          // Node reads it on Windows only. This form binds no option
+          // values, so a value whose evaluation can be observed is refused
+          // by name instead of dropped.
+          windowsOnlyOption(lowerer, "fork", member.name, property, member.value, null);
           break;
         default:
           lowerer.noLowering(
@@ -1755,9 +1964,8 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
+ * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
+ * to each stream as in Node (1 MiB without the option). Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
@@ -1789,6 +1997,10 @@ export function lowerExecFileCall(
   // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
   // one launch member the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let maxBuffer: IrExpr | null = null;
+  // The options that are evaluated, as written: `cwd` is the launch's
+  // fifth argument.
+  const optionSteps: ChildEvalStep[] = [];
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1802,18 +2014,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
@@ -1834,15 +2034,16 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
+        optionSteps.push("limit");
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
+        optionSteps.push(4);
+      } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
+        // Windows-only presentation and quoting: Node reads neither on
+        // POSIX. This form binds no member values, so a value whose
+        // evaluation could be observed has no place to run and is refused.
+        windowsOnlyOption(lowerer, what, member.name, property, member.value, null);
       } else if (member.name === "shell" && !shell) {
         // Node's shell form: [file, ...args].join(" ") through /bin/sh -c.
         // exec itself already IS the shell form, so its member stays out.
@@ -1858,7 +2059,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -1941,6 +2142,9 @@ export function lowerExecFileCall(
   // exec's first argument is Node's `command`; execFile's is its `file`,
   // in the shell launch too.
   const form: ChildLaunchForm = shell ? 1 : execShell ? 2 : 0;
+  // The source evaluates the file or command, the argument list, the
+  // options as written, and the callback last.
+  const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
   if (cwd !== null) {
     return withChildArgsCheck(
       lowerer,
@@ -1952,8 +2156,9 @@ export function lowerExecFileCall(
         loc,
       },
       form,
-      (a) => ({ cwd: a[4] }),
+      (a) => ({ cwd: a[4], maxBuffer: armedMaxBuffer(maxBuffer, false) }),
       loc,
+      sourceOrder,
     );
   }
   return withChildArgsCheck(
@@ -1966,7 +2171,8 @@ export function lowerExecFileCall(
       loc,
     },
     form,
-    () => ({}),
+    () => ({ maxBuffer: armedMaxBuffer(maxBuffer, false) }),
     loc,
+    sourceOrder,
   );
 }

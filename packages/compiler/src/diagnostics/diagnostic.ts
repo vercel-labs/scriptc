@@ -74,7 +74,8 @@
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
  *            to a cast to an unrelated class (SC6004), a value a Node island
- *            made converted to a native type, which is a copy (SC6007), an
+ *            made converted to a native type, which is a copy, or stored
+ *            untyped where the compiler no longer follows it (SC6007), an
  *            import the build keeps although tsc's output drops it (SC6008);
  *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
@@ -100,6 +101,8 @@
  *            object-model constructs in user JavaScript (SC8101–SC8105,
  *            behind --strict-user-js); programs that call into Node.js
  *            where the build finds no usable libnode pack (SC8005), or
+ *            a Node island as a native worker's entry, or a value a
+ *            worker-only module cannot pass to an island (SC8012), or
  *            cannot collect the modules a call loads (SC8006); and type
  *            patches from `scriptc.typePatches` that did not apply as
  *            written (SC8030–SC8033, warnings)
@@ -352,6 +355,38 @@ export function guardedDeferredFenceDiag(
   };
 }
 
+/** SC6011 — a module that worker threads run loads a Node island module.
+ * Under Node a worker thread has an instance of its own of every module it
+ * loads; a compiled program has one Node island, on the main thread, and a
+ * worker's island operations are answered there, so the module is the one
+ * instance the main thread and every worker share. Whatever the module
+ * keeps between calls (a counter, a cache, a registered listener, a
+ * configured default) is therefore shared, where under Node it is not. */
+export function nodeIslandWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6011",
+    message: `worker threads run this module, and it loads the Node island module '${module}': the program has one instance of that module for all its threads, while under Node each worker thread has its own, so what the module keeps between calls (a counter, a cache, a registered listener) is shared with the main thread and the other workers`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use it from one thread only, or pass the state in and out of each call",
+  };
+}
+
+/** SC6011, second subject — a module the program shares with its Node
+ * island (island code imports it too, scope-B NI-6) that worker threads
+ * also run. The island has one instance of everything it imports, the main
+ * thread's, whichever thread calls it; a worker thread's own code runs that
+ * thread's instance of the module. Under Node a worker has one instance for
+ * both, so a value the worker's code writes there is the one its island
+ * code reads. */
+export function sharedModuleWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6011",
+    message: `worker threads run the module '${module}', and Node island code imports it too: island code uses the main thread's instance of the module whichever thread called it, while a worker thread's own code uses that thread's instance; under Node each worker thread has one instance for both, so what the module keeps (an exported binding, a registry, a counter) differs between a worker's own code and the island code it calls`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use the module from the main thread only, or pass the state through the island call's arguments and result",
+  };
+}
+
 /** SC6002 — an object literal whose written key order differs from the
  * order its declared type compiles to, for a type the program observes
  * (JSON.stringify, Object.keys/values/entries, for-in, console output). */
@@ -420,8 +455,10 @@ export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "membe
  * name, the program's writes reach the island, and `===` holds; the copy has
  * none of the three, and it holds only the members the target type declares.
  * A target that stays checked-dynamic (`unknown`, a record of `unknown`
- * members, a type the island declares) keeps the island's object and is not
- * reported, and neither is a copy the program writes itself
+ * members, a type the island declares, a record type of the program that
+ * became a view of the island's object where the program gave the value
+ * that type: class-protocols.ts, markIslandSites) keeps the island's object
+ * and is not reported, and neither is a copy the program writes itself
  * (`structuredClone(value) as T`). */
 export function islandValueCopyDivergenceDiag(
   targetType: string,
@@ -439,6 +476,24 @@ export function islandValueCopyDivergenceDiag(
     message: `${how[site]} copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object, so the island's later changes are visible through it, writes made through it reach the island, and it is '===' to the island's object; the copy has none of the three`,
     loc,
     hint: "declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too",
+  };
+}
+
+/** SC6007 — an untyped value a Node island made is stored where the
+ * compiler no longer follows it (a member, an element, a reassigned binding,
+ * a container). Where it is read back and given a record type the program's
+ * own source declares (an assertion, a typed slot), the checked conversion
+ * copies the island's object into a native record: writes through the copy
+ * and its identity are not the island's, where Node keeps one object. A type
+ * a declaration file declares stays a view there (class-protocols.ts,
+ * markUnplacedConversions). */
+export function islandValueUntrackedDivergenceDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6007",
+    message:
+      "this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object, so writes through that copy and its identity are not the island's, while Node keeps one object",
+    loc,
+    hint: "assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'",
   };
 }
 
@@ -471,6 +526,37 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
         : `a native class extending a class owned by a Node island cannot have ${detail} yet`,
     loc,
     hint: "keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this",
+  };
+}
+
+/** SC8012 — a native worker's entry module is itself a Node island, so the
+ * native program has no compiled module for the worker thread to run. Island
+ * *operations* from a worker thread are routed to the island's thread, but a
+ * worker whose entry IS the island has nothing native to start, and the
+ * island module's own semantics (sloppy-only constructs, for example) are
+ * not implemented by compiled code — so the build refuses it by name. */
+export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message:
+      "the Worker's entry module runs in a Node island, so a native worker thread cannot run it",
+    loc,
+    hint: "give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program",
+  };
+}
+
+/** SC8012 — a module that only worker threads run passes a Node island a
+ * value a worker thread cannot pass: a function the island would call back,
+ * bytes, a promise, or a symbol. The island belongs to the main thread and
+ * such a value to the worker's heap, so the runtime refuses the crossing by name
+ * (ERR_SCRIPTC_ISLAND_WORKER_VALUE); where the module and the value's type
+ * already say so, the build does. `kind` names the value. */
+export function nodeIslandWorkerValueDiag(loc: SrcLoc, kind: string): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message: `this module runs on worker threads only, and a worker thread cannot pass ${kind} to a Node island`,
+    loc,
+    hint: "the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread",
   };
 }
 
@@ -804,6 +890,20 @@ export function nodeIslandNativeUseDiag(
   };
 }
 
+/** SC8010 — an array that holds generators in a program that can hand a
+ * value to a Node island. A generator that crosses the boundary is not the
+ * same value on the other side yet, so the checked-dynamic array such a
+ * slot becomes in a program without an island would find, compare and hand
+ * back another generator than Node does. */
+export function nodeIslandGeneratorArrayDiag(type: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `values of type '${type}' (an array that holds generators) are not supported in a program that runs a Node island yet`,
+    loc,
+    hint: "a generator does not keep its identity across the island boundary yet; the same array compiles in a program that runs no Node island",
+  };
+}
+
 /** SC8023 — the build that ran fenced packages as Node islands failed, so
  * the program was built natively with those runtime fences (each throws
  * when reached). A warning on the native build, with the island build's
@@ -1033,18 +1133,15 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // not reuse. (Identifier catch bindings shipped too, and a catch clause
   // that destructures ships through the checked-dynamic tree; what remains
   // rejected is a destructuring pattern in a promise handler's parameter —
-  // SC1062 — un-narrowed binding uses — SC1063 — and jumps crossing a
-  // finally — SC1090.)
+  // SC1062 — and jumps crossing a finally — SC1090.)
   SC1062: {
     feature: "destructuring catch clause bindings",
     milestone: "later",
     hint: "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives",
   },
-  SC1063: {
-    feature: "this use of a catch binding",
-    milestone: "later",
-    hint: "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is",
-  },
+  // SC1063 (uses of a catch binding outside the narrowing tests) shipped —
+  // code retired, do not reuse: the binding reads as the `unknown` (or
+  // `any`) value TypeScript declares it to be.
   SC1070: { feature: "async/await", milestone: "M3" },
   SC1071: { feature: "generators", milestone: "later" },
   // `this` in class methods (+ lexical capture by arrows) shipped; what
@@ -1443,6 +1540,29 @@ export function noLoweringDiag(
   };
 }
 
+/** A TypeScript read, through an ES module namespace of a builtin module
+ * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a name the
+ * module's exports object owns without enumerating it. The namespace object
+ * has exactly the module's exports, so Node reads undefined, and the
+ * declaration, which describes the exports object, gives the name a type
+ * that cannot hold undefined. */
+export function namespaceNonExportDiag(
+  module: string,
+  member: string,
+  hasConstants: boolean,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${module}.${member}' is not an export of node:${module}: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow`,
+    loc,
+    milestone: "later",
+    hint: hasConstants
+      ? `the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (${module}.constants.${member} for one of the module's constants)`
+      : "the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it",
+  };
+}
+
 /** A use of a Node 24 global the native runtime does not implement
  * (host-globals.ts): constructing or calling its constructor value, or
  * reading one of its members. A bare read compiles and answers the
@@ -1457,6 +1577,39 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
     milestone: "later",
     hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
     reason: "host-global",
+  };
+}
+
+/** A JavaScript source used a Node value native code has no value for
+ * (node-values.ts): it read a value that is not a function, or it called or
+ * constructed the function value such a read answers. Node defines the
+ * value, so answering undefined or a stand-in would diverge silently.
+ * `surface` names it as the program does (`worker_threads.SHARE_ENV`,
+ * `process.finalization`, `URL`). */
+export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is a Node value that native code does not provide as a value`,
+    loc,
+    milestone: "later",
+    hint:
+      hint ??
+      "Node defines this value, and native code has no value to answer with: a function reads as a function that refuses when it is called or constructed, and any other value is refused where it is read. Uses the compiler lowers where they are spelled (a direct call, `new`, a member read) are not affected",
+  };
+}
+
+/** A JavaScript source assigned a member of a Node global object through
+ * the object held as a value (`const held = process; held.exitCode = 1`).
+ * The held object answers reads (node-value-reads.ts); the state behind the
+ * member lives in the runtime and is written where the member is spelled,
+ * so a write accepted here would leave `process.exitCode` unchanged. */
+export function nodeObjectMemberWriteDiag(object: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `assigning a member of '${object}' through a stored value is not supported yet`,
+    loc,
+    milestone: "later",
+    hint: `Assign the member where it is spelled (\`${object}.<member> = value\`): the stored object has Node's members to read, and a write through it would not reach the runtime's state`,
   };
 }
 
@@ -1740,6 +1893,34 @@ export function unionMismatchDiag(
       ambiguous !== undefined
         ? "a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value"
         : "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
+  };
+}
+
+/** A union conversion one of whose arms fits several arms of the destination
+ * union, and so enters the arm its own discriminant names, copies its arms
+ * into the destination's layouts. Under Node the value stays one object, so
+ * the conversion compiles only where the program cannot tell the two apart
+ * (width-copies.ts, refuseObservedCopies); `observed` is what tells them
+ * apart here. The conversion then has no layout mapping that keeps the
+ * object. */
+export function unionArmCopyDiag(
+  from: string,
+  to: string,
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const effect =
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write would reach only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
+  return {
+    code: "SC2003",
+    message: `union conversion has no layout mapping that keeps the object: the arm '${from}' enters the destination as '${to}', which has another layout, so the conversion would build a new object where Node keeps one, and ${effect}`,
+    loc,
+    milestone: "later",
+    hint: `declare the value with the destination's arm type ('${to}') where it is made so that both names are one object, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
   };
 }
 

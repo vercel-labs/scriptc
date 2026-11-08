@@ -33,8 +33,8 @@
  * The analysis runs only on NON-literal load sites (pitfall P4): a literal
  * specifier keeps its exact existing lowering, unfiltered. It needs no
  * `Lowerer` — only a checker, a reassignment cache and symbol resolution
- * (SpecifierBoundContext) — so the program's graph walks, which run before
- * lowering, bound a site exactly as its lowering does. */
+ * (SpecifierBoundContext, a record) — so the program's graph walks, which
+ * run before lowering, bound a site exactly as its lowering does. */
 
 import { pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
@@ -70,8 +70,11 @@ export type TextBound =
   | { kind: "set"; values: string[] }
   | { kind: "top"; at: ts.Node; why: string };
 
-/** What the analysis reads of its surroundings. `Lowerer` satisfies it, and
- * so does `specifierBoundContextOf` for the pre-lowering graph walks. */
+/** What the analysis reads of its surroundings: a record. The lowering
+ * passes `lowerer.specifierBoundContext()` and the pre-lowering graph walks
+ * `specifierBoundContextOf(program)`; never the Lowerer itself, which this
+ * interface would turn into a dynamic value when the compiler compiles
+ * itself (see Lowerer.isStdlibFile). */
 export interface SpecifierBoundContext extends BindingScope {
   readonly program: ts.Program;
   readonly checker: ts.TypeChecker;

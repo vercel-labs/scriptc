@@ -592,6 +592,7 @@ import {
   checkGenericIdentityPins,
 } from "./generic-functions.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
+import type { SpecifierBoundContext } from "../specifier-bounds.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
@@ -19836,6 +19837,22 @@ export class Lowerer {
    * read: a record, not the Lowerer (see isStdlibFile). */
   osConstantsCtx(): Pick<TypeMapperCtx, "checker" | "isStdlibFile"> {
     return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
+  }
+
+  /** What the specifier bounder (specifier-bounds.ts) reads of a lowering:
+   * a record, not the Lowerer (see isStdlibFile). The bounder's parameter is
+   * an interface, because the graph walks that run before lowering bound a
+   * site with a context of their own (specifierBoundContextOf), and a
+   * Lowerer handed over there would be a dynamic value when the compiler
+   * compiles itself. The record shares this Lowerer's reassignment cache and
+   * resolves value symbols as the lowering does. */
+  specifierBoundContext(): SpecifierBoundContext {
+    return {
+      program: this.program,
+      checker: this.checker,
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
   }
 
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by

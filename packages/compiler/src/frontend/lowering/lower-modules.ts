@@ -949,12 +949,16 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
   // names its module at run time and follows Node's exact-file rules. Top and
   // the unimplemented glob form contribute nothing here: the per-site
   // lowering reports the refusal.
+  // The bounder takes a record of what it reads, never the Lowerer
+  // (Lowerer.specifierBoundContext).
+  let ctx: SpecifierBoundContext | null = null;
   for (const { node, arg, spec } of computed) {
     if (spec !== null) {
       collectOneDynamicImport(lowerer, sf, spec, node, true);
       continue;
     }
-    const bound = boundSpecifier(lowerer, arg);
+    ctx ??= lowerer.specifierBoundContext();
+    const bound = boundSpecifier(ctx, arg);
     if (bound.kind !== "set") continue;
     for (const value of bound.values) collectOneDynamicImport(lowerer, sf, value, node, true);
   }
@@ -4062,8 +4066,9 @@ function importRetryModules(lowerer: Lowerer): ReadonlySet<ts.SourceFile> {
       if (dep !== null && dep !== sf) visit(dep);
     }
   };
+  const ctx = lowerer.specifierBoundContext();
   for (const sf of lowerer.moduleOrder) {
-    for (const dep of dynamicProgramImportsOf(lowerer, sf)) visit(dep);
+    for (const dep of dynamicProgramImportsOf(ctx, sf)) visit(dep);
   }
   lowerer.importRetryModules = out;
   return out;

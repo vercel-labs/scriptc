@@ -168,7 +168,7 @@ function boundedWorkerArms(
   lowerer: Lowerer,
   filename: ts.Expression,
 ): { path: string; root: number }[] {
-  const bound = boundLoadValues(lowerer, filename);
+  const bound = boundLoadValues(lowerer.specifierBoundContext(), filename);
   if (bound.kind === "top") return [];
   const arms: { path: string; root: number }[] = [];
   for (const value of bound.values) {

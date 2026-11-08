@@ -796,7 +796,7 @@ function lowerBoundedImportMetaResolve(
   arg: ts.Expression,
 ): IrExpr {
   const loc = locOf(call);
-  const bound = boundSpecifier(lowerer, arg);
+  const bound = boundSpecifier(lowerer.specifierBoundContext(), arg);
   if (bound.kind !== "set") {
     const at = ts.getSourceFileOfNode(bound.at);
     const line = ts.getLineAndCharacterOfPosition(at, ts.tokenStartOfNode(bound.at)).line + 1;

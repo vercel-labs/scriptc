@@ -130,6 +130,7 @@ export function executableLinkFeatures(
     textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,
     watchFile: features.fsWatchFile,
+    ...(features.dateAnnexB ? { dateAnnexB: true } : {}),
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,

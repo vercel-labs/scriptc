@@ -596,6 +596,8 @@ interface TypeTables {
   textDecoderCarriers?: TypeCarriers;
   /** mentionsU8Bytes's carriers. */
   u8BytesCarriers?: TypeCarriers;
+  /** mentionsDate's carriers. */
+  dateCarriers?: TypeCarriers;
 }
 
 /** Whether `t`, the record of a `Promise.withResolvers()`, holds a promise
@@ -1235,6 +1237,82 @@ const FS_READ_BYTES_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "spawnRes.stderrBytes",
 ]);
 
+const dateLeaf: CarrierLeaf = (t) => t.kind === "date";
+
+/** Whether a value of type `t` can hold a Date: a Date itself, or a
+ * function, collection, record, union, promise or class instance that
+ * carries one. */
+function mentionsDate(t: IrType, tables: TypeTables): boolean {
+  tables.dateCarriers ??= leafCarriers(tables, dateLeaf);
+  return carriesLeaf(t, tables.dateCarriers, dateLeaf, tables);
+}
+
+/** dateAnnexB's condition as a scan over the module: a dynamic call of
+ * getYear or setYear, a dynamic member read of one of the two names (a
+ * method value taken off a Date, or off `Date.prototype`, which interns the
+ * same dispatch function), or a member read through a key computed at run
+ * time in a module that holds a Date value. getYear and setYear answer
+ * through scr_lib.c's name table, so a computed key reaches them without
+ * naming them statically (scr_native_date_get looks the key up in
+ * scr_native_date_methods), and so does a Date.prototype member read through
+ * that key (the table always lists the two names). A Date built through a
+ * stored constructor counts as a Date value in the module: the constructor
+ * is a `dyn.globalConstructor` load, so the module holds the value whatever
+ * the call site does with it. The annexB entries exist
+ * only in the SCR_JS_OBJECT_MODEL build (t262-da §J); jsObjectModelFact ORs
+ * this fact into jsObjectModel, so the program selects that build. A program
+ * that merely reads the Date prototype object for other members keeps the
+ * default. */
+function dateAnnexBScan(mod: IrModule): RuleScan {
+  let tables: TypeTables | undefined;
+  const typeTables = (): TypeTables =>
+    (tables ??= {
+      records: new Map((mod.records ?? []).map((r) => [r.id, r])),
+      unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
+      classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
+    });
+  const isAnnexBName = (name: string): boolean => name === "getYear" || name === "setYear";
+  const isDatePrototype = (node: IrExpr): boolean =>
+    node.kind === "libCall" &&
+    node.fn === "dyn.stdlibPrototype" &&
+    node.args[0]?.kind === "strLit" &&
+    node.args[0].value === "Date";
+  // `Date` read as a value (a stored constructor, an alias) and the
+  // constructor reached through `globalThis.Date`.
+  const isDateConstructor = (node: IrExpr): boolean =>
+    node.kind === "libCall" &&
+    node.fn === "dyn.globalConstructor" &&
+    node.args[0]?.kind === "strLit" &&
+    node.args[0].value === "Date";
+  let named = false;
+  let computedKey = false;
+  let dateValue = false;
+  return {
+    expr: (node) => {
+      if (node.kind === "dynInvoke") {
+        if (isAnnexBName(node.method)) named = true;
+      } else if (node.kind === "dynKeyGet") {
+        if (node.key.kind === "strLit") {
+          if (isAnnexBName(node.key.value)) named = true;
+        } else {
+          // The key reaches the lookup table, which holds both names.
+          computedKey = true;
+          // A receiver whose type is a Date answers the annexB names only.
+          if (mentionsDate(node.value.type, typeTables())) named = true;
+        }
+      } else if (node.kind === "libCall") {
+        if (node.fn.startsWith("date.") || isDatePrototype(node) || isDateConstructor(node))
+          dateValue = true;
+      } else if (node.kind === "dynFrom") {
+        if (mentionsDate(node.value.type, typeTables())) dateValue = true;
+      } else if (node.kind === "dynCheck") {
+        if (mentionsDate(node.type, typeTables())) dateValue = true;
+      }
+    },
+    result: () => named || (computedKey && dateValue),
+  };
+}
+
 /** The entries that need the JavaScript object model build (t262-da §J):
  * the runtime code a JavaScript source reaches for builtin intrinsics,
  * array attributes, BigInt views, handle property tables and buffer views
@@ -1266,12 +1344,13 @@ const PROTO_KEY_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 
 /** The JavaScript object model build's program facts (t262-da §J): every
  * runtime feature that shares the one SCR_JS_OBJECT_MODEL build ORs in here
- * (BigInt views today, array attributes and handle property tables next), so
- * pack selection and the source build (RUNTIME_DEFINES, the library's
- * cflags) agree on when the build is on. */
+ * (BigInt views and Date's annexB accessors today, array attributes and
+ * handle property tables next), so pack selection and the source build
+ * (RUNTIME_DEFINES, the library's cflags) agree on when the build is on. */
 export function jsObjectModelFact(features: {
   jsObjectModel?: boolean;
   bigintBytes?: boolean;
+  dateAnnexB?: boolean;
   handleProps?: boolean;
   mutableBuffers?: boolean;
   protoAccessor?: boolean;
@@ -1280,6 +1359,7 @@ export function jsObjectModelFact(features: {
   return (
     features.jsObjectModel === true ||
     features.bigintBytes === true ||
+    features.dateAnnexB === true ||
     features.handleProps === true ||
     features.mutableBuffers === true ||
     features.protoAccessor === true ||
@@ -1394,6 +1474,12 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "arrIntrinsic" && COPYING_ARR_METHODS.has(node.method)) ||
       (node.kind === "bytesIntrinsic" && COPYING_BYTES_METHODS.has(node.method)),
   }),
+  /** Date.prototype's annexB accessors reached through the checked-dynamic
+   * dispatch: getYear and setYear called or read as method values on a
+   * dynamic receiver. They live in the shared SCR_JS_OBJECT_MODEL build
+   * (jsObjectModelFact ORs this fact in), so the fact adds no build column
+   * of its own. Typed code lowers both itself and never sets the fact. */
+  dateAnnexB: rule({ scan: dateAnnexBScan }),
   dc: rule({ prefixes: ["dc."] }),
   /** dns.lookup lives in the dgram unit. */
   dgram: rule({ prefixes: ["dgram.", "dns."], types: ["dgramSocket"] }),
@@ -2122,6 +2208,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childProcess: false,
     cipher: false,
     copying: false,
+    dateAnnexB: false,
     dc: false,
     dgram: false,
     dgramDyn: false,

@@ -5,7 +5,7 @@ date-formatters.ts:6:1 - error SC2020: 'Date.prototype.toLocaleDateString' is pa
     | ^~~~~~~~~~~~~~~~~~~~~~~~~
   7 | date.toLocaleString("en-US");
 
-  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering
+  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), setYear(), getYear() and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering
 
 date-formatters.ts:7:1 - error SC2020: 'Date.prototype.toLocaleString with arguments' is part of the standard library types but has no scriptc lowering yet
 
@@ -14,4 +14,4 @@ date-formatters.ts:7:1 - error SC2020: 'Date.prototype.toLocaleString with argum
     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
   8 | 
 
-  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering
+  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), setYear(), getYear() and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering

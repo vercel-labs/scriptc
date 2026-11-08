@@ -43,6 +43,11 @@
  *     type-only: it is kept, and a declaration that tsc drops for this
  *     reason alone is reported (`inlinedOnly`) so the build can say that it
  *     loads a module tsc's output does not;
+ *   - for the same reason an export of a const enum stays a value export
+ *     (`inlinedExports`): tsc's output has no value for the name, but a file
+ *     that imports the export and uses the name as a value keeps that use,
+ *     so spelling the export `export type` would leave the use without a
+ *     value;
  *   - a name that does not resolve counts as a value;
  *   - `export { T } from "./m"` loses the specifiers that name no value, and
  *     the declaration with its last specifier; `export * from` always stays;
@@ -77,6 +82,9 @@ export interface ImportElision {
   /** Local names of bindings kept only for uses tsc does not count: a const
    * enum member it inlines, an import alias used only in types. */
   inlined: string[];
+  /** Exported names tsc's output has no value for and this dialect keeps as a
+   * value export: a const enum, or a namespace of const enums. */
+  inlinedExports: string[];
   /** Import declarations kept although tsc drops them: every use of their
    * bindings is one tsc does not count, and the use needs the binding as a
    * value here. Spans in the file as written. */
@@ -554,14 +562,16 @@ function elideCandidates(
     if (alias === undefined) continue;
     if (use.kind !== "property") {
       // `export default name` of a name with no value is dropped below, and
-      // the use with it.
+      // the use with it. A const enum name stays a value export, so the
+      // binding behind it is kept for the export.
       const parent = use.id.parent!;
       if (
         use.kind === "exported" &&
         ts.isExportAssignment(parent) &&
         !parent.isExportEquals &&
         alias.symbol !== undefined &&
-        !emitsValue(alias.symbol)
+        !emitsValue(alias.symbol) &&
+        !namesValue(alias.symbol)
       )
         continue;
       mark(alias, use.kind === "exported");
@@ -591,18 +601,32 @@ function elideCandidates(
 
   // ---- export lists and `export default name` ----
   const droppedExports = new Set<ts.ExportSpecifier>();
+  const inlinedExports: string[] = [];
+  /** A specifier stays a value export when its name means a value here, even
+   * if tsc's output has no value for it: a const enum (or a namespace of
+   * const enums) is a name a value use keeps, so a file that imports this
+   * export and uses it as a value has to find a value meaning on it. Such a
+   * name is recorded in `inlinedExports`. */
+  const keepsValueExport = (
+    element: ts.ExportSpecifier,
+    symbol: ts.Symbol | undefined,
+  ): boolean => {
+    if (symbol === undefined || emitsValue(symbol)) return true;
+    if (!namesValue(symbol)) return false;
+    inlinedExports.push(element.name.text);
+    return true;
+  };
   for (const declaration of exportLists) {
     const elements = (declaration.exportClause as ts.NamedExports).elements.nodes;
     for (const element of elements) {
       if (element.isTypeOnly) continue;
       let value: boolean;
       if (declaration.moduleSpecifier !== undefined) {
-        const symbol = checker.getSymbolAtLocation(element.name);
-        value = symbol === undefined || emitsValue(symbol);
+        value = keepsValueExport(element, checker.getSymbolAtLocation(element.name));
       } else {
         const local = element.propertyName ?? element.name;
         const symbol = checker.resolveName(local.text, ALL_MEANINGS, element, false);
-        value = symbol === undefined || emitsValue(symbol);
+        value = keepsValueExport(element, symbol);
         if (value) {
           const alias = aliasOf(symbol, local.text);
           if (alias !== undefined) mark(alias, true);
@@ -615,7 +639,10 @@ function elideCandidates(
   for (const assignment of defaultExports) {
     const id = assignment.expression as ts.Identifier;
     const symbol = checker.resolveName(id.text, ALL_MEANINGS, id, false);
-    if (symbol !== undefined && !emitsValue(symbol)) droppedDefaults.push(assignment);
+    // The same rule as an export list: the name of a const enum stays a
+    // value, so `export default E` stays as written.
+    if (symbol !== undefined && !emitsValue(symbol) && !namesValue(symbol))
+      droppedDefaults.push(assignment);
   }
 
   // `import x = ns.member` that no value use reached: tsc emits nothing for
@@ -823,9 +850,9 @@ function elideCandidates(
   }
 
   if (blanks.length === 0)
-    return inlined.length === 0
+    return inlined.length === 0 && inlinedExports.length === 0
       ? null
-      : { text: null, declarations, bindings, inlined, inlinedOnly };
+      : { text: null, declarations, bindings, inlined, inlinedExports, inlinedOnly };
   // tsc emits `export {}` for a module that loses its last import or export,
   // so the file keeps its format. CommonJS TypeScript (.cts, `export =`) has
   // no such marker to keep.
@@ -839,6 +866,7 @@ function elideCandidates(
     declarations,
     bindings,
     inlined,
+    inlinedExports,
     inlinedOnly,
   };
 }

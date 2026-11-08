@@ -1,8 +1,8 @@
 // spawnSync's `shell: true`: the command string runs through /bin/sh -c,
 // so pipes, variables, redirections, and the shell's own quoting apply.
 // The complete command goes in the first argument with an empty args list
-// — Node's DEP0190 warning covers separate shell arguments, and the
-// compiler refuses that form instead of silently skipping the warning.
+// here; separate shell arguments join onto it with Node's DEP0190 warning
+// (tests/corpus/spawnsync-shell-args.ts).
 // Failure shapes stay data on the result (non-zero status, a signal
 // death, the shell's own 127), never a throw.
 import { spawnSync } from "node:child_process";

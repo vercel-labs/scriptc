@@ -104,6 +104,7 @@ import {
 import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
+import { processStreamAs } from "../general-streams.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
@@ -1977,6 +1978,11 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     ? (lowerAbsenceProbe(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right))
     : lowerer.lowerExpr(expr.right);
   if (strictEquality) {
+    // A process stream compared with a value of the stream class it is an
+    // instance of: the process stream answers its one stream, so the
+    // comparison is between two streams (general-streams.ts).
+    left = processStreamAs(left, right.type) ?? left;
+    right = processStreamAs(right, left.type) ?? right;
     const storedLeft = runtimeOptionalStorageOperand(lowerer, expr.left);
     const storedRight = runtimeOptionalStorageOperand(lowerer, expr.right);
     if (storedLeft !== null && right.type.kind !== "union") left = storedLeft;

@@ -443,7 +443,7 @@ function runWithStdinInContainer(
     void (async () => {
       for (const w of script.writes) {
         await new Promise((r) => setTimeout(r, w.delayMs));
-        child.stdin.write(w.data);
+        child.stdin.write(w.data, w.latin1 ? "latin1" : "utf8");
       }
       if (script.end) child.stdin.end();
       // Held-open pipes close when the child exits (spawn cleans up).

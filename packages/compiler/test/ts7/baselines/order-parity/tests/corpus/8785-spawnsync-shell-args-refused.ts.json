@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8785-spawnsync-shell-args-refused.ts"
+ ],
+ "diags": []
+}

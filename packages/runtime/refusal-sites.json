@@ -2178,6 +2178,18 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_events.c",
+  "function": "scr_stdin_deliver_parts",
+  "message": "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks strings (declare the listener's parameter as string) [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
+  "function": "scr_stdin_read_bytes",
+  "message": "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings (leave the encoding unset and decode the Buffer) [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_fs_stream.c",
   "function": "scr_fss_unsupported",
   "message": "",

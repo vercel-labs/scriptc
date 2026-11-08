@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/stdin-readable-split-sequence.ts"
+ ],
+ "diags": []
+}

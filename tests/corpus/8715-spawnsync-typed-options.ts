@@ -4,10 +4,10 @@
 // literal path's default) and the stdio modes compute at the call, so a
 // runner can pass one options value to many commands.
 //
-// A record MAY enable shell at run time, where Node warns DEP0190 whenever
-// the args list is non-empty, and a native build has no warning channel —
-// so the typed form takes the command-line shape (an empty args list) and
-// the compiler refuses a call that passes separate args.
+// A record MAY enable shell at run time, where Node joins a non-empty args
+// list onto the command and warns DEP0190. This program keeps to the
+// command-line shape (an empty args list); the joined form and its warning
+// are tests/corpus/spawnsync-shell-args.ts.
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

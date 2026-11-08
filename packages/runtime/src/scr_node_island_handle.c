@@ -1235,12 +1235,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
 
 static bool nh_storage_out(ScrBytes *root, ScrNodeValue *out) {
   if (root->shared != NULL) return nh_refuse("shared memory");
-#ifdef SCR_JS_OBJECT_MODEL
-  /* A buffer that can move or shrink has no fixed memory for V8 to alias. */
-  if (scr_js_buffer_ops != NULL &&
-      (scr_js_buffer_ops->owner_resizable(root) || scr_js_buffer_ops->owner_detached(root)))
-    return nh_refuse("a resizable or detached ArrayBuffer");
-#endif
+  /* A buffer that can move or shrink has no fixed memory for V8 to alias.
+   * This unit is built once, so it asks the bytes unit the program links
+   * (a JavaScript program with mutable buffers has another build of it). */
+  if (scr_bytes_storage_movable(root)) return nh_refuse("a resizable or detached ArrayBuffer");
   ScrNodeRef *ref = nh_pinned(root, NH_PIN_BUFFER);
   out->u.bytes.buffer = ref != NULL ? ref->id : 0;
   out->u.bytes.root = root;

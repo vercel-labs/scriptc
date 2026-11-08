@@ -88,6 +88,19 @@ describe.skipIf(skip)("Node island handles", () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);
 
+  test("a program buffer that can move or is detached does not cross into an island", async () => {
+    // An island view aliases the program's memory, so a buffer the program
+    // can resize or has detached is refused by name where it would cross,
+    // as a value or through a view. Under Node every line is a size.
+    const refused =
+      "true scriptc: a resizable or detached ArrayBuffer cannot cross into a Node island yet " +
+      "(scope-B NI-5 exports native values by reference)";
+    expect(await runFixture("movable-buffers", "movable-buffers.mjs")).toBe(
+      "fixed view 8\nfixed buffer 8\n" +
+        `resizable view ${refused}\nresizable buffer ${refused}\ndetached buffer ${refused}\n`,
+    );
+  }, 300_000);
+
   /** Runs a binary that refuses at run time: its stderr. */
   async function refusal(binary: string): Promise<string> {
     const run = await execFileAsync(binary, [], { encoding: "utf8" }).catch(

@@ -1234,10 +1234,19 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
     return;
   }
   if (!meta) {
-    for (size_t i = 0; i < b->n; i++) scr_ee_entry_unref(b->ls[i]);
+    /* Unlink before releasing (scr_cycle.c): releasing a listener can
+     * release what it captured, buffer a cycle candidate and run a
+     * collection, and the collection traces this registry. It must not
+     * find entries whose closures were already given up. */
+    ScrEeEntry **ls = b->ls;
+    size_t n = b->n;
+    b->ls = NULL;
     b->n = 0;
+    b->cap = 0;
     scr_ee_observe(em, b->name, false);
     scr_ee_bucket_drop(em->reg, b);
+    for (size_t i = 0; i < n; i++) scr_ee_entry_unref(ls[i]);
+    free(ls);
     return;
   }
   /* Node snapshots the list and removeListener()s each entry from the

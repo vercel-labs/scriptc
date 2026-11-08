@@ -1,0 +1,24 @@
+class-field-union-through-set.ts:7:3 - error SC2009: values of type 'Bag' cannot be compiled: the union shape is supported, but its arm 'Set<Bag>' does not compile: the record shape is supported, but its member 'add(value).add' has type '(value: Bag) => Set<Bag>', which does not compile: the function shape is supported, but its parameter 'value' has type 'Bag', which does not compile
+
+  6 | class Shelf {
+  7 |   top: Bag = "empty";
+    |   ^~~
+  8 | }
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+class-field-union-through-set.ts:10:15 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+   9 | 
+  10 | const shelf = new Shelf();
+     |               ^~~~~~~~~~~
+  11 | console.log(typeof shelf.top);
+
+class-field-union-through-set.ts:11:20 - error SC2004: uses of 'shelf' inherit the blocker on its declaration
+
+  10 | const shelf = new Shelf();
+  11 | console.log(typeof shelf.top);
+     |                    ^~~~~
+  12 | 
+
+  hint: the declaration of 'shelf' did not compile — fix the diagnostic reported there and these sites clear with it

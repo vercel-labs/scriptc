@@ -4,6 +4,7 @@ import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -315,7 +316,7 @@ export function isOptionalProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): boolean {
-  if (!["isTTY", "columns", "rows", "isRaw"].includes(expr.name.text)) return false;
+  if (!OPTIONAL_PROCESS_STREAM_MEMBERS.includes(expr.name.text)) return false;
   let recv = expr.expression;
   while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
     recv = recv.expression;
@@ -376,6 +377,86 @@ function programMentionsVersions(lowerer: Lowerer): boolean {
     .getImplementationSourceFiles()
     .some((sf) => !sf.isDeclarationFile && ts.sourceTextIncludes(sf, "versions"));
   return lowerer.mentionsProcessVersions;
+}
+
+/** The members a process stream has only on a terminal (and `isRaw` only
+ * on a terminal stdin): a pipe or a file has none of them. */
+export const OPTIONAL_PROCESS_STREAM_MEMBERS: readonly string[] = [
+  "isTTY",
+  "columns",
+  "rows",
+  "isRaw",
+];
+
+/** Whether an object pattern's source is a process stream: a value of the
+ * process-stream type (`process.stdout`, `process.stderr`, an alias, a
+ * parameter), or `process.stdin` itself, whose value is the stream object. */
+export function isProcessStreamPatternSource(
+  lowerer: Lowerer,
+  source: ts.Expression,
+  sourceType: IrType | null,
+): boolean {
+  if (sourceType?.kind === "procStream") return true;
+  const e = withoutParenthesesTypeWrappers(source);
+  if (!ts.isPropertyAccessExpression(e)) return false;
+  const stream = lowerer.stdlibGlobalMember(e, "process");
+  return stream === "stdin" || stream === "stdout" || stream === "stderr";
+}
+
+/** The members a process stream VALUE answers as data, wherever the value
+ * came from (an alias, a parameter, a call result, a destructuring source).
+ * One table for the member read `stream.columns` and the pattern
+ * `const { columns } = stream`. */
+export const PROCESS_STREAM_VALUE_MEMBERS: readonly string[] = [
+  "isTTY",
+  "columns",
+  "rows",
+  "fd",
+  "isRaw",
+  "writableLength",
+  "writableHighWaterMark",
+  "writableNeedDrain",
+];
+
+/** The members of a process output stream that do not depend on the stream:
+ * the compiled binary's fd 1/2 writes are synchronous, so nothing is ever
+ * queued (Node's writableLength is always 0 and the drain flag never set),
+ * and the high-water mark is Node's default. Null for other members. */
+function processStreamConstantMember(member: string, loc: SrcLoc): IrExpr | null {
+  if (member === "writableNeedDrain") return { kind: "boolLit", value: false, type: BOOL, loc };
+  if (member === "writableLength") return { kind: "numLit", value: 0, type: F64, loc };
+  if (member === "writableHighWaterMark") return { kind: "numLit", value: 65536, type: F64, loc };
+  return null;
+}
+
+/** A data member read off a process stream value: `receiver` is the value
+ * (the stream's descriptor scalar, or the stream object it boxes to). The
+ * stream-independent members answer their constants; the others are keyed
+ * reads of the runtime's stream object, which answers the live values
+ * (isatty, the terminal's geometry, the descriptor) and undefined where
+ * Node has no such property (a pipe has no isTTY, columns or rows). Null
+ * for a member outside PROCESS_STREAM_VALUE_MEMBERS. The receiver is read
+ * for the keyed members only: a caller with an effectful receiver
+ * evaluates it itself for the constants. */
+export function processStreamValueMember(
+  lowerer: Lowerer,
+  member: string,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!PROCESS_STREAM_VALUE_MEMBERS.includes(member)) return null;
+  const constant = processStreamConstantMember(member, loc);
+  if (constant !== null) return constant;
+  return lowerer.coerceToExpected(
+    {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(receiver, DYN),
+      key: strLit(member, loc),
+      type: DYN,
+      loc,
+    },
+    lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
+  );
 }
 
 export function lowerProcessStreamProperty(
@@ -479,49 +560,29 @@ export function lowerProcessStreamProperty(
     )
   ) {
     // A FIRST-CLASS ALIAS of the stream (`const out = process.stdout;
-    // out.writableLength`) answers the same constant the direct read
-    // does: the compiled binary's fd 1/2 writes are synchronous, so
-    // nothing is ever queued and Node's number is always 0. The other
-    // members stay keyed reads — the runtime stream answers their live
-    // values (isatty columns/rows, stdin readableLength).
-    if (
-      member === "writableLength" ||
-      member === "writableHighWaterMark" ||
-      member === "writableNeedDrain"
-    ) {
+    // out.writableLength`): processStreamValueMember, the one reading of a
+    // member off a stream VALUE.
+    const constant = processStreamConstantMember(member, locOf(expr));
+    if (constant !== null) {
       // The receiver still EVALUATES: a call or property read that hands
       // back the stream runs its own side effects — and throws where Node
       // throws — before the constant answers, exactly as the read of the
       // member would. A pure receiver (the alias above) folds away.
-      const answer: IrExpr =
-        member === "writableNeedDrain"
-          ? { kind: "boolLit", value: false, type: BOOL, loc: locOf(expr) }
-          : {
-              kind: "numLit",
-              value: member === "writableLength" ? 0 : 65536,
-              type: F64,
-              loc: locOf(expr),
-            };
       const effect = lowerer.lowerExpr(expr.expression);
-      if (isSafeToDiscard(effect)) return answer;
+      if (isSafeToDiscard(effect)) return constant;
       return {
         kind: "seqExpr",
         stmts: [{ kind: "exprStmt", expr: effect, loc: locOf(expr.expression) }],
-        result: answer,
-        type: answer.type,
+        result: constant,
+        type: constant.type,
         loc: locOf(expr),
       };
     }
-    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
-    return lowerer.coerceToExpected(
-      {
-        kind: "dynKeyGet",
-        value: receiver,
-        key: strLit(member, locOf(expr)),
-        type: DYN,
-        loc: locOf(expr),
-      },
-      lowerer.withUndefinedArm(member === "isTTY" ? BOOL : F64),
+    return processStreamValueMember(
+      lowerer,
+      member,
+      lowerer.lowerExpr(expr.expression),
+      locOf(expr),
     );
   }
   if (!ts.isPropertyAccessExpression(recv)) return null;

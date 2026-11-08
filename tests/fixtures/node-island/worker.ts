@@ -34,8 +34,8 @@ if (isMainThread) {
   const helper = requireModule("./helper.cjs");
   parentPort!.postMessage("count " + helper.count());
   // What belongs to this thread's heap cannot cross: a function the island
-  // would call back, bytes in either direction, and a native error (it
-  // crosses by reference, like every native object). Each is refused by
+  // would call back, bytes and symbols in either direction, and a native
+  // error (it crosses by reference, like every native object). Each is refused by
   // code instead of being shared between two threads.
   const refused = (what: string, cross: () => unknown): void => {
     try {
@@ -54,6 +54,8 @@ if (isMainThread) {
   refused("callback", () => helper.callBack((n: number) => n + 1));
   refused("bytes out", () => helper.byteLength(new Uint8Array(4)));
   refused("bytes in", () => helper.bytes());
+  refused("symbol out", () => helper.describe(Symbol("native")));
+  refused("symbol in", () => helper.symbol());
   refused("error out", () => helper.errorName(new RangeError("native")));
   // A resolution with an island value reads its `then` on the island's
   // thread: an object without one fulfils the promise as itself, and a

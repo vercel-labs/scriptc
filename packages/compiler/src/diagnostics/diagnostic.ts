@@ -526,8 +526,8 @@ export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
 
 /** SC8012 — a module that only worker threads run passes a Node island a
  * value a worker thread cannot pass: a function the island would call back,
- * bytes, or a promise. The island belongs to the main thread and such a
- * value to the worker's heap, so the runtime refuses the crossing by name
+ * bytes, a promise, or a symbol. The island belongs to the main thread and
+ * such a value to the worker's heap, so the runtime refuses the crossing by name
  * (ERR_SCRIPTC_ISLAND_WORKER_VALUE); where the module and the value's type
  * already say so, the build does. `kind` names the value. */
 export function nodeIslandWorkerValueDiag(loc: SrcLoc, kind: string): ScrDiagnostic {

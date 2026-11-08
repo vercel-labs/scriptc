@@ -502,6 +502,8 @@ describe.skipIf(skip)("Node islands in-process", () => {
           "island bytes (a typed array or Buffer)",
           "the result of the call to 'bytes'",
         ) +
+        refusal("symbol out", "a native symbol", "argument 1 of the call to 'describe'") +
+        refusal("symbol in", "an island symbol", "the result of the call to 'symbol'") +
         refusal(
           "error out",
           "a native error passed by reference",

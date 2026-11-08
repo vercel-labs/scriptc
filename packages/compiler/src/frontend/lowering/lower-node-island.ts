@@ -1630,13 +1630,15 @@ function workerBoundValueKind(lowerer: Lowerer, type: ts.Type): string | null {
       continue;
     const mapped = (part.flags & ts.TypeFlags.Object) !== 0 ? lowerer.mapTypeOf(part) : null;
     const found =
-      mapped?.kind === "bytes"
-        ? "bytes (a typed array or a Buffer)"
-        : mapped?.kind === "promise"
-          ? "a promise"
-          : mapped?.kind === "func"
-            ? "a function"
-            : null;
+      (part.flags & ts.TypeFlags.ESSymbolLike) !== 0
+        ? "a symbol"
+        : mapped?.kind === "bytes"
+          ? "bytes (a typed array or a Buffer)"
+          : mapped?.kind === "promise"
+            ? "a promise"
+            : mapped?.kind === "func"
+              ? "a function"
+              : null;
     if (found === null) return null;
     kind ??= found;
   }

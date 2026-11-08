@@ -16,10 +16,13 @@ exports.keepFunction = (fn) => {
 };
 exports.getFunction = () => keptFunction;
 // What a worker thread cannot pass to or take from the island (worker.ts):
-// a function to call back, bytes either way, and an error of its own.
+// a function to call back, bytes and symbols either way, and an error of
+// its own.
 exports.callBack = (fn) => fn(1);
 exports.byteLength = (bytes) => bytes.length;
 exports.bytes = () => new Uint8Array(4);
+exports.describe = (symbol) => symbol.description;
+exports.symbol = () => Symbol("island");
 exports.errorName = (error) => error.name;
 // A thenable that is not a promise, and an object without a `then`.
 exports.thenable = () => ({ then: (resolve) => resolve(7) });

@@ -49,10 +49,10 @@ The program has one instance of each island module for all its threads, where No
 The build warns at each load of an island module in a module that worker threads run (SC6011).
 A program module that island code imports too is shared the same way: island code uses the main thread's instance of it whichever thread called the island, while a worker's own code uses that worker's instance, and the build warns for such a module as well (SC6011).
 The main thread answers a worker's island operations from its event loop, so a worker's island call waits while the main thread runs synchronous code, and it is never answered when the main thread blocks until that worker is done, as with `Atomics.wait`.
-An asynchronous island call from a worker rejects with `ERR_SCRIPTC_ISLAND_WORKER_ASYNC`, an island promise or byte value (a typed array or a Buffer) crossing into a worker throws `ERR_SCRIPTC_ISLAND_WORKER_VALUE`, and so does a native value the island passes by reference (a function, an object, an array, a Map, a Set, a promise, or an error) crossing between a worker and its island in either direction.
+An asynchronous island call from a worker rejects with `ERR_SCRIPTC_ISLAND_WORKER_ASYNC`, an island promise, symbol or byte value (a typed array or a Buffer) crossing into a worker throws `ERR_SCRIPTC_ISLAND_WORKER_VALUE`, and so does a worker's own symbol or byte value crossing into the island, and a native value the island passes by reference (a function, an object, an array, a Map, a Set, a promise, or an error) crossing between a worker and its island in either direction.
 The error's message names the kind of value and the call, read, or write it was part of.
 A promise that a worker resolves with an island thenable rejects with the same code, and one resolved with any other island object is fulfilled with it.
-In a module that only worker threads run, an island call whose argument has a function, byte, or promise type is refused at build time (SC8012).
+In a module that only worker threads run, an island call whose argument has a function, byte, promise, or symbol type is refused at build time (SC8012).
 A worker entry must be a compiled module, so a Node island module as the worker's entry is refused at build time (SC8012).
 
 Workers are unsupported in WASI, compiled libraries, and executables that use foreign-thread native callbacks.

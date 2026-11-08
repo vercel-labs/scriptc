@@ -1,6 +1,7 @@
-// The ambient module re-exports a file of a package that is not installed:
-// the project's tsc reports the member as missing, and so does the build.
-import { run } from "ghost-kit/cli";
-import * as termCodes from "term-codes";
+// The ambient module passes on the declarations of a file in a package
+// that is not installed. The project's tsc reports the imported member as
+// missing, and so does the build.
+import { stocked } from "missing-larder/shelves";
+import * as oven from "oven-dial";
 
-console.log(run("draw"), JSON.stringify(termCodes.eraseLine));
+console.log(stocked("flour"), oven.gasMark(180));

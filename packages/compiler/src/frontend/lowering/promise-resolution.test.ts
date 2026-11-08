@@ -108,3 +108,99 @@ w.promise.then((v) => { console.log(String(v)); });
 `);
   expect(resolvingCalls(untyped)).toBe(1);
 });
+
+/** The typed promises whose resolve function adopts a promise it is given:
+ * each runs its executor through the resolution-aware entry. */
+function adoptingExecutors(llvm: string): number {
+  return llvm.match(/call void @scr_promise_run_executor_dyn\(/g)?.length ?? 0;
+}
+
+const typedPrelude = `
+import { EventEmitter } from "node:events";
+const emitter = new EventEmitter();
+interface Box { a: number }
+function maybe(now: boolean): number | Promise<number> { return now ? 1 : Promise.resolve(2); }
+function later(): Promise<number> { return Promise.resolve(3); }
+function settle(done: (value: number | Promise<number>) => void): void { done(later()); }
+function settlePlain(done: (value: number) => void): void { done(4); }
+let stored: ((value: number | Promise<number>) => void) | undefined;
+let exact: (value: number | Promise<number>) => void = () => {};
+let plain: (value: number) => void = () => {};
+`;
+
+test("a typed executor whose resolve values are plain keeps the fulfilling closure", async () => {
+  const llvm = await emit(`${typedPrelude}
+const made: Promise<unknown>[] = [];
+made.push(new Promise<number>((resolve) => { resolve(1); }));
+made.push(new Promise<number>((resolve, reject) => { if (made.length > 99) reject(new Error("x")); else resolve(1); }));
+made.push(new Promise<string>((resolve) => { resolve("text"); }));
+made.push(new Promise<Box>((resolve) => { resolve({ a: 1 }); }));
+made.push(new Promise<void>((resolve) => { resolve(); }));
+made.push(new Promise<void>((resolve) => setTimeout(resolve, 1)));
+made.push(new Promise<number>((resolve) => { setTimeout(resolve, 1, 5); }));
+made.push(new Promise<number>((resolve) => { process.nextTick(resolve, 5); }));
+made.push(new Promise<number>((resolve) => { queueMicrotask(() => resolve(6)); }));
+made.push(new Promise<number>((resolve) => { later().then(resolve); }));
+made.push(new Promise<number>((resolve) => { plain = resolve; }));
+made.push(new Promise<number>((resolve) => { settlePlain(resolve); }));
+made.push(new Promise<number>((resolve) => { emitter.once("go", resolve); }));
+made.push(new Promise<number>((resolve) => { const done = resolve; done(7); }));
+plain(8);
+emitter.emit("go", 9);
+console.log(made.length, maybe(true) === 1, stored === undefined, exact.length);
+`);
+  expect(adoptingExecutors(llvm)).toBe(0);
+  expect(llvm).not.toContain("@scr_resolve_adopt");
+  expect(llvm).not.toContain("@scr_resolve_join");
+});
+
+test("a typed executor whose resolve is given a promise arm adopts it", async () => {
+  const cases = [
+    // The argument is a promise, or a union with a promise arm.
+    "new Promise<number>((resolve) => { resolve(later()); })",
+    "new Promise<number>((resolve) => { resolve(maybe(false)); })",
+    "new Promise<number>((resolve, reject) => { if (made.length > 99) reject(new Error('x')); else resolve(later()); })",
+    "new Promise<void>((resolve) => { resolve(later().then(() => {})); })",
+    // From a closure the executor creates.
+    "new Promise<number>((resolve) => { queueMicrotask(() => resolve(maybe(false))); })",
+    // A scheduler passes the promise on.
+    "new Promise<number>((resolve) => { setTimeout(resolve, 1, later()); })",
+    "new Promise<number>((resolve) => { process.nextTick(resolve, maybe(false)); })",
+    // The function is handed to a position whose callers may pass a promise.
+    "new Promise<number>((resolve) => { stored = resolve; })",
+    "new Promise<number>((resolve) => { exact = resolve; })",
+    "new Promise<number>((resolve) => { settle(resolve); })",
+  ];
+  const llvm = await emit(`${typedPrelude}
+const made: Promise<unknown>[] = [];
+${cases.map((c) => `made.push(${c});`).join("\n")}
+console.log(made.length, plain.length);
+`);
+  expect(adoptingExecutors(llvm)).toBe(cases.length);
+  expect(resolvingCalls(llvm)).toBe(0);
+  expect(llvm).toContain("call void @scr_resolve_adopt(");
+  // One of the ten executors declares a reject function, which joins its
+  // resolve function's target.
+  expect(llvm.match(/call void @scr_resolve_join\(/g)?.length).toBe(1);
+});
+
+test("a typed executor with no value-or-promise union keeps its refusal", async () => {
+  const outDir = await mkdtemp(join(tmpdir(), "scriptc-promise-resolution-"));
+  directories.push(outDir);
+  const entry = join(outDir, "main.ts");
+  // A function-typed promise: a function beside a promise has no union.
+  await writeFile(
+    entry,
+    `type Task = () => number;
+function later(): Promise<Task> { return Promise.resolve(() => 1); }
+new Promise<Task>((resolve) => { resolve(later()); }).then((task) => { console.log(task()); });
+`,
+  );
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "program.ll"),
+    outputKind: "llvm",
+  });
+  expect(result.ok).toBe(false);
+  expect(JSON.stringify(result)).toMatch(/SC1090|SC2002|SC2003/);
+});

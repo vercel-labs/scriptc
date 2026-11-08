@@ -72,6 +72,12 @@ import {
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
+import {
+  builtinPolyfillGuard,
+  isBuiltinPolyfillEarlyExit,
+  isDeadBuiltinPolyfill,
+  noteBuiltinMemberWrite,
+} from "./builtin-member-writes.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
@@ -331,6 +337,7 @@ import {
 } from "./lower-exprs.js";
 import { globalSymbolKey } from "./expressions/global-symbols.js";
 import { identifiersNamed } from "./identifier-uses.js";
+import { isUntypedArrayType, untypedArrayBindingType } from "./empty-array-places.js";
 import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js";
 import {
   dereferencedElementWrite,
@@ -866,6 +873,9 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
+      // A guard that always leaves in front of a polyfill of a built-in
+      // member (`if (Array.prototype.flat) return;`).
+      else if (inFunction && isBuiltinPolyfillEarlyExit(lowerer, stmts, i)) unreachable = true;
       if (!lowerer.suppressStats) lowerer.countStatement(stmt, sf?.fileName);
       const diagsBefore = lowerer.diags.length;
       const sinkMark = lowerer.diagSinkMark();
@@ -2054,11 +2064,27 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     const lead = superConditionLead(stmt.expression);
     const leading = lead ? lowerer.lowerExprStatement(lead.left) : null;
     const test = lead ? lead.right : stmt.expression;
-    const cond = lowerer.lowerCondition(test);
+    // A feature test that guards a polyfill of a built-in member Node 24
+    // has (`if (!Array.prototype.at) { Array.prototype.at = … }`) has one
+    // answer, and neither the test nor the polyfill lowers
+    // (builtin-member-writes.ts); a test with an operand that runs for its
+    // effects still lowers. An arm that declares a hoisted binding has to
+    // lower for it, so its guard is not decided here.
+    const polyfill = builtinPolyfillGuard(
+      lowerer,
+      test,
+      stmt.thenStatement,
+      stmt.elseStatement,
+      declaresHoistedBinding,
+    );
+    const cond: IrExpr =
+      polyfill === null || !polyfill.pure
+        ? lowerer.lowerCondition(test)
+        : { kind: "boolLit", value: polyfill.value, type: BOOL, loc: locOf(test) };
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = staticCondition(lowerer, test);
+    const decided = polyfill?.value ?? staticCondition(lowerer, test);
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;
@@ -7399,6 +7425,22 @@ export function lowerVarDecl(
       lowerer.nullishFuncResults.has(withoutParenthesesTypeWrappers(decl.initializer)))
   )
     type = init.type;
+  // An unannotated binding of an array the checker leaves untyped
+  // (`const mid = o.files` over `{ files: [] }`): `never[]` names no
+  // element, so the binding is the array it is initialized with, at the
+  // element type that array was given where it was written
+  // (empty-array-places.ts), not never's f64 element array.
+  if (!decl.type && type !== null && !isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    const alias = untypedArrayBindingType(lowerer, decl.name, lowerer.typeOf(decl.name));
+    if (alias !== null) type = alias;
+    else if (
+      type.kind === "array" &&
+      init.type.kind === "array" &&
+      !typeEquals(type, init.type) &&
+      isUntypedArrayType(lowerer.checker, lowerer.typeOf(decl.name))
+    )
+      type = init.type;
+  }
   // A TypeScript lambda whose closure returns the runtime result (a missing
   // read, a `??` default of another type) instead of the checker's bare
   // return type: the binding keeps the checker's parameters and takes the
@@ -9775,9 +9817,21 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
   };
 }
 
-export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStmt {
+/** `leaf`, when given, may lower an expression that is not a conditional
+ * (the statement itself, or an arm of a discarded conditional at any
+ * depth) in its own way; null leaves it to the statement lowering. */
+export function lowerExprStatement(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  leaf?: (expr: ts.Expression) => IrStmt | null,
+): IrStmt {
   const stmtNode = expr.parent;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // A polyfill of a built-in member Node 24 has never runs and lowers to
+  // nothing; any other write to a built-in member is recorded for the check
+  // at the end of lowering (builtin-member-writes.ts) and lowers as usual.
+  if (isDeadBuiltinPolyfill(lowerer, expr)) return { kind: "block", body: [], loc: locOf(expr) };
+  noteBuiltinMemberWrite(lowerer, expr);
   fenceConsoleMutation(lowerer, expr);
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
@@ -9793,18 +9847,22 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
   if (ts.isConditionalExpression(expr)) {
     const cond = lowerer.lowerCondition(expr.condition);
     if (cond.kind === "boolLit") {
-      return lowerExprStatement(lowerer, cond.value ? expr.whenTrue : expr.whenFalse);
+      return lowerExprStatement(lowerer, cond.value ? expr.whenTrue : expr.whenFalse, leaf);
     }
     const then = lowerer.narrowingAliases(aliasTypeofNarrows(lowerer, expr.condition, true), () =>
       withRuntimeOptionalNarrowed(lowerer, runtimeOptionalTrueIds(lowerer, expr.condition), () => [
-        lowerExprStatement(lowerer, expr.whenTrue),
+        lowerExprStatement(lowerer, expr.whenTrue, leaf),
       ]),
     );
     const else_ = lowerer.narrowingAliases(
       aliasTypeofNarrows(lowerer, expr.condition, false),
-      () => [lowerExprStatement(lowerer, expr.whenFalse)],
+      () => [lowerExprStatement(lowerer, expr.whenFalse, leaf)],
     );
     return { kind: "if", cond, then, else_, loc: locOf(expr) };
+  }
+  if (leaf !== undefined) {
+    const lowered = leaf(expr);
+    if (lowered !== null) return lowered;
   }
   // Assignment statements over the no-storage binding families:
   //   - `f1 = f2` where the RHS roots at an ambient-undefined name:
@@ -13237,7 +13295,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     !privateSplit &&
     !awaitArray &&
     elementType.kind !== "dyn" &&
-    lowerer.presentElementLoops.has(stmt);
+    lowerer.presentElementLoops.has(stmt) &&
+    !lowerer.instanceLoopHoldsMissing(stmt);
   const yieldedT =
     tupleSource === null && arrayUnionSource === null && !privateSplit && !presentElements
       ? arrayValueType(lowerer, elementType)

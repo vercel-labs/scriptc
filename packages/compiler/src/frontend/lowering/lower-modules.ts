@@ -17,7 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -2454,8 +2454,8 @@ export function collectGlobals(
       // other instance is refused where its declaration lowers.
       if (
         decl.initializer !== undefined &&
-        ts.isNewExpression(withoutParenthesesAssertionsNonNull(decl.initializer)) &&
-        isAssertClassNew(lowerer, withoutParenthesesAssertionsNonNull(decl.initializer))
+        ts.isNewExpression(withoutParenthesesTypeWrappers(decl.initializer)) &&
+        isAssertClassNew(lowerer, withoutParenthesesTypeWrappers(decl.initializer))
       )
         continue;
       // `const process = globalThis.process` at file scope: a stdlib-
@@ -2530,7 +2530,7 @@ export function collectGlobals(
           // lib signature's fixed parameters cannot express: the binding
           // keeps the checked-dynamic callable the namespace answers.
           const initializer = decl.initializer
-            ? withoutParenthesesAssertionsNonNull(decl.initializer)
+            ? withoutParenthesesTypeWrappers(decl.initializer)
             : undefined;
           if (
             (nameNode === decl.name &&

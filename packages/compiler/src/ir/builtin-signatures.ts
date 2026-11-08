@@ -1981,9 +1981,17 @@ function buildLibFnSignatures() {
     /** server.off(event, listener) / removeListener: [server, listener
      * closure, list kind]. The kind selects the event's registry (1 error,
      * 2 close, 3 listening, 4 connection/secureConnection, 5 timeout,
-     * 6 drop — the scr_net.h SCR_NET_OFF_* values); Node removes the most
-     * recently added matching listener. Never throws. */
+     * 6 drop, 7 newListener — the scr_net.h SCR_NET_OFF_* values); Node
+     * removes the most recently added matching listener. Never throws. */
     "net.serverOff": { argTypes: [NETSERVER_T, null, F64], result: VOID },
+    /** server.listeners(event): [server, list kind] — a +1 closure array
+     * of the event's listeners in registration order (the same kinds as
+     * net.serverOff). */
+    "net.serverListeners": { argTypes: [NETSERVER_T, F64], result: VOID },
+    /** server.on('newListener', listener): Node's meta event, fired with
+     * the event name BEFORE a listener joins its list; a throwing handler
+     * abandons the add. */
+    "net.serverOnNewListener": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     /** 'secureConnection' — the TLS server's deferred 'connection' list
      * (handshake-completion timing); on a server without deferred
      * connections (a plain net server) the registration never fires,
@@ -2909,6 +2917,14 @@ function buildLibFnSignatures() {
     /** server.on('checkContinue' | 'checkExpectation', (req, res)): the
      * 'request' listener shape; the last argument picks checkExpectation. */
     "http.serverOnCheck": { argTypes: [NETSERVER_T, null, BOOL, BOOL], result: VOID },
+    /** server.off/removeListener and server.listeners for the HTTP
+     * request-side events: [server, listener closure or nothing, list kind]
+     * with the scr_http.h SCR_HTTP_OFF_* kind (1 request, 2 checkContinue,
+     * 3 checkExpectation, 4 upgrade, 5 connect, 6 clientError). Off
+     * removes the most recently added matching listener; listeners answers
+     * a +1 closure array in registration order. */
+    "http.serverOff": { argTypes: [NETSERVER_T, null, F64], result: VOID },
+    "http.serverListeners": { argTypes: [NETSERVER_T, F64], result: VOID },
     "http2.serverOnSessionError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     /** The guarded absent-session compatibility call remains a no-op. */
     "http2.streamNoop": { argTypes: [], result: VOID },

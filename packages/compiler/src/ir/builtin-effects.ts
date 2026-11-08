@@ -1188,6 +1188,36 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
   // or the fence for forms without a lowering.
   "net.listenPortDyn",
+  // Server event registrations fire the 'newListener' meta event before the
+  // add, so a handler of it can throw out of the on/once/addListener call.
+  "net.serverOnError",
+  "net.serverOnClose",
+  "net.serverOnListening",
+  "net.serverOnConnection",
+  "net.serverOnSecureConnection",
+  "net.serverOnDrop",
+  "net.serverOnNewListener",
+  "http.serverOnTimeout",
+  // setTimeout(ms, callback) adds the callback as a 'timeout' listener
+  // the same way on() does, so a 'newListener' handler can throw out
+  // of it.
+  "http.serverSetTimeoutCb",
+  // listen(..., callback) adds the callback with once('listening', ...)
+  // before it binds, so a 'newListener' handler can throw out of the call
+  // and the server does not listen.
+  "net.listenCb",
+  "net.listenOptsCb",
+  "net.listenOptsReusePortCb",
+  "net.listenPathCb",
+  "http.serverOnRequest",
+  "http.serverOnCheck",
+  "http.serverOnConnect",
+  "http.serverOnUpgrade",
+  "http.serverOnClientError",
+  "http2.serverOnStream",
+  "http2.serverOnSession",
+  "http2.serverOnSessionError",
+  "tls.serverOnClientError",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.

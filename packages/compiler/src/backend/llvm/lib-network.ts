@@ -143,6 +143,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     }
     host.declare(`declare void @scr_net_listen_path(ptr, ptr, ptr)`);
     B.line(`call void @scr_net_listen_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`);
+    // The callback joins the 'listening' list before the bind: a
+    // 'newListener' handler can throw out of the call.
+    if (e.fn === "net.listenPathCb") host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "net.connectOptsChk") {
@@ -175,6 +178,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     }
     host.declare(`declare void @scr_net_listen(ptr, double, ptr)`);
     B.line(`call void @scr_net_listen(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${cb})`);
+    if (e.fn === "net.listenCb") host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -217,6 +221,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         .map((a) => `${host.llType(a.type)} ${a.name}`)
         .join(", ")}, ptr ${cb})`,
     );
+    if (withCallback) host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.clientSignal") {
@@ -337,6 +342,26 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the server's registration.
+    if (e.fn === "net.serverOnError") host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.serverOnNewListener") {
+    // The meta event's listener takes the event name (0 or 1 parameters).
+    const cbT = e.args[1]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[1]!);
+    const adapter =
+      cbT.params.length === 0 ? "scr_net_new_listener_thunk0" : "scr_net_new_listener_thunk1";
+    host.declare(`declare void @${adapter}(ptr, ptr)`);
+    host.declare(`declare void @scr_net_server_on_new_listener(ptr, ptr, ptr, i1 zeroext)`);
+    B.line(
+      `call void @scr_net_server_on_new_listener(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
+    );
+    // The 'newListener' handlers this add fires can throw.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -412,6 +437,10 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @scr_net_server_set_timeout_cb(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr @${adapter})`,
       );
+      // The callback joins the 'timeout' list the same way on() adds it: a
+      // 'newListener' handler can throw out of the call, and the add never
+      // happens.
+      host.emitPendingCheck();
     } else {
       const entry =
         e.fn === "net.serverOnSecureConnection"
@@ -425,6 +454,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
       );
+      // A 'newListener' handler can throw out of the registration.
+      if (e.fn !== "http.clientOnSocket") host.emitPendingCheck();
     }
     return { name: "", type: e.type };
   }
@@ -675,12 +706,16 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       B.line(
         `call void @scr_http_server_on_check(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name}, i1 ${args[3]!.name})`,
       );
+      // A 'newListener' handler can throw out of the registration.
+      host.emitPendingCheck();
       return { name: "", type: e.type };
     }
     host.declare(`declare void @scr_http_server_on_request(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @scr_http_server_on_request(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the registration.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -712,6 +747,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    // A 'newListener' handler can throw out of the server's registration.
+    if (e.fn === "http.serverOnUpgrade") host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.serverOnClientError") {
@@ -726,6 +763,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_http_server_on_client_error(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr @${adapter}, i1 ${args[2]!.name})`,
     );
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (

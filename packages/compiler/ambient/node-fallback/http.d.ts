@@ -111,6 +111,8 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly writableHighWaterMark: number;
+    readonly writableObjectMode: boolean;
     readonly destroyed: boolean;
     readonly req: IncomingMessage;
     readonly socket: Socket | null;
@@ -152,10 +154,11 @@ declare module "http" {
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;
     destroy(): void;
-    on(event: "close" | "finish", listener: () => void): void;
+    /* 'prefinish' fires inside end(), before 'finish'. */
+    on(event: "close" | "finish" | "prefinish", listener: () => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "close" | "finish", listener: () => void): void;
-    once(event: "close" | "finish", listener: () => void): void;
+    addListener(event: "close" | "finish" | "prefinish", listener: () => void): void;
+    once(event: "close" | "finish" | "prefinish", listener: () => void): void;
   }
   /* The CLIENT slice (http.request/http.get): the options-object form
    * with hostname/host, port, path, method, timeout, and headers; the
@@ -173,8 +176,9 @@ declare module "http" {
     /* The caller's own dialer (the proxy's loopback dial): invoked once,
      * synchronously; its socket carries the exchange. */
     createConnection?: () => Socket;
-    /* agent: false is a one-shot dial with Connection: close — exactly
-     * the compiled client's model; null/undefined are the default; an
+    /* agent: false is a one-shot dial through a throwaway agent (the
+     * head asks the server to close) — exactly the compiled client's
+     * model; null/undefined are the default; an
      * Agent VALUE threads through (getName-keyed maxSockets accounting
      * over one-dial-per-request connections). */
     agent?: Agent | boolean | null;
@@ -232,6 +236,17 @@ declare module "http" {
   }
   /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
+  /* The argument of a ClientRequest's 'information' event: the status line
+   * and headers of a 1xx response. An ordinary object, as in Node. */
+  export interface InformationEvent {
+    statusCode: number;
+    statusMessage: string;
+    httpVersion: string;
+    httpVersionMajor: number;
+    httpVersionMinor: number;
+    headers: { [name: string]: string | undefined };
+    rawHeaders: string[];
+  }
   export interface ClientRequest {
     readonly destroyed: boolean;
     readonly aborted: boolean;
@@ -267,29 +282,36 @@ declare module "http" {
     abort(): void;
     on(event: "response", listener: (res: IncomingMessage) => void): this;
     on(event: "socket", listener: (socket: Socket) => void): this;
+    /* 'connect' is the response to a CONNECT request: the tunnel's socket. */
     on(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    on(event: "information", listener: (info: InformationEvent) => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     /* addListener IS on (Node aliases them) — the suite spells both. Each
      * answers the request, as Node's does. */
     addListener(event: "response", listener: (res: IncomingMessage) => void): this;
     addListener(event: "socket", listener: (socket: Socket) => void): this;
     addListener(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
-    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): this;
+    addListener(
+      event: "timeout" | "close" | "finish" | "abort" | "continue",
+      listener: () => void,
+    ): this;
+    addListener(event: "information", listener: (info: InformationEvent) => void): this;
     addListener(event: "error", listener: (err: Error) => void): this;
     once(event: "response", listener: (res: IncomingMessage) => void): this;
     once(event: "socket", listener: (socket: Socket) => void): this;
     once(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
     ): this;
     once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): this;
+    once(event: "information", listener: (info: InformationEvent) => void): this;
     once(event: "error", listener: (err: Error) => void): this;
   }
   export function createServer(
@@ -325,6 +347,8 @@ declare module "http" {
     optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
+  /* Node's argument validation; the compiled parser has no pool to size. */
+  export function setMaxIdleHTTPParsers(max: number): void;
   export function validateHeaderName(name: string, label?: string): void;
   export function validateHeaderValue(name: string, value: unknown): void;
 }

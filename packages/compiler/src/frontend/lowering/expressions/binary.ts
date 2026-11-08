@@ -3233,9 +3233,9 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     if (record) right = lowerer.coerceToExpected(right, record);
   }
   // A LITERAL-unit left operand (a compile-time undefined/null — the
-  // capability-probe members: `process.features.inspector ||
-  // !flag.startsWith('--inspect')` reads undefined in a compiled
-  // binary): statically falsy, so the operator folds JS-exactly —
+  // capability-probe members: `process.config.variables.node_use_quic ||
+  // fallback` reads undefined in a compiled binary): statically falsy,
+  // so the operator folds JS-exactly —
   // `unit || X` IS X, `unit && X` IS the unit (X's side effects never
   // run in JS either; the lowered right is simply dropped). Literal
   // units only — computed unit-typed values keep the fences below.

@@ -208,6 +208,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // Node's pipe lifecycle, installed into the stream unit for programs
+  // that pipe, unpipe or build a pipeline.
+  ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
@@ -234,6 +237,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_child_lifecycle.c", "childLifecycle"],
   // The spawnSync capture Buffers; a unit of its own for the same reason.
   ["scr_child_capture.c", "spawnCaptureBytes"],
+  // process.features as a value: the stable flags object.
+  ["scr_process_features.c", "processFeatures"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
   // The report of failed checked conversions; dev executables link it.
@@ -307,6 +312,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The stderr report of a deferred diagnostic that fires: only a program
   // that contains one links it, so no other executable changes.
   ["scr_deferred_fence.c", "deferredFence"],
+  // `fn.constructor = value` on a value the checker types as a function: the
+  // write into the function's own property table (lower-stmts.ts,
+  // lowerFunctionConstructorWrite).
+  ["scr_dyn_fn_own.c", "functionOwnWrite"],
 ];
 
 /** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
@@ -617,6 +626,30 @@ export function variantsFor(source) {
       when: { childOptionExt: true, childErrorFields: true },
       defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
     });
+    // pause(), resume(), isPaused() and readableFlowing on a child's output
+    // stream: the build where the stream handle keeps Node's flowing state
+    // (scr_child_flow.h). A program that never calls them keeps the default
+    // object. The combinations with the builds above need their own objects,
+    // since the variant with the most conditions is the one selected.
+    for (const [id, when, defines] of [
+      ["stream-flow", { childStreamFlow: true }, ["SCR_CHILD_STREAM_FLOW"]],
+      [
+        "cp-options-stream-flow",
+        { childOptionExt: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "err-fields-stream-flow",
+        { childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+      [
+        "cp-options-err-fields-stream-flow",
+        { childOptionExt: true, childErrorFields: true, childStreamFlow: true },
+        ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS", "SCR_CHILD_STREAM_FLOW"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // A static executable cannot load NSS modules, so the os unit's passwd
   // fallback (os.homedir() with HOME unset, and os.userInfo()) reads

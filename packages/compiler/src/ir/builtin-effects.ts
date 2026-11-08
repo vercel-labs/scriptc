@@ -138,6 +138,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  // The stream predicates and state getters refuse by name (SC2020): a
+  // value that is neither a native stream nor a primitive, and a child or
+  // process stdio stream asked about the side it does not have here.
+  "stream.is",
+  "stream.isDyn",
+  "stream.stateDyn",
   "stream.dynIterableSource",
   "stream.dynSourceValue",
   "stream.unboxDynStage",
@@ -344,6 +350,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteEarlyHints",
   "http.validateHeaderName",
   "http.validateHeaderValue",
+  "http.setMaxIdleParsers",
+  // 'prefinish' on the HTTP/2 compatibility response is refused by name.
+  "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
@@ -434,6 +443,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.clientWriteDyn",
   "http.clientEndDyn",
   "http.clientAddTrailers",
+  // setHeader and removeHeader throw ERR_HTTP_HEADERS_SENT once the head is
+  // out (flushHeaders(), a first write, or an Expect header at
+  // construction), and setHeader throws Node's name and value checks.
+  "http.clientSetHeader",
+  "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",
   "http.clientWrite",
@@ -470,6 +484,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.connectCb",
   "http2.sessionRequest",
   "http2.streamSetEncoding",
+  // Settings are validated (ERR_HTTP2_INVALID_SETTING_VALUE), a ping's
+  // payload and a destroyed session are refused, and a dynamic listener
+  // that is not a function is a TypeError.
+  "http2.sessionSettings",
+  "http2.sessionSettingsCb0",
+  "http2.sessionSettingsDynCb",
+  "http2.sessionOnSettingsDyn",
+  "http2.sessionPing",
+  "http2.sessionPingPayload",
+  "http2.getPackedSettings",
+  "http2.getUnpackedSettings",
   "http2.streamRespond",
   "http2.streamWrite",
   "http2.streamWriteBytes",
@@ -490,6 +515,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.pipelineDyn",
   "stream.compose",
   "sp.finished",
+  // Destroys the stream, which runs a destroy hook of the program's; the
+  // hook's error rejects the returned promise.
+  "stream.asyncDispose",
   "sp.pipeline",
   "sp.pipelineStages",
   "sp.pipelineStagesOpts",
@@ -499,6 +527,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sc.text",
   "sc.json",
   "sc.buffer",
+  "sc.bytes",
   "sc.arrayBuffer",
   "readable.newDyn",
   "writable.newDyn",
@@ -656,6 +685,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectLookupDyn",
   "cp.execSync",
   "cp.execCapture",
+  // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
+  "cp.maxBuffer",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).
@@ -849,6 +880,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.newChecked",
   "regex.replaceCallback",
   "dyn.keySet",
+  "dyn.fnOwnSet",
   "dyn.keySetComputed",
   "process.builtinId",
   "process.builtinModule",

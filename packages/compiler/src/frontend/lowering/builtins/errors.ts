@@ -3,7 +3,7 @@ import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
-import { builtinErrorNew } from "../lower-classes.js";
+import { builtinErrorNew, classHasIndexSignature } from "../lower-classes.js";
 import {
   BOOL,
   CAUGHT,
@@ -249,14 +249,17 @@ export function lowerErrorCodeProperty(
 }
 
 /** Whether a class declared in the program, `className` or one of its
- * subclasses, has its own `code` field or a dynamic property bag. The
- * runtime error classes keep `code` in the errno slot. */
+ * subclasses, has its own `code` field or a dynamic property bag, or
+ * declares an index signature (its `code` is a property of the instance,
+ * written before any bag exists). The runtime error classes keep `code` in
+ * the errno slot. */
 function programClassMayOwnCode(lowerer: Lowerer, className: string): boolean {
   for (const [name, info] of lowerer.classes) {
     if (name.startsWith("%")) continue;
     if (name !== className && !lowerer.isSubclassOf(name, className)) continue;
     if (info.def.fields.some((f) => f.name === "code" || f.name === DYN_CLASS_PROPERTIES))
       return true;
+    if (classHasIndexSignature(info)) return true;
   }
   return false;
 }

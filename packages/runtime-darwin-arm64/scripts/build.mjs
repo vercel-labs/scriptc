@@ -361,6 +361,7 @@ async function build() {
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
+          "SCR_CHILD_STREAM_FLOW",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

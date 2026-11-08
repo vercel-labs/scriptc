@@ -11,17 +11,13 @@ function hidden(): boolean {
 execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
 exec("echo", { windowsHide: hidden() }, () => {});
 
-// The promisified forms bind no option values either, and a
-// synchronous form cannot place such a value beside a conditional env spread
+// The promisified forms do not run such a value either, and a
+// synchronous form cannot place it beside a conditional env spread
 // or a stdio mode known only at run time.
 const run = promisify(execFile);
 const spare = process.argv.length > 9;
 const mode: "pipe" | "inherit" = spare ? "inherit" : "pipe";
-function limit(): number {
-  return 1024;
-}
 
 void run("/bin/echo", [], { windowsHide: hidden() });
-void run("/bin/echo", [], { maxBuffer: limit() });
 execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
 spawnSync("/bin/echo", [], { stdio: mode, windowsHide: hidden() });

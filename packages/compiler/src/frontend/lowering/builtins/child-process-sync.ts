@@ -1,6 +1,12 @@
 import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
-import { lowerChildArgsArg, windowsOnlyOption, withChildArgsCheck } from "./child-process.js";
+import {
+  armedMaxBuffer,
+  type ChildEvalStep,
+  lowerChildArgsArg,
+  windowsOnlyOption,
+  withChildArgsCheck,
+} from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -28,8 +34,8 @@ import { isPureReadShape, optionMember } from "./arguments.js";
  * are drawn from the honestly-implemented set — `encoding` (must be the
  * "utf8"/"utf-8" literal, like spawnSync — outputs are captured utf8),
  * `cwd`, `env`, `input`, `timeout`, `stdio` (the "pipe"/"ignore"
- * string form or a 3-tuple of those), `maxBuffer` (accepted, not
- * enforced — the capture grows), `killSignal` (accepted only as the
+ * string form or a 3-tuple of those), `maxBuffer` (both outputs together;
+ * Node's 1 MiB without it, 0 for no limit), `killSignal` (accepted only as the
  * SIGTERM default), `windowsHide`/`shell:false` on execFileSync (Node
  * no-ops here). Every other member (a non-default killSignal, shell:true
  * on execFileSync, ...) fences by name. */
@@ -74,7 +80,7 @@ export function lowerExecSyncCall(
   }
   // The shell command itself is /bin/sh; the "command" string rides as
   // the argv[1] the display formatter reads.
-  let cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
+  const cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   const emptyPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -90,6 +96,10 @@ export function lowerExecSyncCall(
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = emptyPairs;
   let timeout: IrExpr = numLit(0, loc);
+  let maxBuffer: IrExpr | null = null;
+  // The options that are evaluated, as written, by the launch arguments
+  // each one becomes ("limit": the limit is not one of them).
+  const optionSteps: ChildEvalStep[] = [];
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
@@ -98,15 +108,13 @@ export function lowerExecSyncCall(
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
-  // The option members whose values the call evaluates, in source order,
-  // and the values of members the launch does not read (`windowsHide`,
-  // `maxBuffer`, execSync's `shell`) whose evaluation can be observed (a
-  // call, a getter). With one of the latter, the call's prelude evaluates
-  // the command, the arguments and every member where it sits, as Node
-  // does; without one the call is built as before.
-  const evalOrder: ("cwd" | "input" | "env" | "timeout" | { effect: IrExpr })[] = [];
+  // The value of a member the launch does not read (`windowsHide`,
+  // execSync's `shell`) whose evaluation can be observed (a call, a
+  // getter) is a step of its own: with one, the command, the arguments
+  // and every member are evaluated where they sit, as Node does; without
+  // one the call is built as before.
   const evaluated = (value: IrExpr): void => {
-    if (!isSafeToDiscard(value)) evalOrder.push({ effect: value });
+    if (!isSafeToDiscard(value)) optionSteps.push({ effect: value });
   };
 
   if (optsNode) {
@@ -146,7 +154,11 @@ export function lowerExecSyncCall(
             loc,
           },
           shell ? 1 : 0,
-          (a) => ({ cwd: a[5], envPairs: a[7] }),
+          (a) => ({
+            cwd: a[5],
+            envPairs: a[7],
+            maxBuffer: armedMaxBuffer(runtime.maxBuffer, true),
+          }),
           loc,
         );
       }
@@ -235,6 +247,7 @@ export function lowerExecSyncCall(
             pairs: recordToEnvPairs(lowerer, (cs.props[0] as ts.PropertyAssignment).initializer),
             whenTrue: cs.whenTrue,
           };
+          optionSteps.push(6, 7);
           continue;
         }
         lowerer.noLowering(
@@ -267,7 +280,7 @@ export function lowerExecSyncCall(
         }
         case "cwd":
           cwd = lowerer.lowerExprExpecting(m.value, STRING);
-          evalOrder.push("cwd");
+          optionSteps.push(5);
           break;
         case "input": {
           // string | undefined, Node's exact member semantics: the
@@ -280,6 +293,7 @@ export function lowerExecSyncCall(
             // `input: undefined` — Node treats the member as absent.
             break;
           }
+          optionSteps.push(3, 4);
           const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
           const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
           const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
@@ -328,13 +342,12 @@ export function lowerExecSyncCall(
           }
           input = lowerer.lowerExprExpecting(m.value, STRING);
           hasInput = boolLit(true, loc);
-          evalOrder.push("input");
           break;
         }
         case "env": {
           hasEnv = boolLit(true, loc);
           envPairs = recordToEnvPairs(lowerer, m.value);
-          evalOrder.push("env");
+          optionSteps.push(6, 7);
           // A later inline env member overrides an earlier conditional
           // spread (JS object-literal order); an earlier member stays
           // the spread's false-arm fallback.
@@ -343,15 +356,14 @@ export function lowerExecSyncCall(
         }
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
-          evalOrder.push("timeout");
+          optionSteps.push(8);
           break;
         case "stdio":
           applyStdio(m.value);
           break;
         case "maxBuffer":
-          // Accepted, not enforced (the capture grows unbounded — no
-          // real corpus hits the cap); evaluated where the member sits.
-          evaluated(lowerer.lowerExpr(m.value));
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionSteps.push("limit");
           break;
         case "killSignal": {
           const t = lowerer.typeOf(m.value);
@@ -373,7 +385,7 @@ export function lowerExecSyncCall(
             member,
             p,
             m.value,
-            (value) => evalOrder.push({ effect: value }),
+            (value) => optionSteps.push({ effect: value }),
           );
           break;
         case "shell":
@@ -429,54 +441,18 @@ export function lowerExecSyncCall(
         loc,
       },
       shell ? 1 : 0,
-      (a) => ({ cwd: a[5], envPairs: a[7] }),
+      (a) => ({ cwd: a[5], envPairs: a[7], maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
+      [0, 1, ...optionSteps],
     );
-  if (evalOrder.some((step) => typeof step !== "string")) {
-    if (condEnvSpread !== null) {
-      lowerer.noLowering(
-        `${shell ? "execSync" : "execFileSync"} with a conditional env spread beside an option value that must be evaluated`,
-        optsNode!,
-        "bind the computed option value to a constant before the call",
-      );
-    }
-    // Node evaluates the command, the argument list, then the options
-    // object's members in source order. Each lands in a hidden local the
-    // call reads; a value the launch does not read runs as a statement at
-    // its member's place. Literals need no local.
-    const prelude: IrStmt[] = [];
-    const bind = (name: string, value: IrExpr): IrExpr => {
-      if (value.kind === "strLit" || value.kind === "numLit" || value.kind === "boolLit")
-        return value;
-      const local = lowerer.declareHiddenLocal(name, value.type);
-      prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
-      return varRef(local.id, value.type, loc);
-    };
-    if (shell) {
-      argvExpr = {
-        kind: "arrayLit",
-        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, bind("%execSyncCommand", cmd)],
-        type: arrayOf(STRING),
-        loc,
-      };
-    } else {
-      cmdArg = bind("%execSyncFile", cmd);
-      argvExpr = bind("%execSyncArgs", argvExpr);
-    }
-    for (const step of evalOrder) {
-      if (step === "cwd") cwd = bind("%execSyncCwd", cwd);
-      else if (step === "input") input = bind("%execSyncInput", input);
-      else if (step === "env") envPairs = bind("%execSyncEnv", envPairs);
-      else if (step === "timeout") timeout = bind("%execSyncTimeout", timeout);
-      else prelude.push({ kind: "exprStmt", expr: step.effect, loc });
-    }
-    return {
-      kind: "seqExpr",
-      stmts: prelude,
-      result: execCall(hasEnv, envPairs),
-      type: STRING,
-      loc,
-    };
+  if (condEnvSpread !== null && optionSteps.some((step) => typeof step === "object")) {
+    // The spread's condition is evaluated ahead of both copies of the
+    // call, so a value that only runs has no place among the members.
+    lowerer.noLowering(
+      `${shell ? "execSync" : "execFileSync"} with a conditional env spread beside an option value that must be evaluated`,
+      optsNode!,
+      "bind the computed option value to a constant before the call",
+    );
   }
   if (condEnvSpread !== null) {
     // The conditional env spread: ONE cond evaluation picks between two
@@ -518,6 +494,7 @@ function lowerExecSyncRuntimeOptions(
   hasInput: IrExpr;
   cwd: IrExpr;
   timeout: IrExpr;
+  maxBuffer: IrExpr;
   stdoutMode: IrExpr;
   stderrMode: IrExpr;
 } | null {
@@ -591,6 +568,8 @@ function lowerExecSyncRuntimeOptions(
     hasInput,
     cwd: readOpt("cwd", emptyStr, STRING),
     timeout: readOpt("timeout", { kind: "numLit", value: 0, type: F64, loc }, F64),
+    // An absent maxBuffer is Node's default for the sync forms.
+    maxBuffer: readOpt("maxBuffer", { kind: "numLit", value: 1024 * 1024, type: F64, loc }, F64),
     stdoutMode: modeCall(1),
     stderrMode: modeCall(2),
   };

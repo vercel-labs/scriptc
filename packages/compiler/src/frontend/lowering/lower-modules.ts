@@ -52,7 +52,6 @@ import {
   locOf,
   makeCycleAdmission,
   orderedImportsOf,
-  npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
   resolveNpmImport,
@@ -734,7 +733,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       const projectDep = isRelativeSpecifier(spec)
         ? null
-        : resolveImport(lowerer.program, fp.sf, spec);
+        : lowerer.facts.importedModule(fp.sf, spec);
       if (projectDep !== null) {
         // A Node island package that tsconfig `paths` maps to its installed
         // directory resolves to its declarations: it loads in Node.
@@ -771,7 +770,7 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
         // An explicitly selected installed entry owns its package's
         // source graph. Preflight included these modules for native
 
-        const dep = resolveImport(lowerer.program, fp.sf, spec);
+        const dep = lowerer.facts.importedModule(fp.sf, spec);
         if (dep !== null && entryPackageFile(dep.fileName) && lowerer.fileTag.has(dep)) continue;
       }
       if (!npm && !relIsJs) continue;
@@ -841,8 +840,7 @@ function dynamicImportRejectionOf(
           loc: locOf(call),
         };
   if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
-  const root =
-    resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
+  const root = lowerer.facts.importedModule(sf, spec) ?? lowerer.facts.npmStaticModule(sf, spec);
   if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
   // Builtins, and URL specifiers (file:, data:), are not package names.
   if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
@@ -920,7 +918,7 @@ function collectOneDynamicImport(
           );
         })()
       : (() => {
-          const target = resolveImport(lowerer.program, sf, spec);
+          const target = lowerer.facts.importedModule(sf, spec);
           return target !== null && !target.isDeclarationFile;
         })();
   const builtin = canonicalBuiltinModule(spec);
@@ -3594,7 +3592,7 @@ export function lowerFileInit(
     // A module that reads builtin globals through the global object, by
     // computed names or through a sloppy-mode function's `this`, installs
     // the program's lookup before its body runs.
-    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0, sf));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

@@ -7,12 +7,12 @@ import {
   isCreateRequireBinding7,
   isJsSourceFile,
   locOf,
-  npmStaticDepSf7,
   requireSpecOf,
-  resolveImport,
 } from "../../program.js";
 import { staticString } from "./module-resolution.js";
 import { isCjsRequireGlobal } from "../lower-node-module.js";
+import { builtinModuleHasMember } from "../builtin-module-members.js";
+import { namespaceNonExportDiag, type ScrDiagnostic } from "../../../diagnostics/diagnostic.js";
 
 /** Resolves an identifier to a supported builtin-module IMPORT BINDING:
  * a named import (through its alias, so `import { join as j }` matches)
@@ -179,6 +179,35 @@ export function esmImportBindingKind(
   if (decl === undefined) return null;
   if (ts.isNamespaceImport(decl)) return "namespace";
   return ts.isImportSpecifier(decl) ? "named" : null;
+}
+
+/** The refusal of a TypeScript read, through an ES module namespace
+ * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a member Node's
+ * namespace object does not export: the module's exports object owns the
+ * name without enumerating it, the namespace has exactly the exports, and
+ * Node reads undefined, which the member's declared type (it describes the
+ * exports object) cannot hold. Null for every other read, JavaScript
+ * sources included (their read is untyped). The named import of such a
+ * member fails to link in Node, which the ES module link analysis answers
+ * (program.ts analyzeEsmNamedImportLinks). */
+export function namespaceNonExportRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  module: string,
+  member: string,
+): ScrDiagnostic | null {
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+    builtinModuleHasMember(module, "esm", member) !== false ||
+    lowerer.builtinNamespaceShapeOf(expr.expression)?.flavor !== "esm"
+  )
+    return null;
+  return namespaceNonExportDiag(
+    module,
+    member,
+    builtinModuleHasMember(module, "esm", "constants") === true,
+    locOf(expr),
+  );
 }
 
 /** True when `expr` evaluates to a builtin's ES module namespace OBJECT,
@@ -659,8 +688,8 @@ export function createRequireProgramModuleOf(
   const cr = createRequireSpecOf(lowerer, call);
   if (cr === null || cr.spec === null || canonicalBuiltinModule(cr.spec) !== null) return null;
   const dep =
-    resolveImport(lowerer.program, cr.baseFile, cr.spec, "require") ??
-    npmStaticDepSf7(lowerer.program, cr.baseFile, cr.spec, "require");
+    lowerer.facts.importedModule(cr.baseFile, cr.spec, "require") ??
+    lowerer.facts.npmStaticModule(cr.baseFile, cr.spec, "require");
   if (dep === null || dep.fileName.endsWith(".json")) return null;
   return { spec: cr.spec, baseFile: cr.baseFile, dep };
 }

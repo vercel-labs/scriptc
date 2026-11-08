@@ -115,11 +115,13 @@ test("record width copies report at every storing site", async () => {
 });
 
 test("a Node island value converted to a native type reports as a copy", async () => {
-  // SC6007: an assertion to an array and to a record, the same through a
-  // `const`, a typed binding of an `any`, a typed callback parameter the
-  // callback writes through, and an island Map keyed by a record type. A
-  // record of unknown members, a structuredClone, a value no island made, a
-  // read-only parameter and a Map of scalars report nothing.
+  // SC6007: an assertion to an array and to a record a view cannot hold (it
+  // declares a Date), the same through a `const`, a typed binding of an
+  // `any`, a typed callback parameter the callback writes through, and an
+  // island Map keyed by that record type. A record of unknown members, a
+  // structuredClone, a value no island made, a read-only parameter and a Map
+  // of scalars report nothing, and neither does any of the forms with a
+  // record type that becomes a view of the island's object.
   const entry = fixture("island-copies/main.ts");
   const { coverage } = analyze(entry);
   expect(coverage.stats.statementsFailed).toBe(0);
@@ -364,7 +366,9 @@ test("type claims list the checked conversions that trust an unverified type", a
     ["parsed", "number", 2, [18, 19]],
     ["island", "each(visit)", 1, [28]],
     ["island", "label()", 1, [35]],
-    ["island", "load()", 1, [31]],
+    // `load("p") as Loaded` is a view of the island's object: the claim is
+    // where the program reads a member of it.
+    ["island", "load()", 1, [35]],
     // `table(2) as Catalog`; `entries`, read back under its declared type,
     // is not listed.
     ["untyped", "{ a: { n: number } }", 1, [45]],
@@ -1184,6 +1188,27 @@ test("a package the policy islands types its values as island handles", async ()
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
     ["ni-config", "packaging"],
   ]);
+});
+
+test("an untyped island value stored where its origin is no longer followed is reported", async () => {
+  // An assertion applied to a value the compiler sees comes out of an island
+  // (directly, through a const, a parameter or a return of the program's
+  // functions) is a view of the island's object. Stored in an element, a
+  // container, a reassigned binding, a member, a literal the program keeps,
+  // a class field or a generic helper, the value is read back with no origin,
+  // and an assertion applied to it then copies: SC6007 names each store.
+  const entry = fixture("node-islands-untracked-store/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-untracked-store.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics.filter((d) => d.code !== "SC2013")).toEqual([]);
+  const stores = (coverage.divergences ?? []).filter((d) => d.code === "SC6007");
+  // One per store: the element, the Map value, the `let` and its
+  // reassignment, the member, the two kept literals, the class field and
+  // the generic helper. The snapshot names each line.
+  expect(stores.length).toBe(9);
+  expect((coverage.divergences ?? []).length).toBe(9);
 });
 
 test("a package a build islands by its module-init fence is the same island here", async () => {

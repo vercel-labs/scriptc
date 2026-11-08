@@ -283,6 +283,16 @@ function declaredInIsland(islands: NodeIslandSet, symbol: ts.Symbol | null | und
   );
 }
 
+/** Whether an island declares `symbol`: every declaration of it is in an
+ * island's files, in a `declare module` block that names an island's module,
+ * or is a native subclass of an island class. */
+export function isIslandDeclared(
+  islands: NodeIslandSet,
+  symbol: ts.Symbol | null | undefined,
+): boolean {
+  return declaredInIsland(islands, symbol);
+}
+
 const NULLISH = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
 /** Whether values of `type` are island handles (see the header). An

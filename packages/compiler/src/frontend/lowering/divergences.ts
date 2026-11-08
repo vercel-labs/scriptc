@@ -15,6 +15,7 @@ import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
   islandValueCopyDivergenceDiag,
+  islandValueUntrackedDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
@@ -50,7 +51,6 @@ export function scanDivergences(
   );
   const out: ScrDiagnostic[] = [];
   const checker = lowerer.checker;
-
   // ── pass 1: syntactic collection ────────────────────────────────────
   const fnsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
   const calls: ts.CallExpression[] = [];
@@ -475,6 +475,14 @@ export function scanDivergences(
           }
         }
       });
+    // An untyped island value stored where its origin is no longer followed
+    // (class-protocols.ts, noteIslandEscapes): the conversion applied to it
+    // after it is read back copies the island's object, at a site the scan
+    // above cannot see as one.
+    const ownFiles = new Set(own);
+    for (const stored of lowerer.islandEscapeSites())
+      if (ownFiles.has(ts.getSourceFileOfNode(stored)))
+        out.push(islandValueUntrackedDivergenceDiag(locOf(stored)));
   }
 
   return out;

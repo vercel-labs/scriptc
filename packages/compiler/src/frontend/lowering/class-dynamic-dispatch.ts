@@ -65,6 +65,8 @@ import {
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import { runtimeStaticDefines } from "./class-runtime-statics.js";
+import { classStaticTable } from "./class-static-tables.js";
+import { inGenericChain, refreshGenericPrototypeMembers } from "./class-generic-members.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -1622,6 +1624,10 @@ export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
  * such check in the program calls. */
 export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
 
+/** The constructors that get a static table in a program that cannot read
+ * one: none. */
+const NO_CONSTRUCTORS = new Set<string>();
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1648,6 +1654,8 @@ export class ClassDynamicDispatch {
     return this.boxed;
   }
   private readonly boxedConstructors = new Set<string>();
+  /** The classes classStaticTable was asked about. */
+  private readonly staticTablesDecided = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
   private readonly boxedStatic = new Set<string>();
@@ -1764,6 +1772,7 @@ export class ClassDynamicDispatch {
     let changed = this.caughtDispatch.process(lowerer, functions, this.sites);
     changed = refreshErrorMethodDispatch(lowerer, functions) || changed;
     changed = refreshClassMethodValueSelections(lowerer) || changed;
+    changed = refreshGenericPrototypeMembers(lowerer) || changed;
     changed = refreshErrorPropertyDispatch(lowerer, functions) || changed;
     changed =
       this.generatorDispatch.process(lowerer, functions, this.generated, this.sites) || changed;
@@ -1810,6 +1819,62 @@ export class ClassDynamicDispatch {
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
+    // A constructor that becomes a dynamic value carries the table of its
+    // class's static members, and so do its base classes, whose tables it
+    // inherits from. Only an operation on a dynamic value can reach the
+    // table: a program that converts the constructor and has none (a
+    // function-typed static called through the class name passes the class
+    // as the call's receiver) keeps the constructor value it had.
+    const tables = this.boxedConstructors.size > 0 && this.sites.usesDynamicValues(functions);
+    for (const name of tables ? this.boxedConstructors : NO_CONSTRUCTORS)
+      for (let info = lowerer.classes.get(name) ?? null; info; info = info.base) {
+        if (info.def.staticsHelper !== undefined || this.staticTablesDecided.has(info.def.name))
+          continue;
+        this.staticTablesDecided.add(info.def.name);
+        const helper = classStaticTable(lowerer, info, functions[0]!.loc);
+        if (!helper) break;
+        this.generated.add(helper);
+        // An instantiation's helper calls its declaration's.
+        const declared = lowerer.liftedFnNamed(info.genericInstance?.family.staticMembersHelper);
+        if (declared) this.generated.add(declared);
+        changed = true;
+      }
+    // A reflected prototype holds its class's methods, and an instance reads
+    // a member through its own class's prototype first. Every class below a
+    // reflected one that can have an instance is therefore reflected too:
+    // otherwise the base class's method would answer for a subclass's
+    // override. A class whose constructor nothing reaches (no `new`, no
+    // class value, no subclass that is constructed) has no instance and no
+    // one to read its prototype; its methods stay out of the program.
+    const reflectBelow = (current: ClassInfo): void => {
+      for (const sub of current.subclasses) {
+        if (
+          !sub.prototypeReflectionReady &&
+          !sub.prototypeReflectionRefusal &&
+          sub.decl &&
+          !sub.localClass &&
+          !inGenericChain(sub) &&
+          lowerer.classCanBeConstructed(sub)
+        ) {
+          const before = lowerer.diags.length;
+          try {
+            reflectClassPrototype(
+              lowerer,
+              sub,
+              functions[0]!.loc,
+              classValueRef(lowerer, sub, sub.decl),
+            );
+            if (sub.prototypeReflectionReady) changed = true;
+          } catch (error) {
+            if (!(error instanceof PoisonError)) throw error;
+            lowerer.diags.splice(before);
+          }
+        }
+        reflectBelow(sub);
+      }
+    };
+    for (const info of [...lowerer.classes.values()])
+      if (info.prototypeReflectionReady && !inGenericChain(info)) reflectBelow(info);
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -1919,12 +1984,13 @@ export class ClassDynamicDispatch {
         const loc = this.prototypeHelper.loc;
         const type: IrType = { kind: "object", className };
         const value = varRef("value", DYN, loc);
-        const prototype = reflectClassPrototype(lowerer, info, loc, {
-          kind: "dynCheck",
-          value,
-          type,
+        const prototype = reflectClassPrototype(
+          lowerer,
+          info,
           loc,
-        });
+          { kind: "dynCheck", value, type, loc },
+          true,
+        );
         if (prototype)
           this.prototypeHelper.body.unshift({
             kind: "if",
@@ -2087,7 +2153,11 @@ export class ClassDynamicDispatch {
                   type: { kind: "object", className: name },
                   loc,
                 })
-              : null;
+              : // A class in a chain with a generic class: the prototype
+                // object dynamic code sees, one per declaration.
+                inGenericChain(of)
+                ? classPrototypeData(lowerer, of, loc, undefined, false, true)
+                : null;
           if (prototype) return [{ kind: "return", value: prototype, loc }];
           return hasClassPrototypeData(of) ? null : this.prototypeStandIn(lowerer, name, loc);
         };
@@ -4143,6 +4213,18 @@ export class ClassDynamicDispatch {
           const info = lowerer.classes.get(name);
           // A table the chain defines the name in answers the read itself.
           if (info && runtimeStaticDefines(lowerer, info, dispatch.name)) continue;
+          // The table of the class's static members holds its `prototype`.
+          // A class with neither the table nor a prototype object has
+          // nothing to answer with: the read reaches the run-time refusal,
+          // never undefined.
+          if (
+            info &&
+            dispatch.name === "prototype" &&
+            (info.def.staticsHelper !== undefined ||
+              (!findStaticOn(lowerer, info, "prototype") &&
+                classPrototypeData(lowerer, info, dispatch.fn.loc) === null))
+          )
+            continue;
           const found = info && findStaticOn(lowerer, info, dispatch.name);
           const field = found?.field;
           const key = `constructor:${name}`;

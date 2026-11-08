@@ -1973,6 +1973,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.classPrototype": "scr_dyn_class_prototype",
   "dyn.classBasePrototype": "scr_dyn_class_base_prototype",
   "dyn.classInherit": "scr_dyn_class_inherit",
+  "dyn.classStaticSlot": "scr_dyn_class_static_slot",
+  "dyn.classShare": "scr_dyn_class_share",
   "dyn.builtinClass": "scr_dyn_builtin_class",
   "dyn.builtinStreamClass": "scr_dyn_builtin_stream_class",
   "dyn.builtinInstanceOf": "scr_dyn_builtin_instanceof",

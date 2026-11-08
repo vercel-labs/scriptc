@@ -802,6 +802,17 @@ export interface ClassInfo {
    * whose slot still holds that value calls the method natively. */
   prototypeOriginals?: Map<string, string>;
   prototypeReflectionRefusal?: string;
+  /** The helper that answers the prototype object dynamic code sees for a
+   * class in a chain with a generic class (classPrototypeData's `view`).
+   * Typed code has no prototype data for such a class. */
+  prototypeViewHelper?: string;
+  /** A generic class declaration: the helper that defines its static
+   * members and `prototype` on the constructor it is handed
+   * (classStaticTable). */
+  staticMembersHelper?: string;
+  /** A generic class declaration: the globals of its first constructor
+   * that became a dynamic value exist (genericClassFirst). */
+  genericFirstConstructor?: true;
   localClass?: {
     context: FnCtx | null;
     bodies: Map<string, IrFunction>;

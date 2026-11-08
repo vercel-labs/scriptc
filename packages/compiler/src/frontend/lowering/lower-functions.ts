@@ -43,6 +43,7 @@ import {
   generatorMeta,
   generatorParamsBindAtCall,
   isThisParameter,
+  ownLength,
   type ParamShape,
 } from "./call-signatures.js";
 import { slotSignatureAdoption } from "./slot-signatures.js";
@@ -754,11 +755,13 @@ export function lowerLambda(
       const named = jsFuncNameOf(node, undefined, { everyForm: true });
       if (named !== null) lowerer.objectMethodNames.set(fnName, named);
     }
+    // An adopted literal has the slot's parameter list and its own length.
+    const length = adoption !== null ? adoption.length : ownLength(node, funcType);
     return {
       kind: "closure",
       fnName,
       captures: ctx.captureSources,
-      ...(adoption?.length !== undefined ? { length: adoption.length } : {}),
+      ...(length !== undefined ? { length } : {}),
       type: funcType,
       loc,
     };

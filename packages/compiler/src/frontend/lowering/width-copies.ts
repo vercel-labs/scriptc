@@ -189,6 +189,22 @@ function dictionaryValueType(checker: ts.TypeChecker, type: ts.Type): ts.Type | 
     .find((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0)?.type;
 }
 
+/** How many steps below the converted value (a field, an element, an entry)
+ * copiedDictionary looks for the dictionary. */
+const COPIED_DICTIONARY_DEPTH = 3;
+
+/** What one search of copiedDictionary has established: the targets that
+ * hold a native dictionary, by steps left and type, and for each source
+ * type the targets it was compared with, by depth. */
+interface DictionarySearch {
+  native: Map<string, boolean>;
+  asked: Map<ts.Type, Set<string>>;
+}
+
+function dictionarySearch(): DictionarySearch {
+  return { native: new Map(), asked: new Map() };
+}
+
 /** The dictionary a conversion of a `source` value into `target` copies:
  * one that keeps the object it was given, at a position where the target
  * has a native dictionary (a dictionary type with another value type, or
@@ -199,18 +215,29 @@ function copiedDictionary(
   source: ts.Type,
   target: IrType,
   depth: number,
+  search: DictionarySearch,
 ): { from: ts.Type; entries: ts.Type; to: IrType; value: IrType; depth: number } | null {
-  if (depth > 3) return null;
+  if (depth > COPIED_DICTIONARY_DEPTH) return null;
+  const levels = COPIED_DICTIONARY_DEPTH - depth;
+  if (!holdsNativeDictionary(lowerer, target, levels, search.native)) return null;
   const checker = lowerer.checker;
   const targets =
     target.kind === "union" ? (lowerer.unions.get(target.unionId)?.arms ?? []) : [target];
   for (const part of source.isUnionType() ? ts.constituentTypes(source) : [source]) {
     if ((part.flags & ts.TypeFlags.Object) === 0) continue;
     for (const arm of targets) {
+      if (!holdsNativeDictionary(lowerer, arm, levels, search.native)) continue;
+      // The search ends at its first find, so a pair it has been through
+      // at this depth held none.
+      let asked = search.asked.get(part);
+      if (asked === undefined) search.asked.set(part, (asked = new Set()));
+      const pair = `${depth}\0${typeKey(arm)}`;
+      if (asked.has(pair)) continue;
+      asked.add(pair);
       if (arm.kind === "array") {
         if (!checker.isArrayType(part) && !checker.isTupleType(part)) continue;
         for (const element of checker.getTypeArguments(part as ts.TypeReference)) {
-          const inner = copiedDictionary(lowerer, element, arm.elem, depth + 1);
+          const inner = copiedDictionary(lowerer, element, arm.elem, depth + 1, search);
           if (inner !== null) return inner;
         }
         continue;
@@ -223,11 +250,12 @@ function copiedDictionary(
         if (shape.indexValue === undefined || shape.fields.length > 0) continue;
         if (lowerer.classDictionaryView(part))
           return { from: part, entries: value, to: arm, value: shape.indexValue, depth };
-        const inner = copiedDictionary(lowerer, value, shape.indexValue, depth + 1);
+        const inner = copiedDictionary(lowerer, value, shape.indexValue, depth + 1, search);
         if (inner !== null) return inner;
         continue;
       }
       for (const field of shape.fields) {
+        if (!holdsNativeDictionary(lowerer, field.type, levels - 1, search.native)) continue;
         const property = checker.getPropertyOfType(part, field.name);
         if (property === undefined) continue;
         const inner = copiedDictionary(
@@ -235,12 +263,51 @@ function copiedDictionary(
           checker.getTypeOfSymbol(property),
           field.type,
           depth + 1,
+          search,
         );
         if (inner !== null) return inner;
       }
     }
   }
   return null;
+}
+
+/** Whether a value of `target` is a native dictionary or holds one within
+ * `levels` steps. copiedDictionary finds a copy nowhere else, so it asks
+ * the checker nothing about a target without one: a union of many record
+ * types whose fields hold the union again (a syntax tree) would otherwise
+ * be compared member by member with itself at every step, and a program
+ * with one such conversion would not finish compiling. */
+function holdsNativeDictionary(
+  lowerer: Lowerer,
+  target: IrType,
+  levels: number,
+  known: Map<string, boolean>,
+): boolean {
+  if (levels < 0) return false;
+  if (target.kind !== "record" && target.kind !== "array" && target.kind !== "union") return false;
+  const key = `${levels}\0${typeKey(target)}`;
+  const answer = known.get(key);
+  if (answer !== undefined) return answer;
+  let found = false;
+  if (target.kind === "union") {
+    for (const arm of lowerer.unions.get(target.unionId)?.arms ?? [])
+      if (!found) found = holdsNativeDictionary(lowerer, arm, levels, known);
+  } else if (target.kind === "array") {
+    found = holdsNativeDictionary(lowerer, target.elem, levels - 1, known);
+  } else {
+    const shape = lowerer.shapes.get(target.shapeId);
+    if (shape !== undefined) {
+      found = shape.indexValue !== undefined && shape.fields.length === 0;
+      for (const field of shape.fields)
+        if (!found) found = holdsNativeDictionary(lowerer, field.type, levels - 1, known);
+      // A dictionary's entries are a step below it as well.
+      if (!found && shape.indexValue !== undefined)
+        found = holdsNativeDictionary(lowerer, shape.indexValue, levels - 1, known);
+    }
+  }
+  known.set(key, found);
+  return found;
 }
 
 /** A dictionary type as a message names it, by the layout of its entries. */
@@ -266,7 +333,13 @@ export function noteDictionaryCopy(
   if (converted.kind !== "dynCheck" && converted.kind !== "call") return;
   if (!holdsUntyped(lowerer, value.type) || !lowerer.hasDictionaryViews()) return;
   const source = ts.isExpression(node) ? withoutParenthesesTypeWrappers(node) : node;
-  const copied = copiedDictionary(lowerer, lowerer.typeOf(source), converted.type, 0);
+  const copied = copiedDictionary(
+    lowerer,
+    lowerer.typeOf(source),
+    converted.type,
+    0,
+    dictionarySearch(),
+  );
   if (copied === null) return;
   const entries = lowerer.mapTypeOf(copied.entries);
   lowerer.dictionaryCopies.push({
@@ -313,7 +386,13 @@ export function heldDictionaryCopy(
   for (const field of shape.fields) {
     const property = checker.getPropertyOfType(source, field.name);
     if (property === undefined) return null;
-    const copied = copiedDictionary(lowerer, checker.getTypeOfSymbol(property), field.type, 1);
+    const copied = copiedDictionary(
+      lowerer,
+      checker.getTypeOfSymbol(property),
+      field.type,
+      1,
+      dictionarySearch(),
+    );
     if (copied === null || !lowerer.dictionaryViewBySameness(copied.from)) continue;
     return {
       field: field.name,

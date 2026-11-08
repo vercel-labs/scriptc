@@ -29,6 +29,7 @@
  * instance back. */
 
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType, SrcLoc } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { readsArguments } from "./inline-arrays.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
 
@@ -81,12 +82,13 @@ const OBSERVE: ReadonlySet<IrExpr["kind"]> = new Set([
 
 /** Library calls that look at a dynamic value without handing its members
  * to other code, or give the instance back. */
-const READS: ReadonlySet<string> = new Set([
+const READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.fromDyn",
   "js.toDyn",
   "dyn.this",
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
   "dyn.getPrototypeForIdentity",
   "dyn.hasKey",
   "dyn.hasOwn",
@@ -109,6 +111,7 @@ const READS: ReadonlySet<string> = new Set([
   "js.bitwise",
   "js.compare",
   "js.increment",
+  "js.negate",
   "js.toF64",
   "js.toNumberCoerce",
   "js.toNumeric",
@@ -118,6 +121,7 @@ const READS: ReadonlySet<string> = new Set([
   "dyn.bitwise",
   "dyn.compare",
   "dyn.increment",
+  "dyn.negate",
   "dyn.numberConstructor",
   "dyn.stringConstructor",
   "dyn.toNumberCoerce",
@@ -134,12 +138,12 @@ const READS: ReadonlySet<string> = new Set([
 
 /** Library calls that read a member of a dynamic value by the key in their
  * second argument: the member is followed as the value's. */
-const KEYED_READS: ReadonlySet<string> = new Set(["dyn.bagGet", "dyn.arrAt"]);
+const KEYED_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["dyn.bagGet", "dyn.arrAt"]);
 
 /** Library calls that iterate their first argument: an array's elements, or
  * what an iterable class's own iterator gives. Their results are followed as
  * the argument's members. */
-const ITERATES: ReadonlySet<string> = new Set([
+const ITERATES: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.iterator",
   "dyn.iteratorStep",
   "dyn.iteratorStepDone",
@@ -149,7 +153,7 @@ const ITERATES: ReadonlySet<string> = new Set([
 
 /** Library calls that store their third argument into a member of their
  * first, keyed by their second. */
-const KEYED_WRITES: ReadonlySet<string> = new Set(["dyn.keySet", "dyn.keyDelete"]);
+const KEYED_WRITES: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["dyn.keySet", "dyn.keyDelete"]);
 
 /** The callee name of the iterator protocol's calls the lowering makes for
  * `for...of`, spreads and `yield*` over a dynamic iterable: the iterator's

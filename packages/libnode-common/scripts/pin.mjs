@@ -28,6 +28,7 @@ const BUILD_RECIPE = 1;
  *   tarballSha256: string,
  *   moduleVersion: number,
  *   configureFlags: string[],
+ *   linuxConfigureFlags?: string[],
  *   icu: "full" | "small",
  * }} LibnodePin
  */
@@ -35,6 +36,25 @@ const BUILD_RECIPE = 1;
 /** @returns {LibnodePin} */
 export function readPin() {
   return JSON.parse(readFileSync(join(commonRoot, "libnode.json"), "utf8"));
+}
+
+/**
+ * The configure flags one platform's libnode builds with.
+ *
+ * Linux packs add `--partly-static`, which appends `-static-libstdc++` and
+ * `-static-libgcc` to the link, so libnode.so carries its own C++ runtime.
+ * The build toolchain's libstdc++ is newer than the oldest host scriptc
+ * supports (the manylinux gcc-toolset's symbols are newer than the floor
+ * distro's), and a pack that kept that dependency would fail to load on a
+ * supported host. A statically linked library references no GLIBCXX/CXXABI
+ * version at all.
+ *
+ * @param {string} platform
+ * @param {LibnodePin} [pin]
+ */
+export function configureFlagsFor(platform, pin = readPin()) {
+  const extra = platformInfo(platform).os === "linux" ? (pin.linuxConfigureFlags ?? []) : [];
+  return [...pin.configureFlags, ...extra];
 }
 
 /** Pack platforms: the npm package suffix, the Node `os`/`arch`, and the
@@ -61,13 +81,58 @@ export function packFileNames(platform, moduleVersion) {
     : { libnode: `libnode.so.${moduleVersion}`, bridge: "libscr_node_bridge.so" };
 }
 
+/** Whether a pack manifest records the release identity the published
+ * package carries: the pack build fills in `package`, `version` and
+ * `target`, and the prepack verification (verify.mjs) checks them. The
+ * development pack CI assembles from dev-pack.json passes no such fields
+ * (it is never published, and it predates the pin it stands beside), so
+ * neither the identity nor the release-only verification applies to it. */
+export function isReleasePackManifest(manifest) {
+  return (
+    typeof manifest?.package === "string" &&
+    typeof manifest?.version === "string" &&
+    typeof manifest?.target === "string"
+  );
+}
+
+/** The package.json a development pack is packed with. Packing runs the
+ * prepack verification, which checks the release identity above; the
+ * development fallback has none, so its packing copy drops that one script.
+ * Everything the release package declares (name, version, files) stays. */
+export function withoutReleasePrepack(packageJson) {
+  const copy = { ...packageJson, scripts: { ...packageJson.scripts } };
+  delete copy.scripts.prepack;
+  return copy;
+}
+
+/** The manifest a development pack is packed with: the release identity the
+ * published pack records completed from the package (its name and version,
+ * and the platform its name ends in). A build that installs a pack checks
+ * that identity (packages/compiler/src/node-islands/libnode.ts), so the
+ * stand-in for the published package carries it; fields the manifest already
+ * records win. */
+export function withReleasePackIdentity(manifest, packageJson) {
+  const prefix = "@scriptc/libnode-";
+  return {
+    ...manifest,
+    package: manifest?.package ?? packageJson.name,
+    version: manifest?.version ?? packageJson.version,
+    target:
+      manifest?.target ??
+      (packageJson.name.startsWith(prefix)
+        ? packageJson.name.slice(prefix.length)
+        : `${manifest.platform}-${manifest.arch}`),
+  };
+}
+
 function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
 /** The cache key of the libnode build itself: the Node release, how it is
- * configured, the platform and toolchain. The bridge is not part of it; a
- * bridge change rebuilds only the bridge against the cached headers. */
+ * configured (including the platform's extra flags), the platform and
+ * toolchain. The bridge is not part of it; a bridge change rebuilds only the
+ * bridge against the cached headers. */
 export function libnodeCacheKey(platform, toolchain = process.env.SCRIPTC_LIBNODE_TOOLCHAIN) {
   const pin = readPin();
   platformInfo(platform);
@@ -76,7 +141,7 @@ export function libnodeCacheKey(platform, toolchain = process.env.SCRIPTC_LIBNOD
       recipe: BUILD_RECIPE,
       nodeVersion: pin.nodeVersion,
       tarballSha256: pin.tarballSha256,
-      configureFlags: pin.configureFlags,
+      configureFlags: configureFlagsFor(platform, pin),
       icu: pin.icu,
       platform,
       toolchain: toolchain ?? "default",

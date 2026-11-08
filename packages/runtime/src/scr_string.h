@@ -161,6 +161,14 @@ static inline size_t scr_bytes_ascii_span(const char *p, size_t n) {
 }
 
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
+/* The shared empty string: immortal, so retain and release are no-ops on
+ * it. Builders that may produce an empty field take this instead of
+ * allocating one per call. */
+ScrStr *scr_str_empty_value(void); /* +1 semantics, never freed */
+/* A +1 string for a byte span: an empty or one-character ASCII span shares
+ * immortal storage, a 2-4 byte span shares the per-thread tiny-span table,
+ * and anything longer is a fresh string. */
+ScrStr *scr_str_intern_span(const char *bytes, size_t len);
 /* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
  * malformed subsequences with U+FFFD. NULL with len == 0 is an empty span. */
 ScrStr *scr_str_from_utf8_lossy(const uint8_t *bytes, size_t len); /* +1 */
@@ -193,6 +201,41 @@ void scr_str_release(ScrStr *s); /* NULL-tolerant (uninitialized locals) */
  * string they were lent store scr_str_scratch_keep's copy instead. */
 static inline bool scr_str_is_scratch(const ScrStr *s) {
   return s->rc == SIZE_MAX && s->cap < s->len;
+}
+
+/* ── symbol registry keys (scr_events_emitter.c) ───────────────────────
+ * Node's listener table is keyed by property keys, so a symbol event name
+ * is a key too — one that matches by IDENTITY, never by bytes. Every
+ * emitter entry point takes a ScrStr name, so a symbol crosses that
+ * boundary as a ScrStr-SHAPED key: len is SIZE_MAX, which no string can
+ * have (SCR_STR_MAX_CAP bounds every real one), so byte comparisons never
+ * match it; data holds the ScrSym* the key stands for. The key is an
+ * ordinary refcounted allocation otherwise: retain and release treat it
+ * like any string, and ascii is set so release skips the character-index
+ * purge. The symbol it names is owned by the listener bucket that keeps
+ * the key, never by the key itself. */
+typedef struct ScrSym ScrSym;
+typedef struct ScrDyn ScrDyn; /* C11 repeat; full definition in scr_dyn.h */
+ScrStr *scr_str_symbol_key(ScrSym *sym); /* +1; borrows sym */
+/* The symbol unit's entry points for the emitter's symbol-keyed buckets
+ * (scr_symbol.c installs the table from a constructor): the emitter keeps
+ * the symbol alive for as long as it keys a bucket and lists it as a value
+ * in eventNames(). The pointer lives here, in the always-linked string
+ * unit, so neither the emitter nor a symbol-using program references the
+ * other unit's data: a program without symbols links scr_symbol.o and a
+ * program without emitters links no emitter object. */
+typedef struct ScrSymEventOps {
+  ScrSym *(*retain)(ScrSym *sym);
+  void (*release)(ScrSym *sym);
+  ScrDyn *(*box)(ScrSym *sym);       /* +1 checked-dynamic symbol value */
+  ScrStr *(*to_string)(ScrSym *sym); /* +1 "Symbol(desc)" */
+} ScrSymEventOps;
+extern const ScrSymEventOps *scr_sym_event_ops;
+static inline bool scr_str_is_symbol_key(const ScrStr *s) { return s->len == SIZE_MAX; }
+static inline ScrSym *scr_str_symbol_key_sym(const ScrStr *s) {
+  ScrSym *sym;
+  memcpy(&sym, s->data, sizeof sym);
+  return sym;
 }
 
 /* ── lone surrogates: canonical WTF-8 storage ─────────────────────────

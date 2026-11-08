@@ -82,7 +82,7 @@ static ScrDyn *scr_als_option(ScrDyn *options, const char *key, size_t key_len) 
     snprintf(message, sizeof message,
              "AsyncLocalStorage options whose class declares '%s' are not supported yet", key);
     scr_str_release(name);
-    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
     return NULL;
   }
   ScrDyn *key_value = scr_dyn_new_str(name);
@@ -827,6 +827,62 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
 #endif
 }
 
+/* ── new Promise(executor) of a checked-dynamic value ─────────────────
+ * The resolve function of such a promise runs the resolution procedure
+ * (scr_promise_resolve_dyn): a promise it is given is adopted. From then on
+ * the promise is resolved although it is still pending, so the executor's
+ * resolve, its reject and its throw no longer change it. Both closures
+ * share one box (scr_async.c's layout: caps[0] holds the promise); a
+ * resolution that leaves the promise pending points the box at a settled
+ * promise nobody observes, which every later call finds settled. */
+static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  if (!scr_promise_is_pending(p)) {
+    scr_dyn_release(value);
+  } else {
+    scr_promise_resolve_dyn(p, value); /* moves value in */
+    if (scr_promise_is_pending(p)) {
+      ScrPromise *resolved = scr_promise_new();
+      scr_promise_fulfill_void(resolved);
+      scr_box_set_ref(self->caps[0], resolved);
+    }
+  }
+  scr_promise_release(p);
+}
+
+/* The resolve closure of `p` (+1). `reject`, the promise's reject closure
+ * or NULL, is borrowed and joins the resolve closure's box. */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject) {
+  ScrClosure *resolve = scr_closure_new((void *)&scr_resolve_dyn_thunk, 1);
+  ScrBox *target = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(target, scr_promise_retain(p));
+  resolve->caps[0] = target;
+  if (reject != NULL) {
+    scr_box_release(reject->caps[0]);
+    reject->caps[0] = scr_box_retain(target);
+  }
+  return resolve;
+}
+
+/* Runs the executor of `p` with the closures scr_make_resolve_dyn paired
+ * (`reject` NULL for a one-parameter executor). Borrows `p` and `exec`; the
+ * closures move into the call. A throw rejects the promise unless the
+ * executor resolved it first. */
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject) {
+  ScrBox *target = scr_box_retain(resolve->caps[0]);
+  if (reject != NULL)
+    ((void (*)(ScrClosure *, ScrClosure *, ScrClosure *))exec->fn)(exec, resolve, reject);
+  else ((void (*)(ScrClosure *, ScrClosure *))exec->fn)(exec, resolve);
+  if (scr_exc_pending()) {
+    ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
+    if (now == p) scr_promise_reject_pending(p);
+    else scr_exc_clear();
+    scr_promise_release(now);
+  }
+  scr_box_release(target);
+}
+
 /* `await v` where v is a CHECKED-DYNAMIC value: a dyn promise adopts
  * (the boxed promise awaits — rejections re-throw); every other kind is
  * JS's await-of-a-non-thenable — one microtask hop, the value itself
@@ -872,6 +928,14 @@ ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
 static SCR_TL ScrDyn **scr_warn_listeners = NULL;
 static SCR_TL size_t scr_nwarn = 0, scr_warn_cap = 0;
 
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
+
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function (defined below). */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+#endif
+
 static void scr_warn_teardown(void) {
   for (size_t i = 0; i < scr_nwarn; i++) scr_dyn_release(scr_warn_listeners[i]);
   free(scr_warn_listeners);
@@ -886,6 +950,7 @@ void scr_process_on_warning(ScrDyn *fn) {
     return;
   }
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
     scr_warn_listeners = realloc(scr_warn_listeners, scr_warn_cap * sizeof *scr_warn_listeners);
@@ -1069,13 +1134,39 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+/* The EventEmitter leak warning: MaxListenersExceededWarning with the
+ * `emitter`, `type` and `count` own properties Node's _addListener sets,
+ * in that order. `type` is the event name VALUE (a symbol stays a symbol),
+ * and `emitter` is an identity-bearing value of the emitter, so a listener
+ * comparing it with the emitter it registered on sees one object. Borrows
+ * every argument. */
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("MaxListenersExceededWarning", sizeof "MaxListenersExceededWarning" - 1);
+  e->name_present = true;
+  ScrDyn *w = scr_dyn_from_error(e);
+  /* The values move in (scr_error_set_prop takes the reference). */
+  scr_error_set_prop(e, "emitter", 7, scr_dyn_retain(emitter));
+  scr_error_set_prop(e, "type", 4, scr_dyn_retain(type));
+  scr_error_set_prop(e, "count", 5, scr_dyn_new_num(count));
 #ifdef SCR_WARNING_REPLACE
-/* The program's process.emitWarning replacement, or NULL while the
- * property holds Node's own function. Compiled only into the
- * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
- * link: every other executable keeps the plain warning paths. */
-static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+  if (scr_emit_warning_override != NULL) {
+    /* _addListener calls process.emitWarning(warning), so a replacement
+     * receives the warning object itself. */
+    ScrDyn *r = scr_dyn_call(scr_emit_warning_override, &w, 1, "process.emitWarning");
+    scr_dyn_release(r);
+  } else
+#endif
+    scr_warning_dispatch(w);
+  scr_dyn_release(w);
+  scr_error_release(e);
+}
 
+#ifdef SCR_WARNING_REPLACE
+/* Compiled only into the SCR_WARNING_REPLACE variant, which programs
+ * assigning process.emitWarning link: every other executable keeps the
+ * plain warning paths. */
 static void scr_emit_warning_override_teardown(void) {
   scr_dyn_release(scr_emit_warning_override);
   scr_emit_warning_override = NULL;
@@ -1089,6 +1180,7 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
   /* Units that report their own warnings without a listener route them
    * here once a replacement exists. */
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
 }
 
 /* A runtime-built warning while a replacement is installed: Node's modules
@@ -1196,6 +1288,24 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+static void scr_timer_this_fire(ScrClosure *self) {
+  ScrClosure *cb = scr_box_get_ref(self->caps[0]);
+  double handle = scr_timer_running_handle();
+  ScrDyn *receiver = handle != 0 ? scr_dyn_new_num(handle) : scr_dyn_undefined();
+  scr_dyn_this_push_dyn_once(receiver);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  scr_closure_release(cb);
+}
+
+ScrClosure *scr_timer_this_callback(ScrClosure *cb) {
+  ScrClosure *bound = scr_closure_new((void *)scr_timer_this_fire, 1);
+  bound->caps[0] = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bound->caps[0], scr_closure_retain(cb));
+  return bound;
+}
+
 void scr_buffer_deprecation(void) {
   /* Node's showFlaggedDeprecation: after 10000 calls the check stops. */
   if (scr_buffer_ctor_warned || ++scr_buffer_ctor_checks > 10000) return;
@@ -1210,6 +1320,34 @@ void scr_buffer_deprecation(void) {
   scr_str_release(code);
   scr_str_release(message);
   scr_buffer_ctor_warned = true;
+}
+
+/* SlowBuffer(size): Node 24's deprecate() wrapper reports DEP0030 on the
+ * first call, then allocUnsafeSlow validates the size (a number,
+ * ERR_INVALID_ARG_TYPE otherwise; ERR_OUT_OF_RANGE past [0, kMaxLength])
+ * and allocates a Buffer outside the pool. +1, or NULL with the exception
+ * pending. */
+static SCR_TL bool scr_slow_buffer_warned = false;
+
+ScrBytes *scr_buffer_slow(const ScrDyn *size) {
+  if (!scr_slow_buffer_warned) {
+    scr_slow_buffer_warned = true;
+    static const char text[] = "SlowBuffer() is deprecated. Please use Buffer.allocUnsafeSlow()";
+    ScrStr *message = scr_str_new(text, sizeof text - 1);
+    ScrStr *code = scr_str_new("DEP0030", 7);
+    ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+    scr_warning_emit_deferred(w);
+    scr_dyn_release(w);
+    scr_str_release(code);
+    scr_str_release(message);
+  }
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_buffer_alloc_unsafe_slow(size->v.num);
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
 }
 
 /* The console members' warnings. Node's emitWarning emits on
@@ -1592,7 +1730,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * when the read threw (the exception stays pending). Program class
  * instances read through `reader`, the compiled property dispatch (no
  * reader: their own fields only). */
-static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
+ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
       value->kind != SCR_DYN_TYPED_REF)
     return NULL;
@@ -1627,7 +1765,7 @@ __attribute__((always_inline)) static inline void scr_dyn_resolve_value(ScrPromi
     scr_promise_resolve_dyn(target, scr_dyn_retain(value));
     return;
   }
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(target);
   } else if (then) {
@@ -1721,7 +1859,7 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
 static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
-  ScrDyn *then = scr_dyn_then_of(value, reader);
+  ScrDyn *then = scr_dyn_thenable_function(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {

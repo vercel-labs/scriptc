@@ -1,5 +1,5 @@
 /* Intl over ICU4C (packages/runtime/vendor/icu, version-pinned to the ICU
- * Node 24.22.0 bundles). Linked only into programs whose IR selects the
+ * Node 24.22.1 bundles). Linked only into programs whose IR selects the
  * `icu` runtime feature, so an Intl-free binary carries none of it.
  *
  * What lowers here (the first slice):
@@ -477,7 +477,7 @@ static ScrDyn *scr_icu_word_segmenter_invoke(void *ptr, ScrDyn *self, const char
   }
   if (strcmp(method, "resolvedOptions") == 0) {
     static const char message[] = "Intl.Segmenter locale negotiation is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
   ScrJsonBuf message;
@@ -514,7 +514,7 @@ static ScrDyn *scr_icu_segmenter_get(void *ptr, const char *key, size_t len) {
   if ((len == 7 && memcmp(key, "segment", len) == 0) ||
       (len == 15 && memcmp(key, "resolvedOptions", len) == 0)) {
     static const char message[] = "stored Intl.Segmenter methods are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   }
   return NULL;
 }
@@ -523,7 +523,7 @@ static ScrDyn *scr_icu_segments_get(void *ptr, const char *key, size_t len) {
   (void)ptr;
   if (len == 10 && memcmp(key, "containing", len) == 0) {
     static const char message[] = "stored Intl.Segmenter methods are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   }
   return NULL;
 }

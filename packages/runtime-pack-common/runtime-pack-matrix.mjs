@@ -60,11 +60,20 @@ export const BASE_RUNTIME_SOURCES = [
 ];
 
 export const OPTIONAL_RUNTIME_SOURCES = [
+  // The call-time parameter bind of a generator (fn.generator.bindAtCall).
+  ["scr_gen_bind.c", "genBind"],
+  // The receiver a generator function's body reads (dyn.generatorThis).
+  ["scr_gen_receiver.c", "genReceiver"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
   // mode form is the SCR_FS_FLAGS build of scr_fs_cp.c.
   ["scr_fs_flags.c", "fsFlags"],
+  // existsSync over a path value that may not be a string (the DEP0187
+  // fallback), apart from scr_lib.c's typed form.
+  ["scr_fs_exists_dyn.c", "fsExistsValue"],
+  // The BYTE-data spellings of the option write and fs.promises.writeFile.
+  ["scr_fs_bytes_write.c", "fsBytesWrites"],
   // string_decoder's checked-dynamic chunk forms, apart from scr_bytes.c's
   // typed twins so a typed program keeps that object byte for byte.
   ["scr_bytes_strdec_dyn.c", "strdecDyn"],
@@ -76,7 +85,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
-  ["scr_assert.c", any("assert", "regex", "symbol")],
+  // The worker unit's SHARE_ENV symbol reaches the symbol unit
+  // (scr_worker_events.c), which assembles symbol equality messages here.
+  ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
@@ -85,15 +96,23 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
-  // Number.prototype and Boolean.prototype read as values in JavaScript.
-  ["scr_dyn_builtin_prototype.c", all("builtinPrototypeValue", "dynInvoke")],
+  // A builtin prototype method read as a value in JavaScript (String trim,
+  // RegExp exec/test/toString).
+  ["scr_dyn_builtin_methods.c", all("builtinMethodValue", "dynInvoke")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
   ["scr_builtin_values.c", "builtinValues"],
+  // An untyped path of a synchronous fs function in a JavaScript source; a
+  // unit of its own so no other executable changes.
+  ["scr_fs_path_value.c", "fsPathValue"],
   // A standard library prototype object read as a value in JavaScript
   // (`Date.prototype`); it calls the invoke unit's interned method table.
   ["scr_dyn_stdlib_prototype.c", all("stdlibPrototypeValue", "dynInvoke")],
+  // DataView.prototype as a value in JavaScript (`DataView.prototype`,
+  // its getter/setter family, its see-through accessors and its
+  // [[@@toStringTag]]); it builds that object on the dynamic object model.
+  ["scr_data_view_proto.c", all("dataViewPrototypeValue", "dynInvoke")],
   // createRequire's computed require and require.resolve.
   ["scr_require.c", "computedRequire"],
   ["scr_dc.c", "dc"],
@@ -101,11 +120,21 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // programs whose IR has dynamic-tier operations.
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
+  // Mutable ArrayBuffers (t262-dc C1/C2): the views registry that recomputes
+  // every view's length when a buffer resizes, grows or detaches, and the
+  // operations themselves. A JavaScript source with the `mutableBuffers`
+  // fact arms it at the top of %main (arrayBuffer.armMutable); every other
+  // program keeps the base units' hooks NULL and links no registry.
+  ["scr_js_buffers.c", "mutableBuffers"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
+    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
   ],
+  // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
+  // the specification's algorithms over the checked-dynamic tier. Its
+  // feature also selects dynInvoke and dynAsync, whose units it calls.
+  ["scr_js_promise_generic.c", "promiseGeneric"],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -118,10 +147,13 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
   // Primitive wrapper objects.
   ["scr_js_wrapper.c", "primitiveWrapper"],
+  // %Iterator% and %Iterator.prototype% as values.
+  ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  ["scr_zstd.c", all("zlib", "zstd")],
   // Intl over ICU (scr_intl.c): the default-locale number/date formats and
   // word segmentation, over the packed ICU archive and its data file.
   // Every engine-free Intl form (the en-US fast paths, default grapheme
@@ -140,7 +172,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
-  ["scr_symbol.c", "symbol"],
+  // Worker programs link the symbol unit even without symbols of their own:
+  // the Worker env option compares against worker_threads.SHARE_ENV.
+  ["scr_symbol.c", any("symbol", "workers")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit
@@ -182,13 +216,30 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Object.isExtensible and Object.isSealed of a value typed dynamically; a
   // unit of its own so scr_json.c keeps its layout for every other program.
   ["scr_dyn_integrity.c", "dynIntegrityQueries"],
+  // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
+  // scr_json.c keeps its layout for every program that never reflects.
+  ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // `delete` of a key a record's type does not declare, removed from the
+  // record's kept source; a unit of its own so scr_json.c keeps its layout
+  // for every other program.
+  ["scr_record_source_delete.c", "recordSourceDelete"],
+  // Record views of types whose values may also be frozen; a unit of its own
+  // so scr_json.c keeps its layout for every program without one.
+  ["scr_record_view_frozen.c", "recordViewFrozen"],
   // ChildProcess listener removal (off/removeListener) and signalCode; a
   // unit of its own so scr_child.c's layout stays put for every program.
   ["scr_child_lifecycle.c", "childLifecycle"],
+  // The spawnSync capture Buffers; a unit of its own for the same reason.
+  ["scr_child_capture.c", "spawnCaptureBytes"],
   ["scr_decl_adopt.c", "declAdopt"],
   ["scr_type_origin.c", "typeOrigins"],
+  // The report of failed checked conversions; dev executables link it.
+  ["scr_conversion_trace.c", "conversionTrace"],
   // for await over checked-dynamic values.
   ["scr_dyn_for_await.c", "dynForAwait"],
+  // Set.prototype method values, the ES2025 Set compositions and
+  // Object.getPrototypeOf of a Set.
+  ["scr_dyn_collections.c", "dynCollections"],
   ["scr_dyn_for_await_stream.c", all("dynForAwait", "stream", "dynAsync")],
   // fs.ReadStream / fs.WriteStream reference only the stream unit and base units.
   ["scr_fs_stream.c", "stream"],
@@ -235,109 +286,112 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // A native AbortSignal's twin in an island: programs with islands and
+  // native signals (the signal unit or the fetch unit).
+  ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The dynamic global object's answer for the Node globals the native runtime
+  // does not implement (host-globals.ts): the compiler hands over its derived
+  // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
+  // instead of answering undefined.
+  ["scr_global_host_absent.c", "hostAbsentGlobals"],
 ];
+
+/** One SCR_JS_OBJECT_MODEL twin of each variant of a unit the JavaScript
+ * object model features reach (t262-da §J). Every such feature is inert
+ * until its own runtime state exists, so one build carries all of them. */
+function withJsObjectModel(variants) {
+  for (const { id, when, defines } of variants.slice()) {
+    const suffix = id === "default" ? "" : `-${id}`;
+    variants.push({
+      id: `js-om${suffix}`,
+      when: { ...when, jsObjectModel: true },
+      defines: [...defines, "SCR_JS_OBJECT_MODEL"],
+    });
+  }
+  return variants;
+}
 
 export function variantsFor(source) {
   const variants = [{ id: "default", when: {}, defines: [] }];
-  // Programs with dynamic-tier code link the build that exports the
-  // primitives the tier's inline caches use (two-tier design S4); every
-  // other program links the ordinary object, byte for byte.
+  // scr_json.c builds one object per flavor (and workers mode): its paths
+  // for Node island handles and handle classes call through tables that
+  // scr_node_island_handle.c and scr_dyn_handle_class.c install when a
+  // program links them, its dynamic-tier primitives are always defined, and
+  // its view slot answers NULL for a field the viewed record does not
+  // declare (a partial record assertion, record-views.ts), so the emitted
+  // guard, clone helper and presence test stop with the program's message.
+  // A full view holds an offset for every target field, so the NULL case is
+  // unreachable in a program without a partial assertion.
   if (source === "scr_json.c") {
-    variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
-    // Dynamic operations on Node island handles (typeof, calls, `in`,
-    // delete, Object.keys) route to scr_node_island_handle.c.
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "dyn-tier-node-island",
-      when: { dynTier: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_NODE_ISLANDS"],
-    });
-    // Programs with web streams: instanceof over their classes' handles.
-    variants.push({
-      id: "handle-classes",
-      when: { webStreams: true },
-      defines: ["SCR_HANDLE_CLASSES"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes",
-      when: { dynTier: true, webStreams: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES"],
-    });
-    // Both: the variant with the most conditions is chosen, so programs
-    // with web streams and Node islands need the builds that define both.
-    variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "dyn-tier-handle-classes-node-island",
-      when: { dynTier: true, webStreams: true, nodeIsland: true },
-      defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-    // A program with a partial record assertion (record-views.ts) links the
-    // build whose view slot answers NULL for a field the viewed record does
-    // not declare, so the emitted guard, clone helper and presence test can
-    // stop with the program's message instead of reading a bogus slot. The
-    // selector takes the variant with the most conditions, so each of the
-    // builds above needs its counterpart; every other program keeps the
-    // default object, byte for byte.
-    for (const { id, when, defines } of variants.slice()) {
-      const suffix = id === "default" ? "" : `-${id}`;
-      variants.push({
-        id: `record-view-partial${suffix}`,
-        when: { ...when, recordViewPartial: true },
-        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
-      });
-    }
+    // The JavaScript object model build (t262-da §J): every runtime feature
+    // reached only from JavaScript-source facts — builtin intrinsics, array
+    // attributes, BigInt views, handle property tables, buffer views —
+    // shares SCR_JS_OBJECT_MODEL instead of adding a variant column of its
+    // own. jsObjectModel implies dynTier, so such a program links the
+    // dynamic tier's units as well, and each feature's code is inert until
+    // its own runtime state exists. #2701 made this unit one
+    // build per flavor, so every variant here already carries the dynamic
+    // tier's primitives and each one gets its object model twin. Every other
+    // program keeps the default object, byte for byte.
+    withJsObjectModel(variants);
   }
-  // util.inspect and instanceof of Node island handles; Node's report for
-  // an uncaught island error.
-  if (
-    source === "scr_inspect.c" ||
-    source === "scr_dyn_builtin_class.c" ||
-    source === "scr_exception.c"
-  ) {
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
-    });
-  }
+  // util.inspect and instanceof of Node island handles, Node's report for
+  // an uncaught island error and an island error's constructor need no
+  // build of their own: scr_inspect.c, scr_dyn_builtin_class.c,
+  // scr_exception.c and scr_json.c reach the island units through the
+  // table scr_node_island_handle.c installs (ScrNiDynOps), which is NULL in
+  // a program without them.
   if (source === "scr_bytes.c") {
     variants.push({
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
     });
+    // The BigInt element kinds and their element accessors are part of the
+    // JavaScript object model build (t262-da §J): a BigInt view's program
+    // has jsObjectModel, so it selects the object model build beside the
+    // TextDecoder legacy one when it has both. Every other program keeps the
+    // default object, byte for byte.
+    withJsObjectModel(variants);
   }
-  // fs.watchFile's poll needs a path stat that reports the errno (its failed
-  // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,
-  // so the two entry points live in a build of that unit only programs that
-  // poll link; every other program keeps the default object, byte for byte.
-  if (source === "scr_lib.c") {
-    variants.push({
-      id: "fs-watch-file",
-      when: { watchFile: true },
-      defines: ["SCR_FS_WATCH_FILE"],
-    });
-    // Node answers a Buffer from a file read, and its brand is observable
-    // (Buffer.isBuffer, instanceof, inspect): a program that can observe it
-    // links the build that sets it. Combined with every variant above so a
-    // program that also polls keeps scr_watch_file's stat entry points
-    // (selectVariant takes the variant with the most conditions).
-    for (const { id, when, defines } of variants.slice()) {
-      variants.push({
-        id: `${id}-fs-buffer-brand`,
-        when: { ...when, fsBufferBrand: true },
-        defines: [...defines, "SCR_FS_BUFFER_BRAND"],
-      });
-    }
+  // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
+  // object model build: its tables and the ScrJsBufferOps contract it fills
+  // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
+  // and its default object compiles empty. A program with the fact links
+  // the unit at all (OPTIONAL_RUNTIME_SOURCES).
+  if (source === "scr_js_buffers.c") withJsObjectModel(variants);
+  // A dynamic store to the `__proto__` member is Object.prototype's setter,
+  // never a field the receiver's shape grows (scr_json.c answers it), so the
+  // shape store probe declines it. Only the object model build models that
+  // accessor: every other program keeps the default object, byte for byte.
+  if (source === "scr_js_object.c") withJsObjectModel(variants);
+  // util.inspect prints a BigInt typed array by reading its elements as
+  // BigInts, whichever build of the unit the program selects.
+  if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
+    withJsObjectModel(variants);
+  }
+  // console.table reads the cells of a row's typed array, so a BigInt view
+  // needs the element accessor that answers BigInts. The default object keeps
+  // the numeric read, byte for byte.
+  if (source === "scr_console_native.c") {
+    withJsObjectModel(variants);
+  }
+  // DataView.prototype's byteLength and byteOffset accessors read through
+  // the buffer registry in the object model build, where a view over a
+  // resized or detached buffer throws, and the array-like algorithms read an
+  // array's length, which that build keeps apart from its dense prefix
+  // (scr_dyn.h's scr_dyn_arr_length). Both units test the define, so both
+  // need its build: without one a program with the object model linked the
+  // arm written for programs without it.
+  if (source === "scr_data_view_proto.c" || source === "scr_dyn_array_like.c") {
+    withJsObjectModel(variants);
+  }
+  // The integrity queries answer from the handle property table when the
+  // program's JavaScript object model build carries it (a program whose
+  // JavaScript adds own properties to handles).
+  if (source === "scr_dyn_integrity.c") {
+    withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
   // warning paths; every other program keeps the default object.
@@ -391,9 +445,9 @@ export function variantsFor(source) {
     });
   }
   // Programs with web streams link the promise unit with native promise
-  // reactions, the builtin-class unit whose instanceof knows their classes
-  // (as scr_json.c's does above), and the fetch unit that takes their
-  // streams as bodies; every other program keeps the default objects.
+  // reactions, the builtin-class unit whose instanceof knows their classes,
+  // and the fetch unit that takes their streams as bodies; every other
+  // program keeps the default objects.
   if (source === "scr_async.c") {
     variants.push({
       id: "native-reactions",
@@ -416,103 +470,20 @@ export function variantsFor(source) {
       defines: ["SCR_HANDLE_CLASSES"],
     });
   }
-  // instanceof over both web stream and Node island handles.
-  if (source === "scr_dyn_builtin_class.c") {
+  // A Blob or File request body sends the blob's bytes and type, as Node
+  // does; programs that build no Blob or File keep the default fetch unit
+  // byte for byte, and the combination with web streams has its own build.
+  if (source === "scr_fetch.c") {
     variants.push({
-      id: "handle-classes-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
-    });
-  }
-  // stdin setEncoding, string data listeners and stdio 'resize' events.
-  if (source === "scr_events.c") {
-    variants.push({
-      id: "stdio-extended",
-      when: { stdioExtended: true },
-      defines: ["SCR_STDIO_EXTENDED"],
-    });
-    // Island listeners for signals and 'exit' join the registries.
-    variants.push({
-      id: "node-island",
-      when: { nodeIsland: true },
-      defines: ["SCR_NODE_ISLANDS"],
+      id: "web-bodies",
+      when: { webBodies: true },
+      defines: ["SCR_WEB_BODIES"],
     });
     variants.push({
-      id: "stdio-extended-node-island",
-      when: { stdioExtended: true, nodeIsland: true },
-      defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
+      id: "handle-classes-web-bodies",
+      when: { webStreams: true, webBodies: true },
+      defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
     });
-    // processExtras adds the prepend registrations and stdin's raw-mode
-    // flag; the combinations above then need their own builds, since the
-    // variant with the most conditions is the one selected.
-    variants.push({
-      id: "process-extras",
-      when: { processExtras: true },
-      defines: ["SCR_PROCESS_EXTRAS"],
-    });
-    variants.push({
-      id: "process-extras-stdio-extended",
-      when: { processExtras: true, stdioExtended: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED"],
-    });
-    variants.push({
-      id: "process-extras-node-island",
-      when: { processExtras: true, nodeIsland: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"],
-    });
-    variants.push({
-      id: "process-extras-stdio-extended-node-island",
-      when: { processExtras: true, stdioExtended: true, nodeIsland: true },
-      defines: ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
-    });
-    // The typed process output write slot (the write method as a value, its
-    // replacement, run-time-typed chunks): the shared write body, the
-    // dynamic-chunk entry point and Node's anonymous write function. Every
-    // other program keeps the default object, byte for byte.
-    for (const [id, when, defines] of [
-      ["stdio-write-slot", { stdioWriteSlot: true }, ["SCR_STDIO_WRITE_SLOT"]],
-      [
-        "stdio-extended-write-slot",
-        { stdioExtended: true, stdioWriteSlot: true },
-        ["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "node-island-write-slot",
-        { nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "stdio-extended-node-island-write-slot",
-        { stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-    ])
-      variants.push({ id, when, defines });
-    // A program with both the process extras and the write slot needs both
-    // defines in one build.
-    for (const [id, when, defines] of [
-      [
-        "process-extras-write-slot",
-        { processExtras: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-stdio-extended-write-slot",
-        { processExtras: true, stdioExtended: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-node-island-write-slot",
-        { processExtras: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-      [
-        "process-extras-stdio-extended-node-island-write-slot",
-        { processExtras: true, stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
-        ["SCR_PROCESS_EXTRAS", "SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
-      ],
-    ])
-      variants.push({ id, when, defines });
   }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.
@@ -522,6 +493,30 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A checked-dynamic promise whose executor takes a reject parameter
+    // builds its reject closure with scr_make_reject_dyn, the reason being
+    // the program's own value; every other program keeps the default
+    // object, byte for byte. The selector takes the variant with the most
+    // conditions, so each build above needs its counterpart.
+    for (const [id, when, defines] of [
+      ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
+      [
+        "native-reactions-promise-reject-dyn",
+        { webStreams: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "node-island-promise-reject-dyn",
+        { nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "native-reactions-node-island-promise-reject-dyn",
+        { webStreams: true, nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default
@@ -542,6 +537,49 @@ export function variantsFor(source) {
       defines: ["SCR_YIN"],
     });
   }
+  // A program that reads the global object through a computed key or asks
+  // `… in globalThis` arms the runtime check for the Node globals the native
+  // runtime does not implement (scr_global_host_absent.c). Every other
+  // program keeps the default object, byte for byte.
+  if (source === "scr_node_builtin.c") {
+    variants.push({
+      id: "host-absent-globals",
+      when: { hostAbsentGlobals: true },
+      defines: ["SCR_GLOBAL_HOST_ABSENT"],
+    });
+  }
+  // The spawnSync result's `.error` property: the build that keeps the spawn
+  // errno and argv on the result and stamps Node's errnoException fields
+  // (errno, syscall, path, spawnargs). A program that never reads `.error`
+  // keeps the default object and the result container exactly as they were.
+  if (source === "scr_child.c") {
+    variants.push({
+      id: "err-fields",
+      when: { childErrorFields: true },
+      defines: ["SCR_CHILD_ERR_FIELDS"],
+    });
+    // A program that passes the extended options AND reads `.error` needs
+    // both builds in one object: the extended core answers the result the
+    // error fields are stamped from, so a build with the options alone
+    // would drop them.
+    variants.push({
+      id: "cp-options-err-fields",
+      when: { childOptionExt: true, childErrorFields: true },
+      defines: ["SCR_CHILD_CP_OPTIONS", "SCR_CHILD_ERR_FIELDS"],
+    });
+  }
+  // A static executable cannot load NSS modules, so the os unit's passwd
+  // fallback (os.homedir() with HOME unset, and os.userInfo()) reads
+  // /etc/passwd directly in that build; every dynamically linked build
+  // keeps the unchanged getpwuid_r object. staticLink is the link
+  // plan's fact (link-plan.ts), not a program fact.
+  if (source === "scr_lib.c") {
+    variants.push({
+      id: "static-passwd",
+      when: { staticLink: true },
+      defines: ["SCR_STATIC_PASSWD"],
+    });
+  }
   return variants;
 }
 
@@ -560,6 +598,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];

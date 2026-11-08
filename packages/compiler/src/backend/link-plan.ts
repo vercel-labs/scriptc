@@ -33,6 +33,9 @@ export interface NativeLinkPlan {
   staticLink?: boolean;
   /** Program code large enough for text on huge pages (huge-text.ts). */
   hugeText?: boolean;
+  /** The program's start-up functions by symbol, first-reach order: the linker
+   * places their code first (function-layout.ts). */
+  startupSymbols?: readonly string[];
 }
 
 export async function createNativeLinkPlan(options: {
@@ -50,13 +53,21 @@ export async function createNativeLinkPlan(options: {
   profileLayout?: boolean;
   /** `false` keeps 4 KiB segment alignment for large program code. */
   hugeText?: boolean;
+  startupSymbols?: readonly string[];
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
 }): Promise<NativeLinkPlan> {
   if (options.ffi?.frameworks?.length && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
-  const runtimePack = await loadRuntimePack(options);
+  // A static executable cannot load NSS modules, so the pack selects the
+  // /etc/passwd build of the os unit for it (SCR_STATIC_PASSWD); every
+  // dynamically linked build keeps the getpwuid_r build.
+  const runtimePack = await loadRuntimePack({
+    ...options,
+    features:
+      options.staticLink === true ? { ...options.features, staticLink: true } : options.features,
+  });
   const hugeText =
     options.hugeText !== false &&
     hugeTextProgram(options.target, [options.programObject, ...(options.programPartitions ?? [])]);
@@ -94,5 +105,8 @@ export async function createNativeLinkPlan(options: {
     runtimePack,
     ...(options.staticLink === true ? { staticLink: true } : {}),
     ...(hugeText ? { hugeText: true } : {}),
+    ...(options.startupSymbols === undefined || options.startupSymbols.length === 0
+      ? {}
+      : { startupSymbols: [...options.startupSymbols] }),
   };
 }

@@ -5,9 +5,11 @@ import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
 import { resolveImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
-import { isDeclaredInAmbientNamespace } from "../type-mapper.js";
+import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
+import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   arrayOf,
   BOOL,
@@ -43,11 +45,13 @@ import {
   type StartupCrash,
 } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 export function refuseUnsupportedApi(
   lowerer: Lowerer,
@@ -82,25 +86,8 @@ function requestInitLiteralKey(lowerer: Lowerer, prop: ts.ObjectLiteralElementLi
   return null;
 }
 
-/** Unwrap assertions and parentheses when checking RequestInit values.
- * Computed runtime keys and non-literal objects are also validated by the
- * native runtime. */
-function requestInitValueExpr(expr: ts.Expression): ts.Expression {
-  let current = expr;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isTypeAssertion(current) ||
-    ts.isNonNullExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
 function requestInitStaticBoolean(lowerer: Lowerer, value: ts.Expression): boolean | null {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (expr.kind === ts.SyntaxKind.FalseKeyword) return false;
   const text = lowerer.checker.typeToString(lowerer.typeOf(expr));
@@ -117,9 +104,9 @@ function requestInitPropMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
   }
   const symbols = new Set<ts.Symbol>();
   const noteBase = (target: ts.Expression): void => {
-    let base = requestInitValueExpr(target);
+    let base = withoutParenthesesTypeWrappers(target);
     while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base)) {
-      base = requestInitValueExpr(base.expression);
+      base = withoutParenthesesTypeWrappers(base.expression);
     }
     if (!ts.isIdentifier(base)) return;
     try {
@@ -162,7 +149,7 @@ function requestInitConstBacked(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     const selected = requestInitStaticBoolean(lowerer, expr.condition);
@@ -212,7 +199,7 @@ function visitRequestInitConstSelectedValues(
   seen: Set<ts.Symbol>,
   visit: (value: ts.Expression) => void,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (selector.kind === "property" && ts.isObjectLiteralExpression(expr)) {
     // Last contributor wins. A definite later property (including one from
     // a statically traced spread) hides earlier values exactly as it does at
@@ -426,6 +413,26 @@ function fenceRequestInitProperty(
   }
 }
 
+/** Whether a RequestInit body value is certainly a FormData: every
+ * non-nullish arm of its type is the stdlib FormData, whose multipart
+ * encoding the native fetch does not implement. Blob and File arms are
+ * BodyInit's supported forms, and a union that also holds a string or bytes
+ * arm stays compilable because the value at run time may be one of those. */
+function definiteFormDataBody(lowerer: Lowerer, type: ts.Type): boolean {
+  const base = lowerer.checker.getBaseTypeOfLiteralType(type);
+  const arms = base.isUnionType() ? ts.constituentTypes(base) : [base];
+  let seen = false;
+  for (const arm of arms) {
+    if ((arm.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
+      continue;
+    const sym = arm.getAliasSymbol() ?? arm.getSymbol();
+    if (sym === undefined || ts.symbolName(sym) !== "FormData" || !lowerer.isStdlibSymbol(sym))
+      return false;
+    seen = true;
+  }
+  return seen;
+}
+
 function fenceRequestInitObject(
   lowerer: Lowerer,
   init: ts.ObjectLiteralExpression,
@@ -442,19 +449,33 @@ function fenceRequestInitObject(
   );
   const shadowed = new Set<string>();
   const fence = (row: (typeof rows)[number], value: ts.Expression | null, blame: ts.Node): void => {
-    if (row.status === "static") return;
+    const memberSym = (): ts.Symbol | undefined =>
+      contextualArms
+        .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
+        .find((member) => member !== undefined);
     if (value !== null) {
-      const type = lowerer.typeOf(requestInitValueExpr(value));
+      const type = lowerer.typeOf(withoutParenthesesTypeWrappers(value));
       if (
-        ts.isVoidExpression(requestInitValueExpr(value)) ||
+        ts.isVoidExpression(withoutParenthesesTypeWrappers(value)) ||
         (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
       ) {
         return;
       }
+      // Node sends a FormData body as a multipart encoding. The native fetch
+      // has none, and its USVString fallback would send "[object FormData]"
+      // under text/plain, a silent divergence: refuse the type by name.
+      // Blob and File bodies send their bytes and type, as Node does.
+      if (row.member === "body" && definiteFormDataBody(lowerer, type)) {
+        lowerer.noLowering(
+          "RequestInit body 'FormData' in a static build",
+          blame,
+          "the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement",
+          memberSym(),
+        );
+      }
     }
-    const sym = contextualArms
-      .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
-      .find((member) => member !== undefined);
+    if (row.status === "static") return;
+    const sym = memberSym();
     lowerer.noLowering(
       `RequestInit option '${row.member}'${" in a static build"}`,
       blame,
@@ -509,7 +530,7 @@ function fenceRequestInitValueInner(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): void {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) {
     fenceRequestInitObject(lowerer, expr, seen);
     return;
@@ -1201,7 +1222,7 @@ export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): vo
     node.parent.initializer
       ? node.parent.initializer
       : node;
-  const value = ts.isExpression(source) ? requestInitValueExpr(source) : source;
+  const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
   const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
   lowerer.noLowering(
@@ -1609,13 +1630,22 @@ export function lowerStaticFetchCompanionCall(
           source.type.elem,
           (id) => lowerer.shapes.get(id),
           (id) => lowerer.unions.get(id),
-        )) ||
-      source.type.kind === "dyn";
+        ));
     if (!preserve) {
-      lowerer.noLowering(
-        `ReadableStream.from() over ${lowerer.checker.typeToString(lowerer.typeOf(call.arguments.nodes[0]!))} iterables`,
-        call.arguments.nodes[0]!,
-        "arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]",
+      // Any other iterable, a compiled generator among them, steps through
+      // the web stream classes' own from (scr_webstreams.c), which reads
+      // the iterator protocol rather than the native streams' index walk.
+      return staticCallWithSurplusArgs(
+        lowerer,
+        call,
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
+        (first) => ({
+          kind: "libCall",
+          fn: "webstream.from",
+          args: [first],
+          type: DYN,
+          loc,
+        }),
       );
     }
     return staticCallWithSurplusArgs(lowerer, call, source, (first) => ({
@@ -1623,8 +1653,7 @@ export function lowerStaticFetchCompanionCall(
       fn: "fetch.streamFrom",
       // Arrays and bytes must cross by reference: their iterators read each
       // entry at pull time, so mutations after ReadableStream.from() remain
-      // observable just as they are in Node. Other supported iterable
-      // shapes retain the checked-dynamic fallback.
+      // observable just as they are in Node.
       args: [first],
       type: DYN,
       loc,
@@ -2255,10 +2284,25 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
-  return lowerStaticNamespaceImport(lowerer, call, {
-    kind: "moduleNs",
-    moduleId: `builtin:${res.module}`,
-  });
+  // node:constants resolves the one checked-dynamic namespace object its
+  // `import * as` binding gets: the merged CommonJS object's names plus
+  // "default", sorted, on a null-prototype object (builtinConstantsEsmNamespace).
+  // Its names come from the platform, so a static census cannot list them.
+  if (res.module === "constants")
+    return lowerStaticNamespaceImport(lowerer, call, DYN, null, undefined, () =>
+      builtinConstantsEsmNamespace(lowerer, locOf(call)),
+    );
+  return lowerStaticNamespaceImport(
+    lowerer,
+    call,
+    { kind: "moduleNs", moduleId: `builtin:${res.module}` },
+    null,
+    // Node's punycode module reports DEP0040 when its body first runs,
+    // which a dynamic import does here rather than at link time; the
+    // import's own load reports even from a dependency, whose require()
+    // would not.
+    res.module === "punycode" ? [lowerer.punycodeDynamicImportWarning(call)] : undefined,
+  );
 }
 
 /** An import() Node rejects before any module of its graph evaluates
@@ -2385,12 +2429,18 @@ function lowerOwnStaticModuleImport(
 
 /** Builds a fresh native promise for a static module namespace. Source
  * modules run/await their guarded initializer after the mandatory hop;
- * builtins only take the hop and resolve their immortal token. */
+ * builtins only take the hop and resolve their immortal token. A target
+ * that has a checked-dynamic value instead of a namespace token passes it
+ * as `resolveValue`. */
 function lowerStaticNamespaceImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  ns: IrType & { kind: "moduleNs" },
+  ns: IrType,
   dep: ts.SourceFile | null = null,
+  /** Statements the module's own load runs, after the import's hop. */
+  loaded?: readonly IrStmt[],
+  /** A checked-dynamic value to resolve instead of a namespace token. */
+  resolveValue?: () => IrExpr,
 ): IrExpr {
   const loc = locOf(call);
   const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: ns };
@@ -2414,11 +2464,16 @@ function lowerStaticNamespaceImport(
     };
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
-    body.push({
-      kind: "return",
-      value: { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc },
-      loc,
-    });
+    if (loaded !== undefined) body.push(...loaded);
+    let resolved: IrExpr;
+    if (resolveValue !== undefined) resolved = resolveValue();
+    else if (ns.kind === "moduleNs")
+      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc };
+    else
+      throw new InternalCompilerError(
+        "lowerer bug: static import target has no namespace or value",
+      );
+    body.push({ kind: "return", value: resolved, loc });
     const ctx = lowerer.ctx;
     lowerer.liftedFns.push({
       name: fnName,
@@ -2631,11 +2686,57 @@ export function lowerStdlibMethodCall(
         loc,
       };
     }
+    // A fixed number tuple spreads as its positions: Node walks the
+    // tuple's own array, and every position is already a number, so the
+    // fold is the plain variadic form (arguments convert like any other
+    // number position — an all-f64 tuple needs no ToNumber at all). The
+    // receiver is bound once, then each slot is read in order.
+    const tupleShape =
+      src.type.kind === "record" && lowerer.isArrayValueType(src.type)
+        ? lowerer.shapes.get(src.type.shapeId)
+        : undefined;
+    if (tupleShape?.fields.every((f) => f.type.kind === "f64")) {
+      const srcType = src.type;
+      const fields = [...tupleShape.fields].sort((a, b) => Number(a.name) - Number(b.name));
+      const stmts: IrStmt[] = [];
+      let recv = src;
+      if (!isSafeToRepeat(src)) {
+        const temp = lowerer.declareHiddenLocal("%tupleSpread", src.type);
+        stmts.push({ kind: "varDecl", localId: temp.id, init: src, loc });
+        recv = { kind: "varRef", localId: temp.id, type: src.type, loc };
+      }
+      const shapeId = (srcType as IrType & { kind: "record" }).shapeId;
+      const values = fields.map((f): IrExpr => ({
+        kind: "recordGet",
+        obj: recv,
+        shapeId,
+        field: f.name,
+        type: f.type,
+        loc,
+      }));
+      // No positions is the fold's seed, exactly the zero-argument call.
+      if (values.length === 0) {
+        const seed: IrExpr = {
+          kind: "numLit",
+          value: name === "max" ? -Infinity : Infinity,
+          type: F64,
+          loc,
+        };
+        return afterArguments(stmts, seed);
+      }
+      const fn = name === "max" ? "math.max" : "math.min";
+      let acc = values[0]!;
+      for (let i = 1; i < values.length; i++) {
+        acc = { kind: "libCall", fn, args: [acc, values[i]!], type: F64, loc };
+      }
+      return afterArguments(stmts, acc);
+    }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
         spread,
-        `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+        `spreading '${lowerer.fmt(src.type)}' into Math.${name} ` +
+          "(only a number[] or a fixed-length numeric tuple spreads)",
       );
     }
     return {
@@ -2731,6 +2832,22 @@ export function npmPackageOf(lowerer: Lowerer, type: ts.Type): string | null {
 }
 
 export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+  // A member read on a package-declared DATA shape (an interface, type
+  // alias or mapped type a declarations-only package spells) reads data the
+  // program itself holds — the request object a handler receives, a params
+  // bag, a query object. The mapper already widens such a shape to the
+  // checked-dynamic value when its structural rules cannot map it, so the
+  // read has a representation even though the package ships no code. Only a
+  // package VALUE shape (a class, a merged value declaration) has nothing
+  // to read from without that package's implementation.
+  if (
+    packageTypeIsData(lowerer.typeOf(access.expression), {
+      isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
+      isExternalTypeFile: lowerer.isExternalTypeFile,
+      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
+    })
+  )
+    return;
   const pkg =
     lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
     lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));

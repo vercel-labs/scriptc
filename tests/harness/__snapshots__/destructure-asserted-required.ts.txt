@@ -1,0 +1,31 @@
+destructure-asserted-required.ts:12:11 - error SC1031: destructuring the field 'icons' the source's shape does not carry is not supported yet (instantiating 'required' with <{ _meta: unknown; name: string }>)
+
+  11 | function required<T extends Base>(item: T): string {
+  12 |   const { icons } = item as T & { icons: string[] };
+     |           ^~~~~
+  13 |   return String(icons.length);
+
+destructure-asserted-required.ts:13:17 - error SC2004: uses of 'icons' inherit the blocker on its declaration (instantiating 'required' with <{ _meta: unknown; name: string }>)
+
+  12 |   const { icons } = item as T & { icons: string[] };
+  13 |   return String(icons.length);
+     |                 ^~~~~
+  14 | }
+
+  hint: the declaration of 'icons' did not compile — fix the diagnostic reported there and these sites clear with it
+
+destructure-asserted-required.ts:17:11 - error SC1031: destructuring the field 'toString' the source's shape does not carry is not supported yet (instantiating 'inherited' with <{ _meta: unknown; name: string }>)
+
+  16 | function inherited<T extends Base>(item: T): string {
+  17 |   const { toString } = item as T & { toString?: unknown };
+     |           ^~~~~~~~
+  18 |   return typeof toString;
+
+destructure-asserted-required.ts:18:17 - error SC2004: uses of 'toString' inherit the blocker on its declaration (instantiating 'inherited' with <{ _meta: unknown; name: string }>)
+
+  17 |   const { toString } = item as T & { toString?: unknown };
+  18 |   return typeof toString;
+     |                 ^~~~~~~~
+  19 | }
+
+  hint: the declaration of 'toString' did not compile — fix the diagnostic reported there and these sites clear with it

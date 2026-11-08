@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { beforeEach, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
-import { skipUnownedTest } from "./shard.js";
+import { skipUnownedTest, suiteCosts } from "./shard.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -29,12 +29,7 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 const effectBuildTimeout =
   sanitize || process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
-const testCosts = (
-  JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
-    plain: Record<string, number>;
-    san: Record<string, number>;
-  }
-)[sanitize ? "san" : "plain"];
+const testCosts = suiteCosts(import.meta.filename);
 
 interface RunResult {
   stdout: Buffer;
@@ -185,6 +180,233 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
         expect(native.exitCode).toEqual(reference.exitCode);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A tsconfig path that maps a name onto an opted-in package's JavaScript
+  // is a project edge of whichever program file spells it. The package
+  // ships no declarations, so only its JavaScript types the import, and
+  // that file joins the program as a root: named from the entry and from a
+  // module the entry imports alike.
+  test.each(["direct", "through a helper module"])(
+    "a path alias into an opted-in package compiles (%s)",
+    async (shape) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-alias-root-"));
+      try {
+        const pkg = join(dir, "node_modules", "rawpad");
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name: "rawpad", version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(
+          join(pkg, "index.js"),
+          [
+            "/**",
+            " * @param {string} text",
+            " * @param {number} width",
+            " * @returns {string}",
+            " */",
+            "export function pad(text, width) {",
+            '  return text.padStart(width, ".");',
+            "}",
+            "",
+          ].join("\n"),
+        );
+        writeFileSync(
+          join(dir, "tsconfig.json"),
+          JSON.stringify({
+            compilerOptions: {
+              strict: true,
+              module: "nodenext",
+              moduleResolution: "nodenext",
+              paths: { padding: ["./node_modules/rawpad/index.js"] },
+            },
+          }),
+        );
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+        writeFileSync(
+          join(dir, "helper.ts"),
+          'import { pad } from "padding";\nexport const padded = (text: string): string => pad(text, 4);\n',
+        );
+        const entry = join(dir, "main.ts");
+        writeFileSync(
+          entry,
+          shape === "direct"
+            ? 'import { pad } from "padding";\nconsole.log(pad("a", 4));\n'
+            : 'import { padded } from "./helper.ts";\nconsole.log(padded("a"));\n',
+        );
+        const npmStatic = ["rawpad"];
+        const { coverage } = analyze(entry, { npmStatic });
+        expect(coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+        expect(coverage.npmStatic).toEqual([{ package: "rawpad", status: "static" }]);
+        const outDir = join(dir, "out");
+        const result = await compile(entry, {
+          backend: "llvm",
+          npmStatic,
+          sanitize,
+          outDir,
+          outPath: join(outDir, "program"),
+        });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const run = await runBinary(result.binaryPath, []);
+        expect(run.stdout.toString("utf8")).toBe("...a\n");
+        expect(run.exitCode).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  // A bare string that merely names a package is not a load. The type-only
+  // reachability pass and the reexport planner over-approximate calls (any
+  // call with a leading string literal is an edge), so a package named only
+  // by an ordinary function argument reached npm-static classification
+  // through them: the package was reported as "its entry … did not join the
+  // type-checked program" and islanded or refused, and whether that pass ran
+  // depends on the program the island rounds hand it, so the same build
+  // classified the package differently run to run.
+  test("a package named only by a call argument is not classified", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-named-only-"));
+    try {
+      for (const [name, value] of [
+        ["loaded-pkg", "loaded"],
+        ["named-only-pkg", "named-only"],
+      ] as const) {
+        const pkg = join(dir, "node_modules", name);
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "package.json"),
+          JSON.stringify({ name, version: "1.0.0", type: "module", main: "./index.js" }),
+        );
+        writeFileSync(join(pkg, "index.js"), `export const value = ${JSON.stringify(value)};`);
+        writeFileSync(join(pkg, "index.d.ts"), "export declare const value: string;");
+      }
+      writeFileSync(join(dir, "types.ts"), "export interface Label { text: string }");
+      const entry = join(dir, "main.ts");
+      writeFileSync(
+        entry,
+        [
+          'import { value } from "loaded-pkg";',
+          'import type { Label } from "./types.js";',
+          "function describeArgument(name: string): string {",
+          "\treturn `got ${name}`;",
+          "}",
+          'const label: Label = { text: describeArgument("named-only-pkg") };',
+          "console.log(value, label.text);",
+        ].join("\n"),
+      );
+      const npmStatic = ["loaded-pkg", "named-only-pkg"];
+      // Both packages are plain static modules: the second is never loaded
+      // (the call above names it in a string, which is not an import), so
+      // the selection compiles nothing of it and the analysis does not list
+      // it as a compiled package.
+      expect(analyze(entry, { npmStatic }).coverage.npmStatic).toEqual([
+        { package: "loaded-pkg", status: "static" },
+      ]);
+      const outDir = join(dir, "out");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic,
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect(
+        (result.warnings ?? []).filter(
+          (d) => d.code === "SC8001" || /named-only-pkg/.test(d.message),
+        ),
+      ).toEqual([]);
+      expect(result.islands?.packages ?? []).toEqual([]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(native.exitCode).toEqual(reference.exitCode);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A package's dependency edge can sit behind a function-scoped require:
+  // fastify's logger-factory.js requires ./logger-pino.js inside
+  // createLogger, and only logger-pino.js requires pino at its top level.
+  // The lazy target is no part of the startup module order, so the
+  // dependency scan has to follow the source graph to it.
+  test("a lazily required module's packages are selected", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-lazy-require-"));
+    try {
+      const dep = join(dir, "node_modules", "lazy-dep");
+      mkdirSync(dep, { recursive: true });
+      writeFileSync(
+        join(dep, "package.json"),
+        JSON.stringify({
+          name: "lazy-dep",
+          version: "1.0.0",
+          type: "commonjs",
+          main: "./index.js",
+          types: "./index.d.ts",
+        }),
+      );
+      writeFileSync(join(dep, "index.js"), 'exports.tag = "dep";\n');
+      writeFileSync(join(dep, "index.d.ts"), "export declare const tag: string;\n");
+      const host = join(dir, "node_modules", "lazy-host");
+      mkdirSync(join(host, "lib"), { recursive: true });
+      writeFileSync(
+        join(host, "package.json"),
+        JSON.stringify({
+          name: "lazy-host",
+          version: "1.0.0",
+          type: "commonjs",
+          main: "./index.js",
+          types: "./index.d.ts",
+        }),
+      );
+      writeFileSync(join(host, "index.js"), "module.exports = require('./lib/factory.js');\n");
+      writeFileSync(join(host, "index.d.ts"), "export declare function tag(): string;\n");
+      writeFileSync(
+        join(host, "lib", "factory.js"),
+        "exports.tag = function tag() {\n" + "  return require('./pino-lite.js').tag()\n" + "};\n",
+      );
+      writeFileSync(
+        join(host, "lib", "pino-lite.js"),
+        "const dep = require('lazy-dep')\n" +
+          "exports.tag = function tag() { return dep.tag + '!' };\n",
+      );
+      const entry = join(dir, "main.ts");
+      writeFileSync(entry, 'import { tag } from "lazy-host";\nconsole.log(tag());\n');
+      const { coverage } = analyze(entry, { npmStatic: "lib" });
+      expect(coverage.npmStatic.toSorted((a, b) => a.package.localeCompare(b.package))).toEqual([
+        { package: "lazy-dep", status: "static" },
+        { package: "lazy-host", status: "static" },
+      ]);
+      expect(coverage.diagnostics).toHaveLength(0);
+      const outDir = join(dir, "out");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: "lib",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(native.stdout.toString()).toEqual("dep!\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -558,11 +780,6 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       "exported binding",
     ],
     [
-      "exported mutable alias",
-      'let load = createLoader(import.meta.url); export { load as exported }; const path = load("node:path");',
-      "escapes",
-    ],
-    [
       "escaped mutable shorthand",
       'var load = createLoader(import.meta.url); const alias = { load }; const path = load("node:path");',
       "escapes",
@@ -602,6 +819,15 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       'var load = createLoader(import.meta.url); load?.resolve("node:path"); const path = load("node:path");',
       "escapes",
     ],
+    // Bundlers that lazily initialize a shared module assign the loader into
+    // a hoisted var (`var load; … load = createRequire(import.meta.url)`).
+    // No declaration carries the value, so the build cannot anchor the
+    // loader's call sites.
+    [
+      "hoisted assignment",
+      'var load; function init() { load = createLoader(import.meta.url); } init(); const path = load("node:path");',
+      "escapes",
+    ],
     [
       "shadowed filename",
       'const __filename = "/tmp/other.js"; var load = createLoader(__filename); const path = load("node:path");',
@@ -634,6 +860,117 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // A chunk that exports its createRequire loader (a bundler's shared
+  // require) is link-time plumbing: importing modules reach the same
+  // binding, so their literal calls anchor at the exporting file and the
+  // package still compiles statically.
+  test.each(["llvm"] as const)(
+    "a package's exported createRequire loader stays static (%s)",
+    async (backend) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-module-loader-"));
+      try {
+        const pkg = join(dir, "node_modules/module-loader");
+        cpSync(join(pilotRoot, "node_modules/module-loader"), pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "chunk.js"),
+          'import { createRequire } from "node:module";\n' +
+            "let __require = createRequire(import.meta.url);\n" +
+            "export { __require as exported };\n",
+        );
+        writeFileSync(
+          join(pkg, "index.js"),
+          'import { exported as load } from "./chunk.js";\n' +
+            'const path = load("node:path");\n' +
+            'export function describe() { return path.join("a", "b"); }\n',
+        );
+        writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
+        cpSync(join(pilotRoot, "module-loader-cli.ts"), join(dir, "main.ts"));
+        const entry = join(dir, "main.ts");
+        const { coverage } = analyze(entry, { npmStatic: "auto" });
+        expect(coverage.npmStatic).toEqual([{ package: "module-loader", status: "static" }]);
+        expect(coverage.diagnostics).toHaveLength(0);
+        expect(coverage.runtimeFences ?? []).toHaveLength(0);
+        const outDir = join(
+          cacheDir,
+          "module-loader-exported",
+          sanitize ? "san" : "plain",
+          backend,
+        );
+        const result = await compile(entry, {
+          backend,
+          npmStatic: "auto",
+          sanitize,
+          outDir,
+          outPath: join(outDir, "program"),
+        });
+        if (!result.ok)
+          throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+        const [nodeRes, nativeRes] = await Promise.all([
+          runBinary(process.execPath, [entry]),
+          runBinary(result.binaryPath, []),
+        ]);
+        expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+        expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+        expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // yargs-parser's spelling: the loader comes from the conditional fold and
+  // a `typeof` guard reads it before a literal call. The probe observes only
+  // the loader's type (a function under Node and in the lowered form), so it
+  // does not hide the call sites and the package compiles statically.
+  test.each(["llvm"] as const)(
+    "a package's typeof guard keeps createRequire static (%s)",
+    async (backend) => {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-module-loader-"));
+      try {
+        const pkg = join(dir, "node_modules/module-loader");
+        cpSync(join(pilotRoot, "node_modules/module-loader"), pkg, { recursive: true });
+        writeFileSync(
+          join(pkg, "index.js"),
+          'import { createRequire } from "node:module";\n' +
+            "const require = createRequire ? createRequire(import.meta.url) : undefined;\n" +
+            "export function loaderType() { return typeof require; }\n" +
+            'export function describe() { return require("./config.json").port; }\n',
+        );
+        writeFileSync(
+          join(pkg, "index.d.ts"),
+          "export declare function loaderType(): string;\n" +
+            "export declare function describe(): number;\n",
+        );
+        writeFileSync(join(dir, "package.json"), '{"type":"module"}\n');
+        cpSync(join(pilotRoot, "module-loader-cli.ts"), join(dir, "main.ts"));
+        const entry = join(dir, "main.ts");
+        const { coverage } = analyze(entry, { npmStatic: "auto" });
+        expect(coverage.npmStatic).toEqual([{ package: "module-loader", status: "static" }]);
+        expect(coverage.diagnostics).toHaveLength(0);
+        expect(coverage.runtimeFences ?? []).toHaveLength(0);
+        const outDir = join(cacheDir, "module-loader-typeof", sanitize ? "san" : "plain", backend);
+        const result = await compile(entry, {
+          backend,
+          npmStatic: "auto",
+          sanitize,
+          outDir,
+          outPath: join(outDir, "program"),
+        });
+        if (!result.ok)
+          throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+        const [nodeRes, nativeRes] = await Promise.all([
+          runBinary(process.execPath, [entry]),
+          runBinary(result.binaryPath, []),
+        ]);
+        expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+        expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+        expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   // The package builds its word segmenter at module load. Word segmentation
   // lowers to ICU now, so nothing fences: the package compiles into the
@@ -1040,6 +1377,25 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // A member read on a value typed by a declarations-only package is a read of
+  // data the program holds, not a crossing into a package implementation:
+  // typedbag's interface extends a stdlib type, so the value parses at the
+  // checked-dynamic tier and the read has a representation.
+  test("member reads on a declared data shape need no package", async () => {
+    const entry = join(pilotRoot, "typedbag-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic ?? []).toEqual([]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toEqual([]);
+    const binary = await buildStatic(entry, []);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("ms supports invalid duration strings without runtime fences", () => {
     const { coverage } = analyze(join(pilotRoot, "ms-invalid-cli.ts"), { npmStatic: ["ms"] });
     expect(coverage.npmStatic).toEqual([{ package: "ms", status: "static" }]);
@@ -1177,26 +1533,39 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  // Ineligible packages remain declaration-only during analysis and receive
-  // a refusal, while eligible dependencies can still be analyzed natively.
-  test("an ineligible untyped package is refused alongside a compiled dependency", () => {
-    const { coverage } = analyze(join(pilotRoot, "typegap-mix.ts"), {
-      npmStatic: ["escape-string-regexp"],
-    });
-    expect(coverage.preflightFailed).toBe(false);
-    expect(coverage.npmStatic).toEqual([
-      {
-        package: "typegapped",
-        status: "refused",
-        detail: "it ships no own .d.ts declaration surface",
-        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
-      },
+  // A package that is not compiled is typed the same whether or not another
+  // package compiles beside it: typegapped ships no declarations, so its
+  // import is the implicit-any error and the package refusal in both
+  // programs, and its JavaScript (which does not typecheck) is in neither.
+  test("an untyped package is reported the same beside a compiled dependency", () => {
+    const refused = {
+      package: "typegapped",
+      status: "refused",
+      detail: "it ships no own .d.ts declaration surface",
+      hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
+    };
+    const about = (entry: string, npmStatic: string[]) => {
+      const { coverage } = analyze(join(pilotRoot, entry), { npmStatic });
+      return {
+        preflightFailed: coverage.preflightFailed,
+        statuses: coverage.npmStatic,
+        diagnostics: coverage.diagnostics.map((d) => [
+          d.code,
+          d.message.replace(/'[^']*node_modules/, "'node_modules"),
+        ]),
+      };
+    };
+    const alone = about("typegap-only.ts", []);
+    const beside = about("typegap-mix.ts", ["escape-string-regexp"]);
+    expect(alone.statuses).toEqual([refused]);
+    expect(beside.statuses).toEqual([
+      refused,
       { package: "escape-string-regexp", status: "static" },
     ]);
-    // Report package eligibility rather than errors in unselected source.
-    expect(
-      coverage.diagnostics.some((d) => d.code === "SC2013" && d.message.includes("typegapped")),
-    ).toBe(true);
+    expect(alone.diagnostics.map(([code]) => code)).toEqual(["SC0001", "SC2013"]);
+    expect(alone.diagnostics[0]?.[1]).toContain("implicitly has an 'any' type");
+    expect(beside.diagnostics).toEqual(alone.diagnostics);
+    expect(beside.preflightFailed).toBe(alone.preflightFailed);
   }, 120_000);
 
   test("opted-in npm packages retain imports deeper than four JavaScript modules", async () => {
@@ -1220,8 +1589,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   // "did not join the type-checked program"): uuid's node condition with
   // declarations in another tree, tldts's package-root TypeScript source
   // beside `main`, express's same-version copies of one package (tsgo's
-  // package-id redirect), and get-intrinsic's dependency chain deeper than
-  // maxNodeModuleJsDepth.
+  // package-id redirect), and get-intrinsic's long dependency chain.
   test.each([
     ["split-node-types-cli.ts", ["split-node-types"]],
     ["ts-root-source-cli.ts", ["ts-root-source"]],

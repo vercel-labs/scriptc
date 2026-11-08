@@ -85,6 +85,38 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** `derived` is `base` or extends it (`class Dog extends Animal`). */
+function classIsOrExtends(lowerer: Lowerer, derived: string, base: string): boolean {
+  for (let info = lowerer.classes.get(derived) ?? null; info; info = info.base) {
+    if (info.def.name === base) return true;
+  }
+  return false;
+}
+
+/** A JavaScript array literal whose inferred element type spells ONE class
+ * constructor while the literal names a constructor that type REJECTS
+ * (`const classes = [A, B]`: tsc's best common type is the first element's
+ * `typeof A`). The literal is a fresh array of every constructor it names,
+ * so a file-scope binding holds the checked-dynamic array: the spelled
+ * element type would check each element against A's class key and reject B
+ * at module init. A subclass element keeps the spelled class's layout —
+ * the class value dispatch already accepts it, and its static element type
+ * gives the better diagnostics — so only a rejected element counts. */
+export function jsHoldsMixedClassConstructors(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isArrayLiteralExpression(expr)) return false;
+  const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (own?.kind !== "array" || own.elem.kind !== "classval") return false;
+  let mixed = false;
+  for (const element of expr.elements.nodes) {
+    if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) return false;
+    const elementType = lowerer.mapTypeOf(lowerer.typeOf(element));
+    if (elementType?.kind !== "classval") return false;
+    if (!classIsOrExtends(lowerer, elementType.className, own.elem.className)) mixed = true;
+  }
+  return mixed;
+}
+
 /** The literal is the source of an array destructuring: an assignment's
  * right side or a declaration's initializer under an array pattern. */
 function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
@@ -401,6 +433,24 @@ export function lowerArrayLiteral(
       const fields = expr.elements.nodes.map((el, i) => {
         const fieldType = byName.get(String(i));
         if (!fieldType) lowerer.badType(el, lowerer.typeOf(el));
+        // A HOLE (`[x = 23] = [,]`, `f([,])` through a tuple parameter):
+        // the positional field reads as the undefined every read of a hole
+        // answers, and the property does not exist, so `in`, Object.keys
+        // and the own-key probes skip it — the field's absent state. A
+        // position typed without undefined keeps the element's own
+        // refusal, since a hole is not a value the field can hold.
+        if (ts.isOmittedExpression(el)) {
+          const absent = lowerer.absentFieldValue(fieldType, locOf(el));
+          if (absent !== null) return { name: String(i), value: absent };
+          return {
+            name: String(i),
+            value: lowerer.coerceInto(
+              el,
+              { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(el) },
+              fieldType,
+            ),
+          };
+        }
         return { name: String(i), value: lowerer.lowerExprExpecting(el, fieldType) };
       });
       return { kind: "recordLit", fields, type: mapped, loc };
@@ -488,6 +538,9 @@ export function lowerArrayLiteral(
       needsStateBuild = true;
     }
   }
+  // A spread before an element shifts that element's array index away
+  // from its literal position by an amount only known at run time.
+  const firstSpread = expr.elements.nodes.findIndex((n) => ts.isSpreadElement(n));
   const elems: IrExpr[] = expr.elements.nodes.map((el, i): IrExpr => {
     if (ts.isSpreadElement(el)) {
       // `[...xs, b]`: xs must be an array of the literal's own element
@@ -695,6 +748,29 @@ export function lowerArrayLiteral(
       lowered = raw;
     } else {
       lowered = lowerer.lowerExprExpecting(el, type.elem);
+      // A checked-dynamic element of a `(T | undefined)[]` can hold
+      // undefined, which a check against T rejects although the element
+      // type admits it: convert against the optional element type and let
+      // the store keep the present undefined.
+      if (
+        type.optionalElements === true &&
+        primitiveElement(type.elem) &&
+        lowered.kind === "dynCheck" &&
+        lowered.value.type.kind === "dyn"
+      ) {
+        const optional: IrType = {
+          kind: "union",
+          unionId: lowerer.unions.intern([type.elem, UNDEFINED_T]),
+        };
+        needsStateBuild = true;
+        const checked = lowerer.coerceInto(el, lowered.value, optional);
+        if (checked.kind !== "dynCheck") return checked;
+        // The check runs where the literal stores its element, so a
+        // failure names that position ($[0]) rather than the root. An
+        // element after a spread keeps the root: the spread moves its
+        // array index by an amount only known at run time.
+        return firstSpread < 0 || i < firstSpread ? { ...checked, pathIndex: i } : checked;
+      }
     }
     if (!typeEquals(lowered.type, type.elem)) lowerer.badType(el, lowerer.typeOf(el));
     return lowered;
@@ -814,6 +890,25 @@ function lowerTupleSpreadLiteral(
     if (!ts.isSpreadElement(element)) {
       const expected = byName.get(String(fields.length));
       if (!expected) lowerer.badType(element, lowerer.typeOf(element));
+      if (ts.isOmittedExpression(element)) {
+        // A HOLE beside a spread is still a hole: the field's absent state,
+        // as in a literal without a spread, so `in`, Object.keys and the
+        // own-key probes skip the index. The absent state is a constant
+        // and only legal as a direct field write, so it takes no temp. A
+        // position typed without undefined keeps the element's refusal.
+        const absent = lowerer.absentFieldValue(expected, locOf(element));
+        if (absent !== null) {
+          fields.push({ name: String(fields.length), value: absent });
+          continue;
+        }
+        append(element, {
+          kind: "unitLit",
+          unit: "undefined",
+          type: UNDEFINED_T,
+          loc: locOf(element),
+        });
+        continue;
+      }
       append(element, lowerer.lowerExprExpecting(element, expected));
       continue;
     }
@@ -887,7 +982,7 @@ export function checkedIteratorPack(
   loc: SrcLoc,
 ): IrExpr {
   const name = "%iterator.pack.checked";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });
     const flag = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: BOOL, loc });
     const property = (key: string): IrExpr => ({

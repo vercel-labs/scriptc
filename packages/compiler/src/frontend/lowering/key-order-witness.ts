@@ -74,7 +74,6 @@ import {
 import {
   everyExprChild,
   everyStmtChild,
-  everyStmtList,
   everyTypeChild,
   transformStmtList,
 } from "../../ir/traverse.js";
@@ -541,6 +540,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (opaque) shapesIn(type, opaqueShapes, opaqueSeen);
     else shapesIn(type, runtimeShapes, runtimeSeen, true);
   };
+  /** The shapes a checked conversion in this program builds, which are the
+   * only values that already hold a source when this pass runs (the ones
+   * this pass keeps join keptSourceShapes as it decides). Collected by the
+   * walk below, which already meets every conversion. */
+  const convertedShapes = new Set<string>();
+  const convertedSeen = new Set<string>();
 
   // ── collection ──────────────────────────────────────────────────────
   let pos = 0;
@@ -705,6 +710,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         return;
       }
       case "dynCheck":
+        conversionShapes(lowerer, e.type, convertedShapes, convertedSeen);
         if (e.adopt === true) shapesIn(e.type, declaredShapes, declaredSeen);
         // Conversions that build no record: a boxed primitive, and a
         // replaceable method's result while no replacement the program can
@@ -781,21 +787,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   // another width spread's target, so this runs until no site joins.
   const keptWidths = new Set<IrExpr>();
   const keptClones = new Set<IrExpr>();
-  /** The shapes a checked conversion in this program builds, which are the
-   * only values that already hold a source when this pass runs (the ones
-   * this pass keeps join keptSourceShapes as it decides). */
-  const convertedShapes = new Set<string>();
-  {
-    const seen = new Set<string>();
-    for (const fn of fns)
-      everyStmtList(fn.body, {
-        expr: (expr) => {
-          if (expr.kind === "dynCheck") conversionShapes(lowerer, expr.type, convertedShapes, seen);
-          return true;
-        },
-        stmt: () => true,
-      });
-  }
   /** The statements each kept site's literal evaluates in (the wrapper's
    * prologue), which the per-instance order plan reads a spread's source
    * binding from after keepWidthSpreads moved the literal into a
@@ -1141,7 +1132,12 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     return out;
   };
 
-  /** Today's table with every witness edge applied, or "unknown". */
+  /** Today's table with every witness edge applied, or "unknown".
+   *
+   * Kahn's algorithm takes the ready key the table holds first, which is
+   * the order the tables have always used. Ranks are unique, so a scan for
+   * the smallest ready rank settles each step exactly as reordering the
+   * whole ready set did. */
   const merge = (table: readonly string[], edges: readonly [string, string][]): Resolved => {
     const rank = new Map(table.map((k, i) => [k, i]));
     const succ = new Map<string, Set<string>>(table.map((k) => [k, new Set<string>()]));
@@ -1156,8 +1152,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const order: string[] = [];
     const ready = table.filter((k) => indeg.get(k) === 0);
     while (ready.length > 0) {
-      ready.sort((a, b) => rank.get(a)! - rank.get(b)!);
-      const k = ready.shift()!;
+      let at = 0;
+      let best = rank.get(ready[0]!)!;
+      for (let i = 1; i < ready.length; i++) {
+        const r = rank.get(ready[i]!)!;
+        if (r < best) {
+          best = r;
+          at = i;
+        }
+      }
+      const k = ready[at]!;
+      ready[at] = ready[ready.length - 1]!;
+      ready.pop();
       order.push(k);
       for (const next of succ.get(k)!) {
         indeg.set(next, indeg.get(next)! - 1);
@@ -1173,6 +1179,9 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
 
   // ── resolution over inheritance edges ───────────────────────────────
   const result = new Map<string, Resolved>();
+  /** A shape's late-write edges: they read that shape's facts only, so they
+   * stay valid until the facts change (a shape becomes built at run time,
+   * below). */
   const late = new Map<string, [string, string][] | "unknown">();
   const dependencies = (id: string): string[] => {
     const f = facts.get(id);
@@ -1289,7 +1298,6 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   };
   const resolveAll = (): void => {
     result.clear();
-    late.clear();
     for (const scc of sccs) {
       const members = new Set(scc);
       const guess = new Map<string, Resolved>();
@@ -1334,7 +1342,11 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       const self = target.kind === "record" && target.shapeId === first.shapeId;
       if ((source === "unknown" && !self) || !ordersSpread(segments, sites)) continue;
       orderedSpreads.add(segments);
-      if (target.kind === "record") factsOf(target.shapeId).runtime = true;
+      if (target.kind === "record") {
+        factsOf(target.shapeId).runtime = true;
+        // Its presence answers and late-write edges just changed.
+        late.delete(target.shapeId);
+      }
       grew = true;
     }
     if (grew) resolveAll();
@@ -2203,7 +2215,15 @@ function keepSourceProbes(
  * keeps one, snapshots the source's own keys and notes them on the built
  * record; the overrides keep their source position (a placeholder for an
  * existing key keeps its place, a new one follows the source's keys). The
- * override values still evaluate after the source, as before. */
+ * override values still evaluate after the source, as before.
+ *
+ * The snapshot is taken only for a source whose own keys the plain clone
+ * would not reproduce, which the clone tests when it reads the source: a
+ * record that keeps a source (record.sourceHas: undeclared keys, another
+ * order, a view), or one that lacks a key an override creates, which Node
+ * lists after the source's keys and the shape's table may list earlier.
+ * Any other source holds exactly its declared keys in its own order, every
+ * override replaces a key in place, and the clone copies both. */
 function keepRecordClones(
   lowerer: Lowerer,
   sites: readonly { node: IrExpr; fn: IrFunction }[],
@@ -2218,9 +2238,11 @@ function keepRecordClones(
     const loc = node.loc;
     const n = index++;
     const srcId = `%cloneSrc.${n}`;
+    const ownId = `%cloneOwn.${n}`;
     const keysId = `%cloneKeys.${n}`;
     const builtId = `%cloneKept.${n}`;
     fn.locals.push({ id: srcId, name: "%cloneSrc", type: node.source.type, mutable: false });
+    fn.locals.push({ id: ownId, name: "%cloneOwn", type: BOOL, mutable: false });
     fn.locals.push({ id: keysId, name: "%cloneKeys", type: DYN, mutable: false });
     fn.locals.push({ id: builtId, name: "%cloneKept", type: cloneT, mutable: false });
     const srcRef: IrExpr = { kind: "varRef", localId: srcId, type: node.source.type, loc };
@@ -2241,23 +2263,48 @@ function keepRecordClones(
     for (const override of node.overrides) mirror = assign(mirror, placeholder(override.name));
     const built: IrExpr = { kind: "varRef", localId: builtId, type: cloneT, loc };
     const overrides = node.overrides;
+    // Whether the source's own keys are more than the plain clone copies.
+    // Tested once, when the spread reads the source: an override's value
+    // evaluates later and may change the source.
+    let own: IrExpr = recordSourceTest(srcRef, loc);
+    for (const override of overrides) {
+      const present = lowerer.recordFieldPresent(srcRef, cloneT.shapeId, override.name, loc);
+      if (present.kind === "boolLit" && present.value) continue;
+      own = {
+        kind: "logical",
+        op: "||",
+        left: own,
+        right: { kind: "unary", op: "!", operand: present, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
+    }
+    const ownRef = (): IrExpr => ({ kind: "varRef", localId: ownId, type: BOOL, loc });
     const replacement: IrExpr = {
       kind: "seqExpr",
       stmts: [
         { kind: "varDecl", localId: srcId, init: node.source, loc },
+        { kind: "varDecl", localId: ownId, init: own, loc },
         {
           kind: "varDecl",
           localId: keysId,
-          init: assign(
-            { kind: "dynObjLit", fields: [], type: DYN, loc },
-            {
-              kind: "dynFrom",
-              value: srcRef,
-              liveRef: true,
-              type: DYN,
-              loc,
-            },
-          ),
+          init: {
+            kind: "ternary",
+            cond: ownRef(),
+            then: assign(
+              { kind: "dynObjLit", fields: [], type: DYN, loc },
+              {
+                kind: "dynFrom",
+                value: srcRef,
+                liveRef: true,
+                type: DYN,
+                loc,
+              },
+            ),
+            else_: dynUndefinedExpr(loc),
+            type: DYN,
+            loc,
+          },
           loc,
         },
         {
@@ -2267,14 +2314,22 @@ function keepRecordClones(
           loc,
         },
         {
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "record.sourceNote",
-            args: [built, mirror],
-            type: VOID,
-            loc,
-          },
+          kind: "if",
+          cond: ownRef(),
+          then: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "record.sourceNote",
+                args: [built, mirror],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          else_: null,
           loc,
         },
       ],

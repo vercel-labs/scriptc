@@ -397,6 +397,7 @@ static void scr_net_ls_remove_fn(ScrNetLs *l, ScrClosure *root) {
  * scr_http.c's req/res/client fire their 'error' the same way. */
 void scr_net_fire_err_this(ScrNetLs *l, ScrStr *msg, void *self, ScrDynHandleTag tag) {
   if (l->n == 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);
@@ -6582,7 +6583,7 @@ static void scr_net_dynh_unsupported(const char *member, const char *why) {
   char msg[160];
   int n = snprintf(msg, sizeof msg, "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
                    member, why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The TLS-member hooks (scr_tls.c registers them when linked): TLSSocket
@@ -6638,7 +6639,7 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
         scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Socket is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     return scr_dyn_retain(self);
@@ -6946,7 +6947,7 @@ static void scr_net_dynh_srv_unsupported(const char *member, const char *why) {
   char msg[160];
   int n = snprintf(msg, sizeof msg, "'Server.prototype.%s' on a dynamic value is not supported yet%s%s",
                    member, why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The 'connection' fire for a dyn listener: box the socket by reference
@@ -7022,7 +7023,7 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
         scr_jb_write(&b, name->v.str->data, name->v.str->len);
       }
       scr_jb_puts(&b, "' on a dynamic Server is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     return scr_dyn_retain(self);

@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-const-reassignment.cjs"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "assigning to a 'const' binding is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-const-reassignment.cjs",
+    "start": 267,
+    "end": 273
+   },
+   "milestone": "later",
+   "hint": "Node throws a TypeError at the assignment (strict mode, and always in modules) (TypeScript reports TS2588 here.)"
+  }
+ ]
+}

@@ -8,7 +8,9 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `ast-interp` | cpu | tokenizer, recursive-descent parser, class dispatch |
 | `async-pipeline` | cpu | `async`/`await`, `Promise.all` fan-out |
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
+| `catalog-tables` | cpu | keyed tables made from keyed tables: `Object.values` over dictionaries of `object` from parsed JSON, flattened with `flatMap`, filtered by a field and keyed again with `Object.fromEntries` |
 | `channel-messages` | cpu | 200,000 MessageChannel messages in one thread, half numbers and half small objects, all posted before the port delivers any |
+| `class-unions` | cpu | class instances in unions with their base class (`Shape \| Circle \| Rect`, `Account \| Savings`): an array scanned through overridden methods and methods that return `this`, a `Map` of accounts, and `instanceof` tests for subclass members |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
 | `date-math` | cpu | schedules built with Date setters (local and UTC), weekday and month-end rules through the getters, Dates sorted by time value |
 | `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
@@ -25,6 +27,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
+| `n-body` | cpu | five planets in an array of records advanced a million fixed steps by the pair loop over the upper triangle, then the system's total energy before and after |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
 | `optional-child-sets` | cpu | syntax-tree walks through class nodes whose getters return `TreeNode \| undefined` children, in a program that also keeps a `Set<TreeNode \| undefined>` |
@@ -40,6 +43,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `template-render` | cpu | template literals, escaping, `map`/`join` |
 | `throw-chains` | cpu | exceptions caught 2, 5 and 20 recursive calls above the throw, through direct calls and through a callback, and a backtracking parser that throws on a failed alternative |
 | `thread-slots`, `thread-slots-cache` | cpu | worker threads reading one published type graph from an `InternTable` and keeping per-thread state for each type they visit: a `ThreadSlots` family, or a direct-mapped cache by id in front of a `Map` by id (the `-cache` entry); under Node.js both are per thread |
+| `typed-array-convert` | cpu | copies from one typed view into another: construction from a view of the same kind, `set()` into a preallocated destination through the widening, narrowing and float conversions, and views that start at a non-zero byte offset |
 | `typed-array-kernels` | cpu | element-wise loops that run to one typed array's length and index others at the same position: `Float64Array` axpy, `Float32Array` blend, `Uint8Array` mask, wrapping `Int32Array` add, `Uint8ClampedArray` brighten, RGBA to gray, a row-major `Float32Array` matrix-vector product, and `reduce`/`some`/`map` callbacks |
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `unicode-lexer` | cpu | a hand-written lexer over a 2.7M-unit bundled module whose comments and strings are in several languages: `charCodeAt` scans, line starts |
@@ -50,6 +54,8 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `word-graph` | cpu | string-keyed Map/Set, BFS |
 | `worker-messages` | cpu | message round trips between the main thread and one worker: each posts a number and the other answers it, so every round trip is two messages and two wakeups of a waiting thread |
 | `cli-config` | startup | a `deploy-plan` CLI: read a ~110 KB JSON manifest, validate, interpolate env values, order 80 services into dependency waves, print a summary |
+| `startup-islands-used`, `startup-islands-unused`, `startup-islands-cold` | startup | a command-line program with three dependencies in Node islands (`benchmarks/startup/islands`): an ES module package of about a hundred small modules, a CommonJS package whose load reads an environment variable that is normally unset, and a package it imports and does not use, which ships 1.3 MB of data files nothing loads (as most of a real package directory is). `-used` calls into the first two; `-unused` prints a version and uses none of them, so its time is what having islands costs a start that does not need them; `-cold` is `-used` on a first run, with an empty island module cache. All three need a libnode pack |
+| `startup-modules` | startup | the 240-module program in `benchmarks/startup/modules`: every module's top level runs (classes and instances, Maps and a shared registry filled at load, record tables, strings and regex literals, a regular expression built from a string, constant objects, closures) and the entry prints one line, so the time is module initialization |
 | `http-api` | server | a `node:http` JSON API: routing, query parsing, a seeded catalog, per-cart state, typed JSON bodies, `ETag`/`If-None-Match`, auth and request-id headers |
 
 Compare two checkouts (each with a built CLI and native artifacts for the host):
@@ -62,11 +68,27 @@ Without `--baseline`, the runner reports absolute medians. Baseline and candidat
 
 Node is timed in the same interleaved loop and every row reports candidate/Node; the summary prints the overall geomean and, when several categories ran, the geomean per category (`cpu`, `startup`, `server`). Node runs each `.ts` entry directly, so its times include type stripping and ESM detection, as a user running the TypeScript source would see.
 
+## Steady-state ratios
+
+Every timed sample is a whole launch, so candidate/Node includes process start-up: tens of milliseconds for Node (which also strips types and compiles the module) and about one for a compiled executable. For a workload that runs for 30 ms compiled, most of that ratio is start-up, and it says little about the speed of the code.
+
+`--steady=<factor>` adds a second ratio beside it:
+
+```console
+$ pnpm bench:runtime --candidate=. --steady=4 --json=result.json
+```
+
+A workload file names the argument that multiplies the workload's work with `"scaleArg"`, the argument's index in `args`. With `--steady=4` the runner also times the candidate and Node with that argument multiplied by 4 (`--steady-runs` launches each, 5 by default) and reports the candidate's extra time over Node's extra time: (time at 4x − time at 1x) for the candidate, divided by the same difference for Node. Start-up and most of the JIT's warm-up are in both times of each difference and cancel. The extra work need not be exactly 3 times the original, only the same for both.
+
+The existing columns and JSON fields are unchanged. The table gains a `steady candidate/node` column, each workload's JSON entry a `steady` object (`factor`, `args`, `candidate_ms` and `node_ms` at the scaled size, `candidate_marginal_ms`, `node_marginal_ms`, `vs_node`, and its bootstrap `ci95`), and the summary the geomean of the steady ratios next to the whole-process geomean over the same workloads. The scaled output is compared with Node's first; a difference is reported as `mismatch` and fails the run. A workload that times out at the scaled size, or whose time does not grow for both, has no steady ratio (`timeout`, `no-growth`). Startup-bound and server workloads, and workloads without `scaleArg`, have none either.
+
 ## Workload kinds
 
-Each workload is a JSON file in `workloads/`, named after the workload, that holds its `entry`, `args` and options; adding a workload adds its file and its row in the table above, kept in category and then name order. Workloads are process workloads unless they set `kind`.
+Each workload is a JSON file in `workloads/`, named after the workload, that holds its `entry`, `args` and options (`scaleArg` among them, when one argument scales the work); adding a workload adds its file and its row in the table above, kept in category and then name order. Workloads are process workloads unless they set `kind`.
 
-Process workloads time whole launches (wall time, startup included). An optional `launches` count makes each sample the median of that many sequential launches; `cli-config` uses 20 so that a startup-dominated command (a few milliseconds compiled, tens of milliseconds under Node) is measured with low noise. Its table row is labeled `(per launch)`. On a heavily loaded macOS host, whole batches of launches can run several times slower (samples become bimodal), so judge startup changes on the Linux lane or a quiet machine.
+A workload that needs more than a built checkout says so in `requires`. The one value is `"libnode"`: the program has Node islands, so its executables load a libnode pack from `SCRIPTC_LIBNODE`. Without that variable the runner leaves the workload out and says so, and the zero-cost gate leaves it out on both sides. With it, the runner gives every launch an island module cache of its own run (`XDG_CACHE_HOME` in its work directory): each contender's first launch, the one compared with Node, installs the modules, and the timed launches find them installed. A workload with `"cache": "cold"` times the first launch instead: each of its launches gets an empty cache directory. The JSON report lists the workloads that were left out under `skipped`, with the reason.
+
+Process workloads time whole launches (wall time, startup included). An optional `launches` count makes each sample the median of that many sequential launches; `cli-config` and `startup-modules` use 20 so that a startup-dominated command (a few milliseconds compiled, tens of milliseconds under Node) is measured with low noise. Their table rows are labeled `(per launch)`. On a heavily loaded macOS host, whole batches of launches can run several times slower (samples become bimodal), so judge startup changes on the Linux lane or a quiet machine.
 
 Server workloads (`"kind": "server"`) run a listening program and a load client:
 

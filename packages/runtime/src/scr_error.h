@@ -65,7 +65,7 @@ static inline ScrClassObj *scr_classobj_retain(ScrClassObj *c) {
 }
 void scr_classobj_release(ScrClassObj *c);
 void scr_classobj_clear_properties(ScrClassObj *c);
-ScrClassObj *scr_classobj_new(const ScrClassObj *template, size_t ncaps);
+ScrClassObj *scr_classobj_new(const ScrClassObj *tpl, size_t ncaps);
 void scr_classobj_trace_v(void *c, ScrTraceVisit visit, void *ctx);
 /* void*-signature RC adapters (container slots) — scr_object.c. */
 void *scr_classobj_retain_v(void *c);
@@ -258,6 +258,9 @@ void scr_error_install_message_reader(ScrStr *(*reader)(ScrError *));
 void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *));
 ScrStr *scr_error_default_name(const ScrError *e);
 ScrStr *scr_error_stack(ScrError *e);
+/* Writes the frames the error captured at creation to stderr, each line
+ * led by its newline; nothing when it captured none. Borrows e. */
+void scr_error_report_frames(const ScrError *e);
 /* Replaces the error's stack string, as an assignment to `stack` does.
  * Borrowed operands. */
 void scr_error_set_stack(ScrError *e, ScrStr *stack);

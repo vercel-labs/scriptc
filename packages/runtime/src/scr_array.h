@@ -382,7 +382,7 @@ static inline void scr_arr_need_states(ScrArr *a) {
 }
 /* A CREF slot's pointer, and the slot of a pointer (NULL or a compact
  * instance below 32 GiB). */
-static inline uint64_t scr_cref_decode(uint32_t ref) { return (uint64_t)ref << 3; }
+static inline uint64_t scr_cref_decode(uint32_t ref) { return scr_compact_ref_address(ref); }
 static inline uint32_t scr_cref_encode(uint64_t slot) { return (uint32_t)(slot >> 3); }
 
 /* The bits of `d` as a slot, and back. */
@@ -504,6 +504,12 @@ ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
 ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states);
+/* The heap header of the immortal array `image` (a header in the
+ * executable's image, such as a tagged template's strings), made once and
+ * kept in *slot: 32-bit references in class fields reach only the
+ * allocator's window, and the image lies outside it. The copy shares the
+ * image's slots, and every thread may read it. */
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot);
 
 static inline ScrArr *scr_arr_retain(ScrArr *a) {
   if (a->rc != SIZE_MAX) {
@@ -653,8 +659,9 @@ double scr_math_min_arr(ScrArr *a);
 double scr_math_hypot_arr(ScrArr *a);
 /* The scalar Math statics (scr_lib.c): min/max are the ECMA two-argument
  * folds (NaN poisons; max prefers +0, min prefers -0 — NOT C's fmin/fmax);
- * random is a uniform [0,1) double at 53-bit granularity from
- * arc4random_buf (SEMANTICS.md 62: Node's distribution, not its sequence). */
+ * random is a uniform [0,1) double at 53-bit granularity from a per-thread
+ * xorshift128+ seeded once from arc4random_buf (Node's distribution, not its
+ * sequence; not a cryptographic source, as in Node). */
 double scr_math_min(double a, double b);
 double scr_math_round(double x);
 double scr_math_pow(double base, double exponent);

@@ -47,6 +47,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "dns/promises",
   "punycode",
   "constants",
+  "sea",
 ] as const;
 
 /** Builtins Node itself serves ONLY under the node: prefix —
@@ -56,7 +57,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
  * (a builtin always wins over a same-named npm package for the bare
  * specifier — the npm package named "module" is unreachable in Node too),
  * so both spellings key the same lowering tables here. */
-const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test"]);
+const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test", "sea"]);
 
 /** The builtin modules whose DEFAULT import binding lowers: node:assert's
  * module object IS a callable function (`import assert from "node:assert";
@@ -175,3 +176,14 @@ export function unsupportedModuleFeatureOf(spec: string): string {
  * compiler's own sources never trip program.ts's scan when scriptc
  * compiles itself. */
 export const TEMPORAL_GLOBAL = "Tempo" + "ral";
+
+/** The CommonJS module-scope bindings @types/node declares as globals. Node
+ * passes them to each CommonJS module's wrapper function, so the global
+ * object has none of them (`globalThis.require` is undefined). */
+export const COMMONJS_MODULE_BINDINGS: ReadonlySet<string> = new Set([
+  "require",
+  "module",
+  "exports",
+  "__dirname",
+  "__filename",
+]);

@@ -1,5 +1,6 @@
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesAsSatisfiesNonNull } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
@@ -51,7 +52,9 @@ export function recordToEnvPairs(lowerer: Lowerer, node: ts.Expression): IrExpr 
 }
 
 /** True iff `node` is THE ambient `process.env` object itself (the
- * receiver of an env read). */
+ * receiver of an env read). Strict about the node's shape: a caller that
+ * takes a receiver from source wants isAmbientProcessEnv instead, which
+ * looks through the wrappers erased at runtime. */
 export function isProcessEnv(lowerer: Lowerer, node: ts.Expression): boolean {
   return (
     ts.isPropertyAccessExpression(node) && lowerer.stdlibGlobalMember(node, "process") === "env"
@@ -138,22 +141,20 @@ function reassignedBinding(
   return !bindingNeverReassigned(lowerer, symbol, declaration);
 }
 
-/** Whether an expression is the environment object to Node: the ambient
- * `process.env` or a value held from it (holdsEnvSnapshot). */
-function denotesEnvironment(lowerer: Lowerer, node: ts.Expression): boolean {
-  return isProcessEnv(lowerer, unwrapped(node)) || holdsEnvSnapshot(lowerer, node);
+/** True iff `node` is THE ambient `process.env` object, looking through
+ * parentheses and the erased wrappers (`as`, `!`, `satisfies`): they name
+ * the same object at runtime, so `(process.env).X` and `process.env!.X`
+ * read, write and delete from the environment exactly as the bare form
+ * does. */
+export function isAmbientProcessEnv(lowerer: Lowerer, node: ts.Expression): boolean {
+  return isProcessEnv(lowerer, withoutParenthesesAsSatisfiesNonNull(node));
 }
 
-function unwrapped(node: ts.Expression): ts.Expression {
-  let inner = node;
-  while (
-    ts.isParenthesizedExpression(inner) ||
-    ts.isAsExpression(inner) ||
-    ts.isNonNullExpression(inner) ||
-    ts.isSatisfiesExpression(inner)
-  )
-    inner = inner.expression;
-  return inner;
+/** Whether an expression is the environment object to Node: the ambient
+ * `process.env` (isAmbientProcessEnv) or a value held from it
+ * (holdsEnvSnapshot). */
+export function denotesEnvironment(lowerer: Lowerer, node: ts.Expression): boolean {
+  return isAmbientProcessEnv(lowerer, node) || holdsEnvSnapshot(lowerer, node);
 }
 
 /** `a === b`, `a == b` and their negations where an operand is the

@@ -1,0 +1,172 @@
+name: Profile refresh
+
+# The native compiler profile goes stale as compiler code moves: a build
+# matches a smaller share of the functions it describes every day, and a stale
+# profile leaves the compiler's cold code inline (11 MB more text at 85.4%
+# than with a fresh one). The release workflow collects a fresh profile on the
+# release commit; this job collects one on main every night, builds the native
+# compiler with it to report its match, and opens a pull request that replaces
+# packages/compiler/native/cli.profdata.gz.
+#
+# The profile is collected with the committed layout, the one builds on main
+# lay the compiler out with (scripts/refresh-cli-layout.mjs). A profile
+# collected with a fresh layout would describe functions partitioned unlike
+# the committed layout's and match fewer of the functions builds on main
+# compile, so refreshing the layout is a separate change.
+#
+# The repository accepts only signed commits on every branch, and a commit
+# made with git on the runner has no signature: the push was refused (GH013)
+# on every run from the day this job was added. The commit is therefore made
+# through GitHub's API, which signs it: on a scratch branch at the commit the
+# profile was collected on, and the pull request's branch is then pointed at
+# it, so the branch is always that commit plus the profile.
+#
+# Changes made with the repository's default token do not start workflows, so
+# a pull request this job opens with it carries no CI run. Configure a
+# PROFILE_REFRESH_TOKEN secret (a fine-grained token with contents and pull
+# request write access) to have the pull request run CI as any other.
+on:
+  schedule:
+    # Nightly, off the hour so the run does not start with every other job.
+    - cron: "43 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# One refresh at a time. A manual run restarts a nightly one rather than
+# collecting beside it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Refresh the native compiler profile
+    if: github.repository == 'vercel-labs/scriptc'
+    runs-on: ubuntu-24.04
+    # Two instrumented compiler builds and the training runs take about 20
+    # minutes on a runner's 4 cores, and the compiler build with the refreshed
+    # profile (below) about as long as the CI profile check's.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm --filter @scriptc/compiler --filter scriptc build
+      - name: Check out tsc-ts
+        run: |
+          git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
+          echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
+          npm ci --prefix "$RUNNER_TEMP/tsc-ts"
+      # No SCRIPTC_NATIVE_LAYOUT: the instrumented build keeps the committed
+      # layout, and so do the builds the profile is for.
+      - name: Collect the profile
+        run: >-
+          node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4 --context-sensitive
+          --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
+      - name: Replace the committed profile
+        run: cp "$RUNNER_TEMP/cli-profile/cli.profdata.gz" packages/compiler/native/cli.profdata.gz
+      # A profile that does not build or does not read fails here, on the
+      # refresh that produced it, rather than in the pull request or in main's
+      # CI. The build also prints the match the pull request describes. `tee`
+      # reports its own status, so the step sets pipefail to keep the build's:
+      # a build that fails after printing its summary has to fail the refresh.
+      - name: Build the native compiler with the refreshed profile
+        env:
+          SCRIPTC_NATIVE_PROFILE_CHECK: "1"
+        run: |
+          set -o pipefail
+          pnpm build:native-compiler 2>&1 | tee "$RUNNER_TEMP/profile-check.log"
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_REFRESH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- packages/compiler/native/cli.profdata.gz; then
+            echo "the committed profile is unchanged"
+            exit 0
+          fi
+          summary=$(grep -m1 '^native compiler profile: ' "$RUNNER_TEMP/profile-check.log" || true)
+          test -n "$summary" || { echo "the build printed no profile summary"; exit 1; }
+          branch=refresh-native-profile
+          profile=packages/compiler/native/cli.profdata.gz
+          refs="repos/$GITHUB_REPOSITORY/git/refs"
+          # One branch by its exact name. A read of "$refs/heads/<name>"
+          # answers with every branch that starts with the name when none
+          # has it, and the scratch branch starts with the branch's name.
+          ref="repos/$GITHUB_REPOSITORY/git/ref"
+          head=$(git rev-parse HEAD)
+          # The commit: the checked-out commit of main plus the profile, made
+          # by GitHub on a scratch branch that this step removes again.
+          scratch="$branch-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh api --method POST "$refs" -f ref="refs/heads/$scratch" -f sha="$head" > /dev/null
+          trap 'gh api --method DELETE "$refs/heads/$scratch" > /dev/null || true' EXIT
+          base64 -w0 "$profile" > "$RUNNER_TEMP/profile.b64"
+          jq -n --rawfile contents "$RUNNER_TEMP/profile.b64" \
+            --arg repository "$GITHUB_REPOSITORY" --arg branch "$scratch" --arg head "$head" --arg path "$profile" '{
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: { input: {
+                branch: { repositoryNameWithOwner: $repository, branchName: $branch },
+                expectedHeadOid: $head,
+                message: { headline: "Refresh the native compiler profile" },
+                fileChanges: { additions: [{ path: $path, contents: $contents }] }
+              } }
+            }' > "$RUNNER_TEMP/commit.json"
+          # The request carries the whole profile and its answer can be lost.
+          # The scratch branch says whether the commit was made: it moves off
+          # the checked-out commit exactly when it was.
+          commit=
+          for attempt in 1 2 3; do
+            gh api graphql --input "$RUNNER_TEMP/commit.json" > /dev/null || true
+            commit=$(gh api "$ref/heads/$scratch" --jq .object.sha)
+            if [ "$commit" != "$head" ]; then break; fi
+            commit=
+            sleep 10
+          done
+          test -n "$commit" || { echo "GitHub did not make the commit"; exit 1; }
+          verified=$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit" --jq .commit.verification.verified)
+          test "$verified" = true || { echo "commit $commit is not signed"; exit 1; }
+          # Point the pull request's branch at it. An open pull request keeps
+          # its number and shows the new profile on the new commit of main.
+          if gh api "$ref/heads/$branch" > /dev/null 2>&1; then
+            gh api --method PATCH "$refs/heads/$branch" -f sha="$commit" -F force=true > /dev/null
+          else
+            gh api --method POST "$refs" -f ref="refs/heads/$branch" -f sha="$commit" > /dev/null
+          fi
+          if gh pr list --head "$branch" --state open --json number --jq '.[].number' | grep -q .; then
+            echo "updated the open pull request"
+            exit 0
+          fi
+          {
+            echo "Refreshes \`packages/compiler/native/cli.profdata.gz\` on main with"
+            echo '`node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> --context-sensitive`,'
+            echo "using the committed layout."
+            echo
+            echo "A build of this commit with the refreshed profile reports:"
+            echo
+            echo '```'
+            echo "$summary"
+            echo '```'
+            echo
+            echo "Collected by the nightly profile refresh:"
+            echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$RUNNER_TEMP/pr-body.md"
+          gh pr create --base main --head "$branch" \
+            --title "Refresh the native compiler profile" \
+            --body-file "$RUNNER_TEMP/pr-body.md"

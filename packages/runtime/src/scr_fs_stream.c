@@ -270,11 +270,15 @@ static void scr_fss_after_open(ScrFssOp *op) {
   scr_stream_construct_done(s, NULL);
   ScrStr *name = scr_str_new("open", 4);
   double fd = (double)f->fd; /* emitter arguments are slot pointers */
-  scr_emitter_emit((ScrEmitter *)s, name, &fd);
+  /* The fd as a checked-dynamic argument for listeners registered through
+   * untyped values. */
+  ScrDyn *fdDyn = scr_dyn_new_num(fd);
+  scr_emitter_emit_mixed((ScrEmitter *)s, name, &fdDyn, 1, &fd);
+  scr_dyn_release(fdDyn);
   scr_str_release(name);
   if (scr_exc_pending()) return;
   name = scr_str_new("ready", 5);
-  scr_emitter_emit((ScrEmitter *)s, name);
+  scr_emitter_emit_mixed((ScrEmitter *)s, name, NULL, 0);
   scr_str_release(name);
 }
 
@@ -494,7 +498,7 @@ static bool scr_fss_integer(const ScrDyn *v, const char *name) {
 }
 
 static void scr_fss_unsupported(const char *msg) {
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, strlen(msg), "SC2020");
 }
 
 /* The options record after getOptions: a +1 object (an empty one for

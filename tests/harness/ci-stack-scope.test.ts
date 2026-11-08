@@ -9,6 +9,7 @@ type Job = {
   needs?: string | string[];
   if?: string;
   permissions?: Record<string, string>;
+  outputs?: Record<string, string>;
   steps?: { run?: string; uses?: string }[];
 };
 const workflow = load(
@@ -199,7 +200,9 @@ test("every expensive CI job is gated and included in the required test check", 
     else {
       expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
       expect(job.needs, name).toContain("lanes");
-      expect(["linux", "macos", "effects", "bootstrap"], name).toContain(lane);
+      expect(["linux", "macos", "effects", "bootstrap", "profile", "islands"], name).toContain(
+        lane,
+      );
     }
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }
@@ -209,6 +212,26 @@ test("every expensive CI job is gated and included in the required test check", 
   expect(workflow.jobs.test!.needs).toContain("code_quality");
   // A skipped required job reports success, so aggregate even on cancellation.
   expect(workflow.jobs.test!.if).toBe("${{ always() }}");
+});
+
+test("a lane the base revision's selector does not name leaves its job off", () => {
+  // A pull request runs the base revision's selector, and one older than a
+  // lane emits no output for it. Off keeps the required check passing on that
+  // skip; an empty lane would fail it.
+  // effect_shards is not a lane: it names the shards of the effects lane, and
+  // every shard when the selector says nothing (ci-lanes.test.ts).
+  const { effect_shards: effectShards, ...outputs } = workflow.jobs.lanes!.outputs!;
+  expect(effectShards).toBeDefined();
+  expect(Object.keys(outputs).sort()).toEqual([
+    "bootstrap",
+    "effects",
+    "islands",
+    "linux",
+    "macos",
+    "profile",
+  ]);
+  for (const [lane, output] of Object.entries(outputs))
+    expect(output, lane).toBe(`\${{ steps.lanes.outputs.${lane} || 'false' }}`);
 });
 
 function runGate(

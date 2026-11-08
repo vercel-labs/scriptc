@@ -16,6 +16,8 @@ declare module "path" {
   export function isAbsolute(path: string): boolean;
   export function relative(from: string, to: string): string;
   export function toNamespacedPath(path: string): string;
+  /* Node's deprecated alias of toNamespacedPath (POSIX identity). */
+  export function _makeLong(path: string): string;
   /* matchesGlob() is Node's glob matcher: brace expansion, extglobs, POSIX
    * classes and the ** and dot rules. */
   export function matchesGlob(path: string, pattern: string): boolean;

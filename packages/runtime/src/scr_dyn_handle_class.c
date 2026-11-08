@@ -284,6 +284,21 @@ void scr_dyn_handle_class_install(ScrDynHandleTag tag, const ScrDynHandleOps *op
   hc_classes[tag] = klass;
 }
 
+static const ScrDynHandleAccessor *hc_accessors(const ScrDyn *handle) {
+  ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
+  const ScrDynHandleClass *klass = tag == SCR_DYNH_CAPACITY ? NULL : hc_classes[tag];
+  return klass && klass->accessors && klass->accessors->name ? klass->accessors : NULL;
+}
+
+static const ScrDynHandleClassOps hc_class_ops = {
+    .prototype_of = scr_dyn_handle_class_prototype_of,
+    .receiver = scr_dyn_handle_class_receiver,
+    .method_call = scr_dyn_handle_class_method_call,
+    .accessors = hc_accessors,
+};
+
+__attribute__((constructor)) static void hc_install(void) { scr_dyn_handle_class_ops = &hc_class_ops; }
+
 ScrDyn *scr_dyn_handle_class_value(ScrDynHandleTag tag) {
   if (!hc_ctors[tag]) hc_create(tag);
   return scr_dyn_retain(hc_ctors[tag]);

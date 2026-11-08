@@ -80,13 +80,56 @@ console.log(fact.join(" "));
     const body = new RegExp(`^define [^@]*@sc_\\w+?_${name}\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
     return body.match(/^loop\.b\d+:/gm)?.length ?? 0;
   };
-  // The body runs only for numbers the version does not take: its loop gets
-  // no speculative integer copy beside the ordinary one.
-  expect(loopBodies("fillFact")).toBe(1);
+  // The fallback runs only for numbers the version does not take: its loop
+  // gets no speculative integer copy beside the ordinary one.
+  expect(loopBodies("fillFact")).toBe(0);
+  expect(loopBodies("fillFact_int32Fallback")).toBe(1);
   expect(loopBodies("fillFact_int32Params\\.i32")).toBe(1);
+});
+
+test("a loop that writes record fields is versioned on its bound", async () => {
+  // `p.v -= dt` lowers to a sequence expression around a record write, and
+  // `p.x = ...` to a record write statement.
+  const llvm = await emitLlvm(`
+interface Particle { x: number; v: number }
+function step(particles: Particle[], n: number, dt: number): void {
+  for (let i = 0; i < n; i++) {
+    const p = particles[i]!;
+    p.v -= dt * p.x;
+    p.x = p.x + p.v * dt;
+  }
+}
+const particles: Particle[] = [{ x: 0, v: 1 }, { x: 1, v: 2 }];
+step(particles, Number(process.argv.length > 5 ? "1.5" : "2"), 0.5);
+console.log(particles[0]!.x, particles[1]!.v);
+`);
+  expect(versions(llvm)).toEqual(["step"]);
+  // The version takes the bound as an i32 and the step as a double.
+  expect(llvm).toMatch(/^define [^@]*@sc_\w+_step_int32Params\.i32\([^)]*\bi32 [^)]*\bdouble /m);
 });
 
 test("a module that reads stacks keeps a single body", async () => {
   const llvm = await emitLlvm(`${loops}\nconsole.log(typeof new Error("x").stack);\n`);
   expect(versions(llvm)).toEqual([]);
+});
+
+test("the original body runs as an out-of-line fallback the helper places by name", async () => {
+  const llvm = await emitLlvm(loops);
+  // Only a bound that is not an int32 reaches it: it is cold, never
+  // inlined, and marked for the helper's partitioner.
+  expect(llvm).toMatch(
+    /^define [^@]*@sc_\w+?_sumTo_int32Fallback\([^)]*\) noinline cold "scriptc-fallback" /m,
+  );
+  // The function itself keeps only the int32 test and the two calls.
+  const body = /^define [^@]*@sc_\w+?_sumTo\([^]*?^}/m.exec(llvm)?.[0] ?? "";
+  expect(body).toMatch(/call [^@]*@sc_\w+_sumTo_int32Params/);
+  expect(body).toMatch(/call [^@]*@sc_\w+_sumTo_int32Fallback/);
+  expect(body).not.toMatch(/^loop\./m);
+});
+
+test("a versioned function stays out of line so its copy compiles in its frame", async () => {
+  const llvm = await emitLlvm(loops);
+  // Inlined into a caller the function takes its copy along, and the loops
+  // then compile in that caller's frame instead of this one.
+  expect(llvm).toMatch(/^define [^@]*@sc_\w+?_sumTo\([^)]*\) noinline /m);
 });

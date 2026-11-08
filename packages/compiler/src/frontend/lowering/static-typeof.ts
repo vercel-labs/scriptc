@@ -1,5 +1,7 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
+import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
@@ -8,11 +10,14 @@ import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower
  * ambiently and nothing defines, answers "undefined" (Node's answer for an
  * undeclared global such as window or self, and typeof never throws for
  * one), and the Node global object and process answer "object". Null for
- * every other operand. */
+ * every other operand. A Node 24 global the native runtime does not provide
+ * answers "function" statically: Node has the constructor, and typeof is a
+ * read, not a use (host-global-values.ts). */
 export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): string | null {
   let e = operand;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return null;
+  if (hostGlobalNameOfIdentifier(lowerer, e) !== null) return "function";
   if (lowerer.checker.getSymbolAtLocation(e) === undefined) return "undefined";
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
@@ -28,12 +33,8 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
  * `typeof self !== "undefined"`), folded: the operand read has no effects,
  * so only the comparison's value remains. Null for other shapes. */
 export function staticTypeofComparison(lowerer: Lowerer, e: ts.BinaryExpression): boolean | null {
-  const unwrap = (x: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const left = unwrap(e.left);
-  const right = unwrap(e.right);
+  const left = withoutParentheses(e.left);
+  const right = withoutParentheses(e.right);
   const literal = (x: ts.Expression): string | null =>
     ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x) ? x.text : null;
   let answer: string | null = null;

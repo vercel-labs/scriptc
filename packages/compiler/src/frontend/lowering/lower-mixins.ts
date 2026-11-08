@@ -36,6 +36,7 @@
  * evaluates). */
 import { positionTag } from "./structural-positions.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
 import { type IrType } from "../../ir/ir.js";
@@ -89,12 +90,6 @@ export interface MixinInstanceInfo {
   statics?: { sf: ts.SourceFile; pos: number };
 }
 
-/** Strips parentheses. */
-function unparen(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
 /** The class a mixin FUNCTION's body defines and returns, with every
  * traceability requirement checked — null when the function is not a
  * (supported) mixin. Cached per function node; recognition is pure (no
@@ -129,12 +124,12 @@ function mixinFnShapeInner(
   // not execute) disqualifies.
   let classNode: ts.ClassLikeDeclaration | null = null;
   if (!ts.isBlock(fn.body)) {
-    const e = unparen(fn.body);
+    const e = withoutParentheses(fn.body);
     if (ts.isClassExpression(e)) classNode = e;
   } else {
     const stmts = fn.body.statements.nodes;
     if (stmts.length === 1 && ts.isReturnStatement(stmts[0]!) && stmts[0]!.expression) {
-      const e = unparen(stmts[0]!.expression!);
+      const e = withoutParentheses(stmts[0]!.expression!);
       if (ts.isClassExpression(e)) classNode = e;
     } else if (
       stmts.length === 2 &&
@@ -143,7 +138,7 @@ function mixinFnShapeInner(
       ts.isReturnStatement(stmts[1]!) &&
       stmts[1]!.expression !== undefined
     ) {
-      const ret = unparen(stmts[1]!.expression!);
+      const ret = withoutParentheses(stmts[1]!.expression!);
       if (ts.isIdentifier(ret)) {
         const clsSym = lowerer.checker.getSymbolAtLocation(stmts[0]!.name!);
         if (clsSym && lowerer.checker.getSymbolAtLocation(ret) === clsSym) classNode = stmts[0]!;
@@ -247,7 +242,7 @@ function mixinFnNodeOfBinding(
   ) {
     return null;
   }
-  const init = unparen(decl.initializer);
+  const init = withoutParentheses(decl.initializer);
   return ts.isArrowFunction(init) || ts.isFunctionExpression(init) ? init : null;
 }
 
@@ -266,7 +261,7 @@ export function isMixinFnBinding(lowerer: Lowerer, decl: ts.VariableDeclaration)
  * is a mixin call — from here failures are honest diagnostics, never a
  * fallthrough to a wronger message). */
 function mixinBaseClassOf(lowerer: Lowerer, arg: ts.Expression): ClassInfo {
-  const e = unparen(arg);
+  const e = withoutParentheses(arg);
   // A nested mixin call: `Tagged(Printable(Derived))` — the inner
   // instantiation is the outer's base (instantiated first, exactly JS's
   // argument-before-call order).
@@ -361,7 +356,7 @@ export function mixinResultBindingClassOf(
   ) {
     return null;
   }
-  const init = unparen(decl.initializer);
+  const init = withoutParentheses(decl.initializer);
   if (!ts.isCallExpression(init)) return null;
   const info = mixinCallClassInfoOf(lowerer, init);
   if (info) lowerer.classBySymbol.set(sym, info);

@@ -7,6 +7,7 @@
 
 #include "scr_async.h"
 #include "scr_dyn.h"
+#include "scr_events.h"
 
 /* Records the build-time configuration: the libnode pack directory
  * (absolute, or `$ORIGIN/`-relative to the executable) and the Node version
@@ -65,11 +66,13 @@ void scr_loop_hosted_microtasks_done(void);
 void scr_node_island_leave_stack(uintptr_t sp);
 
 /* Process events island code listens to (SCR_NODE_EVENT_* of the bridge
- * ABI). Their listeners sit in the runtime's registries (the
- * SCR_NODE_ISLANDS build of scr_events.c) at their registration position,
- * and a delivery calls them through scr_node_island_emit: a signal with
- * its number, exit with the code. */
-enum { SCR_NODE_ISLAND_EVENT_SIGNAL = 1, SCR_NODE_ISLAND_EVENT_EXIT = 2 };
+ * ABI). Their listeners sit in scr_events.c's registries at their
+ * registration position, and a delivery calls them through
+ * scr_node_island_emit: a signal with its number, exit with the code. */
+enum {
+  SCR_NODE_ISLAND_EVENT_SIGNAL = SCR_EVENTS_ISLAND_SIGNAL,
+  SCR_NODE_ISLAND_EVENT_EXIT = SCR_EVENTS_ISLAND_EXIT,
+};
 void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg);
 void scr_signal_on_island(ScrStr *name, uint32_t listener);
 void scr_signal_off_island(uint32_t listener);
@@ -86,6 +89,10 @@ void scr_process_off_exit_island(uint32_t listener);
  * Node. See scriptc-perf/results/ni-4/ABI.md. */
 ScrDyn *scr_ni_require(ScrStr *path);     /* require(absolute path): the exports */
 ScrPromise *scr_ni_import(ScrStr *path);  /* import(absolute path): the namespace */
+/* process.report, answered by the island — which is this same process, so
+ * the report's sharedObjects lists the binary's real libraries. Compiler
+ * builds that have no island keep the process.report refusal instead. */
+ScrDyn *scr_ni_process_report(void);
 ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key);
 ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len);
 bool scr_ni_set(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
@@ -121,6 +128,70 @@ ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
 ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
+/* The operations the units every program can link route to the island
+ * units: what scr_json.c's dynamic paths do with an island handle (typeof,
+ * calls, ToPrimitive, `in`, delete, Object.keys, weak-collection keys and
+ * the rest), util.inspect of one (scr_inspect.c), instanceof against one
+ * (scr_dyn_builtin_class.c) and the uncaught report of an island error
+ * (scr_exception.c).
+ * scr_node_island_handle.c installs them from a constructor, so they are
+ * set in every program that can hold an island handle and NULL in every
+ * other, and each of those units builds one object whether or not a program
+ * links the island units. */
+typedef struct ScrNiDynOps {
+  ScrDyn *(*get)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*get_str)(ScrDyn *obj, const char *key, size_t len);
+  int (*has)(ScrDyn *obj, ScrDyn *key);
+  int (*delete_key)(ScrDyn *obj, ScrDyn *key);
+  ScrDyn *(*own_keys)(ScrDyn *obj, int mode);
+  /* Array.isArray of the node: the JSON serializer and a checked array
+   * conversion take the array shape from it. */
+  bool (*is_array)(const ScrDyn *value);
+  ScrDyn *(*call)(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
+  ScrDyn *(*construct)(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
+  ScrStr *(*type_of)(ScrDyn *value);
+  bool (*util_type_is)(const ScrDyn *value, const ScrStr *probe);
+  int (*instance_of)(ScrDyn *value, ScrDyn *ctor);
+  ScrDyn *(*to_primitive)(const ScrDyn *self, int hint);
+  bool (*is_function)(const ScrDyn *value);
+  /* The `constructor` of an error island code threw, answered by V8 (+1 in
+   * *out): an error keeps its realm's constructor, so a native
+   * `e.constructor === TypeError` holds with the island's TypeError. 1 for
+   * an island error, 0 for any other. */
+  int (*error_constructor)(const struct ScrError *err, ScrDyn **out);
+  /* Object.prototype.toString.call(value), answered by Node (+1; NULL with
+   * the exception pending). */
+  ScrStr *(*object_tag)(const ScrDyn *value);
+  /* The identity root of an island function (borrowed, owned by the
+   * function's handle): every typed view of the function adopts it, so the
+   * views are one function to `===`, searches and collection keys. NULL for
+   * a value that is not a function. */
+  struct ScrClosure *(*function_identity)(const ScrDyn *fn);
+  /* The island function whose identity root is `root`, as its handle (+1);
+   * NULL when `root` is not such a root. A signature adapter over a view of
+   * an island function boxes as the function itself through this. */
+  ScrDyn *(*function_of_identity)(const struct ScrClosure *root);
+  /* util.inspect of an island value (scr_ni_inspect). */
+  ScrStr *(*inspect)(const ScrDyn *value, double recurse, double depth);
+  /* Node's uncaught-exception report for an error island code threw
+   * (scr_ni_report_uncaught): true when it printed one. */
+  bool (*report_uncaught)(struct ScrError *error);
+  /* Weak collections keyed by island objects (scr_ni_weak_get,
+   * scr_ni_weak_test, scr_ni_weak_set): the entries of a native WeakMap,
+   * WeakSet or FinalizationRegistry whose key is an island object live in a
+   * collection inside the island. */
+  ScrDyn *(*weak_get)(ScrDyn *collection, ScrDyn *key);
+  int (*weak_test)(ScrDyn *collection, bool set, ScrDyn *key, bool remove);
+  bool (*weak_set)(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
+} ScrNiDynOps;
+extern const ScrNiDynOps *scr_ni_dyn_ops;
+
+/* scr_ni_is_handle for units that also build into programs without the
+ * island units. */
+static inline bool scr_ni_dyn_handle(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_NODE_ISLAND;
+}
+
 /* Between the two island units. */
 struct ScrNodeValue;
 const struct ScrNodeBridge *scr_ni_bridge(void);        /* loads Node */
@@ -129,6 +200,14 @@ const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
  * program's module tree, under its root once Node is loaded; anything else
  * (a built-in module) as it is. */
 char *scr_ni_module_path(const ScrStr *path);
+/* The installed island module tree (scr_node_island.c, "What a start
+ * does"): whether an island error's code says Node did not find a file,
+ * whether an error's text names the tree, the repair of the files it lacks
+ * (once per process), and how many files this process put back. */
+bool scr_ni_missing_file_code(const char *code, size_t len);
+bool scr_ni_tree_named(const char *text, size_t len);
+void scr_ni_tree_repair(void);
+size_t scr_ni_tree_repairs(void);
 void scr_ni_on_node_stack(void (*job)(void *), void *arg);
 void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
 void scr_ni_bytes_free(void *owner);
@@ -178,6 +257,48 @@ int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, struct ScrNode
 void scr_ni_host_shared_tdz(struct ScrNodeValue *out);
 int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *args, size_t argc,
                           struct ScrNodeValue *out);
+/* ── twins (scr_node_island_export.c) ─────────────────────────────────────
+ * A native object of a platform class whose island receivers test its brand
+ * crosses as an export whose representative is a real object of the
+ * island's own class (scr_node_bridge.h SCR_NVF_TWIN). The other way, an
+ * island object of such a class that reaches native code is adopted: a new
+ * native object stands for it natively, as an export whose representative
+ * is that island object. A class joins by registering from a unit of its
+ * own, which links only into programs that have both Node islands and the
+ * class's native objects. The native object's reference count is its first
+ * word (NI-8 reads it). */
+typedef struct ScrNiTwinClass {
+  int tag;          /* the native objects' handle tag (SCR_DYNH_*) */
+  const char *name; /* the island class: a twin maker of scr_node_island_host.cjs */
+  /* The class shares its native object with another twin class (an
+   * AbortController and its signal are one object natively): the two are
+   * separate exports. At most one class per object says so. */
+  bool shares_object;
+  /* Export `id` of `object` was made: the object starts telling its twin
+   * what changes (scr_ni_twin_tell). The answer, when not NULL, goes to
+   * `detach` before the export table lets go of the object, unless the
+   * class reported it gone (scr_ni_twin_detached). NULL: nothing to tell. */
+  void *(*attach)(uint32_t id, void *object);
+  void (*detach)(void *attachment);
+  /* A new native object (+1) to stand for an island object of the class
+   * that reached native code. NULL: island objects of the class stay
+   * handles. */
+  ScrDyn *(*adopt)(void);
+  /* The island object told its native object that `event` happened, with
+   * `value` (borrowed): SCR_NODE_TWIN_TELL. NULL: nothing to hear. */
+  void (*hear)(void *object, const char *event, ScrDyn *value);
+  struct ScrNiTwinClass *next;
+} ScrNiTwinClass;
+void scr_ni_twin_register(ScrNiTwinClass *cls);
+bool scr_ni_twin_box(const ScrDyn *v); /* a native object of a twin class */
+/* The native object of export `id` tells its twin that `event` happened,
+ * with `value` (borrowed). */
+void scr_ni_twin_tell(uint32_t id, const char *event, ScrDyn *value);
+void scr_ni_twin_detached(uint32_t id); /* the attachment freed itself */
+/* The native object (+1) that adopts island object `island` (its handle
+ * box, import `handle`), or NULL when no class adopts it: it stays a handle. */
+ScrDyn *scr_ni_twin_adopt(ScrDyn *island, uint32_t handle);
+size_t scr_ni_twin_exports(const void *object, uint32_t ids[2]); /* NI-8 */
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 void *scr_promise_untraced_dyn_payload(const ScrPromise *p);
@@ -191,6 +312,14 @@ struct ScrNodeGcResult;
 int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
                            struct ScrNodeGcResult *out);
 void scr_ni_gc_cleanup(void); /* at exit */
+/* Weak collections keyed by island objects (scr_node_island_gc.c): the
+ * entries of a native WeakMap, WeakSet or FinalizationRegistry whose key
+ * is an island object live in a WeakMap or WeakSet inside the island,
+ * `collection` (NULL until the first such entry; `set`: a WeakSet).
+ * scr_json.c calls them through ScrNiDynOps. */
+ScrDyn *scr_ni_weak_get(ScrDyn *collection, ScrDyn *key); /* +1; undefined: no entry */
+int scr_ni_weak_test(ScrDyn *collection, bool set, ScrDyn *key, bool remove); /* 1, 0; -1: threw */
+bool scr_ni_weak_set(ScrDyn **collection, bool set, ScrDyn *key, ScrDyn *value);
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

@@ -9,6 +9,7 @@ import {
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
   lowerFsNumericOpenCall,
+  lowerFsOpenCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -22,9 +23,12 @@ import {
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
+  lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
   lowerFsWriteOptionsCall,
+  lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
+  lowerFsExistsValueCall,
 } from "./filesystem-calls.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
@@ -140,6 +144,7 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsNumericOpenCall(lowerer, expr, loc);
   }
+  if (bi.module === "fs" && bi.member === "openSync") return lowerFsOpenCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
     return lowerer.lowerSpawnSyncCall(expr, loc);
@@ -185,6 +190,13 @@ export function lowerBuiltinModuleCall(
   const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
   if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
+  }
+  // fs.existsSync(path) over a Buffer path or a value whose type only the
+  // runtime knows (`any`): Node answers false for a non-path and reports
+  // DEP0187 once, which the value form does.
+  if (bi.module === "fs" && bi.member === "existsSync") {
+    const lowered = lowerFsExistsValueCall(lowerer, expr, loc);
+    if (lowered) return lowered;
   }
   // fs.statSync/fs.lstatSync(path, options) and fs.fstatSync(fd, options):
   // throwIfNoEntry and bigint, routed BEFORE the table completion.
@@ -381,9 +393,11 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
+  // The byte-data two-argument forms: appendFile appends, writeFile
+  // truncates (the same difference the string forms have).
   if (
     bi.module === "fs/promises" &&
-    bi.member === "appendFile" &&
+    (bi.member === "appendFile" || bi.member === "writeFile") &&
     expr.arguments.nodes.length === 2 &&
     lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
   ) {
@@ -409,6 +423,18 @@ export function lowerBuiltinModuleCall(
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
+  // writeFileSync/appendFileSync with options the plain forms do not cover:
+  // a non-utf8 encoding, a flag from Node's wider table, Buffer data, or
+  // any options on appendFileSync. The plain utf8 forms keep their existing
+  // lowerings (lowerFsWriteOptionsCall answers them).
+  if (
+    bi.module === "fs" &&
+    (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsSyncWriteOptionsCall(lowerer, expr, loc, bi.member);
+    if (lowered) return lowered;
+  }
   // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,
   // options): the lowered options are a literal
   // `{ mode?: <number>, encoding?: "utf8" }` — the mode is open(2)'s
@@ -420,6 +446,13 @@ export function lowerBuiltinModuleCall(
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
+  }
+  // appendFileSync(p, data, options): only the encoding can be lowered
+  // here (utf8 is what the runtime appends anyway; the flag a plain append
+  // already uses); `mode` and any other flag keep their fence, since they
+  // change what an append creates.
+  if (bi.module === "fs" && bi.member === "appendFileSync" && expr.arguments.nodes.length === 3) {
+    return lowerFsAppendOptionsCall(lowerer, expr, loc);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain

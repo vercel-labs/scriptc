@@ -24,6 +24,7 @@ import {
 } from "./input-tracker.js";
 import { npmBuiltinAliasOf } from "./builtin-modules.js";
 import { packageSourceText, typePatchSuppliesTypes } from "./type-patches/layer.js";
+import { isFrontendIsland } from "../node-islands/boundary.js";
 
 let activePackages: ReadonlySet<string> = new Set();
 let declarationOverloads: ReadonlyMap<string, NpmStaticDeclarationOverloads> = new Map();
@@ -101,6 +102,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
+  esmPkgCache.clear();
   transformedPkgTexts.clear();
   realpathProbed.clear();
   aliasNames.clear();
@@ -411,6 +413,55 @@ function packageIsUntyped(path: string): boolean {
   return untyped;
 }
 
+/** The installed package directory a node_modules path belongs to, or null
+ * outside node_modules. */
+function nodeModulesPackageDir(path: string): string | null {
+  const norm = path.split("\\").join("/");
+  const idx = norm.lastIndexOf("/node_modules/");
+  if (idx === -1) return null;
+  const parts = norm.slice(idx + "/node_modules/".length).split("/");
+  const first = parts[0] ?? "";
+  const dirName = first.startsWith("@") ? `${first}/${parts[1] ?? ""}` : first;
+  return `${norm.slice(0, idx)}/node_modules/${dirName}`;
+}
+
+/** Whether the package installs its `.js` files as ES modules (`"type":
+ * "module"`): the any-surface stub is CommonJS-shaped, so an ESM package's
+ * file keeps its own text. Cached per package directory. */
+const esmPkgCache = new Map<string, boolean>();
+
+function packageShipsEsmJs(pkgDir: string): boolean {
+  const hit = esmPkgCache.get(pkgDir);
+  if (hit !== undefined) return hit;
+  let esm = false;
+  try {
+    const text = trackedReadFile(`${pkgDir}/package.json`);
+    if (text !== null) {
+      const doc = JSON.parse(text) as Record<string, unknown>;
+      esm = doc["type"] === "module";
+    }
+  } catch {
+    /* a broken package.json keeps the CommonJS shape */
+  }
+  esmPkgCache.set(pkgDir, esm);
+  return esm;
+}
+
+/** Whether a JavaScript file of an opted-in package that runs in a Node
+ * island keeps the implicit-any import surface instead of being inferred
+ * from its source (see the island rule in the fs shadow): an untyped
+ * package, or a CommonJS file no declaration covers. Where the package
+ * declares the subpath from its own declarations (an ambient `declare
+ * module 'pkg/lib/languages/*'` block, which the checker never consults
+ * once the specifier resolves to the JavaScript file), inferring the file
+ * would replace a DECLARED surface with an inferred one. CommonJS only: the
+ * stub is CommonJS-shaped. */
+function servesImplicitAnySurface(path: string): boolean {
+  if (packageIsUntyped(path)) return true;
+  const pkgDir = nodeModulesPackageDir(path);
+  return pkgDir !== null && !packageShipsEsmJs(pkgDir);
+}
+
 /** An installed TypeScript source with no runtime JavaScript at its stem
  * (tldts ships `index.ts` beside `main: "dist/cjs/index.js"`). Node never
  * executes TypeScript under node_modules and resolve.ts answers only
@@ -440,29 +491,27 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
   if (!npmStaticActive()) return null;
   return {
     readFile: (path) => {
+      // A package that is not opted in is read as it is: its JavaScript never
+      // joins the program (tsgo loads node_modules JavaScript only as a
+      // root, and only opted-in packages' files are rooted), so its imports
+      // type exactly as they do without any opted-in package.
       const target = shadowTargetOf(path);
-      /* NON-OPTED node_modules JS: maxNodeModuleJsDepth (set only on
-       * --npm-static loads) admits third-party JS the flagless build never
-       * types, and an UNTYPED package's inferred surface would then
-       * replace the `any` its imports contribute flagless — changing the
-       * PROGRAM's own types under a flag that promised to touch only the
-       * opted-in packages (the jaro-winkler shape: an @ts-ignore'd import
-       * whose result feeds program arithmetic). Serve those files as the
-       * any-surface stub instead: the import types exactly what the
-       * flagless build typed. Typed packages (own .d.ts or an installed
-       * @types twin) resolve types-first and never reach here. */
-      if (!target) {
-        if (
-          (path.endsWith(".js") || path.endsWith(".cjs")) &&
-          isNodeModulesPathNorm(path) &&
-          !trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts")) && // a sibling .d.ts types this very file
-          packageIsUntyped(path)
-        ) {
-          return "module.exports = (() => { let u; return u; })();\n";
-        }
-        return undefined;
-      }
+      if (!target) return undefined;
       if (target.viaTypes) return undefined;
+      /* An OPTED-IN package that runs in a Node ISLAND is typed by its
+       * declarations: its bodies are never lowered, so its JavaScript adds
+       * only the declared/inferred mix (highlight.js: the ambient block
+       * types `lib/languages/*` through the island's declaration entry, while
+       * inferring `php.js` makes one language function's `hljs` required
+       * against the declared `LanguageFn`). A subpath no declaration file
+       * covers keeps the implicit-any surface it has without the flag. */
+      if (
+        isFrontendIsland(target.pkg) &&
+        (path.endsWith(".js") || path.endsWith(".cjs")) &&
+        !trackedExists(path.replace(/\.(js|cjs)$/, ".d.ts")) &&
+        servesImplicitAnySurface(path)
+      )
+        return "module.exports = (() => { let u; return u; })();\n";
       if (path.endsWith("/package.json") || path.endsWith("\\package.json")) {
         try {
           const source = trackedReadFile(path);

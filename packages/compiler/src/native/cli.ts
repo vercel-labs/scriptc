@@ -9,6 +9,8 @@ import {
   stageNativeRuntimeSelection,
 } from "../backend/runtime-pack-native.js";
 import { mergeNativeProfiles } from "../backend/native-tools.js";
+import { noLinkFeatures } from "../backend/native-link-info-core.js";
+import "../backend/native-codegen-server.js";
 import { setDeclarationRoot } from "../frontend/dts-paths.js";
 import { setFrontendDisposedHook } from "../frontend/dispose-hook.js";
 import { FrontendServices } from "../frontend/services.js";
@@ -17,7 +19,7 @@ import { checkerServerLost, createNativeTs7Api } from "../frontend/ts7/native-ap
 import { resolveProvenanceSourcesWithParser } from "../frontend/provenance-core.js";
 import { setCompilerReleaseVersion } from "../library/sidecar.js";
 import { NativeCompiler } from "./compiler.js";
-import { NATIVE_STRING_BYTES, openNativeCache } from "./cache.js";
+import { NATIVE_STRING_BYTES, openCompilerStateCache, openNativeCache } from "./cache.js";
 import {
   checkerExecutableIdentity,
   checkerPackageVersion,
@@ -88,6 +90,9 @@ async function main(): Promise<number> {
     if (toolchain.declarationsRoot !== undefined) setDeclarationRoot(toolchain.declarationsRoot);
     setCompilerReleaseVersion(toolchain.compilerVersion);
     cache = openNativeCache((path, harden) => compilerNativePrivateDirectory(path, harden));
+    const state = openCompilerStateCache((path, harden) =>
+      compilerNativePrivateDirectory(path, harden),
+    );
     if (cache !== null) {
       const store = cache;
       setLibDiagnosticsStore(
@@ -120,7 +125,7 @@ async function main(): Promise<number> {
         write: (key, text) => store.write("checker-features", key, text),
       });
     }
-    compiler = new NativeCompiler(toolchain, cache);
+    compiler = new NativeCompiler(toolchain, cache, state);
     return compiler;
   };
   return runCli(process.argv.slice(2), {
@@ -163,52 +168,7 @@ async function main(): Promise<number> {
             toolchain.runtimePackRoot,
             toolchain.target,
             toolchain.compilerVersion,
-            {
-              fetch: profile === "tls",
-              regex: false,
-              copying: false,
-              textDecoderLegacy: false,
-              fileHandle: false,
-              zlib: false,
-              assert: false,
-              inspect: false,
-              dynInvoke: false,
-              dc: false,
-              dynAsync: false,
-              events: false,
-              emitter: false,
-              symbol: false,
-              bigint: false,
-              searchParams: false,
-              qs: false,
-              utilPromisify: false,
-              dynBuiltinClass: false,
-              dynBuiltinStream: false,
-              parseArgs: false,
-              stream: false,
-              net: false,
-              http: false,
-              http2: false,
-              dgram: false,
-              dnsPromises: false,
-              dgramDyn: false,
-              textCodecDyn: false,
-              watch: false,
-              watchFile: false,
-              fsBufferBrand: false,
-              foreignFfi: false,
-              nodeTest: false,
-              tls: false,
-              cipher: false,
-              ecdh: false,
-              dh: false,
-              pki: false,
-              ed25519: false,
-              x509: false,
-              webcrypto: false,
-              perfLoop: false,
-              tlsCa: false,
-            },
+            { ...noLinkFeatures(), fetch: profile === "tls" },
             options.optimization ?? "release",
           );
           if (options.sanitize) buildSanitizedRuntime(toolchain, pack, stage, "executable", cache);
@@ -246,6 +206,7 @@ async function main(): Promise<number> {
         sparse,
       });
     },
+    reinvoke: (args) => ({ file: process.execPath, args }),
     run: async (binary) => {
       const toolchain = getCompiler().toolchain;
       let executable = binary;

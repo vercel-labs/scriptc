@@ -1,0 +1,29 @@
+scriptc coverage tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts
+
+  statements analyzed   16
+  compile statically    16  (100%)
+    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    ni-sdk  static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    gap  ni-sdk@2.0.0
+          tests/coverage-fixtures/node-islands-fenced-sdk-values/node_modules/ni-sdk/index.js:7:26: SC1090: extending classes not declared in the program ('Promise') is not supported yet
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  fully static — all analyzed statements compile to native code.
+
+  trusts unverified types   4 checked conversions on 4 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×1  ni-sdk@2.0.0 declares AssistantParam.content as string | TextPart[] | null | undefined (index.d.ts:28): a Node island value, and values reached through it read as number
+          at tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts:24:84
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-sdk AssistantParam.content '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  ni-sdk@2.0.0 declares Input as Input (index.d.ts:17): a Node island value
+          at tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts:14:5
+          fix: no selector reaches this declaration (it is generic, or the member comes from a mapped or inferred type), so its type is the one this program gives it: correct the type at the listed sites, or replace the declaration file with a "files" type patch ("scriptc": { "typePatches": { "ni-sdk@^2.0.0": { "files": … } } } in package.json)
+      ×1  ni-sdk@2.0.0 declares send() as string (index.d.ts:32): a Node island value
+          at tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts:27:13
+          fix: if the declaration is wrong, patch it: scriptc types patch ni-sdk 'send()' '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  a Node island value the program reads as string | undefined
+          at tests/coverage-fixtures/node-islands-fenced-sdk-values/main.ts:27:58
+          fix: check the island's value (typeof, in, a schema) before giving it this type, or declare the type it really has

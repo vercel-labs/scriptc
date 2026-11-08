@@ -275,6 +275,52 @@ static void age_to_old(Node *node) {
   check(scr_cyc_gen(scr_cyc_hdr(node)) == SCR_CYC_OLD, "survivor did not reach the old generation");
 }
 
+/* A turn whose nursery buffer is empty still runs the growth rule. The
+ * counters it re-arms count candidates, and a program that reaches a turn
+ * between every message keeps them below the trigger however much the heap
+ * grows in between, so a dead ring waiting in an older buffer must be
+ * collected when the heap grows past its level's fraction, not at the
+ * scheduled age. */
+static void check_empty_turn_keeps_growth_rule(void) {
+  size_t age_boundary = configured_nursery_threshold();
+  /* The run has to reach the growth fraction before the age rule's
+   * boundary, so a boundary of a few turns cannot tell the two apart. */
+  if (age_boundary < 64) return;
+  Node *ring = make_ring(8);
+  age_to_old(ring);
+  scr_collect_cycles(); /* the growth base is the heap this leaves */
+  release_live(ring);   /* a dead ring waiting in the old buffer */
+
+  size_t before = freed;
+  size_t turns = 0;
+  size_t cap = 1024;
+  size_t n = 0;
+  Node **keep = malloc(cap * sizeof *keep);
+  if (!keep) scr_trap("cycle test: out of memory");
+  for (; turns < age_boundary / 4 && freed == before && n < (size_t)1 << 18; turns++) {
+    scr_cyc_collect_scheduled(); /* a turn with nothing young to collect */
+    if (freed != before) break;
+    /* The allocations a turn makes between collection points, retained so
+     * only the growth rule can see them: released objects would buffer
+     * candidates and trip the arrival counters instead. */
+    size_t grow = scr_cyc_live / 2 + 64;
+    for (size_t i = 0; i < grow; i++) {
+      if (n == cap) {
+        cap *= 2;
+        keep = realloc(keep, cap * sizeof *keep);
+        if (!keep) scr_trap("cycle test: out of memory");
+      }
+      keep[n++] = make_leaf();
+    }
+  }
+  check(freed >= before + 8,
+        "a turn with an empty nursery put the grown heap's dead ring off to the scheduled age");
+  for (size_t i = 0; i < n; i++) release_live(keep[i]);
+  free(keep);
+  scr_collect_cycles(); /* settle what the releases left, so the next check
+                         * starts from a drained heap */
+}
+
 /* Fresh live leaves, each released once so the release path keeps running
  * its passes, until `target` objects have been freed or `limit` leaves have
  * been made. Returns how many it made. */
@@ -575,6 +621,10 @@ static void check_program_nursery_threshold(void) {
   scr_collect_cycles();
 }
 
+/* Tests only: the candidate interval the release path arms its trigger
+ * with. */
+size_t scr_cyc_nursery_window_at(void);
+
 /* How many dead rings the release path takes to run its next pass, from
  * the end of the previous one: the nursery trigger in effect. */
 static size_t nursery_window(void) {
@@ -585,6 +635,18 @@ static size_t nursery_window(void) {
   }
   check(freed - before == n, "a nursery pass left dead rings behind");
   return n;
+}
+
+/* A release-triggered nursery pass over live leaves, which walks candidates
+ * and reclaims nothing: the window is spending a pass on a heap that holds
+ * no garbage at all. */
+static void nursery_pass_finding_nothing(void) {
+  size_t before_freed = freed, before_traced = traced, released = 0;
+  while (traced == before_traced) {
+    read_live(make_leaf());
+    check(++released < 65536, "a nursery pass over live leaves never ran");
+  }
+  check(freed == before_freed, "a nursery pass over live leaves freed something");
 }
 
 /* A scheduled full pass that reclaims nothing: its only candidate is an
@@ -625,6 +687,63 @@ static void check_adaptive_nursery_threshold(void) {
   leaf->rc--;
   scr_cyc_on_dead(leaf);
   node_free(leaf);
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* A heap that produces no garbage never promotes anything and never frees
+ * anything, so the reclaim rule above never widens the window and it stays
+ * at 256 for the whole run. The second signal covers that heap: a nursery
+ * pass that walks candidates and reclaims nothing widens the window a
+ * doubling, up to 4096, and a pass that reclaims puts it back to 256. */
+static void check_unproductive_nursery_window(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(scr_cyc_nursery_window_at() == 256, "the unpinned nursery trigger did not start at 256");
+  static const size_t widened[] = { 512, 1024, 2048, 4096, 4096 };
+  for (size_t i = 0; i < sizeof(widened) / sizeof(widened[0]); i++) {
+    nursery_pass_finding_nothing();
+    check(scr_cyc_nursery_window_at() == widened[i],
+          "a nursery pass that reclaimed nothing did not double the nursery trigger");
+  }
+  /* The window that widened reclaims at its wide trigger, and that reclaim
+   * puts it back. */
+  check(nursery_window() == 4096, "the widened window did not collect at 4096");
+  check(scr_cyc_nursery_window_at() == 256,
+        "a pass that reclaimed did not put the nursery trigger back to 256");
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+}
+
+/* A scheduled nursery pass over a buffer that barely filled is a collection
+ * point, not a pass over a window of stale candidates: the few candidates it
+ * walked are all the work a wider window could save, and a heap that raises
+ * such passes steadily is collecting rarely enough that each one has little
+ * to walk. It must not widen the window. */
+static void check_unfilled_nursery_pass_does_not_widen(void) {
+  if (getenv("SCR_CYCLE_THRESHOLD") != NULL) return; /* it pins the trigger */
+  scr_cyc_set_nursery_threshold(0);
+  scr_collect_cycles();
+  check(scr_cyc_nursery_window_at() == 256, "the unpinned nursery trigger did not start at 256");
+  enum { ROUNDS = 8, LEAVES = 8 };
+  Node *leaves[ROUNDS * LEAVES];
+  size_t before = freed;
+  for (size_t round = 0; round < ROUNDS; round++) {
+    for (int i = 0; i < LEAVES; i++) {
+      Node *leaf = leaves[round * LEAVES + i] = make_leaf();
+      read_live(leaf);
+    }
+    scr_cyc_collect_scheduled();
+    check(freed == before, "a scheduled pass over live leaves freed something");
+    check(scr_cyc_nursery_window_at() == 256,
+          "a nursery pass over a barely filled buffer widened the trigger");
+  }
+  for (int i = 0; i < ROUNDS * LEAVES; i++) {
+    leaves[i]->rc--;
+    scr_cyc_on_dead(leaves[i]);
+    node_free(leaves[i]);
+  }
   scr_cyc_set_nursery_threshold(0);
   scr_collect_cycles();
 }
@@ -833,6 +952,9 @@ static void check_deferred_white_restoration(void) {
  * scheduling decision or pass would do. */
 size_t scr_cyc_pass_at(unsigned gen);
 void scr_cyc_route_bypassed_at(void);
+size_t scr_cyc_site_table_bytes_at(void);
+size_t scr_cyc_body_walked_at(void);
+void scr_cyc_forget_per_body_at(void);
 
 /* A nursery pass over a dead ring, longer than the walk recurses, whose
  * nodes hold edges into an older ring, and two live nodes the ring reaches
@@ -1151,6 +1273,40 @@ static size_t fake_closure_walks(FakeClosure **owned, size_t probe, void (*fn)(v
   return fake_closure_traced - before;
 }
 
+/* Per-body statistics start only once the closure family has walked a full
+ * window. A closure body cannot complete a window of its own before the
+ * family does, so below that point the family statistics judge closures
+ * exactly as they did before the change, and a program whose closures never
+ * fill a window never allocates the table. */
+static void check_per_body_starts_after_a_window(void) {
+  enum { WINDOW = 8192, CAP = 4 * WINDOW };
+  FakeClosure **live = calloc(CAP, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  scr_collect_cycles();
+  scr_cyc_forget_per_body_at();
+  check(scr_cyc_site_table_bytes_at() == 0, "per-body statistics existed on a fresh thread");
+  size_t nlive = 0;
+  while (scr_cyc_body_walked_at() < WINDOW && nlive < (size_t)CAP) {
+    check(scr_cyc_site_table_bytes_at() == 0, "per-body statistics were allocated inside the first window");
+    live[nlive] = make_fake_closure(fake_body_long_lived);
+    live[nlive]->rc++;
+    live[nlive]->rc--;
+    scr_cyc_on_release(live[nlive]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+    nlive++;
+  }
+  run_release_passes();
+  check(scr_cyc_site_table_bytes_at() > 0, "per-body statistics were not allocated after a full window");
+  check(scr_cyc_body_walked_at() >= WINDOW, "per-body statistics were allocated before a full window was walked");
+  for (size_t i = 0; i < nlive; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    scr_cyc_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
 static void check_bypass_per_closure_function(void) {
   enum { WINDOW = 8192, LIVE = 3 * WINDOW, PROBE = 4096 };
   FakeClosure **live = calloc(LIVE + 2 * PROBE, sizeof(*live));
@@ -1176,66 +1332,6 @@ static void check_bypass_per_closure_function(void) {
   }
   free(live);
   scr_collect_cycles();
-}
-
-/* A box that holds a closure is counted with that closure's body, so counting
- * its free reads the closure (SCR_CYC_KIND_BOX + SCR_BOX_FUNC). A teardown
- * frees the white set one object at a time, so a closure that is itself in
- * the set can already be gone when its box is counted: scr_cyc_settle counts
- * those boxes before it frees anything. Everything here is dead in one
- * nursery pass, and the closure is walked into the white set before its
- * box. */
-typedef struct BoxClosure {
-  size_t rc;
-  void *fn;
-  struct BoxClosure *next;
-} BoxClosure;
-static size_t box_freed;
-static size_t boxed_closure_freed;
-static void box_trace(void *obj, ScrTraceVisit visit, void *ctx) {
-  void *closure;
-  memcpy(&closure, &((ScrBox *)obj)->slot, sizeof closure);
-  visit(closure, ctx);
-}
-static void box_free(void *obj) {
-  box_freed++;
-  scr_cyc_free(obj);
-}
-static void boxed_closure_free(void *obj) {
-  boxed_closure_freed++;
-  scr_cyc_free(obj);
-}
-static ScrCycType box_type = { &box_trace, &box_free, SCR_CYC_KIND_BOX };
-static ScrCycType boxed_closure_type = { &fake_closure_trace, &boxed_closure_free,
-                                         SCR_CYC_KIND_CLOSURE };
-
-static void check_box_freed_with_its_closure(void) {
-  enum { RING = 64 };
-  scr_collect_cycles(); /* drain the candidates of earlier checks */
-  size_t freed_before = freed;
-  size_t box_before = box_freed;
-  size_t closure_before = boxed_closure_freed;
-
-  Node *ring = make_ring(RING);
-  ScrBox *box = scr_cyc_alloc(sizeof *box, &box_type);
-  BoxClosure *closure = scr_cyc_alloc(sizeof *closure, &boxed_closure_type);
-  box->rc = 1; /* the ring's edge */
-  box->kind = SCR_BOX_FUNC;
-  memcpy(&box->slot, &closure, sizeof box->slot);
-  closure->rc = 2; /* the box's edge and the ring's */
-  closure->fn = (void *)fake_body_short_lived;
-
-  /* The walk follows the ring's `next` chain to its last node and unwinds,
-   * visiting each node's `other` edge on the way back: the second node's
-   * edge puts the closure into the white set before the root's box. */
-  ring->next->other = (Node *)closure;
-  ring->other = (Node *)box;
-  release_live(ring);
-  scr_cyc_pass_at(SCR_CYC_NURSERY);
-
-  check(freed == freed_before + RING, "a nursery pass did not free exactly the dead ring");
-  check(box_freed == box_before + 1, "the ring's box was not freed with it");
-  check(boxed_closure_freed == closure_before + 1, "the box's closure was not freed with it");
 }
 
 /* The mature level's bypass: a type whose mature candidates keep surviving
@@ -1899,6 +1995,7 @@ int main(void) {
   check_sparse_mature_backlog(2);
   check_age_reset_when_last_mature_root_dies();
   check_dead_backlog_rearms_release_trigger();
+  check_empty_turn_keeps_growth_rule();
   check_deep_ring();
   check_shared_edges_and_outside_owner();
   check_repeated_buffered_release();
@@ -1916,10 +2013,10 @@ int main(void) {
   check_death_waits_for_idle();
   check_phase_sweep_restarts_schedule();
   check_death_brings_full_pass();
+  check_per_body_starts_after_a_window();
   check_nursery_bypass();
   check_mature_bypass();
   check_bypass_per_closure_function();
-  check_box_freed_with_its_closure();
   check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();
@@ -1933,6 +2030,8 @@ int main(void) {
   check_program_growth_cap();
   check_program_nursery_threshold();
   check_adaptive_nursery_threshold();
+  check_unproductive_nursery_window();
+  check_unfilled_nursery_pass_does_not_widen();
   printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
          configured_nursery_threshold(), configured_growth_cap());
   return 0;

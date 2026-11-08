@@ -14,7 +14,15 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  globSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -22,6 +30,9 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { recentCrashReport } from "./crash-report.js";
+import { spawnFailure } from "./spawn-failure.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
@@ -236,6 +247,7 @@ async function runBinary(
   cmd: string,
   args: string[],
   env: Record<string, string> = {},
+  track?: Track,
 ): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane, llvm flavor): a
   // sibling worker's fork can inherit the freshly-linked binary's write
@@ -244,6 +256,7 @@ async function runBinary(
   // briefly, the npm/cargo stance. (No-op on macOS: exec there never
   // answers ETXTBSY.)
   for (let attempt = 0; ; attempt++) {
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       // The program's `// @env:` pins layer over the inherited environment,
@@ -252,6 +265,7 @@ async function runBinary(
       env: { ...process.env, ...env },
     });
     pending.child.stdin?.end();
+    track?.(pending.child);
     try {
       const { stdout, stderr } = await pending;
       return { stdout, stderr, exitCode: 0 };
@@ -262,7 +276,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -298,11 +314,14 @@ const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs"
  * package.json module-format detection). */
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 // ---- oracle result cache ---------------------------------------------------
@@ -366,7 +385,7 @@ function usesVolatileHostState(inputs: string[]): boolean {
   );
 }
 
-async function runNode(file: string): Promise<RunResult> {
+async function runNode(file: string, track?: Track): Promise<RunResult> {
   let cachePath: string | null = null;
   if (oracleDir !== null && !usesVolatileHostState(programInputs(file))) {
     const h = createHash("sha256").update(await oracleKeyBase());
@@ -404,7 +423,7 @@ async function runNode(file: string): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file));
+  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file), track);
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -425,7 +444,7 @@ async function runNode(file: string): Promise<RunResult> {
   return res;
 }
 
-async function compileAndRun(file: string): Promise<RunResult> {
+async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
@@ -434,24 +453,31 @@ async function compileAndRun(file: string): Promise<RunResult> {
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(speed ? "speed" : "")
+    // Computed-access sites emit different code by default; an opt-out
+    // restores the key path, so the two builds key separately.
+    .update("index-arms:" + (process.env["SCRIPTC_DYN_INDEX_FASTPATH"] ?? "1"))
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
   mkdirSync(outDir, { recursive: true });
-  const result = await compile(file, {
-    outPath: join(outDir, process.platform === "win32" ? "program.exe" : "program"),
-    outDir,
-    sanitize,
-    backend: "llvm",
-    ...(speed ? { optimization: "speed" as const } : {}),
-  });
+  const result = await runStep(`${rel}: compile`, () =>
+    compile(file, {
+      outPath: join(outDir, process.platform === "win32" ? "program.exe" : "program"),
+      outDir,
+      sanitize,
+      backend: "llvm",
+      ...(speed ? { optimization: "speed" as const } : {}),
+    }),
+  );
   if (!result.ok) {
     throw new Error(
       "corpus program failed to compile:\n" +
         result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"),
     );
   }
-  return runBinary(result.binaryPath, [], programEnv(file));
+  return runStep(`${rel}: run`, (track) =>
+    runBinary(result.binaryPath, [], programEnv(file), track),
+  );
 }
 
 describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized" : ""}${shardSuffix()})`, () => {
@@ -460,15 +486,24 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   // live-spawned Node itself can hang under heavy box load (1751's
   // fs.watch stalled five gates on 2026-07-20 while the compiled binary
   // answered in milliseconds every time).
+  //
+  // timeout: the case's hang detector, above the longest chain of steps it
+  // runs — the oracle starts beside the compile, whose run follows it, so two
+  // step deadlines deep. The shared 300 s default is not a bound for a case
+  // that can spend a full deadline in each of two steps; a step that stalls
+  // still reports itself at its own deadline, naming the processes it left.
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    { retry: 1 },
-    async ([, file], { skip }) => {
+    { retry: 1, timeout: STEP_TIMEOUT_MS * 2 },
+    async ([rel, file], { skip }) => {
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
-      const [nodeRes, nativeRes] = await Promise.all([runNode(file), compileAndRun(file)]);
+      const [nodeRes, nativeRes] = await Promise.all([
+        runStep(`${rel}: node oracle`, (track) => runNode(file, track)),
+        compileAndRun(rel, file),
+      ]);
       // Compare as bytes; decode only for the failure diff.
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {
         expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));

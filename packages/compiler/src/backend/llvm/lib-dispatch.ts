@@ -9,9 +9,11 @@ import { emitTestLibCall } from "./lib-test.js";
 import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
+import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -23,7 +25,9 @@ import {
   USES_TIMERS_LIB_FNS,
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
+import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
@@ -175,10 +179,11 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "rl.on") {
+  if (e.fn === "rl.on" || e.fn === "rl.onFirst") {
     // The listener MOVES into the interface's registry; the adapter is
     // picked by event and parameter count ('line': the text, 'error': the
-    // error, 'history': the history array, the rest none).
+    // error, 'history': the history array, the rest none). onFirst is
+    // prependListener's registration, at the front of the same list.
     host.usesTimers = true;
     const cbT = e.args[2]!.type;
     const evArg = e.args[1]!;
@@ -204,9 +209,10 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     }
-    host.declare(`declare void @scr_rl_on(double, double, ptr, ptr, i1)`);
+    const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
+    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
     B.line(
-      `call void @scr_rl_on(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -297,6 +303,30 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${t} = phi i1 [ false, %${from} ], [ ${has}, %${probed} ]`);
     return { name: t, type: e.type };
   }
+  if (e.fn === "record.sourceDelete") {
+    // `delete rec.key` of a key the declared layout does not hold: the key
+    // lives in the record's kept source, and the runtime removes it there
+    // (a frozen record refuses in strict code, hence the pending check).
+    const record = host.emitReadReceiver(e.args[0]!);
+    const key = e.args[1]!;
+    const strict = e.args[2]!;
+    if (key.kind !== "strLit")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceDelete key is not a literal");
+    if (strict.kind !== "boolLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: record.sourceDelete strictness is not a literal",
+      );
+    host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
+    host.declare(`declare zeroext i1 @scr_record_source_delete(ptr, ptr, ${host.sizeType}, i1)`);
+    const keyLen = Buffer.byteLength(key.value, "utf8");
+    const t = B.tmp();
+    B.line(
+      `${t} = call zeroext i1 @scr_record_source_delete(ptr ${record.name}, ptr ${host.cstr(key.value)}, ${host.sizeType} ${keyLen}, i1 ${strict.value ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
+    return { name: t, type: e.type };
+  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
@@ -310,8 +340,23 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
     host.dyn.keepsRecordSources = true;
+    if (e.args[0]!.type.kind === "record") host.dyn.keptSourceShapes.add(e.args[0]!.type.shapeId);
     host.declare(`declare void @scr_record_source_share(ptr, ptr)`);
     B.line(`call void @scr_record_source_share(ptr ${built.name}, ptr ${value.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "closure.shareIdentity") {
+    const adapter = host.emitReadReceiver(e.args[0]!);
+    const root = host.emitReadReceiver(e.args[1]!);
+    const length = e.args[2]!;
+    if (length.kind !== "numLit")
+      throw new InternalCompilerError(
+        "llvm emitter bug: closure.shareIdentity length is not a literal",
+      );
+    host.declare(`declare void @scr_closure_adopt_identity(ptr, ptr, i32)`);
+    B.line(
+      `call void @scr_closure_adopt_identity(ptr ${adapter.name}, ptr ${root.name}, i32 ${length.value})`,
+    );
     return { name: "", type: e.type };
   }
   if (e.fn === "record.link") {
@@ -562,6 +607,85 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     const result = B.tmp();
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
+  }
+  if (e.fn === "dyn.classHash") {
+    // A generated class table's discriminant: the switch dispatches on the
+    // length and last four bytes of the capsule's class key, the fields a
+    // class branch's own key test compares, so the table's branches (each
+    // still guarded by its own key test) are reached without walking the
+    // chain. A value that is not a capsule, a capsule without a key, and a
+    // key shorter than the four bytes this reads answer -1, which no case
+    // matches, and the switch's fallthrough takes the statements after it;
+    // no branch of the table can match such a value either.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i32`);
+    B.line(`store i32 -1, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("class.hash.inspect");
+    const hashed = B.newLabel("class.hash.hashed");
+    const done = B.newLabel("class.hash.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    const lenSlot = B.tmp(),
+      lenWord = B.tmp(),
+      len = B.tmp();
+    B.line(
+      `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+    );
+    B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+    B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+    const typed = B.tmp(),
+      hasKey = B.tmp(),
+      long = B.tmp(),
+      isCapsule = B.tmp(),
+      hashable = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
+    B.line(`${long} = icmp sge i32 ${len}, 4`);
+    B.line(`${isCapsule} = and i1 ${typed}, ${hasKey}`);
+    B.line(`${hashable} = and i1 ${isCapsule}, ${long}`);
+    B.condBr(hashable, hashed, done);
+    B.startBlock(hashed);
+    const tailAt = B.tmp(),
+      tailStart = B.tmp(),
+      tailPtr = B.tmp(),
+      tail = B.tmp(),
+      folded = B.tmp(),
+      sum = B.tmp(),
+      masked = B.tmp();
+    B.line(`${tailAt} = sub i32 ${len}, 4`);
+    B.line(`${tailStart} = sext i32 ${tailAt} to i64`);
+    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${tailStart}`);
+    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
+    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
+    B.line(`${sum} = add i32 ${folded}, ${tail}`);
+    B.line(`${masked} = and i32 ${sum}, 2147483647`);
+    B.line(`store i32 ${masked}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const selector = B.tmp();
+    B.line(`${selector} = load i32, ptr ${slot}`);
+    const out = B.tmp();
+    B.line(`${out} = sitofp i32 ${selector} to double`);
+    return {
+      name: out,
+      type: e.type,
+      integer: {
+        name: selector,
+        type: "i32",
+        signed: true,
+        range: { min: -1, max: 2147483647 },
+      },
+    };
   }
   if (e.fn === "crypto.randomFillCb" || e.fn === "crypto.randomFillCbDyn") {
     host.usesTimers = true;
@@ -976,7 +1100,7 @@ function emitSameValueF64(host: LlvmEmitterContext, a: string, b: string): strin
  * runtime's test: SameValue (equal bits, or both NaN) and `==`. */
 function emitAssertFailing(
   host: LlvmEmitterContext,
-  fn: string,
+  fn: IrLibFn,
   args: readonly LlValue[],
 ): string | null {
   const B = host.B;
@@ -1005,7 +1129,7 @@ function emitAssertFailing(
 /** Runtime string functions that only read their string arguments and keep
  * no reference to them: their operands are lent (a comparator's
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
-const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["str.localeCompare"]);
 
 /** The most parameters scr_regex_replace_fn calls a replacer with
  * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined
@@ -1096,6 +1220,9 @@ function emitTypedRegexReplace(host: LlvmEmitterContext, e: LibCallExpr): LlValu
 
 export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (USES_TIMERS_LIB_FNS.has(e.fn)) host.usesTimers = true;
+  // A Promise static with a foreign constructor creates promises whose
+  // jobs and unhandled-rejection accounting need the event loop.
+  if (e.fn === "promise.genericStatic") host.usesPromises = true;
   if (e.fn === "regex.replaceCallback") {
     const typed = emitTypedRegexReplace(host, e);
     if (typed) return typed;
@@ -1194,18 +1321,55 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     const receiver = e.args[0]!;
     const value = host.emitReadReceiver(receiver);
     const S = host.sizeType;
+    const views = host.shapeHost.recordViews;
+    const viewTarget =
+      receiver.type.kind === "record" && views?.targets.has(receiver.type.shapeId) === true;
+    // The bit is also a record view's mark (record-views.ts), and a view has
+    // no frozen state of its own. Where no value of the type can be frozen,
+    // a value with the bit is a view of a record that is not frozen either.
+    if (viewTarget && receiver.type.kind === "record" && !views!.marked.has(receiver.type.shapeId))
+      return { name: "false", type: e.type };
     const rc = host.B.tmp(),
       top = host.B.tmp();
     let t = host.B.tmp();
     host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
     host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
     host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    if (viewTarget) {
+      // Otherwise the record-source table answers for the record a view
+      // views, and a frozen record answers true (scr_record_view_frozen.c).
+      host.declare(`declare zeroext i1 @scr_record_marked_frozen(ptr)`);
+      const B = host.B;
+      const from = B.currentLabel();
+      const ask = B.newLabel("rf.marked");
+      const join = B.newLabel("rf.join");
+      B.condBr(t, ask, join, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(ask);
+      const frozen = B.tmp();
+      B.line(`${frozen} = call zeroext i1 @scr_record_marked_frozen(ptr ${value.name})`);
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${frozen}, %${ask} ]`);
+      return { name: answer, type: e.type };
+    }
     if (
       receiver.type.kind === "record" &&
       host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
     )
       t = orPublished(host, t, rc);
     return { name: t, type: e.type };
+  }
+  if (
+    e.fn === "record.freeze" &&
+    e.args[0]?.type.kind === "record" &&
+    host.shapeHost.recordViews?.marked.has(e.args[0].type.shapeId) === true
+  ) {
+    // Freezing a view freezes the record it views (scr_record_view_frozen.c).
+    const value = host.emitReadReceiver(e.args[0]);
+    host.declare(`declare void @scr_record_marked_freeze(ptr)`);
+    host.B.line(`call void @scr_record_marked_freeze(ptr ${value.name})`);
+    return { name: "", type: e.type };
   }
   if (
     (e.fn === "array.isFrozen" || e.fn === "collection.isExtensible") &&
@@ -1344,8 +1508,11 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "array":
       if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
       return host.emitGenericLibCall(e);
+    case "sea":
+      return emitSeaLibCall(host, e);
     case "collection":
     case "record":
+    case "closure":
     case "disposable":
     case "punycode":
     case "constants":
@@ -1357,6 +1524,12 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     // Primitive wrapper objects (scr_js_wrapper.c).
     case "wrapper":
+      return host.emitGenericLibCall(e);
+    // Own properties JavaScript adds to runtime handles
+    // (scr_dyn_handle_props.c).
+    case "handle":
+    // %Iterator% and %Iterator.prototype% (scr_js_iterator.c).
+    case "iterator":
       return host.emitGenericLibCall(e);
     case "webstream":
       // A stream's start, pull and cancel steps run as promise jobs, so
@@ -1380,6 +1553,24 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
 /** `array.foreignThrow`: the checked conversion's TypeError for a foreign
  * element read into a typed result. Always throws; the result is a dummy
  * of the replaced read's type (the error.argTypeThrow pattern). */
+/** node:sea outside a single-executable application, which is every
+ * compiled program: `isSea()` is the constant false, and an asset reader
+ * evaluates its arguments and throws Node's coded error (the same throw
+ * error.nodeThrow emits). */
+function emitSeaLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  if (e.fn === "sea.isSea") return { name: "false", type: e.type };
+  for (const arg of e.args) host.emitExpr(arg);
+  return host.emitExpr(
+    nodeThrowExpr(
+      0,
+      "ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION",
+      "Operation cannot be invoked when not in a single-executable application",
+      e.type,
+      e.loc,
+    ),
+  );
+}
+
 function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   const arr = host.emitExpr(e.args[0]!);
@@ -1389,6 +1580,8 @@ function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValu
   B.line(
     `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
   );
+  // The element's deferred checked conversion: a dev build reports it.
+  host.conversionTraceAt(e.loc)?.();
   const ty = host.llType(e.type);
   if (ty === "void") {
     host.emitAlwaysPendingUnwind();
@@ -1412,11 +1605,35 @@ function allTupleAdapterFor(host: LlvmEmitterContext, fnName: string, tuple: IrT
   const rc = vAdapters(host.shapeHost, tuple);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
   host.declare(`declare void @scr_promise_fulfill_ref(ptr, ptr, ptr, ptr, ptr)`);
+  // A builder that checks a checked-dynamic entry into its tuple position
+  // can throw: the result rejects with that error, and there is no tuple.
+  // Every other builder only reads fulfilled values and keeps its adapter.
+  const builder = host.fnByName.get(fnName);
+  const throws =
+    builder !== undefined &&
+    !everyStmtList(builder.body, {
+      expr: (e) => e.kind !== "dynCheck",
+      stmt: () => true,
+    });
+  if (throws) {
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    host.declare(`declare void @scr_promise_reject_pending(ptr)`);
+  }
   host.resolveThunkDefs.push(
     `define internal void @${adapter}(ptr %dst, ptr %src) ${FN_ATTRS} { ; Promise.all tuple`,
     `entry:`,
     `  %entries = call ptr @scr_promise_payload_ref(ptr %src) ; +1, moves into the builder`,
     `  %tuple = call ptr @${host.callTarget(fnName)}(ptr %entries)`,
+    ...(throws
+      ? [
+          `  %failed = call zeroext i1 @scr_exc_pending()`,
+          `  br i1 %failed, label %reject, label %fulfill`,
+          `reject:`,
+          `  call void @scr_promise_reject_pending(ptr %dst)`,
+          `  ret void`,
+          `fulfill:`,
+        ]
+      : []),
     `  call void @scr_promise_fulfill_ref(ptr %dst, ptr %tuple, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, tuple)})`,
     `  ret void`,
     `}`,

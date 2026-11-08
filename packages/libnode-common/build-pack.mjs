@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { cxxRuntimeDependencies, elfRequirements } from "./scripts/elf.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const runtimeSrc = join(here, "../runtime/src");
@@ -62,10 +63,19 @@ export function bridgeName(os = process.platform) {
 }
 
 /** Compiles the bridge against `headers` (an include/node directory) and
- * links it to `libnode`, which must already sit in the bridge's directory. */
+ * links it to `libnode`, which must already sit in the bridge's directory.
+ *
+ * On Linux the bridge links the C++ runtime the way its libnode does: a
+ * libnode built with Node's --partly-static carries its own libstdc++ (the
+ * published packs; libnode.json), so the bridge does too, and the pack needs
+ * no libstdc++ from the host at all - its build toolchain's is newer than a
+ * supported host's. A libnode that still needs libstdc++.so (the CI
+ * development pack's prebuilt library) keeps the bridge dynamic, so the pack
+ * holds one copy of the C++ runtime instead of two. */
 export function buildBridge({ headers, libnode, out, cxx }) {
   const darwin = process.platform === "darwin";
   const compiler = cxx ?? process.env.CXX ?? (darwin ? "clang++" : "g++");
+  const staticCxx = !darwin && cxxRuntimeDependencies(elfRequirements(libnode)).length === 0;
   const link = darwin
     ? [
         "-dynamiclib",
@@ -77,6 +87,10 @@ export function buildBridge({ headers, libnode, out, cxx }) {
         "-shared",
         `-L${dirname(libnode)}`,
         `-l:${basename(libnode)}`,
+        // The statically linked C++ runtime stays private to the bridge:
+        // --exclude-libs hides the archive's symbols instead of exporting
+        // them into the process the pack is loaded into.
+        ...(staticCxx ? ["-static-libstdc++", "-static-libgcc", "-Wl,--exclude-libs,ALL"] : []),
         "-Wl,-rpath,$ORIGIN",
         "-Wl,-z,defs",
         "-Wl,--as-needed",
@@ -109,6 +123,14 @@ export function buildBridge({ headers, libnode, out, cxx }) {
     execFileSync("codesign", ["--force", "--sign", "-", out], { stdio: "inherit" });
   } else {
     execFileSync("strip", ["--strip-unneeded", out], { stdio: "inherit" });
+    if (staticCxx) {
+      const dependencies = cxxRuntimeDependencies(elfRequirements(out));
+      if (dependencies.length > 0) {
+        throw new Error(
+          `${basename(out)} still needs libstdc++ (${dependencies.join(", ")}) after a static link: the pack would fail to load on a host older than the build toolchain`,
+        );
+      }
+    }
   }
 }
 

@@ -54,6 +54,17 @@ void scr_stdin_set_encoding(ScrStr *enc);
 void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text);
 void scr_stdin_on_end(ScrClosure *cb, bool once);
 void scr_stdin_on_error(ScrClosure *cb, ScrChildErrFn fn, bool once);
+/* A 'readable' listener (moves cb): paused mode, as in Node — input stays
+ * buffered for read(), and the event fires on the next tick when input
+ * arrives while a read wanted more, and once at EOF. */
+void scr_stdin_on_readable(ScrClosure *cb, bool once);
+void scr_stdin_pause(void);
+void scr_stdin_resume(void);
+bool scr_stdin_is_paused(void);
+double scr_stdin_readable_length(void);
+/* read([size]): the held input up to `size` bytes (+1), or NULL; Node's
+ * size coercion and ERR_OUT_OF_RANGE (see the definition). */
+ScrBytes *scr_stdin_read_bytes(bool all, double size);
 ScrPromise *scr_stdin_next_chunk(void); /* +1 */
 void scr_stdin_destroy(void);
 bool scr_stdin_pending(void);
@@ -62,5 +73,13 @@ bool scr_stdin_pending(void);
  * destroyed — a later createInterface is born dead). */
 void scr_stdin_remove_data(ScrClosure *cb);
 bool scr_stdin_ended(void);
+
+/* Process events island code listens to (the bridge's SCR_NODE_EVENT_* ABI).
+ * Their listeners sit in this unit's registries at their registration
+ * position, and a delivery calls them through the emit hook: this unit
+ * cannot name scr_node_island_emit itself, because every program that uses
+ * process events links it and only an island program links that one. */
+enum { SCR_EVENTS_ISLAND_SIGNAL = 1, SCR_EVENTS_ISLAND_EXIT = 2 };
+void scr_events_set_island_emit(void (*fn)(uint32_t event, uint32_t listener, ScrStr *name, int arg));
 
 #endif /* SCR_EVENTS_H */

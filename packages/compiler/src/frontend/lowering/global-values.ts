@@ -13,6 +13,7 @@
  * other declared names: a value, `undefined` for the token, or `null` for
  * a name without one, whose read keeps its SC2020 refusal. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import {
   BYTES_ELEMENT_NAME,
   DYN,
@@ -27,13 +28,14 @@ import {
 import { isJsSourceFile } from "../program.js";
 import { isStrictCode } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { uriFunctionValue } from "./expressions/identifiers.js";
 import { navigatorValue } from "./builtins/navigator.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
+import { globalFunctionValue, isUnloweredGlobal } from "./global-function-values.js";
 import {
   WEB_STREAM_CLASSES,
   programNamesWebStreamClass,
@@ -123,8 +125,9 @@ function readsBuiltinByName(lowerer: Lowerer, node: ts.ElementAccessExpression):
 /** The value a JavaScript source reads for the declared global `name`
  * taken as a value, whatever its spelling (`name`, `globalThis.name`,
  * `const { name } = globalThis`, `globalThis[name]`), or null when it
- * reads the opaque identity token. `reportFences` (builtinNamespaceValue)
- * is false for the program's lookup. */
+ * reads the opaque identity token. `reportFences` is false for the
+ * program's lookup, which holds every declared global's value whether or
+ * not the program reads it. */
 export function jsGlobalValueByName(
   lowerer: Lowerer,
   name: string,
@@ -132,7 +135,7 @@ export function jsGlobalValueByName(
   reportFences = true,
 ): IrExpr | null {
   return (
-    jsSpecialGlobalValue(lowerer, name, loc) ??
+    jsSpecialGlobalValue(lowerer, name, loc, reportFences) ??
     builtinNamespaceValue(lowerer, name, loc, reportFences) ??
     builtinGlobalValue(name, loc, true)
   );
@@ -158,7 +161,12 @@ export function tsUntypedGlobalValue(
   name: string,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (isJsSourceFile(ts.getSourceFileOfNode(node)) || UNTYPED_UNMODELED.has(name)) return null;
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+    UNTYPED_UNMODELED.has(name) ||
+    isUnloweredGlobal(name)
+  )
+    return null;
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
     return null;
   if (!flowsIntoUntypedSlot(lowerer, node)) return null;
@@ -188,8 +196,14 @@ function flowsIntoUntypedSlot(lowerer: Lowerer, node: ts.Expression): boolean {
 }
 
 /** jsGlobalValueByName for the globals other than the interned builtin
- * functions and constructors (builtinGlobalValue). */
-export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+ * functions and constructors (builtinGlobalValue). `reportFences` is false
+ * for the program's lookup (jsGlobalValueByName). */
+export function jsSpecialGlobalValue(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  reportFences = true,
+): IrExpr | null {
   if (name === "NaN" || name === "Infinity")
     return { kind: "numLit", value: name === "NaN" ? NaN : Infinity, type: F64, loc };
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
@@ -215,7 +229,7 @@ export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc
   if (name === "fetch") return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
   if (name === "console")
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
-  return null;
+  return globalFunctionValue(lowerer, name, loc, reportFences);
 }
 
 const URI_FUNCTIONS = new Set([
@@ -300,12 +314,6 @@ function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
   return init !== undefined && init.kind === ts.SyntaxKind.ThisKeyword && sloppyReceiverOf(init);
 }
 
-function withoutParentheses(expr: ts.Expression): ts.Expression {
-  let inner = expr;
-  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-  return inner;
-}
-
 /** Whether the `this` at `node` is a sloppy-mode function's receiver
  * (lower-functions.ts declareCallReceiver): arrows take the enclosing one. */
 function sloppyReceiverOf(node: ts.Node): boolean {
@@ -336,7 +344,12 @@ function declaredGlobalNames(lowerer: Lowerer, at: ts.Node): string[] {
   return lowerer.checker
     .getPropertiesOfType(lowerer.checker.getTypeOfSymbol(symbol))
     .map((property) => ts.symbolName(property))
-    .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
+    .filter(
+      (name) =>
+        name !== TEMPORAL_GLOBAL &&
+        !RUNTIME_ANSWERED.has(name) &&
+        !COMMONJS_MODULE_BINDINGS.has(name),
+    );
 }
 
 /** The names the program's lookup answers: every declared global when a
@@ -378,6 +391,14 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
             : null
           : jsGlobalValueByName(lowerer, global, loc, false);
       if (value === null) continue;
+      // A function boxed here has no source spelling to take its name from
+      // (the identifier read's rule): it takes the global's name, as
+      // `globalThis.String.name` is "String".
+      const boxed = lowerer.coerceToExpected(value, DYN);
+      const named: IrExpr =
+        boxed.kind === "dynFrom" && boxed.value.type.kind === "func" && boxed.fnName === undefined
+          ? { ...boxed, fnName: global }
+          : boxed;
       body.push({
         kind: "if",
         cond: {
@@ -388,7 +409,7 @@ export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
           type: { kind: "bool" },
           loc,
         },
-        then: [{ kind: "return", value: lowerer.coerceToExpected(value, DYN), loc }],
+        then: [{ kind: "return", value: named, loc }],
         else_: null,
         loc,
       });

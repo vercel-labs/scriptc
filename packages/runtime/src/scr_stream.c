@@ -128,6 +128,11 @@ struct ScrStreamState {
      * from the registry's empty/nonempty transitions, so the per-chunk
      * paths read it instead of looking the name up */
     bool data_listeners;
+    /* one of those listeners was registered through an untyped value with
+     * no typed adapter (scr_emitter_has_dyn): the per-chunk emit then also
+     * carries the chunk as a checked-dynamic value. Set on registration
+     * (a stale true costs one box per chunk, never a missed delivery). */
+    bool data_dyn;
     bool resume_scheduled, maybe_more_scheduled;
     /* The buffer's representation: encoded means every entry is a ScrStr,
      * otherwise every entry is a ScrBytes (scr_stream_rbuf_push checks
@@ -734,16 +739,28 @@ static ScrStr *scr_stream_event_name(const char *name) {
   return scr_str_new(name, strlen(name));
 }
 
+/* A typed emit carries no checked-dynamic arguments; a listener registered
+ * through an untyped value still receives the event (with none). The zero-
+ * argument slots go as an empty flex vector, which every listener form
+ * accepts. */
 static bool scr_stream_emit0(ScrStream *s, const char *name) {
   ScrStr *n = scr_stream_event_name(name);
-  bool had = scr_emitter_emit((ScrEmitter *)s, n);
+  bool had = scr_emitter_emit_mixed((ScrEmitter *)s, n, NULL, 0);
   scr_str_release(n);
   return had;
 }
 
 static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *payload) {
   ScrStr *n = scr_stream_event_name(name);
-  scr_emitter_emit((ScrEmitter *)s, n, payload);
+  ScrEmitter *em = (ScrEmitter *)s;
+  if (scr_emitter_has_dyn(em, n)) {
+    ScrDyn *arg = scr_stream_dyn_view(payload);
+    bool had = scr_emitter_emit_mixed(em, n, &arg, 1, payload);
+    scr_dyn_release(arg);
+    (void)had;
+  } else {
+    scr_emitter_emit(em, n, payload);
+  }
   scr_str_release(n);
 }
 
@@ -751,7 +768,11 @@ static void scr_stream_emit_stream(ScrStream *s, const char *name, ScrStream *pa
  * error contract. Borrows err. */
 static void scr_stream_emit_error(ScrStream *s, ScrError *err) {
   ScrStr *n = (ScrStr *)&scr_stream_lit_error;
-  scr_emitter_emit_error((ScrEmitter *)s, n, err);
+  /* The error is also the checked-dynamic argument a listener registered
+   * through an untyped value reads. */
+  ScrDyn *boxed = scr_dyn_from_error(err);
+  scr_emitter_emit_error_mixed((ScrEmitter *)s, n, err, &boxed, 1);
+  scr_dyn_release(boxed);
   scr_str_release(n);
 }
 
@@ -947,7 +968,16 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
    * through st->pipes below */
   if (st->r.data_listeners) {
     ScrStr *n = (ScrStr *)&scr_stream_lit_data;
-    scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    /* A listener registered through an untyped value reads the chunk as
+     * one checked-dynamic argument (the same value a dyn entry carries). */
+    if (st->r.data_dyn) {
+      ScrDyn *boxed = value;
+      if (boxed == NULL) boxed = b != NULL ? scr_dyn_new_buffer(b) : scr_dyn_new_str(str);
+      scr_emitter_emit_mixed((ScrEmitter *)s, n, &boxed, 1, b, str, value);
+      if (boxed != value) scr_dyn_release(boxed);
+    } else {
+      scr_emitter_emit((ScrEmitter *)s, n, b, str, value);
+    }
     scr_str_release(n);
     if (scr_exc_pending()) return;
   }
@@ -1412,7 +1442,7 @@ static void scr_stream_next_str_fence(void) {
   static const char msg[] =
       "for-await over a stream with an encoding set is not supported yet in "
       "typed code (chunks are Buffers here)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
 }
 
 /* Fulfills the parked iterator with a chunk taken from the buffer; kind
@@ -1591,7 +1621,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool resul
   if (st->r.next_waiter) {
     /* the desugared loop awaits each chunk before asking again */
     static const char msg[] = "concurrent for-await iteration of one stream is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     scr_promise_reject_pending(p);
     return p;
   }
@@ -1945,7 +1975,7 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
                        (int)(name->len > 64 ? 64 : name->len), name->data);
       scr_dyn_release(keys);
       if (iter) scr_dyn_release(iter);
-      scr_throw_error_msg(SCR_ERR_ERROR, m, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, m, (size_t)n, "SC2020");
       return NULL;
     }
     scr_dyn_release(keys);
@@ -2167,6 +2197,7 @@ static void scr_stream_on_listener(ScrEmitter *em, ScrStr *name) {
   ScrStreamState *st = s->st;
   if (!st || !st->has_r) return;
   if (name->len == 4 && memcmp(name->data, "data", 4) == 0) {
+    st->r.data_dyn = scr_emitter_has_dyn(em, (ScrStr *)&scr_stream_lit_data);
     st->r.readable_listening = scr_emitter_has(em, "readable");
     if (st->r.flowing != 0) {
       st->r.flowing = 1;
@@ -2690,6 +2721,7 @@ static void scr_stream_listener_observe(void *context, const ScrStr *name, bool 
 /* Starts tracking the stream's 'data' listeners, once its state exists. */
 static void scr_stream_watch_listeners(ScrStream *s) {
   s->st->r.data_listeners = scr_emitter_has((ScrEmitter *)s, "data");
+  s->st->r.data_dyn = scr_emitter_has_dyn((ScrEmitter *)s, (ScrStr *)&scr_stream_lit_data);
   scr_emitter_observe((ScrEmitter *)s, &scr_stream_listener_observe, s);
 }
 
@@ -3186,7 +3218,7 @@ static bool scr_stream_dynopt_truthy(const ScrDyn *o, const char *key, size_t kl
 }
 
 static bool scr_stream_dynopt_unsupported(const char *msg, size_t len) {
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, len);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, len, "SC2020");
   return false;
 }
 
@@ -4214,8 +4246,7 @@ static ScrError *scr_pump_caught(void) {
   ScrError *e = d ? scr_errdyn_err_of(d) : NULL;
   if (d) scr_dyn_release(d);
   if (e) return e;
-  return scr_stream_mkerr("ERR_INTERNAL_ASSERTION",
-                          "a pipeline stage rejection that is not an Error object is not supported yet");
+  return scr_stream_mkerr("SC2020", "a pipeline stage rejection that is not an Error object is not supported yet");
 }
 
 static void scr_pump_loop(ScrPump *pm);
@@ -6061,7 +6092,9 @@ static double scr_stream_rl_listener_count(void *s, const char *name) {
 
 static void scr_stream_rl_emit2(void *s, const char *name, void *a, void *b) {
   ScrStr *n = scr_str_new(name, strlen(name));
-  scr_emitter_emit((ScrEmitter *)s, n, a, b);
+  /* a and b are the checked-dynamic arguments of the event (borrowed). */
+  ScrDyn *args[2] = {(ScrDyn *)a, (ScrDyn *)b};
+  scr_emitter_emit_mixed((ScrEmitter *)s, n, args, 2, a, b);
   scr_str_release(n);
 }
 
@@ -6831,7 +6864,9 @@ bool scr_stream_writes_values(ScrStream *s) {
 bool scr_stream_emit_value(ScrStream *s, ScrStr *name, ScrDyn *v) {
   ScrBytes *b = v->kind == SCR_DYN_BYTES ? v->v.bytes : NULL;
   ScrStr *str = v->kind == SCR_DYN_STR ? v->v.str : NULL;
-  return scr_emitter_emit((ScrEmitter *)s, name, b, str, v);
+  /* The value is the checked-dynamic argument a listener registered through
+   * an untyped value reads. */
+  return scr_emitter_emit_mixed((ScrEmitter *)s, name, &v, 1, b, str, v);
 }
 
 /* The chunk a compiled write or transform callback receives, by its
@@ -7124,7 +7159,7 @@ static void scr_stream_read_str_fence(void) {
   static const char msg[] =
       "read() on a stream with an encoding set is not supported yet "
       "(consume 'data' events, which deliver strings)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
 }
 
 ScrBytes *scr_stream_read(ScrStream *s, double size) {
@@ -7153,7 +7188,7 @@ ScrBytes *scr_stream_read(ScrStream *s, double size) {
     static const char msg[] =
         "read() of an object-mode stream value that is not a Buffer is not supported yet in typed "
         "code (consume 'data' events or for await)";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   if (chunk && kind == SCR_ENTRY_STR) {
@@ -7322,7 +7357,10 @@ static bool scr_stream_write_chunk_desc(ScrStream *s, ScrBytes *chunk /*borrowed
                                         const ScrStreamTypedDesc *desc) {
   ScrStreamState *st = s->st;
   if (!st->has_w || st->destroyed || st->w.ending) {
-    ScrError *e = st->has_w && !st->destroyed
+    /* Node's write() checks state.ending before state.destroyed, so a write
+     * after end() keeps answering ERR_STREAM_WRITE_AFTER_END even once the
+     * stream the failed write destroyed is gone. */
+    ScrError *e = st->w.ending
         ? scr_stream_mkerr("ERR_STREAM_WRITE_AFTER_END", "write after end")
         : scr_stream_mkerr("ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
     if (cb) {
@@ -8525,9 +8563,9 @@ static void scr_handle_step_destroy(ScrClosure *cb, ScrStream *s, ScrError *err)
   scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
 }
 
-static ScrClosure *scr_handle_step(const ScrDynHandleOps *ops, void *h) {
+static ScrClosure *scr_handle_step(const ScrDynHandleOps *ops, void *h, ScrTraceFn trace) {
   ScrClosure *step = scr_closure_new(NULL, 2);
-  step->caps[0] = scr_box_new_obj(ops->retain, ops->release, ops->transform->trace);
+  step->caps[0] = scr_box_new_obj(ops->retain, ops->release, trace);
   scr_box_set_ref(step->caps[0], ops->retain(h));
   step->caps[1] = scr_box_new_obj(scr_handle_ops_retain, scr_handle_ops_release, NULL);
   scr_box_set_ref(step->caps[1], (void *)ops);
@@ -8540,21 +8578,57 @@ static ScrStream *scr_handle_transform(const ScrDynHandleOps *ops, void *h) {
   ScrStream *s = t->stream(h);
   if (!s) {
     s = scr_stream_new_transform(-1, -1, true, true, true, true, true,
-                                 scr_handle_step(ops, h), scr_handle_step_transform,
-                                 scr_handle_step(ops, h), scr_handle_step_flush,
-                                 scr_handle_step(ops, h), scr_handle_step_destroy);
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_transform,
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_flush,
+                                 scr_handle_step(ops, h, t->trace), scr_handle_step_destroy);
     s->cls = ops->cls;
     t->set_stream(h, s, scr_stream_release_v);
   }
   return scr_stream_retain(s);
 }
 
-/* The native stream of a checked-dynamic Transform handle (+1), or NULL
- * when the value is not one. */
+/* ── handles that are Writables (Sign, Verify) ───────────────────────────
+ * A Writable handle (ScrDynHandleOps.writable) used as a stream gets one
+ * native Writable, built here on first use and kept in the handle's slot.
+ * Each chunk goes through the handle's write() as Node's _write does, and
+ * the write completes as soon as it returns: there is no _final, so end()
+ * finishes the stream at once. The step shares the handle (held, and
+ * traced: the handle and its stream form a cycle the collector reclaims)
+ * and the handle's static ops. */
+
+static void scr_handle_wstep_write(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  /* A throwing write() leaves the exception pending: it throws out of the
+   * write, which is where Node's _write throw surfaces too. */
+  scr_handle_step_handle_ops(cb)->writable->write(scr_handle_step_handle(cb), chunk);
+  if (!scr_exc_pending()) scr_stream_write_done(s, NULL);
+}
+
+/* The Writable of handle h (+1), built on first use. */
+static ScrStream *scr_handle_writable(const ScrDynHandleOps *ops, void *h) {
+  const ScrDynHandleWritable *w = ops->writable;
+  ScrStream *s = w->stream(h);
+  if (!s) {
+    s = scr_stream_new_writable(-1, true, true,
+                                scr_handle_step(ops, h, w->trace), scr_handle_wstep_write,
+                                NULL, NULL, NULL, NULL);
+    s->cls = ops->cls;
+    w->set_stream(h, s, scr_stream_release_v);
+  }
+  return scr_stream_retain(s);
+}
+
+/* The native stream of a stream handle (+1): its Transform or Writable. */
+static ScrStream *scr_handle_stream_build(const ScrDynHandleOps *ops, void *h) {
+  return ops->transform ? scr_handle_transform(ops, h) : scr_handle_writable(ops, h);
+}
+
+/* The native stream of a checked-dynamic stream handle (+1), or NULL when
+ * the value is not one. */
 ScrStream *scr_stream_of_handle(const ScrDyn *value) {
   if (value->kind != SCR_DYN_HANDLE) return NULL;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
-  return ops->transform ? scr_handle_transform(ops, value->v.handle.ptr) : NULL;
+  if (!ops->transform && !ops->writable) return NULL;
+  return scr_handle_stream_build(ops, value->v.handle.ptr);
 }
 
 /* A boxed native stream (+1), or NULL for any other value. */
@@ -8669,18 +8743,10 @@ static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, ScrDyn *const *args, si
   return scr_dyn_new_bool(more);
 }
 
-/* eventNames(): the stream's event names as a string array, +1. */
+/* eventNames(): the stream's event names as an array, +1 (symbol keys
+ * included: the emitter registry holds every key). */
 static ScrDyn *scr_stream_dyn_event_names(ScrStream *stream) {
-  ScrArr *names = scr_emitter_event_names((ScrEmitter *)stream);
-  ScrDyn *result = scr_dyn_new_arr();
-  double length = scr_arr_len(names);
-  for (double i = 0; i < length; i++) {
-    ScrStr *name = scr_arr_get_ref(names, i);
-    scr_dyn_arr_push(result, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_arr_release(names);
-  return result;
+  return scr_emitter_event_names((ScrEmitter *)stream);
 }
 
 /* A checked-dynamic call of one of a native stream's members (borrowed
@@ -8799,15 +8865,40 @@ static ScrDyn *scr_stream_view_call(ScrClosure *cb, ScrDyn *const *args, size_t 
   return result;
 }
 
+/* The stream members and properties a Writable-only handle (Sign, Verify)
+ * answers: its Writable and emitter side. Its Readable side is absent, as
+ * it is on a Writable in Node. */
+static bool scr_handle_writable_method(const char *name) {
+  static const char *const methods[] = {
+    "on", "once", "addListener", "prependListener", "prependOnceListener",
+    "off", "removeListener", "removeAllListeners", "listenerCount", "eventNames",
+    "write", "end", "destroy", "cork", "uncork", "setDefaultEncoding",
+  };
+  for (size_t i = 0; i < sizeof methods / sizeof *methods; i++)
+    if (strcmp(name, methods[i]) == 0) return true;
+  return false;
+}
+
+static bool scr_handle_writable_property(const char *name) {
+  static const char *const properties[] = {
+    "writable", "writableEnded", "writableFinished", "writableLength",
+    "writableHighWaterMark", "writableNeedDrain", "destroyed", "closed",
+  };
+  for (size_t i = 0; i < sizeof properties / sizeof *properties; i++)
+    if (strcmp(name, properties[i]) == 0) return true;
+  return false;
+}
+
 /* ScrHandleStreamHooks.call: a member a native stream answers to
- * checked-dynamic calls, on the handle's Transform. Members that answer
- * the stream answer `self`. */
+ * checked-dynamic calls, on the handle's Transform (or Writable). Members
+ * that answer the stream answer `self`. */
 static bool scr_handle_stream_call(const ScrDynHandleOps *ops, void *h, ScrDyn *self,
                                    const char *method, ScrDyn *const *args, size_t argc,
                                    ScrDyn **result) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++) {
     if (strcmp(method, scr_stream_dyn_methods[i]) != 0) continue;
-    ScrStream *stream = scr_handle_transform(ops, h);
+    if (!ops->transform && !scr_handle_writable_method(method)) return false;
+    ScrStream *stream = scr_handle_stream_build(ops, h);
     *result = scr_stream_dyn_call(stream, self, method, args, argc);
     scr_stream_release(stream);
     return true;
@@ -8828,13 +8919,15 @@ static ScrDyn *scr_stream_dyn_property(ScrStream *stream, const char *name) {
   return number ? scr_dyn_new_num(value) : scr_dyn_new_bool(value != 0);
 }
 
-/* ScrHandleStreamHooks.get: a stream property of the handle's Transform. */
+/* ScrHandleStreamHooks.get: a stream property of the handle's Transform
+ * (or Writable). */
 static ScrDyn *scr_handle_stream_get(const ScrDynHandleOps *ops, void *h, const char *key,
                                      size_t key_len) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
     const char *name = scr_stream_dyn_properties[i];
     if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
-    ScrStream *stream = scr_handle_transform(ops, h);
+    if (!ops->transform && !scr_handle_writable_property(name)) return NULL;
+    ScrStream *stream = scr_handle_stream_build(ops, h);
     ScrDyn *value = scr_stream_dyn_property(stream, name);
     scr_stream_release(stream);
     return value;

@@ -1,0 +1,7 @@
+{
+  "entry": "workloads/class-unions.ts",
+  "args": [
+    "5000"
+  ],
+  "scaleArg": 0
+}

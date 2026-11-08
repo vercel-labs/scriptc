@@ -85,6 +85,41 @@ function expectedExit(edit = 0, count = 24): number {
   return total % 251;
 }
 
+/** `program()` with debug info: every step definition and the calls between
+ * steps carry a subprogram, and one compilation unit names the source. */
+function debugProgram(): string {
+  const debug = program()
+    .split("\n")
+    .map((line) => {
+      const definition =
+        /^define internal void @step(\d+)(?:\.i32)?\(i64 %value\) noinline \{$/.exec(line);
+      if (definition !== null) return line.replace(" {", ` !dbg !${10 + Number(definition[1])} {`);
+      const call = /^ {2}call void @step(\d+)\(i64 %value\)$/.exec(line);
+      return call === null ? line : `${line}, !dbg !${40 + Number(call[1]) - 1}`;
+    });
+  return [
+    ...debug,
+    "!llvm.dbg.cu = !{!0}",
+    "!llvm.module.flags = !{!2, !3}",
+    '!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)',
+    '!1 = !DIFile(filename: "program.ts", directory: "/src")',
+    '!2 = !{i32 2, !"Debug Info Version", i32 3}',
+    '!3 = !{i32 7, !"Dwarf Version", i32 5}',
+    "!4 = !DISubroutineType(types: !{})",
+    ...Array.from(
+      { length: 24 },
+      (_, index) =>
+        `!${10 + index} = distinct !DISubprogram(name: "step${index}", scope: !1, file: !1, line: ${index + 1}, type: !4, spFlags: DISPFlagDefinition, unit: !0)`,
+    ),
+    ...Array.from(
+      { length: 23 },
+      (_, index) =>
+        `!${40 + index} = !DILocation(line: ${index + 1}, column: 3, scope: !${10 + index})`,
+    ),
+    "",
+  ].join("\n");
+}
+
 async function emit(
   dir: string,
   source: string,
@@ -94,6 +129,7 @@ async function emit(
     cache?: string;
     split?: boolean;
     profileGenerate?: string;
+    triple?: string;
     name: string;
   },
 ): Promise<string[]> {
@@ -110,7 +146,7 @@ async function emit(
     "--filetype",
     "obj",
     "--target",
-    target!.llvmTriple,
+    options.triple ?? target!.llvmTriple,
     "--opt-level",
     options.optLevel,
     "--relocation-model",
@@ -605,7 +641,9 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       // Copies as --cpu-dispatch emits them: `<name>.base` in #0 and
       // `<name>.v3` in #1. Two callers each, so that every copy is placed by
       // its own name. Each f calls h in its own tier; f and h have 128-bit
-      // vectors, g a 256-bit vector, and s only scalar code.
+      // vectors, g a 256-bit vector, and s only scalar code. t has 128-bit
+      // vectors and calls k, an x86-64-v3 function without copies in #2, as
+      // a --target-cpu=x86-64-v3 build emits its helpers.
       const pairs = 4;
       const copies = (tier: "base" | "v3", group: number): string[] => [
         `define internal void @h.${tier}(ptr %p) #${group} {`,
@@ -633,6 +671,13 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "  %y = fadd double %x, 1.0",
         "  ret double %y",
         "}",
+        `define internal void @t.${tier}(ptr %p) #${group} {`,
+        "  %v = load <2 x double>, ptr %p",
+        "  %w = fadd <2 x double> %v, splat (double 5.0)",
+        "  store <2 x double> %w, ptr %p",
+        "  call void @k(ptr %p)",
+        "  ret void",
+        "}",
       ];
       const calls = (result: string): string[] =>
         (["base", "v3"] as const).flatMap((tier) => [
@@ -641,10 +686,15 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
             (_, index) => `  call void @f${index}.${tier}(ptr @sink)`,
           ),
           `  call void @g.${tier}(ptr @sink)`,
+          `  call void @t.${tier}(ptr @sink)`,
           `  %${result}.${tier} = call double @s.${tier}(double 1.0)`,
         ]);
       const source = [
         "@sink = global [4 x double] zeroinitializer",
+        "define internal void @k(ptr %p) #2 {",
+        "  store double 0.0, ptr %p",
+        "  ret void",
+        "}",
         ...copies("base", 0),
         ...copies("v3", 1),
         "define void @other() {",
@@ -657,6 +707,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         "}",
         "attributes #0 = { noinline uwtable }",
         'attributes #1 = { noinline uwtable "target-cpu"="x86-64-v3" "scriptc-cpu-copy" }',
+        'attributes #2 = { noinline uwtable "target-cpu"="x86-64-v3" }',
       ].join("\n");
       // Each function's object and disassembly, by its name without the
       // thin link's `.llvm.<n>` suffix.
@@ -698,6 +749,10 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(at("g.v3").code).toContain("%ymm");
       expect(at("s.v3").code).toMatch(/\svaddsd\s/);
       expect(at("g.base").code).not.toContain("%ymm");
+      // A baseline copy that calls a function defined for x86-64-v3 does not
+      // give its code to the v3 copy.
+      expect(at("t.v3").code).toMatch(/\svaddpd\s/);
+      expect(at("t.base").code).toMatch(/\saddpd\s/);
       // An instrumented build keeps every copy's code: a baseline body would
       // count the v3 copy's executions against the baseline copy.
       const counted = await disassemble(
@@ -738,6 +793,42 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       expect(runs("f1.v3").code).not.toMatch(/\svaddpd\s/);
     },
   );
+
+  test("an !invariant.group load whose pointer becomes a constant keeps its own function's value", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-invariant-group-"));
+    dirs.push(dir);
+    // After inlining, both reads load through `getelementptr (ptr null, 4)`,
+    // a constant whose uses include the other function's load. LLVM 22.1.8's
+    // memory dependence analysis gave each load the other function's load as
+    // its value, and the optimizer crashed (MemoryDependenceAnalysis.cpp).
+    const read = (name: string, type: "i32" | "i64") => [
+      `define ${type} @${name}(ptr %p) {`,
+      "  %tag = call i32 @tag(ptr %p)",
+      "  %other = icmp eq i32 %tag, 0",
+      "  br i1 %other, label %done, label %read",
+      "done:",
+      `  ret ${type} 0`,
+      "read:",
+      "  %field = getelementptr i8, ptr %p, i64 4",
+      "  %value = load i32, ptr %field, !invariant.group !0",
+      ...(type === "i32"
+        ? ["  ret i32 %value"]
+        : ["  %wide = zext i32 %value to i64", "  ret i64 %wide"]),
+      "}",
+    ];
+    const source = [
+      ...read("first", "i32"),
+      ...read("second", "i64"),
+      "define i32 @tag(ptr %p) {",
+      "  %null = icmp eq ptr %p, null",
+      "  %tag = zext i1 %null to i32",
+      "  ret i32 %tag",
+      "}",
+      "!0 = !{}",
+    ].join("\n");
+    const [object] = await emit(dir, source + "\n", { outputs: 1, optLevel: "2", name: "reads" });
+    expect((await readFile(object!)).length).toBeGreaterThan(0);
+  });
 
   test("internal definitions nothing reaches are left out of every partition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreachable-"));
@@ -880,6 +971,138 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(where.get("trampoline")).toBe(where.get("step7"));
     expect(where.get("closure")).not.toBe(where.get("step7"));
     expect(where.get("matcher")).not.toBe(where.get("step9"));
+  });
+
+  test.runIf(target?.llvmTriple.includes("linux") === true)(
+    "a definition whose last reference the optimizer removes leaves the linked executable",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreferenced-"));
+      dirs.push(dir);
+      // step6 hands @closure to @spawn only when @gate holds, and @gate is a
+      // false constant that lives with its first reader, @home, in main's
+      // partition. @closure is large, so it is placed by its own name and
+      // promoted for step6's reference. step6's partition learns the
+      // constant from the thin link, after which the branch folds and
+      // nothing refers to @closure any more.
+      const source = program()
+        .split("\n")
+        .flatMap((line) => {
+          if (line === "define internal void @step6(i64 %value) noinline {")
+            return [
+              "@gate = internal constant i1 false",
+              "define internal void @home() noinline {",
+              "  %held = load i1, ptr @gate",
+              "  br i1 %held, label %counted, label %done",
+              "counted:",
+              "  call void @bump(i64 0)",
+              "  br label %done",
+              "done:",
+              "  ret void",
+              "}",
+              "define internal void @closure(i64 %value) noinline {",
+              ...Array.from(
+                { length: 40 },
+                (_, index) =>
+                  `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+              ),
+              "  call void @bump(i64 0)",
+              "  ret void",
+              "}",
+              "define internal void @spawn(ptr %fn) noinline {",
+              "  call void %fn(i64 1)",
+              "  ret void",
+              "}",
+              line,
+              "  %held = load i1, ptr @gate",
+              "  br i1 %held, label %kept, label %plain",
+              "kept:",
+              "  call void @spawn(ptr @closure)",
+              "  br label %plain",
+              "plain:",
+            ];
+          if (line === "define i32 @main() {") return [line, "  call void @home()"];
+          return [line];
+        })
+        .join("\n");
+      const defined = async (path: string): Promise<Set<string>> => {
+        const { stdout } = await execFileAsync("nm", ["--defined-only", path]);
+        return new Set(stdout.split("\n").map((line) => line.trim().split(" ").pop() ?? ""));
+      };
+      const objects = await emit(dir, source, { outputs: 4, optLevel: "2", name: "unreferenced" });
+      expect(await exitCode(dir, objects, "unreferenced")).toBe(expectedExit());
+      // The scenario: @closure is defined beside neither its referrer nor
+      // the constant, and no object refers to it.
+      const homes = await Promise.all(objects.map(defined));
+      const partitionOf = (name: string): number => homes.findIndex((names) => names.has(name));
+      expect(partitionOf("closure")).toBeGreaterThanOrEqual(0);
+      expect(partitionOf("closure")).not.toBe(partitionOf("step6"));
+      expect(partitionOf("step6")).not.toBe(partitionOf("main"));
+      for (const object of objects) {
+        const { stdout } = await execFileAsync("nm", ["--undefined-only", object]);
+        expect(stdout).not.toMatch(/ closure$/m);
+      }
+      // It has a section of its own, so the link that collects unreferenced
+      // sections, as an executable's does, leaves it out.
+      const collected = join(dir, "collected");
+      await execFileAsync(process.env["CC"] ?? "cc", [
+        ...objects,
+        "-Wl,--gc-sections",
+        "-o",
+        collected,
+      ]);
+      const linked = await defined(collected);
+      expect(linked.has("step6")).toBe(true);
+      expect(linked.has("closure")).toBe(false);
+    },
+  );
+
+  test("a fallback body that its referrer calls is placed by its own name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-cold-"));
+    dirs.push(dir);
+    const body = (name: string, attrs: string) => [
+      `define internal void @${name}(i64 %value) ${attrs} {`,
+      ...Array.from(
+        { length: 40 },
+        (_, index) => `  %v${index} = add i64 ${index === 0 ? "%value" : `%v${index - 1}`}, 1`,
+      ),
+      "  call void @bump(i64 0)",
+      "  ret void",
+      "}",
+    ];
+    // step7 calls two fallback bodies, one of them unoptimized, and a cold
+    // function without the marker; only the last follows it.
+    const source = program()
+      .split("\n")
+      .flatMap((line) => {
+        if (line === "define internal void @step7(i64 %value) noinline {")
+          return [
+            ...body("fallback", 'noinline cold "scriptc-fallback"'),
+            ...body("plainFallback", 'noinline optnone cold "scriptc-fallback"'),
+            ...body("missPath", "noinline cold"),
+            line,
+            "  call void @fallback(i64 1)",
+            "  call void @plainFallback(i64 1)",
+            "  call void @missPath(i64 1)",
+          ];
+        return [line];
+      })
+      .join("\n");
+    const objects = await emit(dir, source, { outputs: 4, optLevel: "0", name: "cold" });
+    expect(await exitCode(dir, objects, "cold")).toBe(expectedExit());
+    const where = new Map<string, number>();
+    for (const [index, object] of objects.entries()) {
+      const { stdout } = await execFileAsync("nm", [object]);
+      for (const line of stdout.split("\n")) {
+        const defined = /^[0-9a-fA-F]+ [A-Za-z] _?(step7|fallback|plainFallback|missPath)$/.exec(
+          line.trim(),
+        );
+        if (defined !== null) where.set(defined[1]!, index);
+      }
+    }
+    expect(where.size).toBe(4);
+    expect(where.get("missPath")).toBe(where.get("step7"));
+    expect(where.get("fallback")).not.toBe(where.get("step7"));
+    expect(where.get("plainFallback")).not.toBe(where.get("step7"));
   });
 
   test("functions are balanced over a few partitions, and a small edit keeps their places", async () => {
@@ -1199,37 +1422,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
   test("debug metadata follows the functions that reference it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-debug-"));
     dirs.push(dir);
-    const debug = program()
-      .split("\n")
-      .map((line) => {
-        const definition =
-          /^define internal void @step(\d+)(?:\.i32)?\(i64 %value\) noinline \{$/.exec(line);
-        if (definition !== null)
-          return line.replace(" {", ` !dbg !${10 + Number(definition[1])} {`);
-        const call = /^ {2}call void @step(\d+)\(i64 %value\)$/.exec(line);
-        return call === null ? line : `${line}, !dbg !${40 + Number(call[1]) - 1}`;
-      });
-    const source = [
-      ...debug,
-      "!llvm.dbg.cu = !{!0}",
-      "!llvm.module.flags = !{!2, !3}",
-      '!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "test", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)',
-      '!1 = !DIFile(filename: "program.ts", directory: "/src")',
-      '!2 = !{i32 2, !"Debug Info Version", i32 3}',
-      '!3 = !{i32 7, !"Dwarf Version", i32 5}',
-      "!4 = !DISubroutineType(types: !{})",
-      ...Array.from(
-        { length: 24 },
-        (_, index) =>
-          `!${10 + index} = distinct !DISubprogram(name: "step${index}", scope: !1, file: !1, line: ${index + 1}, type: !4, spFlags: DISPFlagDefinition, unit: !0)`,
-      ),
-      ...Array.from(
-        { length: 23 },
-        (_, index) =>
-          `!${40 + index} = !DILocation(line: ${index + 1}, column: 3, scope: !${10 + index})`,
-      ),
-      "",
-    ].join("\n");
+    const source = debugProgram();
     const cache = join(dir, "cache");
     const objects = await emit(dir, source, { outputs: 4, optLevel: "0", cache, name: "debug" });
     const bytes = await Promise.all(objects.map((path) => readFile(path)));
@@ -1249,5 +1442,40 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     });
     expect(await cacheEntries(cache, ".o")).toEqual(before);
     expect(await Promise.all(renumbered.map((path) => readFile(path)))).toEqual(bytes);
+  });
+
+  test("each object names the compilation units it holds after itself", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-units-"));
+    dirs.push(dir);
+    const source = debugProgram();
+    // A Darwin link attributes symbols through one debug-map entry per object,
+    // and each entry carries the object's compilation-unit name. The other
+    // targets record the same names, so the objects hold them either way.
+    const darwin = "arm64-apple-macosx14.0.0";
+    const modes = [
+      { name: "unoptimized", optLevel: "0" as const },
+      { name: "thinlink", optLevel: "2" as const },
+      { name: "codegen", optLevel: "2" as const, split: true },
+    ];
+    for (const mode of modes) {
+      const objects = await emit(dir, source, { ...mode, outputs: 4, triple: darwin });
+      const contents = await Promise.all(objects.map((path) => readFile(path)));
+      // The file a unit names, terminated where the debug strings end it.
+      const needle = (index: number) => Buffer.from(`program.ts.scriptc-partition-${index}\0`);
+      // The first object of a code-generation split is what a single output
+      // produces, so it keeps the module's own unit name.
+      const expected = contents.map((_, index) =>
+        mode.split === true && index === 0 ? [] : [index],
+      );
+      const carried = contents.map((object) =>
+        expected.flat().filter((index) => object.includes(needle(index))),
+      );
+      expect(carried, mode.name).toEqual(expected);
+      for (const [index, object] of contents.entries()) {
+        // The functions, variables and locations keep the source file.
+        if (index === 0 || expected[index]!.length === 1)
+          expect(object.includes("program.ts\0"), mode.name).toBe(true);
+      }
+    }
   });
 });

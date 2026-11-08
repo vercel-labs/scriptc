@@ -2,7 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import { DYN, STRING, arrayOf, type IrExpr, type SrcLoc } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
 /** A stored global object has identity and survives module/function boundaries.
  * Known globals without a value implementation refuse at runtime; absent host
@@ -11,9 +11,12 @@ export function lowerGlobalValue(lowerer: Lowerer, expr: ts.Expression): IrExpr 
   return lowerGlobalValueOfType(lowerer, lowerer.typeOf(expr), locOf(expr));
 }
 
-/** The global object a sloppy-mode function receives as `this` when it is
- * called with undefined or null: the value `globalThis` reads. */
-export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
+/** The global object itself, whatever spelling reached it — `globalThis`, a
+ * cast (`(globalThis as any)`), or an alias. The name table comes from the
+ * `globalThis` symbol rather than from the read's own type: a cast to a type
+ * the checker knows no members of would otherwise register an empty table and
+ * send every declared name to the runtime's undefined. */
+export function lowerGlobalObjectValue(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
   const symbol = lowerer.checker.resolveName(
     "globalThis",
     ts.SymbolFlags.Value,
@@ -27,12 +30,19 @@ export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: 
   );
 }
 
+/** The global object a sloppy-mode function receives as `this` when it is
+ * called with undefined or null: the value `globalThis` reads. */
+export function lowerSloppyGlobalReceiver(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
+  return lowerGlobalObjectValue(lowerer, node, loc);
+}
+
 function lowerGlobalValueOfType(lowerer: Lowerer, type: ts.Type | undefined, loc: SrcLoc): IrExpr {
   // The temporal global is typed for the programs that name it (TS 7's
-  // lib slice) but absent in Node 24: reads answer undefined.
+  // lib slice) but absent in Node 24, and the CommonJS module bindings are
+  // not properties of the global object: reads answer undefined.
   const names = (type === undefined ? [] : lowerer.checker.getPropertiesOfType(type))
     .map((property) => ts.symbolName(property))
-    .filter((name) => name !== TEMPORAL_GLOBAL);
+    .filter((name) => name !== TEMPORAL_GLOBAL && !COMMONJS_MODULE_BINDINGS.has(name));
   return {
     kind: "libCall",
     fn: "global.native",

@@ -1,3 +1,4 @@
+import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { constructedValue } from "./constructor-returns.js";
 import {
@@ -15,11 +16,13 @@ import {
 } from "../../ir/ir.js";
 import { transformExpr, transformStmtList } from "../../ir/traverse.js";
 import type { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, EMPTY_DEPS, FixpointWorklist } from "./fixpoint-worklist.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { inheritedBuiltinCtorFence } from "./lower-classes.js";
+import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
+import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
 const PACKED = `${PREFIX}packed`;
@@ -35,7 +38,7 @@ export function checkedClassInstanceOf(
   refusal: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === INSTANCEOF)) {
+  if (lowerer.liftedFnNamed(INSTANCEOF) === undefined) {
     const params = [
       { localId: "value", name: "value", type: DYN },
       { localId: "callee", name: "callee", type: DYN },
@@ -75,15 +78,20 @@ export function checkedClassInstanceOf(
   };
 }
 
-/** Checked construction dispatches to emitted native constructor thunks. */
+/** Checked construction dispatches to emitted native constructor thunks.
+ * `calleeText` is the callee as V8 spells it in "<callee> is not a
+ * constructor"; without it the runtime's own description of the callee
+ * stands. */
 export function checkedClassConstruction(
   lowerer: Lowerer,
   callee: IrExpr,
   args: IrExpr[],
   loc: SrcLoc,
+  calleeText?: string,
 ): IrExpr {
-  const name = `${PREFIX}${args.length}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  const name =
+    calleeText === undefined ? `${PREFIX}${args.length}` : `${PREFIX}${args.length}:${calleeText}`;
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [callee, ...args].map((_, index) => ({
       localId: `p.${index}`,
       name: `p${index}`,
@@ -109,7 +117,7 @@ export function checkedClassConstruction(
                 type: DYN,
                 loc,
               },
-              { kind: "strLit", value: "constructor", type: STRING, loc },
+              { kind: "strLit", value: calleeText ?? "constructor", type: STRING, loc },
             ],
             type: DYN,
             loc,
@@ -123,6 +131,109 @@ export function checkedClassConstruction(
   return { kind: "call", callee: name, args: [callee, ...args], type: DYN, loc };
 }
 
+/** Outside `%class.construct:` on purpose: every lifted function under that
+ * prefix is an argument helper whose parameters after the callee ARE the
+ * construction's arguments, and the class specialization below reads them
+ * that way. This helper's second parameter is the message, not an argument,
+ * and it hands the construction to the argument helper, which carries that
+ * specialization. */
+const PRIMITIVE = "%class.primitiveConstruct:";
+
+/** Checked construction whose callee the CHECKER types as a primitive while
+ * the value lowers to a dynamic slot. The refusal cannot be a compile-time
+ * throw: a JavaScript property keeps its initializer's type through a later
+ * assignment (`reg.ctor = Foo; new reg.ctor()`), so only the value knows
+ * whether anything is there. V8 evaluates the callee, then every argument,
+ * then IsConstructor, so the arguments are this helper's own parameters and
+ * the check runs between them and the construction: anything that is not a
+ * function throws Node's `<callee> is not a constructor`. */
+export function primitiveCheckedConstruction(
+  lowerer: Lowerer,
+  callee: IrExpr,
+  message: string,
+  args: IrExpr[],
+  loc: SrcLoc,
+  packed?: IrExpr,
+): IrExpr {
+  const name = `${PRIMITIVE}:${packed === undefined ? args.length : "spread"}`;
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const params = [
+      { localId: "p.0", name: "callee", type: DYN },
+      { localId: "p.1", name: "message", type: STRING },
+      ...(packed === undefined
+        ? args.map((_, index) => ({ localId: `p.${index + 2}`, name: `a${index}`, type: DYN }))
+        : [{ localId: "p.2", name: "arguments", type: DYN }]),
+    ];
+    const construction =
+      packed === undefined
+        ? checkedClassConstruction(
+            lowerer,
+            varRef("p.0", DYN, loc),
+            params.slice(2).map((param) => varRef(param.localId, DYN, loc)),
+            loc,
+          )
+        : checkedClassConstructionPacked(
+            lowerer,
+            varRef("p.0", DYN, loc),
+            varRef("p.2", DYN, loc),
+            loc,
+          );
+    lowerer.liftedFns.push({
+      name,
+      params,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: param.type,
+        mutable: false,
+      })),
+      returnType: DYN,
+      speculativeDispatch: true,
+      body: [
+        {
+          kind: "if",
+          cond: {
+            kind: "strEq",
+            negated: true,
+            left: {
+              kind: "libCall",
+              fn: "dyn.typeof",
+              args: [varRef("p.0", DYN, loc)],
+              type: STRING,
+              loc,
+            },
+            right: { kind: "strLit", value: "function", type: STRING, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "exprStmt",
+              expr: throwTypeError(varRef("p.1", STRING, loc), DYN, loc),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: construction, loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: name,
+    args: [
+      callee,
+      { kind: "strLit", value: message, type: STRING, loc },
+      ...(packed === undefined ? args : [packed]),
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
 /** Runtime-length constructor spreads keep argument evaluation before defaults. */
 export function checkedClassConstructionPacked(
   lowerer: Lowerer,
@@ -130,7 +241,7 @@ export function checkedClassConstructionPacked(
   packed: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === PACKED)) {
+  if (lowerer.liftedFnNamed(PACKED) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "arguments", type: DYN },
@@ -269,12 +380,15 @@ export class ClassConstructionDispatch {
   private readonly completed = new Map<string, Set<string>>();
   private prototypeHelper: IrFunction | null = null;
   private readonly prototypes = new Set<string>();
+  /** The bodies still to rewrite; see FixpointWorklist. */
+  private worklist: FixpointWorklist | null = null;
 
   process(lowerer: Lowerer, functions: readonly IrFunction[], sites: DispatchSites): boolean {
     const discover = (type: IrType): void => {
       if (type.kind === "classval") this.constructors.add(type.className);
       else if (type.kind === "union") lowerer.unions.get(type.unionId)?.arms.forEach(discover);
     };
+    const worklist = (this.worklist ??= new FixpointWorklist(sites));
     const prototypeReads = new Set<IrFunction>();
     for (const fn of functions) {
       const found = sites.of(fn);
@@ -284,7 +398,10 @@ export class ClassConstructionDispatch {
     let changed = false;
     for (const fn of functions) {
       if (fn === this.prototypeHelper || !prototypeReads.has(fn)) continue;
-      fn.body = transformStmtList(fn.body, {
+      const settled = !worklist.needsRewrite(fn, () => "");
+      if (settled && !checkIncremental) continue;
+      let touched = false;
+      const body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
           if (expr.kind !== "libCall" || expr.fn !== "dyn.classBasePrototype") return expr;
@@ -303,6 +420,7 @@ export class ClassConstructionDispatch {
             lowerer.liftedFns.push(this.prototypeHelper);
             changed = true;
           }
+          touched = true;
           return {
             kind: "call",
             callee: this.prototypeHelper.name,
@@ -312,6 +430,16 @@ export class ClassConstructionDispatch {
           };
         },
       });
+      if (settled) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(
+            `the settled class-construction rewrite of ${fn.name} changed its body`,
+          );
+        continue;
+      }
+      if (touched) fn.body = body;
+      worklist.record(fn, EMPTY_DEPS);
     }
     if (this.prototypeHelper)
       for (const name of this.constructors) {
@@ -368,6 +496,12 @@ export class ClassConstructionDispatch {
         const info = lowerer.classes.get(name);
         if (!info || info.generic || info.def.runtime) continue;
         if (fn.name === INSTANCEOF) {
+          // A class that declares a static `Symbol.hasInstance` hook (its
+          // bases included): Node asks the hook first, and only without one
+          // walks the prototype chain. The fast path below IS the prototype
+          // walk, so this class must reach `bytes.instanceOf`, which asks
+          // the hook.
+          if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
           const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {

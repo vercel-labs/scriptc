@@ -1,23 +1,27 @@
 {
   "schemaVersion": 4,
-  "nodeVersion": "24.22.0",
-  "nodeTag": "v24.22.0",
-  "nodeCommit": "f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93",
+  "nodeVersion": "24.22.1",
+  "nodeTag": "v24.22.1",
+  "nodeCommit": "d01285110044365f0ad4fec24482a585646640e2",
   "sources": {
     "allJson": {
-      "url": "https://nodejs.org/download/release/v24.22.0/docs/api/all.json",
-      "sha256": "2445f57511c86b2b8129b3fd8423811fd8b32d1eccc1e54d8c747e823f65be27"
+      "url": "https://nodejs.org/download/release/v24.22.1/docs/api/all.json",
+      "sha256": "3edf28696d913c7ef5f96b47f3f69ef70d641b28d560f9c76ffe7783a2234e9a"
     },
     "indexMarkdown": {
-      "url": "https://nodejs.org/docs/v24.22.0/api/index.md",
+      "url": "https://nodejs.org/docs/v24.22.1/api/index.md",
       "sha256": "c63ecaedc4a35de0823706cc72ce76cd10e712ce50eaca829bb2eefe1fc2ded2"
     },
-    "sourceBaseUrl": "https://github.com/nodejs/node/tree/f14cd3aa7bf9ca8df2cc5b8bb14beb0f335b1d93"
+    "sourceBaseUrl": "https://github.com/nodejs/node/tree/d01285110044365f0ad4fec24482a585646640e2"
   },
   "verificationBases": {
     "test-backed": {
       "label": "Test-backed mapping",
       "detail": "Mapped to implementation and relevant repository tests; evidence may cover an API family rather than every documented overload."
+    },
+    "island-test-backed": {
+      "label": "Island test-backed mapping",
+      "detail": "In an island build, a Node island answers this API, and differential tests execute it under Node and as a compiled island binary; a build without islands keeps the refusal. This is not native support."
     },
     "explicit-refusal": {
       "label": "Explicit refusal",
@@ -55,15 +59,15 @@
   "inventory": {
     "sourceChapters": 63,
     "sourceRows": 4996,
-    "matrixChapters": 56,
-    "matrixRows": 3880,
+    "matrixChapters": 57,
+    "matrixRows": 3886,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 8,
-      "chapters": 7
+      "not-applicable": 3,
+      "chapters": 6
     }
   },
   "chapters": [
@@ -294,6 +298,12 @@
       "title": "REPL",
       "entries": 14,
       "apiEntries": 14
+    },
+    {
+      "slug": "single-executable-applications",
+      "title": "Single executable applications",
+      "entries": 6,
+      "apiEntries": 6
     },
     {
       "slug": "sqlite",
@@ -2079,9 +2089,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2102,9 +2112,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2125,9 +2135,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2286,9 +2296,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2309,9 +2319,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2332,9 +2342,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -3482,9 +3492,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9383,9 +9393,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -9406,9 +9416,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14627,9 +14637,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14650,9 +14660,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14673,9 +14683,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14696,9 +14706,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -14719,9 +14729,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15777,9 +15787,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15800,9 +15810,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15823,9 +15833,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15846,9 +15856,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15869,9 +15879,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15892,9 +15902,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15915,9 +15925,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15961,9 +15971,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -15984,9 +15994,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16007,9 +16017,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16030,9 +16040,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16053,9 +16063,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -16076,9 +16086,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24746,9 +24756,9 @@
       "anchor": "err_zstd_invalid_param",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -30428,9 +30438,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32222,9 +32232,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32291,9 +32301,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32360,9 +32370,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32383,9 +32393,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32452,9 +32462,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32475,9 +32485,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32498,9 +32508,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32521,9 +32531,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32544,9 +32554,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32567,9 +32577,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -32590,9 +32600,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34798,9 +34808,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34821,9 +34831,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34844,9 +34854,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34867,9 +34877,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34890,9 +34900,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34913,9 +34923,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34936,9 +34946,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34959,9 +34969,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34982,9 +34992,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35051,9 +35061,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35212,9 +35222,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35258,9 +35268,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35281,9 +35291,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35327,9 +35337,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35396,9 +35406,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Constructs from records, header pairs and copies, and supports append/delete/get/getSetCookie/has/set/forEach with Node's coercion and error shapes, including Response and Request headers; typed iteration and method extraction remain refused.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36017,9 +36027,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36063,9 +36073,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36201,9 +36211,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36224,9 +36234,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36431,9 +36441,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -56891,9 +56901,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "One stable set answers the compatibility target's NODE_OPTIONS flag names for exact spellings; Node's Set subclass also accepts undashed, underscored, and =value spellings in has(), and its add, delete, and clear do nothing.",
+        "verification": "test-backed"
       }
     },
     {
@@ -57543,9 +57553,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57561,9 +57571,9 @@
       "anchor": "processreportgetreporterr",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57597,9 +57607,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57615,9 +57625,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57633,9 +57643,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57651,9 +57661,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57669,9 +57679,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57687,9 +57697,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -57723,9 +57733,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "island-served",
+        "detail": "Answered by a Node island in an island build, not by native code; a build without islands keeps the refusal. This is not native support.",
+        "verification": "island-test-backed"
       }
     },
     {
@@ -59644,6 +59654,144 @@
         "status": "not-implemented",
         "detail": "No static implementation exists for this Node API family yet.",
         "verification": "declared-gap"
+      }
+    },
+    {
+      "id": "single-executable-applications:43d9fc6b5322",
+      "chapter": "single-executable-applications",
+      "kind": "module",
+      "name": "single_executable_applications",
+      "signature": "Single executable applications",
+      "label": "Single executable applications",
+      "apiSymbol": "single_executable_applications",
+      "depth": 0,
+      "scope": "api",
+      "anchor": "",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": false
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Derived from the exact API rows in this chapter.",
+        "verification": "derived"
+      }
+    },
+    {
+      "id": "single-executable-applications:c6cd28e0913d",
+      "chapter": "single-executable-applications",
+      "kind": "method",
+      "name": "isSea",
+      "signature": "`sea.isSea()`",
+      "label": "sea.isSea()",
+      "apiSymbol": "sea.isSea",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "seaissea",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": true
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
+      }
+    },
+    {
+      "id": "single-executable-applications:386d34a67b43",
+      "chapter": "single-executable-applications",
+      "kind": "method",
+      "name": "getAsset",
+      "signature": "`sea.getAsset(key[, encoding])`",
+      "label": "sea.getAsset(key[, encoding])",
+      "apiSymbol": "sea.getAsset",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "seagetassetkey-encoding",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": true
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
+      }
+    },
+    {
+      "id": "single-executable-applications:20737357e3d1",
+      "chapter": "single-executable-applications",
+      "kind": "method",
+      "name": "getAssetAsBlob",
+      "signature": "`sea.getAssetAsBlob(key[, options])`",
+      "label": "sea.getAssetAsBlob(key[, options])",
+      "apiSymbol": "sea.getAssetAsBlob",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "seagetassetasblobkey-options",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": true
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
+      }
+    },
+    {
+      "id": "single-executable-applications:9f7c7f9f6596",
+      "chapter": "single-executable-applications",
+      "kind": "method",
+      "name": "getRawAsset",
+      "signature": "`sea.getRawAsset(key)`",
+      "label": "sea.getRawAsset(key)",
+      "apiSymbol": "sea.getRawAsset",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "seagetrawassetkey",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": true
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
+      }
+    },
+    {
+      "id": "single-executable-applications:d6d5e45df4b8",
+      "chapter": "single-executable-applications",
+      "kind": "method",
+      "name": "getAssetKeys",
+      "signature": "`sea.getAssetKeys()`",
+      "label": "sea.getAssetKeys()",
+      "apiSymbol": "sea.getAssetKeys",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "seagetassetkeys",
+      "nodeStability": {
+        "index": "1.1",
+        "level": 1,
+        "text": "Active development",
+        "inherited": true
+      },
+      "static": {
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -65759,9 +65907,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -65851,9 +65999,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -70612,9 +70760,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -83658,9 +83806,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -84349,7 +84497,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84372,7 +84520,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84395,7 +84543,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84418,7 +84566,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84441,7 +84589,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84464,7 +84612,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84487,7 +84635,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84510,7 +84658,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84533,7 +84681,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84556,7 +84704,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84579,7 +84727,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84602,7 +84750,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84625,7 +84773,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -84647,9 +84795,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "verification": "test-backed"
       }
     },
     {
@@ -84670,9 +84818,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "verification": "test-backed"
       }
     },
     {
@@ -84923,9 +85071,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -84946,9 +85094,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -85383,9 +85531,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -85406,9 +85554,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -85429,9 +85577,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -85452,9 +85600,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -85499,7 +85647,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.",
+        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
     },
@@ -85544,9 +85692,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().",
+        "verification": "test-backed"
       }
     },
     {
@@ -85981,9 +86129,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -86004,9 +86152,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -86027,9 +86175,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -86050,9 +86198,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     }
   ]

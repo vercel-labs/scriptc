@@ -410,6 +410,81 @@ test("writing the record beside the pack keeps the entries another build wrote",
   expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
 });
 
+test("a speed build of a pack without a speed flavor says so, once per pack", async () => {
+  const f = await packFixture();
+  const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const select = () =>
+      selectNativeRuntimePack(
+        f.root,
+        MACOS_ARM64_TARGET,
+        compilerReleaseVersion(),
+        {} as NativeLinkFeatures,
+        "speed",
+        "executable",
+        emptyStore(),
+      );
+    select();
+    select();
+    // The fixture pack ships release and dev units only, so both selections
+    // link the release objects; the warning is the build's only sign of it,
+    // and one build says it once.
+    const lines = write.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('has no "speed" flavor'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("--optimization=speed");
+    expect(lines[0]).toContain("release runtime objects");
+    expect(lines[0]).toContain("SCRIPTC_LLVM_CODEGEN");
+  } finally {
+    write.mockRestore();
+  }
+});
+
+test("a build that reads a stored selection still says the pack has no speed flavor", async () => {
+  const f = await packFixture();
+  const store: RuntimePackStore = {
+    read: (key) => f.entries.get(key) ?? null,
+    write: (key, text) => void f.entries.set(key, text),
+  };
+  const select = (pack: typeof selectNativeRuntimePack) =>
+    pack(
+      f.root,
+      MACOS_ARM64_TARGET,
+      compilerReleaseVersion(),
+      {} as NativeLinkFeatures,
+      "speed",
+      "executable",
+      store,
+    );
+  const speedLines = (write: { mock: { calls: unknown[][] } }) =>
+    write.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('has no "speed" flavor'));
+  const cold = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    select(selectNativeRuntimePack);
+    expect(speedLines(cold)).toHaveLength(1);
+    expect(f.entries.size).toBe(1);
+  } finally {
+    cold.mockRestore();
+  }
+  // The next build starts with the pack directory unreported and reads the
+  // stored selection instead of the manifest; it links the same release
+  // objects, so it has to say so too.
+  const warm = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    vi.resetModules();
+    const fresh = await import("./runtime-pack-native.js");
+    const selection = select(fresh.selectNativeRuntimePack);
+    expect(selection.manifest).toBeUndefined();
+    expect(speedLines(warm)).toHaveLength(1);
+    expect(speedLines(warm)[0]).toContain("--optimization=speed");
+  } finally {
+    warm.mockRestore();
+  }
+});
+
 test("a cache that already trusts the artifacts writes the record beside the pack", async () => {
   const f = await packFixture();
   const selection = f.select();

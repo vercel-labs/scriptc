@@ -1,12 +1,8 @@
-import { BOOL, type IrExpr, type IrType, isUnitType, typeKey } from "../../ir/ir.js";
+import { BOOL, type IrExpr, type IrType, isUnitType, sortArms } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
-
-function stripParens(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node)) node = node.expression;
-  return node;
-}
 
 /** `const { a, ...rest } = options ?? {}` (also `|| {}`) where the options
  * record has a member that cannot be absent. The pattern destructures
@@ -28,14 +24,14 @@ export function nullishEmptyPatternSource(
 ): IrExpr | null {
   if (!ts.isObjectBindingPattern(pattern)) return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(initializer))) return null;
-  const init = stripParens(initializer);
+  const init = withoutParentheses(initializer);
   if (
     !ts.isBinaryExpression(init) ||
     (init.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken &&
       init.operatorToken.kind !== ts.SyntaxKind.BarBarToken)
   )
     return null;
-  const right = stripParens(init.right);
+  const right = withoutParentheses(init.right);
   if (!ts.isObjectLiteralExpression(right) || right.properties.nodes.length !== 0) return null;
   const loc = locOf(init);
   // Decide from the checker's view of the operand before lowering it once.
@@ -57,7 +53,7 @@ export function nullishEmptyPatternSource(
     declaredShape.indexValue ||
     declaredShape.fields.length === 0 ||
     declaredShape.fields.every(
-      (field) => lowerer.absentFieldValue(field.type, loc)?.kind === "fieldAbsent",
+      (field) => lowerer.absentFieldValue(field, loc)?.kind === "fieldAbsent",
     )
   )
     return null;
@@ -85,7 +81,7 @@ export function nullishEmptyPatternSource(
   }
   const record = records[0] as IrType & { kind: "record" };
   const empty: IrType = { kind: "record", shapeId: lowerer.shapes.intern([]) };
-  const resultArms = [record, empty].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const resultArms = sortArms([record, empty]);
   const resultType: IrType = { kind: "union", unionId: lowerer.unions.intern(resultArms) };
   const sourceTag = arms.indexOf(record);
   const tmp = lowerer.declareHiddenLocal("%nullishEmpty", left.type);

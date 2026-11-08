@@ -663,6 +663,27 @@ static bool scr_bv_append(ScrJsonBuf *b, const ScrDyn *value) {
   return true;
 }
 
+/* Reads `key` off the value a builtin received, the way a property read in
+ * the program does. A checked record or class instance boxed as a dynamic
+ * value answers from its native fields or its view, which the plain object
+ * read does not reach (it knows only plain object kinds). */
+static ScrDyn *scr_bv_object_member(const ScrDyn *object, const char *key, size_t key_len) {
+  if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *value = scr_dyn_typed_ref_key_get(object, name);
+  if (!value) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (!view) {
+      scr_str_release(name);
+      return NULL;
+    }
+    value = scr_dyn_obj_read(view, key, key_len);
+    scr_dyn_release(view);
+  }
+  scr_str_release(name);
+  return value;
+}
+
 /* format(pathObject): lib/path.js's _format and formatExt over any object,
  * reading each property as Node does. The result is `base` itself when
  * there is no dir, so it need not be a string. */
@@ -674,24 +695,24 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
     scr_dyn_arg_type_fail("pathObject", "of type object", object);
     return NULL;
   }
-  ScrDyn *dir = scr_dyn_obj_read(object, "dir", 3);
+  ScrDyn *dir = scr_bv_object_member(object, "dir", 3);
   if (!dir) return NULL;
   if (!scr_dyn_truthy(dir)) {
     scr_dyn_release(dir);
-    dir = scr_dyn_obj_read(object, "root", 4);
+    dir = scr_bv_object_member(object, "root", 4);
     if (!dir) return NULL;
   }
-  ScrDyn *base = scr_dyn_obj_read(object, "base", 4);
+  ScrDyn *base = scr_bv_object_member(object, "base", 4);
   if (!base) goto fail_dir;
   if (!scr_dyn_truthy(base)) {
     scr_dyn_release(base);
     base = NULL;
     ScrJsonBuf b;
     scr_jb_init(&b);
-    ScrDyn *name = scr_dyn_obj_read(object, "name", 4);
+    ScrDyn *name = scr_bv_object_member(object, "name", 4);
     bool ok = name != NULL && (!scr_dyn_truthy(name) || scr_bv_append(&b, name));
     if (name) scr_dyn_release(name);
-    ScrDyn *ext = ok ? scr_dyn_obj_read(object, "ext", 3) : NULL;
+    ScrDyn *ext = ok ? scr_bv_object_member(object, "ext", 3) : NULL;
     ok = ext != NULL;
     if (ok && scr_dyn_truthy(ext)) {
       /* `${ext[0] === '.' ? '' : '.'}${ext}` */
@@ -720,7 +741,7 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
     scr_dyn_release(dir);
     return base;
   }
-  ScrDyn *root = scr_dyn_obj_read(object, "root", 4);
+  ScrDyn *root = scr_bv_object_member(object, "root", 4);
   if (!root) goto fail_base;
   bool same = scr_dyn_strict_eq(dir, root);
   scr_dyn_release(root);
@@ -768,17 +789,19 @@ ScrDyn *scr_path_to_namespaced_value(ScrDyn *path, bool win32) {
 /* The constructors with static members, indexed by ScrBvStatic.owner. */
 static const char *const scr_bv_static_owners[] = {
   "Object", "Array", "Promise", "Number", "String", "BigInt", "Date", "RegExp", "Map", "Error",
-  "ArrayBuffer", "Proxy", "BigInt64Array", "BigUint64Array",
+  "ArrayBuffer", "Proxy", "BigInt64Array", "BigUint64Array", "Symbol",
 };
 
 typedef struct {
   const char *key;
   uint8_t owner;
-  /* The function's length, or SCR_BV_CONSTANT for a numeric constant
-   * (scr_bv_static_constant). */
+  /* The function's length, SCR_BV_CONSTANT for a numeric constant
+   * (scr_bv_static_constant), or SCR_BV_PROGRAM for a member only the
+   * program's lookup answers. */
   uint8_t length;
 } ScrBvStatic;
 #define SCR_BV_CONSTANT 0xff
+#define SCR_BV_PROGRAM 0xfe
 
 /* Node 24's own static members of each constructor, in Node's order.
  * Members with symbol keys, and RegExp's legacy accessors, are not
@@ -807,6 +830,14 @@ static const ScrBvStatic scr_bv_statics[] = {
   {"isView", 10, 1},
   {"revocable", 11, 2},
   {"BYTES_PER_ELEMENT", 12, SCR_BV_CONSTANT}, {"BYTES_PER_ELEMENT", 13, SCR_BV_CONSTANT},
+  /* The well-known symbols are the program's values: a program that reads
+   * Symbol as a value links the symbol unit. */
+  {"for", 14, 1}, {"keyFor", 14, 1}, {"asyncIterator", 14, SCR_BV_PROGRAM},
+  {"hasInstance", 14, SCR_BV_PROGRAM}, {"isConcatSpreadable", 14, SCR_BV_PROGRAM},
+  {"iterator", 14, SCR_BV_PROGRAM}, {"match", 14, SCR_BV_PROGRAM}, {"matchAll", 14, SCR_BV_PROGRAM},
+  {"replace", 14, SCR_BV_PROGRAM}, {"search", 14, SCR_BV_PROGRAM}, {"species", 14, SCR_BV_PROGRAM},
+  {"split", 14, SCR_BV_PROGRAM}, {"toPrimitive", 14, SCR_BV_PROGRAM}, {"toStringTag", 14, SCR_BV_PROGRAM},
+  {"unscopables", 14, SCR_BV_PROGRAM}, {"dispose", 14, SCR_BV_PROGRAM}, {"asyncDispose", 14, SCR_BV_PROGRAM},
 };
 #define SCR_BV_STATICS (sizeof scr_bv_statics / sizeof scr_bv_statics[0])
 
@@ -827,7 +858,7 @@ static SCR_TL ScrDyn *scr_bv_static_fences[SCR_BV_STATICS];
 static SCR_TL ScrDyn *scr_bv_statics_lookup;
 /* The constructors whose static members are own properties of their tables
  * (scr_bv_own_statics), one entry per identity. */
-static SCR_TL ScrClosure *scr_bv_owned[16];
+static SCR_TL ScrClosure *scr_bv_owned[32];
 static SCR_TL size_t scr_bv_owned_count;
 
 
@@ -841,6 +872,7 @@ static void scr_bv_statics_cleanup(void) {
   scr_bv_owned_count = 0;
   scr_dyn_builtin_static_fn = NULL;
   scr_dyn_builtin_statics_own_fn = NULL;
+  scr_dyn_builtin_owner_fn = NULL;
 }
 
 static ScrDyn *scr_bv_static_fence_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
@@ -869,8 +901,10 @@ static const ScrBvStatic *scr_bv_static_entry(const char *owner, size_t owner_le
 }
 
 /* The runtime's value for a listed member (+1): the constant, or the
- * member's fenced function, one per thread. */
+ * member's fenced function, one per thread. NULL for a member only the
+ * program answers. */
 static ScrDyn *scr_bv_static_value(const ScrBvStatic *entry) {
+  if (entry->length == SCR_BV_PROGRAM) return NULL;
   if (entry->length == SCR_BV_CONSTANT) return scr_dyn_new_num(scr_bv_static_constant(entry));
   size_t index = (size_t)(entry - scr_bv_statics);
   if (!scr_bv_static_fences[index])
@@ -991,17 +1025,27 @@ static void scr_bv_own_statics(const ScrDyn *fn, ScrDyn *table) {
     size_t key_len = strlen(entry->key);
     if (entry->owner != owner || scr_dyn_obj_get(table, entry->key, key_len)) continue;
     ScrDyn *value = scr_bv_member(fn, entry);
-    if (!value) return;
+    if (!value) {
+      if (scr_exc_pending()) return;
+      continue;
+    }
     bool function = value->kind == SCR_DYN_FUNC;
     scr_dyn_obj_set(table, entry->key, key_len, value);
     scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, function, false, function);
   }
 }
 
+/* scr_dyn_builtin_owner_fn. */
+static const char *scr_bv_owner_name(const ScrDyn *fn) {
+  int owner = scr_bv_owner_of(fn);
+  return owner < 0 ? NULL : scr_bv_static_owners[owner];
+}
+
 static void scr_bv_statics_register(void) {
   if (scr_dyn_builtin_static_fn) return;
   scr_dyn_builtin_static_fn = scr_bv_builtin_static;
   scr_dyn_builtin_statics_own_fn = scr_bv_own_statics;
+  scr_dyn_builtin_owner_fn = scr_bv_owner_name;
   scr_atexit(scr_bv_statics_cleanup);
 }
 

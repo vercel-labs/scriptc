@@ -457,6 +457,8 @@ export function conversionCopyText(copy: ConversionCopy, fmt: (type: IrType) => 
       return "a record converts to a class by constructing an instance";
     case "checked":
       return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by a copy`;
+    case "dict":
+      return "a dictionary converts to a dictionary of another value type by copying its entries";
     case "other":
       return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by building another value`;
   }
@@ -609,14 +611,15 @@ class CopyScan {
       aliasable: note.depth === "value" ? !this.fresh(operand) : inside,
     });
     const value = note.value;
-    const targets = value.kind === "union" ? (this.unionArms(value.unionId) ?? []) : [value];
+    // Read into a local first: called as `this.unionArms(…)` the function
+    // would be handed this scan as its receiver.
+    const unionArms = this.unionArms;
+    const targets = value.kind === "union" ? (unionArms(value.unionId) ?? []) : [value];
     const entries = note.entries ?? DYN;
     const pairs: [IrType, IrType][] = [];
-    for (const entry of entries.kind === "union"
-      ? (this.unionArms(entries.unionId) ?? [])
-      : [entries]) {
+    for (const entry of entries.kind === "union" ? (unionArms(entries.unionId) ?? []) : [entries]) {
       if (targets.some((target) => typeEquals(entry, target))) continue;
-      if (entry.kind !== "dyn") this.layoutPairs(entry, value, pairs, new Set());
+      if (entry.kind !== "dyn") layoutPairs(entry, value, pairs, new Set(), unionArms);
       else for (const target of targets) if (!isValueType(target)) pairs.push([DYN, target]);
     }
     for (const [from, to] of pairs)

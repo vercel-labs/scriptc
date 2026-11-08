@@ -333,6 +333,27 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "dyn.nativeUrlIs", args: [value], type: BOOL, loc };
   }
+  // `x instanceof URLSearchParams`: the brand of the value an untyped slot
+  // holds for one, as for URL above.
+  if (
+    lowerer.isStdlibGlobal(expr.right, "URLSearchParams") ||
+    (rhsBuiltin?.module === "url" && rhsBuiltin.member === "URLSearchParams")
+  ) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "dyn.nativeSearchParamsIs", args: [value], type: BOOL, loc };
+  }
+  // `x instanceof Buffer` in TypeScript: Buffer is the one byte view with a
+  // brand of its own beside its element kind. JavaScript holds the
+  // constructor as a value and tests against that (below).
+  if (
+    (lowerer.isStdlibGlobal(expr.right, "Buffer") ||
+      (rhsBuiltin?.module === "buffer" && rhsBuiltin.member === "Buffer")) &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !lowerer.caughtLocalOf(expr.left)
+  ) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "dynTest", test: "buffer", value, type: BOOL, loc };
+  }
   {
     const stack = lowerDisposableStackInstanceOf(lowerer, expr);
     if (stack) return stack;
@@ -864,6 +885,19 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         type: BOOL,
         loc,
       };
+    }
+    // A built-in class that has no test of its own above: name it, and
+    // what a program can test instead.
+    const builtinClass =
+      stdlibGlobalNameOf(lowerer, expr.right) ??
+      (rhsBuiltin ? `${rhsBuiltin.module}.${rhsBuiltin.member}` : null);
+    if (builtinClass !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        expr.right,
+        `'instanceof ${builtinClass}' (this built-in class has no run-time class test yet: test what the value has instead, ` +
+          `such as \`typeof value === "object" && value !== null && "member" in value\`)`,
+      );
     }
     lowerer.unsupported(
       "SC1090",

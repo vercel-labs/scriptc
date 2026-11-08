@@ -1316,6 +1316,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",
   "dyn.nativeUrlIs": "scr_dyn_native_url_is",
+  "dyn.nativeSearchParamsIs": "scr_dyn_native_search_params_is",
   "dyn.nativeDateIs": "scr_dyn_date_instance_is",
   "dyn.nativeDateHandleIs": "scr_dyn_native_date_is",
   "dyn.globalConstructor": "scr_dyn_global_constructor",

@@ -191,6 +191,7 @@ export type TypeFailureFamily =
   | "intersection"
   | "component"
   | "stdlib-nominal"
+  | "thenable"
   | "record-member"
   | "unsupported"
   | "dyn-field-policy";
@@ -334,6 +335,22 @@ export function widthCopyDivergenceDiag(
   };
 }
 
+/** SC6001, the wording for a copy that is not made — `rows[at] ?? wide` or
+ * `rows[at] || wide`: an element or key read whose type holds no undefined
+ * and can be absent at run time all the same, defaulted to a value of a
+ * wider type that reaches the read's type only as a copy. Under Node the
+ * result is then the default itself. The compiled program answers the left
+ * side as it is where it is present and stops with a TypeError where it is
+ * absent, instead of answering a copy. */
+export function absentDefaultStopDiag(from: string, to: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6001",
+    message: `the left side of this default can be absent at run time although its type '${to}' holds no undefined, and the default has the wider type '${from}', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy`,
+    loc,
+    hint: `give both sides one type: declare the left side's elements as '${from}', or give the default the type '${to}'`,
+  };
+}
+
 /** SC6012 — a JavaScript statement that does not compile (a deferred
  * refusal) sits in the `try` block of a `try`/`catch` of the same function.
  * It throws when it runs, so the program's `catch` clause runs, also where
@@ -352,6 +369,25 @@ export function guardedDeferredFenceDiag(
     message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws and the catch clause runs, also where the statement would have completed under Node, so the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
     loc,
     hint: "rewrite the statement so that it compiles, or accept the catch path; SCRIPTC_DEFERRED_REPORT=all in the program's environment makes the binary name each such site on stderr the first time it throws",
+  };
+}
+
+/** SC6013 — a statement writes a member that the program added to the
+ * library Promise type (`Promise<T> & { status?: ... }`, an interface that
+ * extends Promise). Node adds the member to the promise object. A compiled
+ * promise holds no members of its own, so the write throws a TypeError when
+ * it runs on a promise the program made; a promise a Node island handed
+ * over keeps its members. The program builds either way. */
+export function promiseMemberWriteDivergenceDiag(
+  member: string,
+  type: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6013",
+    message: `writing '${member}' on a promise (declared '${type}'): a compiled promise holds no members of its own, so this statement throws a TypeError when it runs on a promise the program made, while Node adds the member to the promise object`,
+    loc,
+    hint: "keep the state beside the promise: a wrapper record such as { promise, status, value, reason }, or a WeakMap keyed by the promise",
   };
 }
 

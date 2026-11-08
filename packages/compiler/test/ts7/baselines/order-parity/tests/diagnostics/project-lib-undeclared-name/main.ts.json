@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/project-lib-undeclared-name/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find name 'missingWidget'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/project-lib-undeclared-name/main.ts",
+    "start": 351,
+    "end": 364
+   }
+  }
+ ]
+}

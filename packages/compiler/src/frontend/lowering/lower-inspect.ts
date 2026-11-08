@@ -17,7 +17,6 @@ import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
 import { unsignedHex } from "../../format-integer.js";
 import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
-import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { noLoweringDiag } from "../../diagnostics/diagnostic.js";
 import {
@@ -4273,43 +4272,6 @@ function withInspectLayout(
   return { kind: "call", callee: name, args: [value], type: STRING, loc };
 }
 
-/** The name a printed function value takes from the expression that names
- * it, when that expression reaches the function's definition: a function
- * declaration or a `const` an anonymous function initializes (through the
- * binding's name), a method read by its declared name, or the function
- * expression itself. Null for every other expression (a parameter, a
- * member, a call result), whose value is whatever function the program put
- * there: its box takes the function's own name at run time, where the
- * reference's spelling (`x` for a parameter `x`) would print the slot. */
-export function definedFunctionName(lowerer: Lowerer, node: ts.Expression): string | null {
-  const value = withoutParentheses(node);
-  if (ts.isIdentifier(value)) {
-    const declaration = lowerer.resolveValueSymbol(value)?.valueDeclaration;
-    if (declaration === undefined) return null;
-    if (ts.isFunctionDeclaration(declaration)) return declaration.name?.text ?? null;
-    if (
-      ts.isVariableDeclaration(declaration) &&
-      ts.isIdentifier(declaration.name) &&
-      declaration.initializer !== undefined &&
-      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
-    ) {
-      const initializer = withoutParentheses(declaration.initializer);
-      if (ts.isFunctionExpression(initializer))
-        return initializer.name?.text ?? declaration.name.text;
-      if (ts.isArrowFunction(initializer)) return declaration.name.text;
-    }
-    return null;
-  }
-  if (ts.isPropertyAccessExpression(value)) {
-    const declaration = lowerer.checker.getSymbolAtLocation(value.name)?.valueDeclaration;
-    return declaration !== undefined && ts.isMethodDeclaration(declaration)
-      ? value.name.text
-      : null;
-  }
-  if (ts.isFunctionExpression(value) || ts.isArrowFunction(value)) return jsFuncNameOf(value);
-  return null;
-}
-
 /** `util.inspect(fn)` / `util.inspect(Cls)` over a DIRECT identifier
  * naming a declared function or class: the name is compile-time truth,
  * so `[Function: name]` / `[class X extends Y]` bake as literals. Null
@@ -4482,7 +4444,7 @@ export function lowerInspectValue(
     isJsSourceFile(valueNode.getSourceFile()) &&
     lowerer.dynConvertible(value.type)
   ) {
-    const name = definedFunctionName(lowerer, valueNode);
+    const name = jsFuncNameOf(valueNode, lowerer);
     value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
   }
   if (dirPreview?.showHidden) {

@@ -29,6 +29,7 @@ import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
 import { mayReadDefine, resolveDefinedBranches } from "./define-branches.js";
 import type { Defines } from "./defines.js";
 import type { SourceFile } from "./ts7/ast-types.js";
+import type { ComptimeLimits } from "./comptime.js";
 import type { Ladder } from "./npm-static-ladder.js";
 
 /** Whether the source can contain `word` as a keyword or identifier: it
@@ -37,10 +38,16 @@ function spells(source: string, word: string): boolean {
   return source.includes(word) || source.includes("\\u");
 }
 
-/** Evaluate an isolated, self-contained TypeScript callback under a finite
- * budget. Hosts supply execution; shared lowering owns capture checks and
- * verifies the returned value before baking it into the program. */
-export type ComptimeEvaluator = (source: string, timeoutMs: number) => unknown;
+/** Evaluate an isolated, self-contained TypeScript callback within limits
+ * (createComptimeEvaluator; `siblings` are the other callbacks of its source
+ * file). Hosts supply the TypeScript and evaluator executables; shared
+ * lowering owns capture checks and verifies the returned value before baking
+ * it into the program. */
+export type ComptimeEvaluator = (
+  source: string,
+  limits: ComptimeLimits,
+  siblings?: readonly string[],
+) => unknown;
 
 /** A Node host keeps its process-specific resolver settings and hooks. Native
  * clients use the filesystem resolver when no host adapter is supplied. */
@@ -111,12 +118,12 @@ export class FrontendServices {
   parse(path: string, source: string, kind: Ts7SourceKind): SourceFile {
     return this.sourceParser().parse(path, source, kind);
   }
-  evaluateComptime(source: string, timeoutMs: number): unknown {
+  evaluateComptime(source: string, limits: ComptimeLimits, siblings?: readonly string[]): unknown {
     this.ensureOpen();
     const evaluate = this.comptimeEvaluator;
     if (evaluate === undefined)
       throw new Error("this compiler host does not provide compile-time evaluation");
-    return evaluate(source, timeoutMs);
+    return evaluate(source, limits, siblings);
   }
   /** Let every program host serve up to `loads` loads (reuseProgramHosts). */
   reuseProgramHosts(loads: number): void {

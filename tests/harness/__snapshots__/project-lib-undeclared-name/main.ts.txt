@@ -1,0 +1,6 @@
+project-lib-undeclared-name/main.ts:8:13 - error SC0001: Cannot find name 'missingWidget'.
+
+  7 | console.log(typeof widthOf, typeof document);
+  8 | console.log(missingWidget);
+    |             ^~~~~~~~~~~~~
+  9 | 

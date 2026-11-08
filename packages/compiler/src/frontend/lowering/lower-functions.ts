@@ -745,6 +745,16 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
+    // In TypeScript a parameter default, an object-assignment shorthand and
+    // an assignment to an identifier name an anonymous definition as in
+    // JavaScript, but its stack-frame name (sourceName) stays as it was, so
+    // typed programs lower as before: the JavaScript name is the function's
+    // displayName, set only in a module that boxes a function without a
+    // static name (function-names.ts).
+    if (lifted.sourceName === "<anonymous>") {
+      const named = jsFuncNameOf(node, undefined, { everyForm: true });
+      if (named !== null) lowerer.objectMethodNames.set(fnName, named);
+    }
     return {
       kind: "closure",
       fnName,

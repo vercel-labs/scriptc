@@ -21770,6 +21770,37 @@ static void scr_weak_map_release(void *ptr) {
   scr_cyc_free(map);
 }
 
+/* ── promises as weak keys ────────────────────────────────────────────
+ * A promise is keyed by its identity cell (ScrPromiseHead), not by its
+ * address: a typed promise enters the checked-dynamic tier as a fresh adapter
+ * promise each time it is boxed, and the adapters and their source share
+ * one cell, as they do for `===` and for Set and Map keys.
+ *
+ * Every cell that is a key is held once, so its address names that
+ * identity for as long as an entry has it. The holds are the entries of a
+ * collection of this unit's own (scr_weak_promise_cells), which no program
+ * sees: its keys are the cells in use. Nothing reports the end of a cell (it
+ * is plain memory, and the promise unit calls nothing here), so a cell whose
+ * promises are gone is found by its count: the hold is the only one left.
+ * The sweep runs when the number of held cells has doubled since the last
+ * one; it ends the entries of the dead cells and gives up the holds of cells
+ * no collection keys any more. */
+/* Above every other kind: a handle's kind is 4 plus its tag, and a tag can
+ * be any small number. */
+#define SCR_WEAK_PROMISE_KIND 0x10000u
+static SCR_TL ScrWeakMap *scr_weak_promise_cells;
+static SCR_TL size_t scr_weak_promise_held, scr_weak_promise_sweep_at;
+
+static void *scr_weak_promise_cell(ScrPromise *promise) {
+  ScrPromiseHead *head = (ScrPromiseHead *)promise;
+  if (!head->identity) {
+    head->identity = malloc(sizeof *head->identity);
+    if (!head->identity) scr_json_oom();
+    head->identity->rc = 1;
+  }
+  return head->identity;
+}
+
 /* Return 1 for an observed identity, 0 for a primitive, and -1 for a
  * reference whose native lifetime has no observer contract yet. */
 static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
@@ -21804,7 +21835,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     if (!key->v.typed_ref.observed) return -1;
     *ptr = key->v.typed_ref.ptr; *kind = 32; return 1;
   case SCR_DYN_PROMISE:
-    *ptr = key->v.promise; *kind = 33; return 1;
+    *ptr = scr_weak_promise_cell(key->v.promise); *kind = SCR_WEAK_PROMISE_KIND; return 1;
 
   default: return 0;
   }
@@ -21831,6 +21862,54 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * Without the island units a symbol is no weak key yet (scr_weak_key). */
 static bool scr_weak_island_key(const ScrDyn *key) {
   return scr_ni_dyn_handle(key) || (key->kind == SCR_DYN_SYMBOL && scr_ni_dyn_ops != NULL);
+}
+
+static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value);
+
+/* Gives up the holds of the cells that no promise has any more (their
+ * entries end with them) and of the cells that no collection keys any more
+ * (see "promises as weak keys"). The cells are found first: ending an entry
+ * releases its value, which can free other keys and change the tables. */
+static void scr_weak_promise_sweep(void) {
+  size_t gone_len = 0, gone_cap = 0;
+  ScrPromiseIdentity **gone = NULL;
+  for (ScrWeakEntry *held = scr_weak_promise_cells->entries; held; held = held->next) {
+    ScrPromiseIdentity *identity = held->key;
+    bool keyed = held->key_next != NULL || held->key_prev != NULL;
+    if (keyed && identity->rc > 1) continue;
+    if (gone_len == gone_cap) {
+      gone_cap = gone_cap ? gone_cap * 2 : 16;
+      gone = realloc(gone, gone_cap * sizeof *gone);
+      if (!gone) scr_json_oom();
+    }
+    gone[gone_len++] = identity;
+  }
+  for (size_t i = 0; i < gone_len; i++) {
+    scr_weak_disposed(gone[i]);
+    scr_weak_promise_held--;
+    if (--gone[i]->rc == 0) free(gone[i]);
+  }
+  free(gone);
+}
+
+/* Holds the cell of a promise key that just got its first entry. */
+static void scr_weak_promise_hold(ScrDyn *key, ScrPromiseIdentity *identity) {
+  if (!scr_weak_promise_cells) {
+    static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
+    scr_weak_promise_cells = scr_cyc_alloc(sizeof *scr_weak_promise_cells, &cyc_type);
+    if (!scr_weak_promise_cells) scr_json_oom();
+    scr_weak_promise_cells->rc = 1;
+    scr_weak_promise_cells->is_set = true;
+  }
+  if (scr_weak_find(scr_weak_promise_cells, identity, SCR_WEAK_PROMISE_KIND)) return;
+  if (!scr_weak_set(scr_weak_promise_cells, key, scr_dyn_undefined())) return;
+  identity->rc++;
+  if (++scr_weak_promise_held > (scr_weak_promise_sweep_at ? scr_weak_promise_sweep_at : 64)) {
+    /* The key in hand is alive (its box holds a promise of the cell) and has
+     * the entry being made, so the sweep leaves it. */
+    scr_weak_promise_sweep();
+    scr_weak_promise_sweep_at = scr_weak_promise_held * 2 + 64;
+  }
 }
 
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
@@ -21865,6 +21944,7 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   if (map->entries) map->entries->prev = entry;
   map->entries = entry;
   scr_weak_link(entry);
+  if (kind == SCR_WEAK_PROMISE_KIND && map != scr_weak_promise_cells) scr_weak_promise_hold(key, ptr);
   return true;
 }
 

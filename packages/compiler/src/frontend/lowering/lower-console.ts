@@ -13,9 +13,8 @@ import {
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import { type ConsoleMethodMember } from "./builtins/console.js";
-import { type Lowerer } from "./lowerer.js";
+import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import {
-  definedFunctionName,
   heldFormatArgs,
   lowerConsoleInspectArg,
   lowerFormatCall,
@@ -282,7 +281,7 @@ export function lowerConsoleArg(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    const name = definedFunctionName(lowerer, node);
+    const name = jsFuncNameOf(node, lowerer);
     const boxed: IrExpr = {
       kind: "dynFrom",
       value: lowered,

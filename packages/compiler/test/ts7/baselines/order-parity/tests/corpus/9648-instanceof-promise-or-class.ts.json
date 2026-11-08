@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9648-instanceof-promise-or-class.ts"
+ ],
+ "diags": []
+}

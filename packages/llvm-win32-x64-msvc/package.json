@@ -24,7 +24,7 @@
   "scripts": {
     "build": "true",
     "build:native": "node scripts/build.mjs",
-    "prepack": "test -f bin/scriptc-llvm-codegen.exe"
+    "prepack": "test -f bin/scriptc-llvm-codegen.exe && test -f bin/scriptc-comptime.exe"
   },
   "publishConfig": {
     "access": "public"

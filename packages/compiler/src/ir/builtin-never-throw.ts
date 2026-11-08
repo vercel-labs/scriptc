@@ -29,6 +29,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_error_store_cause swaps the error's cause slot: one retain, one
   // release of a value no program code observes being dropped here.
   "error.storeCause",
+  // scr_dyn_new_promise retains the promise and allocates its box.
+  "weakMap.promiseKey",
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",

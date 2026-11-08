@@ -369,6 +369,72 @@ extern const ScrChildStreamOps scr_stream_child_ops;
 ScrDyn *scr_stream_dyn_view(ScrStream *stream); /* borrowed; +1 live method/property view */
 void scr_child_dyn_streams_install(const ScrChildStreamOps *ops,
     ScrDyn *(*readable_box)(void *), ScrDyn *(*writable_box)(void *));
+/* ── a child process a Node island made (the SCR_NODE_ISLANDS build) ─────
+ * An island's ChildProcess that enters a native ChildProcess slot is held
+ * as a ScrChild with no state of its own: its `island` member names the
+ * island's object, and every entry point that takes a child, one of its
+ * output streams or its input writer hands such a value to the table
+ * below, which calls the island object's own member (scr_node_island_child.c,
+ * linked only into programs with both Node islands and child_process). The
+ * guards exist only in the SCR_NODE_ISLANDS build of scr_child.c and
+ * scr_child_lifecycle.c, which programs with Node islands select; every
+ * other program keeps the default objects. `island` is the same kind of
+ * pointer for all three handles. */
+enum {
+  SCR_CHILD_EV_SPAWN = 0,
+  SCR_CHILD_EV_EXIT,
+  SCR_CHILD_EV_CLOSE,
+  SCR_CHILD_EV_ERROR,
+  SCR_CHILD_EV_MESSAGE,
+  SCR_CHILD_EV_DISCONNECT,
+  SCR_CHILD_EV_DATA,     /* a stream's 'data', chunks as Buffers */
+  SCR_CHILD_EV_DATA_STR, /* a stream's 'data', chunks as strings */
+  SCR_CHILD_EV_END,
+  SCR_CHILD_EV_DRAIN,
+  SCR_CHILD_EV_FINISH,
+  SCR_CHILD_EV_WRITE_ERROR, /* the writer's 'error' */
+};
+enum {
+  SCR_CHILD_PROP_PID = 0,
+  SCR_CHILD_PROP_EXIT_CODE,
+  SCR_CHILD_PROP_SIGNAL_CODE,
+  SCR_CHILD_PROP_KILLED,
+  SCR_CHILD_PROP_CONNECTED,
+  SCR_CHILD_PROP_CHANNEL, /* created with an IPC channel */
+  SCR_CHILD_PROP_SPAWNFILE,
+  SCR_CHILD_PROP_WRITABLE, /* the writer's */
+};
+typedef struct ScrChildIslandOps {
+  /* The handle that names `island` is being freed. */
+  void (*drop)(void *island);
+  /* Fills the child's three stdio handles from the island's (once). */
+  void (*stdio)(ScrChild *child);
+  /* emitter.on / once(event, listener): `fn` is the entry point's adapter
+   * for `event` (NULL where the listener takes no argument). Moves cb. */
+  void (*on)(void *island, int event, ScrClosure *cb, void *fn, bool once);
+  void (*off)(void *island, int event, ScrClosure *cb); /* borrows cb */
+  void (*on_dyn)(void *island, ScrStr *event, ScrDyn *listener);
+  bool (*number)(void *island, int prop, double *value); /* false: null or undefined */
+  bool (*boolean)(void *island, int prop);
+  ScrStr *(*string)(void *island, int prop); /* +1; NULL: null or undefined */
+  ScrArr *(*spawnargs)(void *island);        /* +1 */
+  bool (*kill)(void *island, const ScrStr *signal, double signum); /* signal NULL: the number */
+  void (*call)(void *island, const char *method); /* a method without arguments or result */
+  bool (*send)(void *island, ScrStr *json, ScrClosure *cb, ScrIpcSendFn fn); /* moves cb */
+  void (*set_encoding)(void *island, ScrStr *encoding);
+  bool (*write)(void *island, const ScrStr *text, const ScrBytes *bytes); /* one of the two */
+  /* The general stream representation's writes into the writer: the
+   * stream's write or final completes when the island's callback runs. */
+  void (*bridge_write)(void *island, ScrStream *stream, ScrBytes *chunk,
+                       const ScrChildStreamOps *stream_ops);
+  void (*bridge_final)(void *island, ScrStream *stream, const ScrChildStreamOps *stream_ops);
+} ScrChildIslandOps;
+/* Defined by the SCR_NODE_ISLANDS build of scr_child.c; set with the first
+ * island child a program adopts. */
+extern const ScrChildIslandOps *scr_child_island_ops;
+ScrChild *scr_child_island_new(void *island);             /* +1 */
+ScrChildStream *scr_child_stream_island_new(void *island); /* +1 */
+ScrChildWriter *scr_child_writer_island_new(void *island); /* +1 */
 bool scr_children_reffed_pending(void);
 void scr_children_teardown(void);
 /* Node's signal-name table (scr_lib.c), shared with child.kill: the

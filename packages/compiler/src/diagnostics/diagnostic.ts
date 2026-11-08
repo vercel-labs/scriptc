@@ -406,7 +406,7 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
     code: "SC8006",
     message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this patch",
   };
 }
 
@@ -443,7 +443,7 @@ export function nodeIslandMarkStripDiag(
     code: "SC8006",
     message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is",
   };
 }
 
@@ -564,7 +564,7 @@ export function nodeIslandReaderStripDiag(
     code: "SC8006",
     message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this read",
   };
 }
 
@@ -597,26 +597,6 @@ export function sharedModuleDuplicatedDiag(
     message: `module '${module}' is duplicated across the Node island boundary although it is stateful: ${why}; the program and its islands each see their own copy`,
     loc,
     hint: 'remove "share": "duplicate" from its scriptc.packages entry to share one instance',
-  };
-}
-
-/** SC8006 — the build refuses the program: it replaces a process output
- * stream's write method while a Node island exists, and the island's
- * `process.stdout` is its own object, so the replacement and the island's
- * writes cannot see each other. The planner stops on this, so it is an
- * error, not the SC8020 warning. H2 shares the native stream object with
- * the islands and removes this refusal. */
-export function stdioPatchAcrossIslandsDiag(
-  stream: "stdout" | "stderr" | null,
-  loc: SrcLoc,
-): ScrDiagnostic {
-  const what =
-    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
-  return {
-    code: "SC8006",
-    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
-    loc,
-    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 

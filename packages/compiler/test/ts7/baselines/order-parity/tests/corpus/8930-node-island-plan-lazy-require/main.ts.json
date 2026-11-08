@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8930-node-island-plan-lazy-require/main.ts"
+ ],
+ "diags": []
+}

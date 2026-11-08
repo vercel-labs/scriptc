@@ -24,7 +24,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import { checkRefusedMemberUse, reportRefusedMemberUse } from "./class-member-refusals.js";
-import { declaredLength, funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
+import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { methodJsName } from "./function-names.js";
@@ -384,6 +384,17 @@ export function classMethodValue(
   };
 }
 
+/** A method declaration's own `length`, as Node counts it: the parameters
+ * before the first one with a default or a rest. A `this` parameter is a
+ * type, not a parameter. */
+function declaredLength(member: ts.MethodDeclaration): number {
+  const parameters = member.parameters.nodes.filter((parameter) => !isThisParameter(parameter));
+  const stop = parameters.findIndex(
+    (parameter) => parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined,
+  );
+  return stop < 0 ? parameters.length : stop;
+}
+
 /** Public JS prototype methods are ordinary callables over their actual
  * receiver, including descriptor-created copies of class instances. */
 export function reflectedClassMethodValue(
@@ -407,7 +418,7 @@ export function reflectedClassStaticMethodValue(
 /** The declaration with a body behind `method` of `info`'s own class
  * declaration (an accessor's name is `get:x` or `set:x`). An overloaded
  * method's signatures have none; its implementation is the one. */
-export function classMethodMember(
+function classMethodMember(
   lowerer: Lowerer,
   info: ClassInfo,
   method: string,

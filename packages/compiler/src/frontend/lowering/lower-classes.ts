@@ -124,7 +124,6 @@ import {
   documentedParameter,
   generatorMeta,
   generatorParamsBindAtCall,
-  ownLength,
   type ParamShape,
 } from "./call-signatures.js";
 import { omittedArgFor } from "./call-arguments.js";
@@ -269,7 +268,6 @@ import {
   runtimeStaticDefines,
 } from "./class-runtime-statics.js";
 import {
-  classMethodMember,
   reflectedClassMethodValue,
   reflectedClassStaticMethodValue,
 } from "./class-method-values.js";
@@ -6599,28 +6597,14 @@ function staticMethodValue(
   // for its `name`) answers the key the method is declared under, which is
   // an identifier or a private name here (function-names.ts).
   lowerer.objectMethodNames.set(fnName, name);
-  const funcType: IrType & { kind: "func" } = {
+  const funcType: IrType = {
     kind: "func",
     params: sig.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),
     ret: sig.ret,
     ...(sig.params.some((p) => p.mode === "dynRest") ? { rest: true as const } : {}),
   };
   lowerer.requireExactArityValue(blame, blame, sig.params, funcType);
-  // The interned closure carries the declaration's own `length` where the
-  // type counts a parameter Node does not (one with a default).
-  const member = classMethodMember(lowerer, declarer, name, true);
-  const length =
-    member !== undefined && ts.isMethodDeclaration(member)
-      ? ownLength(member, funcType)
-      : undefined;
-  return {
-    kind: "closure",
-    fnName,
-    captures: [],
-    ...(length !== undefined ? { length } : {}),
-    type: funcType,
-    loc,
-  };
+  return { kind: "closure", fnName, captures: [], type: funcType, loc };
 }
 
 /** The class itself taken as a VALUE (`const X = C`, an argument, an

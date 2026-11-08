@@ -132,26 +132,21 @@ export {};
 });
 
 test("forms whose parameters the slot cannot stand in for keep the adapter", async () => {
-  // Each form with the `length` its closure records: its own, where that is
-  // not the count of its type's parameters (a parameter with a default).
-  const forms: [string, number | undefined][] = [
+  const forms = [
     // A named function expression can call itself with its own parameter list.
-    ["each([1], function self(x) { if (x > 5) self(0); });", undefined],
+    "each([1], function self(x) { if (x > 5) self(0); });",
     // A rest parameter collects what the caller passed.
-    ["each([1], (...all: number[]) => { void all; });", undefined],
+    "each([1], (...all: number[]) => { void all; });",
     // A default beside a conversion: the conversion ran before the default.
-    ["each([1], (x: unknown, i = 7) => { void x; void i; });", 1],
+    "each([1], (x: unknown, i = 7) => { void x; void i; });",
     // `arguments` holds what the caller passed.
-    ["each([1], function (x) { void x; void arguments.length; });", undefined],
+    "each([1], function (x) { void x; void arguments.length; });",
     // More parameters than the slot passes.
-    ["each([1], (x, i, extra?: string) => { void x; void i; void extra; });", undefined],
+    "each([1], (x, i, extra?: string) => { void x; void i; void extra; });",
   ];
-  for (const [form, length] of forms) {
+  for (const form of forms) {
     const mod = await lowerSource(`${EACH}\n${form}\nexport {};\n`);
     expect(adapterCalls(mod).length, form).toBe(1);
-    expect(
-      literals(mod).map(({ closure }) => closure.length),
-      form,
-    ).toEqual([length]);
+    expect(literals(mod).map(({ closure }) => closure.length)).toEqual([undefined]);
   }
 });

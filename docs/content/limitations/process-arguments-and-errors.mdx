@@ -24,5 +24,3 @@ A function passed to `Error.captureStackTrace` as the frame to stop at keeps a f
 A class constructor that passes `this.constructor`, `new.target`, or its own class to `Error.captureStackTrace` keeps no frame, and neither do the constructors of its subclasses, so the trace starts at the function that ran `new`.
 `console.log`, `util.format`, and `util.inspect` print an Error from its stack the way Node.js does: the frames under the `name: message` heading, brackets when the stack has no frame line, and a subclass's header named after its class (for example `Bailable [Error]: message`).
 Only the frames themselves diverge, so the output agrees with Node.js when `Error.stackTraceLimit` is `0`.
-`Error.prepareStackTrace` reads as `undefined` and cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass one, so assigning a function is refused by name, while assigning `undefined` or restoring a saved value compiles.
-Node.js 24 answers its default formatter for a read before a program assigns the hook.

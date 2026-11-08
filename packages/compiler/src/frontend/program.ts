@@ -9361,11 +9361,6 @@ function typeWorldHint(d: ts.Diagnostic, message: string, load: LoadResult): str
   // TS2339/TS2550/TS2551: property does not exist (2550: on this lib).
   if (d.code === 2339 || d.code === 2550 || d.code === 2551) {
     const typeText = /on type '([^']+)'/.exec(message)?.[1] ?? "";
-    // V8's stack-formatting hook: scriptc's type world leaves it out on
-    // purpose, with or without @types/node (builtins/stack-trace-hook.ts).
-    if (quoted === "prepareStackTrace" && typeText === "ErrorConstructor") {
-      return "Error.prepareStackTrace is V8's hook for formatting a stack from call sites (structured stack frames); a compiled program has none to pass it, and an error's stack is always its text — code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename)";
-    }
     const newerLib =
       world.projectLib !== null &&
       world.projectLib.some((lib) => /esnext|es202[6-9]|es20[3-9]\d/i.test(lib));

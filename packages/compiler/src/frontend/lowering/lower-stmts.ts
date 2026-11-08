@@ -321,7 +321,6 @@ import {
   createRequireProgramModuleOf,
 } from "./builtins/module-bindings.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
-import { lowerStackTraceHookWrite } from "./builtins/stack-trace-hook.js";
 import { registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
 import { builtinClassAliasOwnsNoSlot, registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { lowerEnumDeclaration } from "./lower-enums.js";
@@ -9880,10 +9879,6 @@ export function lowerExprStatement(
   if (isDeadBuiltinPolyfill(lowerer, expr)) return { kind: "block", body: [], loc: locOf(expr) };
   noteBuiltinMemberWrite(lowerer, expr);
   fenceConsoleMutation(lowerer, expr);
-  // `Error.prepareStackTrace = value`: undefined is nothing, a formatter is
-  // refused by name (builtins/stack-trace-hook.ts).
-  const stackTraceHook = lowerStackTraceHookWrite(lowerer, expr);
-  if (stackTraceHook !== null) return stackTraceHook;
   // Node islands (scope-B NI-4): writes and calls on island values.
   if (lowerer.nodeIslands !== null) {
     const island = lowerIslandExpr(lowerer, expr);

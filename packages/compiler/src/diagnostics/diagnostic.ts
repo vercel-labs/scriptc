@@ -1440,19 +1440,6 @@ export function noLoweringDiag(
   };
 }
 
-/** An assignment of a formatter to Error.prepareStackTrace
- * (lowering/builtins/stack-trace-hook.ts). By design: a compiled program
- * has no V8 call sites to pass one. */
-export function stackTraceHookDiag(loc: SrcLoc): ScrDiagnostic {
-  return {
-    code: "SC2020",
-    message:
-      "'Error.prepareStackTrace' cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass it, and an error's stack is always its text",
-    loc,
-    hint: "code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename); assigning undefined, or restoring a saved value that is undefined, compiles",
-  };
-}
-
 /** A TypeScript read, through an ES module namespace of a builtin module
  * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a name the
  * module's exports object owns without enumerating it. The namespace object

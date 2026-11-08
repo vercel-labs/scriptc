@@ -275,6 +275,10 @@ function buildLibFnSignatures() {
     "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
     "nodeIsland.exitCode": { argTypes: [], result: F64 },
     "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
+    /** process.chdir in a program with Node islands: the runtime's own
+     * change, then Node drops its cached process.cwd()
+     * (island-process-state.ts). */
+    "nodeIsland.chdir": { argTypes: [STRING], result: VOID },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An

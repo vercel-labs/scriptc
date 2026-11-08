@@ -724,6 +724,12 @@ const islandHelpers = {
     const current = process.exitCode;
     return current === undefined || current === null ? null : Number(current);
   },
+  // The program changed directory with its own system call. Node caches
+  // process.cwd() until its own process.chdir runs: changing to "." keeps
+  // the directory and drops the cached answer.
+  processChdir() {
+    process.chdir(".");
+  },
   // The V8 error a native error crosses as (scr_ni_error_link).
   same(value) {
     return value;

@@ -1239,6 +1239,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.setExitCode": "scr_node_island_set_exit_code",
   "nodeIsland.exitCode": "scr_node_island_exit_code",
   "nodeIsland.hasExitCode": "scr_node_island_has_exit_code",
+  "nodeIsland.chdir": "scr_node_island_chdir",
   "dyn.keySet": "scr_dyn_key_set",
   "dyn.fnOwnSet": "scr_dyn_fn_own_set",
   "dyn.keySetComputed": "scr_dyn_key_set_computed",

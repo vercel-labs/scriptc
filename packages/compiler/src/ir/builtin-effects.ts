@@ -38,6 +38,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.promiseResolve",
   // A code that is not a safe integer throws, as process.setExitCode does.
   "nodeIsland.setExitCode",
+  // A directory the process cannot enter throws, as process.chdir does.
+  "nodeIsland.chdir",
+  // Node's own clearTimeout, clearInterval or clearImmediate on an island
+  // value, which is island JavaScript: a proxy's trap can throw there.
+  "nodeIsland.clearTimer",
   // Both read Node's process.exitCode through an island helper once Node is
   // loaded, which is island JavaScript (the property can be redefined
   // there). The runtime drops what that read throws today and answers its

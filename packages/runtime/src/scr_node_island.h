@@ -203,6 +203,9 @@ int scr_ni_exit_code(bool set, double code, double *out);
 void scr_node_island_set_exit_code(double code);
 double scr_node_island_exit_code(void);
 bool scr_node_island_has_exit_code(void);
+/* The libCall of process.chdir in a program with islands: Node's cached
+ * process.cwd() follows the program's change. */
+void scr_node_island_chdir(ScrStr *dir);
 /* A native error is one V8 error while native code holds it. */
 void scr_ni_error_link(ScrDyn *value);
 ScrDyn *scr_ni_helper(const char *name, ScrDyn *const *args, size_t argc);

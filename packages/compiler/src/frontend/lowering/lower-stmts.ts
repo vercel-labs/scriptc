@@ -11300,6 +11300,39 @@ export function lowerExprStatement(
           };
         }
       }
+      // A member write on a process stream value (`out.write = fn` where
+      // `out: NodeJS.WriteStream` holds stdout or stderr, `out.columns =
+      // 132`): a write on the stream object the value names, as a write
+      // through `process.stdin` already is. The object keeps `write` (the
+      // slot above); a member it does not keep is refused by name when the
+      // statement runs.
+      if (
+        ts.isPropertyAccessExpression(expr.left) &&
+        !expr.left.questionDotToken &&
+        !ts.isPrivateIdentifier(expr.left.name) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        lowerer.mapTypeOf(lowerer.typeOf(expr.left.expression))?.kind === "procStream"
+      ) {
+        const out = lowerer.lowerExpr(expr.left.expression);
+        if (out.type.kind === "procStream") {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                lowerer.coerceToExpected(out, DYN),
+                strLit(expr.left.name.text, locOf(expr.left.name)),
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          };
+        }
+      }
       // A dotted write of a property the static type does not declare
       // (`__expected.index = 0` on a string[] literal, `record.extra = v`)
       // in a JavaScript source file: JavaScript creates an own property on

@@ -10,7 +10,10 @@
  * boundary under zod 4 and @hono/zod-validator. The rewrite test checks that
  * a file keeps its projection (no SC6102 note) where the rewrite has to
  * parenthesize a bare async arrow's parameter and cast the start of an
- * unbraced loop body. The overload test checks that a call selecting one of
+ * unbraced loop body. The undefined test is a declared type of exactly
+ * `undefined` (a result type computed from a table whose type the program
+ * built at run time): the cast passes for a value that is undefined and
+ * throws for any other. The overload test checks that a call selecting one of
  * several declared signatures is checked against that signature's result,
  * and that the failure names the declaration. */
 import { execFile } from "node:child_process";
@@ -97,6 +100,34 @@ test(
         "/liar 500 true expected number at $.n, got string\n" +
         "/outcome 200 value 42\n" +
         "/outcome 200 reason late\n",
+    );
+  },
+);
+
+test(
+  "a boundary cast to a declared type of exactly undefined throws for a value that is not",
+  { timeout: 600_000 },
+  async () => {
+    const lying = join(repoRoot, "tests/fixtures/npm/cases/decl-undefined-field/lying.ts");
+    mkdirSync(outDir, { recursive: true });
+    const result = await compile(lying, {
+      outPath: join(outDir, "undefined-lying"),
+      outDir,
+      sanitize,
+    });
+    if (!result.ok) {
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    }
+    const pending = execFileAsync(result.binaryPath, [], { cwd: dirname(lying), encoding: "utf8" });
+    pending.child.stdin?.end();
+    const { stdout } = await pending;
+    // Node prints "absent none", "compared mira", "tested sited",
+    // "asserted mira": it does not check the declared type.
+    expect(stdout).toBe(
+      "absent none\n" +
+        "compared threw TypeError expected null | undefined at $, got string\n" +
+        "tested threw TypeError expected null | undefined at $, got string\n" +
+        "asserted threw TypeError expected null | undefined at $, got string\n",
     );
   },
 );

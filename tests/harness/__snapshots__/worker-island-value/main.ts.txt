@@ -1,0 +1,35 @@
+worker-island-value/job.ts:10:29 - error SC8012: this module runs on worker threads only, and a worker thread cannot pass bytes (a typed array or a Buffer) to a Node island
+
+   9 | parentPort!.postMessage(shout("text"));
+  10 | parentPort!.postMessage(sum(bytes));
+     |                             ^~~~~
+  11 | parentPort!.postMessage(each((n: number) => n + 1));
+
+  hint: the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread
+
+worker-island-value/job.ts:11:30 - error SC8012: this module runs on worker threads only, and a worker thread cannot pass a function to a Node island
+
+  10 | parentPort!.postMessage(sum(bytes));
+  11 | parentPort!.postMessage(each((n: number) => n + 1));
+     |                              ^~~~~~~~~~~~~~~~~~~~
+  12 | parentPort!.postMessage(settled(later));
+
+  hint: the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread
+
+worker-island-value/job.ts:12:33 - error SC8012: this module runs on worker threads only, and a worker thread cannot pass a promise to a Node island
+
+  11 | parentPort!.postMessage(each((n: number) => n + 1));
+  12 | parentPort!.postMessage(settled(later));
+     |                                 ^~~~~
+  13 | parentPort!.postMessage(tagged(tag));
+
+  hint: the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread
+
+worker-island-value/job.ts:13:32 - error SC8012: this module runs on worker threads only, and a worker thread cannot pass a symbol to a Node island
+
+  12 | parentPort!.postMessage(settled(later));
+  13 | parentPort!.postMessage(tagged(tag));
+     |                                ^~~
+  14 | 
+
+  hint: the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread

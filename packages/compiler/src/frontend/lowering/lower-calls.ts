@@ -275,6 +275,7 @@ import {
   storedClassValueType,
   type ClassInfo,
 } from "./lower-classes.js";
+import { checkRefusedMemberUse } from "./class-member-refusals.js";
 import { classCallbackCall, isClassCallback } from "./class-callbacks.js";
 import { lowerInstanceConstructorStaticCall } from "./class-instance-constructor.js";
 import {
@@ -344,6 +345,7 @@ import {
   checkedRestCallArgs,
   lowerSpreadArgsCall,
   completeArgs,
+  omittedArgFor,
 } from "./call-arguments.js";
 import { isThisParameter, type ParamShape } from "./call-signatures.js";
 import { dynamicOverloadChoice } from "./overload-choice.js";
@@ -5490,6 +5492,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "every",
   "find",
   "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flat",
+  "reduce",
+  "reduceRight",
   // The native-handle receiver surface (SCR_DYN_HANDLE — req/res/socket
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket
@@ -12589,6 +12596,9 @@ export function lowerObjectMethodCall(
   const info =
     lowerer.classes.get(receiverIr.className) ?? lowerer.flushDeferredClass(receiverIr.className);
   const found = info ? lowerer.findMethodOn(info, access.name.text) : null;
+  // A member the class refused (class-member-refusals.ts): this call is a
+  // statically visible use of it.
+  if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
   // The zlib stream members (flush/params/close/reset) are declared on
   // the zlib classes; their receivers are runtime Transform streams.
   if (
@@ -12813,7 +12823,7 @@ export function lowerObjectMethodCall(
     const own =
       widened !== undefined &&
       !virtual &&
-      widened.params.length > found.sig.params.length &&
+      widened.params.length !== found.sig.params.length &&
       !(found.declarer.decl && isJsSourceFile(ts.getSourceFileOfNode(found.declarer.decl)))
         ? widened
         : null;
@@ -12927,7 +12937,29 @@ export function lowerObjectMethodCall(
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
   const receiver = lowerReceiver();
-  const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, locOf(call), call);
+  // The nearest declaration is an override with FEWER parameters than the
+  // slot, and a subclass overrides it again: the call was checked against
+  // the shorter list, and the virtual slot still takes every inherited
+  // argument. Each dropped one travels as the omitted value (what a deeper
+  // override that declares it again receives in Node); a slot parameter
+  // that cannot hold it has nothing to pass.
+  const slotParams =
+    adapted &&
+    adapted.params.length < found.sig.params.length &&
+    !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl)))
+      ? found.sig.params.map((p, i): ParamShape => {
+          if (i < adapted.params.length) return p;
+          if (p.mode === "omittable") return p;
+          if (omittedArgFor(lowerer, p.type, locOf(call)) === null)
+            lowerer.unsupported(
+              "SC1090",
+              call,
+              `calling '${method}' through a class whose override declares fewer parameters than the inherited method while a subclass overrides it again (the inherited parameter ${i + 1} has no omitted value to pass through the slot)`,
+            );
+          return { type: p.type, mode: "omittable" };
+        })
+      : found.sig.params;
+  const args = lowerer.completeArgs(call.arguments.nodes, slotParams, locOf(call), call);
   if (lowerer.overrideBelow(info, method)) {
     return reconcileOverloadReturn(lowerer, call, {
       kind: "virtualCall",
@@ -13881,6 +13913,7 @@ function lowerCheckedPrivateMethodCall(
   const owner = privateNameClass(lowerer, access.name);
   const found = owner ? lowerer.findMethodOn(owner, name) : null;
   if (!owner || !found || found.declarer !== owner || found.sig.abstract === true) return null;
+  checkRefusedMemberUse(lowerer, owner, name, access.name);
   const probed = tryLowerExpression(lowerer, access.expression);
   if (!probed || !checkedDynamicOperand(probed)) return null;
   const value = checkedDynamicOperand(lowerer.lowerExpr(access.expression));

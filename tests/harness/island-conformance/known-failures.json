@@ -304,12 +304,6 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $, got undefined"
     }
   },
-  "npm/types-boundary": {
-    "island:rowparse": {
-      "category": "build",
-      "signature": "SC1090"
-    }
-  },
   "npm/undici5": {
     "island:undici": {
       "category": "build",
@@ -346,16 +340,10 @@
       "signature": "SC8010"
     }
   },
-  "npm/zod3-boundary": {
-    "island:zod": {
-      "category": "build",
-      "signature": "SC1090"
-    }
-  },
   "npm/zod4-boundary": {
     "island:zod": {
       "category": "build",
-      "signature": "SC1090,SC8010"
+      "signature": "SC8010"
     }
   },
   "npm/zod4-record": {

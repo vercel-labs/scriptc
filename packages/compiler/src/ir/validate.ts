@@ -2907,16 +2907,19 @@ function validateFunction(
             e.loc,
           );
         }
+        // An adapter reports the length of the function it adapts. Any other
+        // closure may record its own: fewer than its type's parameters (a
+        // literal lowered with a slot's parameter list) or more (a method
+        // whose class inherits a shorter slot).
         if (
           e.length !== undefined &&
           (e.adapts === true ||
-            target.captures === undefined ||
             !Number.isInteger(e.length) ||
             e.length < 0 ||
-            e.length >= e.type.params.length)
+            e.length > 0xffffffff)
         ) {
           err(
-            `closure ${e.fnName}: length ${e.length} must be below the ${e.type.params.length} parameters of a lifted function's type`,
+            `closure ${e.fnName}: length ${e.length} must be a function length (a 32-bit count) on a closure that is not an adapter`,
             e.loc,
           );
         }

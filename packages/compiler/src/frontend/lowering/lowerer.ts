@@ -126,6 +126,7 @@ import {
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
+import { sharedDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -16868,7 +16869,7 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
+        return sharedDynConversion(this, expr, expected, expr.loc);
       }
       return expr;
     }

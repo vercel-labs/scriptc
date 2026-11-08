@@ -61,7 +61,8 @@ import {
   runtimeOptionalLocalOf,
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
-import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
+import { isConstAssertionTypeNode, typeKey, unitOnlyUnion } from "../../type-mapper.js";
+import { keyedHelperName } from "../stable-names.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
@@ -2227,6 +2228,92 @@ function checkedDynCast(
     return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** The checked conversion of a dynamic value where a typed slot takes it
+ * without an assertion: an annotated binding, an argument, a stored field
+ * or element, a returned value. JavaScript keeps one object there, so the
+ * record or array built from a value another holder may still reference
+ * keeps one identity with it, as the assertion form does (adoptingCast):
+ * a write through either name reaches the other, and the typed value boxes
+ * back to the object it came from. A value nothing else can hold converts
+ * outright. */
+export function sharedDynConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  target: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (!holdsReference(lowerer, target) || unsharedDynValue(value))
+    return { kind: "dynCheck", value, type: target, loc };
+  return {
+    kind: "call",
+    callee: sharedConversionHelper(lowerer, target, loc),
+    args: [value],
+    type: target,
+    loc,
+  };
+}
+
+/** sharedDynConversion's helper for one target type: the checked conversion
+ * of its argument, then the adoption that makes the argument a live capsule
+ * of the result (adoptingCast's statements). A function of its own, because
+ * a typed slot's conversion is also built where no function is being
+ * lowered and no local can hold the source and the result (the dispatchers
+ * assembled after lowering: a constructor called through an untyped
+ * value). */
+function sharedConversionHelper(lowerer: Lowerer, target: IrType, loc: SrcLoc): string {
+  const key = `dynShared:${typeKey(target)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, SHARED_CONVERSION_HELPER, key);
+  lowerer.valueHelpers.set(key, name);
+  const source = varRef("value.0", DYN, loc);
+  const built = varRef("built.0", target, loc);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "value.0", name: "value", type: DYN }],
+    returnType: target,
+    locals: [
+      { id: "value.0", name: "value", type: DYN, mutable: true },
+      { id: "built.0", name: "built", type: target, mutable: false },
+    ],
+    body: [
+      {
+        kind: "varDecl",
+        localId: "built.0",
+        init: { kind: "dynCheck", value: source, type: target, loc },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.adoptShared",
+          args: [source, { kind: "dynFrom", value: built, liveRef: true, type: DYN, loc }],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+      { kind: "return", value: built, loc },
+    ],
+    loc,
+  });
+  return name;
+}
+
+/** The name prefix of sharedConversionHelper's functions. */
+const SHARED_CONVERSION_HELPER = "%dyn.shared";
+
+/** A dynamic value no other holder can reference when it converts: parsed
+ * text, a literal built in place, or a typed value boxed for the
+ * conversion (a capsule of a native value has nothing to adopt). */
+function unsharedDynValue(value: IrExpr): boolean {
+  if (value.kind === "libCall") return value.fn === "json.parse";
+  if (value.kind === "awaitExpr")
+    return value.value.kind === "libCall" && value.value.fn === "fetch.responseJson";
+  return value.kind === "dynFrom" || value.kind === "dynObjLit" || value.kind === "dynArrLit";
 }
 
 /** Whether `target` keeps undeclared keys in an overflow map, the one

@@ -2915,6 +2915,7 @@ export class LlEmitter {
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
+      declAdopt: () => this.runtimeFeatures.declAdopt,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,

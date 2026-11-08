@@ -918,6 +918,47 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** Whether boxing a value of type `t` hands untyped code a function with a
+ * record or array parameter (itself, or through a record field, an array
+ * element or a union arm): its thunk converts the caller's argument, and
+ * the argument adopts the converted value. */
+function boxesSharingFunction(t: IrType, tables: TypeTables, seen: Set<string>): boolean {
+  const holdsReference = (p: IrType): boolean =>
+    p.kind === "record" ||
+    p.kind === "array" ||
+    (p.kind === "union" &&
+      (tables.unions.get(p.unionId)?.arms.some((arm) => holdsReference(arm)) ?? false));
+  switch (t.kind) {
+    case "func":
+      return (
+        t.params.some(holdsReference) ||
+        t.params.some((p) => boxesSharingFunction(p, tables, seen)) ||
+        boxesSharingFunction(t.ret, tables, seen)
+      );
+    case "array":
+      return boxesSharingFunction(t.elem, tables, seen);
+    case "record": {
+      if (seen.has(t.shapeId)) return false;
+      seen.add(t.shapeId);
+      return (
+        tables.records
+          .get(t.shapeId)
+          ?.fields.some((field) => boxesSharingFunction(field.type, tables, seen)) ?? false
+      );
+    }
+    case "union": {
+      if (seen.has(t.unionId)) return false;
+      seen.add(t.unionId);
+      return (
+        tables.unions.get(t.unionId)?.arms.some((arm) => boxesSharingFunction(arm, tables, seen)) ??
+        false
+      );
+    }
+    default:
+      return false;
+  }
+}
+
 /** Whether the module holds a runtimeFence that stands for a deferred
  * diagnostic: the statement the backend throws through the reporter. A
  * library's fences keep the plain throw (emit-statements.ts), so a library
@@ -1768,12 +1809,16 @@ const RUNTIME_FEATURE_RULES = {
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
-  /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
-   * casts, and closures boxed in a boundary program, which adopt their
-   * arguments. */
+  /** Adoption (scr_decl_adopt.c): a dynamic object or array converted to a
+   * record or array becomes a live capsule of the converted value. Linked
+   * by the declaration-typed boundary's casts, by every checked conversion
+   * that shares its source, and by a function boxed for untyped code whose
+   * record or array parameter adopts the caller's argument (dynFnThunk). */
   declAdopt: rule({
     fns: ["dyn.declAdopt", "dyn.adoptShared"],
     initial: (mod) => mod.declBoundary === true,
+    expr: (node, tables) =>
+      node.kind === "dynFrom" && boxesSharingFunction(node.value.type, tables(), new Set()),
   }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).

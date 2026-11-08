@@ -792,7 +792,9 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // lowerer turns the read into `scr_undef_global_read` (exact Node text and
   // behavior) and refuses the write with SC1091, which names the Node-island
   // route the sloppy semantics need. TypeScript input keeps the compile
-  // error: an undeclared name there is a bug, not a runtime path. 2552 is
+  // error: an undeclared name there is a bug, not a runtime path, unless a
+  // library the project's `lib` names declares it and Node defines no such
+  // global (program.ts, projectLibraryName admits those sites). 2552 is
   // 2304's did-you-mean spelling, 2584 its spelling for a name another
   // library declares (`document`, `window`: Node defines neither), and
   // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which

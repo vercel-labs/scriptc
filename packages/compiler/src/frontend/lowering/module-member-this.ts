@@ -123,7 +123,7 @@ function functionOfName(
     if (ts.isFunctionDeclaration(decl)) {
       const stable = ts.isSourceFile(decl.parent)
         ? !isRebindableFunction(lowerer, decl)
-        : bindingNeverReassigned(lowerer, symbol, decl, (ident) =>
+        : bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, (ident) =>
             lowerer.checker.getSymbolAtLocation(ident),
           );
       return { fn: stable ? decl : null };
@@ -133,7 +133,7 @@ function functionOfName(
       decl.initializer &&
       ts.isVariableDeclarationList(decl.parent) &&
       ((decl.parent.flags & ts.NodeFlags.Const) !== 0 ||
-        bindingNeverReassigned(lowerer, symbol, decl, (ident) =>
+        bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, (ident) =>
           lowerer.checker.getSymbolAtLocation(ident),
         ))
     ) {

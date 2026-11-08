@@ -128,6 +128,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** A computed read of the global object, or `… in globalThis`
    * (scr_global_host_absent.c). */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
   /** Array.prototype's generic algorithms over array-likes
    * (scr_dyn_array_like.c). */
   arrayLikeDispatch?: boolean;
@@ -148,6 +151,10 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -392,6 +399,7 @@ export function effectiveRuntimeFeatures(
     stdlibPrototypeValue: features.stdlibPrototypeValue === true,
     dataViewPrototypeValue: features.dataViewPrototypeValue === true,
     hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
     arrayLikeDispatch: features.arrayLikeDispatch === true,
     builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
@@ -401,6 +409,7 @@ export function effectiveRuntimeFeatures(
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
     streamWriteErrors: features.streamWriteErrors === true,
+    stdioObject: features.stdioObject === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

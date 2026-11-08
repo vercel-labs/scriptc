@@ -9,8 +9,15 @@
 // 3. A child that points its stderr at its stdout: everything arrives on
 //    stdout in the order written, and stderr ends without data.
 // 4. A spawn that fails: 'error' is a next-tick event and comes before the
-//    pipes' 'end', stdout's before stderr's, from ordinary code and from
-//    inside another child's listeners.
+//    pipes' 'end', from ordinary code and from inside another child's
+//    listeners. Which pipe ends first is the kernel's order. On Linux a
+//    failed spawn returns when the child that could not start has been
+//    waited for: both pipes are at end-of-file by then and end in the order
+//    they were created, stdout before stderr. On Darwin posix_spawn returns
+//    while the kernel still takes that child down, the two pipes reach
+//    end-of-file a moment later in either order, and Node hands them on as
+//    they come, stderr first in some runs. There the two 'end' events are
+//    recorded without their names, and 'close' names what ended.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,14 +97,23 @@ function merged(): Promise<string> {
   });
 }
 
+// Whether a failed spawn's pipes end in the order they were created (4 above).
+const failedPipesEndInOrder = process.platform !== "darwin";
+
 function failing(seen: string[], done: () => void): void {
   const child = spawn("definitely-not-a-binary-zzz", ["x"], { stdio: ["ignore", "pipe", "pipe"] });
+  const ended: string[] = [];
+  const end = (name: string): void => {
+    ended.push(name);
+    seen.push(failedPipesEndInOrder ? `${name} end` : "end");
+  };
   child.stdout!.on("data", () => seen.push("data"));
-  child.stdout!.on("end", () => seen.push("stdout end"));
-  child.stderr!.on("end", () => seen.push("stderr end"));
+  child.stdout!.on("end", () => end("stdout"));
+  child.stderr!.on("end", () => end("stderr"));
   child.on("error", (err) => seen.push(`error ${err.message.split(" ").pop()}`));
   child.on("exit", () => seen.push("exit"));
   child.on("close", (code) => {
+    if (!failedPipesEndInOrder) seen.push(`ended ${ended.sort().join(" and ")}`);
     seen.push(`close:${code}`);
     done();
   });

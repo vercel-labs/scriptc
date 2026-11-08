@@ -10,7 +10,6 @@ import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
-import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
@@ -42,7 +41,11 @@ import {
   wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
-import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import {
+  argumentsOwner,
+  forwardedOnlyTupleValue,
+  typedArgumentsCandidate,
+} from "../typed-arguments.js";
 import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
@@ -112,6 +115,7 @@ import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
 import { processDataMemberValue } from "../builtins/process.js";
+import { adoptingResolveUse } from "../promise-resolution.js";
 
 /** Whether this identifier is the RECEIVER of a member access — the dotted
  * or bracketed `held.X` / `held[k]`, read or written, through any erasure
@@ -175,8 +179,33 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // type and lowerLambda declared the local.
   if (expr.text === "arguments") {
     const binding = captureContextArguments(lowerer.fnStack);
-    if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
-      throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+    // A forwarded-only `arguments` read as a value after all (a call path
+    // that takes its spread operand as a list): the tuple is built here
+    // from its slots (typed-arguments.ts forwardedOnlyTupleValue).
+    const forwardedSlots = binding ? lowerer.ctx.pureTuples.get(binding.id) : undefined;
+    if (binding && forwardedSlots) {
+      // A position that may be undefined, or holds an untyped value, may
+      // also be absent at the call: the native signature always passes it,
+      // so the tuple built from the slots would hand the callee an argument
+      // the caller did not pass (a rest parameter one element longer). The
+      // rest tuple with optional positions is refused the same way
+      // (forwardedOnlyTupleValue), and so is `arguments.length`
+      // (typedArgumentsArity).
+      if (
+        forwardedSlots.some(
+          (slot) =>
+            slot.type.kind === "dyn" ||
+            (slot.type.kind === "union" &&
+              lowerer.armTag(slot.type.unionId, { kind: "undefinedT" }) >= 0),
+        )
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)",
+        );
+      }
+      return lowerer.tupleOfSlots(forwardedSlots, binding.type, expr, loc);
     }
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
     const owner = argumentsOwner(expr);
@@ -261,10 +290,24 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A forwarded-only rest tuple read as a value after all.
+  const forwardedTuple = forwardedOnlyTupleValue(lowerer, expr, loc);
+  if (forwardedTuple) return forwardedTuple;
   // Union-typed bindings read through tsc's control-flow narrowing:
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // The resolve parameter of a typed promise's executor, at a use that gives
+  // it a value with a promise arm: the function that adopts that arm.
+  if (local && lowerer.adoptingResolves.size > 0) {
+    const adopting = adoptingResolveUse(lowerer, expr, {
+      kind: "varRef",
+      localId: local.id,
+      type: local.type,
+      loc,
+    });
+    if (adopting) return adopting;
+  }
   // A BARE use of a value HELD from process.env (`{ ...env }`, Object.keys,
   // an argument, a return) reads the environment as it is HERE: Node's hold
   // IS the environment object, so its contents at use time are the live
@@ -726,6 +769,9 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "os" && bi.member === "constants") {
         return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
       }
+      if (bi.module === "module" && bi.member === "constants") {
+        return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
+      }
       if (bi.module === "fs" && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
       // `import { O_RDONLY } from "constants"`: the member of the frozen
@@ -986,6 +1032,25 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       const t =
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, expr.text, expr, t);
+    }
+    // `require` in an ES module: Node defines no `require` binding there, so
+    // the READ throws its catchable ReferenceError "require is not defined"
+    // (probed on Node 24.22.0 for `.ts`, `.mts` and `.mjs` ES modules; the
+    // CommonJS "in ES module scope" suffix belongs to Node's `createRequire`
+    // shim, not to the bare global). The read always throws, so the dummy is
+    // dynamic and never observed.
+    if (
+      expr.text === "require" &&
+      lowerer.isStdlibGlobal(expr, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
+    ) {
+      return {
+        kind: "libCall",
+        fn: "global.undefRead",
+        args: [{ kind: "strLit", value: "require", type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
     }
     if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;

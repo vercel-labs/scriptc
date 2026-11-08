@@ -48,10 +48,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { checkKeypressListener } from "./builtins/readline.js";
 import * as ts from "../ts7/adapter.js";
-import {
-  withoutParenthesesAssertionsNonNull,
-  withoutParenthesesTypeWrappers,
-} from "../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -444,9 +441,10 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, cbNode, cbCt);
           typed =
             cbT?.kind === "func" &&
-            !ts.isCallExpression(withoutParenthesesAssertionsNonNull(cbNode)) &&
+            !ts.isCallExpression(withoutParenthesesTypeWrappers(cbNode)) &&
             !(cbT.params.length === 0 && isJsSourceFile(sf)) &&
             !cbT.params.some((p) => p.kind === "dyn") &&
+            !takesEveryArgument(cbT) &&
             !readsArgumentsPack(lowerer, cbNode);
         } catch {
           typed = false;
@@ -489,8 +487,13 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           // registers without the adapter, so an untyped emit reaches it
           // only through the event's fixed ABI. A JavaScript function
           // without parameters can still read `arguments`.
+          // A variadic function (a rest parameter, `arguments`) takes
+          // every argument the event carries, however many it names: it is
+          // called through the adapter with the event's whole tuple.
+          const variadic = cbT?.kind === "func" && takesEveryArgument(cbT);
           if (
             !pack &&
+            !variadic &&
             cbT?.kind !== "dyn" &&
             (cbT?.kind !== "func" ||
               (cbT.params.length === 0 && !isJsSourceFile(sf)) ||
@@ -506,6 +509,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           if (
             cbT?.kind === "dyn" ||
             (cbT?.kind === "func" && cbT.params.some((p) => p.kind === "dyn")) ||
+            variadic ||
             pack
           ) {
             const sig = sigOf(name);
@@ -1121,10 +1125,20 @@ function readsArgumentsPack(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
+/** Whether a function type takes its arguments through the hidden argument
+ * array (a rest parameter of untyped values, or `arguments`): a listener of
+ * such a type observes every argument the event carries, so it registers
+ * through the adapter that passes the whole tuple, never as a typed
+ * listener of the parameters it names. */
+function takesEveryArgument(type: IrType & { kind: "func" }): boolean {
+  return type.rest === true && type.restAbi === undefined;
+}
+
 /** How a listener argument is dyn-flavored: "dyn" for a checked-dynamic
  * VALUE (a mustCall wrapper, a listener that rode an untyped binding),
  * "func" for a function whose parameters include dyn (the JS lane's
- * unannotated listeners — their checker type is any). Null for everything
+ * unannotated listeners — their checker type is any) and for a variadic
+ * function (takesEveryArgument). Null for everything
  * else (the static path, with its own diagnostics). */
 function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func" | null {
   let t: IrType | null;
@@ -1141,6 +1155,7 @@ function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func
   if (t?.kind === "dyn") return "dyn";
   if (t?.kind === "func") {
     if (t.params.some((p) => p.kind === "dyn")) return "func";
+    if (takesEveryArgument(t)) return "func";
     if (readsArgumentsPack(lowerer, node)) return "func";
     // The inferred signature of a wrapper can omit its runtime arguments
     // pack. Register the checked callable produced by the factory itself.
@@ -1640,6 +1655,12 @@ function lowerListenerArg(
     lowerer.noLowering(`'${member}' with a non-function listener`, node);
   }
   const cbT = cb.type as IrType & { kind: "func" };
+  // A typed listener is called with the parameters its type names, of the
+  // arguments the event carries.
+  lowerer.noteLongerCall(node, cbT, `'${member}'`, tuple.length);
+  // The emitter is passed as `this` only to a listener whose own type
+  // shows that it reads it.
+  if (!listenerReadsThis(lowerer, node)) lowerer.noteReceiverCall(node, `'${member}'`);
   // Node ignores listener return values, so value-returning listeners
   // (expression-body arrows, mustCall wrappers) register fine — the
   // emitted invoke adapter calls through the listener's true signature

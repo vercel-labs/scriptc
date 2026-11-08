@@ -18,7 +18,8 @@ import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
 
@@ -186,7 +187,7 @@ function wantsTscDecorators(file: string): boolean {
 }
 
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -249,6 +250,7 @@ function programInputs(file: string): string[] {
 }
 
 async function build(file: string, optimization: "release" | "dev") {
+  const defines = programDefines(directiveHead(file));
   // The entry joins the key: a directory can hold several entries.
   const hash = createHash("sha256").update(file).update("\0");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
@@ -270,6 +272,7 @@ async function build(file: string, optimization: "release" | "dev") {
     sanitize,
     optimization,
     ...(cpuDispatch ? { cpuDispatch } : {}),
+    ...(defines ? { define: defines.define } : {}),
     ...(targetCpu === undefined ? {} : { targetCpu }),
   });
 }
@@ -282,8 +285,12 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      const oracleEnv = {
+        ...programEnv(file),
+        ...programDefines(directiveHead(file))?.env,
+      };
       const oracle = await runStep(`${rel}: node oracle`, (track) =>
-        runBinary(process.execPath, nodeOracleArgs(file), undefined, programEnv(file), track),
+        runBinary(process.execPath, nodeOracleArgs(file), undefined, oracleEnv, track),
       );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);

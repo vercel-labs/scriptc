@@ -76,6 +76,8 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   call: { callee: "callee" },
   ffiCall: { import: "other" },
   closure: { fnName: "reference", "captures[]": "other" },
+  viewOf: { adapter: "reference" },
+  viewSource: { adapter: "reference" },
   new: { className: "other" },
   classRef: { className: "other", "captures[]": "other" },
   instanceOf: { className: "other" },
@@ -244,6 +246,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "nodeIsland.modules.location": "other",
   "nodeIsland.modules.files[].path": "other",
   "nodeIsland.modules.files[].sha256": "other",
+  "nodeIsland.modules.files[].generated": "other",
   "nodeIsland.modules.links[].path": "other",
   "nodeIsland.modules.links[].target": "other",
   "sloppyDynWrites[]": "other",
@@ -303,6 +306,36 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
         right: { kind: "numLit", value: 1, type: F64, loc },
         retag: TARGET,
         type: F64,
+        loc,
+      }),
+    ]),
+  "viewOf.adapter": () =>
+    module([
+      exprStmt({
+        kind: "viewOf",
+        value: {
+          kind: "varRef",
+          localId: "f",
+          type: { kind: "func", params: [F64], ret: VOID },
+          loc,
+        },
+        adapter: TARGET,
+        type: { kind: "bool" },
+        loc,
+      }),
+    ]),
+  "viewSource.adapter": () =>
+    module([
+      exprStmt({
+        kind: "viewSource",
+        value: {
+          kind: "varRef",
+          localId: "f",
+          type: { kind: "func", params: [F64], ret: VOID },
+          loc,
+        },
+        adapter: TARGET,
+        type: { kind: "func", params: [F64, F64], ret: VOID },
         loc,
       }),
     ]),

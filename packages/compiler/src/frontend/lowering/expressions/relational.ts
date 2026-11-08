@@ -67,6 +67,7 @@ import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
   findGenericMethodOn,
+  parameterPropertiesFirst,
   type ClassInfo,
   storedClassValueType,
 } from "../lower-classes.js";
@@ -93,6 +94,23 @@ import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js"
 import { recordMayKeepSource } from "../record-sources.js";
 import { recordHasOwnHelper } from "../lower-calls.js";
 import { hostGlobalConstructorOfPrototype, hostGlobalNameOfRead } from "../host-globals.js";
+
+/** The registered class behind the class type of a test's operand. A class
+ * whose collection was refused is deferred, not registered, and a type can
+ * still name it (a parameter, a union arm, a declared result). Naming it
+ * here flushes that refusal, which reports at the class, and the test is
+ * refused with it: the class has no layout to test against. */
+function operandClass(lowerer: Lowerer, className: string, expr: ts.Node, test: string): ClassInfo {
+  const info = lowerer.classes.get(className) ?? lowerer.flushDeferredClass(className);
+  if (info) return info;
+  if (!lowerer.deferredClassByName.has(className))
+    throw new InternalCompilerError(`lowerer bug: unknown class ${className}`);
+  lowerer.unsupported(
+    "SC1090",
+    expr,
+    `${test} on a value whose type names '${lowerer.fmt({ kind: "object", className })}', a class that has no lowering (the class declaration itself was rejected — see its own diagnostic)`,
+  );
+}
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
  * object's property holding a program class (`holder.type`) reads as a
@@ -751,9 +769,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           "'instanceof' on values other than class instances (narrow union-typed values first)",
         );
       }
-      const lhsInfo = lowerer.classes.get(left.type.className);
-      if (!lhsInfo)
-        throw new InternalCompilerError(`lowerer bug: unknown class ${left.type.className}`);
+      const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
       if (
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
@@ -1049,6 +1065,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           isUnitType(arm),
       )
     ) {
+      // Every class arm is resolved before the helper is named: an arm
+      // whose class was rejected refuses this test, and must not leave a
+      // helper name behind that no function defines.
+      for (const arm of arms)
+        if (arm.kind === "object") operandClass(lowerer, arm.className, expr, "'instanceof'");
       const key = `instanceof.union:${unionId}:${target.def.name}`;
       let helper = lowerer.valueHelpers.get(key);
       if (!helper) {
@@ -1058,9 +1079,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         const body: IrStmt[] = [];
         arms.forEach((arm, tag) => {
           if (arm.kind !== "object") return;
-          const lhsInfo = lowerer.classes.get(arm.className);
-          if (!lhsInfo)
-            throw new InternalCompilerError(`lowerer bug: unknown class ${arm.className}`);
+          const lhsInfo = operandClass(lowerer, arm.className, expr, "'instanceof'");
           const armTest = (info: ClassInfo): IrExpr =>
             lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(info)
               ? {
@@ -1129,9 +1148,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       loc,
     });
   }
-  const lhsInfo = lowerer.classes.get(left.type.className);
-  if (!lhsInfo)
-    throw new InternalCompilerError(`lowerer bug: unknown class ${left.type.className}`);
+  const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
   if (lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)) {
     const tests = runtimeTests(left.type.className);
     if (tests.length === 1) {
@@ -1628,8 +1645,7 @@ function lowerPrivateIn(
     );
   }
   const lhsName = recv.type.className;
-  const lhsInfo = lowerer.classes.get(lhsName);
-  if (!lhsInfo) throw new InternalCompilerError(`lowerer bug: unknown class ${lhsName}`);
+  operandClass(lowerer, lhsName, expr, `'${pname} in …'`);
   if (lowerer.isSubclassOf(declName, lhsName)) {
     // The narrowing direction: the declarer strictly below the
     // receiver's static class — a strict subclass relation puts both in
@@ -1704,8 +1720,8 @@ function declaresOwnMember(info: ClassInfo, key: string): boolean {
 
 /** `classInstanceIn`'s answer: a static boolean, "the declaration lacks the
  * key but a subclass may declare it" (the caller resolves it with class
- * tests), or "the declaration cannot answer" (runtime-provided root, index
- * signature, unknown class). */
+ * tests), or "the declaration cannot answer" (runtime-provided root,
+ * unknown class). */
 type ClassInAnswer = boolean | "below" | "unknown";
 
 /** `classInstanceIn`'s subclass guard: a subclass whose values land in THIS
@@ -1736,15 +1752,6 @@ function declaringSubclasses(info: ClassInfo, key: string, out: string[] = []): 
   return out;
 }
 
-/** A class body spelling an index signature: `'k' in instance` then answers
- * per VALUE (the overflow map), not from the declaration. */
-function declaresIndexSignature(info: ClassInfo): boolean {
-  if (!info.decl) return false;
-  for (const member of info.decl.members.nodes)
-    if (ts.isIndexSignatureDeclaration(member)) return true;
-  return false;
-}
-
 /** `'k' in instance` for a compiled class: every declared member is present
  * on every instance (a class field is defined at construction whether or
  * not it holds `undefined`, and a method lives on the prototype), so
@@ -1752,7 +1759,10 @@ function declaresIndexSignature(info: ClassInfo): boolean {
  * answer. `"unknown"` when the declaration cannot answer for the value:
  * runtime-provided roots (`decl === null`, the Error/EventEmitter/stream/
  * EventTarget/Date/Array families) expose members their declaration does
- * not spell, and an index signature answers per value. `armNames` are the
+ * not spell. A class with an index signature answers the same way: its
+ * declared members are on every instance, and a name it does not declare
+ * is not declared, so the caller asks the instance (classAnswersAtRuntime).
+ * `armNames` are the
  * class arms of the union whose arm this is (null for a single-class
  * receiver): a subclass that is itself an arm is tagged with that arm, so
  * only the other subclasses can lie about this arm's `false`. */
@@ -1778,7 +1788,6 @@ function classInstanceIn(
       c.extendsArray
     )
       return "unknown";
-    if (declaresIndexSignature(c)) return "unknown";
   }
   if (declaresInstanceMember(lowerer, info, key)) return true;
   if (subclassDeclares(info, key, armNames)) return "below";
@@ -2056,7 +2065,11 @@ function declaredMembership(
   for (let base = info.base; base; base = base.base) if (base.fields.has(key)) return true;
   // A parameter property is assigned in the constructor body, after every
   // field initializer has run (Node's transform), so it is not on `this` yet.
-  if (info.paramProps?.some((pp) => pp.name === key)) return false;
+  // A file whose tsconfig compiles class fields in the constructor assigns
+  // its parameter properties first (ownFieldAndParamPropInitStmts): there
+  // every one of them is on `this` when the first initializer runs.
+  if (info.paramProps?.some((pp) => pp.name === key))
+    return parameterPropertiesFirst(lowerer, info);
   const own = info.fieldOrder.findIndex((f) => f.name === key);
   if (own < 0) {
     if (generic === null) return false;
@@ -2559,11 +2572,6 @@ export function lowerInExpression(
       if (key === "cause") {
         return { kind: "libCall", fn: "error.hasCause", args: [recv], type: BOOL, loc };
       }
-      // The code slot, or an own `code` with another value
-      // (`err.code = undefined` is present).
-      if (key === "code") {
-        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
-      }
       // The receiver evaluates for its effects when the answer is static.
       const always = (): IrExpr =>
         recv.kind === "varRef" || recv.kind === "caughtNarrow"
@@ -2590,30 +2598,47 @@ export function lowerInExpression(
       if (staticInfo && declares(staticInfo)) return always();
       // Any other key: a descendant class that declares it (instanceof), or
       // an own property set at runtime (a throw site's extra fields,
-      // Object.assign, writes through a dynamic view). Keys built-in errors
-      // keep outside their class fields depend on the runtime error and
-      // stay fenced.
-      if (!BUILTIN_ERROR_SLOT_KEYS.has(key)) {
+      // Object.assign, writes through a dynamic view). `code` is such a key
+      // too: at runtime it is the error's code slot, or an own `code` with
+      // another value (`err.code = undefined` is present), and a subclass
+      // that declares a `code` field holds it in the field instead. The
+      // other keys built-in errors keep outside their class fields depend
+      // on the runtime error and stay fenced.
+      const staticName = recv.type.className;
+      const declarers: string[] = [];
+      for (const c of lowerer.classes.values()) {
+        const name = c.def.name;
+        if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
+          continue;
+        // A declaring ancestor below the static class already covers it.
+        if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
+        declarers.push(name);
+      }
+      if (key === "code" && declarers.length === 0) {
+        return { kind: "libCall", fn: "error.hasCode", args: [recv], type: BOOL, loc };
+      }
+      if (key === "code" || !BUILTIN_ERROR_SLOT_KEYS.has(key)) {
         const stable = recv.kind === "varRef" || recv.kind === "caughtNarrow";
         const slot = stable ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
         const ref = (): IrExpr => (slot ? varRef(slot.id, recv.type, loc) : recv);
-        const tests: IrExpr[] = [];
-        const staticName = recv.type.className;
-        for (const c of lowerer.classes.values()) {
-          const name = c.def.name;
-          if (name === staticName || !lowerer.isSubclassOf(name, staticName) || !declares(c))
-            continue;
-          // A declaring ancestor below the static class already covers it.
-          if (c.base && c.base.def.name !== staticName && declares(c.base)) continue;
-          tests.push({ kind: "instanceOf", value: ref(), className: name, type: BOOL, loc });
-        }
-        tests.push({
-          kind: "libCall",
-          fn: "error.hasKey",
-          args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+        const tests: IrExpr[] = declarers.map((className) => ({
+          kind: "instanceOf",
+          value: ref(),
+          className,
           type: BOOL,
           loc,
-        });
+        }));
+        tests.push(
+          key === "code"
+            ? { kind: "libCall", fn: "error.hasCode", args: [ref()], type: BOOL, loc }
+            : {
+                kind: "libCall",
+                fn: "error.hasKey",
+                args: [ref(), { kind: "strLit", value: key, type: STRING, loc }],
+                type: BOOL,
+                loc,
+              },
+        );
         const answer = tests.reduce((acc, test) => ({
           kind: "logical",
           op: "||",

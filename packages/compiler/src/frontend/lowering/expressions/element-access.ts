@@ -77,7 +77,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedMemberRead,
+  classFieldTarget,
+  erasedDeclareField,
+  lowerUnionKeyedRead,
+} from "./property-access.js";
 import {
   assertedOnlyMemberWrite,
   assertedProbeAccessOf,
@@ -99,6 +104,8 @@ import {
   lowerSafeIndexRead,
   primitiveElement,
   unionArrayValueRead,
+  unionArmsIndexRead,
+  unionArmsView,
   unaffectedByIndex,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
@@ -107,7 +114,10 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
-import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  lowerClassPrototypeComputedAssignment,
+} from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import {
   isKeyedFieldAccess,
@@ -126,6 +136,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { refuseDefinedEnvWrite } from "../builtins/environment.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
@@ -1092,6 +1103,11 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       : lowerer.maybeNarrow(arr, expr.expression);
   }
 
+  // A union of tuples and arrays the checker reads as one array: the
+  // position is read in the value itself once the index is known
+  // (unionArmsView), below.
+  const armsView = unionArmsView(lowerer, expr.expression, arr, receiverIr, locOf(expr.expression));
+
   // An alias or container of an evolving array whose reads disagree
   // (`rows[0]` after `const rows = [xs]`) holds elements the checker's type
   // does not list, so its element read stays checked-dynamic.
@@ -1156,6 +1172,17 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
+  }
+  if (armsView) {
+    // Like every array read, the answer keeps its undefined: an index past
+    // the arm's end reads it whatever the checker's type says.
+    const read = unionArmsIndexRead(lowerer, armsView, index, locOf(expr));
+    if (read) return read;
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `indexing a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' whose elements have no common representation (narrow it to one arm first)`,
+    );
   }
   // The LOWERED receiver's element type wins over the checker's when
   // both are arrays: a spoke result can be more precise than the
@@ -2083,6 +2110,26 @@ function lowerTupleIndexRead(
     locOf(expr.argumentExpression),
     expr.argumentExpression,
   );
+  // An untyped key, or a JavaScript file's non-number key (`t[name]` over
+  // the names Object.getOwnPropertyNames answered): the property read is
+  // dynamic, as it is for an array receiver. The tuple answers through its
+  // checked-dynamic array view: an index, "length", or undefined.
+  if (
+    index.type.kind === "dyn" ||
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      index.type.kind !== "f64" &&
+      lowerer.dynConvertible(index.type))
+  ) {
+    const view = lowerer.coerceToExpected(obj, DYN);
+    if (view.type.kind === "dyn")
+      return {
+        kind: "dynKeyGet",
+        value: view,
+        key: lowerer.coerceToExpected(index, DYN),
+        type: DYN,
+        loc,
+      };
+  }
   if (index.type.kind !== "f64") {
     lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
   }
@@ -2642,6 +2689,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         "indexing process.env with non-string keys",
       );
     }
+    refuseDefinedEnvWrite(lowerer, key, target);
     const value = lowerer.lowerExpr(expr.right);
     if (value.type.kind !== "string") {
       lowerer.unsupported(
@@ -2825,6 +2873,38 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
             ),
             loc: locOf(expr),
           };
+        }
+        // `instance["name"] = v` with a literal key the class does not
+        // declare is the bracket spelling of the dot write `instance.name =
+        // v` (which a class with an index signature admits): the same own
+        // property of the instance, through its checked-dynamic view. A
+        // name the class declares with `declare` keeps the refusal: on a
+        // class rooted in a runtime class the write by name can address the
+        // runtime object's own member of that name, and the two spellings
+        // must reach one place.
+        if (
+          isDynTypedRefType(receiver.type) &&
+          !erasedDeclareField(lowerer, receiver.type.className, key)
+        ) {
+          const info = lowerer.classes.get(receiver.type.className);
+          if (
+            info &&
+            !info.def.runtime &&
+            !info.builtinError &&
+            !info.builtinEmitter &&
+            !info.builtinStream &&
+            !isCompiledPrototypeMember(lowerer, info, key)
+          ) {
+            return {
+              kind: "exprStmt",
+              expr: lowerDynMemberAssignment(
+                lowerer,
+                expr,
+                lowerer.coerceInto(target.expression, receiver, DYN),
+              ),
+              loc: locOf(expr),
+            };
+          }
         }
         lowerer.unsupported(
           "SC1090",

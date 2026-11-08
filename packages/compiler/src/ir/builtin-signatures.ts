@@ -258,6 +258,19 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -306,6 +319,14 @@ function buildLibFnSignatures() {
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
     "dyn.classHash": { argTypes: [DYN], result: F64 },
+    /** The index of a table of class values (`dyn.classIs` branches: `x
+     * instanceof C`, `new C()` and static members of an untyped
+     * constructor): a function value's signature key folded to one of
+     * 2^bits slots (the second argument, a literal), or -1 for a value that
+     * is not a function or whose key is shorter than four bytes. A function
+     * that is not a compiled class selects a slot only by coincidence, and
+     * that slot's exact key guards are false for it. */
+    "dyn.classValueHash": { argTypes: [DYN, F64], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;
@@ -941,6 +962,17 @@ function buildLibFnSignatures() {
     "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
     "path.toNamespacedValue": { argTypes: [DYN, BOOL], result: DYN },
+    /** node:module's compile cache family (scr_module_cache.c). A compiled
+     * program loads no JavaScript, so enableCompileCache validates its
+     * argument as Node does and answers a fresh { status, message } with the
+     * DISABLED status, getCompileCacheDir answers undefined, and
+     * flushCompileCache validates its argument and writes nothing. */
+    "module.compileCacheEnable": { argTypes: [DYN], result: DYN },
+    "module.compileCacheDir": { argTypes: [], result: DYN },
+    "module.compileCacheFlush": { argTypes: [DYN], result: DYN },
+    /** module.constants: the per-thread frozen null-prototype object that
+     * holds compileCacheStatus. */
+    "module.compileCacheConstants": { argTypes: [], result: DYN },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
     /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd
@@ -5803,6 +5835,13 @@ function buildLibFnSignatures() {
      * NON-promise value — JS awaits non-thenables through exactly one
      * microtask turn and yields the value itself. Never throws. */
     "async.hop": { argTypes: [], result: VOID },
+    /** `promise.adopt(resolve, promise)`: the resolve function of a typed
+     * `new Promise` whose `resolves` is set, called with a promise
+     * (scr_resolve_adopt): the new promise settles as that one does, two
+     * turns after it, and is resolved from the call on. `resolve` is the
+     * closure the executor received; `promise` has the new promise's type.
+     * Borrows both. Never throws. */
+    "promise.adopt": { argTypes: [null, null], result: VOID },
     "als.new": { argTypes: [], result: F64 },
     "als.get": { argTypes: [F64], result: DYN },
     "als.run": { argTypes: [F64, DYN, DYN, DYN], result: DYN },

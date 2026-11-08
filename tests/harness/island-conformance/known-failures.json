@@ -38,19 +38,13 @@
   "corpus/6590-npm-promise-mixin": {
     "island:promise-mixin": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: expected string at $[0], got boolean"
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $[0], got boolean"
     }
   },
   "corpus/7132-jose-pbes2": {
     "island:jose": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
-    }
-  },
-  "corpus/7531-buffer-constructor-dependency": {
-    "island:legacy-buf": {
-      "category": "stdout",
-      "signature": "Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
   "corpus/7532-buffer-constructor-check-limit": {
@@ -72,13 +66,9 @@
     }
   },
   "corpus/7748-npm-any-bytes-receiver": {
-    "island:chunk-buffers": {
-      "category": "stdout",
-      "signature": "<Buffer 01 02 09 10 00 00 00 00 00 00 00 00 00 00 00 00>"
-    },
     "island:etag-digest": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
   "corpus/8211-require-resolve-computed": {
@@ -150,7 +140,7 @@
   "npm/any-chaining": {
     "island:mediakit": {
       "category": "exit",
-      "signature": "exit 1, Node 0: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
   "npm/chalk5": {
@@ -163,27 +153,6 @@
     "island:chalk": {
       "category": "build",
       "signature": "SC8006"
-    }
-  },
-  "npm/commander-calc": {
-    "island:commander": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Usage: calc [options] [command]",
-      "argvs": [
-        "add 2 3",
-        "sub 10 4.25",
-        "mul 4 2.5",
-        "div 9 2",
-        "add 0.1 0.2",
-        "add 1e3 -0.5",
-        "echo hello",
-        "echo",
-        "echo hello --upper",
-        "echo hello -p say: ",
-        "echo --upper -p p:  mixed",
-        "--version",
-        "--help"
-      ]
     }
   },
   "npm/create-require": {
@@ -216,8 +185,8 @@
   },
   "npm/hono-zod-default-hook": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "stdout",
+      "signature": "ok 500 Internal Server Error"
     },
     "island:hono": {
       "category": "build",
@@ -226,16 +195,12 @@
   },
   "npm/hono-zod-validator": {
     "island:@hono/zod-validator": {
-      "category": "build",
-      "signature": "SC8006"
+      "category": "exit",
+      "signature": "exit 1, Node 0: Error: 'Headers.[Symbol.iterator] in a static build' is part of the standard library types but has no scriptc lowering yet [SC2020 at <root>/node_modules/hono/d"
     },
     "island:hono": {
       "category": "build",
       "signature": "SC0001"
-    },
-    "island:zod": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
   "npm/hot-shots-buffered": {
@@ -301,7 +266,7 @@
   "npm/node24-fs-descriptors": {
     "island:fszoo": {
       "category": "stderr",
-      "signature": "Unhandled promise rejection: RangeError [ERR_OUT_OF_RANGE]: The value of \"position\" is out of range. It must be >= -1 && <= <n>. Received -2"
+      "signature": "node:internal/process/promises:394"
     }
   },
   "npm/node24-promise-timers": {
@@ -309,12 +274,6 @@
       "category": "exit",
       "signature": "exit 13, Node 0: a race; a failing run stops at a different line each time and some runs match Node",
       "unstable": true
-    }
-  },
-  "npm/node24-timers-unref": {
-    "island:node24-promise-timers-fixture": {
-      "category": "stdout",
-      "signature": "unreferenced timer fired"
     }
   },
   "npm/top-level-await-pending-exit-listener": {
@@ -389,45 +348,16 @@
       "signature": "class-instance ok {\"x\":1}"
     }
   },
-  "packages/commander": {
-    "island:commander": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: error: missing required argument 'name'",
-      "argvs": [
-        "ada --upper",
-        "ada",
-        "--help",
-        "--version",
-        "ada --nope"
-      ]
-    }
-  },
   "packages/date-fns": {
     "island:date-fns": {
       "category": "exit",
       "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
     }
   },
-  "packages/process-argv": {
-    "island:process-reader": {
-      "category": "stdout",
-      "signature": "[] false",
-      "argvs": [
-        "first --flag last",
-        ""
-      ]
-    }
-  },
   "packages/process-cwd": {
     "island:process-reader": {
       "category": "stdout",
       "signature": "false false"
-    }
-  },
-  "packages/process-exit-code": {
-    "island:process-reader": {
-      "category": "exit",
-      "signature": "exit 4, Node 5: undefined 3"
     }
   }
 }

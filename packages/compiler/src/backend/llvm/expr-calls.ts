@@ -78,6 +78,8 @@ export function emitCallExpr(
     | "call"
     | "ffiCall"
     | "closure"
+    | "viewOf"
+    | "viewSource"
     | "callValue"
     | "selfRef"
     | "new"
@@ -846,7 +848,24 @@ export function emitCallExpr(
           `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${index} ; caps[${index}]`,
         );
         B.line(`store ptr ${retained}, ptr ${capp}`);
-        if (i === 0 && e.adapts === true) {
+        if (i === 0 && e.adapts === true && target.captures?.[0]?.type.kind === "dyn") {
+          // A checked adapter over a boxed function: it stands for that
+          // function, and a box of it is that function again
+          // (scr_dyn_new_func reads caps[0] of a closure of this kind).
+          const slot = B.tmp();
+          const original = B.tmp();
+          const kindPtr = B.tmp();
+          const own = B.tmp();
+          const kind = B.tmp();
+          B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+          B.line(`${original} = load ptr, ptr ${slot}`);
+          B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
+          B.line(`${own} = load i32, ptr ${kindPtr}`);
+          B.line(`${kind} = or i32 ${own}, ${CLOSURE_KIND.CHECKED_ADAPTER}`);
+          B.line(`store i32 ${kind}, ptr ${kindPtr}`);
+          host.declare(`declare void @scr_dyn_adopt_identity(ptr, ptr)`);
+          B.line(`call void @scr_dyn_adopt_identity(ptr ${c}, ptr ${original})`);
+        } else if (i === 0 && e.adapts === true) {
           // A signature adapter stands for the function it forwards to.
           const slot = B.tmp();
           const original = B.tmp();
@@ -883,6 +902,45 @@ export function emitCallExpr(
         }
       });
       return out;
+    }
+    case "viewOf": {
+      const v = emitBorrowedInputs(host, [e.value])[0]!;
+      const result = B.tmp();
+      if (e.adapter === null) {
+        // The checked-dynamic boundary marks the views it makes
+        // (CHECKED_ADAPTER: the callable is in caps[0]).
+        const kindPtr = B.tmp();
+        const kind = B.tmp();
+        const bit = B.tmp();
+        B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 0, i32 4`);
+        B.line(`${kind} = load i32, ptr ${kindPtr}`);
+        B.line(`${bit} = and i32 ${kind}, ${CLOSURE_KIND.CHECKED_ADAPTER}`);
+        B.line(`${result} = icmp ne i32 ${bit}, 0`);
+        return { name: result, type: e.type };
+      }
+      // The view an adapter makes is the closure whose code is the
+      // adapter's body: one load and a pointer comparison.
+      const entry = B.tmp();
+      const code = B.tmp();
+      B.line(`${entry} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 0, i32 1`);
+      B.line(`${code} = load ptr, ptr ${entry}`);
+      B.line(`${result} = icmp eq ptr ${code}, @${host.callTarget(e.adapter)}`);
+      return { name: result, type: e.type };
+    }
+    case "viewSource": {
+      // captures[0] of a view is the box of what it forwards to: the
+      // function (the slot the adapter's identity adoption reads) or the
+      // boundary's checked-dynamic callable.
+      const v = emitBorrowedInputs(host, [e.value])[0]!;
+      const caps = B.tmp();
+      const box = B.tmp();
+      const slot = B.tmp();
+      const source = B.tmp();
+      B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 1 ; caps`);
+      B.line(`${box} = load ptr, ptr ${caps}`);
+      B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+      B.line(`${source} = load ptr, ptr ${slot}`);
+      return host.own({ name: host.retainFrame(source, e.type), type: e.type });
     }
     case "callValue": {
       // Calling through a closure value: load the fn pointer, pass the

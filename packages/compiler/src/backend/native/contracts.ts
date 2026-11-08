@@ -223,6 +223,9 @@ export interface CcOptions {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic: compiles
+   * scr_deferred_fence.c, its stderr reporter. */
+  deferredFence?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
@@ -256,6 +259,9 @@ export interface CcOptions {
   /** fs.existsSync over a path value that may not be a string: compiles
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -268,6 +274,11 @@ export interface CcOptions {
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;

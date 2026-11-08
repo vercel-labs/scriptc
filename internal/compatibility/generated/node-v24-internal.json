@@ -52856,6 +52856,7 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/9917-structured-clone-errors.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
@@ -54750,7 +54751,8 @@
         "evidence": "compiler-feature:globals.structuredClone",
         "tests": [
           "tests/corpus/2283-structured-clone.cjs",
-          "tests/corpus/5324-structured-clone-documents.ts"
+          "tests/corpus/5324-structured-clone-documents.ts",
+          "tests/corpus/9917-structured-clone-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -70359,6 +70361,11 @@
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-compile-cache-disabled.ts",
+          "tests/corpus/module-compile-cache-entry.mjs",
+          "tests/corpus/module-compile-cache-require.cjs",
+          "tests/corpus/module-compile-cache-values.mjs",
+          "tests/harness/module-compile-cache.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -70633,8 +70640,15 @@
       "anchor": "moduleenablecompilecacheoptions",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "partial",
+        "evidence": "compiler-feature:module.module.enableCompileCache",
+        "tests": [
+          "tests/corpus/module-compile-cache-disabled.ts",
+          "tests/corpus/module-compile-cache-values.mjs",
+          "tests/corpus/module-compile-cache-require.cjs",
+          "tests/corpus/module-compile-cache-entry.mjs",
+          "tests/harness/module-compile-cache.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70651,8 +70665,15 @@
       "anchor": "moduleflushcompilecache",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "partial",
+        "evidence": "compiler-feature:module.module.flushCompileCache",
+        "tests": [
+          "tests/corpus/module-compile-cache-disabled.ts",
+          "tests/corpus/module-compile-cache-values.mjs",
+          "tests/corpus/module-compile-cache-require.cjs",
+          "tests/corpus/module-compile-cache-entry.mjs",
+          "tests/harness/module-compile-cache.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70669,8 +70690,15 @@
       "anchor": "modulegetcompilecachedir",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "partial",
+        "evidence": "compiler-feature:module.module.getCompileCacheDir",
+        "tests": [
+          "tests/corpus/module-compile-cache-disabled.ts",
+          "tests/corpus/module-compile-cache-values.mjs",
+          "tests/corpus/module-compile-cache-require.cjs",
+          "tests/corpus/module-compile-cache-entry.mjs",
+          "tests/harness/module-compile-cache.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -70687,8 +70715,12 @@
       "anchor": "moduleconstantscompilecachestatus",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "supported",
+        "evidence": "compiler-feature:module.module.constants.compileCacheStatus",
+        "tests": [
+          "tests/corpus/module-compile-cache-disabled.ts",
+          "tests/corpus/module-compile-cache-values.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

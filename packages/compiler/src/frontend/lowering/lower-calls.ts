@@ -1,3 +1,4 @@
+import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
 import {
   memberCallHolder,
@@ -31,6 +32,7 @@ import {
 import { refuseModuleMemberThis } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
+import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
 import { lowerResponseStaticJson } from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
@@ -116,7 +118,7 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
-import { isJsSourceFile, locOf, requireSpecOf } from "../program.js";
+import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
@@ -661,11 +663,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (inlineValue) return inlineValue;
   }
   // `require("path/posix")` of a builtin as a value: the module's
-  // namespace, as a `const posix = require("path/posix")` binding is.
+  // namespace, as a `const posix = require("path/posix")` binding is. An ES
+  // module has no `require`, so there the call reads the binding and throws
+  // Node's ReferenceError (lowerIdentifierExpr).
   if (
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "require" &&
-    isCjsRequireGlobal(lowerer, expr.expression)
+    isCjsRequireGlobal(lowerer, expr.expression) &&
+    !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
     const module = lowerer.builtinNamespaceModuleOf(expr);
     // The platform namespaces are the path module objects.
@@ -4719,7 +4724,8 @@ function lowerDynReceiverMethodCall(
   if (recv.type.kind === "string") {
     return (
       lowerRegexMethodCall(lowerer, call, access, () => recv) ??
-      lowerStringMethodCall(lowerer, call, access, () => recv)
+      lowerStringMethodCall(lowerer, call, access, () => recv) ??
+      lowerUntypedStringLastIndexOfCall(lowerer, call, access, recv)
     );
   }
   // A checker-untyped JS binding holding `string | undefined` (string-
@@ -5752,6 +5758,11 @@ export function lowerDynDispatchMethodCall(
         DYN,
       );
     if (i === 0 && predicate) return lowerer.coerceInto(arg, predicate, DYN);
+    // The receiver of call, apply or bind (lowerFunctionMethodArgs).
+    if (i === 0 && (method === "bind" || method === "call" || method === "apply")) {
+      const stream = processStreamReceiver(lowerer, arg);
+      if (stream) return stream;
+    }
     const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, arg);
     return undefinedArg
       ? defaultAfterUndefined(undefinedArg, dynUndefinedExpr(locOf(arg)))
@@ -9366,8 +9377,13 @@ function lowerObjectStaticCall(
     // fixed record is exactly Object.keys' construction, and boxing a typed
     // record would link the dynamic tier into a program that needs none of
     // it. The descriptor and symbol forms have no static walk, so a record
-    // takes the view there.
-    const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
+    // takes the view there. A tuple is an array to Node (its own names are
+    // its indices and "length"), which the static walk cannot list, so it
+    // takes the view as an array does.
+    const staticWalk =
+      member === "getOwnPropertyNames" &&
+      object.type.kind === "record" &&
+      lowerer.shapes.get(object.type.shapeId)?.tuple !== true;
     if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
       object = lowerer.coerceToExpected(object, DYN);
     if (object.type.kind === "dyn")
@@ -11865,6 +11881,49 @@ function arrowSignatureOf(lowerer: Lowerer, node: ts.Expression): ts.Signature |
   return declaration !== undefined && ts.isArrowFunction(declaration) ? signatures[0]! : null;
 }
 
+/** The arguments of Function.prototype.call, apply or bind on a
+ * checked-dynamic function. The first one is the receiver. A process stream
+ * there is the stream object itself, whose methods the function may be
+ * (`process.stdout.write.bind(process.stdout)`): under checked-dynamic stream
+ * slots a process stream that flows into a dynamic slot otherwise becomes
+ * the Writable such a slot holds (general-streams.ts), which the stream's
+ * own methods do not take as their receiver. */
+function lowerFunctionMethodArgs(lowerer: Lowerer, call: ts.CallExpression): IrExpr[] {
+  return call.arguments.nodes.map(
+    (arg, index) =>
+      (index === 0 ? processStreamReceiver(lowerer, arg) : null) ??
+      lowerer.lowerExprExpecting(arg, DYN),
+  );
+}
+
+/** A process stream given as the receiver of call, apply or bind, boxed as
+ * the stream object; null for any other argument, and in programs without
+ * checked-dynamic stream slots, where the ordinary conversion already
+ * answers the stream object. */
+function processStreamReceiver(lowerer: Lowerer, arg: ts.Expression): IrExpr | null {
+  if (!lowerer.dynNodeStreams || !isProcessStreamValue(lowerer, arg)) return null;
+  const stream = lowerer.lowerExpr(arg);
+  return stream.type.kind === "procStream"
+    ? { kind: "dynFrom", value: stream, type: DYN, loc: stream.loc }
+    : lowerer.coerceToExpected(stream, DYN);
+}
+
+function isProcessStreamValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  // The streams by name: under checked-dynamic stream slots their declared
+  // type maps to the slot's representation, not to the process stream.
+  if (ts.isPropertyAccessExpression(node)) {
+    const member = lowerer.stdlibGlobalMember(node, "process");
+    if (member === "stdout" || member === "stderr" || member === "stdin") return true;
+  }
+  // A query, never a commit: a type with no readable form is not a stream.
+  try {
+    return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "procStream";
+  } catch (e) {
+    if (!isCheckerPanic(e)) throw e;
+    return false;
+  }
+}
+
 /** An inline arrow has lexical `this` and no observable own properties
  * before binding. With no preset arguments, a fresh forwarding closure
  * preserves its completed ABI, defaults and captured environment. Keep
@@ -12263,7 +12322,7 @@ function lowerObjLitGenericMethodCall(
           recv: value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc },
           method: name,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: lowerFunctionMethodArgs(lowerer, call),
           type: DYN,
           loc,
         };
@@ -12276,7 +12335,7 @@ function lowerObjLitGenericMethodCall(
           recv: childMethod,
           method: name,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: lowerFunctionMethodArgs(lowerer, call),
           type: DYN,
           loc,
         };

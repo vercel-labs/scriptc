@@ -5141,3 +5141,15 @@ ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double
   *pending = hold;
   return text;
 }
+
+/* scr_bytes.h. At the end of the unit for the same reason: only the Node
+ * island handle unit calls it, so no other program links it. */
+bool scr_bytes_storage_movable(const ScrBytes *owner) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops != NULL && (ops->owner_resizable(owner) || ops->owner_detached(owner));
+#else
+  (void)owner;
+  return false;
+#endif
+}

@@ -73,7 +73,10 @@
  *            order that differs from insertion order where the program
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
- *            to a cast to an unrelated class (SC6004); SC6005 (Date strings
+ *            to a cast to an unrelated class (SC6004), a value a Node island
+ *            made converted to a native type, which is a copy (SC6007), an
+ *            import the build keeps although tsc's output drops it (SC6008);
+ *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
  *            notes, also warnings (coverage --fail-on=dynamic opts in):
@@ -83,6 +86,9 @@
  *            overlay report: what it typed and how many inferred facts the
  *            build checks (SC6103, frontend/shape-inference), and InlineArray
  *            fields that keep ordinary arrays (SC6105, contracts/check.ts)
+ *            SC62xx are failures the program has under Node too, also
+ *            warnings: Node refuses the program before any module runs, and
+ *            the compiled program reproduces that refusal (SC6201)
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7009, contracts/check.ts)
@@ -263,35 +269,86 @@ export function nodeIslandDataFileDiag(message: string, loc: SrcLoc): ScrDiagnos
 
 /* ── SC6xxx: divergences from Node (warnings) ─────────────────────────── */
 
-/** SC6001 — a value passed to (or declared as) a narrower record type is
- * copied field by field, and the program then writes through or compares
- * the copy: under Node it is the same object, so the write would be
- * visible to the original and `===` would be true. */
+/** SC6008 — tsc drops an import whose only uses it resolves at compile time
+ * (const enum members, which it inlines; an import alias of the binding
+ * that is used only in types), so its output never loads the module. The
+ * native program keeps the import: the module is loaded. */
+export function inlinedImportKeptDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6008",
+    message: `tsc drops this import, because it resolves every use of it at compile time (const enum members, or an import alias used only in types), so its build never loads ${specifier}; the compiled program keeps the import and loads the module`,
+    loc,
+    hint: "for a const enum, set \"isolatedModules\": true in the project tsconfig (tsc then keeps the import too); otherwise import the types with 'import type'",
+  };
+}
+
+/** SC6201 — Node refuses the program before any module runs (a module that
+ * does not resolve, a named import the target module does not export), and
+ * the compiled program fails the same way. The build succeeds: the program
+ * is what was written. The warning says so before the binary does. */
+export function startupFailureDiag(
+  className: string,
+  message: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
+  const name = className.startsWith("%") ? className.slice(1) : className;
+  return {
+    code: "SC6201",
+    message: `this program cannot start: Node refuses it before any module runs, and the compiled program fails the same way (${name}: ${message.split("\n")[0]})`,
+    loc,
+    ...(hint === undefined ? {} : { hint }),
+  };
+}
+
+/** SC6001 — a conversion copies an object something else can still reach
+ * (a record into a record type with other properties, an array into an
+ * array of another element layout, a tuple into an array, a record into a
+ * class instance), and the program observes one of the two layouts in a way
+ * that tells the copy from the object: under Node there is one object, so a
+ * write through either name is visible through the other and `===` is true.
+ * `what` names the copied object when it is a member of the converted value
+ * (a field, an element) rather than the value itself. */
 export function widthCopyDivergenceDiag(
-  sourceType: string,
-  targetType: string,
-  use: "write" | "compare",
-  useText: string,
-  site: "call" | "declaration" | "cast" | "element",
+  conversion: { from: string; to: string; member: boolean },
+  observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
   loc: SrcLoc,
 ): ScrDiagnostic {
-  const how =
-    site === "call"
-      ? `passing a '${sourceType}' where '${targetType}' is expected`
-      : site === "cast"
-        ? `asserting a '${sourceType}' as '${targetType}'`
-        : site === "element"
-          ? `storing a '${sourceType}' as an element of '${targetType}[]'`
-          : `storing a '${sourceType}' in a '${targetType}' binding`;
+  const subject = conversion.member
+    ? `this conversion copies the '${conversion.from}' inside the value into a '${conversion.to}'`
+    : `converting this '${conversion.from}' to '${conversion.to}' copies it`;
   const effect =
-    use === "write"
-      ? `the write to '${useText}' updates only the copy, while under Node it updates the original object`
-      : `'${useText}' compares the copy, which is never the original object, while under Node it is the same object`;
+    observed.how === "write"
+      ? `the program writes ${observed.what} (${observed.where}), and such a write reaches only one of the two objects`
+      : observed.how === "identity"
+        ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
+        : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
   return {
     code: "SC6001",
-    message: `${how} copies the object (converting to a record type with other properties compiles as a field copy): ${effect}`,
+    message: `${subject} (a conversion to another layout builds a new object), while under Node both names refer to one object: ${effect}`,
     loc,
-    hint: `declare the parameter or binding with the value's full type ('${sourceType}'), or make the shape a class — class instances keep their identity when passed as a base class`,
+    hint: `keep the value at its own type ('${conversion.from}') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
+  };
+}
+
+/** SC6012 — a JavaScript statement that does not compile (a deferred
+ * refusal) sits in the `try` block of a `try`/`catch` of the same function.
+ * It throws when it runs, so the program's `catch` clause runs, also where
+ * the statement would have completed under Node (where Node throws there
+ * too, a missing module behind a guarded require, the two agree). The
+ * program handles the throw itself, so the binary does not report the site
+ * on stderr as it does for other deferred refusals; this warning is where
+ * the site is named. */
+export function guardedDeferredFenceDiag(
+  code: string,
+  refusal: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6012",
+    message: `this statement does not compile (${code}: ${refusal}) and sits inside its own try block: when it runs it throws and the catch clause runs, also where the statement would have completed under Node, so the program's output can differ from Node's from there on. The binary prints nothing about it when it runs`,
+    loc,
+    hint: "rewrite the statement so that it compiles, or accept the catch path; SCRIPTC_DEFERRED_REPORT=all in the program's environment makes the binary name each such site on stderr the first time it throws",
   };
 }
 
@@ -346,6 +403,42 @@ export function unrelatedClassCastDivergenceDiag(
     message: `this '${source}' reaches a cast to the unrelated class '${target}' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally`,
     loc,
     hint: `narrow with 'instanceof ${target}' before casting, or cast to a base class or interface both classes share`,
+  };
+}
+
+/** Where a value a Node island made is converted to a native type (SC6007). */
+export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "members";
+
+/** SC6007 — an object or array a Node island made is converted to a native
+ * array or record type where the compiler sees the conversion: an assertion
+ * (`value as T`), a typed binding of an `any` value, a typed parameter of a
+ * callback the island calls, or the keys and values of an island `Map` or
+ * `Set` whose declared member type is a native array or record. The checked
+ * conversion reads the members through the island's object and builds a
+ * native value from them. Under
+ * Node there is one object, so the island's later changes show through every
+ * name, the program's writes reach the island, and `===` holds; the copy has
+ * none of the three, and it holds only the members the target type declares.
+ * A target that stays checked-dynamic (`unknown`, a record of `unknown`
+ * members, a type the island declares) keeps the island's object and is not
+ * reported, and neither is a copy the program writes itself
+ * (`structuredClone(value) as T`). */
+export function islandValueCopyDivergenceDiag(
+  targetType: string,
+  site: IslandValueCopySite,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how: Record<IslandValueCopySite, string> = {
+    assertion: `asserting a value a Node island made as '${targetType}'`,
+    binding: `storing a value a Node island made in a '${targetType}' binding`,
+    parameter: `a Node island calling this callback with an object of its own for the '${targetType}' parameter`,
+    members: `reading a key or a value of this '${targetType}', when a Node island made it,`,
+  };
+  return {
+    code: "SC6007",
+    message: `${how[site]} copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object, so the island's later changes are visible through it, writes made through it reach the island, and it is '===' to the island's object; the copy has none of the three`,
+    loc,
+    hint: "declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too",
   };
 }
 
@@ -597,26 +690,6 @@ export function sharedModuleDuplicatedDiag(
     message: `module '${module}' is duplicated across the Node island boundary although it is stateful: ${why}; the program and its islands each see their own copy`,
     loc,
     hint: 'remove "share": "duplicate" from its scriptc.packages entry to share one instance',
-  };
-}
-
-/** SC8006 — the build refuses the program: it replaces a process output
- * stream's write method while a Node island exists, and the island's
- * `process.stdout` is its own object, so the replacement and the island's
- * writes cannot see each other. The planner stops on this, so it is an
- * error, not the SC8020 warning. H2 shares the native stream object with
- * the islands and removes this refusal. */
-export function stdioPatchAcrossIslandsDiag(
-  stream: "stdout" | "stderr" | null,
-  loc: SrcLoc,
-): ScrDiagnostic {
-  const what =
-    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
-  return {
-    code: "SC8006",
-    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
-    loc,
-    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 
@@ -960,18 +1033,15 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // not reuse. (Identifier catch bindings shipped too, and a catch clause
   // that destructures ships through the checked-dynamic tree; what remains
   // rejected is a destructuring pattern in a promise handler's parameter —
-  // SC1062 — un-narrowed binding uses — SC1063 — and jumps crossing a
-  // finally — SC1090.)
+  // SC1062 — and jumps crossing a finally — SC1090.)
   SC1062: {
     feature: "destructuring catch clause bindings",
     milestone: "later",
     hint: "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives",
   },
-  SC1063: {
-    feature: "this use of a catch binding",
-    milestone: "later",
-    hint: "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is",
-  },
+  // SC1063 (uses of a catch binding outside the narrowing tests) shipped —
+  // code retired, do not reuse: the binding reads as the `unknown` (or
+  // `any`) value TypeScript declares it to be.
   SC1070: { feature: "async/await", milestone: "M3" },
   SC1071: { feature: "generators", milestone: "later" },
   // `this` in class methods (+ lexical capture by arrows) shipped; what
@@ -1066,6 +1136,10 @@ export const FENCE_CODES: Record<string, { name: string; status: "unsupported" }
   },
   SC2014: {
     name: "writes through a value held from process.env (a snapshot, not the live table)",
+    status: "unsupported",
+  },
+  SC2015: {
+    name: "an empty array literal used at an element type that was not decided where it is written",
     status: "unsupported",
   },
   SC2020: {
@@ -1183,11 +1257,35 @@ export function invalidJsonModuleDiag(
   };
 }
 
-export function strictNullChecksFloorDiag(configFile: string): ScrDiagnostic {
+/** SC0016 — a tsconfig setting whose meaning scriptc does not follow, at the
+ * first place of the program that depends on it. One diagnostic per setting
+ * stands in for the TypeScript errors the difference would otherwise produce
+ * one by one. */
+export function unfollowedSettingDiag(
+  setting: string,
+  meaning: string,
+  loc: SrcLoc,
+  sites: number,
+  hint: string,
+): ScrDiagnostic {
+  return {
+    code: "SC0016",
+    message: `this project's tsconfig sets ${setting}, which scriptc does not follow: ${meaning}${sites > 1 ? ` (${sites} places in this program)` : ""}`,
+    loc,
+    hint,
+  };
+}
+
+/** `mentioned`: the tsconfig sets `strict` or `strictNullChecks` (to false);
+ * otherwise it is silent about both, which TypeScript 5 and earlier read as
+ * off. */
+export function strictNullChecksFloorDiag(configFile: string, mentioned = true): ScrDiagnostic {
   return {
     code: "SC0002",
     message:
-      "this project's tsconfig disables strictNullChecks, which scriptc requires " +
+      (mentioned
+        ? "this project's tsconfig disables strictNullChecks, which scriptc requires "
+        : "this project's tsconfig does not enable strict or strictNullChecks, which scriptc requires ") +
       "(null and undefined are modeled as distinct static types; without the knob " +
       "every type implicitly includes them)",
     loc: { file: configFile, start: 0, end: 0 },
@@ -1359,6 +1457,31 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A write to a member of a built-in object (`Array.prototype.push = f`,
+ * `delete Math.random`) in a program that also uses that member through
+ * code that does not read it from the object: a native call, a conversion
+ * or an iteration the compiler lowers directly, or a feature test it
+ * decided at build time. The program would keep running the built-in where
+ * Node runs the replacement. `member` is the member as the program names
+ * it; `use` is the rest of the sentence: what uses the member, where, and
+ * why that use would not see the change. */
+export function builtinMemberWriteDiag(
+  member: string,
+  action: "replace" | "delete" | "add",
+  use: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const verb = action === "delete" ? "deleting" : action === "add" ? "adding" : "replacing";
+  return {
+    code: "SC1092",
+    message: `${verb} the built-in '${member}' here is not supported: ${use}`,
+    loc,
+    milestone: "later",
+    hint: "a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead",
+    reason: "builtin-write",
+  };
+}
+
 /** A stdlib-global snapshot reached a site that needs its VALUE (an
  * argument, a return, a stored field). The declaration emitted no storage
  * — alias plumbing only serves member and call reads — and the global's
@@ -1444,6 +1567,26 @@ export function heldEnvWriteDiag(loc: SrcLoc): ScrDiagnostic {
     loc,
     milestone: "later",
     hint: "read and write the live variable directly (process.env.NAME or process.env[key]), or write into a fresh copy: const env = { ...process.env, NAME: value }",
+  };
+}
+
+/** An empty array literal the checker leaves untyped (`{ files: [] }` is
+ * `{ files: never[] }`) is one array under every name, so its element type
+ * is decided once, where it is written: by its contextual type, or by the
+ * typed slots its value reaches (empty-array-places.ts). A typed array slot
+ * that receives it where that did not decide the slot's type would need a
+ * copy of the array, and a write through either name would then be
+ * invisible through the other. Refused instead. */
+export function emptyArrayDiag(expectedText: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2015",
+    message:
+      `an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as '${expectedText}' here: ` +
+      "it is one array under every name, so its element type is decided where it is written, and this use did not decide it " +
+      "(the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)",
+    loc,
+    milestone: "later",
+    hint: `give the literal its type where it is written, for example \`[] as ${expectedText.includes(" ") ? "ElementType[]" : expectedText}\`, or annotate the object or binding that holds it`,
   };
 }
 
@@ -1580,16 +1723,48 @@ export function unionMismatchDiag(
   expectedText: string,
   actualText: string,
   loc: SrcLoc,
+  ambiguous?: UnionWidthAmbiguity,
 ): ScrDiagnostic {
   return {
     code: "SC2003",
     message:
       `union conversion has no unambiguous layout mapping: expected '${expectedText}', got '${actualText}' ` +
-      `(each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)`,
+      `(each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)` +
+      (ambiguous !== undefined ? ` — ${unionWidthAmbiguityText(ambiguous)}` : ""),
     loc,
     milestone: "later",
-    hint: "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
+    hint:
+      ambiguous !== undefined
+        ? "a union value is one arm at run time, and nothing in this record says which: type the slot with the record type itself (one record that declares every member), or give each arm a member with its own literal value"
+        : "narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's",
   };
+}
+
+/** A record that converts by width into several arms of a union with no
+ * discriminant (`{ a?: X; b?: Y }` into `{ a?: X } | { b?: Y }`): the
+ * conversion would have to pick one arm and the others' members would no
+ * longer be that value's. `arms` are the arms the record fits; `split` are
+ * source members declared by some of those arms but not by all; `homeless`
+ * are source members no arm declares. */
+export interface UnionWidthAmbiguity {
+  arms: number;
+  split: readonly string[];
+  homeless: readonly string[];
+}
+
+function unionWidthAmbiguityText(a: UnionWidthAmbiguity): string {
+  const list = (names: readonly string[]): string =>
+    names
+      .slice(0, 4)
+      .map((name) => `'${name}'`)
+      .join(", ") + (names.length > 4 ? `, and ${names.length - 4} more` : "");
+  return (
+    `the record fits ${a.arms} arms by width and the union has no discriminant member to choose one` +
+    (a.split.length > 0
+      ? `; ${list(a.split)} belong to some of those arms and not to others`
+      : "") +
+    (a.homeless.length > 0 ? `; no arm declares ${list(a.homeless)}` : "")
+  );
 }
 
 /** An object literal that SPREADS union-typed sources (`{ ...base,

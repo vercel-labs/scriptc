@@ -295,7 +295,7 @@ function requireStableGenericBinding(
   const redeclared = symbol.declarations.some(
     (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
   );
-  if (!isConst && (redeclared || !bindingNeverReassigned(lowerer, symbol, decl))) {
+  if (!isConst && (redeclared || !bindingNeverReassigned(lowerer.bindingScope(), symbol, decl))) {
     lowerer.unsupported(
       "SC1090",
       decl.name,
@@ -2371,7 +2371,7 @@ function holdsItsInitializer(lowerer: Lowerer, decl: ts.Node): boolean {
     );
   if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
   const binding = lowerer.checker.getSymbolAtLocation(decl.name);
-  return binding !== undefined && bindingNeverReassigned(lowerer, binding, decl);
+  return binding !== undefined && bindingNeverReassigned(lowerer.bindingScope(), binding, decl);
 }
 
 /** Whether the class that declares `field` assigns a property of its name
@@ -3547,7 +3547,7 @@ export function implicitLocalFnNodeOf(
       (d) => d !== decl && ts.isVariableDeclaration(d) && d.initializer !== undefined,
     );
     if (redeclared) return null;
-    if (!isConst && !bindingNeverReassigned(lowerer, sym, decl)) return null;
+    if (!isConst && !bindingNeverReassigned(lowerer.bindingScope(), sym, decl)) return null;
     // Instances are module functions with no frame.
     return capturesEnclosingFrame(lowerer, init, decl, init.body) ? null : init;
   };
@@ -3756,7 +3756,7 @@ function enclosingFrameCaptures(
           // A trailing-parameter COPY is exact only while the original
           // never changes; a binding written anywhere in the file puts the
           // whole binding in the environment form (GenericFnInfo.captureMode).
-          const reassigned = !bindingNeverReassigned(lowerer, s, d);
+          const reassigned = !bindingNeverReassigned(lowerer.bindingScope(), s, d);
           // ...and exact only once the original is INITIALIZED. A capture
           // declared after the binding could be read from a call that runs
           // before its initializer — a temporal dead zone JavaScript would
@@ -4539,7 +4539,7 @@ export function requireObjLitGenericReceiver(
   }
   if (
     (recvDecl.parent.flags & ts.NodeFlags.Const) === 0 &&
-    !bindingNeverReassigned(lowerer, recvSym!, recvDecl)
+    !bindingNeverReassigned(lowerer.bindingScope(), recvSym!, recvDecl)
   ) {
     fenceReceiver();
   }

@@ -18,6 +18,7 @@ import {
   RUNTIME_STREAM_CLASSES,
 } from "./ir.js";
 import { everyModuleNode, everyStmtList } from "./traverse.js";
+import { isDeferredDiagnosticFence } from "./deferred-fence.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
 import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
@@ -88,6 +89,9 @@ export const DYN_BUFFER_METHODS: ReadonlyMap<string, string> = new Map([
 ]);
 
 const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // A typed promise's resolve function given a promise (scr_resolve_adopt,
+  // beside the checked-dynamic resolution it shares its target box with).
+  "promise.adopt",
   // DEP0040 rides the dyn-async unit's warning machinery.
   "async.awaitDyn",
   // So does SlowBuffer's DEP0030.
@@ -899,6 +903,28 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** Whether the module holds a runtimeFence that stands for a deferred
+ * diagnostic: the statement the backend throws through the reporter. A
+ * library's fences keep the plain throw (emit-statements.ts), so a library
+ * never asks for the reporter. */
+function moduleHasDeferredFence(mod: IrModule): boolean {
+  if (mod.lib !== undefined) return false;
+  let found = false;
+  everyModuleNode(mod, {
+    expr: () => !found,
+    stmt: (node) => {
+      if (
+        node.kind === "runtimeFence" &&
+        isDeferredDiagnosticFence(node.code, node.message, node.loc.file)
+      )
+        found = true;
+      return !found;
+    },
+    type: () => !found,
+  });
+  return found;
+}
+
 /* The node:url and WHATWG URL entry points: every URL value comes from
  * one, and parsing one can reach the UTS #46 host processing. */
 const URL_PREFIXES: readonly string[] = ["url."];
@@ -1408,8 +1434,9 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "intrinsic" &&
         (node.name === "promise.allSettled" || node.name === "promise.any")) ||
       (node.kind === "dynFrom" && boxesPromise(node.value.type, tables(), new Set())) ||
-      // The resolve function of a promise of a checked-dynamic value that
-      // may be given a promise adopts it (scr_make_resolve_dyn).
+      // The resolve function of a promise that may be given a promise
+      // adopts it (scr_make_resolve_dyn, and scr_resolve_adopt for a typed
+      // promise).
       (node.kind === "newPromise" && node.resolves === true) ||
       (node.kind === "promiseWithResolvers" && resolversOfDyn(node.type, tables())),
   }),
@@ -1440,6 +1467,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_GLOBAL_HOST_ABSENT build of scr_node_builtin.c): a computed read of
    * the global object, or `… in globalThis` (host-globals.ts). */
   hostAbsentGlobals: rule({ fns: ["global.hostAbsent", "dyn.globalHas"] }),
+  /** The stderr report of a deferred diagnostic that fires
+   * (scr_deferred_fence.c): a runtimeFence whose message carries its
+   * diagnostic's tag (deferred-fence.ts). */
+  deferredFence: rule({ initial: moduleHasDeferredFence }),
   /** Array.prototype's generic algorithms over array-like receivers
    * (scr_dyn_array_like.c), which delegates every other name to the
    * dyn-invoke unit's array dispatch. */
@@ -1790,6 +1821,20 @@ const RUNTIME_FEATURE_RULES = {
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
 
+  /** The program holds a process output stream as a value: the
+   * process.stdio lib call, process.stdioSlot for the write method's own
+   * lowering, or a value of the process stream type, which becomes the
+   * stream object when it is boxed (dyn.ts). Those are the only ways to the
+   * stream object, and a replacement of its write method is a store into
+   * that object, so this covers every program that can replace
+   * process.stdout.write or process.stderr.write, whichever spelling, alias
+   * or computed key the replacement uses. Beside
+   * `nodeIsland` it links scr_node_island_stdio.c and the
+   * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
+   * island's two output streams read and write the program's write slots;
+   * every other program with islands keeps its island units unchanged. */
+  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1803,8 +1848,10 @@ const RUNTIME_FEATURE_RULES = {
     fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
-    // symbols scr_sym_well_known makes.
-    prefixes: ["sym.", "disposable.", "iterator."],
+    // symbols scr_sym_well_known makes. An island symbol the program
+    // receives is a native symbol (scr_node_island_handle.c makes it), so
+    // a program with a Node island links the unit too.
+    prefixes: ["sym.", "disposable.", "iterator.", "nodeIsland."],
     types: ["symbol"],
   }),
   /** Symbol.toPrimitive is read (sym.wellKnown with that name, or a name
@@ -1973,6 +2020,8 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fs_exists_dyn.c, which reports DEP0187 through the warning queue the
    * dynAsync rule brings in. */
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
   /** The BYTE-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2036,6 +2085,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdlibPrototypeValue: false,
     dataViewPrototypeValue: false,
     hostAbsentGlobals: false,
+    deferredFence: false,
     dynInvoke: false,
     arrayLikeDispatch: false,
     builtinMethodValue: false,
@@ -2050,6 +2100,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fileHandle: false,
     fsFlags: false,
     fsExistsValue: false,
+    moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
@@ -2081,6 +2132,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     regex: false,
     searchParams: false,
     urlIdna: false,
+    stdioObject: false,
     streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,

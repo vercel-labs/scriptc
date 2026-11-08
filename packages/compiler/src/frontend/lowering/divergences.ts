@@ -5,25 +5,31 @@
  *
  * The scan is deliberately narrow: a finding needs both the construct that
  * differs AND evidence in the program that the difference is observable
- * (a write or identity comparison through a copied object, an
- * order-observing call on the type whose literal is reordered, ...).
+ * (an order-observing call on the type whose literal is reordered, ...).
  * Ordinary code produces no findings. Syntactic prefilters run first so the
  * checker is only consulted for candidate sites.
+ *
+ * Width copies (SC6001) are not found here: the lowering knows where it
+ * copied, and width-copies.ts reports from the lowered program. The
+ * binding scans below (bindingIdentityUse, bindingWrite, assertionViewCopy)
+ * remain what the lowering asks when it decides how to lower a binding.
  */
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
+  islandValueCopyDivergenceDiag,
   keyOrderDivergenceDiag,
   localeCompareDivergenceDiag,
   unrelatedClassCastDivergenceDiag,
-  widthCopyDivergenceDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
 import { typeEquals, type IrType } from "../../ir/ir.js";
 import { isCollationCovered } from "./collation-repertoire.js";
 import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
+import { islandCall, islandMadeValue } from "./lower-node-island.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** How an identity-sensitive binding is used after a copy could replace it. */
 interface IdentityUse {
@@ -51,17 +57,12 @@ export function scanDivergences(
   // ── pass 1: syntactic collection ────────────────────────────────────
   const fnsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
   const calls: ts.CallExpression[] = [];
-  const typedDecls: ts.VariableDeclaration[] = [];
-  /** `const v = r as T` (also through `unknown`): the binding views `r`. */
-  const castDecls: { decl: ts.VariableDeclaration; source: ts.Expression; type: ts.TypeNode }[] =
-    [];
-  /** `v = r` into a binding declared elsewhere with a type. */
-  const assignments: ts.BinaryExpression[] = [];
-  /** `const list: T[] = [r, ...]`: each existing element is stored as T. */
-  const arrayDecls: { decl: ts.VariableDeclaration; element: ts.TypeNode }[] = [];
   const literals: ts.ObjectLiteralExpression[] = [];
   const observers: ts.Expression[] = [];
   const casts: (ts.AsExpression | ts.TypeAssertion)[] = [];
+  /** `const v: T = e`, collected only for a program that links Node islands. */
+  const annotatedDecls: ts.VariableDeclaration[] = [];
+  const islands = lowerer.nodeIslands !== null;
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
@@ -109,36 +110,13 @@ export function scanDivergences(
     } else if (ts.isForInStatement(node)) {
       observers.push(node.expression);
     } else if (ts.isVariableDeclaration(node)) {
-      if (
-        node.type !== undefined &&
-        node.initializer !== undefined &&
-        isExistingObjectExpression(node.initializer) &&
-        ts.isIdentifier(node.name)
-      )
-        typedDecls.push(node);
-      else if (node.initializer !== undefined && ts.isIdentifier(node.name)) {
-        const cast = castView(node.initializer);
-        if (cast !== null && node.type === undefined) castDecls.push({ decl: node, ...cast });
-        const element = node.type === undefined ? undefined : arrayElementTypeNode(node.type);
-        if (
-          element !== undefined &&
-          ts.isArrayLiteralExpression(node.initializer) &&
-          node.initializer.elements.nodes.some(isExistingObjectExpression)
-        )
-          arrayDecls.push({ decl: node, element });
-      }
+      if (islands && node.type !== undefined && node.initializer !== undefined)
+        annotatedDecls.push(node);
     } else if (ts.isObjectLiteralExpression(node)) {
       if (node.properties.nodes.length >= 1 && node.properties.nodes.every(isPlainProperty))
         literals.push(node);
     } else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
       casts.push(node);
-    } else if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isIdentifier(node.left) &&
-      isExistingObjectExpression(node.right)
-    ) {
-      assignments.push(node);
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -152,131 +130,6 @@ export function scanDivergences(
   };
   // Iterative: absurdly deep nesting must reach the lowering's own fence.
   for (const sf of own) ts.walkPreorder(sf, visit);
-
-  // ── width copies: writes or identity comparisons through a copy ─────
-  const usesByFn = new Map<ts.FunctionLikeDeclaration, (IdentityUse | null)[]>();
-  const identityUsesOf = (fn: ts.FunctionLikeDeclaration): (IdentityUse | null)[] => {
-    let uses = usesByFn.get(fn);
-    if (uses === undefined) {
-      uses = fn.parameters.nodes.map((p) =>
-        ts.isIdentifier(p.name) && fn.body !== undefined ? identityUse(fn.body, p.name.text) : null,
-      );
-      usesByFn.set(fn, uses);
-    }
-    return uses;
-  };
-  for (const call of calls) {
-    const name = calleeName(call);
-    if (name === null) continue;
-    const candidates = fnsByName.get(name);
-    if (candidates === undefined) continue;
-    if (!candidates.some((fn) => identityUsesOf(fn).some((u) => u !== null))) continue;
-    const signature = safely(() => checker.getResolvedSignature(call));
-    if (signature === undefined) continue;
-    const decl = safely(() => signature.declaration);
-    if (decl === undefined || !candidates.includes(decl as ts.FunctionLikeDeclaration)) continue;
-    const fn = decl as ts.FunctionLikeDeclaration;
-    const uses = identityUsesOf(fn);
-    call.arguments.nodes.forEach((arg, i) => {
-      const use = uses[i];
-      const param = fn.parameters.nodes[i];
-      if (use === null || use === undefined || param === undefined || param.type === undefined)
-        return;
-      if (!isExistingObjectExpression(arg)) return;
-      // The call kept the argument's layout: the callee has the value itself.
-      if (lowerer.layoutKeptNodes.has(arg)) return;
-      const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
-      if (copy === undefined || copy === null) return;
-      out.push(
-        widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "call", locOf(arg)),
-      );
-    });
-  }
-  for (const decl of typedDecls) {
-    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, name, decl.end);
-    if (use === null) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, decl.initializer!, decl.type!));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(
-        copy.source,
-        copy.target,
-        use.kind,
-        use.text,
-        "declaration",
-        locOf(decl.initializer!),
-      ),
-    );
-  }
-
-  for (const { decl, source, type } of castDecls) {
-    // An assertion of the global object keeps that object: no copy.
-    if (keptIdentityAssertion(lowerer, decl.initializer!) !== undefined) continue;
-    // The assertion kept the value's storage (`tagged as Labeled`, a union
-    // arm extracted for a projection): the binding holds the object itself,
-    // so there is no copy to report (lowerVarDecl marks the kept node).
-    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, name, decl.end, symbolMatcher(decl, checker), (target) =>
-      writeLandsOnCopy(lowerer, name, decl.initializer!, target),
-    );
-    // A write through a member the copy shares reaches the value, and a
-    // shadowing declaration's write is not a use of this binding; either
-    // leaves the copy unobservable.
-    if (use === null || (use.kind === "write" && use.copy === false)) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, source, type));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(copy.source, copy.target, use.kind, use.text, "cast", locOf(source)),
-    );
-  }
-  for (const assignment of assignments) {
-    const left = assignment.left as ts.Identifier;
-    const symbol = safely(() => checker.getSymbolAtLocation(left));
-    if (symbol === undefined) continue;
-    const decl = symbol.declarations.find(
-      (d): d is ts.VariableDeclaration => ts.isVariableDeclaration(d) && d.type !== undefined,
-    );
-    if (decl === undefined) continue;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = identityUse(scope, left.text, assignment.end);
-    if (use === null) continue;
-    const copy = safely(() => widthCopyBetween(lowerer, assignment.right, decl.type!));
-    if (copy === undefined || copy === null) continue;
-    out.push(
-      widthCopyDivergenceDiag(
-        copy.source,
-        copy.target,
-        use.kind,
-        use.text,
-        "declaration",
-        locOf(assignment.right),
-      ),
-    );
-  }
-  for (const { decl, element } of arrayDecls) {
-    const name = (decl.name as ts.Identifier).text;
-    const scope = enclosingScope(decl);
-    if (scope === undefined) continue;
-    const use = elementWrite(scope, name, decl.end);
-    if (use === null) continue;
-    for (const item of (decl.initializer as ts.ArrayLiteralExpression).elements.nodes) {
-      if (!isExistingObjectExpression(item)) continue;
-      const copy = safely(() => widthCopyBetween(lowerer, item, element));
-      if (copy === undefined || copy === null) continue;
-      out.push(
-        widthCopyDivergenceDiag(copy.source, copy.target, "write", use, "element", locOf(item)),
-      );
-      break;
-    }
-  }
 
   // ── key order: a reordered literal that reaches an order observer ───
   // Local flow only: the observer's argument is the literal itself, or a
@@ -406,7 +259,107 @@ export function scanDivergences(
     }
   }
 
+  // ── SC6007: a value a Node island made, copied by a checked conversion ──
+  // An island object or array that meets a native array or record type is
+  // read member by member into a native value. The compiler sees the
+  // conversion where its operand is an island read or call (or a `const` of
+  // one): an assertion, a typed binding of an `any`, a typed parameter of a
+  // callback passed to an island call that the callback writes through or
+  // compares, and an island Map or Set declared with a native array or
+  // record as a member type (the collection stays the island's; each key or
+  // value read from it is converted).
+  if (islands) {
+    const copy = (
+      typeAt: ts.Node,
+      site: "assertion" | "binding" | "parameter",
+      at: ts.Node,
+    ): void => {
+      const target =
+        site === "parameter"
+          ? checker.getTypeAtLocation(typeAt)
+          : checker.getTypeFromTypeNode(typeAt as ts.TypeNode);
+      if (!copiesIslandValue(lowerer, lowerer.mapTypeOf(target))) return;
+      out.push(islandValueCopyDivergenceDiag(checker.typeToString(target), site, locOf(at)));
+    };
+    for (const cast of casts)
+      safely(() => {
+        if (islandMadeValue(lowerer, cast.expression)) copy(cast.type, "assertion", cast);
+      });
+    for (const decl of annotatedDecls)
+      safely(() => {
+        const init = withoutParentheses(decl.initializer!);
+        // An assertion in the initializer is the conversion, reported above.
+        if (ts.isAsExpression(init) || ts.isTypeAssertion(init)) return;
+        if (islandMadeValue(lowerer, init)) copy(decl.type!, "binding", decl);
+      });
+    const reported = new Set<ts.Node>();
+    for (const call of calls)
+      safely(() => {
+        if (!islandCall(lowerer, call)) return;
+        const declared = checker.getTypeAtLocation(call);
+        const made = checker.getAwaitedType(declared) ?? declared;
+        const collection = lowerer.mapTypeOf(made);
+        if (
+          collection !== null &&
+          ((collection.kind === "map" &&
+            (copiesIslandValue(lowerer, collection.key) ||
+              copiesIslandValue(lowerer, collection.value))) ||
+            (collection.kind === "set" && copiesIslandValue(lowerer, collection.elem)))
+        )
+          out.push(
+            islandValueCopyDivergenceDiag(checker.typeToString(made), "members", locOf(call)),
+          );
+        for (const arg of call.arguments.nodes) {
+          const fn = callbackDeclaration(lowerer, arg);
+          if (fn === null) continue;
+          for (const param of fn.parameters.nodes) {
+            if (!ts.isIdentifier(param.name) || reported.has(param)) continue;
+            if (!parameterIdentityUse(fn, param.name.text)) continue;
+            reported.add(param);
+            copy(param, "parameter", param);
+          }
+        }
+      });
+  }
+
   return out;
+}
+
+/** Whether the checked conversion of an island object to `target` builds a
+ * native value from its members: an array, a tuple, a record with a typed
+ * member, or a union with such an arm. A target that stays checked-dynamic
+ * keeps the island's object. */
+function copiesIslandValue(lowerer: Lowerer, target: IrType | null): boolean {
+  if (target === null) return false;
+  if (target.kind === "array") return true;
+  if (target.kind === "record") return !keepsIdentityView(lowerer, target);
+  if (target.kind !== "union") return false;
+  const def = lowerer.unions.get(target.unionId);
+  return def !== undefined && def.arms.some((arm) => copiesIslandValue(lowerer, arm));
+}
+
+/** The program function an argument passes: a function expression, or a
+ * name that resolves to a function declaration or, through `const`
+ * bindings, to a function expression. */
+function callbackDeclaration(
+  lowerer: Lowerer,
+  arg: ts.Expression,
+  depth = 0,
+): ts.FunctionLikeDeclaration | null {
+  const e = withoutParenthesesTypeWrappers(arg);
+  if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return e;
+  if (!ts.isIdentifier(e) || depth >= 4) return null;
+  const d = (lowerer.resolveValueSymbol(e) ?? lowerer.checker.getSymbolAtLocation(e))
+    ?.valueDeclaration;
+  if (d === undefined) return null;
+  if (ts.isFunctionDeclaration(d)) return d.body === undefined ? null : d;
+  if (
+    !ts.isVariableDeclaration(d) ||
+    d.initializer === undefined ||
+    (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return callbackDeclaration(lowerer, d.initializer, depth + 1);
 }
 
 /** Whether the binding `decl` declares is used in a way a field copy would
@@ -752,74 +705,6 @@ function castView(expr: ts.Expression): { source: ts.Expression; type: ts.TypeNo
     break;
   }
   return isExistingObjectExpression(inner) ? { source: inner, type } : null;
-}
-
-/** The element type node of `T[]`, `readonly T[]` or `Array<T>`. */
-function arrayElementTypeNode(node: ts.TypeNode): ts.TypeNode | undefined {
-  if (ts.isTypeOperatorNode(node)) node = node.type;
-  if (ts.isArrayTypeNode(node)) return node.elementType;
-  if (
-    ts.isTypeReferenceNode(node) &&
-    ts.isIdentifier(node.typeName) &&
-    (node.typeName.text === "Array" || node.typeName.text === "ReadonlyArray") &&
-    node.typeArguments?.nodes.length === 1
-  )
-    return node.typeArguments.nodes[0];
-  return undefined;
-}
-
-/** The first write through an element of the array binding `name`
- * (`list[i].p = v`, or through a for-of variable over it) after `from`. */
-function elementWrite(root: ts.Node, name: string, from: number): string | null {
-  const throughElement = (node: ts.Expression): boolean => {
-    let cur = node;
-    while (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
-      const inner = cur.expression;
-      if (ts.isElementAccessExpression(inner) && ts.isIdentifier(inner.expression))
-        return inner.expression.text === name;
-      cur = inner;
-    }
-    return false;
-  };
-  let found: string | null = null;
-  ts.walkPreorder(root, (node) => {
-    if (found !== null) return "stop";
-    if (node.end <= from) return "skip";
-    let target: ts.Expression | undefined;
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    )
-      target = node.left;
-    else if (
-      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-      (node.operator === ts.SyntaxKind.PlusPlusToken ||
-        node.operator === ts.SyntaxKind.MinusMinusToken)
-    )
-      target = node.operand;
-    if (target !== undefined && throughElement(target)) {
-      found = ts.getTextOfNode(target);
-      return "stop";
-    }
-    if (
-      ts.isForOfStatement(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === name &&
-      ts.isVariableDeclarationList(node.initializer)
-    ) {
-      const binding = node.initializer.declarations.nodes[0]?.name;
-      if (binding !== undefined && ts.isIdentifier(binding)) {
-        const use = identityUse(node.statement, binding.text);
-        if (use?.kind === "write") {
-          found = use.text;
-          return "stop";
-        }
-      }
-    }
-    return undefined;
-  });
-  return found;
 }
 
 function testsInstanceof(root: ts.Node, name: string): boolean {

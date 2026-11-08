@@ -1,3 +1,4 @@
+import { refuseCallbackThis } from "./callback-arg.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
 import {
@@ -372,6 +373,14 @@ function lowerStreamCallback(
   const { shapes, funcType } = lowerer.lambdaSignature(node);
   if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
     lowerer.unsupported("SC1090", node, `async stream '${which}' callbacks`);
+  }
+  // The stream calls the closure with the parameters it names.
+  if (funcType.rest === true || lowerer.typedArgumentsLambdas.has(node)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `a stream '${which}' callback that takes a rest parameter or reads 'arguments' (name the parameters the callback uses)`,
+    );
   }
   if (funcType.params.length > fullTuple.length) {
     lowerer.noLowering(
@@ -1072,6 +1081,14 @@ function parseStreamOptions(
             "write the callback inline (method shorthand or an inline function/arrow), or pass a function value",
           );
         }
+        // A callback written in place is bound to the stream; a value is
+        // called through the function boundary, without one.
+        refuseCallbackThis(
+          lowerer,
+          valueNode,
+          `the ${ctorName} option '${name}' as a function value`,
+          "the stream",
+        );
         present.set(
           name,
           lowerStreamCallbackValue(lowerer, ctorName, name, valueNode, tuples[name]!.length),
@@ -3891,7 +3908,7 @@ function pipelineStageFunction(lowerer: Lowerer, node: ts.Expression): StageFunc
   const decl = bodies[0]!;
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return null;
   if (ts.isFunctionDeclaration(decl)) {
-    return bindingNeverReassigned(lowerer, symbol, decl, resolve) ? decl : null;
+    return bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, resolve) ? decl : null;
   }
   if (
     ts.isVariableDeclaration(decl) &&

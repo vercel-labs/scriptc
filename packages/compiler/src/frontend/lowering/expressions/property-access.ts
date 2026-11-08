@@ -33,7 +33,12 @@ import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
-import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
+import {
+  argumentCountSlot,
+  contextualCallCount,
+  handedWithoutCallCount,
+  usedAsValue,
+} from "../argument-counts.js";
 import {
   checkedPrivateValue,
   localPrivateBrandClass,
@@ -65,6 +70,7 @@ import {
 import {
   isGenericCallableMemberType,
   isLegacyUrlSymbol,
+  isModuleConstantsType,
   isOsConstantsType,
   isParseArgsDynTypeName,
 } from "../../type-mapper.js";
@@ -224,7 +230,7 @@ import { constructorStaticValue, objectFreezeValue } from "../builtin-statics.js
 import { lowerBufferPrototypeMember, lowerBufferPrototypeObject } from "../containers/bytes.js";
 import { lowerNetAddressStaticRead } from "../builtins/net-address.js";
 import { STATS_TYPE_TESTS } from "../builtins/filesystem.js";
-import { arrayValueRead, arrayValueType } from "../array-values.js";
+import { arrayValueRead, arrayValueType, unionArmsLength, unionArmsView } from "../array-values.js";
 import { lowerClassMethodValue } from "../class-method-values.js";
 import { reflectMemberValue } from "../builtins/reflection.js";
 import {
@@ -305,6 +311,28 @@ function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpress
     }
     return false;
   });
+}
+
+/** A member of module.enableCompileCache()'s result (or of its options
+ * object), which stays the checked-dynamic object the runtime built. */
+function isCompileCacheDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!["status", "message", "directory", "portable"].includes(expr.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+  return (
+    !!symbol &&
+    symbol.declarations.some((declaration) => {
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+      const parent = declaration.parent;
+      if (!ts.isInterfaceDeclaration(parent)) return false;
+      if (!["EnableCompileCacheResult", "EnableCompileCacheOptions"].includes(parent.name.text))
+        return false;
+      for (let node: ts.Node | undefined = parent.parent; node; node = node.parent) {
+        if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name))
+          return node.name.text === "module" || node.name.text === "node:module";
+      }
+      return false;
+    })
+  );
 }
 
 function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
@@ -910,6 +938,15 @@ export function lowerPropertyAccessExpr(
             "SC1090",
             expr,
             "'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call)",
+          );
+        }
+        // Handed to untyped code, or where no one function type is
+        // expected, the expression is called with any number of arguments.
+        if (ts.isFunctionExpression(fn) && handedWithoutCallCount(lowerer, fn)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses)",
           );
         }
         // A top-level declaration also used as a value reads the count its
@@ -1577,12 +1614,20 @@ export function lowerPropertyAccessExpr(
   // os.constants members vary by platform (the declared groups list
   // every platform's names): a number member reads as `number |
   // undefined`, like an array element, and a group stays checked.
-  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer);
+  const osConstants = isOsConstantsType(lowerer.typeOf(expr.expression), lowerer.osConstantsCtx());
+  // module.constants.compileCacheStatus has the same four numbers
+  // everywhere: a member reads as the number it is declared to be.
+  const moduleConstants = isModuleConstantsType(
+    lowerer.typeOf(expr.expression),
+    lowerer.osConstantsCtx(),
+  );
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
+    isCompileCacheDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
+    moduleConstants ||
     // A record, not the Lowerer itself: the compiler lowers its own source,
     // and a class instance does not width-coerce to this shape.
     isLegacyUrlSymbol(lowerer.checker.getSymbolAtLocation(expr.name), {
@@ -1611,6 +1656,11 @@ export function lowerPropertyAccessExpr(
       if (osConstants) {
         return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64"
           ? lowerer.coerceToExpected(read, lowerer.withUndefinedArm(F64))
+          : read;
+      }
+      if (moduleConstants) {
+        return lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64"
+          ? lowerer.coerceToExpected(read, F64)
           : read;
       }
       return lowerer.maybeNarrow(read, expr);
@@ -3390,6 +3440,19 @@ export function lowerIntrinsicProperty(
       receiver = helper
         ? lowerer.checkedNarrowCall(helper, receiver, present, locOf(expr.expression))
         : lowerer.maybeNarrow(receiver, expr.expression);
+    }
+
+    // A union of tuples and arrays the checker reads as one array: the
+    // length of the arm the value holds, read in place (unionArmsView).
+    if (kind === "array") {
+      const view = unionArmsView(
+        lowerer,
+        expr.expression,
+        receiver,
+        expected,
+        locOf(expr.expression),
+      );
+      if (view) return unionArmsLength(lowerer, view, locOf(expr));
     }
 
     // A CHECKED-DYNAMIC value behind an array-typed checker spelling
@@ -5255,7 +5318,7 @@ function readOnlyAccess(access: ts.PropertyAccessExpression): boolean {
  * member (ClassInfo.erasedFields): JavaScript emits no field for it, so
  * the name is an own property only when something assigned one, and a
  * real field of the same name anywhere on the chain owns the storage. */
-function erasedDeclareField(lowerer: Lowerer, className: string, field: string): boolean {
+export function erasedDeclareField(lowerer: Lowerer, className: string, field: string): boolean {
   const start = lowerer.classes.get(className) ?? lowerer.flushDeferredClass(className);
   for (let info = start ?? null; info; info = info.base) {
     if (info.fields.has(field)) return false;

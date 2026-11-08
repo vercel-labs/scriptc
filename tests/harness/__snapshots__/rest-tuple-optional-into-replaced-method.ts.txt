@@ -1,0 +1,6 @@
+rest-tuple-optional-into-replaced-method.ts:16:26 - error SC1090: rest tuple 'args' with optional positions used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on) is not supported yet
+
+  15 | function emit(target: Printer, ...args: [label: string, count?: number]): string {
+  16 |   return target.print(...args);
+     |                          ^~~~
+  17 | }

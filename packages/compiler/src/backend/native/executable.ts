@@ -174,6 +174,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
   // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
   unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
+  // node:module's compile cache family (scr_module_cache.c).
+  unit((u) => u.opts.moduleCompileCache === true, "scr_module_cache.c"),
   // The BYTE-data spellings of the options write and fs.promises.writeFile
   // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
   // program that writes no byte payload keeps both objects unchanged.
@@ -493,7 +495,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
   // A native AbortSignal or AbortController crossing into an island: the
   // signal's twin there follows it through the signal unit's watcher list.
   unit(
@@ -505,6 +511,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // The stderr report of a deferred diagnostic that fires
+  // (ir/deferred-fence.ts).
+  unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -564,6 +573,9 @@ const RUNTIME_DEFINES: readonly {
   // spawnargs); a program that never reads `.error` keeps the default build.
   { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {

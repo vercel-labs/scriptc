@@ -194,16 +194,49 @@ export function renderConfigWarnings(
   );
 }
 
+/** A build renders at most this many warnings with their source lines. A
+ * large program can copy at hundreds of conversions (SC6001), and a wall
+ * of frames hides the count that matters. */
+export const WARNINGS_RENDERED = 25;
+
+/** A build's SC6201 warning: the program fails at start-up, as under Node. */
+export function renderStartupWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    "\n\n1 warning: the program compiled, but it fails at start-up, as it does under Node."
+  );
+}
+
 export function renderWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,
   opts: RenderOptions = {},
 ): string {
   const n = diags.filter((d) => !isNodeIslandNoteCode(d.code)).length;
-  const rendered = renderDiagnostics([...diags], sourceTextByFile, opts);
+  // Notes always render; warnings past the limit are counted by code.
+  const shown: ScrDiagnostic[] = [];
+  const hidden = new Map<string, number>();
+  let warnings = 0;
+  for (const d of diags) {
+    if (isNodeIslandNoteCode(d.code) || warnings++ < WARNINGS_RENDERED) shown.push(d);
+    else hidden.set(d.code, (hidden.get(d.code) ?? 0) + 1);
+  }
+  const rendered = renderDiagnostics(shown, sourceTextByFile, opts);
   if (n === 0) return rendered;
+  const rest = n - Math.min(n, WARNINGS_RENDERED);
+  const more =
+    rest === 0
+      ? ""
+      : `\n\n${rest} more warning${rest === 1 ? "" : "s"} not shown (${[...hidden]
+          .map(([code, count]) => `${code} ×${count}`)
+          .join(", ")}); 'scriptc coverage --print=diagnostics' lists every site.`;
   return (
     rendered +
+    more +
     `\n\n${n} warning${n === 1 ? "" : "s"}: the program compiled, but ${n === 1 ? "this site" : "these sites"} can behave differently from Node.`
   );
 }

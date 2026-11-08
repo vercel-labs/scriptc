@@ -57,6 +57,8 @@ export interface NativeLinkFeatures {
   /** existsSync over a path value that is not statically a string:
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -69,6 +71,12 @@ export interface NativeLinkFeatures {
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
+  /** The program holds a process output stream as a value, so it can
+   * replace the stream's write method. With Node islands it links
+   * scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c, which join the island's process.stdout.write and
+   * process.stderr.write to the program's write slots. */
+  stdioObject?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -194,6 +202,9 @@ export interface NativeLinkFeatures {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
   hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic links
+   * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
+  deferredFence?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

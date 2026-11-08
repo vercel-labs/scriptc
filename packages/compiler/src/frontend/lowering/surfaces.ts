@@ -1467,12 +1467,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.
@@ -2217,6 +2232,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // (builtinFenceHintOf).
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
+    },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
@@ -3215,6 +3260,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
     },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
+    },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.
     {
@@ -3319,6 +3373,22 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
 /** The `length` Node's filesystem callback functions carry
  * (`fs.readFile.length` is 3). The value adapter reports it through
  * Function.length; the direct call accepts the arguments it always did. */

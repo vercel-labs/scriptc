@@ -16,6 +16,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_resolve_adopt queues a job; a promise resolved with itself is
+  // rejected, not thrown.
+  "promise.adopt",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
   // path that is not there is the answer false, and the probe reports no
   // error.
@@ -30,4 +33,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",
+  // Emitted inline: the value's tag, its signature literal's length and
+  // the literal's last four bytes. No runtime call but strlen.
+  "dyn.classValueHash",
+  // scr_module_compile_cache_dir answers the undefined value, and
+  // scr_module_constants builds two objects of constants once per thread;
+  // neither takes an argument, and running out of memory ends the process.
+  "module.compileCacheDir",
+  "module.compileCacheConstants",
 ]);

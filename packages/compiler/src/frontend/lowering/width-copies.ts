@@ -235,17 +235,34 @@ export function collectWidthCopies(
    * `checked`). They are measured, not reported: whether one copies is the
    * backend's record-view plan's answer. */
   checked = false,
-  /** The copies asked about; every copy when absent. A program none of
-   * whose helpers performs such a copy is not walked. */
-  only?: (copy: { kind: WidthCopyKind; routed: boolean }) => boolean,
+): WidthCopyFact[] {
+  return collectCopies(lowerer, functions, checked, false);
+}
+
+/** The copies that are refused where the program can tell them from their
+ * object, instead of reported (refuseObservedCopies). */
+function isNamedCopy(kind: WidthCopyKind, routed: boolean): boolean {
+  return kind === "clsWidth" || routed;
+}
+
+/** collectWidthCopies, or with `namedOnly` the named copies alone: a program
+ * none of whose helpers performs one is then not walked, and the program's
+ * observations are asked for those copies only. */
+function collectCopies(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  checked: boolean,
+  namedOnly: boolean,
 ): WidthCopyFact[] {
   const helpers = new Map<string, IrFunction>();
   for (const fn of functions) if (isConversionHelper(fn.name)) helpers.set(fn.name, fn);
   // A program that interned no conversion helper converts nothing by copy.
   if (helpers.size === 0 && !checked) return [];
   const scan = new CopyScan(helpers, functions, checked, (id) => lowerer.unions.get(id)?.arms);
-  if (only !== undefined && !scan.performs(only)) return [];
-  const sites = only === undefined ? scan.sites() : scan.sites().filter(only);
+  if (namedOnly && !scan.performsNamedCopy()) return [];
+  const sites = namedOnly
+    ? scan.sites().filter((site) => isNamedCopy(site.kind, site.routed))
+    : scan.sites();
   if (sites.length === 0) return [];
   // The program-wide observations are only needed for an aliasable copy.
   let observations: Observations | null = null;
@@ -282,10 +299,12 @@ class CopyScan {
     for (const fn of functions) if (!this.byName.has(fn.name)) this.byName.set(fn.name, fn);
   }
 
-  /** Whether a call of some helper performs a copy `wanted` answers yes
-   * for. Reads the helpers alone. */
-  performs(wanted: (copy: CopyEffect) => boolean): boolean {
-    for (const name of this.helpers.keys()) if (this.effectsOf(name).some(wanted)) return true;
+  /** Whether a call of some helper performs a named copy. Reads the
+   * helpers alone. */
+  performsNamedCopy(): boolean {
+    for (const name of this.helpers.keys())
+      for (const effect of this.effectsOf(name))
+        if (isNamedCopy(effect.kind, effect.routed)) return true;
     return false;
   }
 
@@ -1171,10 +1190,8 @@ class Observations {
  *   programs that convert that way and write another value of the layout
  *   behave as they do under Node. */
 export function refuseObservedCopies(lowerer: Lowerer, functions: IrFunction[]): void {
-  const named = (copy: { kind: WidthCopyKind; routed: boolean }): boolean =>
-    copy.kind === "clsWidth" || copy.routed;
   const refusedArms = new Set<string>();
-  for (const fact of collectWidthCopies(lowerer, functions, false, named)) {
+  for (const fact of collectCopies(lowerer, functions, false, true)) {
     const observed = fact.observed;
     if (observed === null) continue;
     if (fact.kind !== "clsWidth") {

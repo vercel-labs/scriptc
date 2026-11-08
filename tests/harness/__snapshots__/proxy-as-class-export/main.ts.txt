@@ -1,0 +1,8 @@
+proxy-as-class-export/gauge.ts:10:30 - error SC1090: a Proxy where an instance of class 'Gauge' is expected is not supported yet
+
+   9 | // An exported binding typed as the class and initialized with a Proxy.
+  10 | export const shared: Gauge = new Proxy({} as Gauge, {
+     |                              ^~~~~~~~~~~~~~~~~~~~~~~~
+  11 |   get(_target: any, key: string | symbol): any {
+
+  hint: a Proxy is not an instance of 'Gauge', so native code that holds the class cannot hold it. For a value that forwards to the current instance, export a binding that is reassigned ('export let') or a function that returns the instance

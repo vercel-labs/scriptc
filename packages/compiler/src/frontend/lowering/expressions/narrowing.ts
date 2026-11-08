@@ -64,6 +64,7 @@ import { assertsGlobalObject, extractionCopiesReference } from "../assertion-ide
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
+import { nativeProxyEntering, refuseProxyInTypedSlot } from "./native-proxy.js";
 import {
   assertedProbeAccessOf,
   convertingAssertion,
@@ -2080,6 +2081,8 @@ function checkedDynCast(
   inner: IrExpr,
   target: IrType,
 ): IrExpr {
+  const proxy = nativeProxyEntering(lowerer, inner);
+  if (proxy) refuseProxyInTypedSlot(lowerer, inner.loc, target, proxy.trapless);
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

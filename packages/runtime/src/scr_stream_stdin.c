@@ -31,8 +31,13 @@
  * destroy() on the stream destroys the unit's input.
  *
  * Linked only by programs that convert process.stdin (the streamStdin link
- * feature), so every other program's stream and stdin units are unchanged. */
+ * feature), so every other program's stream and stdin units are unchanged.
+ * The end of a file's input needs the stream's private state, which the
+ * stream unit exports no entry for: adding one would change that unit's
+ * object, and with it every program that uses a stream. This unit reads the
+ * layout from scr_stream_private.h instead. */
 #include "scr_runtime.h"
+#include "scr_stream_private.h"
 
 static SCR_TL ScrStream *scr_stream_stdin = NULL; /* +1 until exit */
 static SCR_TL bool scr_stream_stdin_fed = false;      /* the error listener is registered with the unit */
@@ -46,11 +51,43 @@ static void scr_stream_stdin_follow(ScrStream *s, const char *event, void (*fn)(
   scr_str_release(name);
 }
 
+/* The end of a source that does not read again at its end. A Node socket
+ * follows its push(null) with a read(0), so its stream ends at once
+ * (scr_stream_push_null, where the 'readable' pass ends an empty stream);
+ * a Node file stream only pushes null, so a paused stream with nothing
+ * held emits 'readable' and ends at the next read, whoever makes it. A
+ * stream that flows, holds input or has an iteration waiting is read at
+ * its end in any case and takes the other path. */
+static bool scr_stream_stdin_push_null_unread(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  if (!st->has_r || st->destroyed || st->r.ended || st->r.flowing == 1 || st->r.length > 0 ||
+      st->r.next_waiter != NULL || st->r.in_read_sync || (st->r.encoded && st->r.dec_pending != 0)) {
+    return scr_stream_push_null(s);
+  }
+  st->r.reading = false;
+  st->r.ended = true;
+  st->r.need_readable = false;
+  st->r.emitted_readable = true;
+  ScrStr *name = scr_str_new("readable", 8);
+  (void)scr_emitter_emit_mixed((ScrEmitter *)s, name, NULL, 0);
+  scr_str_release(name);
+  if (!scr_exc_pending()) st->r.emitted_readable = false;
+  return false;
+}
+
+/* readable.read(0): takes nothing; a stream that ended with nothing held
+ * ends here. */
+static void scr_stream_stdin_read_zero(ScrStream *s) {
+  ScrDyn *zero = scr_dyn_new_num(0);
+  scr_dyn_release(scr_stream_read_dyn(s, zero));
+  scr_dyn_release(zero);
+}
+
 /* resume() after a file's input ended unread: Node's resume reads once
  * (read(0)), which ends a stream that holds nothing, flowing or not. */
 static void scr_stream_stdin_on_resume(ScrClosure *cb) {
   (void)cb;
-  if (scr_stream_stdin != NULL) scr_stream_read_zero(scr_stream_stdin);
+  if (scr_stream_stdin != NULL) scr_stream_stdin_read_zero(scr_stream_stdin);
 }
 
 /* A pull's answer from the unit: the next input, or NULL at its end. */
@@ -66,7 +103,7 @@ static void scr_stream_stdin_chunk(ScrBytes *chunk) {
      * not read again at the end. A paused stream with nothing held then
      * emits 'readable' and ends at the next read, where a pipe's stream
      * ends at once. */
-    (void)scr_stream_push_null_unread(s);
+    (void)scr_stream_stdin_push_null_unread(s);
     scr_stream_stdin_follow(s, "resume", scr_stream_stdin_on_resume);
     return;
   }

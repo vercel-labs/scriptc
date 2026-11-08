@@ -7050,38 +7050,6 @@ bool scr_stream_push_null(ScrStream *s) {
   return false;
 }
 
-/* The end of a source that does not read again at its end. A Node socket
- * follows its push(null) with a read(0), so its stream ends at once
- * (scr_stream_push_null, where the 'readable' pass ends an empty stream);
- * a Node file stream only pushes null, so a paused stream with nothing
- * held emits 'readable' and ends at the next read, whoever makes it. A
- * stream that flows, holds input or has an iteration waiting is read at
- * its end in any case and takes the other path. */
-bool scr_stream_push_null_unread(ScrStream *s) {
-  ScrStreamState *st = s->st;
-  if (!st->has_r || st->destroyed || st->r.ended || st->r.flowing == 1 || st->r.length > 0 ||
-      st->r.next_waiter != NULL || st->r.in_read_sync || (st->r.encoded && st->r.dec_pending != 0)) {
-    return scr_stream_push_null(s);
-  }
-  st->r.reading = false;
-  st->r.ended = true;
-  st->r.need_readable = false;
-  st->r.emitted_readable = true;
-  (void)scr_stream_emit0(s, "readable");
-  if (!scr_exc_pending()) st->r.emitted_readable = false;
-  return false;
-}
-
-/* readable.read(0): takes nothing; a stream that ended with nothing held
- * ends here. */
-void scr_stream_read_zero(ScrStream *s) {
-  ScrStreamState *st = s->st;
-  if (!st->has_r) return;
-  ScrEntryKind kind;
-  void *chunk = scr_stream_read_n_kind(s, 0, &kind);
-  if (chunk) scr_stream_entry_release_kind(st, chunk, kind);
-}
-
 /* unshift() after 'end': Node's readableAddChunk reports
  * ERR_STREAM_UNSHIFT_AFTER_END_EVENT through errorOrDestroy and adds
  * nothing. True when it did. */

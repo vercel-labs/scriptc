@@ -297,11 +297,6 @@ bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-/* The end of a source that does not read again at its end (a Node file
- * stream, unlike a socket): a paused stream with nothing held emits
- * 'readable' and ends at the next read. */
-bool scr_stream_push_null_unread(ScrStream *s);
-void scr_stream_read_zero(ScrStream *s); /* readable.read(0) */
 void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
 void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
 void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);

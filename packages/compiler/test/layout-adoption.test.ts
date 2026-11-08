@@ -5,12 +5,13 @@ import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
 /** The serialized IR of a program that must compile. */
-async function irOf(source: string): Promise<string> {
+async function irOf(source: string, tables?: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-layout-adoption-"));
   try {
     const entry = join(dir, "main.ts");
     const outPath = join(dir, "main.ir.json");
     await writeFile(entry, `export {};\n${source}`);
+    if (tables !== undefined) await writeFile(join(dir, "tables.ts"), tables);
     const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
@@ -192,4 +193,40 @@ test.each([
   ],
 ])("%s keeps its own layout", async (_name, source) => {
   expect(await irOf(source)).toContain(WIDTH_COPY);
+});
+
+// A module's tables behind a namespace import: the namespace names each
+// export it is asked for, so its tables are followed like named imports. A
+// namespace used as an object hands the module's tables to code that names
+// none of them.
+const SHED = `
+export interface Tool { readonly label: string; readonly grams?: number }
+export const awl = { label: "awl" } as const;
+export function same(left: Tool, right: Tool): boolean { return left === right; }
+`;
+
+test("a table reached through a namespace import that is only asked for members takes the layout", async () => {
+  const ir = await irOf(
+    `import * as shed from "./tables.ts";
+     console.log(shed.same(shed.awl, shed.awl), shed.awl.label);`,
+    SHED,
+  );
+  expect(ir).not.toContain(WIDTH_COPY);
+});
+
+test.each([
+  ["handed on", `console.log(shed.same(shed.awl, shed.awl), Object.keys(shed).length);`],
+  [
+    "destructured",
+    `const { awl, same } = shed;
+     console.log(same(awl, awl));`,
+  ],
+  [
+    "read by a computed name",
+    `const name: "awl" = "awl";
+     console.log(shed.same(shed[name], shed.awl));`,
+  ],
+])("a table of a module whose namespace is %s keeps its own layout", async (_name, body) => {
+  const ir = await irOf(`import * as shed from "./tables.ts";\n${body}`, SHED);
+  expect(ir).toContain(WIDTH_COPY);
 });

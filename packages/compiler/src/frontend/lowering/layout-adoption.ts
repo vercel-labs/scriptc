@@ -39,7 +39,7 @@
  *     are followed the same way: a nested literal may only flow into the
  *     type its slot has. A use this scan does not understand (an alias
  *     binding, a spread, a destructuring, a type query, a list read through
- *     the table's own type, a module imported as a whole) leaves the table
+ *     the table's own type, a module taken as a whole object) leaves the table
  *     as it is, and so does a table held by another table that keeps its
  *     own layout: a value typed by the literal could then reach a type this
  *     scan never saw;
@@ -139,13 +139,16 @@ export class LayoutAdoptions {
     const mentions: ts.Identifier[] = [];
     const compared: ts.Expression[] = [];
     const keyed: ts.Expression[] = [];
-    /** The modules the program takes as a whole object: a namespace import,
-     * `export *`, a dynamic `import()` or a `require()`; null stands for a
-     * module named at run time. */
+    /** The modules the program takes as a whole object: a namespace import
+     * used as an object, `export *`, a dynamic `import()` or a `require()`;
+     * null stands for a module named at run time. */
     const wholeModules: (ts.Expression | null)[] = [];
+    const spaces = namespaceImports(sources);
+    const spaceMentions: ts.Identifier[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isIdentifier(node)) {
         if (names.has(node.text)) mentions.push(node);
+        if (spaces.has(node.text)) spaceMentions.push(node);
         return;
       }
       observeIdentity(node, compared, keyed);
@@ -153,6 +156,7 @@ export class LayoutAdoptions {
       ts.forEachChild(node, visit);
     };
     for (const source of sources) if (!source.isDeclarationFile) visit(source);
+    this.namespacesTakenWhole(spaces, spaceMentions, wholeModules);
     for (const mention of mentions) {
       const table = this.tableOf(mention, tables);
       if (table === undefined) continue;
@@ -546,6 +550,68 @@ export class LayoutAdoptions {
       .some((argument) => this.mentions(argument, own, depth + 1));
   }
 
+  /** Adds to `whole` the modules whose namespace import the program uses as
+   * an object: handed on, enumerated, read by a computed name, destructured
+   * or exported. A namespace that is only asked for members (`ns.member`, a
+   * value or a type) names each export it reaches, and the scan follows
+   * those mentions like any other. */
+  private namespacesTakenWhole(
+    spaces: ReadonlyMap<string, ts.ImportDeclaration[]>,
+    mentions: readonly ts.Identifier[],
+    whole: (ts.Expression | null)[],
+  ): void {
+    if (spaces.size === 0) return;
+    const taken = new Set<ts.ImportDeclaration>();
+    const bindings = new Map<ts.Symbol, ts.ImportDeclaration>();
+    for (const declarations of spaces.values()) {
+      for (const declaration of declarations) {
+        const bound = declaration.importClause?.namedBindings;
+        const symbols =
+          bound !== undefined && ts.isNamespaceImport(bound) ? this.bindingSymbols(bound.name) : [];
+        if (symbols.length === 0) taken.add(declaration);
+        for (const symbol of symbols) bindings.set(symbol, declaration);
+      }
+    }
+    for (const mention of mentions) {
+      const parent = mention.parent;
+      if (parent === undefined || asksForMember(mention, parent)) continue;
+      const named = spaces.get(mention.text) ?? [];
+      // An export of the binding hands the namespace to every importer.
+      if (ts.isExportSpecifier(parent)) {
+        const source = ts.getSourceFileOfNode(mention);
+        for (const declaration of named)
+          if (ts.getSourceFileOfNode(declaration) === source) taken.add(declaration);
+        continue;
+      }
+      const symbols = this.bindingSymbols(mention);
+      // A name the checker cannot resolve may be any namespace of that name.
+      if (symbols.length === 0) for (const declaration of named) taken.add(declaration);
+      for (const symbol of symbols) {
+        const declaration = bindings.get(symbol);
+        if (declaration !== undefined) taken.add(declaration);
+      }
+    }
+    for (const declaration of taken) whole.push(declaration.moduleSpecifier);
+  }
+
+  /** The symbols an identifier stands for: the binding it names and, for an
+   * import, what the import resolves to. Empty when the checker has none. */
+  private bindingSymbols(name: ts.Identifier | undefined): ts.Symbol[] {
+    if (name === undefined) return [];
+    try {
+      const parent = name.parent;
+      const symbol =
+        parent !== undefined && ts.isShorthandPropertyAssignment(parent)
+          ? this.checker.getShorthandAssignmentValueSymbol(parent)
+          : this.checker.getSymbolAtLocation(name);
+      if (symbol === undefined) return [];
+      if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return [symbol];
+      return [symbol, this.checker.getAliasedSymbol(symbol)];
+    } catch {
+      return [];
+    }
+  }
+
   /** The source files of the modules the program takes as whole objects;
    * null when one of them is named at run time. */
   private sourcesOf(specifiers: readonly (ts.Expression | null)[]): Set<ts.SourceFile> | null {
@@ -816,14 +882,39 @@ function observeIdentity(node: ts.Node, compared: ts.Expression[], keyed: ts.Exp
   }
 }
 
-/** Notes the module a node takes as a whole object: `import * as ns`,
- * `export *`, `import("m")`, `require("m")`. */
+/** The namespace imports of the program (`import * as ns from "m"`), by the
+ * name each binds. */
+function namespaceImports(sources: readonly ts.SourceFile[]): Map<string, ts.ImportDeclaration[]> {
+  const spaces = new Map<string, ts.ImportDeclaration[]>();
+  for (const source of sources) {
+    if (source.isDeclarationFile) continue;
+    for (const statement of source.statements.nodes) {
+      if (!ts.isImportDeclaration(statement)) continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings === undefined || !ts.isNamespaceImport(bindings)) continue;
+      const named = spaces.get(bindings.name.text);
+      if (named === undefined) spaces.set(bindings.name.text, [statement]);
+      else named.push(statement);
+    }
+  }
+  return spaces;
+}
+
+/** Whether a mention of a namespace's name asks the namespace for a member
+ * (`ns.member`, `ns.Type`), or is no use of a namespace at all: the import
+ * that binds it, a member's or a property's own name. */
+function asksForMember(mention: ts.Identifier, parent: ts.Node): boolean {
+  if (ts.isPropertyAccessExpression(parent) || ts.isQualifiedName(parent)) return true;
+  if (ts.isNamespaceImport(parent) || ts.isImportSpecifier(parent) || ts.isImportClause(parent))
+    return true;
+  return ts.isPropertyAssignment(parent) && parent.name === mention;
+}
+
+/** Notes the module a node takes as a whole object: `export *`,
+ * `import("m")`, `require("m")`. A namespace import is judged by its uses
+ * (namespacesTakenWhole). */
 function wholeModule(node: ts.Node, modules: (ts.Expression | null)[]): void {
-  if (ts.isImportDeclaration(node)) {
-    const bindings = node.importClause?.namedBindings;
-    if (bindings !== undefined && ts.isNamespaceImport(bindings))
-      modules.push(node.moduleSpecifier);
-  } else if (ts.isExportDeclaration(node)) {
+  if (ts.isExportDeclaration(node)) {
     if (
       node.moduleSpecifier !== undefined &&
       (node.exportClause === undefined || ts.isNamespaceExport(node.exportClause))

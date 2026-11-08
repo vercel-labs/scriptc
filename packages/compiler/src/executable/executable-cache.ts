@@ -75,6 +75,9 @@ export interface EarlyExecutableNativeFeatures {
   fsFlags?: boolean;
   fsExistsValue?: boolean;
   moduleCompileCache?: boolean;
+  /** A function's inherited member shadowed by an own data property:
+   * SCR_FN_MEMBER_PROPS. */
+  fnMemberProps?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
@@ -115,6 +118,9 @@ export interface EarlyExecutableNativeFeatures {
   recordViewFrozen?: boolean;
   genBind?: boolean;
   genReceiver?: boolean;
+  /** The kept-source read of a record-to-record conversion:
+   * scr_record_source_get.c. Absent (false) otherwise. */
+  recordSourceGet?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;

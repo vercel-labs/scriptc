@@ -32,6 +32,7 @@ const features = {
   recordViewFrozen: false,
   genBind: false,
   genReceiver: false,
+  recordSourceGet: false,
   eventsOnceSignal: false,
   mime: false,
   largePages: false,

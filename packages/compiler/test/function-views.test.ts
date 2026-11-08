@@ -112,3 +112,109 @@ console.log(each(["a", "b"], plain).join(" "), ["c"].map((x) => x + "?").join(" 
   );
   expect(allViewTests(withoutView)).toEqual([]);
 });
+
+const PAYLOAD = `interface Payload { diff: string; path: string }
+type Show = (payload: Payload) => string;
+function loose(payload: any): string { return "loose " + JSON.stringify(payload); }
+function exact(payload: Payload): string { return "exact " + payload.diff; }
+function keep(show: Show): Show { return show; }
+`;
+
+test("a conversion to a wider parameter type returns the function a view forwards to", async () => {
+  const mod = await compileToIr(
+    `${PAYLOAD}const wide: (payload: any) => string = keep(loose);
+console.log(wide({}));
+`,
+  );
+  // One view of `Show` converts the parameter (loose's), and one adapter
+  // takes `Show` to a type whose parameter is untyped: its factory holds the
+  // one test, and the test hands back the function itself.
+  const tests = allViewTests(mod);
+  expect(tests).toHaveLength(1);
+  const factory = mod.functions.find((fn) => viewTests(fn).length === 1)!;
+  expect(factory.body[0]).toMatchObject({
+    kind: "if",
+    then: [{ kind: "return", value: { kind: "viewSource", adapter: tests[0]!.adapter } }],
+  });
+  expect(factory.body.at(-1)).toMatchObject({ kind: "return", value: { kind: "closure" } });
+  // The program boxes no function of the slot's type: the view has no mark.
+  expect(mod.functions.some((fn) => fn.boxesSource === true)).toBe(false);
+});
+
+test("a view boxes as the function it forwards to in a program that boxes its type", async () => {
+  const marked = (mod: IrModule): string[] =>
+    mod.functions.filter((fn) => fn.boxesSource === true).map((fn) => fn.name);
+  // Boxed by itself, and inside a record viewed at any.
+  const direct = await compileToIr(
+    `${PAYLOAD}const held: any = keep(loose);
+console.log(held({}));
+`,
+  );
+  expect(marked(direct)).toHaveLength(1);
+  const contained = await compileToIr(
+    `${PAYLOAD}const record: { show: Show } = { show: loose };
+const held: any = record;
+console.log(held.show({}));
+`,
+  );
+  expect(marked(contained)).toHaveLength(1);
+  // The view's body is the code of an adapting closure over the function.
+  const body = contained.functions.find((fn) => fn.boxesSource === true)!;
+  expect(body.captures?.[0]?.type).toMatchObject({ kind: "func", params: [{ kind: "dyn" }] });
+  // A typed program that holds the same view boxes nothing.
+  const typed = await compileToIr(
+    `${PAYLOAD}console.log(keep(loose)({ diff: "d", path: "p" }));
+`,
+  );
+  expect(marked(typed)).toEqual([]);
+  expect(allViewTests(typed)).toEqual([]);
+});
+
+test("a call through the slot's type, or of a function the slot's type is the type of, has no test", async () => {
+  // The slot's contract binds a call through its type.
+  const typedCall = await compileToIr(
+    `${PAYLOAD}const empty: any = {};
+try { console.log(keep(loose)(empty)); } catch (error) { console.log("threw"); }
+`,
+  );
+  expect(allViewTests(typedCall)).toEqual([]);
+  // No view: the function has the slot's parameter type.
+  const ownType = await compileToIr(
+    `${PAYLOAD}const wide: (payload: any) => string = keep(exact);
+try { console.log(wide({})); } catch (error) { console.log("threw"); }
+`,
+  );
+  expect(allViewTests(ownType)).toEqual([]);
+  expect(ownType.functions.some((fn) => fn.boxesSource === true)).toBe(false);
+});
+
+test("typed conversions of a parameter, one after the other, have no test", async () => {
+  // A function of a base class in a slot of a subclass, read at a slot of a
+  // further subclass: each step narrows what callers pass, so no caller
+  // can hand the function more than the slot's type admits.
+  const mod = await compileToIr(
+    `class Animal { name = "a"; }
+class Dog extends Animal { bark = "b"; }
+class Puppy extends Dog { age = 1; }
+function animal(a: Animal): string { return a.name; }
+function dogs(f: (d: Dog) => string): (d: Dog) => string { return f; }
+function puppies(f: (d: Dog) => string): (p: Puppy) => string { return f; }
+console.log(puppies(dogs(animal))(new Puppy()));
+`,
+  );
+  expect(allViewTests(mod)).toEqual([]);
+});
+
+test("a conversion to a wider parameter type converts a callable that crossed any itself", async () => {
+  // The slot holds the checked-dynamic boundary's view of the callable.
+  // The adapter to the untyped parameter asks for it and checks the
+  // callable into the wide type, so no call converts through the slot's.
+  const mod = await compileToIr(
+    `${PAYLOAD}const crossed: any = loose;
+const slot: { show: Show } = { show: crossed };
+const wide: (payload: any) => string = slot.show;
+console.log(wide({}));
+`,
+  );
+  expect(allViewTests(mod).map((test) => test.adapter)).toEqual([null]);
+});

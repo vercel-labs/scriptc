@@ -184,6 +184,9 @@ export interface CcOptions {
   /** A generator function that reads `this` (dyn.generatorThis): compiles
    * scr_gen_receiver.c. */
   genReceiver?: boolean;
+  /** A kept-source read of a record-to-record conversion: compiles
+   * scr_record_source_get.c. */
+  recordSourceGet?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -262,6 +265,10 @@ export interface CcOptions {
   /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
    * and constants: compiles scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
+   * data property (`fn.call = f`; that build of scr_json.c and
+   * scr_dyn_invoke.c). */
+  fnMemberProps?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;
@@ -508,6 +515,9 @@ export interface LibArchiveOptions {
   dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
+  /** See CcOptions.recordSourceGet: the kept-source read of a
+   * record-to-record conversion (scr_record_source_get.c). */
+  recordSourceGet?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
@@ -529,6 +539,11 @@ export interface LibArchiveOptions {
   /** See CcOptions.mutableBuffers: the archive carries the buffer views
    * registry, scr_js_buffers.c. */
   mutableBuffers?: boolean;
+  /** See CcOptions.fnMemberProps: the archive carries the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so an
+   * exported function that defines one of its own call/apply/bind members
+   * runs the write the way the executable lane does. */
+  fnMemberProps?: boolean;
 }
 
 export interface NativeArtifactDependency {

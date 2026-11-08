@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9644-variadic-untyped-callers/callers.mjs",
+  "<repo>/tests/corpus/9644-variadic-untyped-callers/main.ts"
+ ],
+ "diags": []
+}

@@ -146,6 +146,9 @@ static void scr_sym_registry_cleanup(void) {
   g_sym_registry = NULL;
   while (s) {
     ScrSym *next = s->reg_next;
+    /* The registry's reference to the symbol's box (scr_dyn_new_symbol);
+     * the box holds the symbol, so the symbol outlives this release. */
+    if (s->box) scr_dyn_release(s->box);
     scr_sym_release(s);
     s = next;
   }
@@ -187,6 +190,11 @@ ScrDyn *scr_dyn_new_symbol(ScrSym *value) {
   if (value->box) return scr_dyn_retain(value->box);
   ScrDyn *box = scr_dyn_symbol_ref(scr_sym_retain(value), scr_sym_release_box, scr_sym_to_string, scr_sym_desc);
   value->box = box;
+  /* A registered symbol lives until its thread exits, and so does its box:
+   * the registry keeps a reference (dropped by scr_sym_registry_cleanup),
+   * so a comparison against a `Symbol.for` constant does not build and
+   * free a box each time. */
+  if (value->reg_key) scr_dyn_retain(box);
   return box;
 }
 

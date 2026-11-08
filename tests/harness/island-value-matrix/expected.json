@@ -534,13 +534,7 @@
   "n2i2n/N.is#odd": "refused:SC2020"
  },
  "bigint.u": {},
- "bigint.w": {
-  "i2n/T.json#zero": "refused:SC1090",
-  "i2n/T.json#neg": "refused:SC1090",
-  "i2n/T.json#p64": "refused:SC1090",
-  "i2n/T.json#n127": "refused:SC1090",
-  "i2n/T.json#odd": "refused:SC1090"
- },
+ "bigint.w": {},
  "bool.control.-": {},
  "bool.p": {},
  "bool.u": {},
@@ -2597,12 +2591,7 @@
   "i2n/T.json#nodesc": "refused:SC1090"
  },
  "sym.u": {},
- "sym.w": {
-  "i2n/T.json#local": "refused:SC1090",
-  "i2n/T.json#registered": "refused:SC1090",
-  "i2n/T.json#wellknown": "refused:SC1090",
-  "i2n/T.json#nodesc": "refused:SC1090"
- },
+ "sym.w": {},
  "thenable.p": {
   "i2n/U.forin": "unsupported",
   "clo-i2n/U.forin": "unsupported"

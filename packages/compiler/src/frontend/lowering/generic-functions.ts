@@ -25,6 +25,8 @@ import {
 import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { InternalCompilerError } from "../../errors.js";
+import { noteCrashSite } from "../../diagnostics/crash-site.js";
 import { typeKey } from "../type-mapper.js";
 import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
@@ -3686,17 +3688,43 @@ export function internImplicitInstanceOr(
       rollback();
       return null;
     }
-    const types: IrType[] = shapes.map((shape) => shape.type);
-    if (info.member?.kind === "method")
-      types.unshift({ kind: "object", className: info.member.cls.def.name });
-    const fn = lowerer.deferToRuntimeFence(diagsBefore, info.decl, {
-      kind: "function",
-      name: inst.name,
-      returnType: inst.returnType,
-      params: types.map((type, index) => ({ localId: `p.${index}`, name: `p${index}`, type })),
-    });
-    if (!fn) throw e;
-    lowerer.implicitFns.push(fn);
+    // A body refused outside its statements (a concise arrow body, a
+    // parameter default) lowers once more with its reads through the bound
+    // parameters typed by what the bindings declare, as a refused statement
+    // does (lowerStmts); a second lowering that fails too, in any way,
+    // leaves the fence the first one makes.
+    let retried = false;
+    if (lowerer.typedRetryApplies(info.decl, argTypes)) {
+      const firstAttempt = lowerer.diags.slice(diagsBefore);
+      lowerer.dropAttemptDiags(diagsBefore);
+      lowerer.setBindingTypedRetry(true);
+      // The body is lowering again: a call of this instance from inside it
+      // (recursion) finds it in progress, as in the first lowering.
+      inst.implicitState = "lowering";
+      try {
+        lowerer.implicitFns.push(lowerer.lowerGenericInstance(info, inst));
+        retried = true;
+      } catch (again) {
+        if (again instanceof InternalCompilerError) noteCrashSite(again, () => locOf(info.decl));
+        inst.implicitState = "failed";
+        lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt);
+      } finally {
+        lowerer.setBindingTypedRetry(false);
+      }
+    }
+    if (!retried) {
+      const types: IrType[] = shapes.map((shape) => shape.type);
+      if (info.member?.kind === "method")
+        types.unshift({ kind: "object", className: info.member.cls.def.name });
+      const fn = lowerer.deferToRuntimeFence(diagsBefore, info.decl, {
+        kind: "function",
+        name: inst.name,
+        returnType: inst.returnType,
+        params: types.map((type, index) => ({ localId: `p.${index}`, name: `p${index}`, type })),
+      });
+      if (!fn) throw e;
+      lowerer.implicitFns.push(fn);
+    }
   } finally {
     lowerer.diagSink = previousSink;
   }

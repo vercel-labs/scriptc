@@ -389,6 +389,7 @@ import { probeNodeRequireRefusal } from "../npm.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticAccessorExport, npmStaticPackageOfPath } from "../npm-static.js";
 import { constructorStaticValue } from "./builtin-statics.js";
+import { packageBuiltWithoutMember } from "./package-built-values.js";
 import { fenceNodeModuleMutation } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
@@ -918,6 +919,22 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       // lowered once (a poisoned generic instance) and its own diagnostics
       // can miss the failure's cause.
       let firstAttempt: ScrDiagnostic[] | null = null;
+      // A JavaScript statement of an implicit-any instance body that is
+      // refused lowers once more with its reads through the bound
+      // parameters typed by what the bindings declare (bindingTypedRetry),
+      // when it has such a read: the statement that would become a fence
+      // compiles where that typing is what the refused form lacked. Where
+      // the second lowering fails too, in any way, the statement is the
+      // fence its first lowering makes, with that lowering's diagnostics
+      // and the fences it recorded for the statements nested in it.
+      const outBefore = out.length;
+      const fencesBefore = lowerer.runtimeFences.length;
+      let typedRetry: {
+        error: unknown;
+        diags: ScrDiagnostic[];
+        fences: ScrDiagnostic[];
+        running: boolean;
+      } | null = null;
       try {
         for (let attempt = 0; ; attempt++) {
           const hits = new Set<number>();
@@ -927,6 +944,15 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             );
             break;
           } catch (e) {
+            if (typedRetry !== null && typedRetry.running) {
+              typedRetry.running = false;
+              lowerer.setBindingTypedRetry(false);
+              if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(stmt));
+              lowerer.restoreFirstAttemptDiags(diagsBefore, typedRetry.diags);
+              lowerer.runtimeFences.length = fencesBefore;
+              for (const fence of typedRetry.fences) lowerer.runtimeFences.push(fence);
+              throw typedRetry.error;
+            }
             // Localized failure's statement commit point (design §3.3): a
             // degradable type failure at a local, loop variable or module
             // global degrades that type and the statement lowers again.
@@ -937,6 +963,28 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
               if (attempt > 0) lowerer.restoreFirstAttemptDiags(diagsBefore, firstAttempt!);
               return e;
             };
+            if (
+              deferFences &&
+              attempt === 0 &&
+              e instanceof PoisonError &&
+              lowerer.diagSink === null &&
+              out.length === outBefore &&
+              lowerer.typedRetryApplies(stmt)
+            ) {
+              typedRetry = {
+                error: e,
+                diags: firstAttempt,
+                fences: lowerer.runtimeFences.slice(fencesBefore),
+                running: true,
+              };
+              lowerer.dropAttemptDiags(diagsBefore);
+              lowerer.runtimeFences.length = fencesBefore;
+              for (const [symbol, local] of tdzBefore)
+                if (!lowerer.ctx.tdzPredeclared.has(symbol))
+                  lowerer.ctx.tdzPredeclared.set(symbol, local);
+              lowerer.setBindingTypedRetry(true);
+              continue;
+            }
             if (attempt >= MAX_DEGRADE_RETRIES || deferFences) throw giveUp();
             const slot = lowerer.degradeAtCommit(e, STATEMENT_SLOTS);
             // Pushed-down types the failed attempt mapped widen to the
@@ -1017,6 +1065,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           if (fence) out.push(fence);
         }
       } finally {
+        if (typedRetry !== null && typedRetry.running) lowerer.setBindingTypedRetry(false);
         lowerer.failureTouches.pop();
       }
     }
@@ -6386,6 +6435,22 @@ export function bindPatternTarget(
       : (lowerer.runtimeOptionalBindingType(name, lowerer.irTypeOf(name)) ??
         lowerer.irTypeOf(name));
     if (type.kind === "void") lowerer.badType(name, lowerer.typeOf(name));
+    // Inside a generic instance the checker types a pattern's names from
+    // the DECLARED source type, which still mentions the type parameters,
+    // while the value comes from the instance's own parameter: the record
+    // the call's resolved signature gave. A member the declared type only
+    // holds through a type parameter (a mapped type over a template of it)
+    // is missing from the mapped declared type and present in the value.
+    // The binding is the value's record then: a copy into the narrower one
+    // would answer undefined for a member the object holds.
+    if (
+      lowerer.typeParamBindings !== null &&
+      type.kind === "record" &&
+      value.type.kind === "record" &&
+      value.type.shapeId !== type.shapeId &&
+      refinesDeclaredRecord(lowerer, value.type, type)
+    )
+      type = value.type;
     // Array destructuring positions are ordinary indexed reads. When the
     // checker was built without noUncheckedIndexedAccess it still spells
     // the binding as the bare element type, but the runtime value carries
@@ -6428,6 +6493,28 @@ export function bindPatternTarget(
     undefined,
     allowDynObject,
   );
+}
+
+/** Whether record `stored` holds every field of record `declared` at the
+ * same type and more fields besides, both plain records (no tuple, no
+ * index signature): reads and writes of the declared members mean the same
+ * on either, so a binding may be the stored one. */
+function refinesDeclaredRecord(
+  lowerer: Lowerer,
+  stored: IrType & { kind: "record" },
+  declared: IrType & { kind: "record" },
+): boolean {
+  const have = lowerer.shapes.get(stored.shapeId);
+  const want = lowerer.shapes.get(declared.shapeId);
+  if (!have || !want || have.tuple || want.tuple) return false;
+  if (have.indexValue !== undefined || want.indexValue !== undefined) return false;
+  if (have.fields.length <= want.fields.length) return false;
+  return want.fields.every((field) => {
+    const held = have.fields.find((f) => f.name === field.name);
+    return (
+      held !== undefined && typeEquals(held.type, field.type) && held.optional === field.optional
+    );
+  });
 }
 
 /** For-loop initializers evaluate declarators from left to right. The LLVM
@@ -7957,6 +8044,23 @@ export function lowerVarDecl(
   if (!isLet && assertionKeepsStorageLayout(lowerer, decl, init.type, settledType)) {
     settledType = init.type;
     notePreservedLayout(lowerer, decl);
+  }
+  // Inside a generic instance an unannotated `const` read from the
+  // instance's own values (`const row = reading.row`) is the value's record
+  // where that record holds the declared one and more: the checker's type
+  // for the name still mentions the type parameters, and the members only a
+  // type parameter names are missing from it (bindPatternTarget has the
+  // same rule for the names of a pattern).
+  if (
+    !isLet &&
+    decl.type === undefined &&
+    lowerer.typeParamBindings !== null &&
+    settledType.kind === "record" &&
+    init.type.kind === "record" &&
+    init.type.shapeId !== settledType.shapeId &&
+    refinesDeclaredRecord(lowerer, init.type, settledType)
+  ) {
+    settledType = init.type;
   }
   // An exact class behind a generic interface keeps its native
   // representation so generic calls can specialize against its body.
@@ -11306,6 +11410,15 @@ export function lowerExprStatement(
       if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
         const undeclared = anyAssertedUndeclaredWrite(lowerer, expr.left);
         if (undeclared !== null) lowerer.unsupported("SC1090", expr.left, undeclared);
+      }
+      if (ts.isPropertyAccessExpression(expr.left) && !ts.isPrivateIdentifier(expr.left.name)) {
+        const built = packageBuiltWithoutMember(
+          lowerer,
+          expr.left.expression,
+          expr.left.name.text,
+          "writing",
+        );
+        if (built !== null) lowerer.unsupported("SC1090", expr.left, built);
       }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");

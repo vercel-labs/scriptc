@@ -3,6 +3,7 @@ import { OBJECT_PROTOTYPE_MEMBERS } from "../../shape-inference/domain.js";
 import { lowerUnionTupleRead } from "./union-fields.js";
 import { keptLayoutTypeOf, refuseCopiedStore } from "../structural-instances.js";
 import { constituentTypes } from "../../ts7/checker.js";
+import { withoutParenthesesAssertionsSatisfies } from "../../outer-expressions.js";
 import * as ts from "../../ts7/adapter.js";
 import {
   lowerOptionalIndex,
@@ -1707,6 +1708,7 @@ export function lowerRecordKeyRead(
       loc,
     };
   }
+  refuseUnnamedTemplateKey(lowerer, expr, keyNode, shape, shapeId);
   // The result type of the access — the index signature's value type
   // armed with undefined, or the declared fields' one common type on
   // signature-free shapes (tsc's keyof check proved membership; a
@@ -1753,11 +1755,28 @@ export function lowerRecordKeyRead(
       // the read dispatches over those keys; a key the type system does not
       // admit is a smuggled miss, which reads undefined as a missing
       // property does (the join must hold the arm to say so).
-      const domain = literalKeyDomain(lowerer, keyNode);
+      // A key spelled by a template (`row[\`min-${axis}\`]`) names only the
+      // declared fields its text can spell (templateKeyDomain).
+      const literalDomain = literalKeyDomain(lowerer, keyNode);
+      const domain =
+        literalDomain ??
+        (shape.indexValue === undefined ? templateKeyDomain(lowerer, keyNode, shape) : null);
       const reachable =
         domain === null ? [] : shape.fields.filter((field) => domain.includes(field.name));
-      if (domain !== null && reachable.length > 0 && reachable.length < shape.fields.length) {
-        const join = joinedFieldType(lowerer, reachable);
+      // A template may spell every declared field (`flags[\`--${name}\`]`
+      // beside members that are all flags): the read then dispatches over
+      // all of them. A literal domain that names every field keeps the
+      // refusal it had.
+      if (
+        domain !== null &&
+        reachable.length > 0 &&
+        (literalDomain === null || reachable.length < shape.fields.length)
+      ) {
+        // A template's text may spell a name that is no declared field, so
+        // its answer holds undefined whatever the reachable fields declare.
+        const joined = joinedFieldType(lowerer, reachable);
+        const join =
+          joined !== null && literalDomain === null ? lowerer.withUndefinedArmOf(joined) : joined;
         if (
           join !== null &&
           join.kind === "union" &&
@@ -1975,6 +1994,98 @@ function literalKeyDomain(lowerer: Lowerer, node: ts.Expression): string[] | nul
     return null;
   }
   return domain.length > 0 ? domain : null;
+}
+
+/** The template a key expression spells, looked for through parentheses,
+ * assertions (`as const`) and a `const` binding initialized with one
+ * (`const key = \`min-${axis}\` as const; row[key]`). Null for any other
+ * key. */
+function keyTemplateOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  depth = 0,
+): ts.TemplateExpression | null {
+  const key = withoutParenthesesAssertionsSatisfies(node);
+  if (ts.isTemplateExpression(key)) return key;
+  if (!ts.isIdentifier(key) || depth > 4) return null;
+  const decl = lowerer.checker.getSymbolAtLocation(key)?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return keyTemplateOf(lowerer, decl.initializer, depth + 1);
+}
+
+/** The declared fields a TEMPLATE-spelled key can name: the fields whose
+ * names the template's text spells, with each interpolation standing for
+ * any string unless its type is one literal. A template's value always has
+ * that form, whatever its interpolations hold, so no other declared field
+ * can be the one read; a spelled name that is no declared field reads
+ * undefined, as a missing property does. Null when the key is no template
+ * or its text fits no declared field. */
+function templateKeyDomain(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  shape: IrRecordShape,
+): string[] | null {
+  const template = keyTemplateOf(lowerer, node);
+  if (template === null) return null;
+  const quote = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let pattern = `^${quote(template.head.text)}`;
+  for (const span of template.templateSpans.nodes) {
+    // An interpolation whose own type is one literal spells it; any other
+    // (a string, a type parameter whatever this instance binds it to) is
+    // any text.
+    const t = lowerer.typeOf(span.expression);
+    const literal = t.isStringLiteralType()
+      ? t.value
+      : t.isNumberLiteralType()
+        ? String(t.value)
+        : null;
+    pattern += (literal === null ? "[\\s\\S]*" : quote(literal)) + quote(span.literal.text);
+  }
+  const spelled = new RegExp(`${pattern}$`);
+  const names = shape.fields.filter((field) => spelled.test(field.name)).map((f) => f.name);
+  return names.length > 0 ? names : null;
+}
+
+/** Inside a generic instance, a key spelled by a template of a type
+ * parameter on a record none of whose declared members the template can
+ * spell. The members such a key reads are the ones a mapped type names
+ * through the parameter, and the record lists them only in an instance for
+ * a call that passes a literal; an instance for any string has no member
+ * for them, so a read there would answer undefined for a property the
+ * object holds. Refused by name. */
+function refuseUnnamedTemplateKey(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  keyNode: ts.Expression,
+  shape: IrRecordShape,
+  shapeId: string,
+): void {
+  const bindings = lowerer.typeParamBindings;
+  if (bindings === null || shape.indexValue !== undefined) return;
+  const template = keyTemplateOf(lowerer, keyNode);
+  if (template === null) return;
+  // Only an instance that binds the parameter to `string`: the instance a
+  // function used as a value gets (its parameters unknown) keeps the
+  // lowering it has.
+  const ofParameter = template.templateSpans.nodes.some((span) => {
+    const type = lowerer.typeOf(span.expression);
+    if ((type.flags & ts.TypeFlags.TypeParameter) === 0) return false;
+    const symbol = type.getSymbol();
+    return symbol !== undefined && bindings.get(symbol)?.kind === "string";
+  });
+  if (!ofParameter || templateKeyDomain(lowerer, keyNode, shape) !== null) return;
+  lowerer.unsupported(
+    "SC1090",
+    expr,
+    `a read keyed by a template of a type parameter where no declared member of '${lowerer.fmt({ kind: "record", shapeId })}' has such a name (the members the parameter names are listed only for a call that passes a literal)`,
+  );
 }
 
 /* The interned join of the given fields' types, deduped and sorted (the

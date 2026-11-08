@@ -6594,6 +6594,11 @@ function staticMethodValue(
   if (reflected) return reflected;
   const fnName = `%${declarer.def.name}.static:${name}`;
   lowerer.noteEdge(fnName);
+  // The value is the method, so a box of it that has no static name (the
+  // method held in an array, a record or a union and then printed or asked
+  // for its `name`) answers the key the method is declared under, which is
+  // an identifier or a private name here (function-names.ts).
+  lowerer.objectMethodNames.set(fnName, name);
   const funcType: IrType & { kind: "func" } = {
     kind: "func",
     params: sig.params.filter((p) => p.mode !== "dynRest").map((p) => p.type),

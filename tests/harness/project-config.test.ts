@@ -143,6 +143,10 @@ for (const [name, title] of [
     "child-sync-option-evaluation",
     "option values a synchronous child launch does not read are evaluated in place under @types/node",
   ],
+  [
+    "child-held-exit-listeners",
+    "a function passed by name as an exit or close listener keeps its number code under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);
@@ -750,6 +754,27 @@ test("node-types: streams construct and child listeners take @types/node's param
   ]);
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: a held close listener declaring a number code throws for a signal's null", async () => {
+  const outDir = outDirFor("child-held-exit-listener-signal");
+  const entry = join(nodeTypesDir, "child-held-exit-listener-signal.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "child-held-exit-listener-signal"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const failure = await execFileAsync(result.binaryPath).then(
+    () => null,
+    (error: { stdout?: string; stderr?: string }) => error,
+  );
+  expect(failure).not.toBeNull();
+  expect(failure?.stdout).toBe("");
+  expect(failure?.stderr).toContain(
+    "TypeError: an 'exit' or 'close' listener declaring a number exit code received null",
+  );
 });
 
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {

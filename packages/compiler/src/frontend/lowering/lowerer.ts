@@ -97,6 +97,12 @@ import {
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
+import {
+  callerDeliversDefault,
+  isHandleObjectRead,
+  keptHandleTypeOf,
+  recordOnly,
+} from "./structural-instances.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -139,6 +145,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
+import { refuseObservedHandleProjections } from "./coercions/builtin-method-records.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
 import {
@@ -333,6 +340,7 @@ import {
   nodeIslandNativeUseDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
+  handleDefaultRefusalDiag,
   stdlibSnapshotValueUseDiag,
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
@@ -369,6 +377,7 @@ import {
   canConvertToDyn,
   DYN,
   DYN_HANDLE_KINDS,
+  HANDLE_KINDS,
   F64,
   isDynTypedRefType,
   isJsonSafeType,
@@ -2819,6 +2828,11 @@ export class Lowerer {
   /** Consts that keep their initializer's record or array layout, with the
    * initializer's checker type (structural-instances.ts). */
   readonly preservedLayoutTypes = new Map<ts.Symbol, ts.Type>();
+  /** The consts among them whose kept value is a builtin handle (`const
+   * sink: Sink = process.stdout`): a reference to one is typed as the
+   * handle (typeOf), so every use lowers against the value the binding
+   * holds. */
+  readonly handleKeptBindings = new Set<ts.Symbol>();
   /** Arguments and const initializers whose array or record layout the
    * lowering kept instead of copying (divergences.ts reports no copy there). */
   readonly layoutKeptNodes = new Set<ts.Node>();
@@ -5319,6 +5333,7 @@ export class Lowerer {
       checkedTable("mainPrelude", () => this.mainPrelude.length),
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
+      checkedTable("handleKeptBindings", () => this.handleKeptBindings.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
       checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
@@ -12151,6 +12166,7 @@ export class Lowerer {
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
     refuseSourceFieldDeletes(this, functions);
+    refuseObservedHandleProjections(this, functions);
     finalizeRecordLinks(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
@@ -14605,6 +14621,12 @@ export class Lowerer {
     }
     const collection = concreteCollectionNarrow(this, node, t);
     if (collection) return collection;
+    // A const that kept a builtin handle where its declaration names a
+    // record type holds the handle: the reference has the handle's type.
+    if (this.handleKeptBindings.size > 0 && ts.isIdentifier(node)) {
+      const kept = keptHandleTypeOf(this, node);
+      if (kept !== undefined) return kept;
+    }
     // IMPLICIT-ANY instance bodies: an identifier reference to a BOUND
     // param answers the call site's concrete type wherever the checker
     // still says `any` (there is no `T` for mapType to substitute — the
@@ -15136,7 +15158,9 @@ export class Lowerer {
       const detail =
         actual.kind === "record" && expected.kind === "record"
           ? (this.describeRecordWidthBlocker(actual.shapeId, expected.shapeId) ?? undefined)
-          : undefined;
+          : HANDLE_KINDS.has(actual.kind) && expected.kind === "record"
+            ? `a '${this.fmt(actual)}' stays itself as the argument of a directly called function declaration or in a const; here its members would be copied into a record, which stops following it`
+            : undefined;
       this.pushDiag(
         recordShapeMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node), detail),
       );
@@ -15577,6 +15601,21 @@ export class Lowerer {
       if (isConsoleObjectRead(expr)) {
         const projected = consoleInto(this, expr, expected, expr.loc);
         if (projected) return projected;
+      }
+      // A builtin handle read as an untyped value (`process.stdin`, a
+      // process stream in JavaScript) into a record type: the checked
+      // conversion admits plain objects only, so it would throw when it
+      // runs. The refusal belongs to the build, at this position.
+      if (isHandleObjectRead(expr) && recordOnly(this, expected)) {
+        this.pushDiag(
+          recordShapeMismatchDiag(
+            this.fmt(expected),
+            expr.kind === "dynFrom" ? this.fmt(expr.value.type) : "a process stream",
+            expr.loc,
+            "a builtin handle is not a plain object, so the checked conversion into a record type throws when it runs; it stays itself as the argument of a directly called function declaration or in a const",
+          ),
+        );
+        throw new PoisonError();
       }
       if (
         canDynCheckTo(
@@ -17736,7 +17775,12 @@ export class Lowerer {
   }
 
   paramShape(param: ts.ParameterDeclaration): ParamShape {
-    return paramShape(this, param);
+    const shape = paramShape(this, param);
+    return shape.mode === "omittable" &&
+      shape.bodyType?.kind === "record" &&
+      callerDeliversDefault(this, param)
+      ? { ...shape, handleDefault: true }
+      : shape;
   }
 
   /** The pipeline stage source type bound to `node` (a parameter name or
@@ -19106,6 +19150,51 @@ export class Lowerer {
         }
         const valueTag = this.armTag(abi.unionId, shape.bodyType);
         if (valueTag < 0) this.unsupported("SC1090", decl, "this parameter form"); // defensive
+        if (shape.handleDefault) {
+          // The default is a builtin handle only a caller can deliver
+          // (callerDeliversDefault): every call the compiler completes is
+          // bound to the handle's instance or refused, so undefined
+          // arrives here only through the function as a value, and that
+          // call is refused when it runs.
+          const diag = handleDefaultRefusalDiag(
+            name,
+            this.fmt(this.mapTypeOf(this.typeOf(decl.initializer)) ?? DYN),
+            this.fmt(shape.bodyType),
+            "value",
+            locOf(decl.initializer),
+          );
+          this.runtimeFences.push(diag);
+          const body = this.declareLocal(decl.name, name, shape.bodyType, true);
+          prologue.push({
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: abi.unionId,
+              tag: undefTag,
+              negated: false,
+              value: inRef(),
+              type: BOOL,
+              loc,
+            },
+            then: [this.runtimeFenceStmt(diag, decl.initializer, undefined)],
+            else_: null,
+            loc,
+          });
+          prologue.push({
+            kind: "varDecl",
+            localId: body.id,
+            init: {
+              kind: "unionNarrow",
+              unionId: abi.unionId,
+              tag: valueTag,
+              value: inRef(),
+              type: shape.bodyType,
+              loc,
+            },
+            loc,
+          });
+          return;
+        }
         // The default lowers BEFORE the body local binds, so a same-named
         // outer binding referenced in it can never resolve to the fresh
         // local (tsc separately rejects `x = x`).

@@ -1,6 +1,6 @@
 import * as ts from "../ts7/adapter.js";
-import type { IrType } from "../../ir/ir.js";
-import { typeEquals, UNDEFINED_T } from "../../ir/ir.js";
+import type { IrExpr, IrType } from "../../ir/ir.js";
+import { HANDLE_KINDS, typeEquals, UNDEFINED_T } from "../../ir/ir.js";
 import type { FnSig, ParamShape } from "./call-signatures.js";
 import { funcTypeFromParamShapes, isThisParameter } from "./call-signatures.js";
 import { findMethodOn } from "./lower-classes.js";
@@ -197,30 +197,35 @@ function structuralInfoOf(
 
 /** The instance a direct call of the declared function `sig` targets when
  * one of its arguments names a record or array whose layout the parameter
- * would copy; null when every argument converts as declared. */
+ * would copy; null when every argument converts as declared. `args` are
+ * the call's arguments for the instance: the written ones, then the default
+ * of each omitted parameter the instance binds to a handle (handleDefault). */
 export function structuralCallInstance(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   sig: FnSig,
-): GenericInstance | null {
+): { instance: GenericInstance; args: readonly ts.Expression[] } | null {
   const symbol = lowerer.resolveValueSymbol(expr.expression as ts.Identifier);
   const decl = symbol?.valueDeclaration;
-  if (!symbol || !decl || !ts.isFunctionDeclaration(decl) || !decl.body) return null;
-  if (
-    decl.asteriskToken ||
-    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
-  )
-    return null;
-  if (decl.parameters.nodes.some(isThisParameter)) return null;
-  if (symbol.declarations.filter((d) => ts.isFunctionDeclaration(d)).length !== 1) return null;
+  if (!symbol || !bindableDeclaration(symbol, decl)) return null;
   const args = expr.arguments.nodes;
   if (args.some((a) => ts.isSpreadElement(a))) return null;
   const params = decl.parameters.nodes;
   if (sig.params.length !== params.length) return null;
-  const bound: { index: number; type: IrType; checker: ts.Type }[] = [];
+  const bound: { index: number; type: IrType; checker: ts.Type; handle?: true }[] = [];
   params.forEach((_, index) => {
     const arg = args[index];
     const declared = sig.params[index]!;
+    if (arg) {
+      // A builtin handle (a process stream, a child process, a socket) at
+      // a parameter whose record type names some of its members: the
+      // instance's parameter is the handle itself.
+      const handle = handleArgument(lowerer, arg, params[index]!);
+      if (handle) {
+        bound.push({ index, ...handle, handle: true });
+        return;
+      }
+    }
     if (!arg || declared.mode !== "required" || !namesExistingValue(arg)) return;
     // A signature that widens the declared type's layout (record parameters
     // whose fields also take undefined) keeps its own boundary conversion.
@@ -236,12 +241,25 @@ export function structuralCallInstance(
     )
       bound.push({ index, type, checker });
   });
+  // The parameters the call omits, in order, while each defaults to a
+  // builtin handle the instance can bind: the caller passes that default.
+  const defaults: ts.Expression[] = [];
+  for (let index = args.length; index < params.length; index++) {
+    const handle = handleDefault(lowerer, params[index]!);
+    if (!handle || !handleParameterSymbol(lowerer, decl, index)) break;
+    bound.push({ index, type: handle.type, checker: handle.checker, handle: true });
+    defaults.push(handle.value);
+  }
   if (bound.length === 0) return null;
   const info = structuralInfoOf(lowerer, decl, symbol);
   const shapes: ParamShape[] = [...sig.params];
   const argTypes = new Map<ts.Symbol, ts.Type>();
-  for (const { index, type, checker } of bound) {
-    const sym = info.implicitParams![index];
+  for (const { index, type, checker, handle } of bound) {
+    const sym = handle ? handleParameterSymbol(lowerer, decl, index) : info.implicitParams![index];
+    // A handle argument whose parameter cannot be bound leaves the call to
+    // the declared conversion: a default passed by the caller needs its
+    // parameter bound.
+    if (!sym && handle && index >= args.length) return null;
     if (!sym) continue;
     shapes[index] = { type, mode: "required" };
     argTypes.set(sym, checker);
@@ -266,8 +284,9 @@ export function structuralCallInstance(
     returnType,
     true,
   );
-  if (instance) for (const { index } of bound) lowerer.layoutKeptNodes.add(args[index]!);
-  return instance;
+  if (!instance) return null;
+  for (const { index } of bound) if (index < args.length) lowerer.layoutKeptNodes.add(args[index]!);
+  return { instance, args: [...args, ...defaults] };
 }
 
 /** The layout of the value an existing-value expression names: a binding's
@@ -403,6 +422,153 @@ function classStandsFor(lowerer: Lowerer, className: string, to: IrType): boolea
   return true;
 }
 
+/** Whether a builtin handle (HANDLE_KINDS: the process streams, child
+ * processes, sockets, servers, ...) presents the record type `to` where a
+ * binding keeps the handle itself: a plain record type with at least one
+ * member. The checker proved the handle's type has every member the record
+ * declares; code lowered against the binding reads and calls them on the
+ * handle, so a data member (`isTTY`, `columns`) answers its value at the
+ * time of the read and `===` compares the handle. Whether that code lowers
+ * is the instance's own question (structuralCallInstance is fallible). */
+function handleStandsFor(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (!HANDLE_KINDS.has(from.kind) || to.kind !== "record") return false;
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!target || target.tuple || target.indexValue || target.fields.length === 0) return false;
+  return !target.fields.some((field) => field.name.startsWith("%"));
+}
+
+/** Whether `expr` reads a builtin handle as an untyped value: the stream
+ * object of a process stream (`process.stdin`; `process.stdout` in
+ * JavaScript), or a handle boxed into the dynamic tier. */
+export function isHandleObjectRead(expr: IrExpr): boolean {
+  if (expr.kind === "libCall") return expr.fn === "process.stdio";
+  return expr.kind === "dynFrom" && HANDLE_KINDS.has(expr.value.type.kind);
+}
+
+/** Whether every value of `type` is a plain record, undefined or null: a
+ * record type, or a union of such arms with at least one record. */
+export function recordOnly(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "record") {
+    const shape = lowerer.shapes.get(type.shapeId);
+    return shape !== undefined && !shape.tuple;
+  }
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms ?? [];
+  return (
+    arms.some((arm) => arm.kind === "record") &&
+    arms.every(
+      (arm) => arm.kind === "undefinedT" || arm.kind === "nullT" || recordOnly(lowerer, arm),
+    )
+  );
+}
+
+/** The record type a parameter declares, through `| undefined` and
+ * `| null` (an optional or defaulted parameter, `stream?: S`): the one
+ * record arm, else null. */
+function declaredRecordOf(lowerer: Lowerer, type: IrType | null): IrType | null {
+  if (!type) return null;
+  if (type.kind === "record") return type;
+  if (type.kind !== "union") return null;
+  let record: IrType | null = null;
+  for (const arm of lowerer.unions.get(type.unionId)?.arms ?? []) {
+    if (arm.kind === "undefinedT" || arm.kind === "nullT") continue;
+    if (arm.kind !== "record" || record !== null) return null;
+    record = arm;
+  }
+  return record;
+}
+
+/** The handle type of the argument `arg` when it is a builtin handle and
+ * `param` declares a record type the handle presents (handleStandsFor).
+ * The argument may be any expression: a handle is the same object whatever
+ * expression answers it, and its type has no undefined arm, so an optional
+ * or defaulted parameter receives it as given. */
+function handleArgument(
+  lowerer: Lowerer,
+  arg: ts.Expression,
+  param: ts.ParameterDeclaration,
+): { type: IrType; checker: ts.Type } | null {
+  if (!ts.isIdentifier(param.name) || param.dotDotDotToken) return null;
+  const checker = preservedLayoutOf(lowerer, arg) ?? lowerer.typeOf(arg);
+  const type = lowerer.mapTypeOf(checker);
+  if (!type || !HANDLE_KINDS.has(type.kind)) return null;
+  const declared = declaredRecordOf(
+    lowerer,
+    lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(param.name)),
+  );
+  return declared && handleStandsFor(lowerer, type, declared) ? { type, checker } : null;
+}
+
+/** The default of `param` when a call that omits the argument passes it
+ * instead: a member of a standard-library global (`process.stdout`) that
+ * is a builtin handle the parameter's record type presents. Such a read
+ * answers the same handle wherever it is evaluated and has no effect, so
+ * the caller's evaluation is the callee's. Any other default stays with the
+ * callee, which evaluates it in its own scope. */
+function handleDefault(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): { value: ts.Expression; type: IrType; checker: ts.Type } | null {
+  let value = param.initializer;
+  if (!value) return null;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isPropertyAccessExpression(value) || !ts.isIdentifier(value.expression)) return null;
+  if (!lowerer.isStdlibSymbol(lowerer.checker.getSymbolAtLocation(value.expression))) return null;
+  const handle = handleArgument(lowerer, value, param);
+  return handle ? { value, ...handle } : null;
+}
+
+/** The declaration whose direct calls structuralCallInstance can bind: one
+ * synchronous, non-generator function declaration with a body and no
+ * `this` parameter. */
+function bindableDeclaration(
+  symbol: ts.Symbol,
+  decl: ts.Node | undefined,
+): decl is ts.FunctionDeclaration {
+  if (!decl || !ts.isFunctionDeclaration(decl) || !decl.body) return false;
+  if (
+    decl.asteriskToken ||
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    return false;
+  if (decl.parameters.nodes.some(isThisParameter)) return false;
+  return symbol.declarations.filter((d) => ts.isFunctionDeclaration(d)).length === 1;
+}
+
+/** Whether `param` defaults to a builtin handle that only a caller can
+ * deliver (handleDefault): the parameter of a top-level declaration whose
+ * direct calls bind an instance to the handle. No value of the parameter's
+ * record type holds the handle, so the declared function itself cannot
+ * apply this default: a direct call that omits the argument passes it to
+ * the instance, and every other completion of the argument is refused
+ * (ParamShape.handleDefault). */
+export function callerDeliversDefault(lowerer: Lowerer, param: ts.ParameterDeclaration): boolean {
+  if (!param.initializer || !ts.isIdentifier(param.name)) return false;
+  const decl = param.parent;
+  if (!decl || !ts.isFunctionDeclaration(decl) || !decl.name || !ts.isSourceFile(decl.parent))
+    return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  if (!symbol || !bindableDeclaration(symbol, decl)) return false;
+  if (handleDefault(lowerer, param) === null) return false;
+  return handleParameterSymbol(lowerer, decl, decl.parameters.nodes.indexOf(param)) !== null;
+}
+
+/** The symbol of the parameter at `index` when an instance may bind it to
+ * a handle: an identifier the body never assigns. A default initializer or
+ * `?` does not matter here: the instance receives a handle, never
+ * undefined, so its parameter is required. */
+function handleParameterSymbol(
+  lowerer: Lowerer,
+  decl: ts.FunctionDeclaration,
+  index: number,
+): ts.Symbol | null {
+  const param = decl.parameters.nodes[index];
+  if (!param || !decl.body || !ts.isIdentifier(param.name) || param.dotDotDotToken) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(param.name);
+  if (!symbol || paramWrittenInBody(lowerer, decl.body, symbol, param.name.text)) return null;
+  return symbol;
+}
+
 /** Whether a process-stream value (the file-descriptor scalar behind
  * `process.stdout`) presents the record type `to`: `write` is the stream's
  * own method, so a binding may keep the descriptor and route its calls to
@@ -434,6 +600,9 @@ export function keepsInitializerLayout(
 ): boolean {
   let e = initializer;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
+  // A builtin handle is the same object whatever expression answers it, and
+  // no conversion keeps it: the binding holds the handle.
+  if (HANDLE_KINDS.has(actual.kind) && handleStandsFor(lowerer, actual, declared)) return true;
   if (!namesExistingValue(e) && !ts.isCallExpression(e)) return false;
   if (lowerer.isRuntimeOptionalRecordVariant(actual, declared)) return false;
   if (actual.kind === "object" && declared.kind === "record")
@@ -474,6 +643,19 @@ export function notePreservedLayout(lowerer: Lowerer, decl: ts.VariableDeclarati
     preservedLayoutOf(lowerer, decl.initializer) ?? lowerer.typeOf(decl.initializer);
   lowerer.preservedLayoutTypes.set(symbol, initializer);
   lowerer.layoutKeptNodes.add(decl.initializer);
+  const kept = lowerer.mapTypeOf(initializer);
+  if (kept && HANDLE_KINDS.has(kept.kind)) lowerer.handleKeptBindings.add(symbol);
+}
+
+/** The handle type of a reference to a const that kept a builtin handle
+ * (handleKeptBindings), while the binding the current lowering resolves
+ * holds it (preservedLayoutOf). */
+export function keptHandleTypeOf(lowerer: Lowerer, node: ts.Identifier): ts.Type | undefined {
+  let symbol = lowerer.checker.getSymbolAtLocation(node);
+  if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  if (!symbol || !lowerer.handleKeptBindings.has(symbol)) return undefined;
+  return preservedLayoutOf(lowerer, node);
 }
 
 /** Refuse a direct call that would copy an existing value into a parameter

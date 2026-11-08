@@ -1560,6 +1560,53 @@ export function recordShapeMismatchDiag(
   };
 }
 
+/** A parameter whose default is a builtin handle that its record type
+ * cannot hold (`stream: { isTTY?: boolean } = process.stdout`, SC2002). A
+ * direct call that omits the argument passes the handle to an instance of
+ * the function bound to it, where it stays the handle. `call`: a call that
+ * would complete the argument with undefined some other way (the argument
+ * itself may be undefined, or the call does not go straight to the
+ * declaration). `value`: the function as a value was called with the
+ * argument undefined; this one is raised when that call runs. */
+export function handleDefaultRefusalDiag(
+  param: string | null,
+  handleText: string | null,
+  recordText: string | null,
+  site: "call" | "value",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const message =
+    site === "call"
+      ? "this call can leave undefined in a parameter whose default is a builtin handle (such as process.stdout): the parameter's record type holds the handle only when a direct call of the function omits the argument or passes the handle"
+      : `the default of '${param}' is a '${handleText}', which the parameter's type '${recordText}' holds only when the function is called directly: this call reached the function as a value with the argument undefined`;
+  return {
+    code: "SC2002",
+    message,
+    loc,
+    milestone: "later",
+    hint: "pass the handle or a record of the declared type explicitly, or call the function declaration directly without the argument",
+  };
+}
+
+/** A builtin handle stored as a record of its methods (`const sinks:
+ * Sink[] = [process.stdout]`) and then observed as a whole object (SC2021):
+ * the stored value is a separate record of the declared methods, while Node
+ * keeps the handle itself, with its own keys and identity. */
+export function handleProjectionObservedDiag(
+  handleText: string,
+  recordText: string,
+  how: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2021",
+    message: `a '${handleText}' stored as '${recordText}' is a separate record of the declared methods, and the program ${how}: under Node the value is the '${handleText}' itself`,
+    loc,
+    milestone: "later",
+    hint: `pass the '${handleText}' as the argument of a directly called function declaration or hold it in a const (both keep it), or keep the value to calls of its methods`,
+  };
+}
+
 /** A record-width conversion at a boundary where the program writes
  * through the value afterwards (SC2021): the conversion builds a new
  * object, so the write reaches only the copy, while Node keeps one object.

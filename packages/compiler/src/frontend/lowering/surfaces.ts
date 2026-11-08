@@ -15,6 +15,7 @@ import {
   DYN,
   F64,
   FILEHANDLE_T,
+  HANDLE_KINDS,
   type IrExpr,
   type IrLibFn,
   type IrStrIntrinsicMethod,
@@ -3803,9 +3804,39 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
 
 /** True iff the accessed member is declared by the standard library —
  * the same technique as isConsoleLog: trust declarations, not names. */
+/** The handle type of a receiver that names a binding holding a builtin
+ * handle at a declared record type: a parameter an instance binds to the
+ * handle, or a const that kept it. Undefined for every other receiver. */
+function heldHandleTypeOf(lowerer: Lowerer, receiver: ts.Expression): ts.Type | undefined {
+  if (lowerer.implicitParamTypes === null && lowerer.handleKeptBindings.size === 0)
+    return undefined;
+  let node = receiver;
+  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+  if (!ts.isIdentifier(node)) return undefined;
+  const symbol = lowerer.checker.getSymbolAtLocation(node);
+  if (!symbol) return undefined;
+  if (!lowerer.implicitParamTypes?.has(symbol) && lowerer.handleKeptBindings.size === 0)
+    return undefined;
+  const held = lowerer.typeOf(node);
+  const kind = lowerer.mapTypeOf(held)?.kind;
+  return kind !== undefined && HANDLE_KINDS.has(kind) ? held : undefined;
+}
+
 export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
   const direct = lowerer.checker.getSymbolAtLocation(access.name);
-  if (direct) return lowerer.isStdlibSymbol(direct);
+  if (direct) {
+    if (lowerer.isStdlibSymbol(direct)) return true;
+    // A binding that holds a builtin handle where its declaration names a
+    // record type (structural-instances.ts): the checker resolves the
+    // member in the record type; the value's member is the handle's.
+    const handle = heldHandleTypeOf(lowerer, access.expression);
+    return (
+      handle !== undefined &&
+      lowerer.isStdlibSymbol(
+        lowerer.checker.getPropertyOfType(handle, access.name.text) ?? undefined,
+      )
+    );
+  }
   // An IMPLICIT-ANY instance body (the checker sees an `any` receiver —
   // no member symbol resolves) or an ALIASED-TYPEOF narrow (the checker
   // sees the un-narrowed union — `val.length` on String|Number has no

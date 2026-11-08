@@ -715,7 +715,7 @@ function boxDeepOperand(
       "both sides must convert into the checked-dynamic tree (primitives, functions, arrays, records, Maps, Sets, typed arrays and errors)",
     );
   }
-  const fnName = e.type.kind === "func" ? jsFuncNameOf(node) : null;
+  const fnName = e.type.kind === "func" ? jsFuncNameOf(node, lowerer) : null;
   return {
     kind: "dynFrom",
     value: e,
@@ -1395,7 +1395,7 @@ function lowerAssertEqual(
       // A boxed closure takes its best-effort JS name from the source
       // node (the coerceInto convention) — the failure message renders
       // [Function: name] like Node.
-      const fnName = k === "func" ? jsFuncNameOf(node) : null;
+      const fnName = k === "func" ? jsFuncNameOf(node, lowerer) : null;
       return {
         kind: "dynFrom",
         value: e,
@@ -1860,7 +1860,7 @@ function classifyThrowsExpected(
     ) {
       // The boxed function carries its source name (Node's message names
       // a named validation function).
-      const fnName = jsFuncNameOf(node);
+      const fnName = jsFuncNameOf(node, lowerer);
       return {
         form: "predicate",
         value: { kind: "dynFrom", value, ...(fnName !== null ? { fnName } : {}), type: DYN, loc },

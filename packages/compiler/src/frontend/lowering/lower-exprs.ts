@@ -26,6 +26,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
+import { noteBuiltinMemberWrite } from "./builtin-member-writes.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
@@ -989,6 +990,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return { kind: "awaitExpr", value, type: value.type.inner, loc };
   }
   if (ts.isYieldExpression(expr)) return lowerYield(lowerer, expr);
+  // A write to a member of a built-in object is recorded for the check at
+  // the end of lowering (builtin-member-writes.ts) and lowers as usual.
+  noteBuiltinMemberWrite(lowerer, expr);
   if (ts.isPrefixUnaryExpression(expr)) return lowerer.lowerPrefixUnary(expr);
   // `x++` / `x--` in expression position: yields the OLD value.
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);

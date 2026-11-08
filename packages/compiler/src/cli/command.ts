@@ -373,6 +373,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (failOnRaw === "dynamic" && !dynamicTierWarning) {
     fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
   }
+  // --no-copy-warning leaves out SC6001 (frontend/lowering/width-copies.ts).
+  const copyWarning = values["copy-warning"] !== false;
+  if (failOnRaw === "divergences" && !copyWarning) {
+    fail(`--fail-on=divergences checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
+  }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -584,6 +589,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
+    if (!copyWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -707,7 +714,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       throw new CliExit(1);
     }
     const warnings = (result.warnings ?? []).filter(
-      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
+      (d) =>
+        (dynamicTierWarning || !isPerformanceCode(d.code)) && (copyWarning || d.code !== "SC6001"),
     );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({

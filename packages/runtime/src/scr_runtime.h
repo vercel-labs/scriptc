@@ -52,6 +52,7 @@
 #include "scr_os.h"
 #include "scr_dyn.h"
 #include "scr_fs_exists_dyn.h"
+#include "scr_module_cache.h"
 #include "scr_json.h"
 #include "scr_event_target.h"
 #include "scr_blob.h"

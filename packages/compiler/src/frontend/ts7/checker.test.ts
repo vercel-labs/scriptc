@@ -193,6 +193,7 @@ for (const server of servers)
         prefetchRoots: () => facade.prefetchRoots([]),
         prefetchSymbolRoots: () => facade.prefetchSymbolRoots([]),
         prefetchSymbolNodesExact: () => facade.prefetchSymbolNodesExact([]),
+        prefetchSymbolsAtExact: () => facade.prefetchSymbolsAtExact([]),
         prefetchCollectionTypes: () => facade.prefetchCollectionTypes([]),
         prefetchClassCollection: () => facade.prefetchClassCollection([], []),
         prefetchTypeQueries: () => facade.prefetchTypeQueries([]),

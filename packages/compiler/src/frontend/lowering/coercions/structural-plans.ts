@@ -425,15 +425,10 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   }
   if (dst.kind === "array" && src.kind === "array") {
     if (lowerer.widthLiftPlan(src.elem, dst.elem) !== null) return { how: "arr" };
-    // The EMPTY-array lift: a unit-only element type (`readonly []`
-    // mapped as the unit-element array, `(null | undefined)[]`) has no
-    // per-element conversion into a data element — but the only value
-    // such a slot honestly holds in the width family is EMPTY, so the
-    // lift is a fresh empty array of the target type, guarded by a
-    // runtime non-empty trap (the checked-extraction stance).
-    if (lowerer.unitOnlyElem(src.elem) && !lowerer.unitOnlyElem(dst.elem)) {
-      return { how: "emptyArr" };
-    }
+    // A unit-only element array (`never[]`, `readonly []`) into a data
+    // element array has no plan: an empty array is one array under every
+    // name, so it is typed where it is written (empty-array-places.ts)
+    // and never converted to another element type afterwards.
     return null;
   }
   // A TUPLE flowing into an array FIELD/ELEMENT (`aliases: ["ls"]` into

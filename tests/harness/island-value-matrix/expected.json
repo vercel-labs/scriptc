@@ -36,11 +36,17 @@
   "n2i/I.inspect#holes": "proxy=wrong",
   "n2i/I.read#holes": "each=wrong,in1=wrong",
   "n2i/I.inspect#undef": "proxy=wrong",
+  "i2n/U.forin#holes": "unsupported",
   "i2n/I.same@cast#holes": "wrong",
+  "i2n/U.forin#undef": "unsupported",
   "i2n/I.same@cast#undef": "wrong",
   "clo-n2i/I.thunk#holes": "each=wrong,in1=wrong,proxy=wrong",
+  "clo-n2i/N.callback#holes": "forin=unsupported",
   "clo-n2i/I.thunk#undef": "proxy=wrong",
+  "clo-n2i/N.callback#undef": "forin=unsupported",
+  "clo-i2n/U.forin#holes": "unsupported",
   "clo-i2n/I.taker#holes": "each=wrong,in1=wrong,proxy=wrong",
+  "clo-i2n/U.forin#undef": "unsupported",
   "clo-i2n/I.taker#undef": "proxy=wrong"
  },
  "arr-mixed.control.-": {},
@@ -61,6 +67,7 @@
  "arr-mixed.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.len": "wrong",
   "i2n/N.cast.read@isl.t0": "wrong",
@@ -69,12 +76,16 @@
   "i2n/I.read@nat": "join=wrong,json=wrong,len=wrong",
   "i2n/I.inspect@nat": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-mixed.w": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-nested.control.-": {},
@@ -95,18 +106,23 @@
  "arr-nested.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.flat": "wrong",
   "i2n/N.cast.read@isl.json": "wrong",
   "i2n/I.read@nat": "flat=wrong,json=wrong,l0=wrong,len=wrong",
   "i2n/I.inspect@nat": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-nested.w": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-num.control.-": {},
@@ -162,6 +178,7 @@
   "n2i/I.inspect@nat#empty": "proxy=wrong",
   "n2i/I.inspect#big": "proxy=wrong",
   "n2i/I.inspect@nat#big": "proxy=wrong",
+  "i2n/U.forin#three": "unsupported",
   "i2n/I.same@cast#three": "wrong",
   "i2n/N.cast.read@isl.len#three": "wrong",
   "i2n/N.cast.read@isl.join#three": "wrong",
@@ -176,6 +193,7 @@
   "i2n/N.cast.read@isl.forof#three": "wrong",
   "i2n/I.read@nat#three": "forof=wrong,i0=wrong,join=wrong,json=wrong,keys=wrong,last=wrong,len=wrong,map=wrong,slice=wrong,spread=wrong,sum=wrong",
   "i2n/I.inspect@nat#three": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
+  "i2n/U.forin#empty": "unsupported",
   "i2n/I.same@cast#empty": "wrong",
   "i2n/N.cast.read@isl.len#empty": "wrong",
   "i2n/N.cast.read@isl.i0#empty": "wrong",
@@ -190,6 +208,7 @@
   "i2n/N.cast.read@isl.forof#empty": "wrong",
   "i2n/I.read@nat#empty": "forof=wrong,i0=wrong,join=wrong,json=wrong,keys=wrong,last=wrong,len=wrong,map=wrong,slice=wrong,spread=wrong,sum=wrong",
   "i2n/I.inspect@nat#empty": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
+  "i2n/U.forin#big": "unsupported",
   "i2n/I.same@cast#big": "wrong",
   "i2n/N.cast.read@isl.len#big": "wrong",
   "i2n/N.cast.read@isl.join#big": "wrong",
@@ -204,10 +223,16 @@
   "i2n/I.read@nat#big": "forof=wrong,i0=wrong,join=wrong,json=wrong,keys=wrong,last=wrong,len=wrong,map=wrong,slice=wrong,spread=wrong,sum=wrong",
   "i2n/I.inspect@nat#big": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
   "clo-n2i/I.thunk#three": "proxy=wrong",
+  "clo-n2i/N.callback#three": "forin=unsupported",
   "clo-n2i/I.thunk#empty": "proxy=wrong",
+  "clo-n2i/N.callback#empty": "forin=unsupported",
   "clo-n2i/I.thunk#big": "proxy=wrong",
+  "clo-n2i/N.callback#big": "forin=unsupported",
+  "clo-i2n/U.forin#three": "unsupported",
   "clo-i2n/I.taker#three": "proxy=wrong",
+  "clo-i2n/U.forin#empty": "unsupported",
   "clo-i2n/I.taker#empty": "proxy=wrong",
+  "clo-i2n/U.forin#big": "unsupported",
   "clo-i2n/I.taker#big": "proxy=wrong"
  },
  "arr-num.w": {
@@ -217,6 +242,9 @@
   "n2i/I.inspect@nat#empty": "proxy=wrong",
   "n2i/I.inspect#big": "proxy=wrong",
   "n2i/I.inspect@nat#big": "proxy=wrong",
+  "i2n/U.forin#three": "unsupported",
+  "i2n/U.forin#empty": "unsupported",
+  "i2n/U.forin#big": "unsupported",
   "n2i2n/P.read@back.map#three": "throws",
   "n2i2n/P.read@back.sum#three": "throws",
   "n2i2n/P.read@back.last#three": "throws",
@@ -233,22 +261,26 @@
   "clo-n2i/I.thunk#three": "proxy=wrong",
   "clo-n2i/I.thunk#empty": "proxy=wrong",
   "clo-n2i/I.thunk#big": "proxy=wrong",
+  "clo-i2n/U.forin#three": "unsupported",
   "clo-i2n/I.taker#three": "proxy=wrong",
+  "clo-i2n/U.forin#empty": "unsupported",
   "clo-i2n/I.taker#empty": "proxy=wrong",
+  "clo-i2n/U.forin#big": "unsupported",
   "clo-i2n/I.taker#big": "proxy=wrong"
  },
  "arr-rec.control.-": {},
  "arr-rec.i": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-rec.p": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
   "i2n/N.read.json": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -277,7 +309,6 @@
   "n2i2n/N.indexOf": "refused:SC8010",
   "n2i2n/N.read.idx": "throws",
   "n2i2n/N.read.json": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -305,6 +336,7 @@
  "arr-rec.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.len": "wrong",
   "i2n/N.cast.read@isl.as": "wrong",
@@ -312,6 +344,8 @@
   "i2n/I.read@nat": "as=wrong,json=wrong,len=wrong",
   "i2n/I.inspect@nat": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-str.control.-": {},
@@ -334,6 +368,7 @@
  "arr-str.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.len": "wrong",
   "i2n/N.cast.read@isl.i0": "wrong",
@@ -342,12 +377,16 @@
   "i2n/I.read@nat": "join=wrong,json=wrong,len=wrong",
   "i2n/I.inspect@nat": "clone=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arr-str.w": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "arraybuffer.control.-": {
@@ -420,6 +459,7 @@
  "async-generator.u": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "n1=unsupported,rest=throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/T.typeof": "unsupported",
   "n2i2n/U.typeof": "wrong",
@@ -429,17 +469,24 @@
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,n1=unsupported,proto=wrong,rest=throws,str=unsupported,tag=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,n1=unsupported,proto=wrong,rest=throws,str=unsupported,tag=wrong"
  },
  "async-iterable.p": {
   "i2n/N.read.sum": "throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.param": "sum=throws",
   "i2n2i/N.read@mixed.sum": "throws",
   "clo-n2i/N.callback": "sum=throws",
-  "clo-i2n/N.read.sum": "throws"
+  "clo-i2n/N.read.sum": "throws",
+  "clo-i2n/U.forin": "unsupported"
  },
  "async-iterable.u": {
-  "i2n/N.cast.read.sum": "throws"
+  "i2n/U.forin": "unsupported",
+  "i2n/N.cast.read.sum": "throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "big64.control.-": {
   "S.make": "refused:SC2020"
@@ -459,9 +506,12 @@
  },
  "big64.u": {
   "n2i/S.make": "refused:SC2020",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "refused:SC2020",
   "n2i2n/S.make": "refused:SC2020",
   "clo-n2i/S.make": "refused:SC2020",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/S.make": "refused:SC2020"
  },
  "bigint.control.-": {
@@ -484,13 +534,7 @@
   "n2i2n/N.is#odd": "refused:SC2020"
  },
  "bigint.u": {},
- "bigint.w": {
-  "i2n/T.json#zero": "refused:SC1090",
-  "i2n/T.json#neg": "refused:SC1090",
-  "i2n/T.json#p64": "refused:SC1090",
-  "i2n/T.json#n127": "refused:SC1090",
-  "i2n/T.json#odd": "refused:SC1090"
- },
+ "bigint.w": {},
  "bool.control.-": {},
  "bool.p": {},
  "bool.u": {},
@@ -596,16 +640,21 @@
  },
  "cycle-array.p": {
   "n2i/I.inspect": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "n2i2n/U.str": "crash",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "cycle-array.u": {
   "n2i/I.inspect": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "n2i2n/U.str": "crash",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "cycle-record.control.-": {
@@ -617,10 +666,12 @@
  },
  "cycle-record.i": {
   "n2i/N.read@isl.clone": "unsupported",
+  "i2n/U.forin": "unsupported",
   "n2i2n/N.read.clone": "unsupported",
   "n2i2n/U.clone": "unsupported",
   "n2i2n/P.read@back.clone": "unsupported",
-  "n2i2n/N.read@isl.clone": "unsupported"
+  "n2i2n/N.read@isl.clone": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "cycle-record.p": {
   "n2i/N.read@isl.clone": "unsupported",
@@ -633,7 +684,10 @@
  },
  "cycle-record.u": {
   "n2i/P.read@isl.clone": "unsupported",
-  "n2i2n/U.clone": "unsupported"
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.clone": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "dataview.control.-": {
   "U.clone": "wrong"
@@ -734,15 +788,21 @@
   "n2i/P.read@isl.valueOf#invalid": "wrong",
   "n2i/I.read@nat#invalid": "isDate=wrong,iso=throws,json=wrong,time=throws,typeof=wrong,valueOf=throws,year=throws",
   "n2i/I.inspect@nat#invalid": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
+  "i2n/U.forin#valid": "unsupported",
   "i2n/N.cast#valid": "exit",
+  "i2n/U.forin#invalid": "unsupported",
   "i2n/N.cast#invalid": "exit",
   "n2i2n/S.back#valid": "exit",
   "n2i2n/S.back#invalid": "exit",
   "clo-n2i/I.keep#valid": "throws",
   "clo-n2i/I.thunk#valid": "throws",
+  "clo-n2i/N.callback#valid": "forin=unsupported",
   "clo-n2i/I.keep#invalid": "throws",
   "clo-n2i/I.thunk#invalid": "throws",
+  "clo-n2i/N.callback#invalid": "forin=unsupported",
+  "clo-i2n/U.forin#valid": "unsupported",
   "clo-i2n/I.taker#valid": "throws",
+  "clo-i2n/U.forin#invalid": "unsupported",
   "clo-i2n/I.taker#invalid": "throws"
  },
  "date.w": {
@@ -811,7 +871,9 @@
   "clo-i2n/S.call": "refused:SC1100"
  },
  "error-aggregate.u": {
-  "i2n/N.cast": "refused:SC1090"
+  "i2n/U.forin": "unsupported",
+  "i2n/N.cast": "refused:SC1090",
+  "clo-i2n/U.forin": "unsupported"
  },
  "error-cause.control.-": {
   "T.json": "refused:SC1090",
@@ -828,7 +890,9 @@
   "clo-i2n/S.call": "refused:SC1100"
  },
  "error-cause.u": {
-  "i2n/N.cast": "refused:SC1090"
+  "i2n/U.forin": "unsupported",
+  "i2n/N.cast": "refused:SC1090",
+  "clo-i2n/U.forin": "unsupported"
  },
  "error-cause.w": {
   "i2n/S.make": "exit",
@@ -902,7 +966,9 @@
   "n2i/P.read@isl.keys": "refused:SC2020",
   "n2i/P.read@isl.json": "refused:SC1090",
   "n2i/P.read@isl.ctor": "refused:SC2020",
-  "i2n/N.cast": "exit"
+  "i2n/U.forin": "unsupported",
+  "i2n/N.cast": "exit",
+  "clo-i2n/U.forin": "unsupported"
  },
  "error.w": {
   "n2i/P.read@isl.keys": "refused:SC2020",
@@ -1069,25 +1135,61 @@
  "generator-infinite.p": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "next=unsupported,take3=throws",
+  "i2n/N.read.take3": "crash",
+  "i2n/N.read.next": "crash",
   "i2n/T.json": "refused:SC1090",
+  "i2n/T.clone": "unsupported",
+  "i2n/U.typeof": "wrong",
+  "i2n/U.str": "unsupported",
+  "i2n/U.json": "unsupported",
+  "i2n/U.tag": "unsupported",
+  "i2n/U.keys": "throws",
+  "i2n/U.inst": "throws",
+  "i2n/U.clone": "unsupported",
+  "i2n/N.param": "crash",
+  "i2n/I.same@param": "wrong",
+  "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "refused:SC8010",
+  "i2n/N.ident": "wrong",
+  "i2n/N.mapkey": "wrong",
   "i2n/N.indexOf": "refused:SC1101",
+  "n2i2n/N.ident": "wrong",
   "n2i2n/N.is": "refused:SC2020",
+  "n2i2n/N.mapkey": "wrong",
   "n2i2n/N.indexOf": "refused:SC1101",
   "n2i2n/U.typeof": "wrong",
   "n2i2n/U.str": "unsupported",
   "n2i2n/U.json": "unsupported",
+  "n2i2n/U.tag": "unsupported",
   "n2i2n/U.keys": "throws",
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
+  "i2n2i/I.same": "wrong",
+  "i2n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "i2n2i/I.read": "next=unsupported,take3=throws",
+  "i2n2i/N.read@mixed.take3": "crash",
+  "i2n2i/I.same@mixed": "wrong",
+  "i2n2i/I.read@mixed": "next=unsupported,take3=throws",
   "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws",
   "clo-n2i/N.callback": "throws",
   "clo-n2i/I.read@callback": "take3=wrong",
+  "clo-i2n/N.read.take3": "crash",
+  "clo-i2n/N.read.next": "crash",
+  "clo-i2n/U.typeof": "wrong",
+  "clo-i2n/U.str": "unsupported",
+  "clo-i2n/U.json": "unsupported",
+  "clo-i2n/U.tag": "unsupported",
+  "clo-i2n/U.keys": "throws",
+  "clo-i2n/U.inst": "throws",
+  "clo-i2n/U.clone": "unsupported",
+  "clo-i2n/N.ident": "wrong",
+  "clo-i2n/I.taker.back": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws",
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws"
  },
  "generator-infinite.u": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "next=unsupported,take3=throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/T.typeof": "unsupported",
   "n2i2n/U.typeof": "wrong",
@@ -1097,6 +1199,8 @@
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws"
  },
  "generator-lazy.control.-": {
@@ -1113,29 +1217,61 @@
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "after=unsupported,forof=throws",
   "i2n/N.read.forof": "wrong",
+  "i2n/N.read.after": "wrong",
   "i2n/T.json": "refused:SC1090",
+  "i2n/T.clone": "unsupported",
+  "i2n/U.typeof": "wrong",
+  "i2n/U.str": "unsupported",
+  "i2n/U.json": "unsupported",
+  "i2n/U.tag": "unsupported",
+  "i2n/U.keys": "throws",
+  "i2n/U.inst": "throws",
+  "i2n/U.clone": "unsupported",
   "i2n/N.param": "forof=wrong",
+  "i2n/I.same@param": "wrong",
+  "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "refused:SC8010",
+  "i2n/N.ident": "wrong",
+  "i2n/N.mapkey": "wrong",
   "i2n/N.indexOf": "refused:SC1101",
+  "n2i2n/N.ident": "wrong",
   "n2i2n/N.is": "refused:SC2020",
+  "n2i2n/N.mapkey": "wrong",
   "n2i2n/N.indexOf": "refused:SC1101",
   "n2i2n/N.read.forof": "wrong",
   "n2i2n/U.typeof": "wrong",
   "n2i2n/U.str": "unsupported",
   "n2i2n/U.json": "unsupported",
+  "n2i2n/U.tag": "unsupported",
   "n2i2n/U.keys": "throws",
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
+  "i2n2i/I.same": "wrong",
+  "i2n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "i2n2i/I.read": "after=unsupported,forof=throws",
   "i2n2i/N.read@mixed.forof": "wrong",
+  "i2n2i/I.same@mixed": "wrong",
+  "i2n2i/I.read@mixed": "after=unsupported,forof=throws",
   "clo-n2i/I.thunk": "after=unsupported,clone=wrong,ctor=unsupported,forof=throws,proto=wrong,str=unsupported,tag=wrong",
   "clo-n2i/N.callback": "throws",
   "clo-n2i/I.read@callback": "forof=wrong",
   "clo-i2n/N.read.forof": "wrong",
+  "clo-i2n/N.read.after": "wrong",
+  "clo-i2n/U.typeof": "wrong",
+  "clo-i2n/U.str": "unsupported",
+  "clo-i2n/U.json": "unsupported",
+  "clo-i2n/U.tag": "unsupported",
+  "clo-i2n/U.keys": "throws",
+  "clo-i2n/U.inst": "throws",
+  "clo-i2n/U.clone": "unsupported",
+  "clo-i2n/N.ident": "wrong",
+  "clo-i2n/I.taker.back": "after=unsupported,clone=wrong,ctor=unsupported,forof=throws,proto=wrong,str=unsupported,tag=wrong",
   "clo-i2n/I.taker": "after=unsupported,clone=wrong,ctor=unsupported,forof=throws,proto=wrong,str=unsupported,tag=wrong"
  },
  "generator-lazy.u": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "after=unsupported,forof=throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/T.typeof": "unsupported",
   "n2i2n/U.typeof": "wrong",
@@ -1145,6 +1281,8 @@
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "after=unsupported,clone=wrong,ctor=unsupported,forof=throws,proto=wrong,str=unsupported,tag=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "after=unsupported,clone=wrong,ctor=unsupported,forof=throws,proto=wrong,str=unsupported,tag=wrong"
  },
  "generator.control.-": {
@@ -1167,13 +1305,28 @@
   "i2n/cb.n1": "refused:SC1071",
   "i2n/cb.done": "refused:SC1071",
   "i2n/N.read.n1": "refused:SC1071",
+  "i2n/N.read.ret": "wrong",
   "i2n/N.read.done": "refused:SC1071",
   "i2n/N.read.log": "wrong",
   "i2n/T.json": "refused:SC1090",
-  "i2n/N.param": "log=wrong",
+  "i2n/T.clone": "unsupported",
+  "i2n/U.typeof": "wrong",
+  "i2n/U.str": "unsupported",
+  "i2n/U.json": "unsupported",
+  "i2n/U.tag": "unsupported",
+  "i2n/U.keys": "throws",
+  "i2n/U.inst": "throws",
+  "i2n/U.clone": "unsupported",
+  "i2n/N.param": "log=wrong,n2=wrong,ret=wrong",
+  "i2n/I.same@param": "wrong",
+  "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "refused:SC8010",
+  "i2n/N.ident": "wrong",
+  "i2n/N.mapkey": "wrong",
   "i2n/N.indexOf": "refused:SC1101",
+  "n2i2n/N.ident": "wrong",
   "n2i2n/N.is": "refused:SC2020",
+  "n2i2n/N.mapkey": "wrong",
   "n2i2n/N.indexOf": "refused:SC1101",
   "n2i2n/N.read.n1": "refused:SC1071",
   "n2i2n/N.read.done": "refused:SC1071",
@@ -1181,24 +1334,40 @@
   "n2i2n/U.typeof": "wrong",
   "n2i2n/U.str": "unsupported",
   "n2i2n/U.json": "unsupported",
+  "n2i2n/U.tag": "unsupported",
   "n2i2n/U.keys": "throws",
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
+  "i2n2i/I.same": "wrong",
+  "i2n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "i2n2i/I.read": "done=unsupported,log=wrong,n1=unsupported,n2=unsupported,ret=unsupported",
   "i2n2i/N.read@mixed.n1": "refused:SC1071",
+  "i2n2i/I.same@mixed": "wrong",
+  "i2n2i/I.read@mixed": "done=unsupported,log=wrong,n1=unsupported,n2=unsupported,ret=unsupported",
   "clo-n2i/cb.n1": "refused:SC1071",
   "clo-n2i/cb.done": "refused:SC1071",
-  "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,done=unsupported,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong",
+  "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,done=unsupported,log=wrong,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong",
   "clo-n2i/N.callback": "throws",
   "clo-n2i/I.read@callback": "log=wrong,n1=wrong,n2=wrong",
   "clo-i2n/N.read.n1": "refused:SC1071",
+  "clo-i2n/N.read.ret": "wrong",
   "clo-i2n/N.read.done": "refused:SC1071",
   "clo-i2n/N.read.log": "wrong",
-  "clo-i2n/I.taker.back": "log=wrong",
+  "clo-i2n/U.typeof": "wrong",
+  "clo-i2n/U.str": "unsupported",
+  "clo-i2n/U.json": "unsupported",
+  "clo-i2n/U.tag": "unsupported",
+  "clo-i2n/U.keys": "throws",
+  "clo-i2n/U.inst": "throws",
+  "clo-i2n/U.clone": "unsupported",
+  "clo-i2n/N.ident": "wrong",
+  "clo-i2n/I.taker.back": "clone=wrong,ctor=unsupported,done=unsupported,log=wrong,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong",
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,done=unsupported,log=wrong,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong"
  },
  "generator.u": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
   "n2i/I.read": "done=unsupported,n1=unsupported,n2=unsupported,ret=unsupported",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "i2n/N.cast.read.log": "wrong",
   "n2i2n/T.typeof": "unsupported",
@@ -1209,6 +1378,8 @@
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
   "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,done=unsupported,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,done=unsupported,n1=unsupported,n2=unsupported,proto=wrong,ret=unsupported,str=unsupported,tag=wrong"
  },
  "holder.control.-": {
@@ -1227,6 +1398,7 @@
   "n2i/I.inspect@nat": "clone=wrong,json=throws",
   "i2n/N.read.dt": "throws",
   "i2n/N.read.dId": "throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.param": "dId=throws,dt=throws",
   "i2n/N.read@isl.dt": "throws",
   "i2n/N.read@isl.dId": "throws",
@@ -1244,6 +1416,7 @@
   "clo-n2i/N.callback": "dId=throws,dt=throws",
   "clo-i2n/N.read.dt": "throws",
   "clo-i2n/N.read.dId": "throws",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=wrong,dId=throws,dt=throws,json=throws"
  },
  "holder.p": {
@@ -1279,21 +1452,44 @@
   "n2i/P.read@isl.q": "wrong",
   "n2i/I.read@nat": "dId=throws,dt=throws",
   "n2i/I.inspect@nat": "clone=wrong,json=throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/U.clone": "message",
   "n2i2n/W.isl": "throws",
   "clo-n2i/I.thunk": "clone=wrong,dId=throws,dt=throws,json=throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=wrong,dId=throws,dt=throws,json=throws"
  },
  "i32.control.-": {},
  "i32.p": {},
  "i32.u": {},
- "island-class.i": {},
- "island-class.u": {},
- "island-class.w": {},
- "island-error-class.i": {},
+ "island-class.i": {
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "island-class.u": {
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "island-class.w": {
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "island-error-class.i": {
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "island-error-class.u": {
-  "clo-n2i/N.callback": "forin=wrong,json=wrong,keys=wrong"
+  "i2n/U.forin": "unsupported",
+  "n2i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=wrong,json=wrong,keys=wrong",
+  "clo-i2n/U.forin": "unsupported"
  },
  "island-error-class.w": {
   "n2i/S.widen": "exit",
@@ -1305,9 +1501,15 @@
   "clo-i2n/S.call": "exit",
   "clo-i2n/S.widen": "exit"
  },
- "island-subclass.i": {},
- "island-subclass.p": {},
- "island-subclass.u": {},
+ "island-subclass.i": {
+  "n2i2n/U.forin": "unsupported"
+ },
+ "island-subclass.p": {
+  "n2i2n/U.forin": "unsupported"
+ },
+ "island-subclass.u": {
+  "n2i2n/U.forin": "unsupported"
+ },
  "iter-array.control.-": {
   "N.read.n1": "refused:SC1090",
   "N.read.rest": "refused:SC1090",
@@ -1333,20 +1535,49 @@
   "n2i/I.keep": "refused:SC1090",
   "n2i/I.same": "refused:SC1090",
   "i2n/T.json": "refused:SC1090",
+  "i2n/T.clone": "unsupported",
+  "i2n/U.typeof": "wrong",
+  "i2n/U.str": "unsupported",
+  "i2n/U.json": "unsupported",
+  "i2n/U.tag": "unsupported",
+  "i2n/U.keys": "throws",
+  "i2n/U.inst": "throws",
+  "i2n/U.clone": "unsupported",
+  "i2n/I.same@param": "wrong",
+  "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "refused:SC8010",
+  "i2n/N.ident": "wrong",
+  "i2n/N.mapkey": "wrong",
   "i2n/N.indexOf": "refused:SC1101",
   "n2i2n/S.back": "refused:SC1090",
+  "i2n2i/I.same": "wrong",
+  "i2n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "i2n2i/I.read": "done=unsupported,n1=unsupported,rest=throws",
+  "i2n2i/I.same@mixed": "wrong",
+  "i2n2i/I.read@mixed": "done=unsupported,n1=unsupported,rest=throws",
   "clo-n2i/I.keep": "refused:SC1090",
   "clo-n2i/I.thunk": "refused:SC1090",
   "clo-n2i/N.callback": "throws",
   "clo-n2i/I.read@callback": "n1=wrong,rest=wrong",
+  "clo-i2n/U.typeof": "wrong",
+  "clo-i2n/U.str": "unsupported",
+  "clo-i2n/U.json": "unsupported",
+  "clo-i2n/U.tag": "unsupported",
+  "clo-i2n/U.keys": "throws",
+  "clo-i2n/U.inst": "throws",
+  "clo-i2n/U.clone": "unsupported",
+  "clo-i2n/N.ident": "wrong",
+  "clo-i2n/I.taker.back": "clone=wrong,ctor=unsupported,done=unsupported,n1=unsupported,proto=wrong,rest=throws,str=unsupported,tag=wrong",
   "clo-i2n/I.taker": "refused:SC1090"
  },
  "iter-array.u": {
   "n2i/S.widen": "refused:SC1090",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/S.widen": "refused:SC1090",
   "clo-n2i/S.widen": "refused:SC1090",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/S.widen": "refused:SC1090"
  },
  "iter-object.p": {
@@ -1367,6 +1598,7 @@
   "i2n/I.same@param": "refused:SC8010",
   "i2n/I.same@field": "refused:SC8010",
   "i2n/I.same@element": "refused:SC8010",
+  "i2n/N.ident": "wrong",
   "i2n/N.mapkey": "refused:SC1101",
   "i2n/N.indexOf": "refused:SC1101",
   "i2n2i/I.same": "refused:SC8010",
@@ -1386,12 +1618,16 @@
   "clo-i2n/U.forin": "refused:SC1101",
   "clo-i2n/U.inst": "refused:SC1101",
   "clo-i2n/U.clone": "refused:SC1101",
+  "clo-i2n/N.ident": "wrong",
   "clo-i2n/I.taker.back": "refused:SC8010"
  },
  "iter-object.u": {
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast.read.forof": "wrong",
   "i2n/N.cast.read.again": "wrong",
-  "i2n/I.same@cast": "refused:SC8010"
+  "i2n/I.same@cast": "refused:SC8010",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "map-obj.control.-": {
   "T.json": "refused:SC1090",
@@ -1400,7 +1636,6 @@
  "map-obj.p": {
   "i2n/N.read.getByKey": "wrong",
   "i2n/N.read.keyId": "wrong",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -1432,7 +1667,6 @@
   "n2i2n/N.indexOf": "refused:SC8010",
   "n2i2n/N.read.size": "throws",
   "n2i2n/N.read.getByKey": "throws",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -1458,8 +1692,11 @@
   "clo-i2n/U.clone": "refused:SC8010"
  },
  "map-obj.u": {
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
-  "n2i2n/U.forin": "unsupported"
+  "n2i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "map.control.-": {
   "N.read.json": "refused:SC1090",
@@ -1477,7 +1714,6 @@
   "i2n/cb.json": "refused:SC1090",
   "i2n/N.read.isMap": "refused:SC8010",
   "i2n/N.read.json": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -1509,7 +1745,6 @@
   "n2i2n/N.read.size": "throws",
   "n2i2n/N.read.isMap": "refused:SC8010",
   "n2i2n/N.read.json": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -1539,14 +1774,16 @@
  },
  "map.u": {
   "n2i/P.read@isl.json": "refused:SC1090",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
-  "n2i2n/U.forin": "unsupported"
+  "n2i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "map.w": {
   "n2i/S.widen": "refused:SC1090",
   "n2i/P.read@isl.json": "refused:SC1090",
   "i2n/N.read.isMap": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -1761,28 +1998,45 @@
  "rec-acc.i": {
   "n2i/I.inspect": "clone=message",
   "n2i/I.inspect@nat": "clone=message",
+  "i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=message"
  },
  "rec-acc.p": {
   "n2i/I.inspect": "clone=message",
   "n2i/I.inspect@nat": "clone=message",
+  "i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=message"
  },
  "rec-acc.u": {
   "n2i/I.inspect": "clone=message",
   "n2i/I.inspect@nat": "clone=message",
+  "i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "clone=message"
  },
  "rec-extra.control.-": {},
- "rec-extra.i": {},
- "rec-extra.p": {},
- "rec-extra.u": {},
+ "rec-extra.i": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec-extra.p": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec-extra.u": {
+  "i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "rec-frozen.control.-": {},
  "rec-frozen.i": {
   "n2i/I.inspect": "desc=wrong,ext=wrong",
@@ -1791,12 +2045,14 @@
   "n2i/I.read@nat": "frozen=wrong",
   "n2i/I.inspect@nat": "desc=wrong,ext=wrong",
   "i2n/N.read.frozen": "throws",
+  "i2n/U.forin": "unsupported",
   "i2n/N.param": "frozen=throws",
   "i2n/N.read@isl.frozen": "throws",
   "n2i2n/W.isl": "wrong",
   "clo-n2i/I.thunk": "desc=wrong,ext=wrong,frozen=wrong",
   "clo-n2i/N.callback": "frozen=throws",
   "clo-i2n/N.read.frozen": "throws",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "desc=wrong,ext=wrong,frozen=wrong"
  },
  "rec-frozen.p": {
@@ -1825,10 +2081,13 @@
   "n2i/W.isl": "wrong",
   "n2i/I.read@nat": "frozen=wrong",
   "n2i/I.inspect@nat": "desc=wrong,ext=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast.read.frozen": "throws",
   "i2n/N.cast.read@isl.frozen": "throws",
   "n2i2n/W.isl": "wrong",
   "clo-n2i/I.thunk": "desc=wrong,ext=wrong,frozen=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "desc=wrong,ext=wrong,frozen=wrong"
  },
  "rec-idx.control.-": {
@@ -1850,12 +2109,14 @@
   "n2i/N.read@isl.y#empty": "throws",
   "n2i/N.read@isl.nope#empty": "throws",
   "i2n/N.read.nope#xy": "throws",
+  "i2n/U.forin#xy": "unsupported",
   "i2n/N.param#xy": "nope=throws",
   "i2n/N.read@isl.y#xy": "throws",
   "i2n/N.read@isl.nope#xy": "throws",
   "i2n/N.read.x#order": "throws",
   "i2n/N.read.y#order": "throws",
   "i2n/N.read.nope#order": "throws",
+  "i2n/U.forin#order": "unsupported",
   "i2n/N.param#order": "nope=throws,x=throws,y=throws",
   "i2n/N.read@isl.x#order": "throws",
   "i2n/N.read@isl.y#order": "throws",
@@ -1863,11 +2124,13 @@
   "i2n/N.read.x#empty": "throws",
   "i2n/N.read.y#empty": "throws",
   "i2n/N.read.nope#empty": "throws",
+  "i2n/U.forin#empty": "unsupported",
   "i2n/N.param#empty": "nope=throws,x=throws,y=throws",
   "i2n/N.read@isl.x#empty": "throws",
   "i2n/N.read@isl.y#empty": "throws",
   "i2n/N.read@isl.nope#empty": "throws",
   "i2n/N.read.nope#nullproto": "throws",
+  "i2n/U.forin#nullproto": "unsupported",
   "i2n/U.inst#nullproto": "wrong",
   "i2n/N.param#nullproto": "nope=throws",
   "i2n/N.read@isl.y#nullproto": "throws",
@@ -1897,42 +2160,61 @@
   "clo-n2i/N.callback#empty": "nope=throws,x=throws,y=throws",
   "clo-n2i/N.callback#nullproto": "nope=throws",
   "clo-i2n/N.read.nope#xy": "throws",
+  "clo-i2n/U.forin#xy": "unsupported",
   "clo-i2n/N.read.x#order": "throws",
   "clo-i2n/N.read.y#order": "throws",
   "clo-i2n/N.read.nope#order": "throws",
+  "clo-i2n/U.forin#order": "unsupported",
   "clo-i2n/N.read.x#empty": "throws",
   "clo-i2n/N.read.y#empty": "throws",
   "clo-i2n/N.read.nope#empty": "throws",
+  "clo-i2n/U.forin#empty": "unsupported",
   "clo-i2n/N.read.nope#nullproto": "throws",
+  "clo-i2n/U.forin#nullproto": "unsupported",
   "clo-i2n/U.inst#nullproto": "wrong"
  },
  "rec-idx.u": {
+  "i2n/U.forin#xy": "unsupported",
   "i2n/N.cast.read.nope#xy": "throws",
   "i2n/N.cast.read@isl.y#xy": "throws",
   "i2n/N.cast.read@isl.nope#xy": "throws",
+  "i2n/U.forin#order": "unsupported",
   "i2n/N.cast.read.x#order": "throws",
   "i2n/N.cast.read.y#order": "throws",
   "i2n/N.cast.read.nope#order": "throws",
   "i2n/N.cast.read@isl.x#order": "throws",
   "i2n/N.cast.read@isl.y#order": "throws",
   "i2n/N.cast.read@isl.nope#order": "throws",
+  "i2n/U.forin#empty": "unsupported",
   "i2n/N.cast.read.x#empty": "throws",
   "i2n/N.cast.read.y#empty": "throws",
   "i2n/N.cast.read.nope#empty": "throws",
   "i2n/N.cast.read@isl.x#empty": "throws",
   "i2n/N.cast.read@isl.y#empty": "throws",
   "i2n/N.cast.read@isl.nope#empty": "throws",
+  "i2n/U.forin#nullproto": "unsupported",
   "i2n/U.inst#nullproto": "wrong",
   "i2n/N.cast.read.nope#nullproto": "throws",
   "i2n/N.cast.read@isl.y#nullproto": "throws",
   "i2n/N.cast.read@isl.nope#nullproto": "throws",
-  "clo-n2i/N.callback#nullproto": "inst=wrong",
+  "clo-n2i/N.callback#xy": "forin=unsupported",
+  "clo-n2i/N.callback#order": "forin=unsupported",
+  "clo-n2i/N.callback#empty": "forin=unsupported",
+  "clo-n2i/N.callback#nullproto": "forin=unsupported,inst=wrong",
+  "clo-i2n/U.forin#xy": "unsupported",
+  "clo-i2n/U.forin#order": "unsupported",
+  "clo-i2n/U.forin#empty": "unsupported",
+  "clo-i2n/U.forin#nullproto": "unsupported",
   "clo-i2n/U.inst#nullproto": "wrong"
  },
  "rec-idx.w": {
   "n2i/W.nat#xy": "throws",
   "n2i/W.nat#order": "throws",
   "n2i/W.nat#empty": "throws",
+  "i2n/U.forin#xy": "unsupported",
+  "i2n/U.forin#order": "unsupported",
+  "i2n/U.forin#empty": "unsupported",
+  "i2n/U.forin#nullproto": "unsupported",
   "i2n/U.inst#nullproto": "wrong",
   "n2i2n/W.back#xy": "throws",
   "n2i2n/P.read@back.keys#xy": "wrong",
@@ -1960,12 +2242,19 @@
   "n2i2n/N.read@isl.keys#empty": "wrong",
   "n2i2n/N.read@isl.json#empty": "wrong",
   "n2i2n/N.read@isl.n#empty": "wrong",
+  "clo-i2n/U.forin#xy": "unsupported",
+  "clo-i2n/U.forin#order": "unsupported",
+  "clo-i2n/U.forin#empty": "unsupported",
+  "clo-i2n/U.forin#nullproto": "unsupported",
   "clo-i2n/U.inst#nullproto": "wrong"
  },
  "rec-nested.control.-": {
   "W.result.mapkey": "wrong"
  },
- "rec-nested.i": {},
+ "rec-nested.i": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "rec-nested.p": {
   "i2n/S.make": "refused:SC8010",
   "n2i2n/S.back": "refused:SC8010",
@@ -1974,24 +2263,75 @@
   "clo-n2i/N.callback": "elId=wrong",
   "clo-i2n/S.call": "refused:SC8010"
  },
- "rec-nested.u": {},
- "rec-nested.w": {},
+ "rec-nested.u": {
+  "i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec-nested.w": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "rec-opt.control.-": {
   "W.result.mapkey#absent": "wrong",
   "W.result.mapkey#undef": "wrong",
   "W.result.mapkey#full": "wrong"
  },
- "rec-opt.i": {},
- "rec-opt.p": {},
- "rec-opt.u": {},
- "rec-opt.w": {},
+ "rec-opt.i": {
+  "i2n/U.forin#absent": "unsupported",
+  "i2n/U.forin#undef": "unsupported",
+  "i2n/U.forin#full": "unsupported",
+  "clo-i2n/U.forin#absent": "unsupported",
+  "clo-i2n/U.forin#undef": "unsupported",
+  "clo-i2n/U.forin#full": "unsupported"
+ },
+ "rec-opt.p": {
+  "i2n/U.forin#absent": "unsupported",
+  "i2n/U.forin#undef": "unsupported",
+  "i2n/U.forin#full": "unsupported",
+  "clo-i2n/U.forin#absent": "unsupported",
+  "clo-i2n/U.forin#undef": "unsupported",
+  "clo-i2n/U.forin#full": "unsupported"
+ },
+ "rec-opt.u": {
+  "i2n/U.forin#absent": "unsupported",
+  "i2n/U.forin#undef": "unsupported",
+  "i2n/U.forin#full": "unsupported",
+  "clo-n2i/N.callback#absent": "forin=unsupported",
+  "clo-n2i/N.callback#undef": "forin=unsupported",
+  "clo-n2i/N.callback#full": "forin=unsupported",
+  "clo-i2n/U.forin#absent": "unsupported",
+  "clo-i2n/U.forin#undef": "unsupported",
+  "clo-i2n/U.forin#full": "unsupported"
+ },
+ "rec-opt.w": {
+  "i2n/U.forin#absent": "unsupported",
+  "i2n/U.forin#undef": "unsupported",
+  "i2n/U.forin#full": "unsupported",
+  "clo-i2n/U.forin#absent": "unsupported",
+  "clo-i2n/U.forin#undef": "unsupported",
+  "clo-i2n/U.forin#full": "unsupported"
+ },
  "rec.control.-": {
   "W.result.mapkey": "wrong"
  },
- "rec.i": {},
- "rec.p": {},
- "rec.u": {},
- "rec.w": {},
+ "rec.i": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec.p": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec.u": {
+  "i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
+ "rec.w": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "regexp.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "throws",
@@ -2034,10 +2374,13 @@
   "n2i/P.read@isl.li": "wrong",
   "n2i/I.read@nat": "li=throws,src=throws",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "throws"
  },
  "regexp.w": {
@@ -2077,6 +2420,7 @@
   "n2i/I.read@nat": "bl=throws,first=wrong,isSAB=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
   "i2n/N.read.first": "unsupported",
+  "i2n/U.forin": "unsupported",
   "i2n/N.param": "first=unsupported",
   "i2n/N.read@isl.first": "unsupported",
   "i2n/W.nat": "unsupported",
@@ -2088,6 +2432,7 @@
   "clo-n2i/I.thunk": "throws",
   "clo-n2i/N.callback": "first=unsupported",
   "clo-i2n/N.read.first": "unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "throws"
  },
  "sab.u": {
@@ -2098,6 +2443,7 @@
   "n2i/U.json@isl": "unsupported",
   "n2i/I.read@nat": "bl=throws,first=wrong,isSAB=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast.read.first": "unsupported",
   "i2n/N.cast.read@isl.first": "unsupported",
   "i2n/W.nat": "unsupported",
@@ -2105,6 +2451,8 @@
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "throws"
  },
  "set.control.-": {
@@ -2121,7 +2469,6 @@
   "i2n/cb.json": "refused:SC1090",
   "i2n/N.read.isSet": "refused:SC8010",
   "i2n/N.read.json": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2153,7 +2500,6 @@
   "n2i2n/N.read.size": "throws",
   "n2i2n/N.read.isSet": "refused:SC8010",
   "n2i2n/N.read.json": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -2183,14 +2529,16 @@
  },
  "set.u": {
   "n2i/P.read@isl.json": "refused:SC1090",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
-  "n2i2n/U.forin": "unsupported"
+  "n2i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "set.w": {
   "n2i/S.widen": "refused:SC1090",
   "n2i/P.read@isl.json": "refused:SC1090",
   "i2n/N.read.isSet": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2246,29 +2594,41 @@
   "i2n/T.json#nodesc": "refused:SC1090"
  },
  "sym.u": {},
- "sym.w": {
-  "i2n/T.json#local": "refused:SC1090",
-  "i2n/T.json#registered": "refused:SC1090",
-  "i2n/T.json#wellknown": "refused:SC1090",
-  "i2n/T.json#nodesc": "refused:SC1090"
+ "sym.w": {},
+ "thenable.p": {
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
- "thenable.p": {},
- "thenable.u": {},
+ "thenable.u": {
+  "i2n/U.forin": "unsupported",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported"
+ },
  "tuple-opt.control.-": {},
  "tuple-opt.p": {
   "n2i/I.inspect#one": "proxy=wrong",
   "n2i/I.inspect#two": "proxy=wrong",
+  "i2n/U.forin#one": "unsupported",
+  "i2n/U.forin#two": "unsupported",
   "clo-n2i/I.thunk#one": "proxy=wrong",
   "clo-n2i/I.thunk#two": "proxy=wrong",
+  "clo-i2n/U.forin#one": "unsupported",
   "clo-i2n/I.taker#one": "proxy=wrong",
+  "clo-i2n/U.forin#two": "unsupported",
   "clo-i2n/I.taker#two": "proxy=wrong"
  },
  "tuple-opt.u": {
   "n2i/I.inspect#one": "proxy=wrong",
   "n2i/I.inspect#two": "proxy=wrong",
+  "i2n/U.forin#one": "unsupported",
+  "i2n/U.forin#two": "unsupported",
   "clo-n2i/I.thunk#one": "proxy=wrong",
+  "clo-n2i/N.callback#one": "forin=unsupported",
   "clo-n2i/I.thunk#two": "proxy=wrong",
+  "clo-n2i/N.callback#two": "forin=unsupported",
+  "clo-i2n/U.forin#one": "unsupported",
   "clo-i2n/I.taker#one": "proxy=wrong",
+  "clo-i2n/U.forin#two": "unsupported",
   "clo-i2n/I.taker#two": "proxy=wrong"
  },
  "tuple-rec.control.-": {},
@@ -2276,7 +2636,6 @@
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
   "i2n/N.read.json": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2304,7 +2663,6 @@
   "n2i2n/N.mapkey": "refused:SC8010",
   "n2i2n/N.indexOf": "refused:SC8010",
   "n2i2n/N.read.json": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -2332,7 +2690,6 @@
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
   "i2n/N.read.json": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2360,7 +2717,6 @@
   "n2i2n/N.mapkey": "refused:SC8010",
   "n2i2n/N.indexOf": "refused:SC8010",
   "n2i2n/N.read.json": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -2387,12 +2743,15 @@
  "tuple-rec.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.xl": "wrong",
   "i2n/N.cast.read@isl.json": "wrong",
   "i2n/I.read@nat": "json=wrong,xl=wrong",
   "i2n/I.inspect@nat": "clone=wrong,json=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "tuple.control.-": {},
@@ -2402,7 +2761,6 @@
   "i2n/N.read.json": "refused:SC8010",
   "i2n/N.read.isArr": "refused:SC8010",
   "i2n/N.read.destr": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2434,7 +2792,6 @@
   "n2i2n/N.read.json": "refused:SC8010",
   "n2i2n/N.read.isArr": "refused:SC8010",
   "n2i2n/N.read.destr": "refused:SC8010",
-  "n2i2n/T.typeof": "refused:SC8010",
   "n2i2n/U.typeof": "refused:SC8010",
   "n2i2n/U.isArray": "refused:SC8010",
   "n2i2n/U.str": "refused:SC8010",
@@ -2465,6 +2822,7 @@
  "tuple.u": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "wrong",
   "i2n/N.cast.read@isl.t1": "wrong",
   "i2n/N.cast.read@isl.json": "wrong",
@@ -2472,12 +2830,16 @@
   "i2n/I.read@nat": "destr=wrong,json=wrong,t0=wrong",
   "i2n/I.inspect@nat": "clone=wrong,json=wrong,str=wrong",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "tuple.w": {
   "n2i/I.inspect": "proxy=wrong",
   "n2i/I.inspect@nat": "proxy=wrong",
+  "i2n/U.forin": "unsupported",
   "clo-n2i/I.thunk": "proxy=wrong",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "proxy=wrong"
  },
  "u8.control.-": {},
@@ -2517,7 +2879,6 @@
   "i2n/N.read.isURL": "refused:SC8010",
   "i2n/N.read.json": "refused:SC8010",
   "i2n/N.read.str": "refused:SC8010",
-  "i2n/T.typeof": "refused:SC8010",
   "i2n/T.json": "refused:SC8010",
   "i2n/T.clone": "refused:SC8010",
   "i2n/U.typeof": "refused:SC8010",
@@ -2572,10 +2933,13 @@
   "n2i/P.read@isl.str": "wrong",
   "n2i/I.read@nat": "href=throws,isURL=wrong,json=wrong,q=throws,str=wrong",
   "n2i/I.inspect@nat": "clone=wrong,ctor=wrong,desc=wrong,ext=wrong,forin=wrong,inst=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,proxy=wrong,str=wrong,syms=wrong,tag=wrong,typeof=wrong",
+  "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "throws"
  },
  "weakmap.control.-": {
@@ -2591,12 +2955,14 @@
   "n2i/I.read": "refused:SC8010",
   "n2i/I.keep": "refused:SC8010",
   "n2i/I.same": "refused:SC8010",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@param": "refused:SC8010",
   "i2n/I.same@field": "refused:SC8010",
   "i2n/I.same@element": "refused:SC8010",
   "n2i2n/S.back": "refused:SC8010",
   "clo-n2i/I.keep": "refused:SC8010",
   "clo-n2i/I.thunk": "throws",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "refused:SC8010"
  },
  "weakmap.u": {
@@ -2604,10 +2970,13 @@
   "n2i/I.read": "throws",
   "n2i/I.keep": "throws",
   "n2i/I.same": "throws",
+  "i2n/U.forin": "unsupported",
   "i2n/I.same@cast": "refused:SC8010",
   "n2i2n/S.back": "exit",
   "clo-n2i/I.keep": "throws",
   "clo-n2i/I.thunk": "throws",
+  "clo-n2i/N.callback": "forin=unsupported",
+  "clo-i2n/U.forin": "unsupported",
   "clo-i2n/I.taker": "throws"
  }
 }

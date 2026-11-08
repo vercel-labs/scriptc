@@ -618,6 +618,11 @@ const islandHelpers = {
         return box.self;
       },
     }[name];
+    // The class's length is its constructor's (the native function reports
+    // the length Node gives the declaration); without one it is 0, as for
+    // a derived class's implicit constructor.
+    if (typeof ctor === "function")
+      Object.defineProperty(C, "length", { value: ctor.length, configurable: true });
     Object.setPrototypeOf(C, Base);
     const proto = Object.create(Base.prototype, {
       constructor: { value: C, writable: true, configurable: true },

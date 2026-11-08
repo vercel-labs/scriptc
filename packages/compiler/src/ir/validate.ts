@@ -36,6 +36,7 @@ import {
   ffiSourceParamTypes,
   isDirentShape,
   isDynTypedRefType,
+  isLiveDynRefType,
   isFfiCallbackParam,
   isFfiContextParam,
   isFfiReleaseParam,
@@ -1240,20 +1241,6 @@ function validateFunction(
   // Optional chains open a binding scope: chainRecv is valid only inside
   // the body of the optChain whose id it names.
   const activeChains = new Map<string, IrType>();
-
-  const liveDynRefEligible = (type: IrType, seen = new Set<string>()): boolean => {
-    if (
-      type.kind === "record" ||
-      type.kind === "array" ||
-      type.kind === "bytes" ||
-      isDynTypedRefType(type)
-    ) {
-      return true;
-    }
-    if (type.kind !== "union" || seen.has(type.unionId)) return false;
-    seen.add(type.unionId);
-    return unions.get(type.unionId)?.arms.some((arm) => liveDynRefEligible(arm, seen)) ?? false;
-  };
 
   function checkNullishOperands(e: IrExpr & { kind: "nullish" }): void {
     expectType(e.right, e.type, "nullish right operand");
@@ -3623,7 +3610,7 @@ function validateFunction(
         ) {
           err(`dynFrom of non-dyn-convertible type ${vt.kind}`, e.loc);
         }
-        if (e.liveRef && !liveDynRefEligible(vt)) {
+        if (e.liveRef && !isLiveDynRefType(vt, (id) => unions.get(id))) {
           err(`live dynFrom of unsupported type ${vt.kind}`, e.loc);
         }
         break;
@@ -5459,11 +5446,14 @@ function validateFunction(
         const p = cbT.params[0]!;
         if (e.fn === "child.onExit" || e.fn === "child.onClose") {
           const def = p.kind === "union" ? unions.get(p.unionId) : undefined;
+          // A bare `number` code is a held listener's declared type: the
+          // adapter checks the null Node passes for a signal's end.
           ok =
-            def !== undefined &&
-            def.arms.length === 2 &&
-            def.arms[0]!.kind === "f64" &&
-            def.arms[1]!.kind === "nullT";
+            p.kind === "f64" ||
+            (def !== undefined &&
+              def.arms.length === 2 &&
+              def.arms[0]!.kind === "f64" &&
+              def.arms[1]!.kind === "nullT");
           if (ok && cbT.params.length === 2) {
             const s = cbT.params[1]!;
             const sdef = s.kind === "union" ? unions.get(s.unionId) : undefined;

@@ -244,8 +244,8 @@ async function build() {
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
       .sort();
-    // zlib, brotli and mbedtls parse untrusted input and are hardened like the
-    // runtime units; QuickJS and libregexp are not (see hardening.mjs).
+    // zlib, brotli, zstd and mbedtls parse untrusted input and get every
+    // protection; libregexp keeps its flags (see hardening.mjs).
     const vendorHardening = runtimeHardeningFlags(
       { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
       { optimized: true, vendor: true, ...hardeningSupport },

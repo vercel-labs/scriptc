@@ -509,7 +509,7 @@ async function build() {
               ...variant.defines.map((define) => `-D${define}`),
               ...tlsFlags,
               ...includeFlags,
-              // After RUNTIME_COMPILE_FLAGS, so the bounds checks stay enabled.
+              // Zero-initialized small locals and, on Linux, stack-clash probes.
               ...runtimeHardeningFlags(config, {
                 optimized: flavorSpec.optimization !== "-O0",
                 ...hardeningSupport,
@@ -602,9 +602,13 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
-    // zlib, brotli and mbedtls parse untrusted input and are hardened like the
-    // runtime units; QuickJS and libregexp are not (see hardening.mjs).
-    const vendorHardening = runtimeHardeningFlags(config, { optimized: true, vendor: true, ...hardeningSupport });
+    // zlib, brotli, zstd and mbedtls parse untrusted input and get every
+    // protection; libregexp keeps its flags (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(config, {
+      optimized: true,
+      vendor: true,
+      ...hardeningSupport,
+    });
     const requestedArchives = new Set(matrix.archives.map((entry) => entry.id));
     const archives =
       config.vendorArchives === false

@@ -9,14 +9,18 @@ const run = promisify(execFile);
 const ZERO_INIT = ["-ftrivial-auto-var-init=zero", "-ftrivial-auto-var-init-max-size=64"];
 
 /**
- * Hardening flags for the precompiled C runtime units and for the vendored
- * zlib, brotli and mbedtls archives, which parse untrusted compressed and
- * network input.
+ * Hardening flags for the runtime packs: the precompiled C runtime units, and
+ * (`vendor`) the vendored zlib, brotli, zstd and mbedtls archives, which parse
+ * untrusted compressed and network input.
  *
  * Generated code is checked by the compiler; the C runtime is trusted. These
  * flags turn some classes of runtime memory bugs into deterministic traps or
  * defined values instead of silent corruption. None changes the behavior of
  * a correct program.
+ *
+ * The vendored archives get all five protections below. The runtime units get
+ * the first and the fourth only: every typed program runs through them, and
+ * the other three cost instructions there (see the comment in the function).
  *
  * - `-ftrivial-auto-var-init=zero` zero-initializes automatic variables of up
  *   to 64 bytes, so an uninitialized scalar, pointer or small struct reads as
@@ -28,7 +32,7 @@ const ZERO_INIT = ["-ftrivial-auto-var-init=zero", "-ftrivial-auto-var-init-max-
  * - `-fsanitize=bounds -fsanitize-trap=bounds` traps on out-of-bounds indexing
  *   of arrays whose bound the compiler knows. Trapping needs no sanitizer
  *   runtime, so the artifacts still exclude every `__ubsan_` handler.
- *   Unoptimized (dev) units use only the `local-bounds` part: clang's
+ *   An unoptimized build uses only the `local-bounds` part: clang's
  *   `array-bounds` checks emit sanitizer metadata even when they trap, and
  *   without optimization that unused metadata stays in the object, including
  *   source paths that `-ffile-prefix-map` does not rewrite (the file name and
@@ -45,8 +49,8 @@ const ZERO_INIT = ["-ftrivial-auto-var-init=zero", "-ftrivial-auto-var-init-max-
  *   it. Level 3, which also checks dynamically computed sizes, made the
  *   regex benchmark 5% slower.
  *
- * QuickJS and libregexp keep their existing flags: hardening them as well
- * slowed the regex, CSV-number and error-validation benchmarks by 5-7%.
+ * The libregexp archive keeps its existing flags: hardening it as well slowed
+ * the regex, CSV-number and error-validation benchmarks by 5-7%.
  */
 export function runtimeHardeningFlags(config, { optimized, cappedZeroInit, vendor = false }) {
   if (typeof cappedZeroInit !== "boolean") {
@@ -57,9 +61,10 @@ export function runtimeHardeningFlags(config, { optimized, cappedZeroInit, vendo
   const musl = (config.runtimeDefines ?? []).includes("SCR_MUSL");
   // The runtime units are on the path of every typed program, so they get
   // only the two protections that execute no or almost no extra instructions
-  // on the benchmark set (zero-initialization +0.07%, stack-clash probes
-  // 0.00%; canaries cost +0.86%, bounds traps +2.15%, FORTIFY +0.15%). The
-  // vendored archives (`vendor`) parse untrusted input and get all of them.
+  // on the benchmark set (instructions executed, 24 workloads, each protection
+  // alone: zero-initialization +0.07%, stack-clash probes 0.00%; canaries
+  // +0.86%, bounds traps +2.15% with one workload at +25%, FORTIFY +0.15%).
+  // The vendored archives (`vendor`) parse untrusted input and get all of them.
   if (!vendor) {
     return [
       ...(cappedZeroInit ? ZERO_INIT : []),

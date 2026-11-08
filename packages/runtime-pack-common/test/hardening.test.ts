@@ -40,27 +40,33 @@ test.each([
   }
 });
 
-test("unoptimized units omit FORTIFY, which requires optimization", () => {
-  const flags = runtimeHardeningFlags({ platform: "linux" }, { optimized: false, vendor: true, ...supported });
+test("an unoptimized vendored build omits FORTIFY, which requires optimization", () => {
+  const flags = runtimeHardeningFlags(
+    { platform: "linux" },
+    { optimized: false, vendor: true, ...supported },
+  );
   expect(flags).toContain("-fstack-protector-strong");
   expect(flags.some((flag) => flag.includes("FORTIFY"))).toBe(false);
 });
 
-test("unoptimized units check only local bounds, which embed no source paths", () => {
+test("an unoptimized vendored build checks only local bounds, which embed no source paths", () => {
   // array-bounds metadata (file names, unnamed struct locations) survives -O0.
-  expect(runtimeHardeningFlags({ platform: "darwin" }, { optimized: false, vendor: true, ...supported })).toEqual(
-    [
-      ...zeroInit,
-      "-fsanitize=local-bounds",
-      "-fsanitize-trap=local-bounds",
-      "-fstack-protector-strong",
-    ],
-  );
+  expect(
+    runtimeHardeningFlags({ platform: "darwin" }, { optimized: false, vendor: true, ...supported }),
+  ).toEqual([
+    ...zeroInit,
+    "-fsanitize=local-bounds",
+    "-fsanitize-trap=local-bounds",
+    "-fstack-protector-strong",
+  ]);
 });
 
 test("bounds checks trap instead of calling a sanitizer runtime", () => {
   for (const platform of ["linux", "darwin", "win32", "wasi"]) {
-    const flags = runtimeHardeningFlags({ platform }, { optimized: true, vendor: true, ...supported });
+    const flags = runtimeHardeningFlags(
+      { platform },
+      { optimized: true, vendor: true, ...supported },
+    );
     expect(flags.indexOf("-fsanitize-trap=bounds")).toBeGreaterThan(
       flags.indexOf("-fsanitize=bounds"),
     );

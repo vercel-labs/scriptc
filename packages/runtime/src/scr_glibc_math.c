@@ -122,7 +122,8 @@ __attribute__((target("sse4.1"))) static double sgm_trunc_sse41(double x) {
 /* IFUNC resolvers run while a static PIE relocates itself, before libc sets
  * up thread-local storage. The stack protector reads its canary from TLS
  * (%fs:0x28), so neither the resolvers nor the CPU probe they call may carry
- * one. */
+ * one. The packs build the runtime units without the stack protector; the
+ * attribute keeps that true here under a compiler that enables it by default. */
 #define SGM_RESOLVER __attribute__((no_stack_protector))
 
 SGM_RESOLVER static int sgm_has_sse41(void) {

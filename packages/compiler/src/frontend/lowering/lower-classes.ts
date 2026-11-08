@@ -409,10 +409,12 @@ function initializerReachingInstance(decl: ts.ClassLikeDeclaration): ts.Property
 }
 
 /** Whether the constructor body of `decl` can run code of a subclass or
- * hand the instance out: any call, construction or tagged template besides
- * its own `super(...)` call (whose arguments count), and any use of `this`
- * or `super` other than a member access `this.name` of a name that is not
- * an accessor (an accessor is a call a subclass can override). */
+ * hand the instance out, in its body or in a parameter's default value: any
+ * call, construction or tagged template besides its own `super(...)` call
+ * (whose arguments count), and any use of `this` or `super` other than a
+ * member access `this.name` of a name `isAccessor` does not answer for (an
+ * accessor is a call a subclass can override; the caller's second question
+ * is a field without a slot, which an assignment creates). */
 function constructorReachesInstance(
   decl: ts.ClassLikeDeclaration,
   isAccessor: (name: string) => boolean,
@@ -446,7 +448,13 @@ function constructorReachesInstance(
     });
     return reaches;
   };
-  return visit(ctor.body);
+  // A default value of a parameter, and a default or a computed name inside
+  // a destructured one, is evaluated when the constructor is entered: it
+  // reaches the instance the way a statement of the body does.
+  const parameterReaches = (parameter: ts.ParameterDeclaration): boolean =>
+    (parameter.initializer !== undefined && visit(parameter.initializer)) ||
+    (!ts.isIdentifier(parameter.name) && visit(parameter.name));
+  return ctor.parameters.nodes.some(parameterReaches) || visit(ctor.body);
 }
 
 /** Whether an instance index signature is `[key: string]: any` or
@@ -4468,11 +4476,28 @@ export function collectClassShapeInner(
         const accessorOf = (name: string): boolean =>
           lowerer.findMethodOn(ancestor, `get:${name}`) !== null ||
           lowerer.findMethodOn(ancestor, `set:${name}`) !== null;
+        const erasedNames = ancestor.erasedFields;
+        const slotNames = ancestor.fields;
         if (fieldsBelow && constructorReachesInstance(ancestor.decl, accessorOf)) {
           lowerer.unsupported(
             "SC1090",
             decl.name ?? decl,
             `an index signature in a class with instance fields below '${ancestorName}', whose constructor calls a function or hands the instance out (${order})`,
+          );
+        } else if (
+          fieldsBelow &&
+          // A field declared with `declare` has no slot: assigning it in
+          // the constructor creates the property then, before the fields
+          // below exist, exactly like a write through the signature.
+          constructorReachesInstance(
+            ancestor.decl,
+            (name) => erasedNames?.has(name) === true && !slotNames.has(name),
+          )
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `an index signature in a class with instance fields below '${ancestorName}', whose constructor uses a field declared with 'declare' (it exists only once it is assigned; ${order})`,
           );
         }
         if (ancestor.fieldOrder.some((field) => field.redeclared !== true)) fieldsBelow = true;

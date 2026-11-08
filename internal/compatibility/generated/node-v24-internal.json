@@ -45449,6 +45449,11 @@
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
@@ -45727,7 +45732,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.filehandle.createReadStream",
         "tests": [
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9753-file-handle-stream-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45753,7 +45759,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.filehandle.createWriteStream",
         "tests": [
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9753-file-handle-stream-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45982,7 +45989,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.filehandle.readLines",
         "tests": [
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9753-file-handle-stream-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47528,7 +47536,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47556,7 +47568,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51188,7 +51204,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -53058,7 +53078,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -53086,7 +53110,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -53114,7 +53142,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -53142,7 +53174,11 @@
         "tests": [
           "tests/corpus/5546-fs-read-stream.cjs",
           "tests/corpus/5547-fs-write-stream.cjs",
-          "tests/corpus/5554-fs-streams-typed.ts"
+          "tests/corpus/5554-fs-streams-typed.ts",
+          "tests/corpus/9751-fs-read-stream-signal.ts",
+          "tests/corpus/9752-fs-write-stream-signal.ts",
+          "tests/corpus/9754-fs-stream-signal-option-values.ts",
+          "tests/corpus/9755-fs-stream-signal-untyped.cjs"
         ]
       },
       "anchorSource": "exact"

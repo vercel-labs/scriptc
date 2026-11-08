@@ -44,7 +44,7 @@ function jsConstructorFunctionOf(
   if (
     !owner ||
     !declaration?.body ||
-    !bindingNeverReassigned(lowerer, symbol, owner) ||
+    !bindingNeverReassigned(lowerer.bindingScope(), symbol, owner) ||
     !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     declaration.asteriskToken ||
     declaration.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)

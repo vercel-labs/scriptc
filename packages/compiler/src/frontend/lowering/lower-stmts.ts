@@ -6896,7 +6896,7 @@ export function lowerVarDecl(
       stdlibGlobalAliasNameOf(lowerer, decl.initializer) !== null &&
       (() => {
         const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-        return symbol !== undefined && bindingNeverReassigned(lowerer, symbol, decl);
+        return symbol !== undefined && bindingNeverReassigned(lowerer.bindingScope(), symbol, decl);
       })());
   if (stableStdlibAlias && stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer)) return null;
 
@@ -9294,7 +9294,7 @@ function unchangedAfterExport(
       return false;
     return runsBeforeExport(decl);
   }
-  if (!bindingNeverReassigned(lowerer, sym, decl)) return false;
+  if (!bindingNeverReassigned(lowerer.bindingScope(), sym, decl)) return false;
   // A binding of another module: the exporting module's own binding
   // `nameNode` names holds that module's require, evaluated before the
   // export, and this file does not assign the binding either.
@@ -15523,7 +15523,7 @@ export function stdlibBufferVarAlias(lowerer: Lowerer, decl: ts.VariableDeclarat
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   return (
     symbol !== undefined &&
-    bindingNeverReassigned(lowerer, symbol, decl) &&
+    bindingNeverReassigned(lowerer.bindingScope(), symbol, decl) &&
     requireEarlyReference(lowerer.program, decl) === null
   );
 }

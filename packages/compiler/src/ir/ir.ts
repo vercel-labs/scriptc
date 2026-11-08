@@ -3385,7 +3385,9 @@ export type IrExpr =
    * the function's own `length` where the type's parameter list does not
    * give it: a function literal lowered with the parameter list of the slot
    * it is written into receives the slot's remaining arguments in
-   * parameters it never declared. */
+   * parameters it never declared, and a method value takes the parameter
+   * list of the slot its class inherits. On an interned closure every
+   * mention carries the same length. */
   | {
       kind: "closure";
       fnName: string;

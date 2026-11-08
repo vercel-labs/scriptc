@@ -1,5 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -4694,6 +4695,10 @@ export function lowerShorthandValue(
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };
     }
+    // A createRequire loader (`{ load }`): the value the long form
+    // `{ load: load }` reads.
+    const loader = createRequireLoaderValue(lowerer, propName, loc);
+    if (loader !== null) return loader;
     // A binding whose storage can hold undefined that the checker's type
     // here has dropped (a missing-element read) keeps its stored union,
     // exactly like the long form `{ name: name }`: the field records

@@ -273,18 +273,45 @@ export function lowerErrorCodeProperty(
 
 /** Whether a class declared in the program, `className` or one of its
  * subclasses, has its own `code` field or a dynamic property bag, or
- * declares an index signature (its `code` is a property of the instance,
- * written before any bag exists). The runtime error classes keep `code` in
- * the errno slot. */
+ * declares `code` without storage: an index signature or a `declare` field
+ * (its `code` is a property of the instance, written before any bag
+ * exists). The runtime error classes keep `code` in the errno slot. */
 function programClassMayOwnCode(lowerer: Lowerer, className: string): boolean {
   for (const [name, info] of lowerer.classes) {
     if (name.startsWith("%")) continue;
     if (name !== className && !lowerer.isSubclassOf(name, className)) continue;
     if (info.def.fields.some((f) => f.name === "code" || f.name === DYN_CLASS_PROPERTIES))
       return true;
-    if (classHasIndexSignature(info)) return true;
+    if (classHasIndexSignature(info) || info.erasedFields?.has("code") === true) return true;
   }
   return false;
+}
+
+/** Whether instances of the program class `className` keep `code`
+ * themselves, not in the runtime error's code slot: a `code` field, or a
+ * `code` declared without storage (an index signature, a `declare` field),
+ * which is an own property of the instance. */
+export function classHoldsOwnCode(lowerer: Lowerer, className: string): boolean {
+  const info = className.startsWith("%") ? undefined : lowerer.classes.get(className);
+  if (!info) return false;
+  if (info.def.fields.some((f) => f.name === "code") || classHasIndexSignature(info)) return true;
+  for (let c: typeof info | null = info; c; c = c.base)
+    if (c.erasedFields?.has("code") === true) return true;
+  return false;
+}
+
+/** The program classes below `className` whose instances keep `code`
+ * themselves (classHoldsOwnCode). Outermost classes only: an instance of a
+ * subclass is an instance of the class listed. */
+export function classesHoldingOwnCode(lowerer: Lowerer, className: string): string[] {
+  const holders: string[] = [];
+  for (const name of lowerer.classes.keys()) {
+    if (name === className || !lowerer.isSubclassOf(name, className)) continue;
+    if (classHoldsOwnCode(lowerer, name)) holders.push(name);
+  }
+  return holders.filter(
+    (name) => !holders.some((other) => other !== name && lowerer.isSubclassOf(name, other)),
+  );
 }
 
 /** Whether values of `type` are errors: class instances whose class is

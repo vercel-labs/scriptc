@@ -1382,6 +1382,15 @@ export function lowerReadlineCreateCall(
   // false drops it)
   let terminal = null as IrExpr | null; // set in setTerminal
   let terminalFalse = false;
+  // A `terminal` value that may be undefined (`boolean | undefined`): held
+  // as its union, decided once the output is known, because an undefined
+  // value takes the default an absent option takes.
+  let terminalOptional = null as {
+    localId: string;
+    unionId: string;
+    booleanTag: number;
+    undefinedTag: number;
+  } | null;
   const pre: IrStmt[] = [];
   // Only terminal interfaces call the completer. A checked-dynamic value
   // must be callable (Node's ERR_INVALID_ARG_VALUE, after the history
@@ -1399,10 +1408,29 @@ export function lowerReadlineCreateCall(
       return;
     }
     if (!(lowerer.typeOf(value).flags & ts.TypeFlags.BooleanLike)) {
-      lowerer.noLowering(
-        "the createInterface option 'terminal' with a value that is not a boolean",
-        value,
-      );
+      const optional = lowerer.lowerExpr(value);
+      const arms =
+        optional.type.kind === "union" ? lowerer.unions.get(optional.type.unionId)?.arms : null;
+      if (
+        optional.type.kind !== "union" ||
+        arms?.length !== 2 ||
+        !arms.some((arm) => arm.kind === "bool") ||
+        !arms.some((arm) => arm.kind === "undefinedT")
+      ) {
+        lowerer.noLowering(
+          "the createInterface option 'terminal' with a value that is not a boolean",
+          value,
+        );
+      }
+      const held = lowerer.declareHiddenLocal("%rlTerminalOption", optional.type);
+      pre.push({ kind: "varDecl", localId: held.id, init: optional, loc });
+      terminalOptional = {
+        localId: held.id,
+        unionId: optional.type.unionId,
+        booleanTag: lowerer.armTag(optional.type.unionId, BOOL),
+        undefinedTag: lowerer.armTag(optional.type.unionId, UNDEFINED_T),
+      };
+      return;
     }
     const local = lowerer.declareHiddenLocal("%rlTerminal", BOOL);
     pre.push({
@@ -1555,7 +1583,50 @@ export function lowerReadlineCreateCall(
   // Node's default for an output process stream is that stream's isTTY, so
   // a direct process.stderr output passes process.isTTY(2) as the value.
   let terminalMode: number | null;
-  if (terminal !== null) {
+  if (terminalOptional !== null) {
+    // Node reads an undefined `terminal` as an absent one: the output's
+    // isTTY when there is an output, otherwise not a terminal.
+    const optionT: IrType = { kind: "union", unionId: terminalOptional.unionId };
+    const option: IrExpr = {
+      kind: "varRef",
+      localId: terminalOptional.localId,
+      type: optionT,
+      loc,
+    };
+    const ttyFd =
+      output.kind === "stdout"
+        ? 1
+        : output.kind === "stream" && output.ttyFd !== undefined
+          ? output.ttyFd
+          : null;
+    terminalMode = 0;
+    terminal = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.undefinedTag,
+        negated: false,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      then:
+        ttyFd === null
+          ? boolLit(false, loc)
+          : { kind: "libCall", fn: "process.isTTY", args: [numLit(ttyFd, loc)], type: BOOL, loc },
+      else_: {
+        kind: "unionNarrow",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.booleanTag,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  } else if (terminal !== null) {
     terminalMode = 0;
   } else if (terminalFalse) {
     terminalMode = null;

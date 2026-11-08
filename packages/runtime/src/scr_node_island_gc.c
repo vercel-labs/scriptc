@@ -730,7 +730,12 @@ static const char ni_weak_source[] =
   "  };\n"
   "})()";
 
-static ScrDyn *ni_weak_fn = NULL; /* the function above (+1), NULL until first use */
+/* The function above (+1), NULL until first use. One handle box per thread,
+ * released when the thread ends: a box belongs to the heap of the thread
+ * that made it, and a worker thread keys weak collections by island objects
+ * too (its operations run on the island's thread, where the function is
+ * compiled once per thread that asks; the cells set is that copy's). */
+static SCR_TL ScrDyn *ni_weak_fn = NULL;
 
 static void ni_weak_cleanup(void) {
   scr_dyn_release(ni_weak_fn);

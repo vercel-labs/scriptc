@@ -31,6 +31,7 @@ import { typeKey } from "../type-mapper.js";
 import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
+import { reportRefusedMemberUse, type RefusedClassMember } from "./class-member-refusals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
@@ -105,6 +106,10 @@ export interface GenericFnInfo {
    * module functions with an exact receiver or the this/super fence. Absent for
    * top-level functions and object-literal methods. */
   member?: { cls: ClassInfo; kind: "method" | "static" };
+  /** A class member whose form was refused without rejecting its class
+   * (class-member-refusals.ts): no instance of it is ever made, and every
+   * demand for one reports the refusal. */
+  refused?: RefusedClassMember;
   /** Direct static calls specialize lexical this for the proven receiver. */
   staticReceiver?: ClassInfo;
   receiverSpecializations?: Map<string, GenericFnInfo>;
@@ -426,6 +431,7 @@ export function genericCallInstance(
   expr: ts.CallExpression,
   info: GenericFnInfo,
 ): GenericInstance {
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, expr);
   const rsig = lowerer.checker.getResolvedSignature(expr);
   // A GENERIC function with overload signatures: the call resolved to a
   // signature that is not the implementation's, so the per-instantiation
@@ -1130,6 +1136,7 @@ function internGenericInstance(
   // (extraKey): the IR signature alone under-discriminates there — two
   // literals can map to one IR signature while their bodies read
   // different fields.
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, blame);
   const key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
   let inst = info.instances.get(key);
   if (!inst) {
@@ -1495,6 +1502,60 @@ function typeParamUnifier(
           unify(d, matches[0]!, depth + 1);
         }
         if (bare.length === 1 && remaining.length === 1) unify(bare[0]!, remaining[0]!, depth + 1);
+      } else if (dParts.length > 1 && iParts.length > dParts.length) {
+        // `T | A | B` against `X | Y | A | B`: the one bare type parameter
+        // stands for every part the named ones leave (the checker infers
+        // it so: a source part identical to a named target is matched to
+        // it, the rest goes to the parameter). No checker type names that
+        // rest, so the binding is the stored union without the named
+        // arms; it needs each named part and each remaining part to be
+        // stored in an arm of its own.
+        const bare = dParts.filter((d) => (d.flags & ts.TypeFlags.TypeParameter) !== 0);
+        const sym: ts.Symbol | undefined = bare.length === 1 ? bare[0]!.getSymbol() : undefined;
+        if (!sym || !tpSet.has(sym) || bindings.has(sym)) return;
+        const whole = lowerer.mapTypeOf(inst);
+        const arms = whole?.kind === "union" ? lowerer.unions.get(whole.unionId)?.arms : undefined;
+        if (!arms) return;
+        const tagOf = (part: ts.Type): number => {
+          // A unit part has no mapping of its own; its arm is the unit's.
+          if (part.flags & ts.TypeFlags.Null) return arms.findIndex((a) => a.kind === "nullT");
+          if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void))
+            return arms.findIndex((a) => a.kind === "undefinedT");
+          const arm = lowerer.mapTypeOf(part);
+          return arm ? arms.findIndex((candidate) => typeEquals(candidate, arm)) : -1;
+        };
+        const named = new Set<number>();
+        const remaining = [...iParts];
+        const pairs: [ts.Type, ts.Type][] = [];
+        for (const d of dParts) {
+          if (d === bare[0]) continue;
+          const target = d.getSymbol() ?? d.getAliasSymbol();
+          if (target === undefined) return;
+          const matches = remaining.filter((i) => (i.getSymbol() ?? i.getAliasSymbol()) === target);
+          if (matches.length !== 1) return;
+          remaining.splice(remaining.indexOf(matches[0]!), 1);
+          const tag = tagOf(matches[0]!);
+          if (tag < 0 || named.has(tag)) return;
+          named.add(tag);
+          pairs.push([d, matches[0]!]);
+        }
+        const rest = new Set<number>();
+        for (const part of remaining) {
+          const tag = tagOf(part);
+          if (tag < 0 || named.has(tag)) return;
+          rest.add(tag);
+        }
+        if (rest.size + named.size !== arms.length) return;
+        for (const [d, match] of pairs) unify(d, match, depth + 1);
+        // A named part that mentions the parameter (`T | T[]`) has bound
+        // it by now; the first binding wins.
+        if (bindings.has(sym)) return;
+        // Filtering preserves the canonical arm order.
+        const kept = arms.filter((_, tag) => rest.has(tag));
+        bindings.set(
+          sym,
+          kept.length === 1 ? kept[0]! : { kind: "union", unionId: lowerer.unions.intern(kept) },
+        );
       }
       return;
     }

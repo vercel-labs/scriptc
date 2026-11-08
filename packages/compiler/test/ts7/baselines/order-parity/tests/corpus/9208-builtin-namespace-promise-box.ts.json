@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9208-builtin-namespace-promise-box.ts"
+ ],
+ "diags": []
+}

@@ -145,6 +145,7 @@ export function verdictKey(
       // `--coverage=reached` analyzes a different program: it skips the
       // unreached remainder, so its verdict never replays a full one's.
       ...(opts.coverage === "reached" ? ["coverage=reached"] : []),
+      ...(opts.define !== undefined ? [`define=${JSON.stringify(opts.define)}`] : []),
     ].join("\0"),
   );
 }

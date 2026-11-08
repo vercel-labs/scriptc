@@ -1,0 +1,34 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'blend'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 297,
+    "end": 302
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'titles'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 304,
+    "end": 310
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Module '\"spice-rack/blends\"' has no exported member 'Blend'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/ambient-shim-bundler-resolution/main.ts",
+    "start": 317,
+    "end": 322
+   }
+  }
+ ]
+}

@@ -337,9 +337,10 @@ export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
   const code: string = diag.code;
   if (isDivergenceCode(code)) return "divergence";
   if (isPerformanceCode(code)) return "performance";
+  if (code === "SC6201") return "invalid-source";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
   if (code === "SC0003") return "invalid-source";
-  if (code === "SC0002" || code === "SC0004") return "environment";
+  if (code === "SC0002" || code === "SC0004" || code === "SC0016") return "environment";
   if (/^SC[35]\d{3}$/.test(code)) return "environment";
   if (code === "SC8004" || code === "SC8005" || code === "SC8012") return "environment";
   if (isTypePatchCode(code)) return "environment";
@@ -464,6 +465,7 @@ export function locateDiagnostic(
       isDivergenceCode(diag.code) ||
       isPerformanceCode(diag.code) ||
       isNodeIslandNoticeCode(diag.code) ||
+      diag.code === "SC6201" ||
       diag.code === "SC8004" ||
       isTypePatchCode(diag.code)
         ? "warning"

@@ -51,6 +51,7 @@ export function analyzeWithFrontend(
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
+    ...(opts.define !== undefined ? { define: opts.define } : {}),
   });
   // The reload lowering may run on, once the island set is known (see
   // lowerFrontend): null when the first load already excludes every island.
@@ -193,6 +194,9 @@ export function analyzeWithFrontend(
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
           islandPackages: new Set(packages),
+          // The reload re-reads the program: the define values still decide
+          // its branches, so the coverage report sees what the build compiles.
+          ...(opts.define !== undefined ? { define: opts.define } : {}),
         });
         lowerLoad.key = key;
       }

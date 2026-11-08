@@ -82,6 +82,7 @@ const VALUES: Partial<Record<CliOptionName, string>> = {
   tier: "static-only",
   "node-islands": "explicit",
   "from-lowered-accept": "compiler",
+  define: 'process.env.NODE_ENV="production"',
 };
 
 function spelling(option: CliOptionName): string {
@@ -171,7 +172,7 @@ const REFUSALS: Record<string, { every?: string; by?: Partial<Record<CliOptionNa
   },
   "build-lib": {
     every:
-      "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+      "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
     by: { sparse: MERGE_ONLY, range: TYPES_PATCH_ONLY, "dry-run": TYPES_PATCH_ONLY, ...LOWERED },
   },
   "types-patch": { by: LOWERED },

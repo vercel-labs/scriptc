@@ -1,0 +1,20 @@
+ambient-shim-bundler-resolution/main.ts:5:10 - error SC0001: Module '"spice-rack/blends"' has no exported member 'blend'.
+
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |          ^~~~~
+  6 | import * as oven from "oven-dial";
+
+ambient-shim-bundler-resolution/main.ts:5:17 - error SC0001: Module '"spice-rack/blends"' has no exported member 'titles'.
+
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |                 ^~~~~~
+  6 | import * as oven from "oven-dial";
+
+ambient-shim-bundler-resolution/main.ts:5:30 - error SC0001: Module '"spice-rack/blends"' has no exported member 'Blend'.
+
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |                              ^~~~~
+  6 | import * as oven from "oven-dial";

@@ -5458,6 +5458,11 @@ const DYN_DISPATCH_METHODS = new Set([
   "every",
   "find",
   "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flat",
+  "reduce",
+  "reduceRight",
   // The native-handle receiver surface (SCR_DYN_HANDLE — req/res/socket
   // boxed through the checked-dynamic boundary): these names dispatch on
   // the runtime kind so a boxed IncomingMessage/ServerResponse/Socket

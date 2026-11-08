@@ -689,7 +689,15 @@ export function lowerArrayUnionHofCall(
   receiverT: IrType & { kind: "union" },
 ): IrExpr | null {
   const method = access.name.text;
-  if (method !== "map" && method !== "forEach" && method !== "filter") return null;
+  if (
+    method !== "map" &&
+    method !== "forEach" &&
+    method !== "filter" &&
+    method !== "some" &&
+    method !== "every" &&
+    method !== "findIndex"
+  )
+    return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
@@ -741,6 +749,19 @@ export function lowerArrayUnionHofCall(
     }
     lowerer.badType(call, lowerer.typeOf(call));
   }
+  // `some`, `every` and `findIndex` test the callback's answer as the array
+  // methods do; each arm runs its own array's helper.
+  const tests = method === "some" || method === "every" || method === "findIndex";
+  if (tests && !findPredicateOk(lowerer, fnRet)) {
+    if (fnRet.kind === "void") {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `'.${method}()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)`,
+      );
+    }
+    lowerer.badType(argNode, lowerer.typeOf(argNode));
+  }
   // `map` stores the callback's answer; `filter` keeps the elements its
   // predicate named. The kept element is the CHECKER's result element, which
   // for a written type predicate is narrower than every arm's own:
@@ -769,7 +790,13 @@ export function lowerArrayUnionHofCall(
       narrowing.push(helper);
     }
   }
-  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  const resultT: IrType = tests
+    ? method === "findIndex"
+      ? F64
+      : BOOL
+    : method === "forEach"
+      ? VOID
+      : arrayOf(outElem);
   for (const array of arrays) {
     const armFnT = funcOf(
       [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
@@ -803,7 +830,7 @@ export function lowerArrayUnionHofCall(
 
 function arrayUnionHofHelper(
   lowerer: Lowerer,
-  method: "map" | "forEach" | "filter",
+  method: "map" | "forEach" | "filter" | "some" | "every" | "findIndex",
   receiverT: IrType & { kind: "union" },
   arrays: (IrType & { kind: "array" })[],
   callbackT: IrType & { kind: "func" },
@@ -813,7 +840,14 @@ function arrayUnionHofHelper(
   narrowing: (string | null)[],
   loc: SrcLoc,
 ): string {
-  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  const resultT: IrType =
+    method === "some" || method === "every"
+      ? BOOL
+      : method === "findIndex"
+        ? F64
+        : method === "forEach"
+          ? VOID
+          : arrayOf(outElem);
   // A filter's per-arm conversions are part of what the helper does, so two
   // sites that share receiver, callback and result but convert differently
   // keep their own helper. `map`/`forEach` never narrow, and leaving their
@@ -845,15 +879,20 @@ function arrayUnionHofHelper(
     if (!typeEquals(adapted.type, armFnT)) {
       throw new InternalCompilerError("lowerer bug: union-array callback stopped adapting");
     }
-    const callee = arrayHofHelper(
-      lowerer,
-      method,
-      array.elem,
-      fnRet,
-      arity,
-      loc,
-      method === "filter" ? array.elem : outElem,
-    );
+    const callee =
+      method === "some" || method === "every"
+        ? someEveryHelper(lowerer, method, array.elem, fnRet, arity, loc)
+        : method === "findIndex"
+          ? findIndexHelper(lowerer, array.elem, fnRet, arity, false, loc)
+          : arrayHofHelper(
+              lowerer,
+              method,
+              array.elem,
+              fnRet,
+              arity,
+              loc,
+              method === "filter" ? array.elem : outElem,
+            );
     const invoke: IrExpr = {
       kind: "call",
       callee,
@@ -3697,6 +3736,158 @@ export function lowerTuplePredicateCall(
     type: arrayOf(narrowing.elem),
     loc,
   };
+}
+
+/** Tuple `reduce` / `reduceRight`. `reads` holds one element read per
+ * position, in index order, each over the helper's `a.0` receiver
+ * parameter. The helper calls the callback once per position in the
+ * method's direction and reads each position only when it is visited, so
+ * a callback's write to a position not yet visited is visible. Without an
+ * initial value the first position visited seeds the accumulator and the
+ * callback is not called for it; a tuple has no holes and at least one
+ * position here, so the empty-receiver TypeError cannot occur. The
+ * accumulator's type follows the array methods' rule: the call's checked
+ * result with an initial value, the element type without one. */
+export function lowerTupleReduceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: "reduce" | "reduceRight",
+  receiver: IrExpr,
+  elem: IrType,
+  reads: IrExpr[],
+): IrExpr {
+  const loc = locOf(call);
+  const argNode = call.arguments.nodes[0]!;
+  const hasInit = call.arguments.nodes.length === 2;
+  const accT = hasInit ? lowerer.irTypeOf(call) : elem;
+  if (accT.kind === "void" || accT.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    argNode,
+    [accT, elem],
+    receiver.type,
+    false,
+    accT,
+  );
+  const fnRet = fnArg.type.ret;
+  if (!accumulatorAdmitsAnswer(lowerer, accT, fnRet)) {
+    lowerer.noLowering(
+      `tuple .${method} with a callback result the accumulator's type cannot hold`,
+      argNode,
+      "return a value of the accumulator's type from every path of the callback",
+    );
+  }
+  const init = hasInit ? lowerer.lowerExprExpecting(call.arguments.nodes[1]!, accT) : null;
+  const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(accT)}:${arity}:${hasInit ? "init" : "seed"}${callbackSite(fnArg)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, `%tuple.${method}`, key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const visits = reads.map((read, index) => ({ read, index }));
+    if (method === "reduceRight") visits.reverse();
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "acc.0",
+        init: hasInit ? varRef("z.0", accT, loc) : lowerer.coerceToExpected(visits[0]!.read, accT),
+        loc,
+      },
+    ];
+    for (const { read, index } of hasInit ? visits : visits.slice(1)) {
+      body.push({
+        kind: "assign",
+        localId: "acc.0",
+        value: lowerer.coerceToExpected(
+          {
+            kind: "callValue",
+            callee: varRef("f.0", fnArg.type, loc),
+            args: [
+              accumulatorArgument(lowerer, fnArg.type.params[0], accT, loc),
+              read,
+              numLit(index, loc),
+            ].slice(0, arity),
+            type: fnRet,
+            loc,
+          },
+          accT,
+        ),
+        loc,
+      });
+    }
+    body.push({ kind: "return", value: varRef("acc.0", accT, loc), loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+        ...(hasInit ? [{ localId: "z.0", name: "z", type: accT }] : []),
+      ],
+      returnType: accT,
+      locals: [
+        { id: "a.0", name: "a", type: receiver.type, mutable: false },
+        { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+        ...(hasInit ? [{ id: "z.0", name: "z", type: accT, mutable: false }] : []),
+        { id: "acc.0", name: "acc", type: accT, mutable: true },
+      ],
+      body,
+      loc,
+    });
+  }
+  const args: IrExpr[] = [receiver, fnArg];
+  if (init) args.push(init);
+  return { kind: "call", callee: helper, args, type: accT, loc };
+}
+
+/** Tuple `forEach`: the callback runs once per position, in index order,
+ * with the value the position holds when it is visited (see
+ * lowerTuplePredicateCall) and its index. Its result is discarded. */
+export function lowerTupleForEachCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+  elem: IrType,
+  reads: IrExpr[],
+): IrExpr {
+  const loc = locOf(call);
+  const { fnArg, arity } = lowerArrayCallback(
+    lowerer,
+    call.arguments.nodes[0]!,
+    [elem],
+    receiver.type,
+  );
+  const key = `tuple.forEach:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${arity}${callbackSite(fnArg)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%tuple.forEach", key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const body: IrStmt[] = reads.map((read, index) => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "callValue",
+        callee: varRef("f.0", fnArg.type, loc),
+        args: [read, numLit(index, loc)].slice(0, arity),
+        type: fnArg.type.ret,
+        loc,
+      },
+      loc,
+    }));
+    body.push({ kind: "return", value: null, loc });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "a.0", name: "a", type: receiver.type, mutable: false },
+        { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+      ],
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
 }
 
 /** The `%arr.<method>` helper `name` (map, flatMap or filter) taking its

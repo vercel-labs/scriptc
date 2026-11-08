@@ -12907,6 +12907,19 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           return lowerForOfArrayIter(lowerer, stmt, container, proj);
         }
       }
+      // A fixed tuple's keys()/entries(): the same walk over its positions,
+      // each read when the walk reaches it. `values` falls through to the
+      // receiver unwrap below, like an array's.
+      if (
+        recv?.kind === "record" &&
+        lowerer.shapes.get(recv.shapeId)?.tuple &&
+        (proj === "keys" || proj === "entries")
+      ) {
+        const container = lowerer.lowerExpr(src.expression.expression);
+        if (container.type.kind === "record" && lowerer.shapes.get(container.type.shapeId)?.tuple) {
+          return lowerForOfArrayIter(lowerer, stmt, container, proj);
+        }
+      }
       // Typed arrays expose the same live indexed iterator projections.
       // Their fixed length makes the walk simpler, but the yielded keys
       // and [key, numeric value] pairs are identical to Array's.
@@ -12967,10 +12980,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       ts.isPropertyAccessExpression(e.expression) &&
       !e.expression.questionDotToken &&
       e.expression.name.text === "values" &&
-      lowerer.isStdlibMember(e.expression) &&
-      lowerer.mapTypeOf(lowerer.typeOf(e.expression.expression))?.kind === "array"
+      lowerer.isStdlibMember(e.expression)
     ) {
-      iterSrc = e.expression.expression;
+      const valuesOf = lowerer.mapTypeOf(lowerer.typeOf(e.expression.expression));
+      if (
+        valuesOf?.kind === "array" ||
+        (valuesOf?.kind === "record" && lowerer.shapes.get(valuesOf.shapeId)?.tuple === true)
+      )
+        iterSrc = e.expression.expression;
     }
   }
   iterSrc ??= stmt.expression;

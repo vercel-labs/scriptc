@@ -1,4 +1,3 @@
-// @deferred-fences: 1
 // A createRequire loader read as a VALUE in TypeScript: kept in a record
 // (shorthand and named members), passed to a function, held in a typed
 // function slot and aliased. The value is one run-time require function

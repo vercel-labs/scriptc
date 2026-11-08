@@ -1,4 +1,3 @@
-// @deferred-fences: 1
 // A createRequire loader as a shorthand member of an object literal in
 // JavaScript is the loader value the long form `{ narrate: narrate }`
 // reads: the same function, and a request that does not resolve throws

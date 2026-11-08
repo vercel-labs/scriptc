@@ -19,7 +19,7 @@ runs:
         if test "$RUNNER_OS" = Linux; then
           echo "zig=$(zig version)" >> "$GITHUB_OUTPUT"
         fi
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: helper
       if: inputs.helper == 'true'
       with:
@@ -29,7 +29,7 @@ runs:
     # the pack build's scripts, matrices, forced include and committed
     # profiles, and the LLVM helper's sources, because the helper compiles the
     # speed units and applies the profile to them.
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: runtime
       with:
         path: |
@@ -42,7 +42,7 @@ runs:
     # key missed does not also depend on the release host answering. The build
     # verifies the restored archives against their pins and downloads again
     # when they do not match.
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: icu
       if: steps.runtime.outputs.cache-hit != 'true'
       with:
@@ -73,7 +73,7 @@ runs:
         fi
     # Saved right after the build, and only by a build that downloaded both
     # archives (a pack without ICU downloads neither).
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: >-
         steps.runtime.outputs.cache-hit != 'true' && steps.icu.outputs.cache-hit != 'true' &&
         hashFiles('node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz') != '' &&
@@ -88,12 +88,12 @@ runs:
       env:
         SCRIPTC_PACKAGE_TARGET: ${{ inputs.target }}
       run: node "packages/runtime-$SCRIPTC_PACKAGE_TARGET/scripts/verify.mjs"
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: inputs.helper == 'true' && steps.helper.outputs.cache-hit != 'true'
       with:
         path: packages/llvm-${{ inputs.target }}/bin
         key: ${{ steps.helper.outputs.cache-primary-key }}
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.runtime.outputs.cache-hit != 'true'
       with:
         path: |

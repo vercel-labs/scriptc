@@ -19,7 +19,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
@@ -55,7 +55,10 @@ async function compileAndRun(
     .slice(0, 16);
   const outDir = join(cacheDir, `dyncheck-${key}`);
   mkdirSync(outDir, { recursive: true });
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(outDir, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(outDir, name)), { recursive: true });
+    writeFileSync(join(outDir, name), text);
+  }
   const file = join(outDir, `${name}.${ext}`);
   writeFileSync(file, source);
   // Pinned: the exact TypeError text and path rendering of failed checked
@@ -1535,6 +1538,80 @@ console.log(typeof read(), read() === undefined);
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("undefined true\nnumber false\n");
+  });
+
+  test("a cast to an interface a declaration file declares is checked like one the program declares", async () => {
+    // A type has no implementation: an interface from a declarations-only
+    // package, from the project's own declaration file or from an ambient
+    // module types records the program builds, so untyped data asserted to
+    // it goes through the same checked conversion as for an interface in a
+    // `.ts` file. Node never checks an `as`; these throw.
+    const declared = "interface Book {\n  isbn: string;\n  title: string;\n  year?: number;\n}\n";
+    const exported = "export " + declared;
+    const body = `
+function scan(text: string): string {
+  try {
+    const book = JSON.parse(text) as Book;
+    return "read " + typeof book.isbn + " " + book.title;
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+function tally(text: string): string {
+  try {
+    return String((JSON.parse(text) as Book[]).length);
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+console.log(scan('{"isbn":7,"title":"Tides"}'));
+console.log(scan('{"isbn":"0-1"}'));
+console.log(scan("[1,2]"));
+console.log(scan('{"isbn":"0-1","title":"Moss"}'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3"}]'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3","title":"Ferns","year":1961}]'));
+`;
+    const expected = [
+      "TypeError: expected string at $.isbn, got number",
+      "TypeError: expected string at $.title, got undefined",
+      "TypeError: expected object at $, got array",
+      "read string Moss",
+      "TypeError: expected string at $[1].title, got undefined",
+      "2",
+      "",
+    ].join("\n");
+    const variants: [string, string, Record<string, string>][] = [
+      ["declared-cast-program", declared + body, {}],
+      [
+        "declared-cast-package",
+        `import type { Book } from "shelf-types";\n` + body,
+        {
+          "node_modules/shelf-types/package.json":
+            '{ "version": "0.4.1", "name": "shelf-types", "main": "./shelf.d.ts", "types": "./shelf.d.ts" }\n',
+          "node_modules/shelf-types/shelf.d.ts": exported,
+        },
+      ],
+      [
+        "declared-cast-file",
+        `import type { Book } from "./types.js";\n` + body,
+        { "types.d.ts": exported },
+      ],
+      [
+        "declared-cast-ambient",
+        `/// <reference path="./shims.d.ts" />\nimport type { Book } from "ambient-types";\n` +
+          body,
+        { "shims.d.ts": `declare module "ambient-types" {\n${exported}}\n` },
+      ],
+      [
+        "declared-cast-global",
+        `/// <reference path="./globals.d.ts" />\n` + body,
+        { "globals.d.ts": declared },
+      ],
+    ];
+    for (const [name, source, files] of variants) {
+      const r = await compileAndRun(name, source, "ts", false, files);
+      expect([name, r.exitCode, r.stdout, r.stderr]).toEqual([name, 0, expected, ""]);
+    }
   });
 
   test("an untyped value returned where the result is declared undefined is checked", async () => {

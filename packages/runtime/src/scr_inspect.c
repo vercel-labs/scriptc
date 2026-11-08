@@ -3367,7 +3367,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
     }
   }
   ScrStr *tag = ib_take(&out);
-  if (cls && !props && cls->own_static_fields) {
+  if (cls && !props && (cls->own_static_fields & 1)) {
     /* Node prints the static fields after the tag; the class object
      * does not hold them (the reflection fence's stance). */
     scr_str_release(tag);

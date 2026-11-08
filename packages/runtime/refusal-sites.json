@@ -986,7 +986,7 @@
  {
   "file": "scr_json.c",
   "function": "scr_dyn_class_static_fence",
-  "message": "scriptc: replacing, redefining or deleting a compiled class's static member through unknown is not supported",
+  "message": "scriptc: replacing, redefining or deleting a compiled class's member through unknown is not supported",
   "code": "SC1090"
  },
  {

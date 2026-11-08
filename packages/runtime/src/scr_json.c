@@ -58,7 +58,7 @@ SCR_TL const ScrHandleStreamHooks *scr_handle_stream_hooks = NULL;
  * those calls: the change throws instead. */
 static void scr_dyn_class_static_fence(void) {
   static const char message[] =
-      "scriptc: replacing, redefining or deleting a compiled class's static member through unknown is not supported";
+      "scriptc: replacing, redefining or deleting a compiled class's member through unknown is not supported";
   scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC1090");
 }
 
@@ -9079,13 +9079,43 @@ bool scr_dyn_class_statics_begin(ScrDyn *constructor) {
   return true;
 }
 
+const void *scr_class_shared_identity(const ScrClassObj *c) {
+  ScrDyn *table = scr_box_get_ref(c->static_data);
+  scr_dyn_release(table); /* the box keeps it */
+  return table;
+}
+
+/* Makes `constructor`, the class object of an instantiation of a generic
+ * class, answer with the static table of `first`, the first constructor of
+ * that class that became a dynamic value (itself when it is the first), and
+ * the two one value to identity. Returns the constructor (+1). */
+ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first) {
+  if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj || first->kind != SCR_DYN_FUNC ||
+      !first->v.fn.class_obj) {
+    static const char message[] = "Sharing a static table requires native constructors";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrClassObj *cls = constructor->v.fn.class_obj;
+  ScrClassObj *of = first->v.fn.class_obj;
+  ScrDyn *table = scr_dyn_fn_table(first);
+  scr_dyn_release(scr_dyn_fn_table(constructor));
+  if (cls != of) scr_box_set_ref(cls->static_data, scr_dyn_retain(table));
+  scr_dyn_release(table);
+  cls->own_static_fields |= SCR_CLASS_SHARES_STATICS;
+  of->own_static_fields |= SCR_CLASS_SHARES_STATICS;
+  return scr_dyn_retain(constructor);
+}
+
 /* Marks the member the helper just defined as backed by native storage: a
  * field's accessor pair, or a method's value (which also fences, since typed
  * calls reach the method without reading the table). Returns the
  * constructor (+1). */
 ScrDyn *scr_dyn_class_static_slot(ScrDyn *constructor, ScrDyn *key) {
-  if (constructor->kind == SCR_DYN_FUNC && key->kind == SCR_DYN_STR) {
-    ScrDyn *table = scr_dyn_fn_table(constructor);
+  /* A prototype object's method is marked the same way: typed calls bypass
+   * it too. */
+  if ((constructor->kind == SCR_DYN_FUNC || constructor->kind == SCR_DYN_OBJ) && key->kind == SCR_DYN_STR) {
+    ScrDyn *table = constructor->kind == SCR_DYN_OBJ ? scr_dyn_retain(constructor) : scr_dyn_fn_table(constructor);
     ScrDynEntry *entry = scr_dyn_entry(table, key->v.str);
     if (entry) {
       entry->native_data = true;
@@ -14257,6 +14287,14 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
         scr_dyn_release(table);
         continue;
       }
+      if (inherited->native_data) {
+        /* A member a base class keeps in native storage. JavaScript gives
+         * the receiver its own property; typed reads through the subclass
+         * would still answer the base's, so the write is refused. */
+        scr_dyn_release(table);
+        scr_dyn_class_static_fence();
+        return;
+      }
       if (inherited->accessor && inherited->setter) {
         ScrDyn *args[] = {value};
         ScrDyn *setter = scr_dyn_retain(inherited->setter);
@@ -17723,7 +17761,10 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b) {
     /* The ScrDyn box is a boundary artifact — one closure crossing the
      * dyn boundary twice is still ONE JS function value, so identity
      * lives in the boxed closure, not the box. */
-    if (a->v.fn.class_obj || b->v.fn.class_obj) return a->v.fn.class_obj == b->v.fn.class_obj;
+    if (a->v.fn.class_obj || b->v.fn.class_obj)
+      return a->v.fn.class_obj == b->v.fn.class_obj ||
+             (a->v.fn.class_obj && b->v.fn.class_obj &&
+              scr_class_identity(a->v.fn.class_obj) == scr_class_identity(b->v.fn.class_obj));
     return a == b || scr_closure_identity_equal(a->v.fn.clo, b->v.fn.clo);
   case SCR_DYN_BYTES:
     return a->v.bytes == b->v.bytes;
@@ -21806,7 +21847,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   case SCR_DYN_BYTES:
     *ptr = key->v.bytes; *kind = 1; return 1;
   case SCR_DYN_FUNC:
-    *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)scr_closure_identity(key->v.fn.clo);
+    *ptr = key->v.fn.class_obj ? (void *)scr_class_identity(key->v.fn.class_obj) : (void *)scr_closure_identity(key->v.fn.clo);
     *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&

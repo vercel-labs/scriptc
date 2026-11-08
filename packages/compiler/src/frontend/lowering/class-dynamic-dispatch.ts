@@ -66,6 +66,7 @@ import {
 } from "./class-prototypes.js";
 import { runtimeStaticDefines } from "./class-runtime-statics.js";
 import { classStaticTable } from "./class-static-tables.js";
+import { inGenericChain, refreshGenericPrototypeMembers } from "./class-generic-members.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -1763,6 +1764,7 @@ export class ClassDynamicDispatch {
     let changed = this.caughtDispatch.process(lowerer, functions, this.sites);
     changed = refreshErrorMethodDispatch(lowerer, functions) || changed;
     changed = refreshClassMethodValueSelections(lowerer) || changed;
+    changed = refreshGenericPrototypeMembers(lowerer) || changed;
     changed = refreshErrorPropertyDispatch(lowerer, functions) || changed;
     changed =
       this.generatorDispatch.process(lowerer, functions, this.generated, this.sites) || changed;
@@ -1820,8 +1822,43 @@ export class ClassDynamicDispatch {
         const helper = classStaticTable(lowerer, info, functions[0]!.loc);
         if (!helper) break;
         this.generated.add(helper);
+        // An instantiation's helper calls its declaration's.
+        const declared = lowerer.liftedFnNamed(info.genericInstance?.family.staticMembersHelper);
+        if (declared) this.generated.add(declared);
         changed = true;
       }
+    // A reflected prototype holds its class's methods, and an instance reads
+    // a member through its own class's prototype first. Every class below a
+    // reflected one is therefore reflected too: otherwise the base class's
+    // method would answer for a subclass's override.
+    const reflectBelow = (current: ClassInfo): void => {
+      for (const sub of current.subclasses) {
+        if (
+          !sub.prototypeReflectionReady &&
+          !sub.prototypeReflectionRefusal &&
+          sub.decl &&
+          !sub.localClass &&
+          !inGenericChain(sub)
+        ) {
+          const before = lowerer.diags.length;
+          try {
+            reflectClassPrototype(
+              lowerer,
+              sub,
+              functions[0]!.loc,
+              classValueRef(lowerer, sub, sub.decl),
+            );
+            if (sub.prototypeReflectionReady) changed = true;
+          } catch (error) {
+            if (!(error instanceof PoisonError)) throw error;
+            lowerer.diags.splice(before);
+          }
+        }
+        reflectBelow(sub);
+      }
+    };
+    for (const info of [...lowerer.classes.values()])
+      if (info.prototypeReflectionReady && !inGenericChain(info)) reflectBelow(info);
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -1931,12 +1968,13 @@ export class ClassDynamicDispatch {
         const loc = this.prototypeHelper.loc;
         const type: IrType = { kind: "object", className };
         const value = varRef("value", DYN, loc);
-        const prototype = reflectClassPrototype(lowerer, info, loc, {
-          kind: "dynCheck",
-          value,
-          type,
+        const prototype = reflectClassPrototype(
+          lowerer,
+          info,
           loc,
-        });
+          { kind: "dynCheck", value, type, loc },
+          true,
+        );
         if (prototype)
           this.prototypeHelper.body.unshift({
             kind: "if",
@@ -2099,7 +2137,11 @@ export class ClassDynamicDispatch {
                   type: { kind: "object", className: name },
                   loc,
                 })
-              : null;
+              : // A class in a chain with a generic class: the prototype
+                // object dynamic code sees, one per declaration.
+                inGenericChain(of)
+                ? classPrototypeData(lowerer, of, loc, undefined, false, true)
+                : null;
           if (prototype) return [{ kind: "return", value: prototype, loc }];
           return hasClassPrototypeData(of) ? null : this.prototypeStandIn(lowerer, name, loc);
         };

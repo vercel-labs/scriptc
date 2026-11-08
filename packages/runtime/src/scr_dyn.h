@@ -2231,6 +2231,7 @@ ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
  * `prototype` in it; static_slot marks one as backed by native storage. */
 bool scr_dyn_class_statics_begin(ScrDyn *constructor);
 ScrDyn *scr_dyn_class_static_slot(ScrDyn *constructor, ScrDyn *key);
+ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first);
 /* EventEmitter and the stream constructors as untyped constructor values,
  * and instanceof over untyped constructor functions
  * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */

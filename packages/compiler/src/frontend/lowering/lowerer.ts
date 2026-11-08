@@ -4271,6 +4271,12 @@ export class Lowerer {
     ts.Node,
     { fnName: string; type: IrType; selfReads: number } | null
   >();
+  /** The members of generic classes' prototypes that dynamic code reads, by
+   * the name of the function that selects an instantiation's member. */
+  readonly genericPrototypeMembers = new Map<
+    string,
+    import("./class-generic-members.js").GenericPrototypeMember
+  >();
   readonly classMethodValueSelections = new Map<
     string,
     import("./class-method-values.js").ClassMethodValueSelection

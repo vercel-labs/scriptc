@@ -4640,13 +4640,14 @@ export class Lowerer {
   readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
-  /** The JavaScript names of object literals' methods, by lifted function
-   * (function-names.ts). */
+  /** The JavaScript names of methods (an object literal's, a class's, the
+   * function that stands for a method read as a value, a static method
+   * read as a value) and of the functions that initialize class fields, by
+   * function (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
-  /** The JavaScript names of the function values the compiler lifts for a
-   * program: a class method read as a value, a primitive constructor held
-   * as a typed value. Given only in a program that prints a function held
-   * in a typed slot (function-names.ts). */
+  /** The JavaScript names of the functions the compiler lifts for primitive
+   * constructors held as typed values. Given only in a program that prints
+   * a function held in a typed slot (function-names.ts). */
   readonly heldFunctionNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:

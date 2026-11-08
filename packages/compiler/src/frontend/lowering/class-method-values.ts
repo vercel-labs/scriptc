@@ -328,10 +328,6 @@ export function classMethodValue(
     };
     lowerer.liftedFns.push(fn);
     lowerer.classMethodValueHelpers.add(name);
-    // The value is the method: printed through a typed slot, it takes the
-    // method's name (function-names.ts). A runtime error class's `toString`
-    // is every program's and is named where it is read.
-    if (!owner.builtinError) lowerer.heldFunctionNames.set(name, method);
   }
   return { kind: "closure", fnName: name, captures: [], type, loc };
 }

@@ -106,12 +106,13 @@ export function finalizeFunctionNames(lowerer: Lowerer, functions: readonly IrFu
   }
 }
 
-/** Gives the function values the compiler lifts (a class method read as a
- * value, a primitive constructor held as a typed value) their displayName
- * in a program that prints a function held in a typed slot: the inspector
- * renders such a function through a box without a static name
- * (lower-inspect.ts), which the backend names from the function. A program
- * that prints none keeps its functions as they were. */
+/** Gives the function the compiler lifts for a primitive constructor held
+ * as a typed value its displayName in a program that prints a function
+ * held in a typed slot: the inspector renders such a function through a
+ * box without a static name (lower-inspect.ts), which the backend names
+ * from the function. A program that prints none keeps its functions as
+ * they were. A method read as a value, static or not, is named with the
+ * other methods above. */
 function finalizeHeldFunctionNames(lowerer: Lowerer, functions: readonly IrFunction[]): void {
   if (lowerer.heldFunctionNames.size === 0) return;
   let prints = false;

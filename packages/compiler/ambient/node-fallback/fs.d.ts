@@ -318,7 +318,9 @@ declare module "node:fs" {
    * over a file (scr_fs_stream.c). The options are checked at runtime
    * with Node's rules; flags and mode are checked when the file opens, so
    * their errors arrive as 'error' events. Instances also emit 'open'
-   * (with the fd) and 'ready'. */
+   * (with the fd) and 'ready'. `signal` destroys the stream with an
+   * AbortError when it aborts, as stream.addAbortSignal does; null is in
+   * the type as in @types/node, and Node throws for it. */
   export interface StreamOptions {
     flags?: string;
     encoding?: BufferEncoding;
@@ -327,6 +329,7 @@ declare module "node:fs" {
     autoClose?: boolean;
     emitClose?: boolean;
     start?: number;
+    signal?: AbortSignal | null;
     highWaterMark?: number;
   }
   export interface ReadStreamOptions extends StreamOptions {

@@ -284,6 +284,22 @@ test("reading a spawnSync result's error selects the child build with its fields
   expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
 });
 
+test("fs stream options that can hold a signal select the signal build of the fs stream unit", () => {
+  // The build applies options.signal with the event-target unit's abort
+  // listener; a program whose stream options cannot hold one keeps the
+  // default object, byte for byte.
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+  ]);
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_fs_stream.c", { workers: true, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+    "SCR_WORKERS",
+  ]);
+});
+
 test("extended spawn options beside an error read keep both child builds", () => {
   // The cwd/input/shell entries and the errnoException fields live in two
   // builds of scr_child.c; a program that passes those options and reads

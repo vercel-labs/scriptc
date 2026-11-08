@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { clearVirtualSources, setVirtualSource } from "../frontend/input-tracker.js";
 import {
+  ModuleSpecifierScans,
   NodeIslandModuleCollector,
   namedDataPaths,
   nodeIslandManifest,
@@ -139,6 +140,18 @@ describe("module specifiers in JavaScript", () => {
       "require as a value",
     ]);
     expect(forms("function require(x) {} typeof require")).toEqual([]);
+  });
+
+  test("a shared scan answers for the text it was scanned from, and no other", () => {
+    const scans = new ModuleSpecifierScans();
+    const first = scans.of("/pkg/index.js", 'require("zoo");');
+    expect(first.specifiers).toEqual(["zoo"]);
+    // The same file with the same text is not scanned again.
+    expect(scans.of("/pkg/index.js", 'require("zoo");')).toBe(first);
+    // The file's text changed: the answer is the new text's.
+    expect(scans.of("/pkg/index.js", 'require("yak");').specifiers).toEqual(["yak"]);
+    // Another file with the first text has an answer of its own.
+    expect(scans.of("/pkg/other.js", 'require("zoo");').specifiers).toEqual(["zoo"]);
   });
 });
 
@@ -353,6 +366,26 @@ describe("the collected module tree", () => {
       "node_modules/zoo/index.js",
       "node_modules/zoo/package.json",
     ]);
+  });
+
+  test("collectors that share their scans build the same tree as one that does not", () => {
+    const root = project({
+      "main.ts": "",
+      "node_modules/bridge/package.json": "{}",
+      "node_modules/bridge/index.js": 'const zoo = require("zoo");\nmodule.exports = zoo;',
+      "node_modules/zoo/package.json": "{}",
+      "node_modules/zoo/index.js": "exports.a = 1;",
+    });
+    const paths = (collector: NodeIslandModuleCollector): string[] => {
+      expect(collector.addLoaded(join(root, "node_modules/bridge/index.js"))).toBeNull();
+      return collector.tree()!.files.map((f) => f.path);
+    };
+    const alone = paths(new NodeIslandModuleCollector());
+    const scans = new ModuleSpecifierScans();
+    // Two passes of one round: the second collector reads the first's scans.
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(alone).toContain("node_modules/zoo/index.js");
   });
 
   test("type-only imports ship nothing and are not traced", () => {

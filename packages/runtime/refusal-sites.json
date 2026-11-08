@@ -492,6 +492,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_dyn_fn_own.c",
+  "function": "scr_dyn_fn_own_set",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_dyn_handle_props.c",
   "function": "hp_props_of_box",
   "message": "own properties on a %s are not supported yet",

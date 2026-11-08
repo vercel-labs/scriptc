@@ -3,7 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -40,7 +40,11 @@ import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
@@ -1609,6 +1613,15 @@ function computedTableOperation(shape: {
   ].join(":");
 }
 
+/** The name prefix of every helper this pass generates for untyped code's
+ * use of class instances: keyed tables, member dispatch, checked casts. */
+export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
+
+/** The name prefix of a class's checked cast helper (`%dyn.class.cast:C`):
+ * the one function that checks a dynamic value into class `C`, which every
+ * such check in the program calls. */
+export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1629,6 +1642,11 @@ export class ClassDynamicDispatch {
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The classes whose instances the program makes dynamic values, as this
+   * pass found them (dynamic-class-report.ts reads them). */
+  boxedClasses(): ReadonlySet<string> {
+    return this.boxed;
+  }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -1751,6 +1769,8 @@ export class ClassDynamicDispatch {
     const toPrimitiveSites = new Set<IrFunction>();
     const hasKeySites = new Set<IrFunction>();
     const caughtSites = new Set<IrFunction>();
+    // dynamic-class-report.ts follows the same parts of a type to say where
+    // a class became a dynamic value: a part added here is added there.
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -2604,7 +2624,7 @@ export class ClassDynamicDispatch {
           if (!cast) {
             const loc = expr.loc;
             const fn: IrFunction = {
-              name: `%dyn.class.cast:${type.className}`,
+              name: `${CHECKED_CAST_PREFIX}${type.className}`,
               params: [{ localId: "value", name: "value", type: DYN }],
               locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
               returnType: type,
@@ -4772,7 +4792,7 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result = constructedValue(lowerer, info, {
+        const result = constructedDynValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
@@ -4788,7 +4808,7 @@ export class ClassDynamicDispatch {
             type: BOOL,
             loc,
           },
-          then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+          then: [{ kind: "return", value: result, loc }],
           else_: null,
           loc,
         });
@@ -7582,6 +7602,11 @@ export class ClassDynamicDispatch {
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -7604,7 +7629,13 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7771,4 +7802,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

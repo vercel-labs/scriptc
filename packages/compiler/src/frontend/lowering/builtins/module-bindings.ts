@@ -7,9 +7,7 @@ import {
   isCreateRequireBinding7,
   isJsSourceFile,
   locOf,
-  npmStaticDepSf7,
   requireSpecOf,
-  resolveImport,
 } from "../../program.js";
 import { staticString } from "./module-resolution.js";
 import { isCjsRequireGlobal } from "../lower-node-module.js";
@@ -690,8 +688,8 @@ export function createRequireProgramModuleOf(
   const cr = createRequireSpecOf(lowerer, call);
   if (cr === null || cr.spec === null || canonicalBuiltinModule(cr.spec) !== null) return null;
   const dep =
-    resolveImport(lowerer.program, cr.baseFile, cr.spec, "require") ??
-    npmStaticDepSf7(lowerer.program, cr.baseFile, cr.spec, "require");
+    lowerer.facts.importedModule(cr.baseFile, cr.spec, "require") ??
+    lowerer.facts.npmStaticModule(cr.baseFile, cr.spec, "require");
   if (dep === null || dep.fileName.endsWith(".json")) return null;
   return { spec: cr.spec, baseFile: cr.baseFile, dep };
 }

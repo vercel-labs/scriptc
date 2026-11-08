@@ -821,13 +821,14 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
-    body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
+    const cloneHost = emitter.integerCloneHost();
+    body += "\n" + emitIntegerClone(fn, cloneHost, emitter.stackChecks?.has(fn.name) === true);
     if (emitter.integerClones.dispatched.has(fn.name))
       body +=
         "\n" +
         emitIntegerDispatcher(
           fn,
-          emitter,
+          cloneHost,
           `${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}`,
           int32Abi?.params ?? [],
           int32Abi?.result === true,

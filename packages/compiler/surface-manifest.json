@@ -135,14 +135,6 @@
       "note": "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives"
     },
     {
-      "id": "diagnostic.sc1063",
-      "kind": "diagnostic-fence",
-      "name": "this use of a catch binding",
-      "status": "unsupported",
-      "code": "SC1063",
-      "note": "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is"
-    },
-    {
       "id": "diagnostic.sc1070",
       "kind": "diagnostic-fence",
       "name": "async/await",

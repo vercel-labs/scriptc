@@ -319,6 +319,14 @@ function buildLibFnSignatures() {
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
     "dyn.classHash": { argTypes: [DYN], result: F64 },
+    /** The index of a table of class values (`dyn.classIs` branches: `x
+     * instanceof C`, `new C()` and static members of an untyped
+     * constructor): a function value's signature key folded to one of
+     * 2^bits slots (the second argument, a literal), or -1 for a value that
+     * is not a function or whose key is shorter than four bytes. A function
+     * that is not a compiled class selects a slot only by coincidence, and
+     * that slot's exact key guards are false for it. */
+    "dyn.classValueHash": { argTypes: [DYN, F64], result: F64 },
     /** Destructuring pack over a dyn source — `const [a, b] = d`, a
      * destructured dyn callback param (args: the source and the STATIC
      * TypeError spelling, "" when the source has none — both borrowed;

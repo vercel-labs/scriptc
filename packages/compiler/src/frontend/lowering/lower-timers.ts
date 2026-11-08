@@ -21,6 +21,7 @@ import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import { refuseCallbackThis } from "./callback-arg.js";
 
 /** setTimeout invokes its callback with NO arguments, but @types/node's
  * generic signature admits callbacks DECLARED with parameters — the
@@ -197,6 +198,7 @@ function retainedTimerCallback(
  * function. A function, an untyped value and a checked cast are returned
  * as lowered. */
 function timerCallbackArgument(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  refuseCallbackThis(lowerer, node, "a timer", "the timer object");
   const cb = lowerer.lowerExpr(node);
   if (cb.type.kind === "func" || cb.type.kind === "dyn") return cb;
   if (cb.kind !== "unitLit" && !lowerer.dynConvertible(cb.type)) return cb;

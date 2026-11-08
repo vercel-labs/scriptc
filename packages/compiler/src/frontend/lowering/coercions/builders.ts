@@ -60,10 +60,13 @@ export function buildArrayConversion(
 }
 
 /** The implementation captures the original function; the factory creates
- * a fresh closure for each adapted value. Keep both boxed slots in sync. */
+ * a fresh closure for each adapted value. Keep both boxed slots in sync.
+ * `source` is the original's type: a function type, or the checked-dynamic
+ * type for an adapter that calls a boxed function (a checked adapter, whose
+ * box is that function again). */
 export function buildFunctionAdapter(
   name: string,
-  source: IrType & { kind: "func" },
+  source: (IrType & { kind: "func" }) | (IrType & { kind: "dyn" }),
   target: IrType & { kind: "func" },
   params: IrParam[],
   locals: IrLocal[],

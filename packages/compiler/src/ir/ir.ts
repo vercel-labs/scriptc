@@ -3361,7 +3361,10 @@ export type IrExpr =
    * case so `f === f` is true (JS function identity). `adapts` marks a
    * signature adapter: captures[0] holds the function it forwards to, and
    * the new closure takes that function's identity (JS sees one function,
-   * so `===`, SameValue and searches compare identity roots). `length` is
+   * so `===`, SameValue and searches compare identity roots). An adapter
+   * whose captures[0] is checked-dynamic holds a boxed function and is a
+   * checked adapter: boxing the closure answers that boxed function
+   * itself, so untyped code calls the original. `length` is
    * the function's own `length` where the type's parameter list does not
    * give it: a function literal lowered with the parameter list of the slot
    * it is written into receives the slot's remaining arguments in

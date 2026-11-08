@@ -1,0 +1,20 @@
+ambient-shim-bundler-resolution/main.ts:5:15 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'CliCommand'.
+
+  4 | // load of the build.
+  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
+    |               ^~~~~~~~~~
+  6 | import * as termCodes from "term-codes";
+
+ambient-shim-bundler-resolution/main.ts:5:27 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'commands'.
+
+  4 | // load of the build.
+  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
+    |                           ^~~~~~~~
+  6 | import * as termCodes from "term-codes";
+
+ambient-shim-bundler-resolution/main.ts:5:37 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'run'.
+
+  4 | // load of the build.
+  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
+    |                                     ^~~
+  6 | import * as termCodes from "term-codes";

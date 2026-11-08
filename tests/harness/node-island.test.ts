@@ -59,6 +59,13 @@ function treeHashes(result: Run): number {
   return result.stderr.split("[node-islands] hashing the module tree").length - 1;
 }
 
+/** The trees installed in an islands directory. Each has Node's compile
+ * cache for it beside it (`<tree>.compile-cache`,
+ * node-island-compile-cache.test.ts). */
+function installedTrees(islands: string): string[] {
+  return readdirSync(islands).filter((name) => /^[0-9a-f]{64}$/.test(name));
+}
+
 /** The file named `name` below `dir`. */
 function fileBelow(dir: string, name: string): string {
   for (const entry of readdirSync(dir, { withFileTypes: true, recursive: true }))
@@ -223,9 +230,9 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect(first.stdout).toBe("6\n");
     expect([installs(first), treeHashes(first)]).toEqual([1, 0]);
     const islands = join(cache, "scriptc/node-islands");
-    const entries = readdirSync(islands);
+    const entries = installedTrees(islands);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(readdirSync(islands).sort()).toEqual([entries[0], `${entries[0]}.compile-cache`]);
     const root = join(islands, entries[0]!);
     // Later runs open the directory and nothing else.
     for (let i = 0; i < 2; i++) {
@@ -291,7 +298,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     const env = { ...process.env, XDG_CACHE_HOME: cache };
     expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
     const islands = join(cache, "scriptc/node-islands");
-    const [digest] = readdirSync(islands);
+    const [digest] = installedTrees(islands);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
     expect(statSync(islands).mode & 0o777).toBe(0o700);
     expect(statSync(join(islands, digest!)).mode & 0o777).toBe(0o700);
@@ -319,7 +326,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     const root = join(
       cache,
       "scriptc/node-islands",
-      readdirSync(join(cache, "scriptc/node-islands"))[0]!,
+      installedTrees(join(cache, "scriptc/node-islands"))[0]!,
     );
     rmSync(fileBelow(root, "thing.js"));
     const repaired = await run(order, [], env);
@@ -356,7 +363,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     const env = { ...process.env, XDG_CACHE_HOME: cache };
     expect(await run(program, [], env)).toEqual({ stdout: "42 42\n", stderr: "", code: 0 });
     const islands = join(cache, "scriptc/node-islands");
-    const root = join(islands, readdirSync(islands)[0]!);
+    const root = join(islands, installedTrees(islands)[0]!);
     rmSync(fileBelow(root, "later.cjs"));
     rmSync(fileBelow(root, "twice.cjs"));
     expect(await run(program, [], env)).toEqual({

@@ -37,12 +37,14 @@
  *     answer the table's own type. A member read through the table's own
  *     type is a primitive, or a nested literal or another table, whose uses
  *     are followed the same way: a nested literal may only flow into the
- *     type its slot has. A use this scan does not understand (an alias
- *     binding, a spread, a destructuring, a type query, a list read through
- *     the table's own type, a module taken as a whole object) leaves the table
- *     as it is, and so does a table held by another table that keeps its
- *     own layout: a value typed by the literal could then reach a type this
- *     scan never saw;
+ *     type its slot has. A binding declared from the table with no type
+ *     of its own (`const kit = tools`, `const { handle } = tools`) is
+ *     another name of what it holds, and its uses are followed the same
+ *     way. A use this scan does not understand (a spread, a type query, a
+ *     list read through the table's own type, an exported alias, a module
+ *     taken as a whole object) leaves the table as it is, and so does a
+ *     table held by another table that keeps its own layout: a value typed
+ *     by the literal could then reach a type this scan never saw;
  *   - the structural type declares every member the table has, and a member
  *     that is a nested literal, a list or another table has a structural
  *     type or an array of one there: the nested literals take those layouts
@@ -54,6 +56,16 @@
  *
  * Everything else keeps the width copy, with the refusals and the warning
  * (SC6001) it has.
+ *
+ * What an identifier stands for is the checker's answer, never its
+ * spelling: a table is the same table under the name an import or an
+ * export gives it (`import { tools as kit }`, `export { tools as kit }`, a
+ * default export, `export *`). Names only choose which identifiers the
+ * checker is asked about (mentionNames). The decision is made once per
+ * table, before any type is mapped, and it is all or nothing: a table whose
+ * every use was followed takes the layout everywhere, and any other table
+ * is compiled exactly as before, so no reader meets a layout its type does
+ * not say.
  *
  * The scan is syntactic until a table is found: a program with no `as const`
  * table at module scope pays one pass over its top-level statements. */
@@ -122,6 +134,10 @@ export class LayoutAdoptions {
   private readonly layouts = new Map<ts.Symbol, ts.Type>();
   /** The tables of the program, by binding. */
   private readonly found: Map<ts.Symbol, Table>;
+  /** Every name a table is mentioned under, and the tables it may name. */
+  private names: ReadonlyMap<string, ReadonlySet<Table>> = new Map();
+  /** The bindings declared from a table or from a part of one. */
+  private readonly aliases = new Set<ts.Symbol>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -130,19 +146,18 @@ export class LayoutAdoptions {
     const tables = this.tables(sources);
     this.found = tables;
     if (tables.size === 0) return;
-    const names = new Set<string>();
     const literals = new Map<ts.Node, Table>();
-    for (const table of tables.values()) {
-      names.add(table.name);
-      literals.set(table.literal, table);
-    }
+    for (const table of tables.values()) literals.set(table.literal, table);
     const mentions: ts.Identifier[] = [];
     const compared: ts.Expression[] = [];
     const keyed: ts.Expression[] = [];
     /** The modules the program takes as a whole object: a namespace import
-     * used as an object, `export *`, a dynamic `import()` or a `require()`;
-     * null stands for a module named at run time. */
+     * used as an object, `export * as`, `import name = require()`, a dynamic
+     * `import()` or a `require()`; null stands for a module named at run
+     * time. */
     const wholeModules: (ts.Expression | null)[] = [];
+    const names = mentionNames(sources, tables.values(), wholeModules);
+    this.names = names;
     const spaces = namespaceImports(sources);
     const spaceMentions: ts.Identifier[] = [];
     const visit = (node: ts.Node): void => {
@@ -157,9 +172,14 @@ export class LayoutAdoptions {
     };
     for (const source of sources) if (!source.isDeclarationFile) visit(source);
     this.namespacesTakenWhole(spaces, spaceMentions, wholeModules);
+    /** Identifiers named like a table that stand for another binding. */
+    const strays: ts.Identifier[] = [];
     for (const mention of mentions) {
-      const table = this.tableOf(mention, tables);
-      if (table === undefined) continue;
+      const table = this.tableOf(mention);
+      if (table === undefined) {
+        if (!namesMember(mention)) strays.push(mention);
+        continue;
+      }
       const parent = mention.parent;
       if (parent !== undefined && (ts.isExportSpecifier(parent) || ts.isExportAssignment(parent)))
         table.exported = true;
@@ -170,19 +190,16 @@ export class LayoutAdoptions {
       }
       if (table.escaped) continue;
       try {
-        this.use(mention, table);
+        this.useMention(mention, wholeOf(table), false);
       } catch {
         // A checker query that fails says nothing about the use.
         table.escaped = true;
       }
     }
+    this.strayValues(strays);
     // A module taken as a whole object hands its exported tables to code
     // that names none of them.
-    if (wholeModules.length > 0) {
-      const whole = this.sourcesOf(wholeModules);
-      for (const table of tables.values())
-        if (table.exported && (whole === null || whole.has(table.source))) table.escaped = true;
-    }
+    this.takenWhole(wholeModules);
     let told: ((types: Iterable<ts.Type>, own: ts.Symbol) => boolean) | undefined;
     const decided = new Map<Table, { target: ts.Type; fit: Fit } | null>();
     // A table inside another takes the layout its slot has there, so the
@@ -309,34 +326,55 @@ export class LayoutAdoptions {
   }
 
   /** The table an identifier names, through imports and exports. */
-  private tableOf(mention: ts.Identifier, tables: Map<ts.Symbol, Table>): Table | undefined {
-    let symbol: ts.Symbol | undefined;
+  private tableOf(mention: ts.Identifier): Table | undefined {
     try {
-      const parent = mention.parent;
-      symbol =
-        parent !== undefined && ts.isShorthandPropertyAssignment(parent)
-          ? this.checker.getShorthandAssignmentValueSymbol(parent)
-          : this.checker.getSymbolAtLocation(mention);
-      if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
-        symbol = this.checker.getAliasedSymbol(symbol);
+      const symbol = this.bindingOf(mention);
+      if (symbol === undefined) return undefined;
+      if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return this.found.get(symbol);
+      return this.found.get(this.checker.getAliasedSymbol(symbol));
     } catch {
       // An identifier the checker cannot resolve may be any binding of that
-      // name: every table of the name keeps its layout.
-      for (const table of tables.values()) if (table.name === mention.text) table.escaped = true;
+      // name: every table the name may stand for keeps its layout.
+      for (const table of this.names.get(mention.text) ?? []) table.escaped = true;
       return undefined;
     }
-    return symbol === undefined ? undefined : tables.get(symbol);
   }
 
-  /** Records what one mention of a table's binding does with the table. */
-  private use(mention: ts.Identifier, table: Table): void {
+  /** The binding an identifier names; a shorthand member names the binding
+   * it reads. */
+  private bindingOf(mention: ts.Identifier): ts.Symbol | undefined {
+    const parent = mention.parent;
+    return parent !== undefined && ts.isShorthandPropertyAssignment(parent)
+      ? this.checker.getShorthandAssignmentValueSymbol(parent)
+      : this.checker.getSymbolAtLocation(mention);
+  }
+
+  /** Records what one mention does with `subject`: a mention of the table's
+   * binding, under whatever name the module gives it, or (`alias`) of a
+   * binding declared from the subject. */
+  private useMention(mention: ts.Identifier, subject: Subject, alias: boolean): void {
+    const { table } = subject;
     const parent = mention.parent;
     if (parent === undefined) return;
-    // The declaration itself, and the names of imports and exports.
-    if (ts.isVariableDeclaration(parent) && parent.name === mention) return;
-    if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return;
-    if (ts.isImportClause(parent) || ts.isNamespaceImport(parent)) return;
-    if (ts.isExportAssignment(parent)) return;
+    // The declaration itself.
+    if (
+      (ts.isVariableDeclaration(parent) || ts.isBindingElement(parent)) &&
+      parent.name === mention
+    )
+      return;
+    // The names of imports and exports: other names of the table, which the
+    // scan asks about too (mentionNames). An exported alias is a name it
+    // does not follow.
+    if (
+      ts.isImportSpecifier(parent) ||
+      ts.isExportSpecifier(parent) ||
+      ts.isImportClause(parent) ||
+      ts.isNamespaceImport(parent) ||
+      ts.isExportAssignment(parent)
+    ) {
+      if (alias) table.escaped = true;
+      return;
+    }
     // `namespace.table`: the access is the mention.
     let value: ts.Expression = mention;
     if (ts.isPropertyAccessExpression(parent) && parent.name === mention) value = parent;
@@ -344,13 +382,94 @@ export class LayoutAdoptions {
       table.escaped = true;
       return;
     }
-    this.useValue(value, {
-      table,
-      literal: table.literal,
-      type: table.type,
-      own: table.own,
-      path: [],
-    });
+    this.useValue(value, subject);
+  }
+
+  /** A binding declared from `subject` with no type of its own: it holds
+   * the subject under the subject's own type, so each mention of it is a
+   * use of the subject. A pattern binds members: a primitive is its own
+   * value, a nested literal or another table is followed under its new
+   * name, and a list, a default or a rest element is a use the scan does
+   * not follow. A binding the module exports has names in other modules:
+   * not followed either. */
+  private bind(name: ts.BindingName | undefined, subject: Subject): void {
+    const { table } = subject;
+    if (name === undefined || table.escaped) return;
+    if (ts.isObjectBindingPattern(name)) {
+      for (const element of name.elements.nodes) {
+        const key = element.propertyName ?? element.name;
+        if (
+          element.dotDotDotToken !== undefined ||
+          element.initializer !== undefined ||
+          key === undefined ||
+          !(ts.isIdentifier(key) || ts.isStringLiteral(key))
+        ) {
+          table.escaped = true;
+          return;
+        }
+        if (this.primitiveMember(subject.type, key.text)) continue;
+        const member = this.member(subject, key.text);
+        if (member === undefined) {
+          table.escaped = true;
+          return;
+        }
+        if (member === "itself") continue;
+        try {
+          this.bind(element.name, member);
+        } catch {
+          member.table.escaped = true;
+        }
+      }
+      return;
+    }
+    if (!ts.isIdentifier(name) || exportedBinding(name)) {
+      table.escaped = true;
+      return;
+    }
+    const symbol = this.checker.getSymbolAtLocation(name);
+    if (symbol === undefined) {
+      table.escaped = true;
+      return;
+    }
+    if (this.aliases.has(symbol)) return;
+    this.aliases.add(symbol);
+    // The binding is not exported, so its module holds every mention.
+    const mentions: ts.Identifier[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        if (node.text === name.text && node !== name) mentions.push(node);
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ts.getSourceFileOfNode(name));
+    for (const mention of mentions) {
+      if (table.escaped) return;
+      if (this.bindingOf(mention) === symbol) this.useMention(mention, subject, true);
+    }
+  }
+
+  /** Identifiers that are named like a table and stand for another binding:
+   * when one holds a value of a table's own type and is no binding the scan
+   * followed (a pattern over a namespace, a parameter typed by a query),
+   * the table reached it by a way the scan did not see, and keeps its
+   * layout. */
+  private strayValues(strays: readonly ts.Identifier[]): void {
+    if (strays.length === 0) return;
+    const owners = new Map<ts.Symbol, Table>();
+    for (const table of this.found.values()) owners.set(table.own, table);
+    this.checker.prefetchTypeQueries(strays);
+    for (const stray of strays) {
+      try {
+        const own = this.checker.getTypeAtLocation(stray).getSymbol();
+        const table = own === undefined ? undefined : owners.get(own);
+        if (table === undefined || table.escaped) continue;
+        const symbol = this.bindingOf(stray);
+        if (symbol === undefined || !this.aliases.has(symbol)) table.escaped = true;
+      } catch {
+        for (const table of this.names.get(stray.text) ?? []) table.escaped = true;
+      }
+    }
   }
 
   /** Records what the program does with `start`, a value of `subject`. */
@@ -399,6 +518,16 @@ export class LayoutAdoptions {
       if (this.flow(subject, this.checker.getTypeFromTypeNode(outer.type))) table.escaped = true;
       return;
     }
+    // A binding declared from the value with no type of its own is another
+    // name of it.
+    if (
+      ts.isVariableDeclaration(outer) &&
+      outer.type === undefined &&
+      outer.initializer === value
+    ) {
+      this.bind(outer.name, subject);
+      return;
+    }
     if (
       ((ts.isCallExpression(outer) || ts.isNewExpression(outer)) && outer.expression !== value) ||
       (ts.isVariableDeclaration(outer) && outer.type !== undefined) ||
@@ -409,6 +538,17 @@ export class LayoutAdoptions {
       ts.isArrayLiteralExpression(outer) ||
       ts.isPropertyAssignment(outer)
     ) {
+      // A literal that initializes a declaration with no type of its own is
+      // typed by the declaration's pattern alone (`const [first] = [table]`):
+      // the pattern takes any value and its binding has the table's own
+      // type, a name this scan does not follow.
+      if (
+        (ts.isArrayLiteralExpression(outer) || ts.isPropertyAssignment(outer)) &&
+        inferred(outer)
+      ) {
+        table.escaped = true;
+        return;
+      }
       // A context typed by the table's own type holds the table under an
       // inferred type: only a generic callee's type parameter is followed.
       if (
@@ -433,36 +573,40 @@ export class LayoutAdoptions {
    * slot is the structural type's array): a table read that way keeps its
    * own layout. */
   private readMember(access: ts.PropertyAccessExpression, subject: Subject): void {
-    const member = memberOf(subject.literal, access.name.text);
-    if (member !== undefined && ts.isObjectLiteralExpression(member)) {
-      const type = this.checker.getTypeAtLocation(member);
-      const own = type.getSymbol();
-      if (own !== undefined) {
-        const path = [...subject.path, access.name.text];
-        this.useValue(access, { table: subject.table, literal: member, type, own, path });
-        return;
-      }
-    }
-    if (member === undefined || ts.isArrayLiteralExpression(member)) {
+    const member = this.member(subject, access.name.text);
+    if (member === undefined) {
       subject.table.escaped = true;
       return;
     }
-    // An object made elsewhere sits in its slot as itself (heldAsItself):
-    // the read answers that object, whose uses are its own.
-    const named = ts.isIdentifier(member) ? this.tableOf(member, this.found) : undefined;
-    if (named === undefined) return;
-    if (named.escaped) return;
-    try {
-      this.useValue(access, {
-        table: named,
-        literal: named.literal,
-        type: named.type,
-        own: named.own,
-        path: [],
-      });
-    } catch {
-      named.escaped = true;
+    if (member === "itself") return;
+    if (member.table === subject.table) {
+      this.useValue(access, member);
+      return;
     }
+    try {
+      this.useValue(access, member);
+    } catch {
+      member.table.escaped = true;
+    }
+  }
+
+  /** What the member `name` of `subject` is, read through the subject's own
+   * type: a nested literal (a part of the same table), another table named
+   * there, "itself" for an object made elsewhere, which sits in its slot as
+   * itself and whose uses are its own (heldAsItself), or undefined for a
+   * member the scan does not follow (a list, a member the literal does not
+   * write). */
+  private member(subject: Subject, name: string): Subject | "itself" | undefined {
+    const member = memberOf(subject.literal, name);
+    if (member === undefined || ts.isArrayLiteralExpression(member)) return undefined;
+    if (ts.isObjectLiteralExpression(member)) {
+      const type = this.checker.getTypeAtLocation(member);
+      const own = type.getSymbol();
+      if (own === undefined) return "itself";
+      return { table: subject.table, literal: member, type, own, path: [...subject.path, name] };
+    }
+    const named = ts.isIdentifier(member) ? this.tableOf(member) : undefined;
+    return named === undefined || named.escaped ? "itself" : wholeOf(named);
   }
 
   /** Whether each nested literal that flows somewhere by itself flows into
@@ -612,22 +756,38 @@ export class LayoutAdoptions {
     }
   }
 
-  /** The source files of the modules the program takes as whole objects;
-   * null when one of them is named at run time. */
-  private sourcesOf(specifiers: readonly (ts.Expression | null)[]): Set<ts.SourceFile> | null {
+  /** The tables a module taken as a whole object hands to code that names
+   * none of them: what the module exports, declared there or passed on from
+   * another module (`export *`, `export { … } from`). A module named at run
+   * time may be any module. */
+  private takenWhole(specifiers: readonly (ts.Expression | null)[]): void {
+    if (specifiers.length === 0) return;
     const sources = new Set<ts.SourceFile>();
+    let any = false;
     for (const specifier of specifiers) {
-      if (specifier === null) return null;
       try {
-        const module = this.checker.getSymbolAtLocation(specifier);
-        if (module === undefined) return null;
+        const module = specifier === null ? undefined : this.checker.getSymbolAtLocation(specifier);
+        if (module === undefined) {
+          any = true;
+          break;
+        }
         for (const declaration of module.declarations)
           if (ts.isSourceFile(declaration)) sources.add(declaration);
+        for (const exported of this.checker.getExportsOfModule(module)) {
+          const table = this.found.get(
+            (exported.flags & ts.SymbolFlags.Alias) === 0
+              ? exported
+              : this.checker.getAliasedSymbol(exported),
+          );
+          if (table !== undefined) table.escaped = true;
+        }
       } catch {
-        return null;
+        any = true;
+        break;
       }
     }
-    return sources;
+    for (const table of this.found.values())
+      if (table.exported && (any || sources.has(table.source))) table.escaped = true;
   }
 
   /** The declared constraint of a type parameter (`T extends Shape`). */
@@ -712,7 +872,7 @@ export class LayoutAdoptions {
     // layout that has a primitive slot for it.
     const type = literal ? undefined : this.checker.getTypeAtLocation(value);
     if (type !== undefined && primitive(type)) return primitive(declared);
-    const named = ts.isIdentifier(value) ? this.tableOf(value, this.found) : undefined;
+    const named = ts.isIdentifier(value) ? this.tableOf(value) : undefined;
     // An object made elsewhere (a binding of a declared type, a call's
     // result, a function, a class instance) is held as itself.
     if (type !== undefined && named === undefined) return heldAsItself(type, declared);
@@ -910,26 +1070,182 @@ function asksForMember(mention: ts.Identifier, parent: ts.Node): boolean {
   return ts.isPropertyAssignment(parent) && parent.name === mention;
 }
 
-/** Notes the module a node takes as a whole object: `export *`,
+/** Notes the module a node takes as a whole object: `export * as name`,
  * `import("m")`, `require("m")`. A namespace import is judged by its uses
- * (namespacesTakenWhole). */
+ * (namespacesTakenWhole). `export *` passes names on and makes no object:
+ * each importer still names the export it reads, and a module that is taken
+ * whole hands on what it passes on (takenWhole). A `require` whose
+ * specifier is computed names no module of the program: the call resolves
+ * at run time, never to a module compiled into the program, and its answer
+ * has no type. */
 function wholeModule(node: ts.Node, modules: (ts.Expression | null)[]): void {
   if (ts.isExportDeclaration(node)) {
     if (
       node.moduleSpecifier !== undefined &&
-      (node.exportClause === undefined || ts.isNamespaceExport(node.exportClause))
+      node.exportClause !== undefined &&
+      ts.isNamespaceExport(node.exportClause)
     )
       modules.push(node.moduleSpecifier);
   } else if (ts.isCallExpression(node)) {
     const callee = node.expression;
-    if (
-      callee.kind !== ts.SyntaxKind.ImportKeyword &&
-      !(ts.isIdentifier(callee) && callee.text === "require")
-    )
-      return;
     const specifier = node.arguments.nodes[0];
-    modules.push(specifier !== undefined && ts.isStringLiteralLike(specifier) ? specifier : null);
+    const named = specifier !== undefined && ts.isStringLiteralLike(specifier);
+    if (callee.kind === ts.SyntaxKind.ImportKeyword) modules.push(named ? specifier : null);
+    else if (ts.isIdentifier(callee) && callee.text === "require" && named) modules.push(specifier);
   }
+}
+
+/** The name of a module's default export and of `export =`. */
+const DEFAULT = "default";
+
+/** Every name a table can be mentioned under, with the tables it may name:
+ * its own, and each name an import, an export or an import alias gives it,
+ * in its module or in any other (`import { tools as kit }`, `export { kit as
+ * set }`, `export default tools`, `import kit from`, `import kit =
+ * shed.tools`). The names say which identifiers to ask the checker about and
+ * nothing else, so a rename of another binding of the same name only costs
+ * a query. Adds to `whole` the module an `import name = require("m")` takes
+ * as an object. */
+function mentionNames(
+  sources: readonly ts.SourceFile[],
+  tables: Iterable<Table>,
+  whole: (ts.Expression | null)[],
+): Map<string, Set<Table>> {
+  const names = new Map<string, Set<Table>>();
+  const add = (name: string, table: Table): boolean => {
+    let named = names.get(name);
+    if (named === undefined) names.set(name, (named = new Set()));
+    if (named.has(table)) return false;
+    named.add(table);
+    return true;
+  };
+  for (const table of tables) add(table.name, table);
+  const renames: { from: string; to: string }[] = [];
+  const rename = (from: string, to: string): void => {
+    if (from !== to) renames.push({ from, to });
+  };
+  const scan = (statements: readonly ts.Statement[]): void => {
+    for (const statement of statements) {
+      if (ts.isImportDeclaration(statement)) {
+        const clause = statement.importClause;
+        if (clause === undefined) continue;
+        if (clause.name !== undefined) rename(DEFAULT, clause.name.text);
+        const bound = clause.namedBindings;
+        if (bound !== undefined && ts.isNamedImports(bound))
+          for (const specifier of bound.elements.nodes)
+            rename((specifier.propertyName ?? specifier.name).text, specifier.name.text);
+      } else if (ts.isExportDeclaration(statement)) {
+        const clause = statement.exportClause;
+        if (clause !== undefined && ts.isNamedExports(clause))
+          for (const specifier of clause.elements.nodes)
+            rename((specifier.propertyName ?? specifier.name).text, specifier.name.text);
+      } else if (ts.isExportAssignment(statement)) {
+        const value = withoutParentheses(statement.expression);
+        if (ts.isIdentifier(value)) rename(value.text, DEFAULT);
+      } else if (ts.isImportEqualsDeclaration(statement)) {
+        const reference = statement.moduleReference;
+        if (ts.isExternalModuleReference(reference)) {
+          whole.push(ts.isStringLiteralLike(reference.expression) ? reference.expression : null);
+          rename(DEFAULT, statement.name.text);
+        } else {
+          rename(
+            ts.isIdentifier(reference) ? reference.text : reference.right.text,
+            statement.name.text,
+          );
+        }
+      } else if (
+        ts.isModuleDeclaration(statement) &&
+        statement.body !== undefined &&
+        ts.isModuleBlock(statement.body)
+      ) {
+        scan(statement.body.statements.nodes);
+      }
+    }
+  };
+  for (const source of sources) if (!source.isDeclarationFile) scan(source.statements.nodes);
+  for (let settled = renames.length === 0; !settled;) {
+    settled = true;
+    for (const { from, to } of renames)
+      for (const table of names.get(from) ?? []) if (add(to, table)) settled = false;
+  }
+  return names;
+}
+
+/** The subject that is the whole table. */
+function wholeOf(table: Table): Subject {
+  return { table, literal: table.literal, type: table.type, own: table.own, path: [] };
+}
+
+/** Whether an identifier is the name of a member, here or in a pattern:
+ * the member's type says nothing about what a binding of that name holds. */
+function namesMember(mention: ts.Identifier): boolean {
+  const parent = mention.parent;
+  if (parent === undefined) return true;
+  if (ts.isQualifiedName(parent)) return true;
+  if (ts.isBindingElement(parent)) return parent.propertyName === mention;
+  return (
+    (ts.isPropertyAccessExpression(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isPropertySignatureDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isMethodSignatureDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent) ||
+      ts.isEnumMember(parent) ||
+      ts.isJsxAttribute(parent)) &&
+    parent.name === mention
+  );
+}
+
+/** Whether the literal that holds `part` keeps the type it infers: it
+ * initializes a declaration that names no type, or stands under
+ * `satisfies`. The context then checks the literal and does not type what
+ * holds it. */
+function inferred(part: ts.Node): boolean {
+  let literal = part;
+  for (;;) {
+    const parent: ts.Node | undefined = literal.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent) ||
+      ts.isPropertyAssignment(parent) ||
+      ts.isParenthesizedExpression(parent)
+    ) {
+      literal = parent;
+      continue;
+    }
+    if (ts.isSatisfiesExpression(parent)) return true;
+    if (ts.isBindingElement(parent)) return parent.initializer === literal;
+    return (
+      (ts.isVariableDeclaration(parent) ||
+        ts.isParameter(parent) ||
+        ts.isPropertyDeclaration(parent)) &&
+      parent.initializer === literal &&
+      parent.type === undefined
+    );
+  }
+}
+
+/** Whether the declaration that binds `name` is exported where it stands. */
+function exportedBinding(name: ts.Identifier): boolean {
+  let statement: ts.Node | undefined = name.parent;
+  while (
+    statement !== undefined &&
+    (ts.isBindingElement(statement) ||
+      ts.isObjectBindingPattern(statement) ||
+      ts.isArrayBindingPattern(statement) ||
+      ts.isVariableDeclaration(statement) ||
+      ts.isVariableDeclarationList(statement))
+  )
+    statement = statement.parent;
+  return (
+    statement !== undefined &&
+    ts.isVariableStatement(statement) &&
+    statement.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ===
+      true
+  );
 }
 
 function isIdentityOperator(kind: ts.SyntaxKind): boolean {

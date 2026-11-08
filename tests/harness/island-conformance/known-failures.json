@@ -263,12 +263,6 @@
       "signature": "exit 1, Node 0: Uncaught TypeError: Reflect.get called on non-object"
     }
   },
-  "npm/jsval-into-dyn": {
-    "island:plugstub": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: Own-property checks on this checked-dynamic kind are not supported yet [SC1090]"
-    }
-  },
   "npm/jsval-iterate": {
     "island:plugstub": {
       "category": "stdout",

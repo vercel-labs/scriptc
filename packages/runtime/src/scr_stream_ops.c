@@ -1785,10 +1785,12 @@ static void op_from_step_drop(OpObj *o) {
 static void from_next(OpFrom *f, ScrStream *out);
 
 /* An operator error as a stream error: Error values as themselves, any
- * other thrown value refused. +1. */
+ * other truthy value carried by an Error that boxes back to it (Node hands
+ * the thrown value on), a falsy one refused. +1. */
 static ScrError *op_caught_error(const ScrCaught *c) {
   ScrDyn *d = scr_caught_to_dyn(c);
   ScrError *e = d ? scr_errdyn_err_of(d) : NULL;
+  if (d && !e && scr_dyn_truthy(d)) e = scr_error_from_dyn(d);
   if (d) scr_dyn_release(d);
   if (e) return e;
   return op_unsupported("a stream operator rejection that is not an Error object");
@@ -2068,6 +2070,15 @@ static ScrError *op_aggregate_two(ScrError *inner, ScrError *outer) {
     return e ? scr_error_retain(e) : NULL;
   }
   ScrDyn *od = scr_dyn_from_error(outer);
+  /* Two errors that carry one value (a number thrown once and seen on two
+   * paths) are the same error to JavaScript. */
+  ScrDyn *id = scr_dyn_from_error(inner);
+  bool same = id && od && scr_dyn_strict_eq(id, od);
+  if (id) scr_dyn_release(id);
+  if (same) {
+    scr_dyn_release(od);
+    return scr_error_retain(inner);
+  }
   ScrDyn *list = od ? scr_dyn_iterator_result_get(od, "errors", 6) : NULL;
   if (list && list->kind == SCR_DYN_ARR) {
     scr_dyn_arr_push(list, scr_dyn_from_error(inner));

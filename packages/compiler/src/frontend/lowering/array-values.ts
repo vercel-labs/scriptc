@@ -11,6 +11,7 @@ import {
   type IrType,
   isIntegerBytesElem,
   isUnitType,
+  canBoxFuncIntoDyn,
   type SrcLoc,
   STRING,
   UNDEFINED_T,
@@ -332,10 +333,23 @@ function tupleMovingRead(
 ): IrExpr | null {
   const layout = tupleFields(lowerer, tuple.type);
   if (layout === null) return null;
-  let read = lowerer.wrappedUndefined(type, loc);
+  let read = positionMissing(lowerer, type, loc);
   if (!read) return null;
   for (let i = layout.fields.length - 1; i >= 0; i--) {
     const field = layout.fields[i]!;
+    const held = positionAnswer(
+      lowerer,
+      {
+        kind: "recordGet",
+        obj: tuple,
+        shapeId: layout.shapeId,
+        field: field.name,
+        type: field.type,
+        loc,
+      },
+      type,
+    );
+    if (held === null) return null;
     read = {
       kind: "ternary",
       cond: {
@@ -346,23 +360,71 @@ function tupleMovingRead(
         type: BOOL,
         loc,
       },
-      then: lowerer.coerceToExpected(
-        {
-          kind: "recordGet",
-          obj: tuple,
-          shapeId: layout.shapeId,
-          field: field.name,
-          type: field.type,
-          loc,
-        },
-        type,
-      ),
+      then: held,
       else_: read,
       type,
       loc,
     };
   }
   return read;
+}
+
+/** Whether the checked-dynamic value holds a value of type `arm` itself:
+ * by value (the scalars and the unit values are its own kinds) or by
+ * reference (a URL, a function it can box). These are the arms the type
+ * mapper lets share the checked-dynamic representation with a
+ * checked-dynamic arm (`Response | undefined`, `string | Response`),
+ * without the records, arrays and promises, which enter it as copies: a
+ * position read answers the element the tuple holds, never a copy. */
+function dynHoldsItself(lowerer: Lowerer, arm: IrType): boolean {
+  switch (arm.kind) {
+    case "dyn":
+    case "f64":
+    case "string":
+    case "bool":
+    case "undefinedT":
+    case "nullT":
+    case "url":
+      return true;
+    case "func":
+      return canBoxFuncIntoDyn(
+        arm,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      );
+    default:
+      return false;
+  }
+}
+
+/** The one type the arms' answers at a position read as: the answer itself
+ * when they agree, the checked-dynamic value when one answer is
+ * checked-dynamic (a fetch handle) and it holds every other answer itself
+ * (dynHoldsItself): the representation the checker's type of the read
+ * (`Response | undefined`) has in any other slot. Otherwise the union of
+ * the answers. Null when they have no common native representation. */
+function positionAnswerType(lowerer: Lowerer, answers: IrType[]): IrType | null {
+  const joined = sortArms(answers);
+  if (joined.length === 1) return joined[0]!;
+  if (joined.some((arm) => arm.kind === "generator" || arm.kind === "caught")) return null;
+  if (joined.some((arm) => arm.kind === "dyn"))
+    return joined.every((arm) => dynHoldsItself(lowerer, arm)) ? DYN : null;
+  if (!unionContainerArmsOk(joined)) return null;
+  return { kind: "union", unionId: lowerer.unions.intern(joined) };
+}
+
+/** What a position read of type `type` answers where an arm has no such
+ * position: undefined in the read's representation. Null when `type` has
+ * no undefined. */
+function positionMissing(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrExpr | null {
+  return type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(type, loc);
+}
+
+/** One arm's answer in the read's representation. Null when the
+ * conversion into the checked-dynamic value does not reach it. */
+function positionAnswer(lowerer: Lowerer, answer: IrExpr, type: IrType): IrExpr | null {
+  const held = lowerer.coerceToExpected(answer, type);
+  return type.kind !== "dyn" || held.type.kind === "dyn" ? held : null;
 }
 
 /** The type a position of a tuple reads as when the index is known only
@@ -377,14 +439,8 @@ function tupleMovingType(lowerer: Lowerer, tuple: IrType): IrType | null {
       field.type.kind === "union" ? lowerer.unions.get(field.type.unionId)!.arms : [field.type];
     for (const part of parts) answers.set(typeKey(part), part);
   }
-  const joined = sortArms([...answers.values()]);
-  if (
-    joined.length < 2 ||
-    !unionContainerArmsOk(joined) ||
-    joined.some((arm) => arm.kind === "dyn" || arm.kind === "generator" || arm.kind === "caught")
-  )
-    return null;
-  return { kind: "union", unionId: lowerer.unions.intern(joined) };
+  if (answers.size < 2) return null;
+  return positionAnswerType(lowerer, [...answers.values()]);
 }
 
 /** `view[key]` over what unionArmsView answers: the position is read in
@@ -562,17 +618,8 @@ export function unionArrayValueType(
     const parts = answer.kind === "union" ? lowerer.unions.get(answer.unionId)!.arms : [answer];
     for (const part of parts) answers.set(typeKey(part), part);
   }
-  const joined = sortArms([...answers.values()]);
-  if (joined.length === 1 && joined[0]!.kind === "undefinedT") return null;
-  if (
-    joined.length > 1 &&
-    (!unionContainerArmsOk(joined) ||
-      joined.some((arm) => arm.kind === "dyn" || arm.kind === "generator" || arm.kind === "caught"))
-  )
-    return null;
-  return joined.length === 1
-    ? joined[0]!
-    : { kind: "union", unionId: lowerer.unions.intern(joined) };
+  if (answers.size === 1 && answers.has(typeKey(UNDEFINED_T))) return null;
+  return positionAnswerType(lowerer, [...answers.values()]);
 }
 
 /** Read one position of a stabilized union of native arrays and tuples
@@ -612,43 +659,38 @@ export function unionArrayValueRead(
   for (let tag = arms.length - 1; tag >= 0; tag--) {
     const arm = arms[tag]!;
     const receiver: IrExpr = { kind: "unionNarrow", unionId, tag, value, type: arm, loc };
-    let read: IrExpr;
+    let read: IrExpr | null;
     if (arm.kind === "array") {
-      read = lowerer.coerceToExpected(
-        arrayValueRead(lowerer, receiver, index, arm.elem, loc),
-        type,
-      );
+      read = positionAnswer(lowerer, arrayValueRead(lowerer, receiver, index, arm.elem, loc), type);
     } else if (stringArm(arm)) {
-      read = lowerer.coerceToExpected(
+      read = positionAnswer(
+        lowerer,
         arrayValueRead(lowerer, stringChars!(receiver), index, STRING, loc),
         type,
       );
     } else if (moving && position === null) {
       // `value` and `index` are stable here: the caller holds both.
-      const moved = tupleMovingRead(lowerer, receiver, index, type, loc);
-      if (moved === null) return null;
-      read = moved;
+      read = tupleMovingRead(lowerer, receiver, index, type, loc);
     } else {
       const field = tupleField(arm);
       if (field === null) return null;
-      if (field === "past") {
-        const missing = lowerer.wrappedUndefined(type, loc);
-        if (!missing) return null;
-        read = missing;
-      } else {
-        read = lowerer.coerceToExpected(
-          {
-            kind: "recordGet",
-            obj: receiver,
-            shapeId: (arm as IrType & { kind: "record" }).shapeId,
-            field: field.name,
-            type: field.type,
-            loc,
-          },
-          type,
-        );
-      }
+      read =
+        field === "past"
+          ? positionMissing(lowerer, type, loc)
+          : positionAnswer(
+              lowerer,
+              {
+                kind: "recordGet",
+                obj: receiver,
+                shapeId: (arm as IrType & { kind: "record" }).shapeId,
+                field: field.name,
+                type: field.type,
+                loc,
+              },
+              type,
+            );
     }
+    if (read === null) return null;
     result =
       result === null
         ? read

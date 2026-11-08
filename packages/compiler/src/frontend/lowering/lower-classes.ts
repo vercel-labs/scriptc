@@ -352,6 +352,129 @@ function perInstanceMember(node: ts.Node): boolean {
   return !ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword);
 }
 
+/** An index signature of the class's instances (`static [key: string]: T`
+ * describes the class value instead). */
+function isInstanceIndexSignature(member: ts.ClassElement): member is ts.IndexSignatureDeclaration {
+  return (
+    ts.isIndexSignatureDeclaration(member) &&
+    !ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)
+  );
+}
+
+/** Whether the class or a base declares an instance index signature, so a
+ * name no class on the chain declares may be an own property of the
+ * instance (it lives in the instance's checked-dynamic view). */
+export function classHasIndexSignature(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base)
+    if (c.decl?.members.nodes.some(isInstanceIndexSignature)) return true;
+  return false;
+}
+
+/** Whether evaluating `node` can reach the instance under construction or
+ * run other code: it mentions `this` or `super`, or calls, constructs or
+ * tags anything. A nested function's body does not run when the expression
+ * is evaluated (calling it is a call, which answers true). */
+function evaluationReachesInstance(node: ts.Node): boolean {
+  if (ts.isFunctionLike(node)) return false;
+  if (
+    node.kind === ts.SyntaxKind.ThisKeyword ||
+    node.kind === ts.SyntaxKind.SuperKeyword ||
+    ts.isCallExpression(node) ||
+    ts.isNewExpression(node) ||
+    ts.isTaggedTemplateExpression(node)
+  )
+    return true;
+  let reaches = false;
+  ts.forEachChild(node, (child) => {
+    if (!reaches && evaluationReachesInstance(child)) reaches = true;
+  });
+  return reaches;
+}
+
+/** The first instance field initializer of `decl` whose evaluation can
+ * reach the instance (evaluationReachesInstance), or null. */
+function initializerReachingInstance(decl: ts.ClassLikeDeclaration): ts.PropertyDeclaration | null {
+  for (const member of decl.members.nodes) {
+    if (!ts.isPropertyDeclaration(member) || member.initializer === undefined) continue;
+    const modifiers = ts.getModifiers(member);
+    if (
+      modifiers?.some(
+        (m) => m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.DeclareKeyword,
+      )
+    )
+      continue;
+    if (evaluationReachesInstance(member.initializer)) return member;
+  }
+  return null;
+}
+
+/** Whether the constructor body of `decl` can run code of a subclass or
+ * hand the instance out, in its body or in a parameter's default value: any
+ * call, construction or tagged template besides its own `super(...)` call
+ * (whose arguments count), and any use of `this` or `super` other than a
+ * member access `this.name` of a name `isAccessor` does not answer for (an
+ * accessor is a call a subclass can override; the caller's second question
+ * is a field without a slot, which an assignment creates). */
+function constructorReachesInstance(
+  decl: ts.ClassLikeDeclaration,
+  isAccessor: (name: string) => boolean,
+): boolean {
+  const ctor = decl.members.nodes.find(
+    (member): member is ts.ConstructorDeclaration =>
+      ts.isConstructorDeclaration(member) && member.body !== undefined,
+  );
+  if (!ctor?.body) return false;
+  const visit = (node: ts.Node): boolean => {
+    if (ts.isFunctionLike(node)) return false;
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.SuperKeyword)
+      return node.arguments.nodes.some(visit);
+    if (
+      ts.isCallExpression(node) ||
+      ts.isNewExpression(node) ||
+      ts.isTaggedTemplateExpression(node) ||
+      node.kind === ts.SyntaxKind.SuperKeyword
+    )
+      return true;
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      !node.questionDotToken
+    )
+      return isAccessor(node.name.text);
+    if (node.kind === ts.SyntaxKind.ThisKeyword) return true;
+    let reaches = false;
+    ts.forEachChild(node, (child) => {
+      if (!reaches && visit(child)) reaches = true;
+    });
+    return reaches;
+  };
+  // A default value of a parameter, and a default or a computed name inside
+  // a destructured one, is evaluated when the constructor is entered: it
+  // reaches the instance the way a statement of the body does.
+  const parameterReaches = (parameter: ts.ParameterDeclaration): boolean =>
+    (parameter.initializer !== undefined && visit(parameter.initializer)) ||
+    (!ts.isIdentifier(parameter.name) && visit(parameter.name));
+  return ctor.parameters.nodes.some(parameterReaches) || visit(ctor.body);
+}
+
+/** Whether an instance index signature is `[key: string]: any` or
+ * `[key: string]: unknown`: a string key, and a value the checked-dynamic
+ * read answers as it is, an absent property included. */
+function indexSignatureReadsDynamic(
+  lowerer: Lowerer,
+  member: ts.IndexSignatureDeclaration,
+): boolean {
+  if (!isInstanceIndexSignature(member)) return false;
+  const parameter = member.parameters.nodes.length === 1 ? member.parameters.nodes[0] : undefined;
+  if (!parameter?.type || !member.type) return false;
+  const key = lowerer.checker.getTypeFromTypeNode(parameter.type);
+  const value = lowerer.checker.getTypeFromTypeNode(member.type);
+  return (
+    (key.flags & ts.TypeFlags.String) !== 0 &&
+    (value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
+}
+
 /** `Symbol.hasInstance` over the standard global. */
 export function isSymbolHasInstanceKey(lowerer: Lowerer, key: ts.Expression): boolean {
   let e = key;
@@ -2671,6 +2794,10 @@ export function collectClassShapeInner(
     // IrFunction like any other (lowerGenericInstance), calls enter
     // through the instance's own spawn wrapper, and no vtable slot is
     // ever involved — generic members always dispatch statically.
+    // GENERATOR methods collect too, sync and async: a generic generator
+    // instance is a generator IrFunction like a generic generator
+    // function's, entered through its own spawn wrapper. A field holding a
+    // generic generator function expression keeps its refusal.
     const collectGenericMember = (
       member: ts.MethodDeclaration | ts.PropertyDeclaration,
       isStatic: boolean,
@@ -2682,7 +2809,8 @@ export function collectClassShapeInner(
       if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) {
         lowerer.unsupported("SC1090", member, "computed generic method names");
       }
-      if (fnNode.asteriskToken) lowerer.unsupported("SC1071", member);
+      if (fnNode.asteriskToken && ts.isPropertyDeclaration(member))
+        lowerer.unsupported("SC1071", member);
       const mName = (member.name as ts.Identifier | ts.PrivateIdentifier).text;
       const typeParams: ts.Symbol[] = [];
       for (const tp of fnNode.typeParameters!.nodes) {
@@ -4255,7 +4383,22 @@ export function collectClassShapeInner(
         // below reasons about accessors that EXIST on the instance.
         if (!abstractAccessor) accessorNodes.set(mName, member);
       } else if (ts.isIndexSignatureDeclaration(member)) {
-        lowerer.unsupported("SC1090", member, "index signatures");
+        // An index signature declares no storage: JavaScript emits nothing
+        // for it, like a `declare` field. It only tells the checker that a
+        // name the class does not declare may be on the instance, and such
+        // a name is read and written where every undeclared property of a
+        // class instance already lives, the instance's checked-dynamic view
+        // (the member read's and write's own fallbacks; `(x as any).name`
+        // reaches the same property). The value type must be `any` or
+        // `unknown`: a read through any other type would have to convert an
+        // absent property into a type that has no `undefined`.
+        if (!indexSignatureReadsDynamic(lowerer, member)) {
+          lowerer.unsupported(
+            "SC1090",
+            member,
+            "a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property)",
+          );
+        }
       } else if (!ts.isSemicolonClassElement(member)) {
         lowerer.unsupported("SC1090", member, `syntax '${ts.syntaxKindName(member.kind)}'`);
       }
@@ -4276,6 +4419,89 @@ export function collectClassShapeInner(
           initializer: undefined,
         })),
       );
+    }
+
+    // A field of a class below one with an index signature: Node creates it
+    // when the base constructor returns, so it follows every property that
+    // constructor added under an undeclared name (`Object.keys`,
+    // `JSON.stringify` and `for...in` list `added` before the field). A
+    // native instance lists its declared fields first, whichever class
+    // declares them, so the order would differ without a diagnostic.
+    if (fieldOrder.some((field) => field.redeclared !== true)) {
+      for (let ancestor = base; ancestor; ancestor = ancestor.base) {
+        // A generic instance's base is its own family: the same declaration.
+        if (ancestor.decl === decl) continue;
+        if (ancestor.decl?.members.nodes.some(isInstanceIndexSignature)) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `declaring instance fields in a class that extends '${ancestor.decl.name?.text ?? "a class"}', a class with an index signature (Node creates a subclass's fields after the properties the base constructor added, and a compiled instance lists declared fields first; declare the fields in the class that has the index signature)`,
+          );
+        }
+      }
+    }
+
+    // The same order, inside the class that declares the signature: a
+    // property written through it before the declared fields all exist is
+    // listed by Node before the later fields, and a compiled instance lists
+    // declared fields first. The write can only run that early from a field
+    // initializer that reaches the instance (it mentions `this` or calls
+    // something), the class's own or a base class's, or from a base
+    // constructor that calls out or hands the instance out while a class
+    // below it still has fields to define. Each of those is refused; what
+    // cannot be decided here is refused too. A constructor of the class
+    // itself runs after its fields exist, so writes there list as in Node.
+    if (decl.members.nodes.some(isInstanceIndexSignature)) {
+      const order =
+        "a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first";
+      const own = initializerReachingInstance(decl);
+      if (own) {
+        lowerer.unsupported(
+          "SC1090",
+          own,
+          `a field initializer that mentions 'this' or calls a function, in a class with an index signature (${order}; assign the field in the constructor instead)`,
+        );
+      }
+      let fieldsBelow = fieldOrder.some((field) => field.redeclared !== true);
+      for (let ancestor = base; ancestor; ancestor = ancestor.base) {
+        if (ancestor.decl === null || ancestor.decl === decl) continue;
+        const ancestorName = ancestor.decl.name?.text ?? "a class";
+        if (initializerReachingInstance(ancestor.decl)) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `an index signature in a class that extends '${ancestorName}', which has a field initializer that mentions 'this' or calls a function (${order})`,
+          );
+        }
+        const accessorOf = (name: string): boolean =>
+          lowerer.findMethodOn(ancestor, `get:${name}`) !== null ||
+          lowerer.findMethodOn(ancestor, `set:${name}`) !== null;
+        const erasedNames = ancestor.erasedFields;
+        const slotNames = ancestor.fields;
+        if (fieldsBelow && constructorReachesInstance(ancestor.decl, accessorOf)) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `an index signature in a class with instance fields below '${ancestorName}', whose constructor calls a function or hands the instance out (${order})`,
+          );
+        } else if (
+          fieldsBelow &&
+          // A field declared with `declare` has no slot: assigning it in
+          // the constructor creates the property then, before the fields
+          // below exist, exactly like a write through the signature.
+          constructorReachesInstance(
+            ancestor.decl,
+            (name) => erasedNames?.has(name) === true && !slotNames.has(name),
+          )
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            decl.name ?? decl,
+            `an index signature in a class with instance fields below '${ancestorName}', whose constructor uses a field declared with 'declare' (it exists only once it is assigned; ${order})`,
+          );
+        }
+        if (ancestor.fieldOrder.some((field) => field.redeclared !== true)) fieldsBelow = true;
+      }
     }
 
     // Fields read before their first assignment. Construction that exposes

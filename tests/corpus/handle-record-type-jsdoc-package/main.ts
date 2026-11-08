@@ -6,7 +6,7 @@
 import type * as tty from "node:tty";
 import { linkSupport } from "term-links";
 
-class Output {
+class Report {
   stream: tty.WriteStream;
   links = false;
   constructor(stream: tty.WriteStream) {
@@ -14,5 +14,5 @@ class Output {
     this.links = linkSupport(this.stream);
   }
 }
-console.log(new Output(process.stderr).links, new Output(process.stdout).links);
+console.log(new Report(process.stderr).links, new Report(process.stdout).links);
 console.log(linkSupport(process.stdout), linkSupport({ isTTY: true }), linkSupport({}));

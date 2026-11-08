@@ -188,6 +188,7 @@ export type TypeFailureFamily =
   | "intersection"
   | "component"
   | "stdlib-nominal"
+  | "thenable"
   | "record-member"
   | "unsupported"
   | "dyn-field-policy";

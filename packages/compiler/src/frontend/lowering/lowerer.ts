@@ -4423,6 +4423,10 @@ export class Lowerer {
   /** Which member calls on records pass the record as the receiver
    * (memberCallReceivers), computed on first use. */
   memberReceivers: MemberCallReceivers | undefined = undefined;
+  /** Whether the program imports @scriptc/node (programImportsNodeApi), so
+   * a checked-dynamic value may be a Node island value; computed on first
+   * use. */
+  importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -5709,6 +5713,7 @@ export class Lowerer {
     "mentionsProcessVersions",
     "createsWrappers",
     "memberReceivers",
+    "importsNodeApi",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",

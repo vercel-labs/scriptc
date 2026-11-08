@@ -152,6 +152,9 @@ export interface CcOptions {
   childLifecycle?: boolean;
   /** process.features as a value links scr_process_features.c. */
   processFeatures?: boolean;
+  /** Node islands and child_process together: compiles
+   * scr_node_island_child.c. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;

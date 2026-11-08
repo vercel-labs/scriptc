@@ -877,7 +877,7 @@ export function lowerNativeFunctionAssignment(
   )
     return null;
   fenceNodeModuleMutation(lowerer, target, "assignment");
-  const fnName = jsFuncNameOf(target.expression);
+  const fnName = jsFuncNameOf(target.expression, lowerer);
   const boxed: IrExpr = {
     kind: "dynFrom",
     value: receiver,

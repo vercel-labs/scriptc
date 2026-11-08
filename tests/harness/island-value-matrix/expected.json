@@ -2755,16 +2755,11 @@
   "i2n/T.json#nodesc": "refused:SC1090"
  },
  "thenable.p": {
-  "i2n/helper.identN": "refused:SC2020",
-  "i2n/S.make": "refused:SC2020",
-  "i2n2i/S.make": "refused:SC2020",
-  "i2n2i/S.make2": "refused:SC2020",
-  "clo-n2i/N.callback": "refused:SC2020",
-  "clo-i2n/S.call": "refused:SC2020"
+  "i2n/U.forin": "unsupported",
+  "clo-i2n/U.forin": "unsupported"
  },
  "thenable.u": {
   "i2n/U.forin": "unsupported",
-  "i2n/N.cast": "refused:SC2020",
   "clo-n2i/N.callback": "forin=unsupported",
   "clo-i2n/U.forin": "unsupported"
  },

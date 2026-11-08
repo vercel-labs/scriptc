@@ -291,6 +291,7 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
 - `SC6007`: an object or array made in a Node island is converted to an array or record type of the program (an assertion, a typed binding of an `any` value, a typed parameter of a callback the island calls), which copies it; see [Objects converted from Node islands](/docs/limitations#runtime-differences-from-nodejs).
 - `SC6012`: a JavaScript statement that doesn't compile sits in the `try` block of a `try`/`catch` in the same function. It throws when it runs, so the `catch` clause runs even where the statement would have completed under Node.js, and the compiled program [doesn't report it at run time](/docs/dependencies).
+- `SC6013`: a statement writes a member that the program added to the library `Promise` type, such as `Promise<T> & { status?: string }`. A compiled promise holds no members of its own, so the write throws a `TypeError` when it runs on a promise the program made. Keep the state beside the promise, in a wrapper record or in a `WeakMap` keyed by the promise.
 
 ## Gating builds and CI
 

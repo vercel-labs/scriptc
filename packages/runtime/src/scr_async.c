@@ -183,8 +183,6 @@ enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 typedef struct ScrFiber ScrFiber;
 
-typedef struct { size_t rc; } ScrPromiseIdentity;
-
 #ifdef SCR_NODE_ISLANDS
 enum { SCR_LAZY_MIRROR = 1, SCR_LAZY_VIEW = 2 };
 #endif
@@ -275,6 +273,9 @@ struct ScrPromise {
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(ScrPromise) == 128, "ScrPromise packs its flags after state");
 #endif
+_Static_assert(offsetof(ScrPromise, rc) == offsetof(ScrPromiseHead, rc) &&
+                   offsetof(ScrPromise, identity) == offsetof(ScrPromiseHead, identity),
+               "weak collections read a promise's identity cell through ScrPromiseHead");
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_live_promises = 0;

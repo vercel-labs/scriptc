@@ -4453,6 +4453,24 @@ export function isJsonStringifyDynamicType(
   );
 }
 
+/** A JSON-shaped type that the type-directed serializer refuses only for a
+ * symbol or a bigint somewhere in it (a JSON value type spelled with every
+ * primitive: `string | number | boolean | null | undefined | symbol | bigint
+ * | Json[] | { [key: string]: Json }`). The runtime traversal answers those
+ * as Node does: a symbol and undefined drop from an object, are null in an
+ * array and make the root undefined, and a bigint is a TypeError. */
+export function isJsonStringifyRuntimeScalarType(
+  t: IrType,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+  getUnion: (unionId: string) => IrUnionDef | undefined,
+): boolean {
+  return (
+    (t.kind === "record" || t.kind === "array" || t.kind === "union") &&
+    !isJsonSafeAt(t, getRecord, getUnion, true, true, new Set(), true) &&
+    isJsonSafeAt(t, getRecord, getUnion, true, true, new Set(), true, true)
+  );
+}
+
 /** The recursion shared by checked JSON conversion and stringification.
  * Ordinary record fields always admit undefined by dropping the key. Array
  * and tuple slots admit it only for stringification, which writes null.
@@ -4465,6 +4483,10 @@ function isJsonSafeAt(
   undefinedAllowed: boolean,
   visiting: Set<string>,
   nativeFields = false,
+  /** Admit what only the runtime traversal serializes as Node does: a
+   * bigint (a TypeError), a symbol (dropped, null in an array, undefined at
+   * the root) and undefined at any position. */
+  runtimeScalars = false,
 ): boolean {
   if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
@@ -4486,6 +4508,7 @@ function isJsonSafeAt(
         stringify,
         visiting,
         nativeFields,
+        runtimeScalars,
       );
     case "record": {
       const shape = getRecord(t.shapeId);
@@ -4510,6 +4533,7 @@ function isJsonSafeAt(
             !shape.tuple || stringify,
             visiting,
             nativeFields,
+            runtimeScalars,
           )
         )
           return false;
@@ -4527,6 +4551,7 @@ function isJsonSafeAt(
           true,
           visiting,
           nativeFields,
+          runtimeScalars,
         );
       }
       return true;
@@ -4540,7 +4565,7 @@ function isJsonSafeAt(
       for (const arm of def.arms) {
         if (
           !(arm.kind === "undefinedT"
-            ? undefinedAllowed
+            ? undefinedAllowed || runtimeScalars
             : isJsonSafeAt(
                 arm,
                 getRecord,
@@ -4549,6 +4574,7 @@ function isJsonSafeAt(
                 undefinedAllowed,
                 visiting,
                 nativeFields,
+                runtimeScalars,
               ))
         )
           return false;
@@ -4557,7 +4583,10 @@ function isJsonSafeAt(
     }
     case "set":
       return nativeFields && !stringify && t.elem.kind === "dyn";
+    // Node's stringify throws a TypeError for a bigint, which the runtime
+    // traversal does too.
     case "bigint":
+      return nativeFields && (!stringify || runtimeScalars);
     case "regex":
     case "url":
       return nativeFields && !stringify;
@@ -4582,6 +4611,7 @@ function isJsonSafeAt(
     // omitted as object values) — rejected instead of diverging without a
     // diagnostic.
     case "symbol":
+      return runtimeScalars;
     case "caught":
     case "jsval":
     case "promise":
@@ -4592,7 +4622,7 @@ function isJsonSafeAt(
     // Record fields drop undefined. Stringification also represents it in
     // array and tuple slots as null; bare roots remain fenced.
     case "undefinedT":
-      return undefinedAllowed;
+      return undefinedAllowed || runtimeScalars;
     // JSON null ↔ the nullT arm: null-armed unions stringify (`null`) and
     // validate (a JSON null matches exactly the nullT arm).
     case "nullT":
@@ -4712,6 +4742,26 @@ export const ISLAND_ADOPTED_KINDS: ReadonlyMap<IrType["kind"], IslandAdoption> =
  * view only when a checked-dynamic operation actually needs one. */
 export function isDynTypedRefType(t: IrType): t is Extract<IrType, { kind: "object" }> {
   return t.kind === "object" && !RUNTIME_ERROR_CLASSES.has(t.className);
+}
+
+/** Whether a conversion to the untyped value can be a live reference
+ * (`dynFrom` with `liveRef`): the value is a record, an array, bytes or a
+ * class instance, or a union with such an arm. A union of scalars only has
+ * no object whose identity a reference could keep, so it converts by value;
+ * the validator rejects a live conversion of one. */
+export function isLiveDynRefType(
+  t: IrType,
+  getUnion: (unionId: string) => IrUnionDef | undefined,
+  seen = new Set<string>(),
+): boolean {
+  if (t.kind === "record" || t.kind === "array" || t.kind === "bytes" || isDynTypedRefType(t))
+    return true;
+  if (t.kind !== "union" || seen.has(t.unionId)) return false;
+  seen.add(t.unionId);
+  const def = getUnion(t.unionId);
+  if (!def) return false;
+  for (const arm of def.arms) if (isLiveDynRefType(arm, getUnion, seen)) return true;
+  return false;
 }
 
 /** Whether a class layout field is an ECMAScript own enumerable property.

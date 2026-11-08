@@ -1,0 +1,62 @@
+nullish-wider-default-copies-left.ts:27:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '{ kind: string; pages: number }[] | undefined' but the whole expression is '({ kind: string; minutes: number } | { kind: string; pages: number })[]', and an array converts to another element type by copying its elements, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  26 | function onShelf(shelf: Shelf): Edition[] {
+  27 |   return shelf.papers ?? editions;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~
+  28 | }
+
+nullish-wider-default-copies-left.ts:31:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '{ kind: string; pages: number }[] | undefined' but the whole expression is '({ kind: string; minutes: number } | { kind: string; pages: number })[]', and an array converts to another element type by copying its elements, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  30 | function inRoom(room: string): Edition[] {
+  31 |   return rooms.get(room) ?? editions;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  32 | }
+
+nullish-wider-default-copies-left.ts:34:16 - error SC1090: '??' where the left side would be copied to reach the result type (left is '{ kind: string; pages: number }[] | null' but the whole expression is '({ kind: string; minutes: number } | { kind: string; pages: number })[]', and an array converts to another element type by copying its elements, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  33 | function borrowed(papers: Paper[] | null): number {
+  34 |   const list = papers ?? editions;
+     |                ^~~~~~~~~~~~~~~~~~
+  35 |   return list.length;
+
+nullish-wider-default-copies-left.ts:43:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '[number, number] | undefined' but the whole expression is 'number[]', and a tuple converts to an array by copying its elements, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  42 | function days(loan: Loan, usual: number[]): number[] {
+  43 |   return loan.span ?? usual;
+     |          ^~~~~~~~~~~~~~~~~~
+  44 | }
+
+nullish-wider-default-copies-left.ts:47:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '[number, number] | undefined' but the whole expression is 'number[]', and a tuple converts to an array by copying its elements, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  46 | function spanOf(title: string, usual: number[]): number[] {
+  47 |   return spans.get(title) ?? usual;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~
+  48 | }
+
+nullish-wider-default-copies-left.ts:65:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '{ copies: number; title: string } | undefined' but the whole expression is '{ copies: number | string; title: string }', and a record converts to another record type by copying its fields, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  64 | function estimate(title: string, guess: Estimated): Estimated {
+  65 |   return stock.get(title) ?? guess;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~
+  66 | }
+
+nullish-wider-default-copies-left.ts:71:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is '{ copies: number; title: string } | undefined' but the whole expression is '{ title: string }', and a record converts to another record type by copying its fields, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  70 | function ordered(order: Order, other: Titled): Titled {
+  71 |   return order.item ?? other;
+     |          ^~~~~~~~~~~~~~~~~~~
+  72 | }
+
+nullish-wider-default-copies-left.ts:87:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is 'Member | undefined' but the whole expression is '{ name: string }', and a class instance converts to a record type by copying its fields, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  86 | function holder(member: Member | undefined, guest: Named): Named {
+  87 |   return member ?? guest;
+     |          ^~~~~~~~~~~~~~~
+  88 | }
+
+nullish-wider-default-copies-left.ts:93:10 - error SC1090: '??' where the left side would be copied to reach the result type (left is 'Promise<{ kind: string; pages: number }[]> | undefined' but the whole expression is 'Promise<({ kind: string; minutes: number } | { kind: string; pages: number })[]>', and a '{ kind: string; pages: number }[]' converts to '({ kind: string; minutes: number } | { kind: string; pages: number })[]' by a copy, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant) is not supported yet
+
+  92 | function pending(own: Promise<Paper[]> | undefined, all: Promise<Edition[]>): Promise<Edition[]> {
+  93 |   return own ?? all;
+     |          ^~~~~~~~~~
+  94 | }

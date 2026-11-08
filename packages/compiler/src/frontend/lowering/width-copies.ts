@@ -162,6 +162,152 @@ function isValueType(type: IrType): boolean {
   }
 }
 
+/** A copy a conversion makes: a copy helper's family, `checked` for a
+ * checked conversion between two typed layouts, or `other` for an object
+ * the conversion builds in place. */
+export interface ConversionCopy {
+  kind: WidthCopyKind | "other";
+  from: IrType;
+  to: IrType;
+}
+
+/** The node kinds that answer a new object. */
+const FRESH_NODES = new Set<string>(["recordLit", "arrayLit", "arrayNewLen", "recordClone", "new"]);
+
+/** The first copy the conversion `conversion` of `operand` (a node inside
+ * it) can make, or null when it keeps the value: a union tag, a class
+ * view, a box, a checked extraction, a function adapter or a routing
+ * helper none of whose arms copies. The copies are the ones this file
+ * reports: a call of a copy helper, in the conversion itself or in any
+ * helper or adapter it reaches (a routing helper that copies in one
+ * run-time arm copies; an adapter that copies an argument or a result of
+ * each call copies), and a checked conversion between two typed layouts.
+ * A value with no identity and no state converts freely. `helper` answers
+ * a lowered helper by name, `unionArms` a union's arms.
+ *
+ * For a place whose result JavaScript defines as the operand itself, such
+ * as the left side of `??`: there a copy is a second object where Node has
+ * one, whatever the program does with it later. */
+export function conversionCopy(
+  conversion: IrExpr,
+  operand: IrExpr,
+  helper: (name: string) => IrFunction | undefined,
+  unionArms: (unionId: string) => readonly IrType[] | undefined,
+): ConversionCopy | null {
+  if (isValueType(operand.type)) return null;
+  let found: ConversionCopy | null = null;
+  // Inside a helper a literal is how a copy helper builds its result, and
+  // those are found by name.
+  let depth = 0;
+  const reached = new Set<string>();
+  const reach = (name: string): void => {
+    if (reached.has(name)) return;
+    reached.add(name);
+    const fn = helper(name);
+    if (fn === undefined) {
+      // A routing helper exists to forward to copies or tags: one that
+      // cannot be read is not trusted.
+      if (hasPrefix(name, ROUTING_PREFIXES))
+        found = { kind: "other", from: operand.type, to: conversion.type };
+      return;
+    }
+    if (name.startsWith(PREDICATE_PREFIX) && buildsRecord(fn)) {
+      found = { kind: "width", from: fn.params[0]?.type ?? operand.type, to: fn.returnType };
+      return;
+    }
+    depth++;
+    for (const s of fn.body) if (!stmt(s)) break;
+    depth--;
+  };
+  const expr = (e: IrExpr): boolean => {
+    if (found !== null) return false;
+    // The left side's own evaluation is not part of its conversion.
+    if (e === operand) return true;
+    if (e.kind === "call") {
+      const kind = copyKindOf(e.callee);
+      if (kind !== null) found = { kind, from: e.args[0]?.type ?? operand.type, to: e.type };
+      else if (e.callee.charCodeAt(0) === 37 /* % */) reach(e.callee);
+    } else if (e.kind === "closure") reach(e.fnName);
+    else if (e.kind === "dynCheck") {
+      let inner = e.value;
+      while (inner.kind === "seqExpr") inner = inner.result;
+      const pairs: [IrType, IrType][] = [];
+      if (inner.kind === "dynFrom")
+        layoutPairs(inner.value.type, e.type, pairs, new Set(), unionArms);
+      const pair = pairs[0];
+      if (pair !== undefined) found = { kind: "checked", from: pair[0], to: pair[1] };
+    } else if (depth === 0 && FRESH_NODES.has(e.kind))
+      found = { kind: "other", from: operand.type, to: e.type };
+    return found === null && everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => found === null && everyStmtChild(s, expr, stmt);
+  expr(conversion);
+  return found;
+}
+
+/** The pairs of record, array or class layouts that two types declare at
+ * the same position, added to `out`: what a checked conversion of a
+ * `from`-typed value into `to` converts. A position the target leaves
+ * untyped keeps the value (boxing answers the object itself). */
+function layoutPairs(
+  from: IrType,
+  to: IrType,
+  out: [IrType, IrType][],
+  seen: Set<string>,
+  unionArms: (unionId: string) => readonly IrType[] | undefined,
+): void {
+  if (from.kind === "dyn" || to.kind === "dyn" || isValueType(from) || isValueType(to)) return;
+  const key = `${typeKey(from)}\0${typeKey(to)}`;
+  if (typeKey(from) === typeKey(to) || seen.has(key)) return;
+  seen.add(key);
+  if (from.kind === "union" || to.kind === "union") {
+    const sources = from.kind === "union" ? (unionArms(from.unionId) ?? []) : [from];
+    const targets = to.kind === "union" ? (unionArms(to.unionId) ?? []) : [to];
+    for (const source of sources)
+      for (const target of targets)
+        if (source.kind === target.kind) layoutPairs(source, target, out, seen, unionArms);
+    return;
+  }
+  if (from.kind === "promise" && to.kind === "promise") {
+    layoutPairs(from.inner, to.inner, out, seen, unionArms);
+    return;
+  }
+  if (from.kind === "func" && to.kind === "func") {
+    // A caller's argument, typed by the target, enters the source's parameter.
+    for (let i = 0; i < from.params.length && i < to.params.length; i++)
+      layoutPairs(to.params[i]!, from.params[i]!, out, seen, unionArms);
+    layoutPairs(from.ret, to.ret, out, seen, unionArms);
+    return;
+  }
+  const layout = (type: IrType): boolean =>
+    type.kind === "record" || type.kind === "array" || type.kind === "object";
+  if (!layout(from) || !layout(to)) return;
+  out.push([from, to]);
+  if (from.kind === "array" && to.kind === "array")
+    layoutPairs(from.elem, to.elem, out, seen, unionArms);
+}
+
+/** How a message names a conversion's copy: what converts, and by what. */
+export function conversionCopyText(copy: ConversionCopy, fmt: (type: IrType) => string): string {
+  switch (copy.kind) {
+    case "arr":
+      return "an array converts to another element type by copying its elements";
+    case "tupleArr":
+      return "a tuple converts to an array by copying its elements";
+    case "width":
+    case "ovf":
+      return "a record converts to another record type by copying its fields";
+    case "objWidth":
+      return "a class instance converts to a record type by copying its fields";
+    case "clsWidth":
+      return "a record converts to a class by constructing an instance";
+    case "checked":
+      return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by a copy`;
+    case "other":
+      return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by building another value`;
+  }
+}
+
 /** Whether the body of `fn` builds a record: a predicate's conversion
  * that does answers a new object for the elements it rebuilds. */
 function buildsRecord(fn: IrFunction): boolean {
@@ -304,7 +450,7 @@ class CopyScan {
     while (inner.kind === "seqExpr") inner = inner.result;
     if (inner.kind !== "dynFrom") return;
     const pairs: [IrType, IrType][] = [];
-    this.layoutPairs(inner.value.type, check.type, pairs, new Set());
+    layoutPairs(inner.value.type, check.type, pairs, new Set(), this.unionArms);
     if (pairs.length === 0) return;
     const aliasable = !this.deepFresh(inner.value);
     for (const [from, to] of pairs)
@@ -317,38 +463,6 @@ class CopyScan {
         aliasable,
         slot,
       });
-  }
-
-  private layoutPairs(from: IrType, to: IrType, out: [IrType, IrType][], seen: Set<string>): void {
-    if (from.kind === "dyn" || to.kind === "dyn" || isValueType(from) || isValueType(to)) return;
-    const key = `${typeKey(from)}\0${typeKey(to)}`;
-    if (typeKey(from) === typeKey(to) || seen.has(key)) return;
-    seen.add(key);
-    if (from.kind === "union" || to.kind === "union") {
-      const sources = from.kind === "union" ? (this.unionArms(from.unionId) ?? []) : [from];
-      const targets = to.kind === "union" ? (this.unionArms(to.unionId) ?? []) : [to];
-      for (const source of sources)
-        for (const target of targets)
-          if (source.kind === target.kind) this.layoutPairs(source, target, out, seen);
-      return;
-    }
-    if (from.kind === "promise" && to.kind === "promise") {
-      this.layoutPairs(from.inner, to.inner, out, seen);
-      return;
-    }
-    if (from.kind === "func" && to.kind === "func") {
-      // A caller's argument, typed by the target, enters the source's parameter.
-      for (let i = 0; i < from.params.length && i < to.params.length; i++)
-        this.layoutPairs(to.params[i]!, from.params[i]!, out, seen);
-      this.layoutPairs(from.ret, to.ret, out, seen);
-      return;
-    }
-    const layout = (type: IrType): boolean =>
-      type.kind === "record" || type.kind === "array" || type.kind === "object";
-    if (!layout(from) || !layout(to)) return;
-    out.push([from, to]);
-    if (from.kind === "array" && to.kind === "array")
-      this.layoutPairs(from.elem, to.elem, out, seen);
   }
 
   /** Calls `visit` for every call of a conversion helper in `body`, with

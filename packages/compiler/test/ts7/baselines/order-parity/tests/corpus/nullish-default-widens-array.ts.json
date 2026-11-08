@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/nullish-default-widens-array.ts"
- ],
- "diags": []
-}

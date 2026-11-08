@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/nullish-wider-default-copies-left.ts"
+ ],
+ "diags": []
+}

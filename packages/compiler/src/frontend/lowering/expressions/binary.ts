@@ -105,6 +105,7 @@ import { lowerInstanceConstructorIs } from "../class-instance-constructor.js";
 import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { tryLowerIndexedComparison } from "../indexed-comparison.js";
 import { processStreamAs } from "../general-streams.js";
+import { conversionCopy, conversionCopyText } from "../width-copies.js";
 import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../strict-equality.js";
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
@@ -771,10 +772,16 @@ export function lowerNullishPair(
       return { kind: "nullish", left, right, type: present, loc };
     }
   }
-  // A present value that converts into the result (`texts ?? mixed`, where
-  // the default's array holds a wider element union): the conversion a slot
-  // of the result type applies to that value, after the original nullish
-  // test, with the default lowered lazily into the result.
+  // A present value that converts into the result and stays the value it
+  // is (`onDone ?? onEvent`, a function that takes fewer parameters than
+  // the default: its adapter is that function to `===`; a class defaulted
+  // to its base class; a promise whose payload type widens): the conversion
+  // a slot of the result type applies to that value, after the original
+  // nullish test, with the default lowered lazily into the result.
+  // JavaScript answers the left side itself, so a conversion that copies
+  // (`circles ?? shapes`: an array reaches another element type as a new
+  // array) stays refused: a write through the result would miss the left
+  // side's object, and the two would not be identical.
   if (present !== null) {
     const helper = lowerer.narrowedArmHelper(left.type.unionId, present, loc);
     if (helper !== null) {
@@ -788,11 +795,29 @@ export function lowerNullishPair(
         loc,
         () => lowerer.lowerExprExpecting(expr.right, type),
         (stable) => {
-          const value = lowerer.coerceToExpected(
-            { kind: "call", callee: helper, args: [stable], type: present, loc },
-            type,
-          );
+          const taken: IrExpr = {
+            kind: "call",
+            callee: helper,
+            args: [stable],
+            type: present,
+            loc,
+          };
+          const value = lowerer.coerceToExpected(taken, type);
           converts = typeEquals(value.type, type);
+          const copy = converts
+            ? conversionCopy(
+                value,
+                taken,
+                (name) => lowerer.liftedFnNamed(name),
+                (id) => lowerer.unions.get(id)?.arms,
+              )
+            : null;
+          if (copy !== null)
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              `'??' where the left side would be copied to reach the result type (left is '${lowerer.fmt(left.type)}' but the whole expression is '${lowerer.fmt(type)}', and ${conversionCopyText(copy, (t) => lowerer.fmt(t))}, where JavaScript answers the left side itself — give both sides one type, or copy the left side explicitly where a copy is meant)`,
+            );
           return value;
         },
       );

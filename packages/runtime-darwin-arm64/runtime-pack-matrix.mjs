@@ -45,7 +45,6 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       ),
     ].map((unit) => ({ ...unit, variants: variantsFor(unit.source) })),
     archives: [
-      { id: "quickjs", predicate: false },
       { id: "libregexp", predicate: "regex" },
       { id: "zlib", predicate: "zlibEffective" },
       { id: "brotli", predicate: all("zlib", "brotli") },

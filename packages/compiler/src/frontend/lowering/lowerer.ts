@@ -2952,6 +2952,8 @@ export class Lowerer {
   /** Identifiers by spelling, per file, for the generic bindings' use
    * ordering (runsAfterDeclaration). */
   readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** Each source file's inline `comptime` callbacks (comptimeCallbacksOf). */
+  readonly comptimeCallbacks = new Map<ts.SourceFile, string[]>();
   /** Per JavaScript file, the declarations of the bindings it assigns an
    * own `toString` (jsAssignsOwnToString in lower-calls.ts). */
   readonly ownToStringTargets = new Map<ts.SourceFile, Set<ts.Node>>();
@@ -5659,6 +5661,9 @@ export class Lowerer {
     // census in handle-properties.ts reads it again when a unit replays.
     "handleJsSources",
     "collectionPrototypePatches",
+    // The inline `comptime` callbacks of a source file are its text, read
+    // again when a unit replays (comptimeCallbacksOf in lower-comptime.ts).
+    "comptimeCallbacks",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",

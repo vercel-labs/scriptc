@@ -24,7 +24,7 @@ runs:
       if: inputs.helper == 'true'
       with:
         path: packages/llvm-${{ inputs.target }}/bin
-        key: helper-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**') }}
+        key: helper-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**', 'packages/runtime/vendor/quickjs-ng/**', 'packages/runtime/src/scr_ieee754.*') }}
     # The pack's key names every file its build reads: the runtime sources,
     # the pack build's scripts, matrices, forced include and committed
     # profiles, and the LLVM helper's sources, because the helper compiles the

@@ -23,7 +23,7 @@ import {
   genericOverrideBelow,
   type ClassInfo,
 } from "./lower-classes.js";
-import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
+import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
@@ -248,8 +248,15 @@ export function classMethodValue(
   }
   const type = funcTypeFromParamShapes(params, ret);
   const name = `%method.value:${callee}`;
+  const member = classMethodMember(lowerer, owner, method, false);
+  // The value is the method the class declares, so its `length` is that
+  // declaration's. The type counts the slot's parameters: an override that
+  // adds optional parameters keeps the inherited slot, and a parameter with
+  // a default is a position of the type that Node does not count.
+  const typeLength = type.params.length - (type.restAbi === "typed" ? 1 : 0);
+  const ownLength =
+    member !== undefined && ts.isMethodDeclaration(member) ? declaredLength(member) : typeLength;
   if (!lowerer.classMethodValueHelpers.has(name)) {
-    const member = classMethodMember(lowerer, owner, method, false);
     if (member !== undefined && readsReceiver(member))
       lowerer.receiverReadingMethodValues.add(name);
     const thunkParams = params.map((param, i) => ({
@@ -320,7 +327,25 @@ export function classMethodValue(
     lowerer.liftedFns.push(fn);
     lowerer.classMethodValueHelpers.add(name);
   }
-  return { kind: "closure", fnName: name, captures: [], type, loc };
+  return {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    ...(ownLength !== typeLength ? { length: ownLength } : {}),
+    type,
+    loc,
+  };
+}
+
+/** A method declaration's own `length`, as Node counts it: the parameters
+ * before the first one with a default or a rest. A `this` parameter is a
+ * type, not a parameter. */
+function declaredLength(member: ts.MethodDeclaration): number {
+  const parameters = member.parameters.nodes.filter((parameter) => !isThisParameter(parameter));
+  const stop = parameters.findIndex(
+    (parameter) => parameter.initializer !== undefined || parameter.dotDotDotToken !== undefined,
+  );
+  return stop < 0 ? parameters.length : stop;
 }
 
 /** Public JS prototype methods are ordinary callables over their actual

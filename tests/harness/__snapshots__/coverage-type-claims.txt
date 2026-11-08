@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   statements analyzed   30
   compile statically    30  (100%)
-    in dynamic tier     11  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     10  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     tc-island  static

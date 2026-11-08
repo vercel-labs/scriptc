@@ -68,7 +68,9 @@ export interface NodeIslandsSetting {
   speculativeStart: boolean;
   /** Environment variables whose build-time values a deferred island
    * module's boot guards may record in the executable (snapshot.ts). A
-   * deferred load that reads any other variable stays eager. */
+   * load that reads any other variable that is set at build time stays
+   * eager. A variable that is unset at build time needs no listing: its
+   * guard records only that it was unset. */
   publicEnv: string[];
 }
 

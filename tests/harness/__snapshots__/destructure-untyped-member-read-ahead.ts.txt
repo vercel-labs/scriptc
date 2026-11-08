@@ -1,0 +1,13 @@
+destructure-untyped-member-read-ahead.ts:10:2 - error SC1031: destructuring assignment into a member of an untyped object from a source that is neither an untyped array nor a literal of the statement (the source's parts may be read or copied before the first write here, where Node reads each one after the previous write: assign from an array or object literal, or write the parts out) is not supported yet
+
+   9 | const typed: string[] = box.list;
+  10 | [box.list[2], box.list[0]] = typed;
+     |  ^~~~~~~~~~~
+  11 | const pair: [string, string] = ["a", "b"];
+
+destructure-untyped-member-read-ahead.ts:12:2 - error SC1031: destructuring assignment into a member of an untyped object from a source that is neither an untyped array nor a literal of the statement (the source's parts may be read or copied before the first write here, where Node reads each one after the previous write: assign from an array or object literal, or write the parts out) is not supported yet
+
+  11 | const pair: [string, string] = ["a", "b"];
+  12 | [box.first, box.last] = pair;
+     |  ^~~~~~~~~
+  13 | console.log(box);

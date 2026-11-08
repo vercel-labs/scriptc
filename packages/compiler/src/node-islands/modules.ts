@@ -32,6 +32,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { builtinModules } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  isVirtualSource,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
@@ -40,6 +41,13 @@ import {
   trackedRealpath,
 } from "../frontend/input-tracker.js";
 import type { IrNodeIslandModules } from "../ir/ir.js";
+import {
+  generatedModuleName,
+  generatedModuleText,
+  generatedTreeFile,
+  generatedTreePath,
+  type GeneratedModule,
+} from "./generated.js";
 import { packageDirOf } from "./origin.js";
 
 export type NodeIslandModuleTree = IrNodeIslandModules;
@@ -178,6 +186,10 @@ export class NodeIslandModuleCollector {
   private readonly provided = new Set<string>();
   /** The problems addNamedData reported (isDataFileProblem). */
   private readonly dataProblems = new Set<string>();
+  /** Modules the build writes (addGenerated), by key. */
+  private readonly generated = new Map<string, GeneratedModule>();
+  /** Their tree paths, once tree() placed them. */
+  private readonly generatedPaths = new Map<string, string>();
 
   /** Whether `problem`, returned by add or addLoaded, is a data file the
    * build does not ship (addNamedData) rather than a module. */
@@ -222,6 +234,44 @@ export class NodeIslandModuleCollector {
     }
   }
 
+  /** Collects a module the build writes (generated.ts): the tree holds its
+   * text under GENERATED_DIRECTORY. The files it imports are loads of the
+   * program, collected by addLoaded. */
+  addGenerated(key: string, module: GeneratedModule): void {
+    this.generated.set(key, module);
+  }
+
+  /** The name a load gives the generated module `key` once tree() placed
+   * it, or null when `key` names none. */
+  generatedLoadPath(key: string): string | null {
+    const path = this.generatedPaths.get(key);
+    return path === undefined ? null : `./${path}`;
+  }
+
+  /** The tree's entries of the generated modules, placed under `root`. */
+  private generatedFiles(root: string): NodeIslandModuleFile[] {
+    const names = new Map<string, string>();
+    for (const [key, module] of this.generated)
+      names.set(key, generatedModuleName(portable(relative(root, module.source)), module.index));
+    const files: NodeIslandModuleFile[] = [];
+    for (const [key, module] of this.generated) {
+      const name = names.get(key)!;
+      const file = generatedTreeFile(root, name);
+      const specifiers = module.imports.map((entry) => {
+        const other = names.get(entry.target);
+        return other !== undefined
+          ? `./${other}`
+          : NodeIslandModuleCollector.relativeSpecifier(file, entry.target);
+      });
+      const text = generatedModuleText(module, specifiers);
+      const bytes = new TextEncoder().encode(text);
+      const path = generatedTreePath(name);
+      this.generatedPaths.set(key, path);
+      files.push({ path, size: bytes.length, sha256: sha256(bytes), generated: text });
+    }
+    return files;
+  }
+
   /** The collected tree, or null when no call loads a file. */
   tree(): NodeIslandModuleTree | null {
     if (this.files.size === 0 && this.links.size === 0) return null;
@@ -249,6 +299,11 @@ export class NodeIslandModuleCollector {
       const bytes = trackedReadBytes(file);
       if (bytes === null) continue;
       files.push({ path, size: bytes.length, sha256: sha256(bytes) });
+    }
+    if (this.generated.size > 0) {
+      // The manifest lists files in path order.
+      files.push(...this.generatedFiles(root));
+      files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     }
     const links: NodeIslandModuleLink[] = [...this.links]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -478,6 +533,11 @@ export class NodeIslandModuleCollector {
     const entries = trackedAccessibleEntries(dir);
     if (entries === null) return;
     for (const file of entries.files) {
+      // A source the compiler synthesized beside the package's files (the
+      // native compile's generated declarations, a bundle's split chunks)
+      // is listed with them and is on no disk: Node loads the package's
+      // own files, so the tree ships only those.
+      if (isVirtualSource(join(dir, file))) continue;
       this.files.add(join(dir, file));
       if (SCRIPT.test(file)) scripts.push(join(dir, file));
     }
@@ -490,7 +550,7 @@ export class NodeIslandModuleCollector {
 
 /* ── module specifiers in JavaScript source ───────────────────────────── */
 
-interface Token {
+export interface Token {
   kind: "name" | "string" | "punct" | "other";
   value: string;
   at: number;
@@ -829,8 +889,10 @@ function clauseContinues(prev: Token | undefined, next: Token): boolean {
   );
 }
 
-export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
-  const tokens = moduleTokens(text);
+export function scanModuleSpecifiers(
+  text: string,
+  tokens: Token[] = moduleTokens(text),
+): ModuleSpecifierScan {
   const specifiers: string[] = [];
   const computed: { at: number; form: string }[] = [];
   const at = (k: number): Token | undefined => tokens[k];
@@ -1032,14 +1094,22 @@ export function nodeIslandTreeName(modules: IrNodeIslandModules): string {
 }
 
 /** The tree's files concatenated in manifest order, each checked against
- * the digest the build recorded, or the reason one no longer matches. */
-export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array | string {
+ * the digest the build recorded, or the reason one no longer matches.
+ * `generated` holds the files the build made for the tree itself (the load
+ * plan, load-plan.ts), by path: they are on no disk. */
+export function readNodeIslandModules(
+  modules: IrNodeIslandModules,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
+): Uint8Array | string {
   const parts: Uint8Array[] = [];
   let total = 0;
   for (const file of modules.files) {
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
-    if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    const made = generated.get(file.path);
+    if (made !== undefined) bytes = made;
+    else if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    else if (file.generated !== undefined) bytes = new TextEncoder().encode(file.generated);
     else
       try {
         bytes = new Uint8Array(readFileSync(path));
@@ -1067,8 +1137,9 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
 ): string | null {
-  const data = readNodeIslandModules(modules);
+  const data = readNodeIslandModules(modules, generated);
   if (typeof data === "string") return data;
   // Every path, and every link's target, stays inside the tree.
   const inside = resolve(target) + sep;

@@ -1772,15 +1772,13 @@ static bool scr_ee_emit_carried_va(ScrEmitter *em, ScrStr *name, ScrDyn *const *
  * call (a parameter that does not admit the value fails its conversion by
  * name; no listener is handed an Error the program never made). The
  * runtime's own listeners, which have no such call, receive `err`. With no
- * 'error' listener the value is unhandled as in any untyped emit. Borrows
- * err and args. */
+ * 'error' listener the value is unhandled by the untyped emit itself (the
+ * error monitor, then ERR_UNHANDLED_ERROR), so that path stays the one
+ * function it is for programs that never reach this entry. Borrows err and
+ * args. */
 bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
                                     ScrDyn *const *args, size_t argc) {
-  if (!scr_ee_has(em->reg, "error")) {
-    scr_ee_emit_carried_va(em, SCR_EE_ERROR_MONITOR, args, argc, err);
-    if (!scr_exc_pending()) scr_ee_unhandled_error(args[0]);
-    return false;
-  }
+  if (!scr_ee_has(em->reg, "error")) return scr_ee_emit_error_dyn(em, name, args, argc, NULL);
   return scr_ee_emit_carried_va(em, name, args, argc, err);
 }
 

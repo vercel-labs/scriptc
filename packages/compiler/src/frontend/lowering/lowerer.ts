@@ -18066,6 +18066,23 @@ export class Lowerer {
         }
         const type = failure === undefined ? undefined : this.failedTypes.get(failure);
         const id = (type as { id?: number } | undefined)?.id;
+        // A type that another declaration's retry degraded to the whole-slot
+        // dynamic after this diagnostic was recorded: the diagnostic is
+        // stale, so the collection runs again once, as for a declaration
+        // that only waited for another. The diagnostics of a later round
+        // come from a collection that already saw the degraded type.
+        if (
+          round === 0 &&
+          failure !== undefined &&
+          id !== undefined &&
+          failure.degradable &&
+          DECLARATION_SLOTS.has(failure.slot) &&
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+        ) {
+          retriable = true;
+          slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+          continue;
+        }
         if (
           failure === undefined ||
           type === undefined ||

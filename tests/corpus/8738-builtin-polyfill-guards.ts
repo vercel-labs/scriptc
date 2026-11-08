@@ -62,14 +62,10 @@ if (!Array.prototype.includes && effect("never", true)) {
   };
 }
 console.log(effects.join(","));
-// The spellings without a guard statement: an assignment that keeps the
-// member's own value, and a logical assignment that never assigns.
-String.prototype.trimStart =
-  String.prototype.trimStart ||
-  function (this: string): string {
-    ran++;
-    return "polyfill";
-  };
+// The spelling without a guard statement: a logical assignment that never
+// assigns. (`X.m = X.m || f` does assign, the member's own value; in strict
+// code, which this module is, it lowers as the assignment it is:
+// builtin-polyfill-keep-value-assignment.mjs.)
 (Array.prototype as { includes: unknown }).includes ??= function (): boolean {
   ran++;
   return false;

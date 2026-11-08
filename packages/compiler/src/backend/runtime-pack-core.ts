@@ -111,6 +111,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
+  recordSourceGet: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -394,6 +395,7 @@ export function effectiveRuntimeFeatures(
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
+    recordSourceGet: features.recordSourceGet === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

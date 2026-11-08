@@ -2270,4 +2270,61 @@ try {
     );
     expect(r.stderr).toBe("");
   });
+
+  test("an untyped call reaches the function behind a slot; the slot's type and the function's own still check", async () => {
+    // A function that passed through a typed slot is checked against what
+    // it declares. Three claims remain the program's and still throw where
+    // Node proceeds: a call through the slot's type, the parameter type the
+    // function itself declares, and a function whose parameter type the
+    // slot gave it.
+    const r = await compileAndRun(
+      "untyped-call-through-slot-claims",
+      `
+      interface Payload { diff: string; path: string }
+      type Show = (payload: Payload) => string;
+      function loose(payload: any): string { return "loose " + JSON.stringify(payload); }
+      function narrow(payload: { diff: string }): string { return "narrow " + payload.diff; }
+      const viaLoose: { show: Show } = { show: loose };
+      const viaNarrow: { show: Show } = { show: narrow };
+      const viaSlot: { show: Show } = { show: (payload) => "typed " + payload.diff };
+      const empty: any = {};
+      const attempt = (label: string, call: () => string): void => {
+        try { console.log(label, call()); }
+        catch (error) { console.log(label, error instanceof TypeError, (error as Error).message); }
+      };
+      // No claim on either side: the function runs.
+      const looseWide: (payload: any) => string = viaLoose.show;
+      const looseAny: any = viaLoose.show;
+      attempt("wider type:", () => looseWide(empty));
+      attempt("any:", () => looseAny(empty));
+      // The call through the slot's type.
+      attempt("slot type, asserted:", () => viaLoose.show(empty as Payload));
+      attempt("slot type, any argument:", () => viaLoose.show(empty));
+      // The function's own parameter type.
+      const narrowWide: (payload: any) => string = viaNarrow.show;
+      const narrowAny: any = viaNarrow.show;
+      attempt("own type, wider type:", () => narrowWide(empty));
+      attempt("own type, any:", () => narrowAny(empty));
+      attempt("own type, admitted:", () => narrowWide({ diff: "d" }));
+      // The function typed by the slot.
+      const slotWide: (payload: any) => string = viaSlot.show;
+      attempt("typed by the slot:", () => slotWide(empty));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "wider type: loose {}",
+        "any: loose {}",
+        "slot type, asserted: true expected string at $.diff, got undefined",
+        "slot type, any argument: true expected string at $.diff, got undefined",
+        "own type, wider type: true expected string at $.diff, got undefined",
+        "own type, any: true expected string at $[0].diff, got undefined",
+        "own type, admitted: narrow d",
+        "typed by the slot: true expected string at $.diff, got undefined",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
 });

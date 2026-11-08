@@ -2,15 +2,17 @@ import {
   BOOL,
   canAdaptDynFuncTo,
   canBoxFuncIntoDyn,
+  canDynCheckTo,
   DYN,
   typeEquals,
   typeKey,
+  UNDEFINED_T,
 } from "../../ir/ir.js";
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
-import { strandedFuncAdapter } from "./coercions/function-adapters.js";
+import { everyStmtList, everyTypeChild, transformStmtList } from "../../ir/traverse.js";
+import { isJsSourceFileName } from "../tsc-codes.js";
+import { funcSlotAdaptable, strandedFuncAdapter } from "./coercions/function-adapters.js";
 import { widerArrayHelper } from "./containers/array-callbacks.js";
-import { keyedHelperName } from "./stable-names.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 
 /* Function values and the views of them.
@@ -59,16 +61,44 @@ import { PoisonError, type Lowerer } from "./lowerer.js";
  *  - A checked-dynamic callable held at a function type (`dynCheck`: a
  *    bound function, a function that crossed `any`) is a view too, marked
  *    by the boundary. A widening adapter whose source type the program
- *    checks callables into converts the callable itself to the wide type.
- *  - Boxing a view into a checked-dynamic value (`dynFrom`) would give
- *    dynamic callers the view's parameter list. It boxes the function the
- *    view forwards to instead, as the runtime already does for the
- *    boundary's own views.
+ *    checks callables into converts the callable itself to the wide type,
+ *    whether the wide type has more parameters or a wider one.
+ *  - Boxing a view into a checked-dynamic value would give dynamic
+ *    callers the view's parameter list. It boxes the function the view
+ *    forwards to instead, as the runtime already does for the boundary's
+ *    own views: in a program that boxes a function of the view's type,
+ *    the view's body carries the mark (IrFunction.boxesSource) and the
+ *    backend's box builder for that type, the one place every box of the
+ *    type is made (a value converted by itself, a record's member, an
+ *    array's element, a call's result), tests for it.
  *
- * Nothing changes where a function is narrowed or called. A widening
- * adapter or a boxing changes only when the program holds a view of its
- * source type that can be handed more, so a program without that pair
- * compiles as before. */
+ * The same holds for what an argument may be. A view converts each
+ * argument from its slot's parameter type into the function's, so a caller
+ * that holds the view at a wider type, or untyped, would have its argument
+ * converted twice: into the slot's parameter type, a check the function
+ * never asked for, and from there into the function's:
+ *
+ *   function show(payload: any) { … }
+ *   const def: { show: (payload: { diff: string }) => string } = { show };
+ *   const loose: (payload: any) => string = def.show;
+ *   loose({});            // show runs: neither end names { diff: string }
+ *   def.show({} as any);  // the program's claim: the assertion throws
+ *
+ * JavaScript hands the function the value as it is. So a conversion of
+ * the slot's type to one that takes more at a parameter the view converts
+ * (argumentWidens), and a boxing where that parameter is typed, start from
+ * the function as well: the argument is converted once, into what the
+ * function itself declares. A call through the slot's own type is not such
+ * a consumer and converts as before. A call written in JavaScript source,
+ * or through a binding declared `any`, is one, whatever function type the
+ * compiler gave its callee: it makes no claim about its arguments
+ * (untypedCalls).
+ *
+ * Nothing changes where a function is narrowed, or called through a
+ * function type the program wrote. A widening adapter changes only when
+ * the program holds a view of its source type that can be handed more, and
+ * a box builder only when the program boxes a function type it holds such
+ * a view of, so a program without that pair compiles as before. */
 
 type FuncType = IrType & { kind: "func" };
 
@@ -85,6 +115,61 @@ interface Adapter {
   /** The tests ahead of it, each under the name of the view it looks
    * through ("" for the checked-dynamic boundary's). */
   readonly tests: Map<string, IrStmt>;
+  /** The parameter positions at which the function the view forwards to
+   * is handed a converted argument: the view converts there, or forwards
+   * unchanged to a value that can itself be such a view. */
+  readonly converts: Set<number>;
+}
+
+/** Whether `wide` takes values `narrow` excludes, read off the two types:
+ * an untyped position where the other names a type, a union with more
+ * arms, a record that requires less, a base class. A consumer that holds
+ * a function at a parameter type like that can pass what the slot's
+ * parameter type rejects. The answer is conservative: false leaves the
+ * conversion through the slot's type in place. */
+function argumentWidens(
+  lowerer: Lowerer,
+  wide: IrType,
+  narrow: IrType,
+  seen: Set<string> = new Set(),
+): boolean {
+  if (typeEquals(wide, narrow)) return false;
+  if (wide.kind === "dyn") return true;
+  if (narrow.kind === "dyn") return false;
+  const key = `${typeKey(wide)}\n${typeKey(narrow)}`;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  const covers = (w: IrType, n: IrType): boolean =>
+    typeEquals(w, n) || argumentWidens(lowerer, w, n, seen);
+  if (wide.kind === "union") {
+    const arms = lowerer.unions.get(wide.unionId)?.arms ?? [];
+    const narrowArms =
+      narrow.kind === "union" ? (lowerer.unions.get(narrow.unionId)?.arms ?? []) : [narrow];
+    return narrowArms.length > 0 && narrowArms.every((n) => arms.some((w) => covers(w, n)));
+  }
+  if (narrow.kind === "union") return false;
+  if (wide.kind === "array" && narrow.kind === "array")
+    return argumentWidens(lowerer, wide.elem, narrow.elem, seen);
+  if (wide.kind === "object" && narrow.kind === "object")
+    return lowerer.isSubclassOf(narrow.className, wide.className);
+  if (wide.kind === "record" && narrow.kind === "record") {
+    const w = lowerer.shapes.get(wide.shapeId);
+    const n = lowerer.shapes.get(narrow.shapeId);
+    if (!w || !n || w.tuple || n.tuple || w.indexValue || n.indexValue) return false;
+    // Every member the wide record names is one the narrow record has at a
+    // type it covers, or one it may leave out. The types differ, so the
+    // narrow record then requires more or names a narrower member.
+    return w.fields.every((field) => {
+      const other = n.fields.find((candidate) => candidate.name === field.name);
+      if (other === undefined)
+        return (
+          field.type.kind === "dyn" ||
+          (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0)
+        );
+      return covers(field.type, other.type);
+    });
+  }
+  return false;
 }
 
 /** Puts the adapter's tests ahead of its own statement, ordered by the
@@ -117,6 +202,9 @@ export class FunctionViews {
    * may stand for a function that takes more than the type passes. */
   private readonly holders = new Map<string, Adapter[]>();
   private readonly holding = new Set<Adapter>();
+  /** By the key of a function type: the adapters whose views of that type
+   * convert an argument on its way to the function (Adapter.converts). */
+  private readonly converters = new Map<string, Adapter[]>();
   /** The (widening adapter, view) pairs already given a test. */
   private readonly looked = new Set<string>();
   /** The array-method helpers that test for views: the body each was
@@ -141,14 +229,22 @@ export class FunctionViews {
       // By name, so the tests and their order do not depend on the order
       // bodies lowered in.
       for (const widening of [...this.adapters].sort(byFactoryName)) {
-        if (!this.widens(widening)) continue;
-        const views = this.holders.get(typeKey(widening.source));
-        if (views === undefined) continue;
-        for (const view of [...views].sort(byFactoryName)) {
+        const key = typeKey(widening.source);
+        const more = this.widens(widening) ? (this.holders.get(key) ?? []) : [];
+        const wider = (this.converters.get(key) ?? []).filter((view) =>
+          this.handsWider(lowerer, widening, view),
+        );
+        if (more.length === 0 && wider.length === 0) continue;
+        for (const view of [...new Set([...more, ...wider])].sort(byFactoryName)) {
           const pair = `${widening.factory.name}\n${view.factory.name}`;
           if (this.looked.has(pair)) continue;
           this.looked.add(pair);
-          const test = this.quietly(lowerer, () => this.lookThrough(lowerer, widening, view));
+          const test = this.quietly(
+            lowerer,
+            () =>
+              (wider.includes(view) ? this.fromFunction(lowerer, widening, view) : null) ??
+              (more.includes(view) ? this.lookThrough(lowerer, widening, view) : null),
+          );
           if (test === null) continue;
           widening.tests.set(view.factory.name, test);
           install(widening);
@@ -258,13 +354,40 @@ export class FunctionViews {
     }
   }
 
-  /** The consumers that are not signature adapters, once `functions` is
-   * every lowered function and process has settled. */
+  /** The consumers that are not signature adapters (a boxing, the
+   * checked-dynamic boundary), once `functions` is every lowered function
+   * and process has settled. */
   finish(lowerer: Lowerer, functions: readonly IrFunction[]): void {
-    const wideners = this.adapters.filter((adapter) => this.widens(adapter)).sort(byFactoryName);
-    if (wideners.length === 0 && this.holders.size === 0) return;
-    // One walk: the function types the program checks callables into, and
-    // the functions that box a view.
+    // The adapters whose callers can hand the checked-dynamic boundary's
+    // view more than its type admits: more arguments, or a wider one.
+    const wideners = this.adapters
+      .filter((adapter) => this.widens(adapter) || this.widensArgument(lowerer, adapter))
+      .sort(byFactoryName);
+    if (wideners.length === 0 && this.holders.size === 0 && this.converters.size === 0) return;
+    // A dynamic caller passes more arguments than a view's type has, and
+    // untyped ones where the type names one. The views it must see through
+    // box as the function they forward to, in a program that boxes a
+    // function of the view's type.
+    let boxed: Set<string> | null = null;
+    for (const view of this.adapters) {
+      const typed = [...view.converts].some((index) => view.target.params[index]!.kind !== "dyn");
+      if (!typed && !this.holding.has(view)) continue;
+      boxed ??= this.boxedTypes(lowerer, functions);
+      if (!boxed.has(typeKey(view.target))) continue;
+      if (
+        !canBoxFuncIntoDyn(
+          view.source,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      )
+        continue;
+      const body = lowerer.liftedFnNamed(view.body);
+      if (body !== undefined) body.boxesSource = true;
+    }
+    if (this.converters.size > 0) this.untypedCalls(lowerer, functions);
+    if (wideners.length === 0) return;
+    // The function types the program checks callables into.
     const checkedInto = new Set<string>();
     const noted = new Set<string>();
     const note = (type: IrType): void => {
@@ -282,18 +405,14 @@ export class FunctionViews {
         if (shape?.indexValue) note(shape.indexValue);
       }
     };
-    const boxing: IrFunction[] = [];
     for (const fn of functions) {
-      let boxes = false;
       everyStmtList(fn.body, {
         expr: (e) => {
           if (e.kind === "dynCheck") note(e.type);
-          else if (!boxes && this.boxedView(lowerer, e) !== null) boxes = true;
           return true;
         },
         stmt: () => true,
       });
-      if (boxes) boxing.push(fn);
     }
     for (const widening of wideners) {
       if (!checkedInto.has(typeKey(widening.source))) continue;
@@ -333,97 +452,158 @@ export class FunctionViews {
       });
       install(widening);
     }
-    for (const fn of boxing) {
-      fn.body = transformStmtList(fn.body, {
+  }
+
+  /** The function types a value the program boxes can have: every function
+   * type reachable from the operand of a `dynFrom` or the target of a
+   * `dynCheck`, through members, elements, arms and class fields, and
+   * through a function's parameters and result, which its call thunk and
+   * the boundary's adapter box in turn. A program that boxes no function
+   * of a view's type keeps that view unmarked, and its IR as it was. */
+  private boxedTypes(lowerer: Lowerer, functions: readonly IrFunction[]): Set<string> {
+    const boxed = new Set<string>();
+    const seen = new Set<string>();
+    let classes = false;
+    const reach = (type: IrType): boolean => {
+      const key = typeKey(type);
+      if (seen.has(key)) return true;
+      seen.add(key);
+      if (type.kind === "func") boxed.add(key);
+      else if (type.kind === "record") {
+        const shape = lowerer.shapes.get(type.shapeId);
+        for (const field of shape?.fields ?? []) reach(field.type);
+        if (shape?.indexValue) reach(shape.indexValue);
+      } else if (type.kind === "union") {
+        for (const arm of lowerer.unions.get(type.unionId)?.arms ?? []) reach(arm);
+      } else if (type.kind === "object" && !classes) {
+        // An instance can be of any subclass: every class's fields.
+        classes = true;
+        for (const info of lowerer.classes.values())
+          for (const field of info.fields.values()) reach(field);
+      }
+      return everyTypeChild(type, reach);
+    };
+    for (const fn of functions) {
+      everyStmtList(fn.body, {
         expr: (e) => {
-          const type = this.boxedView(lowerer, e);
-          if (type === null || e.kind !== "dynFrom") return e;
-          const helper = this.boxHelper(lowerer, type, e.loc)!;
-          return { kind: "call", callee: helper, args: [e.value], type: DYN, loc: e.loc };
+          if (e.kind === "dynFrom") reach(e.value.type);
+          else if (e.kind === "dynCheck") reach(e.type);
+          return true;
         },
-        stmt: (stmt) => stmt,
+        stmt: () => true,
       });
+    }
+    return boxed;
+  }
+
+  /** A call written in JavaScript source, or through a binding the program
+   * declares `any` (callValue.untyped), makes no claim about its
+   * arguments, whatever function type the compiler gave the callee (a
+   * package function specialized for the callback it is handed, a local
+   * that holds a function). Where such a call checks an untyped argument
+   * against a parameter type the program holds converting views of, it
+   * asks first whether the callee is one, and then calls the function the
+   * view forwards to, with the argument checked against that function's
+   * own parameter type. */
+  private untypedCalls(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+    // The calls through the slot's type this pass built: the rewrite
+    // visits what it returns.
+    const kept = new Set<IrExpr>();
+    const through = (e: IrExpr): IrExpr => {
+      if (e.kind !== "callValue" || kept.has(e)) return e;
+      const slot = e.callee.type;
+      if (e.callee.kind !== "varRef" || slot.kind !== "func" || slot.rest === true) return e;
+      if (e.untyped !== true && !isJsSourceFileName(e.loc.file)) return e;
+      let result: IrExpr = e;
+      const views = [...(this.converters.get(typeKey(slot)) ?? [])].sort(byFactoryName).reverse();
+      for (const view of views) {
+        const args = this.untypedArguments(lowerer, e, slot, view.source);
+        if (args === null) continue;
+        const loc: SrcLoc = e.loc;
+        if (result === e) {
+          result = { ...e };
+          kept.add(result);
+        }
+        result = {
+          kind: "ternary",
+          cond: { kind: "viewOf", value: e.callee, adapter: view.body, type: BOOL, loc },
+          then: {
+            kind: "callValue",
+            callee: {
+              kind: "viewSource",
+              value: e.callee,
+              adapter: view.body,
+              type: view.source,
+              loc,
+            },
+            ...(e.receiver === undefined ? {} : { receiver: e.receiver }),
+            args,
+            type: e.type,
+            loc,
+          },
+          else_: result,
+          type: e.type,
+          loc,
+        };
+      }
+      return result;
+    };
+    for (const fn of functions) {
+      let calls = false;
+      everyStmtList(fn.body, {
+        expr: (e) => {
+          if (e.kind === "callValue" && (e.untyped === true || isJsSourceFileName(e.loc.file)))
+            calls = true;
+          return !calls;
+        },
+        stmt: () => !calls,
+      });
+      if (calls) fn.body = transformStmtList(fn.body, { expr: through, stmt: (stmt) => stmt });
     }
   }
 
-  /** The views of `type` that box as the function they forward to. */
-  private boxedSources(lowerer: Lowerer, type: FuncType): Adapter[] {
-    return (this.holders.get(typeKey(type)) ?? [])
-      .filter((view) =>
-        canBoxFuncIntoDyn(
-          view.source,
-          (id) => lowerer.shapes.get(id),
-          (id) => lowerer.unions.get(id),
-        ),
-      )
-      .sort(byFactoryName);
-  }
-
-  /** The function type of the value `e` boxes, when that value can be a
-   * view that boxes as its function. A value boxed with a static name or
-   * length is a function the program names, and a closure expression is a
-   * function, never a view. */
-  private boxedView(lowerer: Lowerer, e: IrExpr): FuncType | null {
+  /** The arguments of the call `e` through `slot` for the function type
+   * `source` a view of `slot` forwards to: each untyped argument the call
+   * checks against the slot's parameter type is checked against the
+   * function's instead. Null unless that is the only difference between
+   * the two calls. */
+  private untypedArguments(
+    lowerer: Lowerer,
+    e: IrExpr & { kind: "callValue" },
+    slot: FuncType,
+    source: FuncType,
+  ): IrExpr[] | null {
     if (
-      e.kind !== "dynFrom" ||
-      e.value.type.kind !== "func" ||
-      e.value.kind === "closure" ||
-      e.fnName !== undefined ||
-      e.fnLength !== undefined
+      source.rest === true ||
+      source.params.length !== slot.params.length ||
+      e.args.length !== slot.params.length ||
+      !typeEquals(source.ret, slot.ret)
     )
       return null;
-    return this.boxedSources(lowerer, e.value.type).length > 0 ? e.value.type : null;
-  }
-
-  /** `%fn.box.<type>(f)`: the checked-dynamic value of the function `f`
-   * stands for. Null when no view of `type` boxes as its function. */
-  private boxHelper(lowerer: Lowerer, type: FuncType, loc: SrcLoc): string | null {
-    const views = this.boxedSources(lowerer, type);
-    if (views.length === 0) return null;
-    const key = `fnbox:${typeKey(type)}`;
-    const existing = lowerer.valueHelpers.get(key);
-    if (existing) return existing;
-    const name = keyedHelperName(lowerer, "%fn.box", key);
-    // Interned before the body: views that convert types can forward to
-    // each other's types.
-    lowerer.valueHelpers.set(key, name);
-    const value: IrExpr = { kind: "varRef", localId: "f.0", type, loc };
-    const body: IrStmt[] = views.map((view): IrStmt => {
-      const source: IrExpr = {
-        kind: "viewSource",
-        value,
-        adapter: view.body,
-        type: view.source,
-        loc,
-      };
-      const inner = this.boxHelper(lowerer, view.source, loc);
-      return {
-        kind: "if",
-        cond: { kind: "viewOf", value, adapter: view.body, type: BOOL, loc },
-        then: [
-          {
-            kind: "return",
-            value:
-              inner === null
-                ? { kind: "dynFrom", value: source, type: DYN, loc }
-                : { kind: "call", callee: inner, args: [source], type: DYN, loc },
-            loc,
-          },
-        ],
-        else_: null,
-        loc,
-      };
-    });
-    body.push({ kind: "return", value: { kind: "dynFrom", value, type: DYN, loc }, loc });
-    lowerer.liftedFns.push({
-      name,
-      params: [{ localId: "f.0", name: "f", type }],
-      returnType: DYN,
-      locals: [{ id: "f.0", name: "f", type, mutable: false }],
-      body,
-      loc,
-    });
-    return name;
+    let differs = false;
+    const args: IrExpr[] = [];
+    for (let index = 0; index < e.args.length; index++) {
+      const arg = e.args[index]!;
+      const own = source.params[index]!;
+      if (typeEquals(own, slot.params[index]!)) {
+        args.push(arg);
+        continue;
+      }
+      if (arg.kind !== "dynCheck" || arg.value.type.kind !== "dyn") return null;
+      const value = arg.value;
+      if (own.kind === "dyn") args.push(value);
+      else if (
+        canDynCheckTo(
+          own,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      )
+        args.push({ kind: "dynCheck", value, type: own, loc: arg.loc });
+      else return null;
+      differs = true;
+    }
+    return differs ? args : null;
   }
 
   /** Reads the adapters lowering added since the last call; false when
@@ -453,6 +633,7 @@ export class FunctionViews {
         checked: mode === "checked",
         plain: made,
         tests: new Map(),
+        converts: new Set(),
       });
     }
     return this.adapters.length > known;
@@ -483,6 +664,91 @@ export class FunctionViews {
         grew = true;
       }
     }
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const adapter of this.adapters) {
+        const { source, target, converts } = adapter;
+        if (source.rest === true || target.rest === true) continue;
+        const relayed = this.converters.get(typeKey(source));
+        const shared = Math.min(source.params.length, target.params.length);
+        for (let index = 0; index < shared; index++) {
+          if (converts.has(index)) continue;
+          if (
+            typeEquals(source.params[index]!, target.params[index]!) &&
+            !relayed?.some((view) => view.converts.has(index))
+          )
+            continue;
+          if (converts.size === 0) {
+            const key = typeKey(target);
+            const list = this.converters.get(key);
+            if (list) list.push(adapter);
+            else this.converters.set(key, [adapter]);
+          }
+          converts.add(index);
+          grew = true;
+        }
+      }
+    }
+  }
+
+  /** Whether calls through the adapter's target can pass an argument its
+   * source's type excludes. */
+  private widensArgument(lowerer: Lowerer, adapter: Adapter): boolean {
+    const { source, target } = adapter;
+    if (source.rest === true || target.rest === true) return false;
+    const shared = Math.min(source.params.length, target.params.length);
+    for (let index = 0; index < shared; index++)
+      if (argumentWidens(lowerer, target.params[index]!, source.params[index]!)) return true;
+    return false;
+  }
+
+  /** Whether calls through the adapter's target can pass, at a parameter
+   * the view converts, an argument the view's own type excludes. */
+  private handsWider(lowerer: Lowerer, adapter: Adapter, view: Adapter): boolean {
+    const { source, target } = adapter;
+    if (source.rest === true || target.rest === true) return false;
+    for (const index of view.converts) {
+      const wide = target.params[index];
+      if (wide !== undefined && argumentWidens(lowerer, wide, source.params[index]!)) return true;
+    }
+    return false;
+  }
+
+  /** `if (f is the view `view` makes) return <the function it forwards to,
+   * converted to the consumer's type>`, for a consumer that hands the view
+   * a wider argument (handsWider): each argument is converted once, into
+   * the function's own parameter type. Null when that conversion has a
+   * parameter or a result it can only refuse, which leaves the adapter as
+   * it was. */
+  private fromFunction(lowerer: Lowerer, widening: Adapter, view: Adapter): IrStmt | null {
+    const loc = widening.factory.loc;
+    const target = widening.target;
+    const param = widening.factory.params[0]!;
+    const value: IrExpr = { kind: "varRef", localId: param.localId, type: widening.source, loc };
+    let result: IrExpr = {
+      kind: "viewSource",
+      value,
+      adapter: view.body,
+      type: view.source,
+      loc,
+    };
+    if (!typeEquals(view.source, target)) {
+      const checked = widening.checked || view.checked;
+      const direct = this.inMode(lowerer, checked, () =>
+        funcSlotAdaptable(lowerer, view.source, target, loc)
+          ? lowerer.funcCoerceAdapter(view.source, target, loc)
+          : null,
+      );
+      if (direct === null) return null;
+      result = { kind: "call", callee: direct, args: [result], type: target, loc };
+    }
+    return {
+      kind: "if",
+      cond: { kind: "viewOf", value, adapter: view.body, type: BOOL, loc },
+      then: [{ kind: "return", value: result, loc }],
+      else_: null,
+      loc,
+    };
   }
 
   /** Whether calls through the adapter's target pass more arguments than
@@ -547,10 +813,16 @@ export class FunctionViews {
     checked: boolean,
     loc: SrcLoc,
   ): string | null {
-    if (!checked) return lowerer.funcCoerceAdapter(from, to, loc);
+    return this.inMode(lowerer, checked, () => lowerer.funcCoerceAdapter(from, to, loc));
+  }
+
+  /** Runs `build` in the checked mode a method field's adapter is planned
+   * and built in, or outside it. */
+  private inMode<T>(lowerer: Lowerer, checked: boolean, build: () => T): T {
+    if (!checked) return build();
     lowerer.coercions.checkedRetags++;
     try {
-      return lowerer.funcCoerceAdapter(from, to, loc);
+      return build();
     } finally {
       lowerer.coercions.checkedRetags--;
     }

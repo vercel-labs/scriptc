@@ -79,4 +79,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // scr_record_source_has_key asks the record's kept view whether it holds
+  // an own key: no accessor runs, and a record without a view answers false.
+  "record.sourceHasKey",
 ]);

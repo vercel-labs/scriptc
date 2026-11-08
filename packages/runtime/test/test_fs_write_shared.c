@@ -51,10 +51,15 @@ int main(int argc, char **argv) {
   ScrStr *write_flag = scr_str_new("w", 1);
   ScrStr *append_flag = scr_str_new("a", 1);
 
+  /* The mode is a number, as the lowering passes it. Octal 0644 as an
+   * integer constant: `0644.0` is the decimal 644.0, which creates the file
+   * as 01204, without read permission for its owner, and the read-back below
+   * then fails wherever the process has no CAP_DAC_OVERRIDE. */
+  double mode = (double)0644;
   ScrBytes *bytes = shared_bytes(64, 0x41);
-  scr_fs_write_file_bytes_options(p, bytes, empty, 0644.0, write_flag);
+  scr_fs_write_file_bytes_options(p, bytes, empty, mode, write_flag);
   int ok = file_is(path, 0x41, 64);
-  scr_fs_append_file_bytes_options(p, bytes, empty, 0644.0, append_flag);
+  scr_fs_append_file_bytes_options(p, bytes, empty, mode, append_flag);
   ok = ok && file_is(path, 0x41, 128);
 
   int saw_shared = shared_writes;

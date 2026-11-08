@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-error-paths-typed/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-pending-await/main.mjs"
+ ],
+ "diags": []
+}

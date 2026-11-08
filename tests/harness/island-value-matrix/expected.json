@@ -1009,119 +1009,81 @@
  "error-aggregate.control.-": {
   "T.json": "refused:SC1090",
   "U.clone": "wrong",
+  "N.mapkey": "refused:SC2020",
   "N.cast": "refused:SC1090"
  },
  "error-aggregate.p": {
-  "n2i/I.inspect": "ctor=wrong,desc=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
-  "n2i/I.read": "e1=throws,isAgg=wrong,n=throws",
-  "n2i/I.same": "wrong",
   "i2n/S.make": "refused:SC1100",
   "n2i2n/S.back": "refused:SC1100",
   "i2n2i/S.make": "refused:SC1100",
   "i2n2i/S.make2": "refused:SC1100",
-  "clo-n2i/I.thunk": "ctor=wrong,desc=wrong,e1=throws,forin=wrong,isAgg=wrong,json=wrong,keys=wrong,n=throws,own=wrong,proto=wrong,same=wrong",
   "clo-n2i/N.callback": "refused:SC8010",
-  "clo-n2i/I.read@callback": "e1=throws,isAgg=wrong,n=throws",
-  "clo-i2n/S.call": "refused:SC1100",
-  "clo-i2n/I.taker": "ctor=wrong,desc=wrong,e1=throws,forin=wrong,isAgg=wrong,json=wrong,keys=wrong,n=throws,own=wrong,proto=wrong"
+  "clo-i2n/S.call": "refused:SC1100"
  },
  "error-aggregate.u": {
-  "n2i/I.inspect": "ctor=wrong,desc=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
-  "n2i/I.read": "e1=throws,isAgg=wrong,n=throws",
-  "n2i/I.same": "wrong",
   "i2n/U.forin": "unsupported",
   "i2n/N.cast": "refused:SC1090",
-  "n2i2n/N.ident": "wrong",
-  "n2i2n/N.is": "wrong",
-  "n2i2n/N.mapkey": "wrong",
-  "n2i2n/N.indexOf": "wrong",
-  "n2i2n/U.json": "wrong",
-  "n2i2n/U.keys": "wrong",
-  "n2i2n/U.forin": "unsupported",
-  "clo-n2i/I.thunk": "ctor=wrong,desc=wrong,e1=throws,forin=wrong,isAgg=wrong,json=wrong,keys=wrong,n=throws,own=wrong,proto=wrong,same=wrong",
+  "n2i2n/U.clone": "wrong",
   "clo-n2i/N.callback": "clone=wrong",
-  "clo-i2n/U.forin": "unsupported",
-  "clo-i2n/I.taker": "ctor=wrong,desc=wrong,e1=throws,forin=wrong,isAgg=wrong,json=wrong,keys=wrong,n=throws,own=wrong,proto=wrong"
+  "clo-i2n/U.forin": "unsupported"
  },
  "error-cause.control.-": {
   "T.json": "refused:SC1090",
   "U.clone": "wrong",
+  "N.mapkey": "refused:SC2020",
+  "W.result.mapkey": "refused:SC2020",
   "N.cast": "refused:SC1090"
  },
  "error-cause.p": {
-  "n2i/I.inspect": "own=wrong",
-  "n2i/I.read": "cause=wrong,causeIsR=wrong",
-  "n2i/I.same": "wrong",
   "i2n/S.make": "refused:SC1100",
   "n2i2n/S.back": "refused:SC1100",
   "i2n2i/S.make": "refused:SC1100",
   "i2n2i/S.make2": "refused:SC1100",
-  "clo-n2i/I.thunk": "cause=wrong,causeIsR=wrong,own=wrong,same=wrong",
   "clo-n2i/N.callback": "refused:SC8010",
-  "clo-n2i/I.read@callback": "cause=wrong,causeIsR=wrong",
-  "clo-i2n/S.call": "refused:SC1100",
-  "clo-i2n/I.taker": "cause=wrong,causeIsR=wrong,own=wrong"
+  "clo-i2n/S.call": "refused:SC1100"
  },
  "error-cause.u": {
-  "n2i/I.inspect": "own=wrong",
-  "n2i/I.read": "cause=wrong,causeIsR=wrong",
-  "n2i/I.same": "wrong",
   "i2n/U.forin": "unsupported",
   "i2n/N.cast": "refused:SC1090",
-  "n2i2n/N.ident": "wrong",
-  "n2i2n/N.is": "wrong",
-  "n2i2n/N.mapkey": "wrong",
-  "n2i2n/N.indexOf": "wrong",
-  "n2i2n/U.forin": "unsupported",
-  "clo-n2i/I.thunk": "cause=wrong,causeIsR=wrong,own=wrong,same=wrong",
+  "n2i2n/U.clone": "wrong",
   "clo-n2i/N.callback": "clone=wrong",
-  "clo-i2n/U.forin": "unsupported",
-  "clo-i2n/I.taker": "cause=wrong,causeIsR=wrong,own=wrong"
+  "clo-i2n/U.forin": "unsupported"
  },
  "error-cause.w": {
-  "n2i/I.inspect": "own=wrong",
-  "n2i/I.read": "cause=wrong,causeIsR=wrong",
-  "n2i/I.same": "wrong",
   "i2n/S.make": "exit",
-  "n2i2n/S.back": "exit",
+  "n2i2n/N.mapkey": "refused:SC2020",
+  "n2i2n/U.clone": "wrong",
   "i2n2i/S.make": "exit",
   "i2n2i/S.make2": "exit",
-  "clo-n2i/I.thunk": "cause=wrong,causeIsR=wrong,own=wrong,same=wrong",
-  "clo-i2n/S.call": "exit",
-  "clo-i2n/I.taker": "cause=wrong,causeIsR=wrong,own=wrong"
+  "clo-i2n/S.call": "exit"
  },
  "error-class.control.-": {
-  "U.clone": "wrong"
+  "U.clone": "wrong",
+  "N.mapkey": "refused:SC2020",
+  "W.result.mapkey": "refused:SC2020"
  },
  "error-class.p": {
-  "n2i/I.inspect": "ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
-  "n2i/I.read": "code=wrong,ctor=wrong,keys=wrong",
-  "n2i/I.same": "wrong",
-  "n2i2n/S.back": "exit",
-  "clo-n2i/I.thunk": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,same=wrong",
-  "clo-i2n/I.taker": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong"
+  "n2i/I.inspect": "ctor=wrong,proto=wrong",
+  "n2i/I.read": "ctor=wrong",
+  "n2i2n/N.mapkey": "refused:SC2020",
+  "n2i2n/U.clone": "wrong",
+  "clo-n2i/I.thunk": "ctor=wrong,proto=wrong",
+  "clo-i2n/I.taker": "ctor=wrong,proto=wrong"
  },
  "error-class.u": {
-  "n2i/I.inspect": "ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
-  "n2i/I.read": "code=wrong,ctor=wrong,keys=wrong",
-  "n2i/I.same": "wrong",
-  "n2i2n/N.ident": "wrong",
-  "n2i2n/N.is": "wrong",
-  "n2i2n/N.mapkey": "wrong",
-  "n2i2n/N.indexOf": "wrong",
-  "n2i2n/U.json": "wrong",
-  "n2i2n/U.keys": "wrong",
-  "n2i2n/U.forin": "unsupported",
-  "clo-n2i/I.thunk": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,same=wrong",
-  "clo-i2n/I.taker": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong"
+  "n2i/I.inspect": "ctor=wrong,proto=wrong",
+  "n2i/I.read": "ctor=wrong",
+  "n2i2n/U.clone": "wrong",
+  "clo-n2i/I.thunk": "ctor=wrong,proto=wrong",
+  "clo-i2n/I.taker": "ctor=wrong,proto=wrong"
  },
  "error-class.w": {
-  "n2i/I.inspect": "ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong",
-  "n2i/I.read": "code=wrong,ctor=wrong,keys=wrong",
-  "n2i/I.same": "wrong",
-  "n2i2n/S.back": "exit",
-  "clo-n2i/I.thunk": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong,same=wrong",
-  "clo-i2n/I.taker": "code=wrong,ctor=wrong,forin=wrong,json=wrong,keys=wrong,own=wrong,proto=wrong"
+  "n2i/I.inspect": "ctor=wrong,proto=wrong",
+  "n2i/I.read": "ctor=wrong",
+  "n2i2n/N.mapkey": "refused:SC2020",
+  "n2i2n/U.clone": "wrong",
+  "clo-n2i/I.thunk": "ctor=wrong,proto=wrong",
+  "clo-i2n/I.taker": "ctor=wrong,proto=wrong"
  },
  "error.control.-": {
   "N.read.keys": "refused:SC2020",
@@ -1129,6 +1091,9 @@
   "N.read.ctor": "refused:SC2020",
   "T.json": "refused:SC1090",
   "U.clone": "wrong",
+  "N.mapkey": "refused:SC2020",
+  "W.result.read.str": "refused:SC1090",
+  "W.result.mapkey": "refused:SC2020",
   "N.cast.read.keys": "refused:SC2020",
   "N.cast.read.json": "refused:SC1090",
   "N.cast.read.ctor": "refused:SC2020",
@@ -1137,64 +1102,50 @@
   "N.read@nat.ctor": "refused:SC2020"
  },
  "error.p": {
-  "n2i/I.same": "wrong",
-  "n2i/N.throwId": "wrong",
-  "n2i/N.read@isl.msg": "wrong",
-  "n2i/N.read@isl.str": "wrong",
   "n2i/N.read@isl.keys": "refused:SC2020",
   "n2i/N.read@isl.json": "refused:SC1090",
   "n2i/N.read@isl.ctor": "refused:SC2020",
-  "n2i/I.read@nat": "msg=wrong,str=wrong",
-  "n2i/I.inspect@nat": "str=wrong",
   "i2n/S.make": "exit",
-  "n2i2n/S.back": "exit",
+  "n2i2n/N.mapkey": "refused:SC2020",
+  "n2i2n/N.read.keys": "refused:SC2020",
+  "n2i2n/N.read.json": "refused:SC1090",
+  "n2i2n/N.read.ctor": "refused:SC2020",
+  "n2i2n/U.clone": "wrong",
   "n2i2n/P.read@back.keys": "refused:SC2020",
   "n2i2n/P.read@back.json": "refused:SC1090",
   "n2i2n/P.read@back.ctor": "refused:SC2020",
+  "n2i2n/N.read@isl.keys": "refused:SC2020",
+  "n2i2n/N.read@isl.json": "refused:SC1090",
+  "n2i2n/N.read@isl.ctor": "refused:SC2020",
   "i2n2i/S.make": "exit",
   "i2n2i/S.make2": "exit",
   "clo-n2i/cb.keys": "refused:SC2020",
   "clo-n2i/cb.json": "refused:SC1090",
   "clo-n2i/cb.ctor": "refused:SC2020",
-  "clo-n2i/I.thunk": "same=wrong",
   "clo-i2n/S.call": "exit"
  },
  "error.u": {
-  "n2i/I.same": "wrong",
-  "n2i/P.read@isl.msg": "wrong",
-  "n2i/P.read@isl.str": "wrong",
   "n2i/P.read@isl.keys": "refused:SC2020",
   "n2i/P.read@isl.json": "refused:SC1090",
   "n2i/P.read@isl.ctor": "refused:SC2020",
-  "n2i/I.read@nat": "msg=wrong,str=wrong",
-  "n2i/I.inspect@nat": "str=wrong",
   "i2n/U.forin": "unsupported",
   "i2n/N.cast": "exit",
-  "n2i2n/N.ident": "wrong",
-  "n2i2n/N.is": "wrong",
-  "n2i2n/N.mapkey": "wrong",
-  "n2i2n/N.indexOf": "wrong",
-  "n2i2n/U.forin": "unsupported",
-  "clo-n2i/I.thunk": "same=wrong",
+  "n2i2n/U.clone": "wrong",
   "clo-n2i/N.callback": "clone=wrong",
   "clo-i2n/U.forin": "unsupported"
  },
  "error.w": {
-  "n2i/I.same": "wrong",
-  "n2i/N.read@isl.str": "wrong",
-  "n2i/P.read@isl.msg": "wrong",
-  "n2i/P.read@isl.str": "wrong",
   "n2i/P.read@isl.keys": "refused:SC2020",
   "n2i/P.read@isl.json": "refused:SC1090",
   "n2i/P.read@isl.ctor": "refused:SC2020",
-  "n2i/I.read@nat": "msg=wrong,str=wrong",
-  "n2i/I.inspect@nat": "str=wrong",
   "i2n/S.make": "exit",
-  "n2i2n/S.back": "exit",
+  "n2i2n/N.mapkey": "refused:SC2020",
+  "n2i2n/N.read.str": "refused:SC1090",
+  "n2i2n/U.clone": "wrong",
+  "n2i2n/N.read@isl.str": "refused:SC1090",
   "i2n2i/S.make": "exit",
   "i2n2i/S.make2": "exit",
   "clo-n2i/cb.str": "refused:SC1090",
-  "clo-n2i/I.thunk": "same=wrong",
   "clo-i2n/S.call": "exit"
  },
  "f32.control.-": {},
@@ -1878,6 +1829,7 @@
   "U.forin": "refused:SC1090",
   "U.inst": "refused:SC1090",
   "U.clone": "refused:SC1090",
+  "N.mapkey": "refused:SC1090",
   "S.unknown": "refused:SC1090"
  },
  "iter-array.p": {
@@ -2056,6 +2008,7 @@
   "T.json": "refused:SC1090",
   "U.forin": "unsupported",
   "S.widen": "refused:SC1090",
+  "S.result": "refused:SC1090",
   "N.cast.read.json": "refused:SC1090",
   "N.read@nat.json": "refused:SC1090",
   "N.itermut": "refused:SC2001"
@@ -2195,7 +2148,8 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message"
+  "U.clone": "message",
+  "N.mapkey": "refused:SC2020"
  },
  "promise-pending.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -2239,7 +2193,8 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message"
+  "U.clone": "message",
+  "N.mapkey": "refused:SC2020"
  },
  "promise-rejected.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -2281,7 +2236,9 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message"
+  "U.clone": "message",
+  "N.mapkey": "refused:SC2020",
+  "W.result.mapkey": "refused:SC2020"
  },
  "promise-resolved.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -2623,7 +2580,9 @@
   "clo-i2n/U.forin#nullproto": "unsupported",
   "clo-i2n/U.inst#nullproto": "wrong"
  },
- "rec-nested.control.-": {},
+ "rec-nested.control.-": {
+  "W.result.mapkey": "wrong"
+ },
  "rec-nested.i": {
   "i2n/U.forin": "unsupported",
   "clo-i2n/U.forin": "unsupported"
@@ -2652,7 +2611,11 @@
   "i2n/U.forin": "unsupported",
   "clo-i2n/U.forin": "unsupported"
  },
- "rec-opt.control.-": {},
+ "rec-opt.control.-": {
+  "W.result.mapkey#absent": "wrong",
+  "W.result.mapkey#undef": "wrong",
+  "W.result.mapkey#full": "wrong"
+ },
  "rec-opt.i": {
   "i2n/N.read.hasB#absent": "unsupported",
   "i2n/U.forin#absent": "unsupported",
@@ -2751,7 +2714,9 @@
   "clo-i2n/U.forin#undef": "unsupported",
   "clo-i2n/U.forin#full": "unsupported"
  },
- "rec.control.-": {},
+ "rec.control.-": {
+  "W.result.mapkey": "wrong"
+ },
  "rec.i": {
   "i2n/U.forin": "unsupported",
   "clo-i2n/U.forin": "unsupported"
@@ -2905,6 +2870,7 @@
   "T.json": "refused:SC1090",
   "U.forin": "unsupported",
   "S.widen": "refused:SC1090",
+  "S.result": "refused:SC1090",
   "N.cast.read.json": "refused:SC1090",
   "N.read@nat.json": "refused:SC1090"
  },

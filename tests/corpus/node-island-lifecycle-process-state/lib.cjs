@@ -1,0 +1,13 @@
+"use strict";
+exports.env = (k) => process.env[k];
+exports.setEnv = (k, v) => { process.env[k] = v; };
+exports.delEnv = (k) => { delete process.env[k]; };
+exports.cwd = () => process.cwd();
+exports.chdir = (d) => process.chdir(d);
+exports.argv = () => process.argv.slice(2).join(",");
+exports.title = () => typeof process.title;
+exports.pid = () => process.pid;
+exports.umask = () => process.umask();
+exports.setUmask = (m) => process.umask(m);
+exports.uptimeType = () => typeof process.uptime();
+exports.isTTY = () => `${process.stdout.isTTY} ${process.stderr.isTTY} ${process.stdin.isTTY}`;

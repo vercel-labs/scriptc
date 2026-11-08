@@ -135,6 +135,7 @@ import {
   unsupportedModuleFeatureOf,
   TEMPORAL_GLOBAL,
 } from "./builtin-modules.js";
+import { builtinModuleHasMember } from "./lowering/builtin-module-members.js";
 import {
   clearWorkspacePackages,
   isRelativeSpecifier,
@@ -8348,8 +8349,9 @@ interface BadEsmImport {
   spec: string;
   nameNode: ts.Node;
   sf: ts.SourceFile;
-  /** The module the request names. */
-  dep: ts.SourceFile;
+  /** The module the request names: a source file, or a builtin module by
+   * its name. */
+  dep: ts.SourceFile | string;
 }
 
 interface EsmNamedImportLinkAnalysis {
@@ -8445,18 +8447,40 @@ function analyzeEsmNamedImportLinks(
   };
 
   const firstMissingOf = (sf: ts.SourceFile): BadEsmImport | null => {
+    // A request's target: a program ES module, or a builtin module by its
+    // canonical name. Node links a builtin's named imports against the
+    // enumerable own keys of its exports object (and `default`), the names
+    // the member census records: a name the exports object owns without
+    // enumerating it (`Z_NO_FLUSH` of node:zlib) is not an export.
     const imports: {
       local: string;
       exportName: string;
       spec: string;
       nameNode: ts.Node;
-      dep: ts.SourceFile;
+      dep: ts.SourceFile | string;
     }[] = [];
     for (const stmt of sf.statements.nodes) {
       if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const clause = stmt.importClause;
       if (clause === undefined || clause.phaseModifier === ts.SyntaxKind.TypeKeyword) continue;
       const spec = stmt.moduleSpecifier.text;
+      const builtin = npmBuiltinAliasOf(spec) === null ? canonicalBuiltinModule(spec) : null;
+      if (builtin !== null) {
+        if (clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings))
+          continue;
+        for (const element of clause.namedBindings.elements.nodes) {
+          if (element.isTypeOnly) continue;
+          const nameNode = element.propertyName ?? element.name;
+          imports.push({
+            local: element.name.text,
+            exportName: nameNode.text,
+            spec,
+            nameNode,
+            dep: builtin,
+          });
+        }
+        continue;
+      }
       const dep = resolveEdge(sf, spec);
       if (dep === null || dep.fileName.endsWith(".json") || !isNodeEsmFile7(dep, program)) continue;
       if (clause.name !== undefined) {
@@ -8486,7 +8510,11 @@ function analyzeEsmNamedImportLinks(
     // more than one erased TypeScript export.
     imports.sort((a, b) => (a.local < b.local ? -1 : a.local > b.local ? 1 : 0));
     for (const request of imports) {
-      if (runtimeExport(request.dep, request.exportName) === undefined) {
+      const missing =
+        typeof request.dep === "string"
+          ? builtinModuleHasMember(request.dep, "esm", request.exportName) === false
+          : runtimeExport(request.dep, request.exportName) === undefined;
+      if (missing) {
         return {
           exportName: request.exportName,
           spec: request.spec,
@@ -8549,12 +8577,12 @@ function analyzeEsmNamedImportLinks(
   const bad = isNodeEsmFile7(entry, program) ? dfs(entry) : null;
   if (bad !== null) {
     // The usual cause: the name is a type, which Node's type stripping
-    // leaves in a plain import.
+    // leaves in a plain import. A builtin module has no source file to ask.
+    const dep = bad.dep;
     const declaresType =
-      checker
-        .getSymbolAtLocation(bad.dep)
-        ?.getExports()
-        .get(ts.escapedSymbolName(bad.exportName)) !== undefined;
+      typeof dep !== "string" &&
+      checker.getSymbolAtLocation(dep)?.getExports().get(ts.escapedSymbolName(bad.exportName)) !==
+        undefined;
     return {
       crash: {
         message: `The requested module '${bad.spec}' does not provide an export named '${bad.exportName}'`,

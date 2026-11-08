@@ -151,6 +151,28 @@ export function lowerBuiltinExtraProperty(
       }
     }
   }
+  // child.stdout.readableFlowing: Node's `boolean | null` (null until the
+  // stream gets a 'data' listener or is paused or resumed). The handle's
+  // other properties have no lowering here.
+  if (
+    kind === "childStream" &&
+    expr.name.text === "readableFlowing" &&
+    lowerer.isStdlibMember(expr)
+  ) {
+    const receiver = lowerer.lowerExprExpecting(expr.expression, CHILDSTREAM_T);
+    const type: IrType = {
+      kind: "union",
+      unionId: lowerer.unions.intern([BOOL, { kind: "nullT" }]),
+    };
+    const read: IrExpr = {
+      kind: "libCall",
+      fn: "stream.childFlowing",
+      args: [receiver],
+      type,
+      loc: locOf(expr),
+    };
+    return lowerer.maybeNarrow(read, expr);
+  }
   if (
     kind !== "stats" &&
     kind !== "bigintStats" &&

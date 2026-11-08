@@ -440,7 +440,7 @@
       "name": "child_process.execFile",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
+      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
     },
     {
       "id": "node-builtin.child_process.execFileSync",
@@ -2460,6 +2460,13 @@
       "name": "process.exitCode",
       "status": "static",
       "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
+    },
+    {
+      "id": "node-builtin.process.features",
+      "kind": "node-builtin",
+      "name": "process.features",
+      "status": "static",
+      "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",

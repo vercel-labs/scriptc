@@ -1,8 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/8933-proxy-record-export/settings.ts",
-  "<repo>/tests/corpus/8933-proxy-record-export/reader.ts",
-  "<repo>/tests/corpus/8933-proxy-record-export/main.ts"
- ],
- "diags": []
-}

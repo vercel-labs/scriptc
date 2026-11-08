@@ -1,7 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/proxy-as-class-export/gauge.ts",
-  "<repo>/tests/diagnostics/proxy-as-class-export/main.ts"
- ],
- "diags": []
-}

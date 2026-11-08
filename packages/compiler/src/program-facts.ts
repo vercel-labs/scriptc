@@ -482,6 +482,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "finds the modules a fork() can start, which become program roots",
   ),
   scan(
+    "frontend/import-elision.ts#elideProgramImports",
+    1,
+    "discovery",
+    "the imports and exports tsc drops, file by file: each file's answer comes from its own uses and the tsconfig above it, and decides that file's module edges",
+  ),
+  scan(
     "frontend/lowering/argument-counts.ts#usedAsValue",
     1,
     "closed-world",
@@ -715,9 +721,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#loadProgram7",
-    2,
+    3,
     "discovery",
-    "fork and worker targets, which become program roots",
+    "fork and worker targets, which become program roots; and, file by file from the tsconfig above each, the files that compile class fields in the constructor and the legacy decorators refused by name",
   ),
   scan(
     "frontend/program.ts#declBoundaryUserFiles",

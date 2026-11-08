@@ -768,7 +768,11 @@ export function describeRecordWidthBlocker(
 
 /** Plan a record projection from plain class fields, including inherited
  * fields and absent optional fields. Methods, accessors, reserved slots and
- * builtin runtime layouts cannot be read as ordinary emitted storage. */
+ * builtin runtime layouts cannot be read as ordinary emitted storage: a
+ * class rooted in a runtime-provided class (an emitter, an error, a stream)
+ * projects the fields its program classes declare, which follow the runtime
+ * prefix in the emitted struct, and declines a member the runtime class
+ * itself holds. */
 export function objToRecordPlan(
   lowerer: Lowerer,
   className: string,
@@ -781,7 +785,10 @@ export function objToRecordPlan(
   // not projectable storage.
   if (to.fields.some((f) => f.name.startsWith("%"))) return null;
   for (let c: ClassInfo | null = info; c; c = c.base) {
-    if (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime)
+    if (
+      (c.builtinError || c.builtinEmitter || c.builtinStream !== undefined || c.def.runtime) &&
+      (c === info || to.fields.some((f) => c.fields.has(f.name)))
+    )
       return null;
   }
   const key = `obj:${className}:${toId}`;

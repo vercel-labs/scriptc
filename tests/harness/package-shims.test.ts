@@ -25,7 +25,11 @@
  *   by an installed package's JavaScript) compiles the shim, and matches
  *   Node running the real package;
  * - the undici shim compiles under a project tsconfig with
- *   strictPropertyInitialization off.
+ *   strictPropertyInitialization off;
+ * - the undici shim compiles in a project whose own @types/node declares no
+ *   DOMException global (20.11 and earlier): the declaration joins the
+ *   program beside the project's types, and an aborted fetch rejects with
+ *   the DOMException undici rejects with.
  */
 import { execFile, spawn } from "node:child_process";
 import {
@@ -33,6 +37,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -417,6 +422,67 @@ describe("package shims", () => {
       ].join("\n"),
     );
   }, 180_000);
+
+  test("undici5: fetch compiles in a project whose @types/node declares no DOMException global", async () => {
+    const dir = copyCase("undici5", "undici5-old-node-types");
+    // The vendored @types/node without its DOMException global, which is
+    // what the shim sees of @types/node 20.11 and earlier: the project's own
+    // code cannot name the class, the shim's fetch does.
+    const vendored = join(repoRoot, "tests/fixtures/node-types/node_modules");
+    const types = join(dir, "node_modules/@types/node");
+    cpSync(join(vendored, "@types/node"), types, { recursive: true });
+    cpSync(join(vendored, "undici-types"), join(dir, "node_modules/undici-types"), {
+      recursive: true,
+    });
+    const reference = '/// <reference path="web-globals/domexception.d.ts" />\n';
+    const index = readFileSync(join(types, "index.d.ts"), "utf8");
+    expect(index).toContain(reference);
+    writeFileSync(join(types, "index.d.ts"), index.replace(reference, ""));
+    rmSync(join(types, "web-globals/domexception.d.ts"));
+    writeFileSync(join(dir, "tsconfig.json"), '{ "compilerOptions": { "strict": true } }\n');
+    writeFileSync(
+      join(dir, "main.ts"),
+      [
+        'import { createServer } from "node:http";',
+        'import { fetch } from "undici";',
+        "const server = createServer((req, res) => {",
+        '  if (req.url === "/slow") return;',
+        "  res.end(`${req.method} ${req.url}`);",
+        "});",
+        'server.listen(0, "127.0.0.1", async () => {',
+        "  const address = server.address();",
+        '  const port = typeof address === "object" && address ? address.port : 0;',
+        "  const ok = await fetch(`http://127.0.0.1:${port}/ok`);",
+        "  console.log(ok.status, await ok.text());",
+        "  const controller = new AbortController();",
+        "  const pending = fetch(`http://127.0.0.1:${port}/slow`, { signal: controller.signal });",
+        "  controller.abort();",
+        "  try {",
+        "    await pending;",
+        '    console.log("not aborted");',
+        "  } catch (error) {",
+        "    const failure = error as Error;",
+        "    console.log(failure.name, failure.message, failure instanceof Error);",
+        "  }",
+        "  server.closeAllConnections();",
+        "  server.close();",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const out = join(dir, ".scriptc");
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(out, "program"),
+      outDir: out,
+      sanitize,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n"));
+    // undici 5.29.0's output under Node.
+    expect(await run(result.binaryPath, [], dir)).toBe(
+      "200 GET /ok\nAbortError This operation was aborted true\n",
+    );
+  }, 300_000);
 
   test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
     const dir = copyCase("undici7", "undici7-loose");

@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { constructorRefusals, fewerRefusals, otherErrors } from "./held-constructors.js";
-import type { LowerResult } from "./lowerer.js";
+import type { Lowerer, LowerResult } from "./lowerer.js";
 
 const loc = { file: "main.ts", start: 0, end: 1 };
 const refusal = (extra: Partial<ScrDiagnostic> = {}): ScrDiagnostic =>
@@ -31,10 +31,24 @@ test("then the deferred refusals in all, and a tie keeps the standing pass", () 
 
 test("a refusal involves a held constructor by its mark, as an error or deferred", () => {
   const marked = refusal({ heldConstructor: true });
-  expect(constructorRefusals(pass([refusal()], [refusal()]))).toBe(false);
-  expect(constructorRefusals(pass([marked]))).toBe(true);
-  expect(constructorRefusals(pass([], [marked]))).toBe(true);
-  expect(otherErrors(pass([marked]))).toBe(false);
-  expect(otherErrors(pass([marked, refusal()]))).toBe(true);
-  expect(otherErrors(pass([], [refusal()]))).toBe(false);
+  const early = refusal();
+  const holds = {
+    constructorFunctionTypes: true,
+    earlyDiagnostics: new WeakSet([early]),
+  } as unknown as Lowerer;
+  const holdsNone = {
+    constructorFunctionTypes: false,
+    earlyDiagnostics: new WeakSet([marked]),
+  } as unknown as Lowerer;
+  expect(constructorRefusals(holds, pass([refusal()], [refusal()]))).toBe(false);
+  expect(constructorRefusals(holds, pass([marked]))).toBe(true);
+  expect(constructorRefusals(holds, pass([], [marked]))).toBe(true);
+  // A diagnostic made before the program's first constructor value counts.
+  expect(constructorRefusals(holds, pass([early]))).toBe(true);
+  // A program that writes no constructor as a value never compares.
+  expect(constructorRefusals(holdsNone, pass([marked]))).toBe(false);
+  expect(otherErrors(holds, pass([marked]))).toBe(false);
+  expect(otherErrors(holds, pass([marked, refusal()]))).toBe(true);
+  expect(otherErrors(holds, pass([early]))).toBe(false);
+  expect(otherErrors(holds, pass([], [refusal()]))).toBe(false);
 });

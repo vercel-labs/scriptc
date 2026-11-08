@@ -1734,6 +1734,10 @@ function lowerToIrWithIslands(
   timing("reachable-emit", {
     reachable: reachable.size,
     ...(pushDownAborted ? { aborted: "stream-flags" } : {}),
+    // The program holds a primitive constructor in its typed form
+    // (held-constructors.ts): what makes its refusals count for the
+    // comparison round below.
+    ...(reachableEmit.constructorFunctionTypes ? { held_constructors: true } : {}),
   });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
@@ -1772,8 +1776,10 @@ function lowerToIrWithIslands(
     for (;;) {
       const partial = result.diagnostics.length > 0 && resultLowerer.hasPartialDegradedTypes();
       const untyped =
-        !constructorsCompared && !resultLowerer.untypedConstructors && constructorRefusals(result);
-      const whole = partial && (!untyped || otherErrors(result));
+        !constructorsCompared &&
+        !resultLowerer.untypedConstructors &&
+        constructorRefusals(resultLowerer, result);
+      const whole = partial && (!untyped || otherErrors(resultLowerer, result));
       if (!whole && !untyped) return;
       if (untyped) constructorsCompared = true;
       const pass = new Lowerer(program, entry, moduleOrder, {
@@ -5607,6 +5613,7 @@ export class Lowerer {
     "constructorTouchMark",
     "constructorHolders",
     "constructorFunctionMemo",
+    "earlyDiagnostics",
     "abortOnStreamFlags",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
@@ -6088,10 +6095,14 @@ export class Lowerer {
   readonly wholeSlotDegradation: boolean;
   /** LowererMode.untypedConstructors. */
   readonly untypedConstructors: boolean;
-  /** The program holds a primitive constructor by the constructor's own
-   * function type: such a type mapped, or the constructor was read as a
-   * value. Until then nothing of held-constructors.ts is asked. */
+  /** The program holds a primitive constructor as a value: one was written
+   * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
+   * nothing of held-constructors.ts is asked of the values it lowers. */
   constructorFunctionTypes = false;
+  /** The diagnostics made while constructorFunctionTypes was still false
+   * (pushDiag): lowering order is not evaluation order, so a statement
+   * lowered before the program's first constructor value may use one. */
+  readonly earlyDiagnostics = new WeakSet<ScrDiagnostic>();
   /** How often lowering met a value or a type that holds a constructor's
    * function type (lowerExpr, the type mapper). */
   constructorTouches = 0;
@@ -6865,8 +6876,9 @@ export class Lowerer {
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
       ...(this.untypedConstructors ? { untypedConstructors: true } : {}),
+      // A mapping says nothing of whether the program holds a constructor:
+      // analyses map the type of a callee or a receiver they never hold.
       onConstructorFunctionType: () => {
-        this.constructorFunctionTypes = true;
         this.constructorTouches++;
       },
       constructorFunctionMemo: this.constructorFunctionMemo,
@@ -10192,6 +10204,20 @@ export class Lowerer {
       // method's callback such a declaration keeps its declared parameters.
       called: ts.FunctionDeclaration | null = null,
     ): boolean => {
+      // `String`, `Number`, `Boolean` or `BigInt` written as the callback is
+      // the constructor's conversion, not a function of the program (lower-
+      // exprs.ts, conversionCallbackTypeOf): there is no parameter to widen,
+      // and mapping the constructor's own type here would say the program
+      // holds one as a value (held-constructors.ts).
+      if (
+        ts.isIdentifier(callback) &&
+        (callback.text === "String" ||
+          callback.text === "Number" ||
+          callback.text === "Boolean" ||
+          callback.text === "BigInt") &&
+        conversionCallbackTypeOf(this, callback) !== null
+      )
+        return false;
       let changed = false;
       const checkerTypeContainsTypeParameter = (type: ts.Type): boolean => {
         if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
@@ -14301,8 +14327,11 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts).
-    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
+    // (held-constructors.ts). Until the program is known to hold one,
+    // values are not looked at, so a diagnostic made that early is kept
+    // aside: it counts if the program turns out to hold a constructor.
+    if (!this.constructorFunctionTypes) this.earlyDiagnostics.add(d);
+    else if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in

@@ -4403,6 +4403,11 @@ export function primitiveCtorValue(
   loc: SrcLoc,
 ): IrExpr {
   const fn = primitiveCtorClosure(lowerer, name, loc);
+  // The program holds a constructor as a value from here on. The untyped
+  // tier's own uses of the function (a `constructor` answer, a wrapper's
+  // prototype) call primitiveCtorClosure and do not say so: nothing typed
+  // holds the function there.
+  lowerer.constructorFunctionTypes = true;
   return lowerer.untypedConstructors ? namedConstructorBox(lowerer.coerceToExpected(fn, DYN)) : fn;
 }
 
@@ -4479,6 +4484,5 @@ export function primitiveCtorClosure(
     };
     lowerer.liftedFns.push(fn);
   }
-  lowerer.constructorFunctionTypes = true;
   return { kind: "closure", fnName, captures: [], type: primitiveConstructorType(ret), loc };
 }

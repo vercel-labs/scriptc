@@ -19,13 +19,17 @@
  * fewer refusals, a refusal deferred to run time counting like a build
  * error behind the errors (constructorRefusals, fewerRefusals).
  *
- * This module answers which refusals involve one. The lowerer counts each
- * value it lowers whose type holds a constructor's function type and each
- * mapping of such a type (Lowerer.constructorTouches); a diagnostic made
- * after the innermost statement being lowered counted one is marked
- * (ScrDiagnostic.heldConstructor). The mark over-approximates on purpose: it
- * decides only whether the comparison pass runs, never which pass stands. A
- * program that holds no constructor counts nothing. */
+ * This module answers which refusals involve one. Once the program has
+ * written a constructor as a value (Lowerer.constructorFunctionTypes), the
+ * lowerer counts each value it lowers whose type holds a constructor's
+ * function type and each mapping of such a type
+ * (Lowerer.constructorTouches); a diagnostic made after the innermost
+ * statement being lowered counted one is marked
+ * (ScrDiagnostic.heldConstructor), and every diagnostic made before that
+ * first value counts too. The mark over-approximates on purpose: it decides
+ * only whether the comparison pass runs, never which pass stands. A program
+ * that writes no constructor as a value looks at nothing and never
+ * compares. */
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import {
   BIGINT_T,
@@ -84,7 +88,7 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
       );
     case "record": {
       const shapeId = type.shapeId;
-      return named(lowerer, `r:${shapeId}`, visiting, true, (inner) => {
+      return named(lowerer, `r:${shapeId}`, visiting, (inner) => {
         const shape = lowerer.shapes.get(shapeId);
         if (shape === undefined) return false;
         for (const field of shape.fields) if (holds(lowerer, field.type, inner)) return true;
@@ -93,7 +97,7 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
     }
     case "union": {
       const unionId = type.unionId;
-      return named(lowerer, `u:${unionId}`, visiting, true, (inner) => {
+      return named(lowerer, `u:${unionId}`, visiting, (inner) => {
         const arms = lowerer.unions.get(unionId)?.arms ?? [];
         for (const arm of arms) if (holds(lowerer, arm, inner)) return true;
         return false;
@@ -101,10 +105,11 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
     }
     case "object": {
       const className = type.className;
-      // A class gains fields while it is collected: only a yes is kept.
-      return named(lowerer, `c:${className}`, visiting, false, (inner) => {
-        const fields = lowerer.classes.get(className)?.fields;
-        if (fields === undefined) return false;
+      const fields = lowerer.classes.get(className)?.fields;
+      if (fields === undefined) return false;
+      // A class gains fields while it is collected: the answer is kept for
+      // the fields it was given for.
+      return named(lowerer, `c:${className}:${fields.size}`, visiting, (inner) => {
         for (const field of fields.values()) if (holds(lowerer, field, inner)) return true;
         return false;
       });
@@ -122,7 +127,6 @@ function named(
   lowerer: Lowerer,
   key: string,
   visiting: Set<string> | null,
-  keepNo: boolean,
   answer: (visiting: Set<string>) => boolean,
 ): boolean {
   const known = lowerer.constructorHolders.get(key);
@@ -132,25 +136,29 @@ function named(
   inner.add(key);
   const result = answer(inner);
   inner.delete(key);
-  if (result || (keepNo && inner.size === 0)) lowerer.constructorHolders.set(key, result);
+  if (result || inner.size === 0) lowerer.constructorHolders.set(key, result);
   return result;
 }
 
 /** Whether one of a pass's refusals, a build error or a refusal deferred to
- * run time, involves a held constructor. */
-export function constructorRefusals(result: LowerResult): boolean {
-  return (
-    result.diagnostics.some(involvesConstructor) || result.runtimeFences.some(involvesConstructor)
-  );
+ * run time, involves a held constructor. A program that never writes a
+ * constructor as a value has none. */
+export function constructorRefusals(lowerer: Lowerer, result: LowerResult): boolean {
+  if (!lowerer.constructorFunctionTypes) return false;
+  const involved = (d: ScrDiagnostic): boolean => involvesConstructor(lowerer, d);
+  return result.diagnostics.some(involved) || result.runtimeFences.some(involved);
 }
 
 /** Whether one of a pass's build errors involves no held constructor. */
-export function otherErrors(result: LowerResult): boolean {
-  return result.diagnostics.some((d) => !involvesConstructor(d));
+export function otherErrors(lowerer: Lowerer, result: LowerResult): boolean {
+  return result.diagnostics.some((d) => !involvesConstructor(lowerer, d));
 }
 
-function involvesConstructor(d: ScrDiagnostic): boolean {
-  return d.heldConstructor === true;
+/** Marked while lowering, or made before the program's first constructor
+ * value was lowered (Lowerer.earlyDiagnostics): the statement around such a
+ * diagnostic was not watched. */
+function involvesConstructor(lowerer: Lowerer, d: ScrDiagnostic): boolean {
+  return d.heldConstructor === true || lowerer.earlyDiagnostics.has(d);
 }
 
 /** Whether `candidate` refuses less than `standing`: fewer build errors; or

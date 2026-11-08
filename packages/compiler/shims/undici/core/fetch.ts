@@ -11,6 +11,9 @@
 // offer `gzip, deflate` rather than undici's `br, gzip, deflate` (the runtime
 // has no Brotli decoder).
 import type { Transform } from "node:stream";
+// The web stream classes come from their module, not from the global scope:
+// a project's @types/node may predate the globals (20.11 has none).
+import { ReadableStream, type ReadableStreamDefaultController } from "node:stream/web";
 import * as zlib from "node:zlib";
 import type { Dispatcher } from "./dispatcher.ts";
 import { getGlobalDispatcher, hasCustomGlobalDispatcher } from "./api.ts";

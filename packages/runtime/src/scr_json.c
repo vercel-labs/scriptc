@@ -23047,19 +23047,23 @@ bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
  * native state (the error's slots, then the class fields). The list's
  * properties are defined on the view as scr_dyn_copy_property_descriptors
  * does; a data property the native state already answered keeps the native
- * value; and every property the list names then follows the ones it does
- * not name, in the list's order. Calls only exported functions. */
+ * value and whether it is enumerable (the slots' flags and the fields are
+ * current, the list's copy is the last commit's); and every property the
+ * list names then follows the ones it does not name, in the list's order.
+ * Calls only exported functions. */
 void scr_error_view_follow_list(ScrDyn *view, const ScrDyn *bag, size_t native) {
   if (!bag || bag->kind != SCR_DYN_OBJ || view->kind != SCR_DYN_OBJ || bag->v.obj.len == 0) return;
   if (native > view->v.obj.len) native = view->v.obj.len;
   ScrDyn **kept = native ? calloc(native, sizeof *kept) : NULL;
   ScrStr **names = native ? calloc(native, sizeof *names) : NULL;
-  if (native && (!kept || !names)) scr_trap("scriptc: out of memory\n");
+  bool *listable = native ? calloc(native, sizeof *listable) : NULL;
+  if (native && (!kept || !names || !listable)) scr_trap("scriptc: out of memory\n");
   for (size_t i = 0; i < native; i++) {
     ScrDynEntry *entry = &scr_dyn_obj_dict_entries(view)[i];
     if (entry->accessor || !scr_dyn_obj_get(bag, entry->key, entry->key_len)) continue;
     names[i] = scr_str_new(entry->key, entry->key_len);
     kept[i] = scr_dyn_retain(entry->value);
+    listable[i] = entry->enumerable;
   }
   ScrDyn *copied = scr_dyn_copy_property_descriptors(view, bag);
   scr_dyn_release(copied);
@@ -23075,6 +23079,7 @@ void scr_error_view_follow_list(ScrDyn *view, const ScrDyn *bag, size_t native) 
       ScrDyn *old = entry->value;
       scr_dyn_region_store(view, kept[i]);
       entry->value = kept[i];
+      entry->enumerable = listable[i];
       scr_dyn_release(old);
     } else {
       scr_dyn_release(kept[i]);
@@ -23083,6 +23088,7 @@ void scr_error_view_follow_list(ScrDyn *view, const ScrDyn *bag, size_t native) 
   }
   free(kept);
   free(names);
+  free(listable);
   if (scr_exc_pending()) return;
   size_t n = view->v.obj.len;
   ScrDynEntry *entries = scr_dyn_obj_dict_entries(view);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-array-instance-seeds/main.ts"
+ ],
+ "diags": []
+}

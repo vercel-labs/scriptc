@@ -81,6 +81,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
+import { isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   lowerSafeIndexRead,
@@ -385,6 +386,12 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
     if (outermost) refuseSpentLowering(lowerer);
     return lowered;
+  } catch (e) {
+    // An internal error or a checker panic on its way out: the innermost
+    // expression being lowered is where the diagnostic belongs
+    // (diagnostics/crash-site.ts). A poison passes untouched.
+    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, () => locOf(expr));
+    throw e;
   } finally {
     lowerExprDepth--;
     lowerer.closeOperandFrame(operands);
@@ -2871,15 +2878,17 @@ export function lowerElementCompoundStatement(
   return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
 }
 
-/** Checked member assignment evaluates the reference before its RHS and
- * yields the original assigned value, including in a chained assignment. */
-export function lowerDynMemberAssignment(
+/** The reference of a checked member write, evaluated ahead of the value
+ * it will take: the receiver and the key are held in temporaries (key
+ * coercion waits for PutValue), and `store` writes a checked-dynamic value
+ * through them. Shared by the member assignment and by a destructuring
+ * assignment's member targets, so both make the same write. */
+export function dynMemberReference(
   lowerer: Lowerer,
-  expr: ts.BinaryExpression,
+  target: ts.ElementAccessExpression | ts.PropertyAccessExpression,
   recv: IrExpr,
-): IrExpr {
-  const loc = locOf(expr);
-  const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
+  loc: SrcLoc,
+): { stmts: IrStmt[]; store: (stored: IrExpr) => IrStmt } {
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
   const boxedKey = ts.isElementAccessExpression(target)
     ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
@@ -2892,6 +2901,39 @@ export function lowerDynMemberAssignment(
     boxedKey.value.type.kind === "string";
   const keyValue = stringKey ? boxedKey.value : boxedKey;
   const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
+  return {
+    stmts: [
+      { kind: "varDecl", localId: receiver.id, init: recv, loc },
+      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+    ],
+    store: (stored) => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+        args: [
+          varRef(receiver.id, DYN, loc),
+          varRef(key.id, stringKey ? STRING : DYN, loc),
+          stored,
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    }),
+  };
+}
+
+/** Checked member assignment evaluates the reference before its RHS and
+ * yields the original assigned value, including in a chained assignment. */
+export function lowerDynMemberAssignment(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  recv: IrExpr,
+): IrExpr {
+  const loc = locOf(expr);
+  const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
+  const reference = dynMemberReference(lowerer, target, recv, loc);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2913,24 +2955,9 @@ export function lowerDynMemberAssignment(
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: receiver.id, init: recv, loc },
-      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+      ...reference.stmts,
       { kind: "varDecl", localId: assigned.id, init: value, loc },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
-          args: [
-            varRef(receiver.id, DYN, loc),
-            varRef(key.id, stringKey ? STRING : DYN, loc),
-            stored,
-          ],
-          type: VOID,
-          loc,
-        },
-        loc,
-      },
+      reference.store(stored),
     ],
     result,
     type: result.type,
@@ -3009,7 +3036,7 @@ export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExp
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??
-    lowerer.ensureString(e, node)
+    lowerer.ensureString(e, node, "default")
   );
 }
 

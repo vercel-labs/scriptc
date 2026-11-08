@@ -150,6 +150,7 @@ function expressionPreservesEdges(
         e.fn === "dyn.typedRefKeyIs" ||
         e.fn === "dyn.typedRefIs" ||
         e.fn === "dyn.classHash" ||
+        e.fn === "dyn.classValueHash" ||
         // jsval conversions (ir/jsval.ts) answer as the dyn forms they
         // replace: moving a value between dyn and jsval reads it, and a
         // number, boolean or string crosses like its dynFrom box.

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/regex-tokenizer.ts",
+  "args": [
+    "1"
+  ]
+}

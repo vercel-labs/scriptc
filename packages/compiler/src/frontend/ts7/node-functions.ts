@@ -29,10 +29,13 @@ export {
   FULL_SPAN,
   LEADING_SPAN,
   TOKEN_SPAN,
+  UP_TO_TOKEN_SPAN,
   carriedSourceText,
   sourceTextIncludes,
   sourceTextMatches,
   sourceTextRange,
   sourceTextRangeIncludes,
   sourceTextRangeMatches,
+  sourceTextRewritten,
 } from "./ast-node.js";
+export type { SourceTextBlank, SourceTextSpan } from "./ast-node.js";

@@ -101,6 +101,7 @@ const INERT_LIB_CALLS = new Set<IrLibFn>([
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classValueHash",
   "dyn.bagGet",
   "json.parse",
   "process.stderrWrite",

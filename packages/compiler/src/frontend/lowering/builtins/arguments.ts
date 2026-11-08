@@ -1,3 +1,4 @@
+import { refuseCallbackThis } from "../callback-arg.js";
 import { keyedHelperName } from "../stable-names.js";
 import {
   BYTES_U8,
@@ -264,6 +265,7 @@ export function errorFirstCallback(
   acceptValue: (value: IrType) => boolean,
   values: string,
 ): IrExpr {
+  refuseCallbackThis(lowerer, node, `a ${api} callback`, "an object of its own");
   // A literal here is called only by the callback adapter, which passes
   // null as the error whenever it passes a result (lowerUndefinedResultBody).
   // A named function expression can also call itself, and a function

@@ -632,6 +632,16 @@ export function variantsFor(source) {
       defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
   }
+  // fs.ReadStream / fs.WriteStream options that can hold a `signal`: the
+  // fs stream unit applies it, with the event-target unit's abort listener;
+  // every other program keeps the default object, byte for byte.
+  if (source === "scr_fs_stream.c") {
+    variants.push({
+      id: "signal",
+      when: { fsStreamSignal: true },
+      defines: ["SCR_FS_STREAM_SIGNAL"],
+    });
+  }
   if (source === "scr_cycle.c") {
     // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
     // nursery collections; programs built without it link the default.

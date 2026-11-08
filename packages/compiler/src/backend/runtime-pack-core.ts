@@ -164,6 +164,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioObject: boolean;
   /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
   streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -426,6 +429,7 @@ export function effectiveRuntimeFeatures(
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
     streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

@@ -2950,6 +2950,7 @@ export class LlEmitter {
       pendingTestLines: (dest) => this.pendingTestLines(dest),
       closureNames: () => this.closureNames(),
       threadLocalState: mod.workers === true || mod.lib?.threadInstances === true,
+      pendingBailReleaseLines: (type, value) => this.pendingBailReleaseLines(type, value),
       virtualEntry: (implFn) => this.virtualEntry(implFn),
       programLifetime: this.programLifetime,
       regionAliasTag: (word) => this.memoryAliasAttachment(`region.${word}`),
@@ -4901,6 +4902,21 @@ export class LlEmitter {
       `  ${dest}.kind = load i32, ptr ${dest}.cell`,
       `  ${dest} = icmp ne i32 ${dest}.kind, 0`,
     ];
+  }
+
+  /** Instructions (two-space indented) for the block a hand-built helper
+   * or adapter takes when the pending test after a call is true: they
+   * release `value`, what that call returned, when nothing else owns it
+   * yet. A call that throws returns null for a counted type, so where the
+   * test is exactly "an exception is pending" there is nothing to release
+   * and there are no lines. In a Worker program the test is also true once
+   * the thread's context must stop (a terminate request, process.exit() in
+   * a worker, the shutdown that starts every thread's cleanup), which a
+   * call that succeeded knows nothing about: its value is released there.
+   * The release helpers accept the null of a call that did throw. */
+  pendingBailReleaseLines(type: IrType, value: string): string[] {
+    if (this.mod.workers !== true || type.kind === "void" || !isRefCounted(type)) return [];
+    return [`  call void ${releaseSym(this.shapeHost, type)}(ptr ${value})`];
   }
 
   /** The emitter contract for exceptions: after EVERY call that can throw

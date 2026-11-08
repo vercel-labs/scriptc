@@ -253,10 +253,11 @@ interface Candidates {
   uses: Use[];
   /** The names that occur anywhere beyond the aliases' own declarations. */
   mentioned: Set<string>;
-  /** The nodes the decision asks the checker for the symbol at: the
-   * candidates' names, the uses, and the module specifiers and re-exported
-   * names behind which it looks for a type-only declaration. One request
-   * answers them for a file, or for a whole program (elideProgramImports). */
+  /** The nodes the decision asks the checker for the symbol at before it
+   * starts: the candidates' names, the first use of each, and the module
+   * specifiers and re-exported names behind which it looks for a type-only
+   * declaration. One request answers them for a file, or for a whole
+   * program (elideProgramImports). */
   questions: ts.Node[];
 }
 
@@ -355,8 +356,17 @@ function candidatesOf(sf: ts.SourceFile): Candidates | null {
 
   // ---- the questions ----
   const questions: ts.Node[] = aliases.map((alias) => alias.name);
-  for (const use of uses)
-    if (use.kind !== "shorthand" && use.kind !== "exported") questions.push(use.id);
+  // The first use of a name settles it almost always (it resolves to the
+  // import, which names a value), and the decision skips every later use of
+  // a settled name. A later use of a name its first use left open (a local
+  // that shadows the import, a const enum member tsc inlines) is asked when
+  // the decision reaches it.
+  const asked = new Set<string>();
+  for (const use of uses) {
+    if (use.kind === "shorthand" || use.kind === "exported" || asked.has(use.id.text)) continue;
+    asked.add(use.id.text);
+    questions.push(use.id);
+  }
   // Whether a type-only import or export stands between a binding and what
   // it names is read through the module each declaration names
   // (reachedThroughTypeOnly). The module specifiers are not identifiers, so

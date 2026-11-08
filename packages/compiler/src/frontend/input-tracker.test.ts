@@ -942,6 +942,29 @@ test("two reads of a file that saw different content prevent cache publication",
   expect(tracker.snapshot().stable).toBe(false);
 });
 
+test("a change between two reads of an unsettled file prevents cache publication", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
+  scratch.push(dir);
+  const source = join(dir, "entry.ts");
+  await writeFile(source, "export const answer = 1;\n");
+  const tracker = new FrontendInputTracker();
+  // The clock stands a minute before the file's write, so no read below finds
+  // the file settled, however long the machine takes between the steps.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() - 60_000);
+  try {
+    expect(tracker.run(() => trackedReadFile(source))).toBe("export const answer = 1;\n");
+    fs.writeFileSync(source, "export const answer = 2;\n");
+    // The first read recorded no identity, so this one asks the disk without
+    // the write being declared.
+    expect(tracker.run(() => trackedReadFile(source))).toBe("export const answer = 2;\n");
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(tracker.snapshot().stable).toBe(false);
+  expect(tracker.snapshot().probes.filter((probe) => probe.op === "file")).toHaveLength(1);
+});
+
 test("a repeated probe is served from this compile's first answer", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-inputs-"));
   scratch.push(dir);

@@ -5801,6 +5801,28 @@ ScrDyn *scr_dyn_typed_ref_string_view(const ScrDyn *d) {
     return out;
   }
   ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  /* The view of a class instance holds its fields, not its class's methods:
+   * a toString the class declares is compiled for the class's own calls,
+   * which the runtime cannot make. Node runs that method, so answering
+   * "[object Object]" from the view would be a wrong value: the conversion
+   * is refused by name. (A class with prototype data answers no to the
+   * class test, and its view reaches the method.) */
+  if (view->kind == SCR_DYN_OBJ && !scr_dyn_property_owner(view, "toString", 8)) {
+    ScrStr *to_string_key = scr_str_new("toString", 8);
+    bool declared = scr_dyn_typed_ref_class_has(d, to_string_key);
+    scr_str_release(to_string_key);
+    if (declared) {
+      static const char message[] = "String conversion of a class instance whose class defines toString has "
+                                    "no lowering where the value is untyped; convert the instance where its "
+                                    "class is known";
+      scr_dyn_release(view);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *out = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return out;
+    }
+  }
   const char *tag = scr_event_ref_hooks ? scr_event_ref_hooks->string_tag(d) : NULL;
   if (!tag || view->kind != SCR_DYN_OBJ || scr_dyn_property_owner(view, "toString", 8)) return view;
   scr_dyn_release(view);
@@ -13293,6 +13315,10 @@ ScrStr *scr_dyn_string_coerce_js(const ScrDyn *d) {
     }
     if (scr_exc_pending()) return NULL;
     ScrDyn *materialized = scr_dyn_typed_ref_string_view(d);
+    if (scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return NULL;
+    }
     ScrStr *out = scr_dyn_string_coerce_js(materialized);
     scr_dyn_release(materialized);
     return out;
@@ -20677,6 +20703,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
 #endif
+    /* An island object: Node answers, by its own intrinsic. */
+    if (scr_ni_dyn_handle(v)) {
+      ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+      int found = scr_ni_dyn_ops->has_own((ScrDyn *)v, k, 0);
+      scr_dyn_release(k);
+      return found == 1;
+    }
     const char *m = "Own-property checks on this checked-dynamic kind are not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC1090");
     return false;
@@ -20713,6 +20746,15 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
   if (value->kind == SCR_DYN_BYTES)
     return (!value->v.bytes->is_data_view && scr_dyn_canonical_own_index(key, value->v.bytes->len)) ||
       (value->v.bytes->properties && scr_dyn_obj_enumerable(value->v.bytes->properties, key->data, key->len));
+  /* An island object: Node answers, by its own intrinsic. The test stands
+   * last, behind every native kind, so that the paths above compile as
+   * they did. */
+  if (scr_ni_dyn_handle(value)) {
+    ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+    int found = scr_ni_dyn_ops->has_own((ScrDyn *)value, k, 1);
+    scr_dyn_release(k);
+    return found == 1;
+  }
   return false;
 }
 ScrDyn *scr_dyn_obj_values(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWALK_VALUES); }
@@ -21845,6 +21887,37 @@ static void scr_weak_map_release(void *ptr) {
   scr_cyc_free(map);
 }
 
+/* ── promises as weak keys ────────────────────────────────────────────
+ * A promise is keyed by its identity cell (ScrPromiseHead), not by its
+ * address: a typed promise enters the checked-dynamic tier as a fresh adapter
+ * promise each time it is boxed, and the adapters and their source share
+ * one cell, as they do for `===` and for Set and Map keys.
+ *
+ * Every cell that is a key is held once, so its address names that
+ * identity for as long as an entry has it. The holds are the entries of a
+ * collection of this unit's own (scr_weak_promise_cells), which no program
+ * sees: its keys are the cells in use. Nothing reports the end of a cell (it
+ * is plain memory, and the promise unit calls nothing here), so a cell whose
+ * promises are gone is found by its count: the hold is the only one left.
+ * The sweep runs when the number of held cells has doubled since the last
+ * one; it ends the entries of the dead cells and gives up the holds of cells
+ * no collection keys any more. */
+/* Above every other kind: a handle's kind is 4 plus its tag, and a tag can
+ * be any small number. */
+#define SCR_WEAK_PROMISE_KIND 0x10000u
+static SCR_TL ScrWeakMap *scr_weak_promise_cells;
+static SCR_TL size_t scr_weak_promise_held, scr_weak_promise_sweep_at;
+
+static void *scr_weak_promise_cell(ScrPromise *promise) {
+  ScrPromiseHead *head = (ScrPromiseHead *)promise;
+  if (!head->identity) {
+    head->identity = malloc(sizeof *head->identity);
+    if (!head->identity) scr_json_oom();
+    head->identity->rc = 1;
+  }
+  return head->identity;
+}
+
 /* Return 1 for an observed identity, 0 for a primitive, and -1 for a
  * reference whose native lifetime has no observer contract yet. */
 static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
@@ -21879,7 +21952,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     if (!key->v.typed_ref.observed) return -1;
     *ptr = key->v.typed_ref.ptr; *kind = 32; return 1;
   case SCR_DYN_PROMISE:
-    *ptr = key->v.promise; *kind = 33; return 1;
+    *ptr = scr_weak_promise_cell(key->v.promise); *kind = SCR_WEAK_PROMISE_KIND; return 1;
 
   default: return 0;
   }
@@ -21906,6 +21979,54 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * Without the island units a symbol is no weak key yet (scr_weak_key). */
 static bool scr_weak_island_key(const ScrDyn *key) {
   return scr_ni_dyn_handle(key) || (key->kind == SCR_DYN_SYMBOL && scr_ni_dyn_ops != NULL);
+}
+
+static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value);
+
+/* Gives up the holds of the cells that no promise has any more (their
+ * entries end with them) and of the cells that no collection keys any more
+ * (see "promises as weak keys"). The cells are found first: ending an entry
+ * releases its value, which can free other keys and change the tables. */
+static void scr_weak_promise_sweep(void) {
+  size_t gone_len = 0, gone_cap = 0;
+  ScrPromiseIdentity **gone = NULL;
+  for (ScrWeakEntry *held = scr_weak_promise_cells->entries; held; held = held->next) {
+    ScrPromiseIdentity *identity = held->key;
+    bool keyed = held->key_next != NULL || held->key_prev != NULL;
+    if (keyed && identity->rc > 1) continue;
+    if (gone_len == gone_cap) {
+      gone_cap = gone_cap ? gone_cap * 2 : 16;
+      gone = realloc(gone, gone_cap * sizeof *gone);
+      if (!gone) scr_json_oom();
+    }
+    gone[gone_len++] = identity;
+  }
+  for (size_t i = 0; i < gone_len; i++) {
+    scr_weak_disposed(gone[i]);
+    scr_weak_promise_held--;
+    if (--gone[i]->rc == 0) free(gone[i]);
+  }
+  free(gone);
+}
+
+/* Holds the cell of a promise key that just got its first entry. */
+static void scr_weak_promise_hold(ScrDyn *key, ScrPromiseIdentity *identity) {
+  if (!scr_weak_promise_cells) {
+    static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
+    scr_weak_promise_cells = scr_cyc_alloc(sizeof *scr_weak_promise_cells, &cyc_type);
+    if (!scr_weak_promise_cells) scr_json_oom();
+    scr_weak_promise_cells->rc = 1;
+    scr_weak_promise_cells->is_set = true;
+  }
+  if (scr_weak_find(scr_weak_promise_cells, identity, SCR_WEAK_PROMISE_KIND)) return;
+  if (!scr_weak_set(scr_weak_promise_cells, key, scr_dyn_undefined())) return;
+  identity->rc++;
+  if (++scr_weak_promise_held > (scr_weak_promise_sweep_at ? scr_weak_promise_sweep_at : 64)) {
+    /* The key in hand is alive (its box holds a promise of the cell) and has
+     * the entry being made, so the sweep leaves it. */
+    scr_weak_promise_sweep();
+    scr_weak_promise_sweep_at = scr_weak_promise_held * 2 + 64;
+  }
 }
 
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
@@ -21940,6 +22061,7 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   if (map->entries) map->entries->prev = entry;
   map->entries = entry;
   scr_weak_link(entry);
+  if (kind == SCR_WEAK_PROMISE_KIND && map != scr_weak_promise_cells) scr_weak_promise_hold(key, ptr);
   return true;
 }
 

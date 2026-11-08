@@ -42,7 +42,9 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  DYN,
   DYN_HANDLE_KINDS,
+  ISLAND_ADOPTED_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
@@ -230,6 +232,9 @@ export interface DynHost extends WalkerHost {
   readonly programLifetime?: ReadonlySet<string>;
   /** The immortal ABSENT field-slot state of an undefined-armed union. */
   absentInstanceRef(unionId: string): string;
+  /** The emitted code can queue work for the event loop: the program runs
+   * it before it ends (LlEmitter.usesTimers). */
+  keepLoopLive(): void;
   /** The optional checked-dynamic field slot's ABSENT marker. */
   dynAbsentRef(): string;
   /** The shared adapter record: live array capsules read its `arrayOps`, so a
@@ -246,7 +251,8 @@ export interface DynHost extends WalkerHost {
   declBoundary?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
-   * conversion reads them there. */
+   * conversion reads them there; a kind in ISLAND_ADOPTED_KINDS converts
+   * through its island-aware functions. */
   nodeIslands?(): boolean;
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
@@ -273,6 +279,9 @@ export interface DynHost extends WalkerHost {
   /** The module's mutable globals are per thread (a Worker program or a
    * thread-instanced library), so the state a helper keeps is too. */
   threadLocalState?: boolean;
+  /** emitter.ts's pendingBailReleaseLines: what a bail releases of the
+   * call its pending test follows. */
+  pendingBailReleaseLines(type: IrType, value: string): string[];
 }
 
 /** A closure with a jsval body (IrFunction.jsEntry), for the box builders. */
@@ -1382,20 +1391,34 @@ export class LlDyn {
     B.startBlock(deep);
     const built = B.tmp();
     B.line(`${built} = call ptr @${this.dynCheckHelper(arm)}(ptr %d, ptr %path)`);
-    this.pendingBail(B, "dcu.deep", () => {}, "ptr null");
+    this.pendingBail(B, "dcu.deep", () => {}, "ptr null", arm, built);
     const rc = vAdapters(host, arm);
     B.line(`call void ${rc.release}(ptr ${built})`);
     B.br(outer);
     B.startBlock(outer);
   }
 
-  private pendingBail(B: BlockBuilder, hint: string, cleanup: () => void, dummy: string): void {
+  /** Tests the pending flag after a call and, when it is set, runs `cleanup`
+   * and returns `dummy`. `made`, of type `madeType`, is the value that call
+   * returned, when nothing else owns it yet: the bail releases it where the
+   * flag can be set although the call succeeded (pendingBailReleaseLines). */
+  private pendingBail(
+    B: BlockBuilder,
+    hint: string,
+    cleanup: () => void,
+    dummy: string,
+    madeType?: IrType,
+    made?: string,
+  ): void {
     const p = B.tmp();
     for (const line of this.host.pendingTestLines(p)) B.line(line.trimStart());
     const lu = B.newLabel(`${hint}.u`);
     const lk = B.newLabel(`${hint}.k`);
     B.condBr(p, lu, lk);
     B.startBlock(lu);
+    if (madeType !== undefined && made !== undefined)
+      for (const line of this.host.pendingBailReleaseLines(madeType, made))
+        B.line(line.trimStart());
     cleanup();
     B.terminate(`ret ${dummy}`);
     B.startBlock(lk);
@@ -1951,6 +1974,15 @@ export class LlDyn {
             undefined,
             `a checked-dynamic value tested against type ${typeKey(t)}`,
           );
+        const adopted = this.islandConversion(t);
+        if (adopted) {
+          // An island's own instance matches too: its runtime unit answers.
+          const matched = B.tmp();
+          this.host.declare(`declare zeroext i1 @${adopted.is}(ptr)`);
+          B.line(`${matched} = call zeroext i1 @${adopted.is}(ptr %d)`);
+          B.terminate(`ret i1 ${matched}`);
+          break;
+        }
         const kd = this.kindOf(B, "%d");
         const isHandle = B.tmp();
         B.line(`${isHandle} = icmp eq i32 ${kd}, ${DYN_KIND.HANDLE}`);
@@ -2465,6 +2497,8 @@ export class LlDyn {
           B.line(`call void @scr_arr_release(ptr ${a})`);
         },
         "ptr null",
+        elem,
+        v,
       );
       const pushed = B.tmp();
       B.line(`${pushed} = call double @scr_arr_push_${acc}(ptr ${a}, ${accTy} ${v})`);
@@ -3285,6 +3319,8 @@ export class LlDyn {
                   this.releaseIslandSource(B, src, srcOwned);
                 },
                 "ptr null",
+                iv,
+                ev,
               );
             }
             const ek = B.tmp();
@@ -3395,6 +3431,8 @@ export class LlDyn {
               this.releaseIslandSource(B, source, owned);
             },
             "ptr null",
+            elem,
+            v,
           );
           const pushed = B.tmp();
           B.line(`${pushed} = call double @scr_arr_push_${acc}(ptr ${a}, ${accTy} ${v})`);
@@ -3706,7 +3744,7 @@ export class LlDyn {
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
           const r = B.tmp();
-          const unbox = DYN_HANDLE_UNBOX_FN[t.kind];
+          const unbox = this.islandConversion(t)?.unbox ?? DYN_HANDLE_UNBOX_FN[t.kind];
           if (unbox) {
             host.declare(`declare ptr @${unbox}(ptr, ptr, ptr)`);
             B.line(`${r} = call ptr @${unbox}(ptr %d, ptr %path, ptr ${want})`);
@@ -3731,6 +3769,14 @@ export class LlDyn {
     if (recursive || memo) this.emitVisitWrapper(name, t, recursive ? "build" : "memo");
     this.host.journalBuilt?.();
     return name;
+  }
+
+  /** The island-aware conversion functions of a kind whose instances made by
+   * a Node island a native slot holds (ISLAND_ADOPTED_KINDS), in a program
+   * that has islands; undefined for every other kind and program. */
+  private islandConversion(t: IrType): { unbox: string; box: string; is: string } | undefined {
+    const adoption = ISLAND_ADOPTED_KINDS.get(t.kind);
+    return adoption?.at === "conversion" && this.host.nodeIslands?.() ? adoption : undefined;
   }
 
   /** `i1`: %d is a handle box with tag `tag`. */
@@ -4013,6 +4059,10 @@ export class LlDyn {
         break;
       }
       case "procStream": {
+        // The stream object queues its write callbacks and write errors on
+        // a tick, so a program that holds it runs the loop, as one that
+        // reaches it through process.stdio does (USES_TIMERS_LIB_FNS).
+        host.keepLoopLive();
         host.declare(`declare ptr @scr_process_stdio(double)`);
         const r = B.tmp();
         B.line(`${r} = call ptr @scr_process_stdio(double %v)`);
@@ -4594,7 +4644,7 @@ export class LlDyn {
         // tag's installed ops.
         const h = DYN_HANDLE_KINDS.get(t.kind);
         if (h) {
-          const box = DYN_HANDLE_BOX_FN[t.kind];
+          const box = this.islandConversion(t)?.box ?? DYN_HANDLE_BOX_FN[t.kind];
           const r = B.tmp();
           if (box) {
             host.declare(`declare ptr @${box}(ptr)`);
@@ -6047,6 +6097,8 @@ export class LlDyn {
             });
           },
           "ptr null",
+          p,
+          a,
         );
         argNames.push(a);
         return;
@@ -6101,6 +6153,8 @@ export class LlDyn {
             });
           },
           "ptr null",
+          p,
+          a,
         );
         // Declaration-typed boundary programs: an argument package code
         // passes keeps its identity (scr_dyn_decl_adopt).
@@ -6148,12 +6202,12 @@ export class LlDyn {
     } else if (t.ret.kind === "dyn") {
       const r = B.tmp();
       B.line(`${r} = call ptr ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
       B.terminate(`ret ptr ${r}`);
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
       // A record or array result crosses the way `dynFrom liveRef` boxes
       // one — a LIVE capsule of the closure's own object — so the caller's
       // `() => shared` through an untyped slot still answers `shared`
@@ -6228,7 +6282,7 @@ export class LlDyn {
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
-      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r);
       if (ret.kind === "jsval") {
         B.terminate(`ret ptr ${r}`);
       } else if (ret.kind === "f64") {
@@ -6901,7 +6955,7 @@ export class LlDyn {
       );
     B.line(`call void @scr_dyn_release(ptr ${fnv})`);
     for (const v of argVals) B.line(`call void @scr_dyn_release(ptr ${v})`);
-    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy);
+    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r);
     if (t.ret.kind === "void") {
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret void`);

@@ -121,6 +121,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   const ok = B.newLabel("sra.ok");
   B.condBr(pending, fail, ok);
   B.startBlock(fail);
+  for (const line of host.pendingBailReleaseLines(inner, value)) B.line(line.trimStart());
   B.line(`call void @scr_promise_reject_pending(ptr %dst)`);
   B.terminate(`ret void`);
   B.startBlock(ok);
@@ -1496,6 +1497,7 @@ function liveArrayOps(
   const failed = S.newLabel("live.array.failed");
   S.condBr(pending, failed, write);
   S.startBlock(failed);
+  for (const line of host.pendingBailReleaseLines(elem, next)) S.line(line.trimStart());
   S.terminate(`ret i1 true`);
   S.startBlock(write);
   host.declare(
@@ -1673,7 +1675,16 @@ function liveRecordSet(
     for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
     const write = S.newLabel("live.record.write");
     const done = S.newLabel("live.record.done");
-    S.condBr(pending, done, write);
+    const dropped = host.pendingBailReleaseLines(field.type, next);
+    if (dropped.length === 0) {
+      S.condBr(pending, done, write);
+    } else {
+      const stopped = S.newLabel("live.record.stopped");
+      S.condBr(pending, stopped, write);
+      S.startBlock(stopped);
+      for (const line of dropped) S.line(line.trimStart());
+      S.br(done);
+    }
     S.startBlock(write);
     const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
     const fieldPtr = S.tmp();

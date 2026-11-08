@@ -26,6 +26,8 @@ Replacing a console member, such as `console.log = capture`, is refused in TypeS
 Members of custom `Console` instances as values are unsupported.
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
+The replacement can be assigned through a stored stream as well, such as `out.write = wrapper` where `out` is a `NodeJS.WriteStream` parameter holding `process.stdout`.
+`write` is the one member a process stream keeps: an assignment to another member, such as `process.stdout.isTTY = true`, compiles and throws an `SC2020` error when the statement runs, where Node stores the value.
 A program that holds `process.stdout` or `process.stderr` as a value shares the stream's `write` method with its Node islands: a replacement installed by either side sees the output of both, and either side can call or restore the method the other saved.
 In the islands of such a program `write` is an own accessor property of the two streams, so `Object.hasOwn(process.stdout, "write")` is `true` before any replacement.
 There, `Object.defineProperty(process.stdout, "write", …)` throws a `TypeError`, and `delete process.stdout.write` throws one in strict code and answers `false` otherwise, where Node would replace or remove the method.

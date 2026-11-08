@@ -525,6 +525,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     tracked: "FOLLOWUPS 2026-11-07 (holed-array-generics)",
     lowererFields: [],
   },
+  {
+    name: "imports-node-api",
+    file: `${SRC}/frontend/node-api-import.ts`,
+    symbol: "programImportsNodeApi",
+    source: "syntax",
+    scope: "program",
+    setBy: "an import of `@scriptc/node` in any source file of the program",
+    gates:
+      "clearTimeout, clearInterval and clearImmediate of a checked-dynamic handle also ask the Node island unit to clear an island's timer, and take such a handle in TypeScript",
+    narrower:
+      "the handle, at run time: a requireModule result and everything reached from it is untyped, so no site knows whether its value came from an island",
+    tracked: "pi-decisions DECISIONS island-timers-iteration 2026-11-07",
+    lowererFields: ["importsNodeApi"],
+  },
 ];
 
 /** Why a whole-program scan decides no registered fact.
@@ -677,6 +691,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "whether one enum is ever used as a value; the text test skips files that spell none of its names",
   ),
   scan(
+    "frontend/lowering/fetch-dispatcher.ts#programHasUndiciPackage",
+    1,
+    "closed-world",
+    "whether the program contains the built-in undici package; only global fetch calls whose init can carry a dispatcher change",
+  ),
+  scan(
     "frontend/lowering/empty-array-places.ts#Search",
     2,
     "inference",
@@ -687,6 +707,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     2,
     "closed-world",
     "the names the program assigns on the global object; only reads of those names change",
+  ),
+  scan(
+    "frontend/lowering/global-object-writes.ts#globalObjectWrites",
+    2,
+    "closed-world",
+    "every write of the global object by any spelling; only calls and reads of a built-in through the global object change",
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
@@ -769,6 +795,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the declarations that carry a configured binding's name",
   ),
+  scan(
+    "frontend/lowering/open-enumerations.ts#analyzeOpenEnumerations",
+    2,
+    "prefilter",
+    "an enumeration of an open spread value spells `...` and `Object.entries` or `Object.values`; the result types the bindings that take its values",
+  ),
   decides(
     "frontend/lowering/partial-assertions.ts#partialTargetOf",
     1,
@@ -793,6 +825,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "key",
     "a digest of the files a reused unit does not own",
   ),
+  decides("frontend/node-api-import.ts#programImportsNodeApi", 1, "imports-node-api"),
   scan(
     "frontend/pipeline.ts#addDynamicImportGraph",
     1,

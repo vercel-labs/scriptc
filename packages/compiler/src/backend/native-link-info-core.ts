@@ -85,6 +85,10 @@ export interface NativeLinkFeatures {
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`:
+   * links the SCR_FS_STREAM_SIGNAL build of the fs stream unit, and the
+   * event-target unit its abort listener comes from. */
+  fsStreamSignal?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -128,6 +132,10 @@ export interface NativeLinkFeatures {
   /** process.features read as a value links scr_process_features.c (the
    * stable flags object); absent (false) otherwise. */
   processFeatures?: boolean;
+  /** A program with both Node islands and child_process links
+   * scr_node_island_child.c (a child process an island made, in a native
+   * ChildProcess slot); absent (false) otherwise. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */

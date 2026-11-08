@@ -3507,6 +3507,21 @@ static ScrStr *scr_insp_search_params(ScrSearchParams *sp, double recurse, doubl
   return ib_take(&indented);
 }
 
+/* Whether the program gave runtime handle `d` properties of its own (the
+ * handle-property tables, linked by programs that add any): a string-keyed
+ * or symbol-keyed entry util.inspect would list after the value. */
+static bool insp_handle_has_own(const ScrDyn *d) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrDyn *table = scr_dyn_handle_props_hooks ? scr_dyn_handle_props_hooks->table(d) : NULL;
+  if (table == NULL) return false;
+  return scr_dyn_obj_count(table) > 0 || table->symbol_properties != NULL;
+#else
+  /* Only the JavaScript object model build gives a handle such a table. */
+  (void)d;
+  return false;
+#endif
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   if ((d->kind == SCR_DYN_TYPED_REF ? g_ncustom_classes > 0 : scr_dyn_inspect_custom_symbol() != NULL) &&
@@ -3756,6 +3771,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE)
         return insp_styled(scr_insp_date(scr_dyn_native_date_value(d)), INSP_DATE);
+      /* A RegExp prints its pattern and flags at any depth. showHidden adds
+       * `[lastIndex]`, and a RegExp the program gave properties of its own
+       * prints them after the pattern (`/a/ { extra: 1 }`): neither has a
+       * rendering here, and both keep the refusal below. */
+      if (d->v.handle.tag == SCR_DYNH_REGEXP && !g_show_hidden && !insp_handle_has_own(d))
+        return scr_insp_regex(d->v.handle.ptr);
       if (d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS)
         return scr_insp_search_params(d->v.handle.ptr, recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
@@ -4108,18 +4129,39 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
  * class instance whose class defines toString as -2: its methods are
  * compiled for the class's own calls, which this runtime cannot make. */
 static int insp_fmt_custom_to_string(const ScrDyn *value) {
+  ScrDyn *view = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrStr *to_string = scr_str_new("toString", 8);
     bool has = scr_dyn_typed_ref_class_has(value, to_string);
     scr_str_release(to_string);
-    return has ? -2 : 0;
+    if (has) return -2;
+    /* A record that typed code built can hold a toString function of its
+     * own, and answers from the object it shows untyped code. A class
+     * instance is left alone: its view is not asked for here, since
+     * building it can throw (fields with no checked form) where the
+     * instance's own inspector would have answered. */
+    if (!value->v.typed_ref.record) return 0;
+    view = scr_dyn_typed_ref_materialize(value);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return 0;
+    }
+    value = view;
   }
+  int custom = 0;
   for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) return -1;
+    if (current->symbol_properties) {
+      custom = -1;
+      break;
+    }
     const ScrDyn *member = scr_dyn_obj_get(current, "toString", 8);
-    if (member) return member->kind == SCR_DYN_FUNC;
+    if (member) {
+      custom = member->kind == SCR_DYN_FUNC;
+      break;
+    }
   }
-  return 0;
+  scr_dyn_release(view);
+  return custom;
 }
 
 static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
@@ -4135,6 +4177,7 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if ((value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) == NULL) ||
       value->kind == SCR_DYN_TYPED_REF) {
     int custom = insp_fmt_custom_to_string(value);
+    if (scr_exc_pending()) return NULL;
     if (custom == -2) {
       insp_fmt_fence(o, "%s of a class instance whose class defines toString has no lowering");
       return NULL;

@@ -19,6 +19,11 @@ import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
+import {
+  lowerIntlFormatterCall,
+  lowerIntlFormatterMethodCall,
+  lowerNumberToLocaleString,
+} from "./builtins/intl-formatters.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -53,6 +58,7 @@ import {
 } from "./lower-timers.js";
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
+import { lowerOpenEnumeration } from "./open-enumerations.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   isFsStreamMember,
@@ -134,6 +140,7 @@ import {
   STRING_INDEX_METHODS,
   STR_METHODS,
   UTIL_TYPES_KEYS,
+  globalObjectMemberName,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { dynStringReceiver } from "./containers/dynamic-receivers.js";
@@ -164,6 +171,8 @@ import {
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
 import { tryFuseIndexRead } from "./array-values.js";
 import { builtinGlobalValue, isPrimitivePrototypeRead } from "./expressions/property-access.js";
+import { globalObjectWrites } from "./global-object-writes.js";
+import { staticallySelected } from "./static-typeof.js";
 import {
   lowerBufferConstruct,
   lowerBytesPrototypeSetCall,
@@ -187,6 +196,7 @@ import {
   lowerChildWriterMethodCall,
 } from "./builtins/child-process-methods.js";
 import {
+  fenceHeldLoaderMember,
   isDirectOnlyResolveCallee,
   lowerCreateRequireCall,
   lowerImportMetaResolveCall,
@@ -366,6 +376,7 @@ import {
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
+import { lowerFetchDispatcherHook } from "./fetch-dispatcher.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -500,6 +511,53 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
   const callee = lowerer.fieldGetExpr(target, locOf(access), access);
   if (callee.type.kind !== "func") return null;
   return lowerCallThroughValue(lowerer, call, callee, locOf(call));
+}
+
+/** The identifier that names the built-in global a call calls: the bare
+ * identifier (`fetch(…)`), or the member name of a direct read of the
+ * global object (`globalThis.fetch(…)`, `global.fetch(…)`:
+ * globalObjectMemberName), which calls the same function. */
+export function builtinCalleeName(
+  lowerer: Lowerer,
+  call: ts.CallExpression | ts.NewExpression,
+): ts.Identifier | null {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return callee;
+  if (ts.isCallExpression(call) && call.questionDotToken) return null;
+  return globalObjectMemberName(lowerer, callee);
+}
+
+/** A call or construction that compiles because its callee is a built-in
+ * named through the global object (`named` is that member's name, not the
+ * callee itself). A program that writes that member (`globalThis.fetch =
+ * mine`, `global.fetch = mine`, `Object.defineProperty(globalThis,
+ * "fetch", …)`) means its own function there, and a compiled program has
+ * only the built-in to call, so the call is refused by name. The writes
+ * are the census of global-object-writes.ts: every spelling, in every
+ * source. The spellings main compiled before this rule (the timers, and
+ * the constructors and conversions that go by the receiver) do not ask:
+ * they are as they were. */
+export function refuseWrittenBuiltin(
+  lowerer: Lowerer,
+  call: ts.CallExpression | ts.NewExpression,
+  named: ts.Identifier,
+): void {
+  const callee = call.expression;
+  if (named === callee || !ts.isPropertyAccessExpression(callee)) return;
+  const written = globalObjectWrites(
+    lowerer,
+    lowerer.typeOf(staticallySelected(lowerer, callee.expression)),
+  );
+  if (!written.names.has(named.text) && !written.computed) return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    `${ts.isCallExpression(call) ? "calling" : "constructing"} the built-in '${named.text}' through the global object in a program that writes ${
+      written.names.has(named.text)
+        ? `'${named.text}' on the global object`
+        : "a member of the global object by a name it computes"
+    } (it would reach the built-in, not the written value)`,
+  );
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -760,6 +818,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const crServed = lowerCreateRequireCall(lowerer, expr, loc);
     if (crServed) return crServed;
   }
+  // `held.load.resolve(request)`: a member of a held loader, called.
+  if (ts.isPropertyAccessExpression(expr.expression))
+    fenceHeldLoaderMember(lowerer, expr.expression);
 
   {
     const resolved =
@@ -947,14 +1008,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const consoleInstanceCall = lowerConsoleInstanceCall(lowerer, expr, loc);
   if (consoleInstanceCall) return consoleInstanceCall;
 
-  if (
-    ts.isPropertyAccessExpression(expr.expression) &&
-    TIMER_MODULE_MEMBERS.has(expr.expression.name.text) &&
-    lowerer.stdlibGlobalMember(expr.expression, "globalThis") === expr.expression.name.text
-  ) {
-    const served = lowerTimersMemberCall(lowerer, expr, expr.expression.name.text, loc);
-    if (served) return served;
-  }
+  // The built-in global this call names, bare or through the global
+  // object (`globalThis.setTimeout(…)`): one identifier for every
+  // recognizer below that goes by name and provenance.
+  const named = builtinCalleeName(lowerer, expr);
 
   // The timer globals — setTimeout/clearTimeout, setInterval/
   // clearInterval, setImmediate/clearImmediate. Provenance-checked (a
@@ -962,15 +1019,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // symbol); the shared member dispatch also serves the node:timers
   // module forms (Node's timers module re-exports the globals).
   if (
-    ts.isIdentifier(expr.expression) &&
-    TIMER_MODULE_MEMBERS.has(expr.expression.text) &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined) &&
+    named !== null &&
+    TIMER_MODULE_MEMBERS.has(named.text) &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined) &&
     // A named/destructured node:timers/promises import shares the
     // spelling but is the PROMISIFIED surface (`await setTimeout(1)`)
     // — its own builtin-module lowering owns it below.
-    lowerer.builtinImportOf(expr.expression)?.module !== "timers/promises"
+    lowerer.builtinImportOf(named)?.module !== "timers/promises"
   ) {
-    const served = lowerTimersMemberCall(lowerer, expr, expr.expression.text, loc);
+    const served = lowerTimersMemberCall(lowerer, expr, named.text, loc);
     if (served) return served;
   }
 
@@ -983,10 +1040,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // nowhere — a documented residue: Node evaluates them). Provenance-
   // checked like setTimeout.
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "queueMicrotask" &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+    named !== null &&
+    named.text === "queueMicrotask" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
+    refuseWrittenBuiltin(lowerer, expr, named);
     if (expr.arguments.nodes.length === 0) {
       // Node: queueMicrotask() throws ERR_INVALID_ARG_TYPE at runtime
       // (the undefined callback) — the Dyn form delivers exactly that.
@@ -1034,10 +1092,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // Node's exact errors; the zero-argument call Node's
   // ERR_MISSING_ARGS. Provenance-checked like setTimeout.
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "structuredClone" &&
-    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+    named !== null &&
+    named.text === "structuredClone" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
   ) {
+    refuseWrittenBuiltin(lowerer, expr, named);
     if (expr.arguments.nodes.length === 0) {
       return { kind: "libCall", fn: "dyn.cloneMissing", args: [], type: DYN, loc };
     }
@@ -1317,15 +1376,16 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // typecheck — options objects, omitted encodings, Buffer data — so the
   // supported form is fenced here per site. Members with no lowering at
   // all (fs.watch, os.cpus, ...) fence with the module-qualified name.
-  if (ts.isIdentifier(expr.expression)) {
-    if (expr.expression.text === "Array" && lowerer.isStdlibGlobal(expr.expression, "Array")) {
+  if (named !== null) {
+    refuseWrittenBuiltin(lowerer, expr, named);
+    if (named.text === "Array" && lowerer.isStdlibGlobal(named, "Array")) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments.nodes);
     }
     // A call through a compile-time util.promisify projection. execFile
     // keeps its custom result helper; ordinary builtins route through
     // their existing promise-module lowering.
     {
-      const sym = lowerer.resolveValueSymbol(expr.expression);
+      const sym = lowerer.resolveValueSymbol(named);
       const projection = sym ? lowerer.staticCallables.get(sym) : undefined;
       if (projection?.kind === "promisified-exec-file") {
         return lowerer.lowerExecFileAsyncCall(expr, loc);
@@ -1374,7 +1434,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const rf = sym ? httpClientFnBindingOf(lowerer, sym) : undefined;
       if (rf) return lowerHttpClientFnCall(lowerer, expr, rf, loc);
     }
-    if (threadsImportOf(lowerer.program, expr.expression) === "publish") {
+    if (threadsImportOf(lowerer.program, named) === "publish") {
       // @scriptc/threads publish(value): the same value, its graph made
       // immortal and immutable (backend/llvm/publish.ts).
       if (expr.arguments.nodes.length !== 1 || ts.isSpreadElement(expr.arguments.nodes[0]!))
@@ -1382,18 +1442,18 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const value = lowerer.lowerExpr(expr.arguments.nodes[0]!);
       return { kind: "intrinsic", name: "threads.publish", args: [value], type: value.type, loc };
     }
-    const bi = lowerer.builtinImportOf(expr.expression);
+    const bi = lowerer.builtinImportOf(named);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
     // A call through an alias of an http/https client function whose
     // declaration is another module's (`import { request } from "./net"`).
     {
-      const ref = httpClientFnRefOf(lowerer, expr.expression);
+      const ref = httpClientFnRefOf(lowerer, named);
       if (ref) return lowerHttpClientFnRefCall(lowerer, expr, ref, loc);
     }
     // A constant bound to an assert method (`const ok = assert.ok`) called
     // directly is that assertion, with the message Node quotes the call for.
     {
-      const alias = assertFunctionAliasOf(lowerer, expr.expression);
+      const alias = assertFunctionAliasOf(lowerer, named);
       const served = alias ? lowerer.lowerAssertModuleCall(expr, alias, loc) : null;
       if (served) return served;
     }
@@ -1420,8 +1480,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // `new Symbol()` throws in Node and is a checker error — the
     // generic new fence keeps it.
     if (
-      expr.expression.text === "Symbol" &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      named.text === "Symbol" &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
       if (expr.arguments.nodes.length > 1) {
         lowerer.noLowering(`Symbol with ${expr.arguments.nodes.length} arguments`, expr);
@@ -1455,19 +1515,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // ToNumber to any argument, then test like Number.isNaN /
     // Number.isFinite.
     if (
-      (expr.expression.text === "parseInt" ||
-        expr.expression.text === "isNaN" ||
-        expr.expression.text === "parseFloat" ||
-        expr.expression.text === "isFinite") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "parseInt" ||
+        named.text === "isNaN" ||
+        named.text === "parseFloat" ||
+        named.text === "isFinite") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      const parsed = lowerStaticNumberGlobal(
-        lowerer,
-        expr.expression.text,
-        expr,
-        expr.arguments.nodes,
-        loc,
-      );
+      const parsed = lowerStaticNumberGlobal(lowerer, named.text, expr, expr.arguments.nodes, loc);
       if (parsed !== null) return parsed;
     }
     // STATIC encodeURIComponent/encodeURI/decodeURIComponent
@@ -1481,13 +1535,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // THROWS the spec's URIError ("URI malformed") catchably and keeps
     // the string-only argument rule.
     if (
-      (expr.expression.text === "encodeURIComponent" ||
-        expr.expression.text === "encodeURI" ||
-        expr.expression.text === "decodeURI" ||
-        expr.expression.text === "decodeURIComponent") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "encodeURIComponent" ||
+        named.text === "encodeURI" ||
+        named.text === "decodeURI" ||
+        named.text === "decodeURIComponent") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      const name = expr.expression.text;
+      const name = named.text;
       if (expr.arguments.nodes.length !== 1) {
         lowerer.noLowering(
           `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
@@ -1526,18 +1580,18 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // Provenance like parseInt: a shadowing user function has a
     // different, non-stdlib symbol.
     if (
-      (expr.expression.text === "atob" || expr.expression.text === "btoa") &&
-      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression) ?? undefined)
+      (named.text === "atob" || named.text === "btoa") &&
+      lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(named) ?? undefined)
     ) {
-      return lowerBase64Call(lowerer, expr, expr.expression.text, loc);
+      return lowerBase64Call(lowerer, expr, named.text, loc);
     }
 
     // global function executes — callFn(globalGet(name)) — and the
     // result exits to the declared static type. A user function
     // shadowing the name has a different, non-stdlib symbol.
-    const islFn = lowerer.stdlibGlobalFnOf(expr.expression);
+    const islFn = lowerer.stdlibGlobalFnOf(named);
     if (islFn && expr.arguments.nodes.length !== islFn.args.length) {
-      const name = expr.expression.text;
+      const name = named.text;
       lowerer.noLowering(
         `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
         expr,
@@ -1550,7 +1604,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // reading as if the global itself were unsupported.
       const argText = loweredArgumentText(lowerer, expr.arguments.nodes[0]!);
       lowerer.refuseUnsupportedApi(
-        `'${expr.expression.text}' with a '${argText}' argument`,
+        `'${named.text}' with a '${argText}' argument`,
         expr,
         "only a string argument compiles statically: convert the argument explicitly first (for example String(x), or narrow the union)",
       );
@@ -1875,6 +1929,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerBigIntStaticCall(lowerer, expr, expr.expression) ??
       lowerer.lowerNumberStaticCall(expr, expr.expression) ??
       lowerer.lowerDateCall(expr, expr.expression) ??
+      // Intl.NumberFormat and Intl.DateTimeFormat: the call without `new`,
+      // and `format` on a formatter (a checked-dynamic handle, so before
+      // the dynamic receiver path).
+      lowerIntlFormatterCall(lowerer, expr) ??
+      lowerIntlFormatterMethodCall(lowerer, expr, expr.expression) ??
       lowerer.lowerTextCodecCall(expr, expr.expression) ??
       lowerer.lowerStringStaticCall(expr, expr.expression) ??
       lowerer.lowerStringLastIndexOfCall(expr, expr.expression) ??
@@ -2006,9 +2065,6 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerSymbolStaticCall(lowerer, expr, expr.expression) ??
       lowerSymbolMethodCall(lowerer, expr, expr.expression) ??
       lowerRegExpStaticCall(lowerer, expr, expr.expression) ??
-      // The composed en-US Intl.NumberFormat form — before the member
-      // fences (the receiver's Intl.NumberFormat type has no mapping).
-      lowerIntlNumberFormatCall(lowerer, expr, expr.expression) ??
       lowerGroupByStaticCall(lowerer, expr, expr.expression) ??
       // Iterator-helper chains rooted at arr.values() — before the
       // array method paths (the terminal names collide with array
@@ -6496,8 +6552,8 @@ function lowerPrimitiveProtoCall(
   // Number.prototype.toLocaleString("en-US") — the spec makes it
   // NumberFormat(locale).format(this), so the en-US embedded formatter
   // answers exactly. Without a locale (or with `undefined`) the DEFAULT
-  // locale answers, over the ICU data scr_intl.c loads; other locales and
-  // options bags stay fenced.
+  // locale answers, over the ICU data scr_intl.c loads; with options, the
+  // formatter those options build (lowerNumberToLocaleString).
   if (name === "toLocaleString" && recvKind === "f64") {
     // Exactly undefined (or void): what the absent form means. A union that
     // merely includes undefined may hold a locale at run time and falls
@@ -6543,32 +6599,20 @@ function lowerPrimitiveProtoCall(
       };
       return stmts.length ? { kind: "seqExpr", stmts, result: call_, type: STRING, loc } : call_;
     }
-    if (call.arguments.nodes.length > 1) {
-      lowerer.noLowering(
-        "Number.prototype.toLocaleString with an options bag",
-        call,
-        "what lowers is the DEFAULT options shape (decimal notation, up to 3 fraction digits, " +
-          "grouping) at the default locale or at en-US — omit the options bag",
-      );
-    }
-    const locNode = call.arguments.nodes[0]!;
-    if (
-      ts.isSpreadElement(locNode) ||
-      !ts.isStringLiteralLike(locNode) ||
-      locNode.text !== "en-US"
-    ) {
-      lowerer.noLowering(
-        !ts.isSpreadElement(locNode) && ts.isStringLiteralLike(locNode)
-          ? `Number.prototype.toLocaleString at locale "${locNode.text}"`
-          : "Number.prototype.toLocaleString with a non-literal locale",
-        locNode,
-        "what lowers is the default locale (no argument) and the composed en-US form — " +
-          "other locales are ICU data the binary does not negotiate yet",
-      );
-    }
     const operand = lowerer.lowerExpr(recv);
     if (operand.type.kind !== "f64") return null;
-    return { kind: "libCall", fn: "intl.numFormatEnUs", args: [operand], type: STRING, loc };
+    // The en-US locale with no options: the formatter the runtime embeds.
+    const locNode = call.arguments.nodes[0]!;
+    if (
+      call.arguments.nodes.length === 1 &&
+      !ts.isSpreadElement(locNode) &&
+      ts.isStringLiteralLike(locNode) &&
+      locNode.text === "en-US"
+    )
+      return { kind: "libCall", fn: "intl.numFormatEnUs", args: [operand], type: STRING, loc };
+    // Any other form constructs the Intl.NumberFormat the specification
+    // names, over ICU, for this one call.
+    return lowerNumberToLocaleString(lowerer, call, operand);
   }
   if (
     name === "charAt" &&
@@ -7375,8 +7419,11 @@ export function lowerPromiseMethodCall(
         type: inner,
         loc,
       };
+      // The settled value is read after the guarded await, so the function's
+      // statement list owns it: the try body's scope ends with the try.
+      if (vLocal) vLocal.mutable = true;
       const tryBody: IrStmt[] = vLocal
-        ? [{ kind: "varDecl", localId: vLocal.id, init: awaitE, loc }]
+        ? [{ kind: "assign", localId: vLocal.id, value: awaitE, loc }]
         : [{ kind: "exprStmt", expr: awaitE, loc }];
       const resultOf = (value: IrExpr, promise: Adoption = "never"): IrStmt[] => {
         if (value.type.kind === "promise")
@@ -7453,7 +7500,7 @@ export function lowerPromiseMethodCall(
         ? {
             kind: "dynCall",
             callee: { kind: "varRef", localId: rLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(rejectedNode!) ?? "onRejected",
+            calleeName: jsFuncNameOf(rejectedNode!, undefined, { spelling: true }) ?? "onRejected",
             args: [
               {
                 kind: "caughtToDyn",
@@ -7481,9 +7528,16 @@ export function lowerPromiseMethodCall(
                   loc,
                 },
               ];
-      const body: IrStmt[] = [
-        { kind: "tryCatch", tryBody, catchBody, catchLocalId: eLocal.id, finallyBody: null, loc },
-      ];
+      const body: IrStmt[] = [];
+      if (vLocal) body.push({ kind: "varDecl", localId: vLocal.id, init: null, loc });
+      body.push({
+        kind: "tryCatch",
+        tryBody,
+        catchBody,
+        catchLocalId: eLocal.id,
+        finallyBody: null,
+        loc,
+      });
       // The fulfillment callback sits after the catch so a throw from it
       // rejects the result instead of reaching onRejected.
       if (fLocal) {
@@ -7523,7 +7577,8 @@ export function lowerPromiseMethodCall(
             {
               kind: "dynCall",
               callee: { kind: "varRef", localId: fLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(fulfilledNode!) ?? "onFulfilled",
+              calleeName:
+                jsFuncNameOf(fulfilledNode!, undefined, { spelling: true }) ?? "onFulfilled",
               args: [arg],
               type: DYN,
               loc,
@@ -7691,7 +7746,8 @@ export function lowerPromiseMethodCall(
           value: {
             kind: "dynCall",
             callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-            calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onFulfilled",
+            calleeName:
+              jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onFulfilled",
             args: handlerArgs,
             type: DYN,
             loc,
@@ -8006,7 +8062,8 @@ export function lowerPromiseMethodCall(
             value: {
               kind: "dynCall",
               callee: { kind: "varRef", localId: cbLocal.id, type: DYN, loc },
-              calleeName: jsFuncNameOf(call.arguments.nodes[0]!, lowerer) ?? "onRejected",
+              calleeName:
+                jsFuncNameOf(call.arguments.nodes[0]!, lowerer, { spelling: true }) ?? "onRejected",
               args: [
                 {
                   kind: "caughtToDyn",
@@ -9051,89 +9108,6 @@ function lowerRegExpStaticCall(
   if (arg.type.kind !== "string")
     lowerer.badType(call.arguments.nodes[0]!, lowerer.typeOf(call.arguments.nodes[0]!));
   return { kind: "libCall", fn: "regexp.escape", args: [arg], type: STRING, loc: locOf(call) };
-}
-
-/** The composed en-US Intl.NumberFormat form: `new Intl.NumberFormat(
- * "en-US").format(x)` (and the callable spelling without `new` — the
- * spec makes them the same formatter). Only the COMPOSED form lowers —
- * formatter values have no representation — and only the one locale
- * whose data the runtime embeds, with default options: decimal
- * notation, 0–3 fraction digits rounded half-up on the shortest
- * round-tripping decimal (ICU's rounding input — format(1.0005) is
- * "1.001" though toFixed(3) answers "1.000"), "," grouping. The
- * unlowered forms fence by NAME (no locale — the host environment's
- * default, which a compiled binary cannot carry; other locales — ICU
- * data the binary does not embed; options bags; non-number arguments).
- * Null when the callee isn't a NumberFormat-construction .format. */
-function lowerIntlNumberFormatCall(
-  lowerer: Lowerer,
-  call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
-): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
-  if (access.name.text !== "format") return null;
-  let recv: ts.Expression = access.expression;
-  while (ts.isParenthesizedExpression(recv)) recv = recv.expression;
-  let ctorArgs: readonly ts.Expression[];
-  if (ts.isNewExpression(recv) || (ts.isCallExpression(recv) && !recv.questionDotToken)) {
-    const ctor = recv.expression;
-    if (
-      !ts.isPropertyAccessExpression(ctor) ||
-      ctor.questionDotToken ||
-      ctor.name.text !== "NumberFormat" ||
-      !lowerer.isStdlibGlobal(ctor.expression, "Intl")
-    ) {
-      return null;
-    }
-    ctorArgs = recv.arguments?.nodes ?? [];
-  } else {
-    return null;
-  }
-  const loc = locOf(call);
-  if (ctorArgs.length === 0) {
-    lowerer.noLowering(
-      "Intl.NumberFormat without a locale",
-      recv,
-      "the default locale is the host environment's, which a compiled binary cannot carry — " +
-        'pass it explicitly: new Intl.NumberFormat("en-US").format(x)',
-    );
-  }
-  if (ctorArgs.length > 1) {
-    lowerer.noLowering(
-      "Intl.NumberFormat with an options bag",
-      ctorArgs[1]!,
-      "the embedded data covers DEFAULT options only (decimal notation, up to 3 fraction digits, " +
-        'grouping) — new Intl.NumberFormat("en-US").format(x)',
-    );
-  }
-  const locArg = ctorArgs[0]!;
-  if (ts.isSpreadElement(locArg) || !ts.isStringLiteralLike(locArg) || locArg.text !== "en-US") {
-    lowerer.noLowering(
-      !ts.isSpreadElement(locArg) && ts.isStringLiteralLike(locArg)
-        ? `Intl.NumberFormat at locale "${locArg.text}"`
-        : "Intl.NumberFormat with a non-literal locale",
-      locArg,
-      '"en-US" (Node\'s default-build locale) is the one locale whose data the runtime embeds — ' +
-        "everything else is ICU data the binary does not carry",
-    );
-  }
-  if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!)) {
-    lowerer.noLowering(
-      `Intl.NumberFormat("en-US").format with ${call.arguments.nodes.length} arguments`,
-      call,
-    );
-  }
-  const argNode = call.arguments.nodes[0]!;
-  if (lowerer.mapTypeOf(lowerer.typeOf(argNode))?.kind !== "f64") {
-    lowerer.noLowering(
-      `Intl.NumberFormat("en-US").format over a '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
-      argNode,
-      "a number argument is the lowered form (bigint and numeric-string inputs have no representation)",
-    );
-  }
-  const arg = lowerer.lowerExprExpecting(argNode, F64);
-  if (arg.type.kind !== "f64") lowerer.badType(argNode, lowerer.typeOf(argNode));
-  return { kind: "libCall", fn: "intl.numFormatEnUs", args: [arg], type: STRING, loc };
 }
 
 /** Object.is over statically disjoint kinds: the constant false, with
@@ -10683,6 +10657,12 @@ function lowerObjectStaticCall(
             loc,
           };
     }
+  }
+  // An open spread value whose pairs or values go straight to bindings
+  // that take them as they are (open-enumerations.ts).
+  if (member !== "keys") {
+    const open = lowerOpenEnumeration(lowerer, call);
+    if (open !== null) return open;
   }
   // A CHECKED-DYNAMIC argument — the checker may still spell a record
   // type (the JS file-scope object-literal identity story stores the
@@ -13862,17 +13842,18 @@ function lowerShimIntrinsicCall(
   callee: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
-  const intrinsic = SHIM_INTRINSICS.get(callee.text);
-  if (intrinsic === undefined) return null;
   const decl = lowerer.checker.getSymbolAtLocation(callee)?.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isFunctionDeclaration(decl) ||
     decl.body ||
-    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName) ||
-    expr.arguments.nodes.length !== intrinsic.args.length
+    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName)
   )
     return null;
+  const hook = lowerFetchDispatcherHook(lowerer, callee, expr, loc);
+  if (hook !== null) return hook;
+  const intrinsic = SHIM_INTRINSICS.get(callee.text);
+  if (intrinsic === undefined || expr.arguments.nodes.length !== intrinsic.args.length) return null;
   const args = expr.arguments.nodes.map((arg, i) =>
     lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
   );

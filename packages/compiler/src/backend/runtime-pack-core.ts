@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
+  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -96,6 +96,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   processFeatures: boolean;
+  islandChild: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
@@ -162,6 +163,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   stdioObject: boolean;
   /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
   streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -380,6 +384,7 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     processFeatures: features.processFeatures === true,
+    islandChild: features.islandChild === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,
@@ -422,6 +427,7 @@ export function effectiveRuntimeFeatures(
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
     streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

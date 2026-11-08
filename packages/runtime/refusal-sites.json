@@ -954,6 +954,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_intl.c",
+  "function": "scr_intl_refuse",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_js_promise_generic.c",
   "function": "scr_js_promise_generic_call",
   "message": "Promise static is not supported",
@@ -1078,6 +1084,12 @@
   "function": "scr_dyn_class_view_unavailable",
   "message": "class fields cannot be represented as checked-dynamic properties",
   "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_typed_ref_string_view",
+  "message": "String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",

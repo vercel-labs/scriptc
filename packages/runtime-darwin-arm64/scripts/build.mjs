@@ -76,7 +76,6 @@ async function build() {
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
-  const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
   const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
@@ -244,20 +243,6 @@ async function build() {
       .flat()
       .sort();
     const archives = [
-      await archive("quickjs", QJS_SOURCES, quickjs, [
-        "-target",
-        RUNTIME_PACK_MATRIX.target.llvm_triple,
-        "-std=gnu11",
-        "-fvisibility=hidden",
-        "-funsigned-char",
-        "-DQUICKJS_NG_BUILD",
-        "-D_GNU_SOURCE",
-        "-DNDEBUG",
-        "-Os",
-        ...codeAlignment,
-        "-I",
-        quickjs,
-      ]),
       await archive("libregexp", LRE_SOURCES, quickjs, [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -357,6 +342,7 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STREAM_WRITE_ERRORS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",

@@ -2,4 +2,13 @@
   The parts of the type that compile keep their native layout, and only the failing parts hold checked-dynamic values.
   Operations on those values run in the dynamic tier, and reading one into typed code checks it against the type that reads it, so a value that contradicts its declaration throws a `TypeError` when typed code first uses it rather than when it is stored.
   Each slot is an `SC6104` warning; `scriptc coverage --fail-on=dynamic-slots` fails on them, and `--tier=static-only` turns them back into build errors.
+  A slot declared with the library's `PromiseLike<T>` is such a slot: it holds a promise or an object of the program with a `then` method, and `await`, `Promise.resolve`, `Promise.all`, `Promise.race`, and a call of its `then` ask the value as Node.js does.
+  What a thenable hands over is checked against `T` where typed code reads it.
+  A class whose `then` method has type parameters cannot be called through such a slot and throws `SC2020` when it is awaited; a `then` without type parameters, or an object literal, can.
+  A promise given to one of the program's own types with a `then` method is refused with `SC2002`; declare the slot `PromiseLike<T>` instead.
+  A member that the program adds to the library `Promise` type, such as `Promise<T> & { status?: string }`, cannot be written on a promise the program made: the write throws a `TypeError` when it runs, and the build reports it as an `SC6013` warning.
+  Keep such state beside the promise, in a wrapper record or in a `WeakMap` keyed by the promise.
   Values that scriptc cannot produce at all, such as `WeakRef` instances, still fail where they are created.
+  A promise typed with extra members, such as `Promise<T> & { settle(value: T): void }`, is such a slot: a promise that a Node island hands over keeps its members, while a promise the program made holds none of its own.
+  Assigning a member to a promise the program made, as in `const p = new Promise(...) as Promise<T> & { settle(value: T): void }; p.settle = finish`, builds and throws when the statement runs: an `Error` that names the write with `SC1090` where the compiler sees how the promise was made, and a `TypeError` otherwise.
+  Return the members beside the promise instead, such as `{ promise, settle }`.

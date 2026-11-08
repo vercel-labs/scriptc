@@ -152,6 +152,9 @@ export interface CcOptions {
   childLifecycle?: boolean;
   /** process.features as a value links scr_process_features.c. */
   processFeatures?: boolean;
+  /** Node islands and child_process together: compiles
+   * scr_node_island_child.c. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
@@ -294,6 +297,9 @@ export interface CcOptions {
   /** The program pipes or unpipes a stream: compiles
    * scr_stream_pipe_events.c (Node's pipe lifecycle). */
   streamPipeEvents?: boolean;
+  /** SCR_FS_STREAM_SIGNAL: fs.ReadStream and fs.WriteStream apply their
+   * options' `signal` (a program whose stream options can hold one). */
+  fsStreamSignal?: boolean;
   /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
    * errnoException fields (errno, syscall, path, spawnargs). */
   childErrorFields?: boolean;

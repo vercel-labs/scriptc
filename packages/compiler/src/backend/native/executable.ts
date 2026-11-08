@@ -513,6 +513,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
     "scr_node_island_abort.c",
   ),
+  // A child process an island made, in a native ChildProcess slot: a
+  // program with both islands and child_process.
+  unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
   // The dynamic global object's answer for the Node globals the native
@@ -572,6 +575,9 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
+  // scr_fs_stream.c's `signal` option, whose abort listener comes from the
+  // event-target unit.
+  { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.

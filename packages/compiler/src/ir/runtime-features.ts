@@ -113,6 +113,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
   "dyn.promiseResolve",
+  // A promise boxed as a weak collection's key (scr_dyn_new_promise).
+  "weakMap.promiseKey",
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",
@@ -257,6 +259,10 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
+  "fileHandle.createReadStreamSignal",
+  "fileHandle.createWriteStreamSignal",
+  "fs.createReadStreamSignal",
+  "fs.createWriteStreamSignal",
   "http.clientSignal",
   "http.requestDyn",
   "http.requestDynCb",
@@ -302,9 +308,13 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashStream",
   "crypto.hashStreamPiped",
   "fileHandle.createReadStream",
+  "fileHandle.createReadStreamSignal",
   "fileHandle.createWriteStream",
+  "fileHandle.createWriteStreamSignal",
   "fs.createReadStream",
+  "fs.createReadStreamSignal",
   "fs.createWriteStream",
+  "fs.createWriteStreamSignal",
   "rl.inputFromDyn",
   "rl.outputFromDyn",
   "sp.finished",
@@ -1651,6 +1661,9 @@ const RUNTIME_FEATURE_RULES = {
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",
+      // A rejected entry's reason crosses as a checked-dynamic value
+      // (Promise.allSettled's tuple form).
+      "promise.entryReason",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -2087,6 +2100,20 @@ const RUNTIME_FEATURE_RULES = {
           node.calleeNameValue !== undefined)) ||
       (node.kind === "strLit" && (node.value === "pipe" || node.value === "unpipe")),
   }),
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`
+   * (the options name it, or their type admits it): the
+   * SCR_FS_STREAM_SIGNAL build of scr_fs_stream.c applies the signal as
+   * Node's stream constructors do. The same calls link the event-target
+   * unit (ABORT_SIGNAL_LIB_FNS), whose addAbortListener that build calls.
+   * Every other program keeps the default fs stream unit, byte for byte. */
+  fsStreamSignal: rule({
+    fns: [
+      "fs.createReadStreamSignal",
+      "fs.createWriteStreamSignal",
+      "fileHandle.createReadStreamSignal",
+      "fileHandle.createWriteStreamSignal",
+    ],
+  }),
 
   /** The program holds a process output stream as a value: the
    * process.stdio lib call, process.stdioSlot for the write method's own
@@ -2416,6 +2443,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     stdioObject: false,
     streamWriteErrors: false,
     streamPipeEvents: false,
+    fsStreamSignal: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,

@@ -121,7 +121,6 @@ async function build() {
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
     ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"));
-  const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
   const zstdBuild = zstdInputs(config.target.llvm_triple);
@@ -581,9 +580,9 @@ async function build() {
     )
       .flat()
       .sort();
-    // Vendored QuickJS reads `clock_gettime` for its monotonic clock. WASI
-    // exposes that declaration only when its process-clock emulation ABI is
-    // selected, so vendor sources inherit the target's runtime defines too.
+    // Vendor sources inherit the target's runtime defines too: WASI exposes
+    // some declarations (`clock_gettime` among them) only when its emulation
+    // ABIs are selected.
     const vendorTarget = [
       ...config.targetArgs,
       ...(config.compilerFlags ?? []),
@@ -597,22 +596,6 @@ async function build() {
       config.vendorArchives === false
         ? []
         : [
-            ...(requestedArchives.has("quickjs")
-              ? [
-                  await archive("quickjs", qjsSources, quickjs, [
-                    ...vendorTarget,
-                    "-std=gnu11",
-                    "-fvisibility=hidden",
-                    "-funsigned-char",
-                    "-DQUICKJS_NG_BUILD",
-                    "-D_GNU_SOURCE",
-                    "-DNDEBUG",
-                    "-Os",
-                    "-I",
-                    quickjs,
-                  ]),
-                ]
-              : []),
             ...(requestedArchives.has("libregexp")
               ? [
                   await archive("libregexp", lreSources, quickjs, [
@@ -801,6 +784,7 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STREAM_WRITE_ERRORS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",

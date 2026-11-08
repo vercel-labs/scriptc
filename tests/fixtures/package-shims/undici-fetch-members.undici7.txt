@@ -1,0 +1,196 @@
+plain: 200 GET accept,accept-encoding,accept-language,sec-fetch-mode,user-agent
+direct, empty init: 200 body, as a plain call
+direct, cache default: 200 body, as a plain call
+direct, cache no-store: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "no-store" is refused (taken: "default", "force-cache", which ask for nothing)
+direct, cache reload: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "reload" is refused (taken: "default", "force-cache", which ask for nothing)
+direct, cache no-cache: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "no-cache" is refused (taken: "default", "force-cache", which ask for nothing)
+direct, cache force-cache: 200 body, as a plain call
+direct, cache only-if-cached: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "only-if-cached" is refused (taken: "default", "force-cache", which ask for nothing)
+direct, cache sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "sometimes" is refused (taken: "default", "force-cache", which ask for nothing)
+direct, credentials same-origin: 200 body, as a plain call
+direct, credentials omit: 200 body, as a plain call
+direct, credentials include: 200 body, as a plain call
+direct, credentials sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'credentials': "sometimes" is refused (taken: "omit", "same-origin", "include", which ask for nothing)
+direct, duplex half: 200 body, as a plain call
+direct, duplex full: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'duplex': "full" is refused (taken: "half", which ask for nothing)
+direct, integrity empty: 200 body, as a plain call
+direct, integrity matching sha256: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-1M4sUnr+Z0x6CGvXTiVgGePV3Nsx7rbqre9a2oxDg7k=" is refused (taken: "", which ask for nothing)
+direct, integrity matching sha512: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha512-Rl4904kBdQ7yARvSPfkLbpIK8/tAOeIMjOS11b6PhhHfja9LesFRvvIeTKdGmeOhqLPds4znjTopo+w8LMcP/w==" is refused (taken: "", which ask for nothing)
+direct, integrity other body: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-hnrYwQomsuknP3Phfk0ABcd7VMhf3r4WizVN7klHfX4=" is refused (taken: "", which ask for nothing)
+direct, integrity other body, then matching: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-hnrYwQomsuknP3Phfk0ABcd7VMhf3r4WizVN7klHfX4= sha256-1M4sUnr+Z0x6CGvXTiVgGePV3Nsx7rbqre9a2oxDg7k=" is refused (taken: "", which ask for nothing)
+direct, integrity unknown algorithm: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "md5-AAAA" is refused (taken: "", which ask for nothing)
+direct, integrity not a digest: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "nonsense" is refused (taken: "", which ask for nothing)
+direct, keepalive false: 200 body, as a plain call
+direct, keepalive true: 200 body, as a plain call
+direct, mode cors: 200 body, as a plain call
+direct, mode no-cors: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+direct, mode same-origin: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "same-origin" is refused (taken: "cors", which ask for nothing)
+direct, mode navigate: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "navigate" is refused (taken: "cors", which ask for nothing)
+direct, mode websocket: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "websocket" is refused (taken: "cors", which ask for nothing)
+direct, mode sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "sometimes" is refused (taken: "cors", which ask for nothing)
+direct, mode no-cors with PUT: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+direct, mode no-cors with a header: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+direct, priority auto: 200 body, as a plain call
+direct, priority high: 200 body, as a plain call
+direct, priority low: 200 body, as a plain call
+direct, priority sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'priority': "sometimes" is refused (taken: "auto", "high", "low", which ask for nothing)
+direct, referrer "": 200 body, as a plain call
+direct, referrer "about:client": 200 body, as a plain call
+direct, referrer "https://elsewhere.example/page": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "https://elsewhere.example/page" is refused (taken: "", "about:client", which ask for nothing)
+direct, referrer "http://HOST/item/from": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "http://HOST/item/from" is refused (taken: "", "about:client", which ask for nothing)
+direct, referrer "not a url": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "not a url" is refused (taken: "", "about:client", which ask for nothing)
+direct, referrerPolicy "": 200 body, as a plain call
+direct, referrerPolicy "no-referrer": 200 body, as a plain call
+direct, referrerPolicy "origin": 200 body, as a plain call
+direct, referrerPolicy "unsafe-url": 200 body, as a plain call
+direct, referrerPolicy "strict-origin-when-cross-origin": 200 body, as a plain call
+direct, referrerPolicy "sometimes": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrerPolicy': "sometimes" is refused (taken: "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin", "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url", which ask for nothing)
+direct, referrer with unsafe-url: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "http://HOST/item/from" is refused (taken: "", "about:client", which ask for nothing)
+direct, window null: 200 body, as a plain call
+direct, window a value: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'window': 1 is refused (taken: null, which ask for nothing)
+direct, redirect follow: 200 body, as a plain call
+direct, redirect manual: 200 body, as a plain call
+direct, redirect error: 200 body, as a plain call
+direct, redirect sometimes: rejected TypeError: undefined: sometimes is not an accepted type. Expected one of follow, manual, error.
+direct, method get: 200 body, as a plain call
+direct, method post: 200 body, method=POST +content-length=0
+direct, method Put: 200 body, method=PUT +content-length=0
+direct, method patch: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not send the method 'patch' (undici sends it in this spelling, which is not the PATCH method; write 'PATCH')
+direct, method PATCH: 200 body, method=PATCH +content-length=0
+direct, method PROPFIND: 200 body, method=PROPFIND +content-length=0
+direct, method CONNECT: rejected TypeError: 'CONNECT' HTTP method is unsupported.
+direct, method TRACE: rejected TypeError: 'TRACE' HTTP method is unsupported.
+direct, method TRACK: rejected TypeError: 'TRACK' HTTP method is unsupported.
+direct, method bad method: rejected TypeError: 'bad method' is not a valid HTTP method.
+direct, body with GET: rejected TypeError: Request with GET/HEAD method cannot have body.
+direct, body with HEAD: rejected TypeError: Request with GET/HEAD method cannot have body.
+direct, body string: 200 body, method=POST bytes=3 +content-length=3 +content-type=text/plain;charset=UTF-8
+direct, body null: 200 body, method=POST +content-length=0
+direct, body bytes: 200 body, method=POST bytes=4 +content-length=4
+direct, body ArrayBuffer: 200 body, method=POST bytes=2 +content-length=2
+direct, body DataView: 200 body, method=POST bytes=2 +content-length=2
+direct, body URLSearchParams: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+direct, body number: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+direct, body object: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+direct, headers record: 200 body, +x-own=1
+direct, headers pairs: 200 body, +x-own=1, 2
+direct, headers Headers: 200 body, +x-own=1
+direct, headers null: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+direct, headers record, array value: 200 body, +x-own=1,2
+direct, headers record, number value: 200 body, +x-own=7
+direct, headers pair of three: rejected TypeError: Headers constructor: expected name/value pair to be length 2, found 3.
+direct, headers a number: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+direct, headers a string: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+direct, headers value with a line break: rejected TypeError: Headers.append: "1\r\nx-added: 2" is an invalid header value.
+direct, headers pair value with a line break: rejected TypeError: Headers.append: "1\r\nx-added: 2" is an invalid header value.
+direct, headers value with a line feed: rejected TypeError: Headers.append: "1\nx-added: 2" is an invalid header value.
+direct, headers value with a NUL: rejected TypeError: Headers.append: "1\02" is an invalid header value.
+direct, headers name with a space: rejected TypeError: Headers.append: "x own" is an invalid header name.
+direct, headers name with a colon: rejected TypeError: Headers.append: "x-own: 1\r\nx-added" is an invalid header name.
+direct, headers empty name: rejected TypeError: Headers.append: "" is an invalid header name.
+direct, headers value with outer spaces: 200 body, +x-own=1
+direct, headers value beyond latin1: rejected TypeError: Cannot convert argument to a ByteString because the character at index 0 has a value of 8364 which is greater than 255.
+direct, headers forbidden name: rejected TypeError: fetch failed (cause InvalidArgumentError: invalid transfer-encoding header)
+direct, signal aborted: rejected AbortError 20: This operation was aborted
+direct, signal null: 200 body, as a plain call
+direct, signal live: 200 body, as a plain call
+agent, empty init: 200 body, as a plain call
+agent, cache default: 200 body, as a plain call
+agent, cache no-store: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "no-store" is refused (taken: "default", "force-cache", which ask for nothing)
+agent, cache reload: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "reload" is refused (taken: "default", "force-cache", which ask for nothing)
+agent, cache no-cache: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "no-cache" is refused (taken: "default", "force-cache", which ask for nothing)
+agent, cache force-cache: 200 body, as a plain call
+agent, cache only-if-cached: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "only-if-cached" is refused (taken: "default", "force-cache", which ask for nothing)
+agent, cache sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'cache': "sometimes" is refused (taken: "default", "force-cache", which ask for nothing)
+agent, credentials same-origin: 200 body, as a plain call
+agent, credentials omit: 200 body, as a plain call
+agent, credentials include: 200 body, as a plain call
+agent, credentials sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'credentials': "sometimes" is refused (taken: "omit", "same-origin", "include", which ask for nothing)
+agent, duplex half: 200 body, as a plain call
+agent, duplex full: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'duplex': "full" is refused (taken: "half", which ask for nothing)
+agent, integrity empty: 200 body, as a plain call
+agent, integrity matching sha256: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-1M4sUnr+Z0x6CGvXTiVgGePV3Nsx7rbqre9a2oxDg7k=" is refused (taken: "", which ask for nothing)
+agent, integrity matching sha512: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha512-Rl4904kBdQ7yARvSPfkLbpIK8/tAOeIMjOS11b6PhhHfja9LesFRvvIeTKdGmeOhqLPds4znjTopo+w8LMcP/w==" is refused (taken: "", which ask for nothing)
+agent, integrity other body: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-hnrYwQomsuknP3Phfk0ABcd7VMhf3r4WizVN7klHfX4=" is refused (taken: "", which ask for nothing)
+agent, integrity other body, then matching: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "sha256-hnrYwQomsuknP3Phfk0ABcd7VMhf3r4WizVN7klHfX4= sha256-1M4sUnr+Z0x6CGvXTiVgGePV3Nsx7rbqre9a2oxDg7k=" is refused (taken: "", which ask for nothing)
+agent, integrity unknown algorithm: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "md5-AAAA" is refused (taken: "", which ask for nothing)
+agent, integrity not a digest: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'integrity': "nonsense" is refused (taken: "", which ask for nothing)
+agent, keepalive false: 200 body, as a plain call
+agent, keepalive true: 200 body, as a plain call
+agent, mode cors: 200 body, as a plain call
+agent, mode no-cors: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+agent, mode same-origin: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "same-origin" is refused (taken: "cors", which ask for nothing)
+agent, mode navigate: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "navigate" is refused (taken: "cors", which ask for nothing)
+agent, mode websocket: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "websocket" is refused (taken: "cors", which ask for nothing)
+agent, mode sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "sometimes" is refused (taken: "cors", which ask for nothing)
+agent, mode no-cors with PUT: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+agent, mode no-cors with a header: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'mode': "no-cors" is refused (taken: "cors", which ask for nothing)
+agent, priority auto: 200 body, as a plain call
+agent, priority high: 200 body, as a plain call
+agent, priority low: 200 body, as a plain call
+agent, priority sometimes: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'priority': "sometimes" is refused (taken: "auto", "high", "low", which ask for nothing)
+agent, referrer "": 200 body, as a plain call
+agent, referrer "about:client": 200 body, as a plain call
+agent, referrer "https://elsewhere.example/page": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "https://elsewhere.example/page" is refused (taken: "", "about:client", which ask for nothing)
+agent, referrer "http://HOST/item/from": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "http://HOST/item/from" is refused (taken: "", "about:client", which ask for nothing)
+agent, referrer "not a url": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "not a url" is refused (taken: "", "about:client", which ask for nothing)
+agent, referrerPolicy "": 200 body, as a plain call
+agent, referrerPolicy "no-referrer": 200 body, as a plain call
+agent, referrerPolicy "origin": 200 body, as a plain call
+agent, referrerPolicy "unsafe-url": 200 body, as a plain call
+agent, referrerPolicy "strict-origin-when-cross-origin": 200 body, as a plain call
+agent, referrerPolicy "sometimes": rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrerPolicy': "sometimes" is refused (taken: "", "no-referrer", "no-referrer-when-downgrade", "same-origin", "origin", "strict-origin", "origin-when-cross-origin", "strict-origin-when-cross-origin", "unsafe-url", which ask for nothing)
+agent, referrer with unsafe-url: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'referrer': "http://HOST/item/from" is refused (taken: "", "about:client", which ask for nothing)
+agent, window null: 200 body, as a plain call
+agent, window a value: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not implement the RequestInit member 'window': 1 is refused (taken: null, which ask for nothing)
+agent, redirect follow: 200 body, as a plain call
+agent, redirect manual: 200 body, as a plain call
+agent, redirect error: 200 body, as a plain call
+agent, redirect sometimes: rejected TypeError: undefined: sometimes is not an accepted type. Expected one of follow, manual, error.
+agent, method get: 200 body, as a plain call
+agent, method post: 200 body, method=POST +content-length=0
+agent, method Put: 200 body, method=PUT +content-length=0
+agent, method patch: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch does not send the method 'patch' (undici sends it in this spelling, which is not the PATCH method; write 'PATCH')
+agent, method PATCH: 200 body, method=PATCH +content-length=0
+agent, method PROPFIND: 200 body, method=PROPFIND +content-length=0
+agent, method CONNECT: rejected TypeError: 'CONNECT' HTTP method is unsupported.
+agent, method TRACE: rejected TypeError: 'TRACE' HTTP method is unsupported.
+agent, method TRACK: rejected TypeError: 'TRACK' HTTP method is unsupported.
+agent, method bad method: rejected TypeError: 'bad method' is not a valid HTTP method.
+agent, body with GET: rejected TypeError: Request with GET/HEAD method cannot have body.
+agent, body with HEAD: rejected TypeError: Request with GET/HEAD method cannot have body.
+agent, body string: 200 body, method=POST bytes=3 +content-length=3 +content-type=text/plain;charset=UTF-8
+agent, body null: 200 body, method=POST +content-length=0
+agent, body bytes: 200 body, method=POST bytes=4 +content-length=4
+agent, body ArrayBuffer: 200 body, method=POST bytes=2 +content-length=2
+agent, body DataView: 200 body, method=POST bytes=2 +content-length=2
+agent, body URLSearchParams: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+agent, body number: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+agent, body object: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch sends string and byte bodies (string, ArrayBuffer and its views); streams, Blob, FormData and URLSearchParams bodies are not supported yet
+agent, headers record: 200 body, +x-own=1
+agent, headers pairs: 200 body, +x-own=1, 2
+agent, headers Headers: 200 body, +x-own=1
+agent, headers null: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+agent, headers record, array value: 200 body, +x-own=1,2
+agent, headers record, number value: 200 body, +x-own=7
+agent, headers pair of three: rejected TypeError: Headers constructor: expected name/value pair to be length 2, found 3.
+agent, headers a number: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+agent, headers a string: rejected TypeError: Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.
+agent, headers value with a line break: rejected TypeError: Headers.append: "1\r\nx-added: 2" is an invalid header value.
+agent, headers pair value with a line break: rejected TypeError: Headers.append: "1\r\nx-added: 2" is an invalid header value.
+agent, headers value with a line feed: rejected TypeError: Headers.append: "1\nx-added: 2" is an invalid header value.
+agent, headers value with a NUL: rejected TypeError: Headers.append: "1\02" is an invalid header value.
+agent, headers name with a space: rejected TypeError: Headers.append: "x own" is an invalid header name.
+agent, headers name with a colon: rejected TypeError: Headers.append: "x-own: 1\r\nx-added" is an invalid header name.
+agent, headers empty name: rejected TypeError: Headers.append: "" is an invalid header name.
+agent, headers value with outer spaces: 200 body, +x-own=1
+agent, headers value beyond latin1: rejected TypeError: Cannot convert argument to a ByteString because the character at index 0 has a value of 8364 which is greater than 255.
+agent, headers forbidden name: rejected TypeError: fetch failed (cause InvalidArgumentError: invalid transfer-encoding header)
+agent, signal aborted: rejected AbortError 20: This operation was aborted
+agent, signal null: 200 body, as a plain call
+agent, signal live: 200 body, as a plain call
+dispatcher Agent: 200 body, as a plain call
+dispatcher null: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch takes a dispatcher or none: 'dispatcher: null' is refused (undici 7 fails an assertion on it)
+dispatcher an object: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)
+dispatcher a number: rejected NotSupportedError UND_ERR_NOT_SUPPORTED: scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)
+unknown member: 200 body, as a plain call

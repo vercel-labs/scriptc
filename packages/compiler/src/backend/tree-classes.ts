@@ -90,8 +90,9 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
   // the module when the first class asks. Asking every slot about every
   // class instead is a walk of the module per class: 30 s of the compiler's
   // own build. A module none of whose classes gets that far is not walked.
+  const reach = new MentionedClasses(unions);
   let index: MentionIndex | null = null;
-  const mentioned = (): MentionIndex => (index ??= indexMentions(mod, unions));
+  const mentioned = (): MentionIndex => (index ??= indexMentions(mod, reach));
 
   for (const def of defs) {
     if (def.runtime === true) continue;
@@ -122,7 +123,7 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     // Reference fields must be written by the constructor alone: a node
     // that can be rewired after construction can gain a second owner.
     for (const field of def.fields) {
-      if (!mentions(field.type, name, unions)) continue;
+      if (!reach.mentions(field.type, name)) continue;
       if (immutable?.classField(name, field.name) !== true)
         reject(`field ${field.name} is written after construction`);
     }
@@ -164,7 +165,7 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     // A function none of whose slots mentions the class has no tree local,
     // no tree result and no expression that holds a node, which is where
     // the linear-use check of a function returns before it looks further.
-    const check = new LinearUse(name, unions, functions, facts);
+    const check = new LinearUse(name, reach, functions, facts);
     for (const fn of mentioned().functions.get(name) ?? []) check.function(fn);
     for (const why of check.reasons()) reject(why);
     finish();
@@ -228,59 +229,22 @@ function unionIdOf(type: IrType): string {
   return type.kind === "union" ? type.unionId : "";
 }
 
-/** Whether a value of this type can lead to an instance of `name`: directly,
- * through a union arm, or through a container, closure or generator slot. */
-export function mentions(
-  type: IrType,
-  name: string,
-  unions: ReadonlyMap<string, IrUnionDef>,
-): boolean {
-  switch (type.kind) {
-    case "object":
-    case "classval":
-      return type.className === name;
-    case "union": {
-      const arms = unions.get(type.unionId)?.arms;
-      return arms !== undefined && arms.some((arm) => mentions(arm, name, unions));
-    }
-    case "array":
-      return mentions(type.elem, name, unions);
-    case "map":
-      return mentions(type.key, name, unions) || mentions(type.value, name, unions);
-    case "set":
-      return mentions(type.elem, name, unions);
-    case "promise":
-      return mentions(type.inner, name, unions);
-    case "func":
-      return (
-        type.params.some((param) => mentions(param, name, unions)) ||
-        mentions(type.ret, name, unions)
-      );
-    case "generator":
-      return (
-        mentions(type.yieldT, name, unions) ||
-        mentions(type.retT, name, unions) ||
-        mentions(type.nextT, name, unions)
-      );
-    case "record":
-      return false;
-    default:
-      return false;
-  }
-}
-
 const NO_CLASSES: ReadonlySet<string> = new Set();
 
-/** The classes a value of a type can lead to: exactly the names `mentions`
- * accepts for it. A union's answer is kept by its id and a class's by its
- * name, so most types cost a lookup.
+/** The classes a value of a type can lead to: directly, through a union
+ * arm, or through a container, closure or generator slot. A record is not
+ * looked into: its fields are slots of their own. A union's answer is kept
+ * by its id and a class's by its name, so most types cost a lookup.
  *
  * A union can reach itself through a container (`type Json = string |
  * Json[]`). The walk of a union does not enter a union it is already inside,
  * which is being collected by the same walk. What it then returns for an
  * inner union lacks whatever the enclosing union adds, so such an answer is
  * not kept: only the union the walk started from, or one whose walk met no
- * union it was inside, is complete. */
+ * union it was inside, is complete.
+ *
+ * Every question the planner asks about a type goes through one instance,
+ * so no walk of a type is left that could follow such a union forever. */
 class MentionedClasses {
   private readonly ofUnion = new Map<string, ReadonlySet<string>>();
   private readonly ofClass = new Map<string, ReadonlySet<string>>();
@@ -290,6 +254,12 @@ class MentionedClasses {
   private skipped = 0;
 
   constructor(private readonly unions: ReadonlyMap<string, IrUnionDef>) {}
+
+  /** Whether a value of this type can lead to an instance of `name`. */
+  mentions(type: IrType, name: string): boolean {
+    if (type.kind === "object" || type.kind === "classval") return type.className === name;
+    return this.of(type).has(name);
+  }
 
   of(type: IrType): ReadonlySet<string> {
     switch (type.kind) {
@@ -391,7 +361,7 @@ class LinearUse {
 
   constructor(
     private readonly cls: string,
-    private readonly unions: ReadonlyMap<string, IrUnionDef>,
+    private readonly reach: MentionedClasses,
     private readonly functions: ReadonlyMap<string, IrFunction>,
     private readonly facts: TreeClassFacts,
   ) {}
@@ -413,7 +383,7 @@ class LinearUse {
   }
 
   private tree(type: IrType): boolean {
-    return mentions(type, this.cls, this.unions);
+    return this.reach.mentions(type, this.cls);
   }
 
   function(fn: IrFunction): void {
@@ -818,16 +788,15 @@ function isExpr(node: IrExpr | IrStmt): node is IrExpr {
 
 /** What mentions each class: its typed slots with where they sit, in module
  * order, and the functions that hold one of them, in module order. Root
- * types only: `mentions` looks through the containers itself. */
+ * types only: `MentionedClasses` looks through the containers itself. */
 interface MentionIndex {
   slots: ReadonlyMap<string, readonly TypeSlot[]>;
   functions: ReadonlyMap<string, readonly IrFunction[]>;
 }
 
-function indexMentions(mod: IrModule, unions: ReadonlyMap<string, IrUnionDef>): MentionIndex {
+function indexMentions(mod: IrModule, classes: MentionedClasses): MentionIndex {
   const slots = new Map<string, TypeSlot[]>();
   const functions = new Map<string, IrFunction[]>();
-  const classes = new MentionedClasses(unions);
   let holder: IrFunction | null = null;
   // `where` arrives in parts and is joined only for a slot that mentions a
   // class: most of a module's slots are expressions that mention none.

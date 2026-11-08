@@ -3,6 +3,7 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
+import { fsStreamOptionsMayHoldSignal } from "./fs-streams.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   builtinModuleFnOf,
@@ -414,9 +415,16 @@ export function lowerFsLadderCall(
       const a = dynArgs([args[0], args[1]]);
       if (a && args.length <= 2) {
         const readable = bi.member === "createReadStream";
+        const signal = fsStreamOptionsMayHoldSignal(lowerer, args[1]);
         return {
           kind: "libCall",
-          fn: readable ? "fs.createReadStream" : "fs.createWriteStream",
+          fn: readable
+            ? signal
+              ? "fs.createReadStreamSignal"
+              : "fs.createReadStream"
+            : signal
+              ? "fs.createWriteStreamSignal"
+              : "fs.createWriteStream",
           args: a,
           type: { kind: "object", className: readable ? "%Readable" : "%Writable" },
           loc,
@@ -991,9 +999,16 @@ function lowerFileHandleStreamCall(
     }
   }
   const writable = name === "createWriteStream";
+  const signal = fsStreamOptionsMayHoldSignal(lowerer, args[0]);
   const stream: IrExpr = {
     kind: "libCall",
-    fn: writable ? "fileHandle.createWriteStream" : "fileHandle.createReadStream",
+    fn: writable
+      ? signal
+        ? "fileHandle.createWriteStreamSignal"
+        : "fileHandle.createWriteStream"
+      : signal
+        ? "fileHandle.createReadStreamSignal"
+        : "fileHandle.createReadStream",
     args: [receiver, options],
     type: { kind: "object", className: writable ? "%Writable" : "%Readable" },
     loc,

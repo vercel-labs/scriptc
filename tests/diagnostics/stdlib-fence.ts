@@ -17,7 +17,7 @@ const merged = Object.assign({}, { a: 1 }); // the empty-target literal-source s
 const aliasedAssign = Object.assign(merged, { b: 2 }); // aliased targets stay fenced (real mutation of a live object)
 const refl = Reflect.has({ a: 1 }, "a");
 const parsedMs = Date.parse;
-const fmt = new Intl.NumberFormat();
+const fmt = new Intl.PluralRules();
 
 // Constructors.
 const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced

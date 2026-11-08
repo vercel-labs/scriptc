@@ -40,6 +40,7 @@ import {
   typeEquals,
   sortArms,
   typeKey,
+  unionContainerArmsOk,
 } from "../../../ir/ir.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import {
@@ -85,7 +86,8 @@ import {
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { boolLit, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { throwTypeError } from "../primitive-throws.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
@@ -96,7 +98,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
-import { emptyArrayLiteralArm } from "./array-literals.js";
+import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -487,6 +489,225 @@ function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boole
   });
 }
 
+/** Whether converting a value of `from` into `to` answers that same value:
+ * a union that holds `from` (or every arm of a `from` union) as its own arm,
+ * a function entering a function type whose arguments and result convert the
+ * same way (its adapter is that function to `===`), a class instance
+ * entering its base class. Every other conversion between two types builds
+ * a second object or checks the value against a narrower type. */
+function conversionKeepsValue(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (typeEquals(from, to)) return true;
+  if (to.kind === "union") {
+    const arms = from.kind === "union" ? lowerer.unions.get(from.unionId)?.arms : [from];
+    return arms !== undefined && arms.every((arm) => lowerer.armTag(to.unionId, arm) >= 0);
+  }
+  if (from.kind === "object" && to.kind === "object")
+    return lowerer.isSubclassOf(from.className, to.className);
+  if (from.kind === "func" && to.kind === "func") {
+    if (from.rest === true || to.rest === true) return false;
+    if (!lowerer.withDeclaredCallList(() => cleanFuncAdaptable(lowerer, from, to))) return false;
+    const shared = Math.min(from.params.length, to.params.length);
+    for (let i = 0; i < shared; i++)
+      if (!conversionKeepsValue(lowerer, to.params[i]!, from.params[i]!)) return false;
+    return to.ret.kind === "void" || conversionKeepsValue(lowerer, from.ret, to.ret);
+  }
+  return false;
+}
+
+/** Whether a result of type `from` can hold a value that `to` cannot: a
+ * union with an arm `to` has no place for. Converting such a result checks
+ * it against `to` and throws for that arm. */
+function resultStrands(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "union" || to.kind === "void" || to.kind === "dyn") return false;
+  const arms = lowerer.unions.get(from.unionId)?.arms ?? [];
+  if (to.kind !== "union") return arms.some((arm) => !typeEquals(arm, to));
+  return arms.some(
+    (arm) => lowerer.armTag(to.unionId, arm) < 0 && lowerer.widthLiftPlan(arm, to) === null,
+  );
+}
+
+/** A left side of `??` or `||` that can be absent at run time although the
+ * checker types it present (mayLowerAbsent), also as the last default of an
+ * inner `??` or `||` (`rows[i] ?? rows[j] ?? spare`). */
+function absentDespiteType(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (
+    ts.isBinaryExpression(expr) &&
+    (expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      expr.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  )
+    return absentDespiteType(lowerer, expr.right);
+  return mayLowerAbsent(lowerer, expr);
+}
+
+/** The result type of `left ?? right` where the checker dropped the default.
+ *
+ * The checker types the expression as the left alone when the left's
+ * declared type holds no nullish value (`rows[i] ?? spare`, `table[key] ??
+ * null`: an element or key read is declared present). The read can still be
+ * absent at run time, and the default is then the answer. A default the
+ * checker's result type does not hold cannot be converted into that type:
+ * the result is the type that holds both sides, as the checker itself
+ * answers when the element type is declared `T | undefined`. Null when the
+ * checker's result holds the default, or when no such type is known (the
+ * expression then lowers as before). `present` is the left's lowered type
+ * without its absent arm, `rightType` the default's. */
+function droppedDefaultJoin(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  present: IrType,
+  rightType: IrType,
+  leftType: IrType,
+): IrType | null {
+  // A default of the left's own type, with or without its absent arm, is
+  // held already (the rules below keep the left's storage for it).
+  if (typeEquals(rightType, present) || typeEquals(rightType, leftType)) return null;
+  if (rightType.kind === "undefinedT") return null;
+  if (present.kind === "dyn" || rightType.kind === "dyn" || rightType.kind === "void") return null;
+  const whole = lowerer.typeOf(expr);
+  const right = lowerer.typeOf(expr.right);
+  const open = ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never;
+  if ((whole.flags & open) !== 0 || (right.flags & open) !== 0) return null;
+  const armsOf = (t: IrType): readonly IrType[] =>
+    t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+  // The checker compares classes by their members; a class instance is the
+  // class it was built from, so a type holds one only as that class or a
+  // base of it. Values without identity and units are held as themselves.
+  // For every other kind the checker's answer stands.
+  const holdsEach = (from: IrType, to: IrType): boolean =>
+    armsOf(from).every((arm) => {
+      const named =
+        arm.kind === "object" ||
+        arm.kind === "f64" ||
+        arm.kind === "string" ||
+        arm.kind === "bool" ||
+        isUnitType(arm);
+      if (!named) return true;
+      return armsOf(to).some(
+        (place) =>
+          typeEquals(place, arm) ||
+          (arm.kind === "object" &&
+            place.kind === "object" &&
+            lowerer.isSubclassOf(arm.className, place.className)),
+      );
+    });
+  if (lowerer.checker.isTypeAssignableTo(right, whole) && holdsEach(rightType, present))
+    return null;
+  // A bare `null` maps to the unit-only union; the result takes its one arm.
+  if ((right.flags & ts.TypeFlags.Null) !== 0) return withUnitArm(present, "nullT", lowerer.unions);
+  // The default's type holds the left's values too: it is the result.
+  if (lowerer.checker.isTypeAssignableTo(whole, right) && holdsEach(present, rightType))
+    return rightType;
+  // Neither holds the other: a union of both. Its arms are told apart by
+  // what they are (a value without identity, a class instance), so one side
+  // may bring arms of any kind and the other only such arms; two sides that
+  // each bring records, arrays or functions get no union here.
+  const told = (t: IrType): boolean =>
+    t.kind === "f64" ||
+    t.kind === "string" ||
+    t.kind === "bool" ||
+    t.kind === "object" ||
+    isUnitType(t);
+  if (!armsOf(present).every(told) && !armsOf(rightType).every(told)) return null;
+  const arms = [...armsOf(present)];
+  for (const arm of armsOf(rightType))
+    if (!arms.some((held) => typeEquals(held, arm))) arms.push(arm);
+  if (arms.length < 2 || !unionContainerArmsOk(arms)) return null;
+  sortArms(arms);
+  return { kind: "union", unionId: lowerer.unions.intern(arms) };
+}
+
+/** The default of `rows[at] ?? wide` / `rows[at] || wide` where the result
+ * is the left's type (the checker dropped the default), the left side can
+ * be absent at run time all the same (absentDespiteType), and the default's
+ * type is as wide as the left's or wider and reaches the left's layout only
+ * as a copy of an object the program holds: an array of a wider element
+ * type, a record or a dictionary of another layout.
+ *
+ * Where the left side is present the expression answers it as it is.
+ * Where it is absent JavaScript answers the default itself, which the
+ * result type cannot hold; a copy into the left's layout is another object
+ * (and a checked one: it throws for a value the layout has no place for and
+ * loses the default's identity otherwise). So the absent side evaluates the
+ * default and stops with a TypeError that names the form, and the build
+ * reports the site (SC6001, absentDefaultStopDiag). The program builds and
+ * is right wherever the left side is there.
+ *
+ * Null where the default is used as before: it enters the left's type as
+ * the value it is, it is a literal built at that type, its type is narrower
+ * than the left's (a widening copy, reported where the program can tell),
+ * or it is itself a read that can be absent. A default the lowering refuses
+ * stays refused by its own name. */
+function absentDefaultStop(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  present: IrType,
+  rightType: IrType,
+  loc: SrcLoc,
+): { value: IrExpr; from: IrType } | null {
+  let from = rightType;
+  if (from.kind === "union") {
+    const arms = (lowerer.unions.get(from.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm));
+    if (arms.length !== 1) return null;
+    from = arms[0]!;
+  }
+  // Values without identity convert freely, and a function enters another
+  // function type through an adapter (conversionKeepsValue decides those).
+  const object = (t: IrType): boolean =>
+    !(
+      t.kind === "f64" ||
+      t.kind === "bigint" ||
+      t.kind === "string" ||
+      t.kind === "bool" ||
+      t.kind === "func" ||
+      t.kind === "union" ||
+      t.kind === "dyn" ||
+      t.kind === "void" ||
+      isUnitType(t)
+    );
+  if (!object(from) || !object(present) || typeEquals(from, present)) return null;
+  if (conversionKeepsValue(lowerer, from, present)) return null;
+  let dflt = expr.right;
+  while (
+    ts.isParenthesizedExpression(dflt) ||
+    ts.isAsExpression(dflt) ||
+    ts.isSatisfiesExpression(dflt) ||
+    ts.isNonNullExpression(dflt)
+  )
+    dflt = dflt.expression;
+  if (ts.isObjectLiteralExpression(dflt) || ts.isArrayLiteralExpression(dflt)) return null;
+  if (isPlainValueRead(expr.right) && mayLowerAbsent(lowerer, expr.right)) return null;
+  const whole = lowerer.typeOf(expr);
+  const right = lowerer.typeOf(expr.right);
+  const open = ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never;
+  if ((whole.flags & open) !== 0 || (right.flags & open) !== 0) return null;
+  if (!lowerer.checker.isTypeAssignableTo(whole, right)) return null;
+  // The conversion this replaces is built once and dropped, so that a
+  // default it refuses is refused as before.
+  lowerer.lowerExprExpecting(expr.right, present);
+  const raw = lowerer.lowerExpr(expr.right);
+  const op = expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ? "||" : "??";
+  const stop = throwTypeError(
+    strLit(
+      `the default of '${op}' has a wider type ('${lowerer.fmt(from)}') than the left side ('${lowerer.fmt(present)}'), and the left side was absent although its type holds no undefined: the default would be copied to reach the left side's type, where JavaScript answers the default itself (give both sides one type)`,
+      loc,
+    ),
+    present,
+    loc,
+  );
+  const value: IrExpr = isSafeToDiscard(raw)
+    ? stop
+    : {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: raw, loc }],
+        result: stop,
+        type: present,
+        loc,
+      };
+  return { value, from };
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -499,7 +720,9 @@ export function lowerNullishPair(
     // Both sides live in the checked-dynamic tree — the right converts through
     // the usual boundary and evaluates lazily in its branch; a default
     // with no dyn representation keeps the fence.
-    const right = lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
+    const right =
+      dynamicArrayOperand(lowerer, expr.right, expr) ??
+      lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
     if (right.type.kind !== "dyn") {
       lowerer.unsupported(
         "SC1100",
@@ -582,6 +805,35 @@ export function lowerNullishPair(
     sortArms(arms);
     type = { kind: "union", unionId: lowerer.unions.intern(arms) };
     lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
+  }
+  // The same incomplete result type for every other default the checker
+  // dropped: the result is the type that holds both sides, and each side
+  // converts into it (droppedDefaultJoin).
+  if (
+    rest.length === 1 &&
+    rightType &&
+    typeEquals(type, rest[0]!) &&
+    absentDespiteType(lowerer, expr.left)
+  ) {
+    const joined = droppedDefaultJoin(lowerer, expr, rest[0]!, rightType, left.type);
+    if (joined !== null && conversionKeepsValue(lowerer, rest[0]!, joined)) {
+      type = joined;
+      if (type.kind === "func") lowerer.nullishFuncResults.add(expr);
+      const joinedArms = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : null;
+      if (joinedArms?.every(primitive)) lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
+    } else {
+      // JavaScript answers the left side itself, and a left side that
+      // reaches the joined type only as a second object (an array or a
+      // record of another layout) has no result that is both. The result
+      // stays the left's type and the present value stays as it is; a
+      // default that only a copy brings into that type stops the program
+      // by name where the left side is absent (absentDefaultStop).
+      const stop = absentDefaultStop(lowerer, expr, rest[0]!, rightType, loc);
+      if (stop !== null) {
+        lowerer.absentDefaultStops.set(expr, { from: stop.from, to: type, loc });
+        return { kind: "nullish", left, right: stop.value, type, loc };
+      }
+    }
   }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
     // `counts.get(k) ?? 0` in JavaScript: a scalar optional left and a
@@ -751,11 +1003,55 @@ export function lowerNullishPair(
       );
     }
   }
+  // THE RULE for a result type that is not the left's: the result is the
+  // checker's type of the whole expression and EACH side converts into it;
+  // neither side converts into the other's type. It applies where the
+  // present left value stays the value it is (`grade ?? remark`, a function
+  // defaulted to one with a wider result: the left's adapter is that
+  // function to `===`). A left side that would be copied falls through to
+  // the refusal below.
+  if (
+    present !== null &&
+    !typeEquals(type, present) &&
+    conversionKeepsValue(lowerer, present, type)
+  ) {
+    const helper = lowerer.narrowedArmHelper(left.type.unionId, present, loc);
+    if (helper !== null) {
+      let converts = true;
+      const result = nullishBranches(
+        lowerer,
+        left,
+        left.type,
+        def.arms,
+        type,
+        loc,
+        () => lowerer.lowerExprExpecting(expr.right, type),
+        (stable) => {
+          const value = lowerer.withDeclaredCallList(() =>
+            lowerer.coerceToExpected(
+              { kind: "call", callee: helper, args: [stable], type: present, loc },
+              type,
+            ),
+          );
+          converts = typeEquals(value.type, type);
+          return value;
+        },
+      );
+      if (converts) return result;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `'??' where the default changes the result type (left is '${lowerer.fmt(left.type)}' but the whole expression is '${lowerer.fmt(type)}' — give both sides one type)`,
+      );
+    }
+  }
   // An optional callback defaulted to a function of another signature
   // (`o.tags ?? (() => ({}))`, fewer parameters or a narrower result): the
   // result is the callback's own function type, and the default adapts into
   // it (JavaScript ignores surplus arguments). The checker's merged union
-  // signature would lose the callback's result shape.
+  // signature would lose the callback's result shape. A default whose
+  // result the callback's type cannot hold is not such a default: adapting
+  // it would check each result against the narrower type and throw.
   if (present?.kind === "func" && present.rest !== true) {
     const raw = lowerer.lowerExpr(expr.right);
     // `present` is the optional callback's own declared type, so the
@@ -764,6 +1060,7 @@ export function lowerNullishPair(
     const rawType = raw.type;
     if (
       rawType.kind === "func" &&
+      !resultStrands(lowerer, rawType.ret, present.ret) &&
       (typeEquals(rawType, present) ||
         lowerer.withDeclaredCallList(() => cleanFuncAdaptable(lowerer, rawType, present)))
     ) {
@@ -773,6 +1070,19 @@ export function lowerNullishPair(
       lowerer.nullishFuncResults.add(expr);
       return { kind: "nullish", left, right, type: present, loc };
     }
+  }
+  // A left side that holds only null or undefined (a value asserted or
+  // declared `undefined`): the default is the answer, after the left's
+  // evaluation.
+  if (rest.length === 0) {
+    const right = lowerer.lowerExprExpecting(expr.right, type);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: left, loc }],
+      result: right,
+      type: right.type,
+      loc,
+    };
   }
   lowerer.unsupported(
     "SC1090",
@@ -862,7 +1172,7 @@ export function lowerNativeFunctionAssignment(
   )
     return null;
   fenceNodeModuleMutation(lowerer, target, "assignment");
-  const fnName = jsFuncNameOf(target.expression);
+  const fnName = jsFuncNameOf(target.expression, lowerer);
   const boxed: IrExpr = {
     kind: "dynFrom",
     value: receiver,
@@ -3220,7 +3530,9 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;
-  let right = lowerer.lowerExpr(expr.right);
+  let right =
+    (left.type.kind === "dyn" ? dynamicArrayOperand(lowerer, expr.right, expr) : null) ??
+    lowerer.lowerExpr(expr.right);
   // `logger || console` over an optional record: console flows into the
   // record the left operand holds (console-records.ts), so the pair stays
   // typed, as the checker's own result type is.
@@ -3291,6 +3603,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     // Test the deciding operand in its own representation. The result
     // contains only the values that can survive short-circuit evaluation.
     let target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    let orStop: { value: IrExpr; from: IrType } | null = null;
     // Index reads can be absent without noUncheckedIndexedAccess. Their
     // explicit nullish fallback still runs, even if the checker discarded it.
     if (target !== null) {
@@ -3315,6 +3628,32 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
       const restored = restoredAndResult(lowerer, expr, left.type, right.type, target);
       if (restored !== null) target = restored;
+    }
+    // `rows[at] || spare` over elements that are never falsy by their type:
+    // the checker types the expression as the left alone, as it does for
+    // `??`, and the read can be absent at run time all the same. The result
+    // is the type that holds both sides (droppedDefaultJoin). Where only a
+    // copy could bring the left side there, the result stays the left's
+    // type and a default that only a copy brings into it stops the program
+    // by name where the left side is absent (absentDefaultStop).
+    if (
+      op === ts.SyntaxKind.BarBarToken &&
+      target !== null &&
+      left.type.kind === "union" &&
+      absentDespiteType(lowerer, expr.left)
+    ) {
+      const arms = lowerer.unions.get(left.type.unionId)?.arms ?? [];
+      const rest = arms.filter((arm) => !isUnitType(arm));
+      const rightType = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
+      if (rest.length === 1 && arms.some(isUnitType) && rightType && typeEquals(target, rest[0]!)) {
+        const joined = droppedDefaultJoin(lowerer, expr, rest[0]!, rightType, left.type);
+        if (joined !== null && conversionKeepsValue(lowerer, rest[0]!, joined)) {
+          target = joined;
+          if (target.kind === "func") lowerer.nullishFuncResults.add(expr);
+        } else {
+          orStop = absentDefaultStop(lowerer, expr, rest[0]!, rightType, loc);
+        }
+      }
     }
     // A broad-JSDoc npm-static body can leave the CHECKER result `any`
     // even after declaration-backed specialization has recovered both
@@ -3487,13 +3826,65 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     if (op === ts.SyntaxKind.BarBarToken && left.type.kind === "union") {
       const def = lowerer.unions.get(left.type.unionId);
       const rest = def ? def.arms.filter((a) => !isUnitType(a)) : [];
+      // A value defaulted to one whose type holds it (`grade || remark`, a
+      // function whose default returns a wider type; an instance defaulted
+      // to one of its base class): the rule of `??` (lowerNullishPair, THE
+      // RULE). The result is the checker's type, the left value enters it
+      // as the value it is on the truthy side (a function through its
+      // adapter, that function to `===`), and the default converts into it
+      // too.
+      const taken = rest.length === 1 ? rest[0]! : null;
+      if (
+        taken !== null &&
+        target !== null &&
+        (taken.kind === "func" || taken.kind === "object") &&
+        target.kind === taken.kind &&
+        !typeEquals(target, taken) &&
+        conversionKeepsValue(lowerer, taken, target)
+      ) {
+        const helper = lowerer.narrowedArmHelper(left.type.unionId, taken, loc);
+        if (helper) {
+          lowerer.requireTruthyUnion(left.type.unionId, expr);
+          const stmts: IrStmt[] = [];
+          let stable: IrExpr = left;
+          if (!isSafeToRepeat(left)) {
+            const local = lowerer.declareHiddenLocal("%or", left.type);
+            stmts.push({ kind: "varDecl", localId: local.id, init: left, loc });
+            stable = varRef(local.id, left.type, loc);
+          }
+          const result: IrExpr = {
+            kind: "ternary",
+            cond: lowerer.ensureBool(stable, expr.left),
+            then: lowerer.withDeclaredCallList(() =>
+              lowerer.coerceToExpected(
+                { kind: "call", callee: helper, args: [stable], type: taken, loc },
+                target,
+              ),
+            ),
+            else_: lowerer.coerceInto(expr.right, right, target),
+            type: target,
+            loc,
+          };
+          return stmts.length === 0
+            ? result
+            : { kind: "seqExpr", stmts, result, type: target, loc };
+        }
+      }
+      // The default adapts into the left's function type only when that
+      // type holds its results (resultStrands).
       const funcArmDefault =
-        rest[0]?.kind === "func" && (target === null || target.kind === "func");
+        rest[0]?.kind === "func" &&
+        (target === null || target.kind === "func") &&
+        !(right.type.kind === "func" && resultStrands(lowerer, right.type.ret, rest[0].ret));
       if (
         rest.length === 1 &&
         ((target !== null && typeEquals(target, rest[0]!)) || funcArmDefault)
       ) {
         lowerer.requireTruthyUnion(left.type.unionId, expr);
+        if (orStop !== null && target !== null && typeEquals(target, rest[0]!)) {
+          lowerer.absentDefaultStops.set(expr, { from: orStop.from, to: rest[0]!, loc });
+          return { kind: "orDefault", left, right: orStop.value, type: rest[0]!, loc };
+        }
         const dflt = lowerer.lowerExprExpecting(expr.right, rest[0]!);
         return { kind: "orDefault", left, right: dflt, type: rest[0]!, loc };
       }

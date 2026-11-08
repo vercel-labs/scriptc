@@ -99,10 +99,12 @@ export class LifetimeRegions {
   }
 
   /** Can a value of type `t` hold (or own something that holds) a
-   * reference to a ProgramLifetime instance the walk can explain? */
-  private reaches(t: IrType): boolean {
-    const nullable = this.host.nullableUnions.of(t);
-    if (nullable?.repr === "single") return this.reaches(nullable.arm);
+   * reference to a ProgramLifetime instance the walk can explain?
+   *
+   * A union can reach itself through a container (`type Json = string |
+   * Json[]`). `inside` holds the unions this walk is in; meeting one of them
+   * again adds nothing, since its other arms are already being asked. */
+  private reaches(t: IrType, inside?: Set<string>): boolean {
     switch (t.kind) {
       case "object":
         return this.isLifetime(t.className) || this.reach.get(`object:${t.className}`) === true;
@@ -110,12 +112,21 @@ export class LifetimeRegions {
         return this.reach.get(`record:${t.shapeId}`) === true;
       case "array":
       case "set":
-        return this.reaches(t.elem);
+        return this.reaches(t.elem, inside);
       case "map":
-        return this.reaches(t.key) || this.reaches(t.value);
+        return this.reaches(t.key, inside) || this.reaches(t.value, inside);
       case "union": {
+        if (inside?.has(t.unionId) === true) return false;
+        const within = inside ?? new Set<string>();
+        within.add(t.unionId);
+        const nullable = this.host.nullableUnions.of(t);
         const def = this.host.unionsById.get(t.unionId);
-        return def !== undefined && def.arms.some((a) => this.reaches(a));
+        const found =
+          nullable?.repr === "single"
+            ? this.reaches(nullable.arm, within)
+            : def !== undefined && def.arms.some((a) => this.reaches(a, within));
+        within.delete(t.unionId);
+        return found;
       }
       // Closures capture anything, and dyn values box class instances.
       case "func":

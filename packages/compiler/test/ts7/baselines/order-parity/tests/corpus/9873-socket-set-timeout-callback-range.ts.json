@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9873-socket-set-timeout-callback-range.ts"
+ ],
+ "diags": []
+}

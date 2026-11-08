@@ -39,6 +39,7 @@ declare module "fs/promises" {
     start?: number;
     end?: number;
     highWaterMark?: number;
+    signal?: AbortSignal;
   }
   export interface CreateWriteStreamOptions {
     encoding?: BufferEncoding | null;

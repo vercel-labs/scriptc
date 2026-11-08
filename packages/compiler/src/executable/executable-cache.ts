@@ -88,6 +88,8 @@ export interface EarlyExecutableNativeFeatures {
   stdioObject?: boolean;
   /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
   streamPipeEvents?: boolean;
+  /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
+  fsStreamSignal?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
   /** A child output stream's flowing state: SCR_CHILD_STREAM_FLOW. */

@@ -35,7 +35,7 @@ import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import { BOOL, DYN, STRING, VOID, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { resolveBareModule } from "../resolve.js";
 import { packageDirOf } from "../../node-islands/origin.js";
-import { requireModuleSpecifiers, scanModuleSpecifiers } from "../../node-islands/modules.js";
+import { requireModuleSpecifiers } from "../../node-islands/modules.js";
 import { readProjectConfig } from "../../project-config.js";
 import {
   sharedClassExtendedDiag,
@@ -444,7 +444,7 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     // Specifiers in code only: a comment or a string that looks like an
     // import names no module. A bounded argument names one module per value
     // (SPEC §5.3): a compiled module it names is shared, not duplicated.
-    for (const spec of scanModuleSpecifiers(text, undefined, { bounds: true }).specifiers) {
+    for (const spec of lowerer.facts.moduleSpecifierScans.of(file, text, true).specifiers) {
       for (const target of resolveAll(file, spec)) {
         const sf = compiled.get(target);
         if (sf !== undefined) {

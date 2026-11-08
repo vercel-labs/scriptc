@@ -51,6 +51,74 @@ import {
 import { keyedHelperName } from "../stable-names.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
+/** node:module's compile cache calls and the runtime entry point of each
+ * (scr_module_cache.c). `value` marks the ones that hand their first
+ * argument to the runtime, which validates it as Node does. */
+const COMPILE_CACHE_CALLS = {
+  enableCompileCache: { fn: "module.compileCacheEnable", value: true, result: DYN },
+  getCompileCacheDir: { fn: "module.compileCacheDir", value: false, result: DYN },
+  flushCompileCache: { fn: "module.compileCacheFlush", value: true, result: DYN },
+} as const;
+type CompileCacheMember = keyof typeof COMPILE_CACHE_CALLS;
+
+/** enableCompileCache(options), getCompileCacheDir() and
+ * flushCompileCache(): a compiled program loads no JavaScript, so there is
+ * no code cache to enable, name or write. Every argument is evaluated in
+ * source order, then the runtime validates the first one as Node does and
+ * answers what Node answers with the cache disabled: { status: DISABLED,
+ * message }, undefined, and undefined. In typed code the answer is checked
+ * into the call's declared type (@types/node's EnableCompileCacheResult,
+ * `string | undefined`); flushCompileCache's is void, which keeps the
+ * runtime's undefined. */
+function lowerCompileCacheCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: CompileCacheMember,
+  loc: SrcLoc,
+): IrExpr {
+  const row = COMPILE_CACHE_CALLS[member];
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `module.${member} with spread arguments`,
+      expr,
+      "pass the argument itself; the call reads at most one",
+    );
+  }
+  const stmts: IrStmt[] = [];
+  let first: IrExpr | null = null;
+  args.forEach((arg, i) => {
+    const value = lowerer.lowerExpr(arg);
+    const argLoc = locOf(arg);
+    if (i > 0 || !row.value) {
+      stmts.push({ kind: "exprStmt", expr: value, loc: argLoc });
+      return;
+    }
+    const boxed = lowerer.coerceInto(arg, value, DYN);
+    if (args.length === 1) {
+      first = boxed;
+      return;
+    }
+    // Later arguments run before the runtime looks at this one.
+    const slot = lowerer.declareHiddenLocal("%compileCacheArg", DYN);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: boxed, loc: argLoc });
+    first = varRef(slot.id, DYN, argLoc);
+  });
+  const call: IrExpr = {
+    kind: "libCall",
+    fn: row.fn,
+    args: row.value ? [first ?? dynUndefinedExpr(loc)] : [],
+    type: row.result,
+    loc,
+  };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const result =
+    declared === null || declared.kind === "dyn" || declared.kind === "void"
+      ? call
+      : lowerer.coerceToExpected(call, declared);
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+}
+
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
@@ -65,6 +133,9 @@ export function lowerNodeModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module !== "module") return null;
+  if (Object.hasOwn(COMPILE_CACHE_CALLS, bi.member)) {
+    return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
+  }
   if (bi.member === "syncBuiltinESMExports") {
     if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(

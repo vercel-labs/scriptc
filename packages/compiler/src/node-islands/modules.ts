@@ -172,6 +172,11 @@ function portable(path: string): string {
 }
 
 export class NodeIslandModuleCollector {
+  /** The specifier scans of the files this collector reads. Every pass of a
+   * round builds a collector and collects the same packages, so the round's
+   * passes share one (LoweringFacts.moduleSpecifierScans). */
+  constructor(private readonly scans: ModuleSpecifierScans = new ModuleSpecifierScans()) {}
+
   /** Real paths of collected files. */
   private readonly files = new Set<string>();
   /** Link path (its directory real) → real target. */
@@ -391,7 +396,7 @@ export class NodeIslandModuleCollector {
     if (dataProblem !== null) return dataProblem;
     // The program's own code names its modules as far as its syntax does
     // (SPEC §5.3): a bounded argument's values are traced specifiers.
-    const scan = scanModuleSpecifiers(text, undefined, { bounds: true });
+    const scan = this.scans.of(file, text, true);
     if (scan.computed.length > 0) {
       const first = scan.computed[0]!;
       const line = text.slice(0, first.at).split("\n").length;
@@ -493,7 +498,7 @@ export class NodeIslandModuleCollector {
     for (const file of scripts) {
       const text = trackedReadFile(file);
       if (text === null) continue;
-      for (const specifier of scanModuleSpecifiers(text).specifiers) {
+      for (const specifier of this.scans.of(file, text).specifiers) {
         if (isBuiltin(specifier) || isPathSpecifier(specifier)) continue;
         if (specifier.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) continue;
         const other = packageDirectory(dirname(file), packageName(specifier));
@@ -1070,6 +1075,25 @@ function clauseContinues(prev: Token | undefined, next: Token): boolean {
     (prev !== undefined && CLAUSE_CONTINUES_AFTER.has(prev.value)) ||
     CLAUSE_CONTINUES_BEFORE.has(next.value)
   );
+}
+
+/** scanModuleSpecifiers' answers by file, for readers that scan the same
+ * files more than once. An answer stands only for the text it was scanned
+ * from: a file whose text differs is scanned again. A scan that also takes
+ * the values of bounded arguments (`bounds`) names more specifiers than a
+ * plain one, so the two are kept apart. */
+export class ModuleSpecifierScans {
+  private readonly byFile = new Map<string, { text: string; scan: ModuleSpecifierScan }>();
+  private readonly boundedByFile = new Map<string, { text: string; scan: ModuleSpecifierScan }>();
+
+  of(file: string, text: string, bounds = false): ModuleSpecifierScan {
+    const answers = bounds ? this.boundedByFile : this.byFile;
+    const known = answers.get(file);
+    if (known !== undefined && known.text === text) return known.scan;
+    const scan = scanModuleSpecifiers(text, undefined, bounds ? { bounds: true } : {});
+    answers.set(file, { text, scan });
+    return scan;
+  }
 }
 
 export function scanModuleSpecifiers(

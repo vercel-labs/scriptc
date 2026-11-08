@@ -82,6 +82,9 @@ export function typedArgumentsCandidate(node: ts.Node): node is ts.FunctionExpre
 export function typedArgumentsTarget(
   lowerer: Lowerer,
   node: ts.FunctionExpression,
+  /** Set when the signature is the contextual one: the function is then
+   * the content of a declared slot, not a value asserted to a type. */
+  origin?: { contextual: boolean },
 ): (IrType & { kind: "func" }) | null {
   const fixed = (t: (IrType & { kind: "func" }) | null) => (t && t.rest !== true ? t : null);
   const direct = assertedFuncType(lowerer, node);
@@ -120,8 +123,28 @@ export function typedArgumentsTarget(
   if (!ctxType) return null;
   const sigs = lowerer.checker.getCallSignatures(lowerer.checker.getNonNullableType(ctxType));
   if (sigs.length !== 1) return null;
+  // One declared signature: a slot that also takes something else (an
+  // options object, a listener object) has no single parameter list to
+  // type `arguments` by.
+  if (sigs[0]!.declaration === undefined) return null;
   const mapped = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(ctxType));
-  return mapped?.kind === "func" ? fixed(mapped) : null;
+  if (mapped?.kind !== "func") return null;
+  // `arguments` becomes the tuple of the signature's parameters, so the
+  // lowered signature must name every parameter the declared one does: a
+  // contextual type whose lowering names fewer (a callback type beside an
+  // options object or a listener object) would hand the function a shorter
+  // `arguments` than its caller passes. A declared rest parameter is the
+  // lowering's to lay out (a tuple flattens into one parameter each).
+  const declared = (sigs[0]!.declaration?.parameters?.nodes ?? []).filter(
+    (param) => ts.isParameter(param) && !isThisParameter(param),
+  );
+  if (
+    declared.length !== mapped.params.length &&
+    !declared.some((param) => ts.isParameter(param) && param.dotDotDotToken !== undefined)
+  )
+    return null;
+  if (origin !== undefined) origin.contextual = true;
+  return fixed(mapped);
 }
 
 function enclosingScope(node: ts.Node): ts.Node | null {

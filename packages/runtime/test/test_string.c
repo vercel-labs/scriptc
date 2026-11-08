@@ -589,6 +589,44 @@ static void sidx_fail(const char *what) {
   fprintf(stderr, "SIDX: %s\n", what);
 }
 
+/* Cutting the front off a long non-ASCII text again and again (`rest =
+ * rest.slice(cut)`, a tokenizer's rest of the input) must not index each
+ * rest: the slice's end is the length, which the slice before it recorded,
+ * and its start is a few characters in. Checkpoints are laid every 4 KiB
+ * of indexed text, so their count shows how much of the rests was read. */
+static void sparse_slice_rest_asserts(void) {
+  enum { BYTES = 512 * 1024, CUTS = 64, CUT = 25 };
+  char *raw = malloc(BYTES);
+  if (!raw) { sidx_fail("slice rest allocation"); return; }
+  memset(raw, 'x', BYTES);
+  for (size_t i = 40; i + 3 < BYTES; i += 44) memcpy(raw + i, "\xe2\x80\x94", 3); /* — */
+  ScrStr *rest = scr_str_new(raw, BYTES);
+  free(raw);
+  /* Counting the first text's length indexes it once; its checkpoints go
+   * when it is released after the first cut, so the count starts at the
+   * second, while the text being cut is still alive. */
+  size_t units = (size_t)scr_str_utf16_len(rest);
+  size_t most = 0;
+  bool ok = true;
+  for (int i = 0; i < CUTS; i++) {
+    ScrStr *next = scr_str_slice(rest, (double)CUT, INFINITY);
+    units -= CUT;
+    ok = ok && (size_t)scr_str_utf16_len(next) == units && next->len < rest->len &&
+         memcmp(next->data, rest->data + (rest->len - next->len), next->len) == 0;
+    if (i > 0 && scr_sidx_test_points() > most) most = scr_sidx_test_points();
+    scr_str_release(rest);
+    rest = next;
+  }
+  if (!ok) sidx_fail("slice of the rest returned the wrong text");
+  /* Indexing a rest lays more than a hundred checkpoints. */
+  if (most > 8) {
+    failed++;
+    fprintf(stderr, "SIDX: slicing the rest of a text indexed it (%zu checkpoints)\n", most);
+  }
+  scr_str_release(rest);
+  total++;
+}
+
 /* A live source must keep its index when sequential large slices use and
  * vacate another slot. Slicing knows output length without decoding it. */
 static void sparse_slice_churn_asserts(void) {
@@ -1344,6 +1382,7 @@ int main(int argc, char **argv) {
   sparse_append_threshold_asserts();
   index_activity_asserts();
   sparse_slice_churn_asserts();
+  sparse_slice_rest_asserts();
   local_navigation_asserts();
   forward_scan_asserts();
   positioned_suffix_eviction_asserts();

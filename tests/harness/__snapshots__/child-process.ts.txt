@@ -68,15 +68,6 @@ child-process.ts:53:1 - error SC2020: 'execFile with 1 arguments' is part of the
 
   hint: the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)
 
-child-process.ts:54:24 - error SC2020: 'execFile option 'killSignal'' is part of the standard library types but has no scriptc lowering yet
-
-  53 | execFile("true");
-  54 | execFile("true", [], { killSignal: "SIGTERM" }, () => {});
-     |                        ^~~~~~~~~~~~~~~~~~~~~
-  55 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
-
-  hint: encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
-
 child-process.ts:55:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
 
   54 | execFile("true", [], { killSignal: "SIGTERM" }, () => {});
@@ -102,7 +93,7 @@ child-process.ts:62:6 - error SC2020: 'fork with a runtime-valued module path' i
      |      ^~~~~~~~~~~~~~~~
   63 | const staticWorker = new URL("./child-process.ts", import.meta.url);
 
-  hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed
+  hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed, or name the executable that runs a script file with execPath
 
 child-process.ts:64:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
 

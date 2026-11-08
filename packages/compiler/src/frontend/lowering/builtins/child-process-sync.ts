@@ -113,8 +113,11 @@ export function lowerExecSyncCall(
   // getter) is a step of its own: with one, the command, the arguments
   // and every member are evaluated where they sit, as Node does; without
   // one the call is built as before.
+  const runs = (value: IrExpr): void => {
+    optionSteps.push({ run: { kind: "exprStmt", expr: value, loc } });
+  };
   const evaluated = (value: IrExpr): void => {
-    if (!isSafeToDiscard(value)) optionSteps.push({ effect: value });
+    if (!isSafeToDiscard(value)) runs(value);
   };
 
   if (optsNode) {
@@ -379,14 +382,7 @@ export function lowerExecSyncCall(
         case "windowsHide":
           // Node reads it on Windows only; the value is still evaluated
           // where the member sits.
-          windowsOnlyOption(
-            lowerer,
-            shell ? "execSync" : "execFileSync",
-            member,
-            p,
-            m.value,
-            (value) => optionSteps.push({ effect: value }),
-          );
+          windowsOnlyOption(lowerer, shell ? "execSync" : "execFileSync", member, p, m.value, runs);
           break;
         case "shell":
           if (shell) {

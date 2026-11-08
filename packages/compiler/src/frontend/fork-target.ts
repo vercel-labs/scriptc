@@ -1,7 +1,10 @@
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
-import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
+import {
+  withoutParenthesesAssertionsNonNull,
+  withoutParenthesesTypeWrappers,
+} from "./outer-expressions.js";
 import {
   ambientDtsPath,
   isFallbackDtsPath,
@@ -410,6 +413,45 @@ function namesChildProcess(program: ts.Program): boolean {
   }
   program.analysis.namesChildProcess = names;
   return names;
+}
+
+/** Whether the program uses the process's IPC channel: a call of
+ * process.send or process.disconnect, or a 'message' or 'disconnect'
+ * listener registered on process, where `process` is Node's global. A bare
+ * test of process.send is not a use. Such a program takes over the channel
+ * a parent opened for it (NODE_CHANNEL_FD) when it starts, as Node does;
+ * every other program keeps the test of the variable alone, which links no
+ * runtime code. Decided from the program's calls once, before any use is
+ * lowered, so that every read of the channel in the program is lowered the
+ * same way. */
+export function usesProcessChannel(program: ts.Program): boolean {
+  const known = program.analysis.usesProcessChannel;
+  if (known !== null) return known;
+  let uses = false;
+  search: for (const sourceFile of program.getImplementationSourceFiles()) {
+    if (sourceFile.isDeclarationFile || sourceFile.fileName.endsWith(".json")) continue;
+    for (const call of moduleSourceCandidates(program, sourceFile).calls) {
+      const callee = withoutParenthesesAssertionsNonNull(call.expression);
+      if (!ts.isPropertyAccessExpression(callee)) continue;
+      const receiver = withoutParenthesesAssertionsNonNull(callee.expression);
+      if (!ts.isIdentifier(receiver) || receiver.text !== "process") continue;
+      const member = callee.name.text;
+      const event = call.arguments.nodes[0];
+      const used =
+        member === "send" ||
+        member === "disconnect" ||
+        ((member === "on" || member === "once" || member === "addListener") &&
+          event !== undefined &&
+          ts.isStringLiteral(event) &&
+          (event.text === "message" || event.text === "disconnect"));
+      if (used && isNodeGlobal(program, receiver)) {
+        uses = true;
+        break search;
+      }
+    }
+  }
+  program.analysis.usesProcessChannel = uses;
+  return uses;
 }
 
 /** Source-order static fork targets in the supplied files, deduplicated by

@@ -454,6 +454,20 @@ export class CheckerFacade {
     this.prefetchSymbolNodes([...new Set(nodes)], false, false);
   }
 
+  /** prefetchSymbolNodesExact for nodes of any kind. An analysis that asks
+   * for the symbol at a module specifier (the module it names) beside the
+   * identifiers it compares batches those questions too: the identifier
+   * sweeps leave such a node to one request each. */
+  prefetchSymbolsAtExact(nodes: readonly Node[]): void {
+    this.ensureActive();
+    this.markManaged(nodes);
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.symbolAtLocation.has(node));
+    const symbols = chunked(missing, (chunk) =>
+      withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
+    );
+    missing.forEach((node, i) => this.cache.symbolAtLocation.set(node, symbols[i]));
+  }
+
   /** Batches the hot getTypeAtLocation nodes structure collection may read
    * despite their runtime expressions being reachability-deferred. */
   prefetchCollectionTypes(nodes: readonly Node[]): void {

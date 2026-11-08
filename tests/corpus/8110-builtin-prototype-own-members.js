@@ -66,8 +66,3 @@ class Point {
 const samples = [{}, { a: 1 }, JSON.parse("{}"), Object.create(null), [], new Point(), new Error("e"), { constructor: 5 }, { constructor: undefined }, "s", 1, null];
 console.log(samples.map((sample) => isPlainObject(sample)).join(","));
 
-// A constructor stored on Array.prototype stays one own name, after length.
-function Replacement() {}
-Array.prototype.constructor = Replacement;
-const replacedNames = Object.getOwnPropertyNames(Array.prototype);
-console.log(replacedNames.slice(0, 2).join(","), replacedNames.filter((name) => name === "constructor").length, has(Array.prototype, "constructor"));

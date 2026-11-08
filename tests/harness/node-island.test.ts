@@ -425,7 +425,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
       undefined,
       join(repoRoot, "tests/fixtures/node-island/worker.ts"),
     );
-    // The build says what differs from Node (SC6010): a module that worker
+    // The build says what differs from Node (SC6011): a module that worker
     // threads run loads these island modules, and the program has one
     // instance of each for all its threads.
     const notedDir = join(outDir, "worker-noted");
@@ -436,7 +436,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
       sanitize,
     });
     expect(noted.ok).toBe(true);
-    const shared = (noted.warnings ?? []).filter((d) => d.code === "SC6010");
+    const shared = (noted.warnings ?? []).filter((d) => d.code === "SC6011");
     expect([...new Set(shared.map((d) => /module '([^']+)'/.exec(d.message)?.[1]))].sort()).toEqual(
       ["./helper.cjs", "thenable-pkg"],
     );
@@ -481,6 +481,34 @@ describe.skipIf(skip)("Node islands in-process", () => {
         "worker async ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
         "worker await ERR_SCRIPTC_ISLAND_WORKER_ASYNC\n" +
         "worker thenable ERR_SCRIPTC_ISLAND_WORKER_VALUE\nexit 0\n",
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
+
+  test("a module shared with the island that a worker also runs is named at build time", async () => {
+    // The island has one instance of every module it imports, the main
+    // thread's, whichever thread calls it, and a worker's own code runs the
+    // worker's instance of the same module: the build says so (SC6011), for
+    // the shared module and for the island module the worker loads, and the
+    // program runs with that one difference from Node, which prints
+    // `worker 0/0 1/1 2 2/2` and `main after 2 2`.
+    const entry = join(repoRoot, "tests/fixtures/node-island/worker-shared/main.mjs");
+    const dir = join(outDir, "worker-shared");
+    mkdirSync(dir, { recursive: true });
+    const built = await compile(entry, { outPath: join(dir, "main"), outDir: dir, sanitize });
+    if (!built.ok)
+      throw new Error(built.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const noted = (built.warnings ?? []).filter((d) => d.code === "SC6011");
+    const subjects = noted
+      .map((d) => d.message.slice(0, d.message.indexOf(":")).replace(repoRoot, "<repo>"))
+      .sort();
+    expect(subjects).toEqual([
+        "worker threads run the module '<repo>/tests/fixtures/node-island/worker-shared/state.mjs', and Node island code imports it too",
+        "worker threads run this module, and it loads the Node island module './plugin.mjs'",
+    ]);
+    expect(await run(built.binaryPath, [])).toEqual({
+      stdout: "main 2 2\nworker 0/2 1/2 3 1/3\nmain after 3 3\n",
       stderr: "",
       code: 0,
     });

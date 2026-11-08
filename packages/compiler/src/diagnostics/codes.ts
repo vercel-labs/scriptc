@@ -111,7 +111,7 @@ export const DIAGNOSTIC_CODES = {
   SC6003: "divergence: localeCompare outside the built-in collation",
   SC6004: "divergence: cast to an unrelated class",
   SC6008: "divergence: import kept that tsc's output drops",
-  SC6010: "divergence: one Node island module instance for all threads",
+  SC6011: "divergence: one Node island module instance for all threads",
   SC6101: "performance: likely-hot function with untyped values",
   SC6102: "performance: declaration-typed boundary note",
   SC6103: "performance: shape inference overlay report",

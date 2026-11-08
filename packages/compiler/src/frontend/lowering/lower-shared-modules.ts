@@ -40,6 +40,7 @@ import { readProjectConfig } from "../../project-config.js";
 import {
   sharedClassExtendedDiag,
   sharedModuleDuplicatedDiag,
+  sharedModuleWorkerInstanceDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
   classConstructHelper,
@@ -511,6 +512,13 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       }
     }
     plans.push({ sf, path, exports });
+    // A worker thread that runs this module runs an instance of its own;
+    // island code reads the main thread's, whichever thread called it
+    // (the registration and the accessor are the island thread's).
+    if (lowerer.workerModules.has(sf))
+      lowerer.islandWorkerWarnings.push(
+        sharedModuleWorkerInstanceDiag(pkg?.name ?? sf.fileName, loc),
+      );
   }
   if (plans.length > 0) lowerer.usesNodeIsland = true;
   // Before island loads are lowered (the plans are computed in the first

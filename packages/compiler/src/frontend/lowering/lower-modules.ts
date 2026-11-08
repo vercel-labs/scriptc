@@ -212,7 +212,7 @@ export interface AppendGraph {
  * modules they reach through static imports, requires and literal import()
  * calls. A Node island belongs to the main thread, so an island module one
  * of these loads is the main thread's instance, not one of the worker's
- * own (SC6010). */
+ * own (SC6011). */
 export function workerThreadModules(
   program: ts.Program,
   roots: readonly ts.SourceFile[],

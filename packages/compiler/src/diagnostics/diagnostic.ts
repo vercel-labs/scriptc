@@ -333,7 +333,7 @@ export function widthCopyDivergenceDiag(
   };
 }
 
-/** SC6010 — a module that worker threads run loads a Node island module.
+/** SC6011 — a module that worker threads run loads a Node island module.
  * Under Node a worker thread has an instance of its own of every module it
  * loads; a compiled program has one Node island, on the main thread, and a
  * worker's island operations are answered there, so the module is the one
@@ -342,10 +342,26 @@ export function widthCopyDivergenceDiag(
  * configured default) is therefore shared, where under Node it is not. */
 export function nodeIslandWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
   return {
-    code: "SC6010",
+    code: "SC6011",
     message: `worker threads run this module, and it loads the Node island module '${module}': the program has one instance of that module for all its threads, while under Node each worker thread has its own, so what the module keeps between calls (a counter, a cache, a registered listener) is shared with the main thread and the other workers`,
     loc,
     hint: "nothing differs when the module keeps no state between calls; otherwise use it from one thread only, or pass the state in and out of each call",
+  };
+}
+
+/** SC6011, second subject — a module the program shares with its Node
+ * island (island code imports it too, scope-B NI-6) that worker threads
+ * also run. The island has one instance of everything it imports, the main
+ * thread's, whichever thread calls it; a worker thread's own code runs that
+ * thread's instance of the module. Under Node a worker has one instance for
+ * both, so a value the worker's code writes there is the one its island
+ * code reads. */
+export function sharedModuleWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6011",
+    message: `worker threads run the module '${module}', and Node island code imports it too: island code uses the main thread's instance of the module whichever thread called it, while a worker thread's own code uses that thread's instance; under Node each worker thread has one instance for both, so what the module keeps (an exported binding, a registry, a counter) differs between a worker's own code and the island code it calls`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use the module from the main thread only, or pass the state through the island call's arguments and result",
   };
 }
 

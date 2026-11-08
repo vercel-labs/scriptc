@@ -4456,7 +4456,7 @@ export class Lowerer {
   readonly workerOnlyModules: ReadonlySet<ts.SourceFile>;
   /** Every module a worker entry reaches, the ones the main thread loads
    * too among them: an island module one of them loads is the one instance
-   * the whole program has (SC6010). */
+   * the whole program has (SC6011). */
   readonly workerModules: ReadonlySet<ts.SourceFile>;
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
@@ -4522,7 +4522,7 @@ export class Lowerer {
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
   readonly sharedModuleWarnings: ScrDiagnostic[] = [];
-  /** SC6010 warnings: the Node island modules that modules worker threads
+  /** SC6011 warnings: the Node island modules that modules worker threads
    * run load (noteIslandOnWorkerThread), one per load site. Warnings, so
    * they leave with the divergences and never fail the build. */
   readonly islandWorkerWarnings: ScrDiagnostic[] = [];
@@ -13813,7 +13813,7 @@ export class Lowerer {
     throw new PoisonError();
   }
 
-  /** SC6010 for a Node island module loaded at `node`, when a worker thread
+  /** SC6011 for a Node island module loaded at `node`, when a worker thread
    * runs the module that loads it. */
   noteIslandOnWorkerThread(module: string, node: ts.Node): void {
     if (this.workerModules.size === 0) return;

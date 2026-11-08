@@ -86,7 +86,8 @@ import {
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { boolLit, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { throwTypeError } from "../primitive-throws.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
 import { lowerShortCircuitAssignment } from "./nullish-assignment.js";
@@ -617,6 +618,96 @@ function droppedDefaultJoin(
   return { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
+/** The default of `rows[at] ?? wide` / `rows[at] || wide` where the result
+ * is the left's type (the checker dropped the default), the left side can
+ * be absent at run time all the same (absentDespiteType), and the default's
+ * type is as wide as the left's or wider and reaches the left's layout only
+ * as a copy of an object the program holds: an array of a wider element
+ * type, a record or a dictionary of another layout.
+ *
+ * Where the left side is present the expression answers it as it is.
+ * Where it is absent JavaScript answers the default itself, which the
+ * result type cannot hold; a copy into the left's layout is another object
+ * (and a checked one: it throws for a value the layout has no place for and
+ * loses the default's identity otherwise). So the absent side evaluates the
+ * default and stops with a TypeError that names the form, and the build
+ * reports the site (SC6001, absentDefaultStopDiag). The program builds and
+ * is right wherever the left side is there.
+ *
+ * Null where the default is used as before: it enters the left's type as
+ * the value it is, it is a literal built at that type, its type is narrower
+ * than the left's (a widening copy, reported where the program can tell),
+ * or it is itself a read that can be absent. A default the lowering refuses
+ * stays refused by its own name. */
+function absentDefaultStop(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  present: IrType,
+  rightType: IrType,
+  loc: SrcLoc,
+): { value: IrExpr; from: IrType } | null {
+  let from = rightType;
+  if (from.kind === "union") {
+    const arms = (lowerer.unions.get(from.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm));
+    if (arms.length !== 1) return null;
+    from = arms[0]!;
+  }
+  // Values without identity convert freely, and a function enters another
+  // function type through an adapter (conversionKeepsValue decides those).
+  const object = (t: IrType): boolean =>
+    !(
+      t.kind === "f64" ||
+      t.kind === "bigint" ||
+      t.kind === "string" ||
+      t.kind === "bool" ||
+      t.kind === "func" ||
+      t.kind === "union" ||
+      t.kind === "dyn" ||
+      t.kind === "void" ||
+      isUnitType(t)
+    );
+  if (!object(from) || !object(present) || typeEquals(from, present)) return null;
+  if (conversionKeepsValue(lowerer, from, present)) return null;
+  let dflt = expr.right;
+  while (
+    ts.isParenthesizedExpression(dflt) ||
+    ts.isAsExpression(dflt) ||
+    ts.isSatisfiesExpression(dflt) ||
+    ts.isNonNullExpression(dflt)
+  )
+    dflt = dflt.expression;
+  if (ts.isObjectLiteralExpression(dflt) || ts.isArrayLiteralExpression(dflt)) return null;
+  if (isPlainValueRead(expr.right) && mayLowerAbsent(lowerer, expr.right)) return null;
+  const whole = lowerer.typeOf(expr);
+  const right = lowerer.typeOf(expr.right);
+  const open = ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never;
+  if ((whole.flags & open) !== 0 || (right.flags & open) !== 0) return null;
+  if (!lowerer.checker.isTypeAssignableTo(whole, right)) return null;
+  // The conversion this replaces is built once and dropped, so that a
+  // default it refuses is refused as before.
+  lowerer.lowerExprExpecting(expr.right, present);
+  const raw = lowerer.lowerExpr(expr.right);
+  const op = expr.operatorToken.kind === ts.SyntaxKind.BarBarToken ? "||" : "??";
+  const stop = throwTypeError(
+    strLit(
+      `the default of '${op}' has a wider type ('${lowerer.fmt(from)}') than the left side ('${lowerer.fmt(present)}'), and the left side was absent although its type holds no undefined: the default would be copied to reach the left side's type, where JavaScript answers the default itself (give both sides one type)`,
+      loc,
+    ),
+    present,
+    loc,
+  );
+  const value: IrExpr = isSafeToDiscard(raw)
+    ? stop
+    : {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: raw, loc }],
+        result: stop,
+        type: present,
+        loc,
+      };
+  return { value, from };
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -723,20 +814,23 @@ export function lowerNullishPair(
     absentDespiteType(lowerer, expr.left)
   ) {
     const joined = droppedDefaultJoin(lowerer, expr, rest[0]!, rightType, left.type);
-    if (joined !== null) {
-      // JavaScript answers the left side itself. A left side that reaches
-      // the joined type only as a second object (an array or a record of
-      // another layout) has no result that is both: refused by name.
-      if (!conversionKeepsValue(lowerer, rest[0]!, joined))
-        lowerer.unsupported(
-          "SC1090",
-          expr,
-          `'??' where the left side can be absent at run time although its type '${lowerer.fmt(rest[0]!)}' holds no undefined, and the default has another type ('${lowerer.fmt(rightType)}'): the result holds both, and the left side would be copied to reach it, where JavaScript answers the left side itself (give both sides one type, or copy the left side explicitly where a copy is meant)`,
-        );
+    if (joined !== null && conversionKeepsValue(lowerer, rest[0]!, joined)) {
       type = joined;
       if (type.kind === "func") lowerer.nullishFuncResults.add(expr);
       const joinedArms = type.kind === "union" ? lowerer.unions.get(type.unionId)?.arms : null;
       if (joinedArms?.every(primitive)) lowerer.runtimeOptionalArithmeticTypes.set(expr, type);
+    } else {
+      // JavaScript answers the left side itself, and a left side that
+      // reaches the joined type only as a second object (an array or a
+      // record of another layout) has no result that is both. The result
+      // stays the left's type and the present value stays as it is; a
+      // default that only a copy brings into that type stops the program
+      // by name where the left side is absent (absentDefaultStop).
+      const stop = absentDefaultStop(lowerer, expr, rest[0]!, rightType, loc);
+      if (stop !== null) {
+        lowerer.absentDefaultStops.set(expr, { from: stop.from, to: type, loc });
+        return { kind: "nullish", left, right: stop.value, type, loc };
+      }
     }
   }
   if (type.kind === "dyn" && lowerer.dynConvertible(left.type)) {
@@ -3492,6 +3586,7 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     // Test the deciding operand in its own representation. The result
     // contains only the values that can survive short-circuit evaluation.
     let target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    let orStop: { value: IrExpr; from: IrType } | null = null;
     // Index reads can be absent without noUncheckedIndexedAccess. Their
     // explicit nullish fallback still runs, even if the checker discarded it.
     if (target !== null) {
@@ -3513,8 +3608,10 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     // `rows[at] || spare` over elements that are never falsy by their type:
     // the checker types the expression as the left alone, as it does for
     // `??`, and the read can be absent at run time all the same. The result
-    // is the type that holds both sides (droppedDefaultJoin), and a left
-    // side that only a copy could bring there is refused by name.
+    // is the type that holds both sides (droppedDefaultJoin). Where only a
+    // copy could bring the left side there, the result stays the left's
+    // type and a default that only a copy brings into it stops the program
+    // by name where the left side is absent (absentDefaultStop).
     if (
       op === ts.SyntaxKind.BarBarToken &&
       target !== null &&
@@ -3526,15 +3623,11 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
       const rightType = lowerer.mapTypeOf(lowerer.typeOf(expr.right));
       if (rest.length === 1 && arms.some(isUnitType) && rightType && typeEquals(target, rest[0]!)) {
         const joined = droppedDefaultJoin(lowerer, expr, rest[0]!, rightType, left.type);
-        if (joined !== null) {
-          if (!conversionKeepsValue(lowerer, rest[0]!, joined))
-            lowerer.unsupported(
-              "SC1090",
-              expr,
-              `'||' where the left side can be absent at run time although its type '${lowerer.fmt(rest[0]!)}' holds no undefined, and the default has another type ('${lowerer.fmt(rightType)}'): the result holds both, and the left side would be copied to reach it, where JavaScript answers the left side itself (give both sides one type, or copy the left side explicitly where a copy is meant)`,
-            );
+        if (joined !== null && conversionKeepsValue(lowerer, rest[0]!, joined)) {
           target = joined;
           if (target.kind === "func") lowerer.nullishFuncResults.add(expr);
+        } else {
+          orStop = absentDefaultStop(lowerer, expr, rest[0]!, rightType, loc);
         }
       }
     }
@@ -3764,6 +3857,10 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         ((target !== null && typeEquals(target, rest[0]!)) || funcArmDefault)
       ) {
         lowerer.requireTruthyUnion(left.type.unionId, expr);
+        if (orStop !== null && target !== null && typeEquals(target, rest[0]!)) {
+          lowerer.absentDefaultStops.set(expr, { from: orStop.from, to: rest[0]!, loc });
+          return { kind: "orDefault", left, right: orStop.value, type: rest[0]!, loc };
+        }
         const dflt = lowerer.lowerExprExpecting(expr.right, rest[0]!);
         return { kind: "orDefault", left, right: dflt, type: rest[0]!, loc };
       }

@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/nullish-absent-read-copies-left.ts"
- ],
- "diags": []
-}

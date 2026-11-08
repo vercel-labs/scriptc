@@ -105,7 +105,7 @@ import {
   type WidthCopyFact,
 } from "./width-copies.js";
 import { guardedDeferredFences } from "../../ir/deferred-fence.js";
-import { guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
+import { absentDefaultStopDiag, guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -1949,6 +1949,9 @@ function lowerToIrWithIslands(
     ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
+    ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
+      absentDefaultStopDiag(resultLowerer.fmt(site.from), resultLowerer.fmt(site.to), site.loc),
+    ),
     // Deferred refusals inside their own try/catch: named here, since the
     // binary does not report them (ir/deferred-fence.ts).
     ...(result.module === null
@@ -3187,6 +3190,11 @@ export class Lowerer {
   /** `??` expressions whose result is the optional callback's own function
    * type (an adapted function default); their bindings take that type. */
   readonly nullishFuncResults = new Set<ts.Node>();
+  /** `rows[at] ?? wide` / `rows[at] || wide` expressions whose default
+   * stops the program where the left side is absent (absentDefaultStop in
+   * expressions/binary.ts), with the default's type and the left's: the
+   * build reports each once (SC6001, absentDefaultStopDiag). */
+  readonly absentDefaultStops = new Map<ts.Node, { from: IrType; to: IrType; loc: SrcLoc }>();
   /** The static names of the current generic instance's name-keyed
    * function parameters (static-function-names.ts). */
   staticFnNames: Map<ts.Symbol, string | null> | null = null;
@@ -5264,6 +5272,7 @@ export class Lowerer {
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
+      checkedTable("absentDefaultStops", () => this.absentDefaultStops.size),
       checkedTable("localClassInstantiations", () => this.localClassInstantiations.length),
       checkedTable("localClassInstanceTypes", () => this.localClassInstanceTypes.size),
       checkedTable("localClassValueTypes", () => this.localClassValueTypes.size),

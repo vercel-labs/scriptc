@@ -6825,7 +6825,6 @@ export class Lowerer {
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: this.isExternalTypeFile,
@@ -6935,6 +6934,18 @@ export class Lowerer {
     );
   }
 
+  /** The untyped island values the program stores where their origin is no
+   * longer followed (class-protocols.ts, noteIslandEscapes). */
+  islandEscapeSites(): readonly ts.Expression[] {
+    return this.facts.classProtocols().islandEscapeSites();
+  }
+
+  /** Whether `expr` holds a value a Node island made, by its origin
+   * (class-protocols.ts, islandOrigin). */
+  islandOrigin(expr: ts.Expression): boolean {
+    return this.facts.classProtocols().islandOrigin(expr);
+  }
+
   /** A record view a Map or Set answers: it keeps protocol identity but
    * calls the collection's own methods, never a stored member. */
   classCollectionView(type: ts.Type): boolean {
@@ -6954,7 +6965,9 @@ export class Lowerer {
     const answer = ask(this.facts.classProtocols());
     if (!this.facts.verify) return answer;
     if (this.ownClassProtocols === null) {
-      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
+      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder, (file) =>
+        this.isStdlibFile(file),
+      );
     }
     const fresh = ask(this.ownClassProtocols);
     this.facts.noteVerified("classProtocols");

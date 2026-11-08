@@ -9,7 +9,6 @@ import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
 import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
-import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   arrayOf,
   BOOL,
@@ -3018,7 +3017,6 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
     packageTypeIsData(lowerer.typeOf(access.expression), {
       isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
       isExternalTypeFile: lowerer.isExternalTypeFile,
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
     })
   )
     return;

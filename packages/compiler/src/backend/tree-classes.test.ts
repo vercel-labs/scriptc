@@ -10,7 +10,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
-import { planTreeClasses } from "./tree-classes.js";
+import { mentions, planTreeClasses } from "./tree-classes.js";
 
 const loc = { file: "tree.ts", start: 0, end: 1 };
 const NODE: IrType = { kind: "object", className: "Node" };
@@ -510,4 +510,28 @@ test("a module with a self-reaching union and no class is planned without a walk
   );
   expect([...plan.classes]).toEqual([]);
   expect([...plan.rejected]).toEqual([]);
+});
+
+test("a union that holds itself through a container is walked once", () => {
+  // A JSON value: `number | Json[] | Map<string, Json>`. The walk used to
+  // enter the union again from its own array arm until the stack ran out.
+  const json: IrType = { kind: "union", unionId: "json" };
+  const plain = new Map([
+    [
+      "json",
+      { id: "json", arms: [F64_T, arrayOf(json), { kind: "map", key: F64_T, value: json }] },
+    ],
+  ]) as unknown as Parameters<typeof mentions>[2];
+  expect(mentions(json, "Node", plain)).toBe(false);
+  expect(mentions(arrayOf(json), "Node", plain)).toBe(false);
+  // The same union with the class in an arm behind the recursive ones, and
+  // a second union reached only through the first.
+  const holder: IrType = { kind: "union", unionId: "holder" };
+  const withNode = new Map([
+    ["json", { id: "json", arms: [arrayOf(json), holder] }],
+    ["holder", { id: "holder", arms: [arrayOf(json), NODE] }],
+  ]) as unknown as Parameters<typeof mentions>[2];
+  expect(mentions(json, "Node", withNode)).toBe(true);
+  expect(mentions(holder, "Node", withNode)).toBe(true);
+  expect(mentions(json, "Other", withNode)).toBe(false);
 });

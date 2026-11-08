@@ -74,7 +74,8 @@
  *            observes it (SC6002), localeCompare over text the built-in
  *            collation does not cover (SC6003), a call feeding an instance
  *            to a cast to an unrelated class (SC6004), a value a Node island
- *            made converted to a native type, which is a copy (SC6007), an
+ *            made converted to a native type, which is a copy, or stored
+ *            untyped where the compiler no longer follows it (SC6007), an
  *            import the build keeps although tsc's output drops it (SC6008);
  *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
@@ -454,8 +455,10 @@ export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "membe
  * name, the program's writes reach the island, and `===` holds; the copy has
  * none of the three, and it holds only the members the target type declares.
  * A target that stays checked-dynamic (`unknown`, a record of `unknown`
- * members, a type the island declares) keeps the island's object and is not
- * reported, and neither is a copy the program writes itself
+ * members, a type the island declares, a record type of the program that
+ * became a view of the island's object where the program gave the value
+ * that type: class-protocols.ts, markIslandSites) keeps the island's object
+ * and is not reported, and neither is a copy the program writes itself
  * (`structuredClone(value) as T`). */
 export function islandValueCopyDivergenceDiag(
   targetType: string,
@@ -473,6 +476,24 @@ export function islandValueCopyDivergenceDiag(
     message: `${how[site]} copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object, so the island's later changes are visible through it, writes made through it reach the island, and it is '===' to the island's object; the copy has none of the three`,
     loc,
     hint: "declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too",
+  };
+}
+
+/** SC6007 — an untyped value a Node island made is stored where the
+ * compiler no longer follows it (a member, an element, a reassigned binding,
+ * a container). Where it is read back and given a record type the program's
+ * own source declares (an assertion, a typed slot), the checked conversion
+ * copies the island's object into a native record: writes through the copy
+ * and its identity are not the island's, where Node keeps one object. A type
+ * a declaration file declares stays a view there (class-protocols.ts,
+ * markUnplacedConversions). */
+export function islandValueUntrackedDivergenceDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6007",
+    message:
+      "this untyped value from a Node island is stored where the compiler no longer follows it: natively, giving it a record type of the program's own source after it is read back copies the island's object, so writes through that copy and its identity are not the island's, while Node keeps one object",
+    loc,
+    hint: "assert its type where the island hands it over ('value as T') so it stays a view of the island's object, or copy it there with 'structuredClone(value)'",
   };
 }
 

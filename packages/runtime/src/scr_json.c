@@ -19711,11 +19711,13 @@ ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
   return scr_dyn_value_list_from(slots, count, stack);
 }
 
-/* One source's own enumerable members onto an OBJ target. OBJ sources
- * snapshot their keys, then check attributes and read values in order so
- * getters can affect later entries. Arrays, strings, and bytes use their
- * index-keyed entries walk. Nullish and scalar sources copy nothing;
- * non-OBJ targets have no property table. */
+/* One source's own enumerable members onto a target. OBJ sources snapshot
+ * their keys, then check attributes and read values in order so getters
+ * can affect later entries. Arrays, strings, and bytes use their
+ * index-keyed entries walk. Nullish and scalar sources copy nothing. Each
+ * member arrives as a member write of the target's kind (scr_dyn_key_set):
+ * an array takes an index key as an element and `length` as its length,
+ * and a kind that holds no members throws what a write to it throws. */
 static void scr_dyn_copy_property(ScrDyn *target, ScrStr *key, ScrDyn *value, bool define) {
   if (!define) { scr_dyn_key_set(target, key, value); return; }
   ScrDyn *descriptor = scr_dyn_new_obj();
@@ -19735,7 +19737,6 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
     scr_dyn_proxy_unsupported("Object.assign");
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_BYTES) return;
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(src);
     if (materialized) scr_dyn_assign_strings_from(target, materialized, define);
@@ -19865,9 +19866,6 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
     scr_dyn_proxy_unsupported("Object.assign");
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC &&
-      target->kind != SCR_DYN_BYTES)
-    return;
   ScrDyn *snapshot = scr_dyn_typed_ref_peek(src);
   if (scr_exc_pending() || !snapshot || snapshot->kind != SCR_DYN_OBJ) {
     scr_dyn_release(snapshot);

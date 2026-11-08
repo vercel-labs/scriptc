@@ -2479,6 +2479,8 @@ function islandHandleLocal(lowerer: Lowerer, ident: ts.Identifier): IrLocal | nu
  * expression, the ordinary lowering applies). */
 export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
   if (lowerer.nodeIslands === null) return null;
+  if (ts.isPropertyAccessExpression(expr) && expr.name.text === "length")
+    refuseIslandMethodLength(lowerer, expr);
   // A module-level constant the island evaluates (closed-island-init.ts).
   const closed = lowerClosedIslandInit(lowerer, expr);
   if (closed !== null) return closed;
@@ -3185,6 +3187,62 @@ function receiverFn(
   }
 }
 
+/** Whether the checker types a function's result as an island value: an
+ * instance of a class an island declares, or of a program class that
+ * extends one (both are island objects wherever they go). */
+export function returnsIslandValue(lowerer: Lowerer, node: ts.SignatureDeclaration): boolean {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(node);
+  if (signature === undefined) return false;
+  const result = lowerer.checker.getReturnTypeOfSignature(signature);
+  if (isForeignType(islands, result, lowerer.checker)) return true;
+  const decl = result.getSymbol()?.declarations.find(ts.isClassDeclaration);
+  return decl !== undefined && isIslandSubclassDecl(decl);
+}
+
+/** `method.length` where the method belongs to a class that extends an
+ * island class and has a default or rest parameter: the read is answered
+ * from the method's parameter count, where Node stops counting at that
+ * parameter. Refused by name (the class's own `length` is its
+ * constructor's, as in Node). */
+function refuseIslandMethodLength(lowerer: Lowerer, expr: ts.PropertyAccessExpression): void {
+  const receiver = lowerer.typeOf(expr.expression);
+  if ((receiver.flags & ts.TypeFlags.Object) === 0) return;
+  for (const signature of lowerer.checker.getCallSignatures(receiver)) {
+    const declaration = signature.declaration;
+    if (
+      declaration !== undefined &&
+      ts.isMethodDeclaration(declaration) &&
+      isIslandSubclassDecl(declaration.parent) &&
+      declaration.parameters.nodes.some((p) => p.initializer !== undefined || p.dotDotDotToken)
+    )
+      boundaryFail(
+        lowerer,
+        `the 'length' of '${memberName(declaration) ?? "a method"}', a method with a default or rest parameter of a class that extends an island class,`,
+        expr,
+      );
+  }
+}
+
+/** A constructor or method as the checked-dynamic function the JavaScript
+ * class calls. The box reports its parameter count as its `length`; Node
+ * stops counting at the first default or rest parameter, so a member with
+ * one carries the length Node reports (the host gives the class its
+ * constructor's). */
+function boxedMember(lowerer: Lowerer, member: ts.MethodDeclaration): IrExpr {
+  const lambda = lowerer.lowerLambda(member, true);
+  const boxed = lowerer.coerceToExpected(lambda, DYN);
+  if (boxed.kind !== "dynFrom" || lambda.type.kind !== "func") return boxed;
+  const params = member.parameters.nodes.filter(
+    (p) => !(ts.isIdentifier(p.name) && p.name.text === "this"),
+  );
+  const stop = params.findIndex((p) => p.initializer !== undefined || p.dotDotDotToken);
+  const length = stop === -1 ? params.length : stop;
+  const counted = lambda.type.params.length - (lambda.type.restAbi === "typed" ? 1 : 0);
+  return length === counted ? boxed : { ...boxed, fnLength: length };
+}
+
 /** The statement that creates the class: its module global assigned the
  * JavaScript constructor. */
 export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration): IrStmt {
@@ -3213,16 +3271,10 @@ export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration)
   for (const m of decl.members.nodes) {
     if (ts.isConstructorDeclaration(m)) {
       if (m.body === undefined) continue;
-      ctor = lowerer.coerceToExpected(
-        lowerer.lowerLambda(m as unknown as ts.MethodDeclaration, true),
-        DYN,
-      );
+      ctor = boxedMember(lowerer, m as unknown as ts.MethodDeclaration);
     } else if (ts.isMethodDeclaration(m)) {
       if (m.body === undefined) continue;
-      methods.push({
-        key: key(memberName(m)!),
-        value: lowerer.coerceToExpected(lowerer.lowerLambda(m, true), DYN),
-      });
+      methods.push({ key: key(memberName(m)!), value: boxedMember(lowerer, m) });
     } else if (ts.isGetAccessorDeclaration(m)) {
       if (m.body === undefined) continue;
       getters.push({

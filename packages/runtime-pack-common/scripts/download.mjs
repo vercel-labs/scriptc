@@ -12,8 +12,10 @@
 /** Statuses a later request can cure. */
 export const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
-/** The waits before attempts two to five: 110 seconds in all. */
-export const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
+/** The waits before attempts two to seven: 470 seconds in all. On 2026-11-08
+ * the release host answered 504 on and off for about forty minutes, and three
+ * of six from-scratch builds failed inside a window of two minutes. */
+export const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 240_000];
 
 /** The longest wait a `Retry-After` header can ask for. */
 export const RETRY_AFTER_LIMIT_MS = 120_000;

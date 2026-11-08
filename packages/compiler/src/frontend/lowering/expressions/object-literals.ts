@@ -3016,6 +3016,7 @@ export function lowerObjectLiteral(
  * present-test desugar owns that case), when the site type is not a
  * narrowing of the stored union, or in JavaScript files. */
 function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrExpr): IrExpr | null {
+  if (stored.type.kind === "dyn") return checkedDynamicSpreadSource(lowerer, node, stored);
   if (stored.type.kind !== "union") return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
   const def = lowerer.unions.get(stored.type.unionId);
@@ -3033,6 +3034,32 @@ function checkedSpreadSource(lowerer: Lowerer, node: ts.Expression, stored: IrEx
   if (site.kind !== "union") return null;
   const helper = lowerer.narrowedRetagHelper(node, stored.type.unionId, site.unionId, loc);
   return helper ? { kind: "call", callee: helper, args: [stored], type: site, loc } : null;
+}
+
+/** A checked-dynamic spread source that the checker types as one record
+ * beside unit arms (`x?.list && { list: x.list }` where `x` is held as a
+ * checked-dynamic value, so the `&&` is one too): the value enters that
+ * type through the checked conversion. The present-test desugar then
+ * spreads the record and copies nothing for undefined or null, as
+ * JavaScript does, and a value the type excludes throws the catchable
+ * TypeError. Null in JavaScript files, and where the type has no checked
+ * conversion (the spread keeps its refusal). */
+function checkedDynamicSpreadSource(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  stored: IrExpr,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return null;
+  const site = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (site?.kind !== "union") return null;
+  const arms = lowerer.unions.get(site.unionId)?.arms ?? [];
+  if (
+    arms.filter((arm) => arm.kind === "record").length !== 1 ||
+    !arms.every((arm) => arm.kind === "record" || isUnitType(arm)) ||
+    lowerer.dynCheckBlocker(site) !== null
+  )
+    return null;
+  return lowerer.coerceInto(node, stored, site);
 }
 
 /** A spread source whose stored union holds one record arm beside arms

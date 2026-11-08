@@ -182,6 +182,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     // from its slots (typed-arguments.ts forwardedOnlyTupleValue).
     const forwardedSlots = binding ? lowerer.ctx.pureTuples.get(binding.id) : undefined;
     if (binding && forwardedSlots) {
+      // A position that may be undefined, or holds an untyped value, may
+      // also be absent at the call: the native signature always passes it,
+      // so the tuple built from the slots would hand the callee an argument
+      // the caller did not pass (a rest parameter one element longer). The
+      // rest tuple with optional positions is refused the same way
+      // (forwardedOnlyTupleValue), and so is `arguments.length`
+      // (typedArgumentsArity).
+      if (
+        forwardedSlots.some(
+          (slot) =>
+            slot.type.kind === "dyn" ||
+            (slot.type.kind === "union" &&
+              lowerer.armTag(slot.type.unionId, { kind: "undefinedT" }) >= 0),
+        )
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)",
+        );
+      }
       return lowerer.tupleOfSlots(forwardedSlots, binding.type, expr, loc);
     }
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };

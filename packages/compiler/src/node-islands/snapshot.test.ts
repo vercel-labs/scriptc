@@ -418,11 +418,37 @@ describe("the effects of a file that modules share", () => {
     expect(other.decisions[0]!.reason).toContain("a load it shares a file with reads Date.now()");
     expect(other.decisions[1]!.reason).toContain("its load reads Date.now()");
     expect(other.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+  });
 
-    // A module that shares nothing with it still defers, with its constants.
+  test("a load probed after one that read what no run repeats has no snapshot", () => {
+    // The first load drew a random number and evaluates where it is
+    // imported. The second shares no file with it, but the probe evaluated
+    // it in an island that held the build's draw, and its constants can hold
+    // that draw (a package exporting what the first left in a global). No
+    // run is answered from such a snapshot: Node is running once the first
+    // load has evaluated, and a run that skips the first load fails the
+    // second's guard on the loads before it. The snapshot would be dead
+    // bytes that differ from one build to the next, so none is written.
     const apart = sharing({ volatile: ["Math.random()"] }, false);
-    expect(apart.decisions.map((d) => d.deferred)).toEqual([false, true]);
-    expect(apart.snapshots[1]).toContain("5:three");
+    expect(apart.decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(apart.decisions[0]!.reason).toContain("its load reads Math.random()");
+    expect(apart.decisions[1]!.reason).toContain("an earlier load reads Math.random()");
+    expect(apart.decisions[1]!.reason).toContain("could hold the build's reading");
+    expect(apart.calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(apart.snapshots.join("")).not.toContain("three");
+
+    // The clock and the process id are such readings too.
+    for (const reading of ["Date.now()", "process.pid"]) {
+      const next = sharing({ volatile: [reading] }, false);
+      expect(next.decisions.map((d) => d.deferred)).toEqual([false, false]);
+      expect(next.decisions[1]!.reason).toContain(`an earlier load reads ${reading}`);
+    }
+
+    // A load the probe reached before it computed from nothing of the
+    // reading: it defers with its constants.
+    const before = sharing({ volatile: ["Math.random()"] }, false, "second");
+    expect(before.calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.require"]);
+    expect(before.snapshots[0]).toContain("5:three");
   });
 
   test("a module that shares nothing with such a load still defers", () => {

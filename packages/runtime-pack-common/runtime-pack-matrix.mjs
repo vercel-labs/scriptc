@@ -767,7 +767,6 @@ export function createRuntimePackMatrix({
   libraryOnly = false,
 }) {
   const vendorArchives = [
-    { id: "quickjs", predicate: false },
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },

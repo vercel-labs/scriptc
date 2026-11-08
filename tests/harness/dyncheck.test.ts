@@ -22,7 +22,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { compile } from "@scriptc/compiler";
+import { analyze, compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -1687,6 +1687,46 @@ console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3","title":"Ferns",
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("a value other than undefined is not representable");
+  });
+
+  test("a wider default behind an element read stops by name where the element is absent", async () => {
+    // `rows[at] ?? wide`: the checker types the read present and so the
+    // whole expression as the element; past the end Node answers `wide`
+    // itself, which the element's type cannot hold and a copy would not be.
+    // The present side answers the element (corpus
+    // nullish-absent-read-wider-default-present); the absent side evaluates
+    // the default and throws a TypeError that names the form, and the build
+    // reports both sites.
+    const source = `
+      const counts: number[][] = [[1, 2]];
+      const anything: (number | string)[] = [7, 8];
+      let asked = 0;
+      function spare(): (number | string)[] { asked++; return anything; }
+      function pick(at: number): number { return (counts[at] ?? anything).length; }
+      function lazy(at: number): number { return (counts[at] || spare()).length; }
+      console.log(pick(0), lazy(0), asked);
+      try { console.log(pick(3)); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { console.log(lazy(3)); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message, asked); }
+      console.log(pick(5));
+    `;
+    const r = await compileAndRun("absent-read-wider-default", source);
+    const message = (op: string): string =>
+      `the default of '${op}' has a wider type ('(number | string)[]') than the left side ('number[]'), and the left side was absent although its type holds no undefined: the default would be copied to reach the left side's type, where JavaScript answers the default itself (give both sides one type)`;
+    expect(r.stdout).toBe(
+      ["2 2 0", `true ${message("??")}`, `true ${message("||")} 1`, ""].join("\n"),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain(`TypeError: ${message("??")}`);
+
+    const file = join(cacheDir, "dyncheck-absent-read-wider-default.ts");
+    writeFileSync(file, source);
+    const warnings = (analyze(file).coverage.divergences ?? []).filter((d) => d.code === "SC6001");
+    expect(warnings.map((d) => d.message)).toEqual([
+      "the left side of this default can be absent at run time although its type 'number[]' holds no undefined, and the default has the wider type '(number | string)[]', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy",
+      "the left side of this default can be absent at run time although its type 'number[]' holds no undefined, and the default has the wider type '(number | string)[]', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy",
+    ]);
   });
 });
 

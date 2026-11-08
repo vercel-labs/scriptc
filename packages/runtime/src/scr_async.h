@@ -21,6 +21,23 @@ ScrPromise *scr_tp_set_immediate(void);
  * tiebreaks) drives everything after %main returns. See scr_async.c.
  */
 ScrPromise *scr_promise_new(void);
+/* The identity cell of a promise: what a promise adopted across inner types
+ * shares with its source (scr_promise_share_identity) and what a Set or a
+ * Map keys a promise by (scr_promise_map_identity). Each promise that points
+ * at a cell holds one count of it; a promise has none until its first share
+ * or its first key.
+ *
+ * A WeakMap or a WeakSet keys a promise by the same cell. Their unit, the
+ * checked-dynamic core, is linked by programs that have no promise and calls
+ * nothing of this unit, so it reads and creates the cell through the head
+ * below: the first two words of every promise. */
+typedef struct ScrPromiseIdentity {
+  size_t rc;
+} ScrPromiseIdentity;
+typedef struct ScrPromiseHead {
+  size_t rc;
+  ScrPromiseIdentity *identity;
+} ScrPromiseHead;
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
 void *scr_promise_map_identity(void *promise);

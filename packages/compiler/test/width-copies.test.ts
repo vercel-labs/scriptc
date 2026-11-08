@@ -144,6 +144,38 @@ test("a record built into a class instance is refused where the program can tell
   ]);
 });
 
+test("a derived class's construction is not a write after the copy", () => {
+  // The fields a constructor stores before anything can hold the object are
+  // not writes a copy could miss, also where the constructor first calls its
+  // base's, and where the base is a class the runtime provides.
+  const DIAL = `class Dial { turns = 20 }\n`;
+  const USE = `function turns(source: { dial: Dial }): number { return source.dial.turns; }\nconst radio = new Radio(); radio.dial.turns += 5; console.log(turns(radio));`;
+  const quiet = [{ kind: "objWidth", depth: "value", aliasable: true, observed: null }];
+  const derived = facts(
+    `${DIAL}class Chassis { serial = 7 }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
+  );
+  expect(derived.facts).toEqual(quiet);
+  expect(derived.warnings).toEqual([]);
+  const emitter = facts(
+    `import { EventEmitter } from "node:events";\n${DIAL}class Radio extends EventEmitter { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
+  );
+  expect(emitter.facts).toEqual(quiet);
+  expect(emitter.warnings).toEqual([]);
+  const error = facts(
+    `${DIAL}class Radio extends Error { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
+  );
+  expect(error.facts).toEqual(quiet);
+  expect(error.warnings).toEqual([]);
+  // A constructor that hands the object to the program's own code lets it
+  // out before its fields are stored: those stores are writes.
+  const leaked = facts(
+    `${DIAL}const seen: Chassis[] = [];\nclass Chassis { serial = 7; constructor() { seen.push(this); } }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
+  );
+  expect(leaked.facts).toEqual([
+    { kind: "objWidth", depth: "value", aliasable: true, observed: "write" },
+  ]);
+});
+
 test("a conversion of a copy is a copy of the first value", () => {
   // `w` reaches M through N. Node has one object, so the write through M
   // is lost exactly as a write through N would be: the second conversion

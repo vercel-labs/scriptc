@@ -48,6 +48,7 @@ import {
   recordViewHosted,
 } from "./expressions/hosted-narrowing.js";
 import { assertedOnlyMemberWrite } from "./expressions/asserted-receiver.js";
+import { instanceSlotReadAtDeclaredType } from "./expressions/narrowing.js";
 import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergences.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
@@ -5030,6 +5031,22 @@ function narrowedUnionPatternSource(
   if (allowed.size === 0 || allowed.size === from.arms.length) return null;
   if (allowed.size === 1) {
     const tag = [...allowed][0]!;
+    // A generic instance's binding the checker did not narrow: the record
+    // is the view its constraint gives every arm, and each other arm still
+    // arrives. The extraction is the checked one, which throws the
+    // TypeError of a value the pattern's type does not name, and the build
+    // names the pattern (SC6015).
+    if (patternOverInstanceBinding(lowerer, pattern, fromId, narrowed)) {
+      const helper = lowerer.narrowedArmHelper(fromId, from.arms[tag]!, loc);
+      if (helper) {
+        lowerer.noteStrandedInstanceArm(
+          pattern,
+          lowerer.checker.typeToString(lowerer.typeOf(pattern)),
+          from.arms.filter((arm, other) => other !== tag && !isUnitType(arm)).length,
+        );
+        return lowerer.checkedNarrowCall(helper, value, from.arms[tag]!, loc);
+      }
+    }
     // The checker proved the tag; the extraction traps on a mismatch
     // instead of reading another arm.
     return { kind: "unionNarrow", unionId: fromId, tag, value, type: from.arms[tag]!, loc };
@@ -5045,6 +5062,42 @@ function narrowedUnionPatternSource(
     type: { kind: "union", unionId: subId },
     loc,
   };
+}
+
+/** Whether `pattern` destructures a generic instance's binding that the
+ * checker did not narrow, while the slot `fromId` holds the pattern's
+ * record `site` among several value arms: the variable of a declaration
+ * read at its declared type (instanceSlotReadAtDeclaredType), or the
+ * elements of a `for…of` over a binding typed by a type parameter. */
+function patternOverInstanceBinding(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  fromId: string,
+  site: IrType,
+): boolean {
+  if (lowerer.typeParamBindings === null || site.kind !== "record") return false;
+  const declaration = pattern.parent;
+  if (!declaration || !ts.isVariableDeclaration(declaration)) return false;
+  const values = lowerer.unions.get(fromId)?.arms.filter((arm) => !isUnitType(arm)) ?? [];
+  if (values.length < 2) return false;
+  let source = declaration.initializer;
+  while (source && ts.isParenthesizedExpression(source)) source = source.expression;
+  if (source)
+    return instanceSlotReadAtDeclaredType(lowerer, source, fromId, lowerer.typeOf(source), site);
+  const loop = declaration.parent?.parent;
+  if (!loop || !ts.isForOfStatement(loop)) return false;
+  let iterated = loop.expression;
+  while (ts.isParenthesizedExpression(iterated)) iterated = iterated.expression;
+  if (!ts.isIdentifier(iterated)) return false;
+  const symbol = lowerer.resolveValueSymbol(iterated);
+  if (!symbol) return false;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  const isVariable = (type: ts.Type): boolean => (type.flags & ts.TypeFlags.Instantiable) !== 0;
+  return (
+    isVariable(declared) ||
+    (lowerer.checker.isArrayType(declared) &&
+      lowerer.checker.getTypeArguments(declared as ts.TypeReference).some(isVariable))
+  );
 }
 
 /** An object pattern over a union of records and class instances

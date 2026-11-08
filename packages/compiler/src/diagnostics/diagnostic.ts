@@ -397,6 +397,26 @@ export function deferredRefusalDiag(refusal: string, loc: SrcLoc, hint: string):
   };
 }
 
+/** SC6015 — a statement of a generic instance that takes one record out of
+ * a binding whose slot holds several. The checker types the binding by the
+ * type parameter's constraint and narrowed nothing, so a value of each of the
+ * other layouts reaches the statement, and the statement has no form that
+ * takes them: it throws the TypeError of a value its type does not name. It
+ * completes for a value of the named layout, so the build names the
+ * statement instead of refusing the program. */
+export function strandedInstanceArmDiag(
+  target: string,
+  others: number,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6015",
+    message: `this statement throws when it runs with a value of another layout (this generic instance's binding holds ${others} other ${others === 1 ? "layout" : "layouts"} beside '${target}', and the statement takes the value as '${target}'), where it would have completed under Node; a program that never reaches it with such a value runs as it does under Node`,
+    loc,
+    hint: "give the values one layout by declaring each with the binding's type (`const item: Item = …`), or read the members from the variable of a `for…of` loop (`item.member`), which keeps every layout",
+  };
+}
+
 /** SC6013 — a statement writes a member that the program added to the
  * library Promise type (`Promise<T> & { status?: ... }`, an interface that
  * extends Promise). Node adds the member to the promise object. A compiled

@@ -108,6 +108,10 @@ for (const [name, title] of [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
   ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);

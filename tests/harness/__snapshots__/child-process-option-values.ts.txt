@@ -1,0 +1,17 @@
+child-process-option-values.ts:10:47 - error SC2020: 'execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+   9 | 
+  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+     |                                               ^~~~~~~~~~~~~~~~~~~~~
+  11 | exec("echo", { windowsHide: hidden() }, () => {});
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:11:16 - error SC2020: 'exec option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+  11 | exec("echo", { windowsHide: hidden() }, () => {});
+     |                ^~~~~~~~~~~~~~~~~~~~~
+  12 | 
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)

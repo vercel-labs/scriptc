@@ -79,15 +79,6 @@ export class Agent extends CoreAgent {
   }
 }
 
-// undici 7 declares a dispatch's method as any string
-// (`Autocomplete<'GET' | …>` in types/dispatcher.d.ts), where 5.x names
-// nine: a program on 7.x hands dispatch() a method it holds as a string.
-declare module "./core/types.ts" {
-  interface OtherMethods {
-    any: string;
-  }
-}
-
 export declare namespace Agent {
   type Options = AgentOptions;
   type DispatchOptions = import("./core/types.ts").DispatchOptions;

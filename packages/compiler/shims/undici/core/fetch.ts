@@ -16,7 +16,7 @@ import { Dispatcher as DispatcherClass } from "./dispatcher.ts";
 import type { Dispatcher } from "./dispatcher.ts";
 import { NotSupportedError } from "./errors.ts";
 import { getGlobalDispatcher, hasCustomGlobalDispatcher } from "./api.ts";
-import type { DispatchHandlers, HttpMethod, Profile } from "./types.ts";
+import type { DispatchHandlers, Profile } from "./types.ts";
 
 /** undici's RequestInit, restricted to the implemented members: string and
  * byte bodies, and the init members the dispatcher path honors. This is
@@ -48,8 +48,11 @@ export interface UndiciFetchInit {
   signal?: AbortSignal | null;
   redirect?: string;
   dispatcher?: unknown;
-  // Members of RequestInit that change nothing in a Node process (there is
-  // no page, cache or credential store): accepted and not read.
+  // Members of RequestInit this implementation does not act on. undici
+  // acts on most of them (it checks `integrity`, sends cache and referrer
+  // headers, restricts a `no-cors` request), so they are typed for the
+  // inits a program holds and checked where fetch reads them
+  // (inertMembers): only a value that asks for nothing is taken.
   cache?: unknown;
   credentials?: unknown;
   duplex?: unknown;
@@ -62,25 +65,56 @@ export interface UndiciFetchInit {
   window?: unknown;
 }
 
-/** The init fetch works with, from the init a program passed. */
-export function requestInitOf(init: UndiciFetchInit): UndiciRequestInit {
+/** The init fetch works with, from the init a program passed. Every
+ * member is either acted on as undici does or refused here, by name: an
+ * init never asks for something that is then silently not done. */
+export function requestInitOf(init: UndiciFetchInit, profile: Profile): UndiciRequestInit {
   const out: UndiciRequestInit = {};
-  if (init.method !== undefined) out.method = init.method;
+  inertMembers(init);
+  const method = init.method;
+  if (method !== undefined) {
+    if (!isToken(method)) throw new TypeError(`'${method}' is not a valid HTTP method.`);
+    const upper = method.toUpperCase();
+    if (upper === "CONNECT" || upper === "TRACE" || upper === "TRACK") {
+      throw new TypeError(`'${method}' HTTP method is unsupported.`);
+    }
+    // undici sends `patch` as it is written (only DELETE, GET, HEAD,
+    // OPTIONS, POST and PUT are put in upper case), a method servers do
+    // not know. This implementation does not send it either way.
+    if (upper === "PATCH" && method !== "PATCH") {
+      throw new NotSupportedError(
+        `scriptc's undici fetch does not send the method '${method}' (undici sends it in this spelling, which is not the PATCH method; write 'PATCH')`,
+      );
+    }
+    out.method = method;
+  }
   const headers = init.headers;
-  if (headers !== undefined && headers !== null) out.headers = headersInitOf(headers);
+  if (headers !== undefined) out.headers = headersInitOf(headers);
   const body = init.body;
-  if (body !== undefined && body !== null) out.body = bodyInitOf(body);
+  if (body !== undefined && body !== null) {
+    const sent = method === undefined ? "GET" : method.toUpperCase();
+    if (sent === "GET" || sent === "HEAD") {
+      throw new TypeError("Request with GET/HEAD method cannot have body.");
+    }
+    out.body = bodyInitOf(body);
+  }
   if (init.signal !== undefined) out.signal = init.signal;
   const redirect = init.redirect;
   if (redirect !== undefined) {
     if (redirect !== "follow" && redirect !== "manual" && redirect !== "error") {
       throw new TypeError(
-        `Request constructor: ${redirect} is not an accepted type. Expected one of follow, error, manual.`,
+        `${enumContext(profile)}: ${redirect} is not an accepted type. Expected one of follow, manual, error.`,
       );
     }
     out.redirect = redirect;
   }
   const dispatcher = init.dispatcher;
+  if (dispatcher === null && profile.major >= 7) {
+    // undici 7 fails an assertion on it; 5.x takes it as no dispatcher.
+    throw new NotSupportedError(
+      "scriptc's undici fetch takes a dispatcher or none: 'dispatcher: null' is refused (undici 7 fails an assertion on it)",
+    );
+  }
   if (dispatcher !== undefined && dispatcher !== null) {
     if (!(dispatcher instanceof DispatcherClass)) {
       throw new NotSupportedError(
@@ -92,10 +126,84 @@ export function requestInitOf(init: UndiciFetchInit): UndiciRequestInit {
   return out;
 }
 
-function headersInitOf(headers: unknown): Headers | [string, string][] | Record<string, string> {
+/** How the release names the dictionary in its message about a member
+ * that is none of the values it lists. */
+function enumContext(profile: Profile): string {
+  return profile.major >= 7 ? "undefined" : "Dictionary";
+}
+
+/** RFC 9110's token: what a method is made of. */
+function isToken(text: string): boolean {
+  if (text.length === 0) return false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    const alphanumeric = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+    if (!alphanumeric && !"!#$%&'*+-.^_`|~".includes(text[i]!)) return false;
+  }
+  return true;
+}
+
+/** The members this implementation does not act on. For each, the values
+ * listed are the ones undici answers with the request of a plain call and
+ * the same response (measured on undici 5.29.0 and 7.30.0, one request per
+ * value): those ask for nothing and are taken. Every other value asks for
+ * something undici would do and this implementation would not (a digest to
+ * check the body against, a Referer or Cache-Control header, a restricted
+ * request) or is one undici rejects: the call is refused, naming the
+ * member, so no init is half honoured. */
+function inertMembers(init: UndiciFetchInit): void {
+  inertOneOf("cache", init.cache, ["default", "force-cache"]);
+  inertOneOf("credentials", init.credentials, ["omit", "same-origin", "include"]);
+  inertOneOf("duplex", init.duplex, ["half"]);
+  inertOneOf("integrity", init.integrity, [""]);
+  inertOneOf("mode", init.mode, ["cors"]);
+  inertOneOf("priority", init.priority, ["auto", "high", "low"]);
+  inertOneOf("referrer", init.referrer, ["", "about:client"]);
+  inertOneOf("referrerPolicy", init.referrerPolicy, [
+    "",
+    "no-referrer",
+    "no-referrer-when-downgrade",
+    "same-origin",
+    "origin",
+    "strict-origin",
+    "origin-when-cross-origin",
+    "strict-origin-when-cross-origin",
+    "unsafe-url",
+  ]);
+  const keepalive = init.keepalive;
+  if (keepalive !== undefined && typeof keepalive !== "boolean") {
+    throw unimplementedMember("keepalive", keepalive, "false or true");
+  }
+  const window = init.window;
+  if (window !== undefined && window !== null) {
+    throw unimplementedMember("window", window, "null");
+  }
+}
+
+function inertOneOf(member: string, value: unknown, inert: readonly string[]): void {
+  if (value === undefined) return;
+  if (typeof value === "string" && inert.includes(value)) return;
+  const taken: string[] = [];
+  for (const one of inert) taken.push(JSON.stringify(one));
+  throw unimplementedMember(member, value, taken.join(", "));
+}
+
+function unimplementedMember(member: string, value: unknown, taken: string): NotSupportedError {
+  const given = typeof value === "string" ? JSON.stringify(value) : String(value);
+  return new NotSupportedError(
+    `scriptc's undici fetch does not implement the RequestInit member '${member}': ${given} is refused (taken: ${taken}, which ask for nothing)`,
+  );
+}
+
+/** The init's headers as a Headers object, filled the way undici's
+ * Headers constructor fills one: each pair is appended, so a name or a
+ * value the fetch standard does not allow (a line break, a NUL, a
+ * character beyond latin1) is rejected with the constructor's own error
+ * and never reaches a request. */
+function headersInitOf(headers: unknown): Headers {
   if (headers instanceof Headers) return headers;
+  const out = new Headers();
   if (Array.isArray(headers)) {
-    const pairs: [string, string][] = [];
     for (const entry of headers as unknown[]) {
       if (!Array.isArray(entry) || entry.length !== 2) {
         throw new TypeError(
@@ -104,22 +212,18 @@ function headersInitOf(headers: unknown): Headers | [string, string][] | Record<
             ".",
         );
       }
-      pairs.push([String(entry[0]), String(entry[1])]);
+      out.append(String(entry[0]), String(entry[1]));
     }
-    return pairs;
+    return out;
   }
-  if (typeof headers !== "object") {
+  if (typeof headers !== "object" || headers === null) {
     throw new TypeError(
-      "Headers constructor: The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.",
+      "Headers constructor: Argument 1 could not be converted to one of: sequence<sequence<ByteString>>, record<ByteString, ByteString>.",
     );
   }
-  const record: Record<string, string> = {};
   const given = headers as Record<string, unknown>;
-  for (const name of Object.keys(given)) {
-    const value = given[name];
-    record[name] = Array.isArray(value) ? (value as unknown[]).join(",") : String(value);
-  }
-  return record;
+  for (const name of Object.keys(given)) out.append(name, String(given[name]));
+  return out;
 }
 
 function bodyInitOf(body: unknown): string | Uint8Array {
@@ -242,38 +346,83 @@ export function undiciFetch(
   if (given !== undefined) {
     // fetch() reports a bad init by rejecting, never by throwing.
     try {
-      init = requestInitOf(given);
+      init = requestInitOf(given, profile);
     } catch (err) {
       return Promise.reject(err);
     }
   }
   const explicit = init !== undefined ? init.dispatcher : undefined;
-  if (explicit === undefined && !hasCustomGlobalDispatcher()) {
-    if (init === undefined) return fetch(input);
+  // A method outside the standard ones goes through this package's own
+  // client, which frames it as undici does (a PROPFIND without a body
+  // carries `content-length: 0`).
+  const ordinary =
+    init === undefined ||
+    ((init.method === undefined || isStandardMethod(init.method)) && !framingHeader(init.headers));
+  const ownGlobal = explicit === undefined && !hasCustomGlobalDispatcher();
+  if (ownGlobal && ordinary) {
+    // undici's fetch names itself; the runtime's own fetch names Node.
+    const headers = new Headers(init !== undefined ? init.headers : undefined);
+    if (!headers.has("user-agent")) headers.set("user-agent", "undici");
+    if (init === undefined) return fetch(input, { headers });
     return fetch(input, {
       method: init.method,
-      headers: init.headers,
+      headers,
       body: init.body,
       signal: init.signal ?? undefined,
       redirect: init.redirect,
     });
   }
   const dispatcher = explicit ?? getGlobalDispatcher(createGlobal);
-  return fetchThrough(dispatcher, input, init ?? {}, profile);
+  return fetchThrough(dispatcher, input, init ?? {}, profile, ownGlobal);
 }
 
+/** Whether the init carries a header the client frames itself or refuses
+ * (request.ts, processHeader): such a request goes through this package's
+ * client, which fails it with the error undici's does. */
+function framingHeader(
+  headers: Headers | [string, string][] | Record<string, string> | undefined,
+): boolean {
+  if (!(headers instanceof Headers)) return false;
+  for (const name of [
+    "connection",
+    "content-length",
+    "expect",
+    "host",
+    "keep-alive",
+    "transfer-encoding",
+    "upgrade",
+  ]) {
+    if (headers.has(name)) return true;
+  }
+  return false;
+}
+
+/** undici's normalizeMethod: these six are put in upper case, every other
+ * token is sent as written. */
 function normalizeMethod(method: string): string {
   const upper = method.toUpperCase();
-  return ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"].includes(upper)
-    ? upper
-    : method;
+  return ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"].includes(upper) ? upper : method;
 }
 
+function isStandardMethod(method: string): boolean {
+  return ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"].includes(
+    normalizeMethod(method),
+  );
+}
+
+/** `nodeGlobal`: the request is one undici would send through the global
+ * dispatcher the program never set. Under Node that dispatcher is Node's
+ * own, a 7.x one whatever the installed undici is, and it frames a
+ * bodiless QUERY, PROPFIND or PROPPATCH with `content-length: 0` where a
+ * 5.x dispatcher sends none (measured with undici 5.29.0 under Node 24:
+ * with and without a dispatcher of the package). The client is told so
+ * with the request (`__framedAsNode`). */
 async function fetchThrough(
   dispatcher: Dispatcher,
   input: string | URL,
   init: UndiciRequestInit,
   profile: Profile,
+  nodeGlobal: boolean,
 ): Promise<Response> {
   let url = typeof input === "string" ? new URL(input) : new URL(input.href);
   let method = normalizeMethod(init.method ?? "GET");
@@ -318,7 +467,17 @@ async function fetchThrough(
 
     let raw: RawResponse;
     try {
-      raw = await dispatchOnce(dispatcher, url, method, pairs, body, signal, redirectMode, profile);
+      raw = await dispatchOnce(
+        dispatcher,
+        url,
+        method,
+        pairs,
+        body,
+        signal,
+        redirectMode,
+        profile,
+        nodeGlobal,
+      );
     } catch (err) {
       if (signal !== null && signal.aborted) throw abortReason(signal);
       // undici's fetch reports a dispatch that was aborted without the
@@ -501,6 +660,7 @@ function dispatchOnce(
   signal: AbortSignal | null,
   redirectMode: "follow" | "manual" | "error",
   profile: Profile,
+  nodeGlobal: boolean,
 ): Promise<RawResponse> {
   return new Promise<RawResponse>((resolve, reject) => {
     let resolved = false;
@@ -751,9 +911,10 @@ function dispatchOnce(
         origin: url.origin,
         path: url.pathname + url.search,
         // fetch() sends any method token, as undici's does.
-        method: method as HttpMethod,
+        method,
         headers,
         body,
+        __framedAsNode: nodeGlobal,
       },
       handler,
     );

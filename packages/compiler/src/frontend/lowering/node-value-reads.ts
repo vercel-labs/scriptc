@@ -254,7 +254,7 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
       // process.nextTick`, and a call through the stored object runs it);
       // the refusing function the spelled read answers otherwise.
       const real =
-        name === "process" ? processFunctionMemberValue(lowerer, member, loc, true) : null;
+        name === "process" ? processFunctionMemberValue(lowerer, member, loc, true, true) : null;
       descriptor = [
         field("value", dyn(real ?? memberFunctionFence(lowerer, display, member, kind, node, loc))),
         field("writable", dyn(boolLit(true, loc))),

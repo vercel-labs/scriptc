@@ -205,6 +205,7 @@ import {
   lowerUtilTypeValue,
   checkedNativeCallableValue,
   pathModuleValue,
+  settleLoaderShareEnv,
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
@@ -12076,6 +12077,8 @@ export class Lowerer {
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
   finishModule(functions: IrFunction[], library = false): LowerResult {
+    // Whether the program uses workers is final now.
+    settleLoaderShareEnv(this, functions);
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.

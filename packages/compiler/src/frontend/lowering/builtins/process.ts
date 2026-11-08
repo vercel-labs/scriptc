@@ -662,12 +662,14 @@ export function processDataMemberValue(
  * what `process.<member>` read as a value answers, and what the same member
  * of a stored process object answers (node-value-reads.ts), so the two are
  * one function. Null for the members that are call-only or have no
- * lowering. `js` is whether the read is in a JavaScript source. */
+ * lowering. `js` is whether the read is in a JavaScript source; `held` is
+ * whether the member is built for a stored process object, not spelled. */
 export function processFunctionMemberValue(
   lowerer: Lowerer,
   member: string,
   loc: SrcLoc,
   js: boolean,
+  held = false,
 ): IrExpr | null {
   if (member === "hrtime") {
     return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
@@ -679,7 +681,7 @@ export function processFunctionMemberValue(
     // Keep the native loader's argument validation when the function is
     // stored. The declaration's string signature must not insert a checked
     // adapter before the loader gets to report Node's invalid-id error.
-    return { kind: "dynFrom", value: lowerBuiltinLoaderValue(lowerer, loc), type: DYN, loc };
+    return { kind: "dynFrom", value: lowerBuiltinLoaderValue(lowerer, loc, held), type: DYN, loc };
   }
   // process.cwd as a value: the process module's member (surfaces.ts).
   if (member === "cwd")

@@ -1624,6 +1624,10 @@ export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
  * such check in the program calls. */
 export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
 
+/** The constructors that get a static table in a program that cannot read
+ * one: none. */
+const NO_CONSTRUCTORS = new Set<string>();
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
@@ -1818,7 +1822,7 @@ export class ClassDynamicDispatch {
     // function-typed static called through the class name passes the class
     // as the call's receiver) keeps the constructor value it had.
     const tables = this.boxedConstructors.size > 0 && this.sites.usesDynamicValues(functions);
-    for (const name of tables ? this.boxedConstructors : [])
+    for (const name of tables ? this.boxedConstructors : NO_CONSTRUCTORS)
       for (let info = lowerer.classes.get(name) ?? null; info; info = info.base) {
         if (info.def.staticsHelper !== undefined || this.staticTablesDecided.has(info.def.name))
           continue;

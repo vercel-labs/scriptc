@@ -1,3 +1,4 @@
+import { refuseCallbackThis } from "../callback-arg.js";
 import { lowerBuiltinByteInput, errorFirstBytesCallback } from "./arguments.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -241,6 +242,7 @@ export function lowerZlibStreamMethodCall(
   const isFunc = (node: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
   const callback = (node: ts.Expression): IrExpr => {
+    refuseCallbackThis(lowerer, node, `a zlib ${member} callback`, "the stream");
     const cb = lowerer.lowerExprExpecting(node, funcOf([], VOID));
     if (cb.type.kind !== "func" || cb.type.params.length > 0) {
       lowerer.noLowering(

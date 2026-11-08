@@ -145,13 +145,13 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
-  stdioExtended: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   zstd: boolean;
@@ -404,9 +404,8 @@ export function effectiveRuntimeFeatures(
     jsObjectModel,
     mutableBuffers: features.mutableBuffers === true,
     bigintBytes: features.bigintBytes === true,
-    stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
+    stdioObject: features.stdioObject === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     zstd: features.zstd === true,

@@ -14,8 +14,9 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
@@ -49,6 +50,16 @@ if (requestedMode !== undefined && requestedMode !== "release" && requestedMode 
 // packaged-artifact runs retain both modes unless one is explicitly selected.
 const optimizationModes: readonly ("release" | "dev")[] =
   requestedMode === undefined ? ["release", "dev"] : [requestedMode];
+
+// A case is a sequence of steps, and every step already carries its own
+// deadline (step-timeout.ts): the Node oracle, then one compile and one run
+// per optimization mode per CPU level. The test timeout is the case's hang
+// detector, so it has to cover the whole sequence — with the 240 s step
+// deadline and two modes, the five steps together can outlast the shared
+// 300 s default while every one of them is still inside its own deadline
+// (5015-lifetime-region-publish, arm64, 2026-11-04). A stalled step still
+// reports itself at the step deadline, with the processes it left behind.
+const CASE_TIMEOUT_MS = STEP_TIMEOUT_MS * (1 + optimizationModes.length * (1 + cpuLevels.length));
 
 // Same known-env contract as the main differential suite.
 process.env["SCRIPTC_TEST_ENV"] = "from-harness";
@@ -116,6 +127,7 @@ async function runBinary(
   for (let attempt = 0; ; attempt++) {
     const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
     if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
@@ -132,7 +144,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw spawnFailure(err);
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -262,6 +276,7 @@ async function build(file: string, optimization: "release" | "dev") {
 describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${targetCpu === undefined ? "" : `, ${targetCpu}`}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
+    { timeout: CASE_TIMEOUT_MS },
     async ([rel, file], { skip }) => {
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();

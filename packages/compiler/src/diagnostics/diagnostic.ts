@@ -223,13 +223,17 @@ export function nativeCodegenDiag(
 }
 
 /** SC8005 — the program calls into Node.js (@scriptc/node), and the build
- * found no usable libnode pack to record into the binary. */
-export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+ * found no usable libnode pack to record into the binary. `hint` names what
+ * reached into Node and how to install this host's pack
+ * (node-islands/libnode.ts); the default is the pack-less self-build route. */
+export function nodeIslandNodeDiag(message: string, file: string, hint?: string): ScrDiagnostic {
   return {
     code: "SC8005",
     message,
     loc: { file, start: 0, end: 0 },
-    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
+    hint:
+      hint ??
+      "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
   };
 }
 
@@ -402,7 +406,7 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
     code: "SC8006",
     message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this patch",
   };
 }
 
@@ -439,7 +443,7 @@ export function nodeIslandMarkStripDiag(
     code: "SC8006",
     message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a .js module can run in a Node island as it is",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is",
   };
 }
 
@@ -560,7 +564,7 @@ export function nodeIslandReaderStripDiag(
     code: "SC8006",
     message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this read",
   };
 }
 
@@ -593,26 +597,6 @@ export function sharedModuleDuplicatedDiag(
     message: `module '${module}' is duplicated across the Node island boundary although it is stateful: ${why}; the program and its islands each see their own copy`,
     loc,
     hint: 'remove "share": "duplicate" from its scriptc.packages entry to share one instance',
-  };
-}
-
-/** SC8006 — the build refuses the program: it replaces a process output
- * stream's write method while a Node island exists, and the island's
- * `process.stdout` is its own object, so the replacement and the island's
- * writes cannot see each other. The planner stops on this, so it is an
- * error, not the SC8020 warning. H2 shares the native stream object with
- * the islands and removes this refusal. */
-export function stdioPatchAcrossIslandsDiag(
-  stream: "stdout" | "stderr" | null,
-  loc: SrcLoc,
-): ScrDiagnostic {
-  const what =
-    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
-  return {
-    code: "SC8006",
-    message: `${what} is replaced while a Node island exists: the island's process output stream is its own object, so it would not see this patch and its writes would bypass it`,
-    loc,
-    hint: "remove the replacement, or keep this write in a module that stays native (--node-islands=off for the package)",
   };
 }
 
@@ -1513,6 +1497,56 @@ export function recordShapeMismatchDiag(
     loc,
     milestone: "later",
     hint: "width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead",
+  };
+}
+
+/** A record-width conversion at a boundary where the program writes
+ * through the value afterwards (SC2021): the conversion builds a new
+ * object, so the write reaches only the copy, while Node keeps one object.
+ * The alternative — refusing — is what keeps a build from shipping a
+ * program whose writes go missing; the hint names the annotation that
+ * makes both names the same object. */
+export function widthCopyRefusalDiag(
+  site: "declaration" | "call" | "literal",
+  sourceType: string,
+  targetType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how =
+    site === "call"
+      ? `passing a '${sourceType}' to a parameter declared '${targetType}'`
+      : site === "literal"
+        ? `storing a '${sourceType}' in a '${targetType}' field`
+        : `declaring a '${sourceType}' value as '${targetType}'`;
+  return {
+    code: "SC2021",
+    message: `${how} copies the object, and the program writes through it: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
+  };
+}
+
+/** A store into a binding that kept its initializer's layout (SC2021): the
+ * kept slot represents the assigned value in a different layout, so the
+ * store rebuilds the object instead of sharing it, while Node keeps one
+ * object. Refusing the store keeps a later write through the assigned value
+ * from silently reaching only the copy. */
+export function keptLayoutStoreCopyDiag(
+  targetName: string,
+  sourceType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2021",
+    message: `assigning a '${sourceType}' to '${targetName}' copies the object, so a later write through the assigned value would reach only the copy: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
   };
 }
 

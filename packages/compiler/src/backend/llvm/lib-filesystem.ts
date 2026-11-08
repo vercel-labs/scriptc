@@ -191,6 +191,9 @@ function watchChangeAdapter(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The value form reports DEP0187 on a next tick, so the loop runs even when
+  // nothing else in the program is asynchronous.
+  if (e.fn === "fs.existsSyncValue") host.usesTimers = true;
   const alwaysThrowSym = FS_ALWAYS_THROW_SYMS[e.fn];
   if (alwaysThrowSym !== undefined) {
     return emitAlwaysThrowLibCall(host, e, alwaysThrowSym);

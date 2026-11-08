@@ -1,0 +1,111 @@
+variadic-callback-library-slots.ts:9:11 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+   8 | const ta = new Float64Array([1, 2]);
+   9 | m.forEach((...args: unknown[]) => console.log(args.length));
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | s.forEach((...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:10:11 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+   9 | m.forEach((...args: unknown[]) => console.log(args.length));
+  10 | s.forEach((...args: unknown[]) => console.log(args.length));
+     |           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | ta.forEach((...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:11:12 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  10 | s.forEach((...args: unknown[]) => console.log(args.length));
+  11 | ta.forEach((...args: unknown[]) => console.log(args.length));
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | console.log(ta.map((...args: unknown[]) => args.length).length);
+
+variadic-callback-library-slots.ts:12:20 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  11 | ta.forEach((...args: unknown[]) => console.log(args.length));
+  12 | console.log(ta.map((...args: unknown[]) => args.length).length);
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | console.log(Array.from(xs.values().map((...args: unknown[]) => args.length)).length);
+
+variadic-callback-library-slots.ts:13:40 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  12 | console.log(ta.map((...args: unknown[]) => args.length).length);
+  13 | console.log(Array.from(xs.values().map((...args: unknown[]) => args.length)).length);
+     |                                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | xs.values().forEach((...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:14:21 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  13 | console.log(Array.from(xs.values().map((...args: unknown[]) => args.length)).length);
+  14 | xs.values().forEach((...args: unknown[]) => console.log(args.length));
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 | console.log(xs.toSorted((...args: unknown[]) => args.length).length);
+
+variadic-callback-library-slots.ts:15:25 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  14 | xs.values().forEach((...args: unknown[]) => console.log(args.length));
+  15 | console.log(xs.toSorted((...args: unknown[]) => args.length).length);
+     |                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | console.log("a1".replace("1", (...args: unknown[]) => String(args.length)));
+
+variadic-callback-library-slots.ts:16:13 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  15 | console.log(xs.toSorted((...args: unknown[]) => args.length).length);
+  16 | console.log("a1".replace("1", (...args: unknown[]) => String(args.length)));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | new URLSearchParams("a=1").forEach((...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:17:36 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  16 | console.log("a1".replace("1", (...args: unknown[]) => String(args.length)));
+  17 | new URLSearchParams("a=1").forEach((...args: unknown[]) => console.log(args.length));
+     |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  18 | console.log(Map.groupBy(xs, (...args: unknown[]) => String(args.length)).size);
+
+variadic-callback-library-slots.ts:18:13 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  17 | new URLSearchParams("a=1").forEach((...args: unknown[]) => console.log(args.length));
+  18 | console.log(Map.groupBy(xs, (...args: unknown[]) => String(args.length)).size);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | Promise.resolve(1).then((...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:19:1 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  18 | console.log(Map.groupBy(xs, (...args: unknown[]) => String(args.length)).size);
+  19 | Promise.resolve(1).then((...args: unknown[]) => console.log(args.length));
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  20 | process.stdout.write("x", (...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:20:27 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  19 | Promise.resolve(1).then((...args: unknown[]) => console.log(args.length));
+  20 | process.stdout.write("x", (...args: unknown[]) => console.log(args.length));
+     |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | process.on("exit", (...args: unknown[]) => console.log(args.length));
+
+variadic-callback-library-slots.ts:21:20 - error SC1090: a function that takes a rest parameter or reads 'arguments', passed where it is called with a fixed argument list (name the parameters the function uses) is not supported yet
+
+  20 | process.stdout.write("x", (...args: unknown[]) => console.log(args.length));
+  21 | process.on("exit", (...args: unknown[]) => console.log(args.length));
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | 
+
+variadic-callback-library-slots.ts:31:12 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  30 |   loose(function () {
+  31 |     return arguments.length;
+     |            ^~~~~~~~~~~~~~~~
+  32 |   }),
+
+variadic-callback-library-slots.ts:35:10 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  34 | const held: unknown = function () {
+  35 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  36 | };
+
+variadic-callback-library-slots.ts:41:14 - error SC1090: 'arguments.length' in a function expression handed where no function type is expected (the count each call passes is not known: name the parameters the function uses) is not supported yet
+
+  40 |     function () {
+  41 |       return arguments.length;
+     |              ^~~~~~~~~~~~~~~~
+  42 |     },

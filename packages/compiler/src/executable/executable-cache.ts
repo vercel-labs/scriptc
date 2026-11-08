@@ -72,15 +72,16 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
-  stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsExistsValue?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
-  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
-  stdioWriteSlot?: boolean;
+  /** A process output stream held as a value: with Node islands,
+   * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
+  stdioObject?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
   nodeIsland?: boolean;

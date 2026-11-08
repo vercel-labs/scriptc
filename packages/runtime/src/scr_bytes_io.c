@@ -1364,7 +1364,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
 static ScrBytes *scr_buffer_from_refusal(const char *detail) {
   char msg[192];
   int n = snprintf(msg, sizeof msg, "Buffer.from %s is not supported yet", detail);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
   return NULL;
 }
 

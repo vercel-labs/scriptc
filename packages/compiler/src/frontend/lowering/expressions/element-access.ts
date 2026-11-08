@@ -2876,13 +2876,16 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         // declare is the bracket spelling of the dot write `instance.name =
         // v` (which a class with an index signature admits): the same own
         // property of the instance, through its checked-dynamic view. A
-        // name the class declares with `declare` keeps the refusal: on a
-        // class rooted in a runtime class the write by name can address the
-        // runtime object's own member of that name, and the two spellings
-        // must reach one place.
+        // `declare` field is such a name too. A declared `stack` on an
+        // Error subclass keeps the refusal: the runtime error holds its
+        // own stack, and the two spellings must reach one place.
         if (
           isDynTypedRefType(receiver.type) &&
-          !erasedDeclareField(lowerer, receiver.type.className, key)
+          !(
+            key === "stack" &&
+            lowerer.isErrorRootedClass(receiver.type.className) &&
+            erasedDeclareField(lowerer, receiver.type.className, key)
+          )
         ) {
           const info = lowerer.classes.get(receiver.type.className);
           if (

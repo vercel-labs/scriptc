@@ -16,10 +16,16 @@ declare module "worker_threads" {
   export const resourceLimits: ResourceLimits;
   /* the Worker's name option, trimmed ("WorkerThread" by default); "" in the main thread */
   export const threadName: string | null;
+  /* The env option value that makes a Worker read and write this process's
+   * environment instead of a copy: env: SHARE_ENV. */
+  export const SHARE_ENV: unique symbol;
   export interface WorkerOptions {
     workerData?: unknown;
     transferList?: readonly unknown[];
     argv?: readonly unknown[];
+    /* A copy of these entries becomes the worker's process.env; omitted or
+     * null copies this thread's environment. */
+    env?: { [key: string]: string | number | boolean | undefined } | null | typeof SHARE_ENV;
     name?: string;
     resourceLimits?: ResourceLimits;
     stdout?: boolean;

@@ -34,6 +34,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.promisify",
   "nodeIsland.classMethodsOf",
   "nodeIsland.copyArrays",
+  "nodeIsland.adoptThenable",
+  "nodeIsland.promiseResolve",
+  // A code that is not a safe integer throws, as process.setExitCode does.
+  "nodeIsland.setExitCode",
+  // Both read Node's process.exitCode through an island helper once Node is
+  // loaded, which is island JavaScript (the property can be redefined
+  // there). The runtime drops what that read throws today and answers its
+  // own value; the check keeps the call right if it ever delivers one.
+  "nodeIsland.exitCode",
+  "nodeIsland.hasExitCode",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.
@@ -367,6 +377,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.listenersDyn",
   "emitter.emitError",
   "emitter.on",
+  "emitter.onNamed",
   "emitter.off",
   "emitter.checkListener",
   "emitter.onDyn",
@@ -376,6 +387,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.onData",
   "emitter.onDataDyn",
   "emitter.emitData",
+  // The event name's ToPropertyKey conversion runs an object name's own
+  // toString/valueOf (user code, which may throw), and an object that
+  // answers no primitive throws the spec's TypeError.
+  "emitter.nameDyn",
   "readable.nextChunk",
   "readable.nextChunkDyn",
   // The checked-dynamic chunk forms throw Node's ERR_INVALID_ARG_TYPE

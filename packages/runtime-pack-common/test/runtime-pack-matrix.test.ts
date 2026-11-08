@@ -45,6 +45,62 @@ test("scr_events.c builds once per flavor, whatever the program's features", () 
   ]);
 });
 
+test("Node islands select the dynamic promise build that adopts island thenables", () => {
+  const plain = { warningReplace: false, processExtras: false, nodeIsland: false, workers: false };
+  expect(selected("scr_async_dyn.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  // Beside the unit's other builds it keeps each one's defines.
+  expect(
+    selected("scr_async_dyn.c", { ...plain, processExtras: true, nodeIsland: true }).defines,
+  ).toEqual(["SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  expect(
+    selected("scr_async_dyn.c", {
+      ...plain,
+      warningReplace: true,
+      processExtras: true,
+      nodeIsland: true,
+    }).defines,
+  ).toEqual(["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS", "SCR_NODE_ISLANDS"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_async_dyn.c", plain).defines).toEqual([]);
+  expect(selected("scr_async_dyn.c", { ...plain, processExtras: true }).defines).toEqual([
+    "SCR_PROCESS_EXTRAS",
+  ]);
+});
+
+test("Node islands select the invoke build that reaches an island promise's own methods", () => {
+  const plain = { jsObjectModel: false, nodeIsland: false, workers: false };
+  expect(selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true }).defines).toEqual([
+    "SCR_NODE_ISLANDS",
+  ]);
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, nodeIsland: true, jsObjectModel: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_JS_OBJECT_MODEL"]);
+  // A program without islands keeps the objects it had.
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true }).defines).toEqual([
+    "SCR_JS_OBJECT_MODEL",
+  ]);
+});
+
+test("a process stream held as a value selects the island build that shares its write", () => {
+  // The unit that joins the island's process.stdout.write to the program's
+  // links only with both features.
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_node_island_stdio.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["nodeIsland", "stdioObject"] });
+  expect(selected("scr_node_island.c", { stdioObject: true, workers: false }).defines).toEqual([
+    "SCR_NODE_ISLAND_STDIO",
+  ]);
+  // Every other program with islands keeps the default object.
+  expect(selected("scr_node_island.c", { stdioObject: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(
@@ -241,6 +297,17 @@ test("extended spawn options beside an error read keep both child builds", () =>
     selected("scr_child.c", { workers: false, childOptionExt: true, childErrorFields: false })
       .defines,
   ).toEqual(["SCR_CHILD_CP_OPTIONS"]);
+});
+
+test("a worker program links the symbol and assert units its env option needs", () => {
+  // The Worker env option compares against worker_threads.SHARE_ENV, whose
+  // symbol lives in scr_symbol.c, so a worker program selects that unit even
+  // when it never uses a symbol itself; scr_symbol.c assembles symbol
+  // equality messages through scr_assert.c, which travels with it.
+  const symbol = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_symbol.c");
+  expect(symbol.predicate).toEqual({ any: ["symbol", "workers"] });
+  const assert = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_assert.c");
+  expect(assert.predicate).toEqual({ any: ["assert", "regex", "symbol", "workers"] });
 });
 
 test("Node islands select no build of the units that reach them through the installed table", () => {

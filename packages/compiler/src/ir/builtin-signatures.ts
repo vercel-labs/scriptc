@@ -258,6 +258,19 @@ function buildLibFnSignatures() {
      * promise's value). */
     "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },
     "nodeIsland.awaitCopy": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** The operand of a dynamic await or PromiseResolve in a program with
+     * Node islands: an island thenable as the promise V8 adopts it into,
+     * any other value as itself. */
+    "nodeIsland.adoptThenable": { argTypes: [DYN], result: DYN },
+    /** `Promise.resolve(v)` over a dynamic value in a program with Node
+     * islands: PromiseResolve, so an island thenable is adopted. */
+    "nodeIsland.promiseResolve": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    /** process.exitCode in a program with Node islands: Node's property
+     * once Node is loaded, the runtime's own value before
+     * (island-process-state.ts). */
+    "nodeIsland.setExitCode": { argTypes: [F64], result: VOID },
+    "nodeIsland.exitCode": { argTypes: [], result: F64 },
+    "nodeIsland.hasExitCode": { argTypes: [], result: BOOL },
     /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
      * checked-dynamic object (args: receiver, key string, value — all
      * borrowed; the runtime copies the key and retains the value in). An
@@ -1700,6 +1713,9 @@ function buildLibFnSignatures() {
     "worker.root": { argTypes: [], result: F64 },
     "worker.data": { argTypes: [], result: DYN },
     "worker.parentPort": { argTypes: [], result: DYN },
+    /** worker_threads.SHARE_ENV: the env option's share marker symbol
+     * (scr_worker_events.c). */
+    "worker.shareEnv": { argTypes: [], result: SYMBOL_T },
     /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
      * worker (scr_worker_events.c). */
     "worker.resourceLimits": { argTypes: [], result: DYN },
@@ -4771,6 +4787,11 @@ function buildLibFnSignatures() {
     "emitter.className": { argTypes: [null], result: STRING },
     "emitter.ctor": { argTypes: [null], result: VOID },
     "emitter.on": { argTypes: [null, STRING, null, BOOL, BOOL], result: VOID },
+    /** emitter.on for a name whose ARGUMENT value is not the registry key
+     * it converts to (`on(null)` keys the table as "null" but warns with
+     * `type: null`): (recv, name key, name value dyn, cb /moves/, once,
+     * prepend). Only the leak warning reads the value. */
+    "emitter.onNamed": { argTypes: [null, STRING, DYN, null, BOOL, BOOL], result: VOID },
     "emitter.off": { argTypes: [null, STRING, null], result: VOID },
     // The dyn-adapted registration family (JS-lane checked-dynamic
     // listeners): checkListener has NO receiver (it validates the listener
@@ -4806,7 +4827,10 @@ function buildLibFnSignatures() {
     "emitter.count": { argTypes: [null, STRING], result: F64 },
     "emitter.countFn": { argTypes: [null, STRING, null], result: F64 },
     "emitter.countDyn": { argTypes: [null, STRING, DYN], result: F64 },
-    "emitter.names": { argTypes: [null], result: VOID },
+    /** eventNames(): the registered event keys as a checked-dynamic array —
+     * string names first in Node's _events property order, then symbols
+     * (which a string array cannot carry). */
+    "emitter.names": { argTypes: [null], result: DYN },
     "emitter.listeners": { argTypes: [null, STRING], result: VOID },
     /** listeners()/rawListeners() through an untyped value: a checked-
      * dynamic array (throws when a listener has typed parameters). */
@@ -4832,6 +4856,14 @@ function buildLibFnSignatures() {
     /** The events.errorMonitor event key: an immortal string the runtime
      * registry matches by identity, so no string event name reaches it. */
     "emitter.errorMonitor": { argTypes: [], result: STRING },
+    /** A symbol event name's registry key (the scr_str_symbol_key of
+     * scr_string.h): Node's listener table is keyed by property keys, so a
+     * symbol name matches by identity and never by bytes. No receiver.
+     * emitter.nameDyn is the same conversion for an untyped name —
+     * ToPropertyKey: a symbol's key, or ToString of every other value,
+     * which runs an object name's own toString/valueOf and may throw. */
+    "emitter.symName": { argTypes: [SYMBOL_T], result: STRING },
+    "emitter.nameDyn": { argTypes: [DYN], result: STRING },
     // node:stream: receivers are stream-hierarchy objects and several
     // results are program-dependent (the receiver's class, unions) — the
     // libCall case owns those checks. The constructors and a few methods

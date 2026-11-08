@@ -123,6 +123,11 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* The process environment's value for one UTF-8, NUL-terminated name, copied:
+ * +1 for the caller to free, NULL when the variable is absent. The Win32
+ * environment on Windows, getenv(3) elsewhere, so a worker that shares the
+ * process environment reads what either thread wrote. Never throws. */
+char *scr_env_process_copy(const char *name);
 /* NODE_DEBUG as the process started (NULL when unset), for util.debuglog. */
 const char *scr_node_debug_initial(void);
 /* The whole environment as alternating [k, v, k, v, ...] strings in

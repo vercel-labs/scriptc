@@ -30,6 +30,7 @@ import {
   genericClassConstructor,
   genericPrototypeMember,
   inGenericChain,
+  replaceablePrototypeMethod,
 } from "./class-generic-members.js";
 import { iteratorPrototypeExpr } from "./iterator-prototype.js";
 
@@ -518,16 +519,37 @@ export function reflectClassPrototype(
           "prototype reflection with a computed member key that has no lowering is not supported yet",
         );
       }
-      initialization.then.push(
-        define(
-          key,
-          ts.isMethodDeclaration(member)
-            ? [{ key: "value", value }, writable]
-            : [{ key: ts.isGetAccessor(member) ? "get" : "set", value }],
-        ),
-      );
-      // Typed calls reach the method without reading this object, so a
-      // replacement through the dynamic view is refused by name.
+      // Typed calls reach a method without reading this object. A method
+      // with a slot of its own (replaceablePrototypeMethod) takes a
+      // replacement through the dynamic view and refuses, by name, a later
+      // run of the declared method; any other method refuses the
+      // replacement itself.
+      const slot =
+        viewed && ts.isMethodDeclaration(member) && !ts.isComputedPropertyName(member.name)
+          ? replaceablePrototypeMethod(lowerer, info, member, method, loc)
+          : null;
+      if (slot)
+        initialization.then.push(
+          {
+            kind: "assign",
+            localId: slot.valueId,
+            value: lowerer.coerceToExpected(value, DYN),
+            loc,
+          },
+          define(key, [
+            { key: "get", value: slot.get },
+            { key: "set", value: slot.set },
+          ]),
+        );
+      else
+        initialization.then.push(
+          define(
+            key,
+            ts.isMethodDeclaration(member)
+              ? [{ key: "value", value }, writable]
+              : [{ key: ts.isGetAccessor(member) ? "get" : "set", value }],
+          ),
+        );
       if (viewed && ts.isMethodDeclaration(member))
         initialization.then.push({
           kind: "exprStmt",

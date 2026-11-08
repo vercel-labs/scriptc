@@ -1,4 +1,4 @@
-import { varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -73,6 +73,14 @@ function staticMembers(
   const members: { name: string; node: ts.ClassElement }[] = [];
   for (const member of info.decl?.members.nodes ?? []) {
     if (!isStatic(member) || ts.isClassStaticBlockDeclaration(member)) continue;
+    // `declare static x` names a member for the type checker alone: the
+    // class definition creates no property, so the table has none and a
+    // read answers what the chain above the class answers (undefined).
+    if (
+      ts.canHaveModifiers(member) &&
+      ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)
+    )
+      continue;
     const memberName = (member as { name?: ts.PropertyName }).name;
     if (memberName === undefined || ts.isPrivateIdentifier(memberName)) continue;
     const name = classMemberNameOf(lowerer, memberName);
@@ -343,6 +351,22 @@ export function classStaticTable(
     if (ts.isPropertyDeclaration(node)) {
       const found = findStaticOn(lowerer, info, name);
       const field = found?.declarer === info ? found.field : undefined;
+      if (!field && node.initializer === undefined) {
+        // A static field without a value has no native storage, and typed
+        // code that names it is refused when the program is built: the
+        // table holds the property the class definition creates.
+        define(
+          name,
+          [
+            { key: "value", value: dynUndefinedExpr(loc) },
+            { key: "writable", value: flag(true) },
+            { key: "enumerable", value: flag(true) },
+            { key: "configurable", value: flag(true) },
+          ],
+          false,
+        );
+        continue;
+      }
       if (!field || !lowerer.dynConvertible(field.type)) {
         define(
           name,

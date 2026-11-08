@@ -1,6 +1,14 @@
 import { varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, type IrExpr, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  VOID,
+  type IrExpr,
+  type IrFunction,
+  type IrStmt,
+  type SrcLoc,
+} from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -174,6 +182,150 @@ export function genericPrototypeMember(
     type: { kind: "func", params: [DYN], ret: DYN, rest: true, argumentsAll: true },
     loc,
   };
+}
+
+/** A method on the prototype object dynamic code sees for a class in a
+ * chain with a generic class (classPrototypeData's `view`), held in a slot
+ * of its own so that dynamic code can replace it. */
+export interface ReplaceablePrototypeMethod {
+  /** The class whose prototype holds the method; a generic class stands
+   * for every instantiation's function. */
+  info: ClassInfo;
+  method: string;
+  /** The global that holds the member's current value. */
+  valueId: string;
+  /** The global that is true once dynamic code replaced the member. */
+  replacedId: string;
+  get: IrExpr;
+  set: IrExpr;
+  loc: SrcLoc;
+}
+
+/** The slot of method `method` on the prototype view of `info`, or null for
+ * a method that keeps the refusal of a replacement (async and generator
+ * methods: their bodies take no check in front).
+ *
+ * Typed calls reach the method the class declares without reading the
+ * prototype, so a replacement cannot reach them. JavaScript allows the
+ * replacement, and a program may make one that no typed call can observe (a
+ * method every subclass overrides). The view therefore holds the member as
+ * an accessor over a global, reported as the data property it is: a write
+ * stores the new value, which every read through the view answers, and
+ * marks the method replaced; from then on a run of the declared method
+ * (finalizeReplaceablePrototypeMethods) is refused by name instead of
+ * answering what JavaScript would not. */
+export function replaceablePrototypeMethod(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration,
+  method: string,
+  loc: SrcLoc,
+): ReplaceablePrototypeMethod | null {
+  if (
+    member.asteriskToken ||
+    ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    return null;
+  const name = `%prototype.slot:${info.def.name}.${method}`;
+  const known = lowerer.replaceablePrototypeMethods.get(name);
+  if (known) return known;
+  const valueId = `%g.${name}`;
+  const replacedId = `${valueId}.replaced`;
+  const label = `${info.def.jsName ?? info.def.name}.prototype.${method}`;
+  lowerer.globalsList.push(
+    { id: valueId, name: label, type: DYN, mutable: true },
+    { id: replacedId, name: `${label}.replaced`, type: BOOL, mutable: true },
+  );
+  lowerer.liftedFns.push(
+    {
+      name: `${name}.get`,
+      params: [],
+      locals: [],
+      returnType: DYN,
+      body: [{ kind: "return", value: varRef(valueId, DYN, loc), loc }],
+      loc,
+    },
+    {
+      name: `${name}.set`,
+      params: [{ localId: "p.0", name: "value", type: DYN }],
+      locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
+      returnType: VOID,
+      body: [
+        { kind: "assign", localId: valueId, value: varRef("p.0", DYN, loc), loc },
+        {
+          kind: "assign",
+          localId: replacedId,
+          value: { kind: "boolLit", value: true, type: BOOL, loc },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    },
+  );
+  const slot: ReplaceablePrototypeMethod = {
+    info,
+    method,
+    valueId,
+    replacedId,
+    get: {
+      kind: "closure",
+      fnName: `${name}.get`,
+      captures: [],
+      type: { kind: "func", params: [], ret: DYN },
+      loc,
+    },
+    set: {
+      kind: "closure",
+      fnName: `${name}.set`,
+      captures: [],
+      type: { kind: "func", params: [DYN], ret: VOID },
+      loc,
+    },
+    loc,
+  };
+  lowerer.replaceablePrototypeMethods.set(name, slot);
+  return slot;
+}
+
+/** Puts the check of its slot in front of every declared method dynamic
+ * code can replace (replaceablePrototypeMethod): once replaced, a run of
+ * the declared method is refused by name. A generic class's method is one
+ * function per instantiation, and all of them check the one slot. The
+ * detached copy of a method that never reads its receiver was made before
+ * this pass and takes no check: it is the value a program saved before
+ * replacing the member, which JavaScript still runs. */
+export function finalizeReplaceablePrototypeMethods(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+): void {
+  if (lowerer.replaceablePrototypeMethods.size === 0) return;
+  const byName = new Map(functions.map((fn) => [fn.name, fn]));
+  for (const slot of lowerer.replaceablePrototypeMethods.values()) {
+    const owners: ClassInfo[] = [];
+    if (slot.info.generic) {
+      for (const instance of slot.info.generic.instances.values())
+        if (instance.info) owners.push(instance.info);
+    } else owners.push(slot.info);
+    for (const owner of owners) {
+      const fn = byName.get(`%${owner.def.name}.${slot.method}`);
+      if (!fn) continue;
+      fn.body.unshift({
+        kind: "if",
+        cond: varRef(slot.replacedId, BOOL, slot.loc),
+        then: [
+          {
+            kind: "runtimeFence",
+            code: "SC1090",
+            message: `running the declared method '${slot.method}' of a compiled class after it was replaced through a dynamic value is not supported yet`,
+            loc: slot.loc,
+          },
+        ],
+        else_: null,
+        loc: slot.loc,
+      });
+    }
+  }
 }
 
 function selectBody(lowerer: Lowerer, entry: GenericPrototypeMember): IrStmt[] {

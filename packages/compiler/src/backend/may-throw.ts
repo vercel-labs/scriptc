@@ -88,52 +88,60 @@ export function computeMayThrow(
   const closureTargets = new Set<string>();
   // Whether a checked conversion into `type` can mint a function adapter: a
   // function type, or a record, tuple, array, collection, promise or union
-  // that holds one in a member, an element or an arm.
-  const recordsById = new Map((mod.records ?? []).map((record) => [record.id, record]));
-  const unionsById = new Map((mod.unions ?? []).map((union) => [union.id, union]));
-  const holdsFunctionMemo = new Map<string, boolean>();
-  const holdsFunctionIn = (type: IrType, visiting: Set<string>): boolean => {
-    switch (type.kind) {
-      case "func":
-        return true;
-      case "array":
-      case "set":
-        return holdsFunctionIn(type.elem, visiting);
-      case "map":
-        return holdsFunctionIn(type.key, visiting) || holdsFunctionIn(type.value, visiting);
-      case "promise":
-        return holdsFunctionIn(type.inner, visiting);
-      case "record":
-      case "union": {
-        const key = type.kind === "record" ? `r:${type.shapeId}` : `u:${type.unionId}`;
-        const known = holdsFunctionMemo.get(key);
-        if (known !== undefined) return known;
-        // A type that names itself ends there.
-        if (visiting.has(key)) return false;
-        visiting.add(key);
-        let answer = false;
-        if (type.kind === "record") {
-          const shape = recordsById.get(type.shapeId);
-          answer =
-            shape !== undefined &&
-            (shape.fields.some((field) => holdsFunctionIn(field.type, visiting)) ||
-              (shape.indexValue !== undefined && holdsFunctionIn(shape.indexValue, visiting)));
-        } else {
-          answer =
-            unionsById.get(type.unionId)?.arms.some((arm) => holdsFunctionIn(arm, visiting)) ===
-            true;
+  // that holds one in a member, an element or an arm. It is reachability in
+  // the type graph: one query expands each record and union once, and when
+  // it finds no function, none of the types it expanded holds one either, so
+  // all of them are answered for good. (A walk that only remembers its own
+  // path expands a type shared by many members once per path to it.)
+  // The declarations by id, built at the first conversion that asks.
+  let recordsById: Map<string, NonNullable<IrModule["records"]>[number]> | null = null;
+  let unionsById: Map<string, NonNullable<IrModule["unions"]>[number]> | null = null;
+  const holdsFunctionKnown = new Map<string, boolean>();
+  const holdsFunction = (root: IrType): boolean => {
+    const expanded = new Set<string>();
+    const reaches = (type: IrType): boolean => {
+      switch (type.kind) {
+        case "func":
+          return true;
+        case "array":
+        case "set":
+          return reaches(type.elem);
+        case "map":
+          return reaches(type.key) || reaches(type.value);
+        case "promise":
+          return reaches(type.inner);
+        case "record":
+        case "union": {
+          const key = type.kind === "record" ? `r:${type.shapeId}` : `u:${type.unionId}`;
+          const known = holdsFunctionKnown.get(key);
+          if (known !== undefined) return known;
+          // Expanded earlier in this query: what it reaches is being, or
+          // has been, looked at from there.
+          if (expanded.has(key)) return false;
+          expanded.add(key);
+          let answer = false;
+          if (type.kind === "record") {
+            recordsById ??= new Map((mod.records ?? []).map((record) => [record.id, record]));
+            const shape = recordsById.get(type.shapeId);
+            answer =
+              shape !== undefined &&
+              (shape.fields.some((field) => reaches(field.type)) ||
+                (shape.indexValue !== undefined && reaches(shape.indexValue)));
+          } else {
+            unionsById ??= new Map((mod.unions ?? []).map((union) => [union.id, union]));
+            answer = unionsById.get(type.unionId)?.arms.some((arm) => reaches(arm)) === true;
+          }
+          if (answer) holdsFunctionKnown.set(key, true);
+          return answer;
         }
-        visiting.delete(key);
-        // A "no" found while an enclosing type was still being walked may
-        // only mean the walk came back to that type: it is not kept.
-        if (answer || visiting.size === 0) holdsFunctionMemo.set(key, answer);
-        return answer;
+        default:
+          return false;
       }
-      default:
-        return false;
-    }
+    };
+    const answer = reaches(root);
+    if (!answer) for (const key of expanded) holdsFunctionKnown.set(key, false);
+    return answer;
   };
-  const holdsFunction = (type: IrType): boolean => holdsFunctionIn(type, new Set());
   // FUNC-targeted dynChecks synthesize adapter closures outside the IR's
   // closure table; any callValue may then reach a throwing body.
   let sawDynFuncAdapter = false;

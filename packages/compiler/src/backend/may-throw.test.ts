@@ -291,6 +291,67 @@ test("a checked conversion into a type that holds a function activates indirect 
     });
 });
 
+test("whether a conversion's target holds a function is one pass over the types it reaches", () => {
+  // Sixty records, each naming the next in two members: 2^60 paths lead to
+  // the last one, and a walk that only remembers its own path follows them
+  // all. The answer is reachability: each record is expanded once.
+  const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
+  const ladder = (last: IrType) => [
+    ...Array.from({ length: 60 }, (_, step) => ({
+      id: `rStep${step}`,
+      fields: [
+        { name: "left", type: record(`rStep${step + 1}`) },
+        { name: "right", type: record(`rStep${step + 1}`) },
+      ],
+      declaredOrder: ["left", "right"],
+    })),
+    { id: "rStep60", fields: [{ name: "end", type: last }], declaredOrder: ["end"] },
+    // Two records that name each other, one of which also holds a function:
+    // asked from either, the function is found behind the cycle.
+    {
+      id: "rRing",
+      fields: [{ name: "other", type: record("rRingHolder") }],
+      declaredOrder: ["other"],
+    },
+    {
+      id: "rRingHolder",
+      fields: [
+        { name: "back", type: record("rRing") },
+        { name: "run", type: funcOf([], VOID) },
+      ],
+      declaredOrder: ["back", "run"],
+    },
+  ];
+  const callee: IrExpr = { kind: "varRef", localId: "callback", type: funcOf([], VOID), loc };
+  const check = (records: ReturnType<typeof ladder>, types: IrType[]): IrModule => ({
+    ...moduleWith(
+      fn("indirect", [exprStmt({ kind: "callValue", callee, args: [], type: VOID, loc })], []),
+      fn(
+        "convert",
+        types.map((type) =>
+          exprStmt({
+            kind: "dynCheck",
+            value: { kind: "varRef", localId: "unknown", type: DYN, loc },
+            type,
+            loc,
+          }),
+        ),
+        [],
+      ),
+    ),
+    records,
+  });
+  expect(computeMayThrow(check(ladder(F64), [record("rStep0"), record("rStep7")]))).toEqual({
+    fns: new Set(["convert"]),
+    indirect: false,
+  });
+  expect(computeMayThrow(check(ladder(funcOf([], VOID)), [record("rStep0")])).indirect).toBe(true);
+  expect(computeMayThrow(check(ladder(F64), [record("rRing")])).indirect).toBe(true);
+  expect(
+    computeMayThrow(check(ladder(F64), [record("rStep3"), record("rRingHolder")])).indirect,
+  ).toBe(true);
+});
+
 const construct = (className: string, direct = false): IrStmt =>
   exprStmt(
     direct

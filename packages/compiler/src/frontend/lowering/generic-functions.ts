@@ -29,6 +29,7 @@ import { typeKey } from "../type-mapper.js";
 import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
+import { reportRefusedMemberUse, type RefusedClassMember } from "./class-member-refusals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
@@ -103,6 +104,10 @@ export interface GenericFnInfo {
    * module functions with an exact receiver or the this/super fence. Absent for
    * top-level functions and object-literal methods. */
   member?: { cls: ClassInfo; kind: "method" | "static" };
+  /** A class member whose form was refused without rejecting its class
+   * (class-member-refusals.ts): no instance of it is ever made, and every
+   * demand for one reports the refusal. */
+  refused?: RefusedClassMember;
   /** Direct static calls specialize lexical this for the proven receiver. */
   staticReceiver?: ClassInfo;
   receiverSpecializations?: Map<string, GenericFnInfo>;
@@ -424,6 +429,7 @@ export function genericCallInstance(
   expr: ts.CallExpression,
   info: GenericFnInfo,
 ): GenericInstance {
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, expr);
   const rsig = lowerer.checker.getResolvedSignature(expr);
   // A GENERIC function with overload signatures: the call resolved to a
   // signature that is not the implementation's, so the per-instantiation
@@ -1128,6 +1134,7 @@ function internGenericInstance(
   // (extraKey): the IR signature alone under-discriminates there — two
   // literals can map to one IR signature while their bodies read
   // different fields.
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, blame);
   const key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
   let inst = info.instances.get(key);
   if (!inst) {

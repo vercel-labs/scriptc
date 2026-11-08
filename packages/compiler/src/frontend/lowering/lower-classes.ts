@@ -151,6 +151,13 @@ import { islandValueOrigin } from "../node-api-import.js";
 import { nativeSubclassOfIslandDiag } from "../../diagnostics/diagnostic.js";
 import { isForeignType, isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { declarationGroupKey } from "./type-failure.js";
+import {
+  checkRefusedMemberUse,
+  checkRefusedStaticUse,
+  memberRefusalMark,
+  takeMemberRefusal,
+  type RefusedClassMember,
+} from "./class-member-refusals.js";
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
@@ -712,6 +719,15 @@ export interface ClassInfo {
   /** Own JS overrides whose signature cannot use the inherited ABI. The slot
    * retains that ABI, but its implementation throws before executing. */
   methodEntryFences?: Map<string, ScrDiagnostic>;
+  /** Own members whose declaration was refused without rejecting the class
+   * (class-member-refusals.ts), keyed like `methods` ("m", "get:x",
+   * "set:x"). Each keeps its slot, whose function throws the refusal at
+   * entry (methodEntryFences); a statically typed use is a build error. */
+  refusedMembers?: Map<string, RefusedClassMember>;
+  /** Own static methods left out of `staticMethods` because their
+   * signature has no mapping, by name: a use of one reports its refusal
+   * (checkRefusedStaticUse). */
+  refusedStatics?: Map<string, RefusedClassMember>;
   /** Own TypeScript overrides whose declared result differs from the
    * inherited ABI's but converts into it (`Promise<void>` over `any`, a
    * union narrowed to its inherited arm): the slot function `%C.m` keeps the
@@ -2597,6 +2613,33 @@ export function collectClassShapeInner(
       }
     >();
     const methodEntryFences = new Map<string, ScrDiagnostic>();
+    const refusedMembers = new Map<string, RefusedClassMember>();
+    const refusedStatics = new Map<string, RefusedClassMember>();
+    // Member refusals confine in declaration-level TypeScript classes. A
+    // JavaScript class defers its refusals statement by statement already,
+    // and a per-evaluation class lowers its members with the expression.
+    const confinesMemberRefusals =
+      !isJsSourceFile(ts.getSourceFileOfNode(decl)) && !perEvaluationClass(decl);
+    const memberDisplay = (name: string): string =>
+      `${decl.name?.text ?? className.replace(/^%/, "")}.${name}`;
+    /** Refuses the member `key` and keeps its slot: `sig` is the slot's
+     * ABI (the inherited one for an override), and the slot's function
+     * throws the member's first diagnostic at entry. */
+    const refuseMember = (
+      key: string,
+      name: string,
+      sig: { params: ParamShape[]; ret: IrType },
+      refused: RefusedClassMember,
+      blame: ts.Node,
+    ): void => {
+      methods.set(key, sig);
+      methodEntryFences.set(
+        key,
+        refused.diags[0] ??
+          unsupportedDiag("SC1090", locOf(blame), `the declaration of '${memberDisplay(name)}'`),
+      );
+      refusedMembers.set(key, refused);
+    };
     const returnAdapters = new Map<string, { params: ParamShape[]; ret: IrType; async: boolean }>();
     // Own accessor declarations ("get:x"/"set:x" → node), for the
     // partial-override analysis below (diagnostics need the node).
@@ -2706,6 +2749,37 @@ export function collectClassShapeInner(
         typeParams,
         instances: new Map(),
       });
+    };
+    // A generic member whose FORM is refused stays a generic member of the
+    // class (class-member-refusals.ts): it has no slot, so the class and
+    // its dispatch rules are what they are with a compiled one, and every
+    // demand for an instance of it reports the refusal
+    // (internGenericInstance). A member with no plain name has no entry to
+    // stay under and rejects the class as before.
+    const collectGenericMemberOrRefuse = (
+      member: ts.MethodDeclaration | ts.PropertyDeclaration,
+      isStatic: boolean,
+    ): void => {
+      const mark = memberRefusalMark(lowerer);
+      try {
+        collectGenericMember(member, isStatic);
+      } catch (e) {
+        if (!(e instanceof PoisonError) || !confinesMemberRefusals) throw e;
+        if (!ts.isIdentifier(member.name) && !ts.isPrivateIdentifier(member.name)) throw e;
+        const mName = member.name.text;
+        const refused = takeMemberRefusal(lowerer, mark, memberDisplay(mName));
+        if (refused === null) throw e;
+        (isStatic ? genericStatics : genericMethods).set(mName, {
+          decl: ts.isPropertyDeclaration(member)
+            ? (genericFieldFnNodeOf(member) as ts.ArrowFunction | ts.FunctionExpression)
+            : member,
+          baseName: mName,
+          qualifiedName: `%${className}.${isStatic ? "static:" : ""}${mName}`,
+          typeParams: [],
+          instances: new Map(),
+          refused,
+        });
+      }
     };
     for (const member of decl.members.nodes) {
       if (
@@ -2854,10 +2928,28 @@ export function collectClassShapeInner(
           member.body &&
           member.typeParameters === undefined
         ) {
-          const { shapes, funcType: ft } = lowerer.lambdaSignature(member);
-          if (member.asteriskToken !== undefined && ft.ret.kind !== "generator") {
-            lowerer.badType(member.name, lowerer.typeOf(member.name));
+          // A static method whose signature has no mapping is left out,
+          // like a static accessor whose type has none (below): statics
+          // never live on instances, so the class stays, and each use
+          // reports the method's own refusal (checkRefusedStaticUse).
+          const staticMark = memberRefusalMark(lowerer);
+          let staticSignature: ReturnType<Lowerer["lambdaSignature"]>;
+          try {
+            staticSignature = lowerer.lambdaSignature(member);
+            if (
+              member.asteriskToken !== undefined &&
+              staticSignature.funcType.ret.kind !== "generator"
+            ) {
+              lowerer.badType(member.name, lowerer.typeOf(member.name));
+            }
+          } catch (e) {
+            if (!(e instanceof PoisonError) || !confinesMemberRefusals) throw e;
+            const refused = takeMemberRefusal(lowerer, staticMark, memberDisplay(member.name.text));
+            if (refused === null) throw e;
+            refusedStatics.set(member.name.text, refused);
+            continue;
           }
+          const { shapes, funcType: ft } = staticSignature;
           staticMethods.set(member.name.text, { params: shapes, ret: ft.ret, member });
           if (
             implicitMonoFile(ts.getSourceFileOfNode(decl)) &&
@@ -2923,7 +3015,7 @@ export function collectClassShapeInner(
           member.body &&
           member.typeParameters !== undefined
         ) {
-          collectGenericMember(member, true);
+          collectGenericMemberOrRefuse(member, true);
         }
         // Statics that don't qualify for the module-global/module-
         // function treatment (accessors, initializer-less fields,
@@ -3317,7 +3409,7 @@ export function collectClassShapeInner(
               `redeclaring the inherited generic member '${member.name.text}' (generic members dispatch statically, so the base's call sites could never reach this redeclaration)`,
             );
           }
-          collectGenericMember(member, false);
+          collectGenericMemberOrRefuse(member, false);
           continue;
         }
         // Non-generic fields shadowing an inherited GENERIC member split
@@ -3670,7 +3762,7 @@ export function collectClassShapeInner(
               `overriding the inherited method '${mName}' with a generic method (generic methods dispatch statically, so the base's vtable slot could never reach this override)`,
             );
           }
-          collectGenericMember(member, false);
+          collectGenericMemberOrRefuse(member, false);
           continue;
         }
         // Async methods collect with the same direct-call spawn wrapper
@@ -3711,7 +3803,56 @@ export function collectClassShapeInner(
             continue;
           }
         }
-        const { shapes, funcType: ft } = lowerer.lambdaSignature(member);
+        // A signature with no mapping refuses the METHOD, not the class
+        // (class-member-refusals.ts): a method is not part of the layout.
+        // The slot keeps the inherited ABI when the method overrides one a
+        // virtual call reaches, and a checked-dynamic ABI of the declared
+        // arity otherwise. The refusals below that protect dispatch (a
+        // shadowed field or accessor, an inherited generic or statically
+        // dispatched method) still reject the class.
+        const signatureMark = memberRefusalMark(lowerer);
+        let signature: ReturnType<Lowerer["lambdaSignature"]>;
+        try {
+          signature = lowerer.lambdaSignature(member);
+        } catch (e) {
+          if (!(e instanceof PoisonError) || !confinesMemberRefusals) throw e;
+          const inherited = lowerer.findMethodOn(base, mName);
+          if (
+            fields.has(mName) ||
+            redeclaresInheritedMember(lowerer, base, mName, true) ||
+            findGenericMethodOn(lowerer, base, mName) ||
+            (inherited &&
+              (inherited.declarer.decl == null ||
+                inherited.sig.async === true ||
+                inherited.sig.gen !== undefined))
+          )
+            throw e;
+          const refused = takeMemberRefusal(lowerer, signatureMark, memberDisplay(mName));
+          if (refused === null) throw e;
+          refuseMember(
+            mName,
+            mName,
+            inherited
+              ? { params: inherited.sig.params, ret: inherited.sig.ret }
+              : {
+                  params: member.parameters.nodes
+                    .filter((p) => !(ts.isIdentifier(p.name) && p.name.text === "this"))
+                    .map((p): ParamShape => ({
+                      type: DYN,
+                      mode: p.dotDotDotToken
+                        ? "dynRest"
+                        : p.questionToken || p.initializer
+                          ? "omittable"
+                          : "required",
+                    })),
+                  ret: DYN,
+                },
+            refused,
+            member.name,
+          );
+          continue;
+        }
+        const { shapes, funcType: ft } = signature;
         const fieldRet = ft.ret.kind === "promise" ? ft.ret.inner : ft.ret;
         if (returnsWidenedJsField(lowerer, decl, member, fields, fieldRet)) {
           ft.ret = ft.ret.kind === "promise" ? { ...ft.ret, inner: DYN } : DYN;
@@ -4002,7 +4143,18 @@ export function collectClassShapeInner(
             shapes.splice(0, shapes.length, ...overridden.sig.params);
             ft.ret = overridden.sig.ret;
             if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
-          } else if (fencedJsOverride) {
+          } else if (
+            fencedJsOverride ||
+            // The TypeScript form (class-member-refusals.ts): the inherited
+            // method dispatches through its slot (it is neither async nor
+            // a generator, which dispatch statically, and its class is the
+            // program's), so a call through a base-typed receiver reaches
+            // the fence, and a use through this class is a build error.
+            (confinesMemberRefusals &&
+              overridden.declarer.decl != null &&
+              overridden.sig.async !== true &&
+              overridden.sig.gen === undefined)
+          ) {
             // A dormant JS method must not poison the whole class. Keep
             // the inherited call/dispatch ABI and refuse at method entry;
             // lowering this body with the base signature would change JS.
@@ -4025,16 +4177,19 @@ export function collectClassShapeInner(
                 const baseType = lowerer.mapTypeOf(lowerer.typeOf(inherited));
                 return ownType !== null && baseType !== null && !typeEquals(ownType, baseType);
               });
-            methodEntryFences.set(
-              mName,
-              unsupportedDiag(
-                "SC1090",
-                locOf(member.name),
-                returnOnly
+            const fence = unsupportedDiag(
+              "SC1090",
+              locOf(member.name),
+              // A TypeScript override keeps the text its class rejection had.
+              !fencedJsOverride
+                ? "overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass)"
+                : returnOnly
                   ? `overriding method '${mName}' with a different return type (the native return type must match the base declaration exactly)`
                   : `overriding method '${mName}' with a different signature (the native parameter types must match the base declaration exactly; returns may narrow to a subclass)`,
-              ),
             );
+            methodEntryFences.set(mName, fence);
+            if (!fencedJsOverride)
+              refusedMembers.set(mName, { display: memberDisplay(mName), diags: [fence] });
             shapes.splice(0, shapes.length, ...overridden.sig.params);
             ft.ret = overridden.sig.ret;
           } else {
@@ -4063,6 +4218,7 @@ export function collectClassShapeInner(
         if (
           overridden &&
           !returnAdapters.has(mName) &&
+          !refusedMembers.has(mName) &&
           (asyncMember || overridden.sig.async === true) &&
           !isJsSourceFile(ts.getSourceFileOfNode(member)) &&
           !perEvaluationClass(decl) &&
@@ -4088,7 +4244,9 @@ export function collectClassShapeInner(
           const message = `overriding ${overridden.sig.async === true ? "the async method" : "a method with an async method"} '${mName}' (async methods dispatch statically — the vtable slot machinery has no fiber-spawn story)`;
           if (isJsSourceFile(ts.getSourceFileOfNode(member)))
             methodEntryFences.set(mName, unsupportedDiag("SC1090", locOf(member.name), message));
-          else lowerer.unsupported("SC1090", member.name, message);
+          // A refused override (above) is already a plain function that
+          // throws at entry behind a slot of a synchronous method.
+          else if (!refusedMembers.has(mName)) lowerer.unsupported("SC1090", member.name, message);
         }
         if (
           overridden &&
@@ -4115,7 +4273,7 @@ export function collectClassShapeInner(
         } else {
           methods.set(
             mName,
-            asyncMember && !returnAdapters.has(mName)
+            asyncMember && !returnAdapters.has(mName) && !refusedMembers.has(mName)
               ? { params: shapes, ret: ft.ret, async: true as const }
               : { params: shapes, ret: ft.ret },
           );
@@ -4197,8 +4355,46 @@ export function collectClassShapeInner(
         ) {
           lowerer.unsupported("SC1090", member.name, "accessors shadowing inherited methods");
         }
-        let sig: { params: ParamShape[]; ret: IrType };
-        if (isGet) {
+        // An accessor half refused without rejecting the class
+        // (class-member-refusals.ts): its type has no mapping, or differs
+        // from its twin's or from the inherited accessor's. The half keeps
+        // its slot under the type the property already has (the twin's,
+        // else the inherited one, else checked-dynamic), and its function
+        // throws at entry. The other half is not affected.
+        const accessorMark = memberRefusalMark(lowerer);
+        const refuseAccessor = (type: IrType, diag?: ScrDiagnostic): boolean => {
+          const refused = diag
+            ? { display: memberDisplay(prop), diags: [diag] }
+            : takeMemberRefusal(lowerer, accessorMark, memberDisplay(prop));
+          if (refused === null) return false;
+          refuseMember(
+            mName,
+            prop,
+            isGet ? { params: [], ret: type } : { params: [{ type, mode: "required" }], ret: VOID },
+            refused,
+            member.name,
+          );
+          accessorNodes.set(mName, member);
+          return true;
+        };
+        const confinesAccessor = confinesMemberRefusals && !abstractAccessor;
+        const ownTwin = methods.get(`${isGet ? "set" : "get"}:${prop}`);
+        const inheritedAccessor = lowerer.findMethodOn(base, mName);
+        const propertyType = (): IrType =>
+          ownTwin
+            ? isGet
+              ? ownTwin.params[0]!.type
+              : ownTwin.ret
+            : inheritedAccessor
+              ? isGet
+                ? inheritedAccessor.sig.ret
+                : inheritedAccessor.sig.params[0]!.type
+              : DYN;
+        const accessorSignature = (): { params: ParamShape[]; ret: IrType } => {
+          if (!isGet) {
+            // tsc rejects optional/default/rest setter params (TS1051-53).
+            return { params: lowerer.paramShapes(member.parameters.nodes), ret: VOID };
+          }
           let ret = lowerer.declaredReturnType(member, member.name);
           // A getter that never returns a value: typed `never` (it only
           // throws, Next.js's removed `page`/`ua` getters) or, unannotated
@@ -4211,10 +4407,20 @@ export function collectClassShapeInner(
           )
             ret = DYN;
           if (ret.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
-          sig = { params: [], ret };
-        } else {
-          // tsc rejects optional/default/rest setter params (TS1051-53).
-          sig = { params: lowerer.paramShapes(member.parameters.nodes), ret: VOID };
+          return { params: [], ret };
+        };
+        let sig: { params: ParamShape[]; ret: IrType };
+        try {
+          sig = accessorSignature();
+        } catch (e) {
+          if (
+            !(e instanceof PoisonError) ||
+            !confinesAccessor ||
+            (inheritedAccessor && inheritedAccessor.declarer.decl == null)
+          )
+            throw e;
+          if (!refuseAccessor(propertyType())) throw e;
+          continue;
         }
         if (lowerer.checkedVirtualJsAccessors.has(member)) {
           if (isGet) sig.ret = DYN;
@@ -4227,11 +4433,12 @@ export function collectClassShapeInner(
         const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
         const ownType = isGet ? sig.ret : sig.params[0]!.type;
         if (twinType && !typeEquals(twinType, ownType)) {
-          lowerer.unsupported(
-            "SC1090",
-            member.name,
-            `getter/setter pairs with different types (the property '${prop}' must have one type)`,
-          );
+          const message = `getter/setter pairs with different types (the property '${prop}' must have one type)`;
+          if (confinesAccessor && !(inheritedAccessor && inheritedAccessor.declarer.decl == null)) {
+            refuseAccessor(twinType, unsupportedDiag("SC1090", locOf(member.name), message));
+            continue;
+          }
+          lowerer.unsupported("SC1090", member.name, message);
         }
         // Same exactness rule as methods — an accessor override keeps
         // the overridden accessor's type (getter return / setter param).
@@ -4242,11 +4449,16 @@ export function collectClassShapeInner(
             !overridden.sig.params.every((p, i) => typeEquals(p.type, sig.params[i]!.type)) ||
             !typeEquals(overridden.sig.ret, sig.ret))
         ) {
-          lowerer.unsupported(
-            "SC1090",
-            member.name,
-            "overriding an accessor with a different type (the property type must match the base declaration exactly)",
-          );
+          const message =
+            "overriding an accessor with a different type (the property type must match the base declaration exactly)";
+          if (confinesAccessor && overridden.declarer.decl != null) {
+            refuseAccessor(
+              isGet ? overridden.sig.ret : overridden.sig.params[0]!.type,
+              unsupportedDiag("SC1090", locOf(member.name), message),
+            );
+            continue;
+          }
+          lowerer.unsupported("SC1090", member.name, message);
         }
         methods.set(mName, abstractAccessor ? { ...sig, abstract: true } : sig);
         // Abstract accessors stay OUT of accessorNodes: they are erased
@@ -4905,6 +5117,8 @@ export function collectClassShapeInner(
       ...(erasedFields.size > 0 ? { erasedFields } : {}),
       methods,
       ...(methodEntryFences.size > 0 ? { methodEntryFences } : {}),
+      ...(refusedMembers.size > 0 ? { refusedMembers } : {}),
+      ...(refusedStatics.size > 0 ? { refusedStatics } : {}),
       ...(returnAdapters.size > 0 ? { returnAdapters } : {}),
       decl,
       ...(emitOverride !== undefined ? { emitOverride } : {}),
@@ -6402,6 +6616,7 @@ export function lowerClassStaticRead(
   site: ts.Expression,
 ): IrExpr | null {
   const loc = locOf(site);
+  checkRefusedStaticUse(lowerer, info, name, site);
   const found = findStaticOn(lowerer, info, name);
   // A Date static read as a value through a class declared `extends Date`:
   // the statics lower only as calls.
@@ -7356,6 +7571,7 @@ function staticCallOn(
   throughValue: boolean,
 ): IrExpr | null {
   const loc = locOf(call);
+  checkRefusedStaticUse(lowerer, info, access.name.text, access.name);
   const runtimeStatic = directRuntimeStaticCall(lowerer, call, access, info, throughValue);
   if (runtimeStatic) return runtimeStatic;
   // Date's statics through a class declared `extends Date`
@@ -10473,6 +10689,7 @@ export function lowerSuperMethodCall(
   const forward = emitSpecSuperForward(lowerer, call, access);
   if (forward) return forward;
   const found = lowerer.findMethodOn(cls.base, access.name.text);
+  if (found) checkRefusedMemberUse(lowerer, found.declarer, access.name.text, access.name);
   if (!found) {
     // `super.m(...)` of a GENERIC method: super dispatch is static in JS
     // too, so the base chain's declaration answers unconditionally — the
@@ -10670,6 +10887,7 @@ export function lowerSuperAccessorRead(
   if (found.sig.abstract === true) {
     lowerer.unsupported("SC1090", access, `'super.${name}' of an abstract accessor`);
   }
+  checkRefusedMemberUse(lowerer, found.declarer, `get:${name}`, access.name);
   lowerer.noteEdge(`%${found.declarer.def.name}.get:${name}`);
   return {
     kind: "call",
@@ -10702,6 +10920,7 @@ export function lowerSuperAccessorWrite(
   if (found.sig.abstract === true) {
     lowerer.unsupported("SC1090", access, `assignment to 'super.${name}' of an abstract accessor`);
   }
+  checkRefusedMemberUse(lowerer, found.declarer, `set:${name}`, access.name);
   lowerer.noteEdge(`%${found.declarer.def.name}.set:${name}`);
   const value = lowerer.lowerExprExpecting(rhs, found.sig.params[0]!.type);
   return {

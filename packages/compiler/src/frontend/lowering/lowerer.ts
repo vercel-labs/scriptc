@@ -17897,6 +17897,30 @@ export class Lowerer {
     }
   }
 
+  /** Whether the declaration flush retry (retryDeferred) can still act on
+   * one of `diags`: a type failure it degrades, or a collection that only
+   * waited for another declaration. A class member refusal with such a
+   * diagnostic is left to that retry (class-member-refusals.ts): the retry
+   * compiles the member where confining it would refuse it. */
+  declarationRetryMayClear(diags: readonly ScrDiagnostic[]): boolean {
+    if (this.tierMode !== "auto") return false;
+    return diags.some((diag) => {
+      if (this.retriableDiags.has(diag)) return true;
+      const failure = diag.typeFailure;
+      if (failure === undefined) return false;
+      if (failure.family === "dyn-field-policy") return true;
+      const type = this.failedTypes.get(failure);
+      const id = (type as { id?: number } | undefined)?.id;
+      return (
+        type !== undefined &&
+        id !== undefined &&
+        failure.degradable &&
+        DECLARATION_SLOTS.has(failure.slot) &&
+        this.degradedTypes.get(id)?.lenient?.kind !== "dyn"
+      );
+    });
+  }
+
   private retryDeferredRounds(
     symbol: ts.Symbol,
     collector: { symbolOf: () => ts.Symbol | undefined; collect: () => void },

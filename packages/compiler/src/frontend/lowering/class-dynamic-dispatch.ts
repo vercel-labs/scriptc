@@ -7522,6 +7522,8 @@ export class ClassDynamicDispatch {
       generic &&
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
+      // A refused generic member has no instance: the call keeps the fence.
+      generic.info.refused === undefined &&
       generic.declarer.decl &&
       !lowerer.overrideBelow(info, method)
     ) {
@@ -7545,7 +7547,8 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (!sub.decl || own.implicitParams || own.typeParams.length === 0 || own.refused)
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||

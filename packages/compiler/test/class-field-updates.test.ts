@@ -63,9 +63,12 @@ const receiver: Base = new Child();
 console.log(receiver.copy(new Item()).value);
 `,
     );
+    // The override is refused as a member: its class is admitted, and the
+    // slot the base-typed call reaches throws the refusal before the body
+    // could read a field the argument does not have.
     const { coverage } = analyze(entry);
     expect(
-      coverage.diagnostics.some(
+      [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])].some(
         (d) => d.code === "SC1090" && d.message.includes("different signature"),
       ),
     ).toBe(true);

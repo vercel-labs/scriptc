@@ -1,0 +1,4 @@
+- **Class members:** A method, an accessor, or a static method of a TypeScript class that cannot be compiled is refused by itself: the class, its fields, and its other members compile.
+  Using the refused member where the compiler can see it is a compile error at the use, which names the member, and the member's own diagnostic is reported once.
+  A call that reaches the member another way throws an error that carries the diagnostic's code at run time: through an untyped value, through an interface, or through a base-class receiver when the member is an override.
+  A refused field, constructor, base class, decorator, or index signature still rejects the whole class, as does a member that overrides an async, generator, or generic method of its base class.

@@ -23,6 +23,7 @@ import {
   genericOverrideBelow,
   type ClassInfo,
 } from "./lower-classes.js";
+import { checkRefusedMemberUse, reportRefusedMemberUse } from "./class-member-refusals.js";
 import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
@@ -188,6 +189,11 @@ function methodValue(
   expr: ts.PropertyAccessExpression,
   info: ClassInfo,
 ): IrExpr | null {
+  // A method read as a value in source: a refused member reports here.
+  const declared = findMethodOn(lowerer, info, expr.name.text);
+  if (declared) checkRefusedMemberUse(lowerer, declared.declarer, expr.name.text, expr.name);
+  const generic = declared ? null : findGenericMethodOn(lowerer, info, expr.name.text);
+  if (generic?.info.refused) reportRefusedMemberUse(lowerer, generic.info.refused, expr.name);
   return classMethodValue(lowerer, expr, info, expr.name.text, locOf(expr));
 }
 

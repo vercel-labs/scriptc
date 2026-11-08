@@ -108,4 +108,7 @@ const gaRef = GenericAbstract;
 new Aliased();
 new BareRepeat();
 new RetypedRepeat();
-new Bivariant();
+// A refused override does not reject its class: the construction
+// compiles, and the call through the class is what reports it.
+const bivariant = new Bivariant();
+bivariant.feed(bivariant);

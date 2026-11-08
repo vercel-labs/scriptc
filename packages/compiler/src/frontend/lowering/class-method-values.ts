@@ -26,6 +26,7 @@ import {
 import { funcTypeFromParamShapes, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
+import { methodJsName } from "./function-names.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 
@@ -309,6 +310,14 @@ export function classMethodValue(
           type: ret,
           loc,
         };
+    // The value is the method, so its `name` is the method's; the function
+    // that stands for it has no source name of its own (function-names.ts).
+    // The runtime's own `Error.prototype.toString` is in nearly every
+    // program with an untyped error and stays as it was.
+    if (!owner.builtinError) {
+      const jsName = member?.name !== undefined ? methodJsName(member.name) : method;
+      if (jsName !== null) lowerer.objectMethodNames.set(name, jsName);
+    }
     const fn: IrFunction = {
       name,
       params: thunkParams,

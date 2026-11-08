@@ -2445,8 +2445,11 @@ export type IrStmt =
    * In a JavaScript source, a message that ends with its diagnostic's tag
    * ("[SC2020 at file:line]") marks a diagnostic deferred from a
    * statement, which the program reports on stderr the first time the site
-   * fires (deferred-fence.ts). */
-  | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
+   * fires (deferred-fence.ts). `guarded` marks such a fence that sits in the
+   * `try` block of a `try`/`catch` of the same function, in the source: the
+   * program has its own handler for the statement, so the build names the
+   * site (SC6012) and the run reports it only when asked to. */
+  | { kind: "runtimeFence"; code: string; message: string; guarded?: true; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
    * payload retained (the binding stays live until its scope exits).

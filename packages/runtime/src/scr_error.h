@@ -317,6 +317,9 @@ SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len
 /* A deferred refusal fires (scr_deferred_fence.c): reports the site on
  * stderr the first time, then throws its Error with `code` stamped. */
 SCR_COLD void scr_deferred_fence(const char *message, size_t len, const char *code);
+/* The same throw for a site inside its own try/catch, which the build named
+ * (SC6012): reported only under SCRIPTC_DEFERRED_REPORT=all. */
+SCR_COLD void scr_deferred_fence_guarded(const char *message, size_t len, const char *code);
 /* The compiler-resolved Node-parity throw (error.nodeThrow): builtin
  * error of `kind`, `code` stamped when non-empty. Borrows both. */
 SCR_COLD void scr_throw_node_coded(double kind, const ScrStr *code, const ScrStr *msg);

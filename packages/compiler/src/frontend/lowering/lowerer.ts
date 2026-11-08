@@ -97,6 +97,8 @@ import {
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
+import { guardedDeferredFences } from "../../ir/deferred-fence.js";
+import { guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -1897,6 +1899,13 @@ function lowerToIrWithIslands(
   const divergences = [
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
+    // Deferred refusals inside their own try/catch: named here, since the
+    // binary does not report them (ir/deferred-fence.ts).
+    ...(result.module === null
+      ? []
+      : guardedDeferredFences(result.module).map((site) =>
+          guardedDeferredFenceDiag(site.code, site.refusal, site.loc),
+        )),
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };

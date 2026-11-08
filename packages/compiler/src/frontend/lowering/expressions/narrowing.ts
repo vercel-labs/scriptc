@@ -1718,7 +1718,14 @@ export function lowerAsExpression(
     // Recorded before the branches below so every path carries it, the
     // erasure included.
     const claimable = (type: IrType | null | undefined): type is IrType =>
-      type?.kind === "union" || type?.kind === "record" || type?.kind === "array";
+      type?.kind === "union" ||
+      type?.kind === "record" ||
+      type?.kind === "array" ||
+      // A module namespace is an object the assertion can claim members of
+      // (`(await import("./m.mjs")) as Dyn`): the conversion boxes the
+      // namespace as the live-read dynamic value an untyped flow builds and
+      // checks the claimed shape against it.
+      type?.kind === "moduleNs";
     if (claimable(target) && claimable(inner.type)) lowerer.assertedValues.set(inner, target);
     // A PRESENCE PROBE of a member read through the assertion (`typeof
     // (u as R).member`, `(u as R).member !== undefined`): the read answers

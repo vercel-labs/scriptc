@@ -1,0 +1,17 @@
+bounded-import-written-parameter.ts:6:19 - error SC1090: dynamic import() with a specifier that cannot be bounded at build time (at bounded-import-written-parameter.ts:6: 'p', a parameter written in its function) is not supported yet
+
+  5 |   p = "./other.ts";
+  6 |   const m = await import(p);
+    |                   ^~~~~~~~~
+  7 |   return (m as { kind: string }).kind;
+
+  hint: pass a string literal, a const, or a parameter of a module-local function every call of which passes one
+
+bounded-import-written-parameter.ts:7:11 - error SC2004: uses of 'm' inherit the blocker on its declaration
+
+  6 |   const m = await import(p);
+  7 |   return (m as { kind: string }).kind;
+    |           ^
+  8 | }
+
+  hint: the declaration of 'm' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -148,6 +148,7 @@ import {
   lowerStaticFieldRead,
   lowerStaticSuperRead,
 } from "../lower-classes.js";
+import { checkRefusedMemberUse } from "../class-member-refusals.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
@@ -1737,6 +1738,23 @@ export function lowerPropertyAccessExpr(
       };
       const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
+    }
+  }
+  // `name` or `message` of a value that is an error object, read through an
+  // intersection that restates the member (`Error & { name?: string }`, the
+  // result of an assertion or a type guard): the value is the error itself,
+  // so the error reader answers, as it does on the class.
+  if (
+    !expr.questionDotToken &&
+    (expr.name.text === "name" || expr.name.text === "message") &&
+    lowerer.typeOf(expr.expression).isIntersectionType()
+  ) {
+    const error = tryLowerExpression(lowerer, expr.expression);
+    if (
+      error?.type.kind === "object" &&
+      (error.type.className === "%Error" || lowerer.isSubclassOf(error.type.className, "%Error"))
+    ) {
+      return lowerer.maybeNarrow(errorPropertyRead(lowerer, error, expr.name.text), expr);
     }
   }
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
@@ -5917,6 +5935,7 @@ export function fieldGetExpr(
         `reading a property that has only a setter ('${target.field}' — Node would yield undefined)`,
       );
     }
+    checkRefusedMemberUse(lowerer, getF.declarer, `get:${target.field}`, blame);
     if (
       !target.field.startsWith("#") &&
       isJsSourceFile(ts.getSourceFileOfNode(blame)) &&

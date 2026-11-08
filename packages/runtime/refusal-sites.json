@@ -1159,6 +1159,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_define_property",
   "message": "Object.defineProperty on a numeric property of a native array is not supported yet",
   "code": "SC2020"
@@ -1228,6 +1234,18 @@
   "function": "scr_function_constructor_call",
   "message": "constructing functions from source text is not supported in static code",
   "code": "SC2010"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_receiver",
+  "message": " on a callable that is not a function value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_to_string_call",
+  "message": "'Function.prototype.toString' on a dynamic value is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",
@@ -1494,10 +1512,22 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_node_island.c",
+  "function": "ni_async_main_thread",
+  "message": "asynchronous island calls from a worker thread are not supported; call the island synchronously (@scriptc/node callSync) from the worker [SC8012]",
+  "code": "SC8012"
+ },
+ {
   "file": "scr_node_island_export.c",
   "function": "scr_ni_host_shared_get",
   "message": "scriptc: an array exported by a shared module cannot cross into a Node island yet",
   "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_worker_await_refusal",
+  "message": "awaiting an island value from a worker thread is not supported; await it on the main thread, which owns the Node island [SC8012]",
+  "code": "SC8012"
  },
  {
   "file": "scr_node_island_handle.c",

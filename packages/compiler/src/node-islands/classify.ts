@@ -50,9 +50,11 @@ function reasonIdOf(d: ScrDiagnostic): string | null {
 
 /** Codes that are not reasons of the package they appear in: a cascade
  * marker repeats a root cause, an import of another refused package is
- * that package's island boundary, and divergences compile. */
+ * that package's island boundary, divergences compile, and SC8012 refuses an
+ * island module as a native worker's entry (the fix is to compile that module
+ * natively, the opposite of islanding). */
 export function isIslandReasonCode(code: string): boolean {
-  if (code === "SC2004" || code === "SC2013") return false;
+  if (code === "SC2004" || code === "SC2013" || code === "SC8012") return false;
   if (/^SC6\d{3}$/.test(code)) return false;
   return true;
 }

@@ -43,9 +43,11 @@
  * themselves stay on the island's emitter, as Node keeps them. */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
-#ifndef SCR_NODE_ISLANDS
-#define SCR_NODE_ISLANDS 1 /* the ScrChild layout of scr_child.c's SCR_NODE_ISLANDS build */
-#endif
+/* This unit is linked only into a program with islands and always reads the
+ * ScrChild layout of scr_child.c's SCR_NODE_ISLANDS build: it has no block
+ * that depends on the define. */
+#undef SCR_NODE_ISLANDS
+#define SCR_NODE_ISLANDS 1
 #include "scr_runtime.h"
 #include "scr_child_private.h"
 #include "scr_node_island.h"
@@ -163,6 +165,7 @@ typedef struct NcListener {
   ScrStream *stream;   /* NC_BRIDGE_*: the stream to complete (+1 through stream_ops) */
   const ScrChildStreamOps *stream_ops;
   uint8_t event; /* SCR_CHILD_EV_* or NC_* */
+  bool removed;  /* off() took it from the emitter: no later off() finds it */
 } NcListener;
 
 static NcGroup *nc_group_retain(NcGroup *g) {
@@ -522,7 +525,12 @@ static void nc_on_dyn(void *island, ScrStr *event, ScrDyn *listener) {
 
 /* child.off(event, listener): the most recent registration of this
  * function on this emitter, as EventEmitter removes it. The emitter says
- * which of the functions made for the closure it holds. */
+ * which of the functions made for the closure it holds. The removed
+ * function keeps the program's closure: an emit that is under way calls
+ * every listener that was registered when it started, so a listener an
+ * earlier one removes still runs in that emit. The closure is released with
+ * the function (the island's collector frees it once the emitter no longer
+ * holds it) or when the child closes. */
 static void nc_off(void *island, int event, ScrClosure *cb) {
   NcHandle *h = island;
   NcGroup *group = nc_group(h);
@@ -530,7 +538,7 @@ static void nc_off(void *island, int event, ScrClosure *cb) {
   const char *name = nc_event_name(event);
   for (NcListener *l = group->first; l != NULL;) {
     NcListener *next = l->next;
-    ScrClosure *held = l->event == event ? nc_closure_of(l->wrapper) : NULL;
+    ScrClosure *held = l->event == event && !l->removed ? nc_closure_of(l->wrapper) : NULL;
     bool same = held != NULL && scr_closure_identity_equal(held, cb);
     scr_closure_release(held);
     if (same) {
@@ -539,7 +547,7 @@ static void nc_off(void *island, int event, ScrClosure *cb) {
       bool removed = nc_true(nc_island_call("off", args, 3));
       scr_dyn_release(args[1]);
       scr_dyn_release(args[2]);
-      if (removed) scr_box_set_ref(l->wrapper->caps[1], NULL);
+      if (removed) l->removed = true;
       /* The island call may have freed listeners: the walk ends here either way
        * when one was removed, and restarts from the list's head otherwise. */
       next = removed ? NULL : l->next;

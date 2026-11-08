@@ -37,6 +37,7 @@ import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { arrayValueStore, primitiveElement, unionReadAsArray } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 
 /** The arm an EMPTY `[]` literal builds as: `arms`' first array arm, or
  * null when the literal is not empty (an element selects the arm) or no
@@ -58,6 +59,53 @@ export function emptyArrayLiteralArm(
   if (!ts.isArrayLiteralExpression(value) || value.elements.nodes.length > 0) return null;
   const arm = arms.find((candidate) => candidate.kind === "array");
   return (arm as (IrType & { kind: "array" }) | undefined) ?? null;
+}
+
+/** A fresh array literal that is an operand of an expression whose own
+ * value is the checked-dynamic array (`unknown[]`, `any[]`, `unknown`): the
+ * default of `list ?? []` or `list || []`, an arm of `c ? list : []`, the
+ * default of a destructured member. Written directly into such a slot a
+ * literal is the dynamic array (lowerExprExpecting: it has no typed aliases,
+ * and the slot's type lets the program store any value in it). Reached
+ * through one of these operators it lowered as a typed literal boxed live,
+ * of `never`'s number elements when empty, so a later `push` of a value the
+ * static type allows threw "expected number at $[0]". The operand builds as
+ * the literal written into the slot does. Null for any other operand, for a
+ * literal with a spread or a hole, and where the whole expression has a
+ * typed value. */
+export function dynamicArrayOperand(
+  lowerer: Lowerer,
+  operand: ts.Expression,
+  whole: ts.Expression,
+): IrExpr | null {
+  const literal = withoutParentheses(operand);
+  if (!ts.isArrayLiteralExpression(literal)) return null;
+  if (
+    literal.elements.nodes.some(
+      (element) => ts.isSpreadElement(element) || ts.isOmittedExpression(element),
+    )
+  )
+    return null;
+  // The checker's own type of the whole expression says so: an array of
+  // `unknown` or `any` elements, or `unknown`/`any` itself. A precise type
+  // whose value merely happens to be held checked-dynamic (an iterator or
+  // an array, a typed array behind an untyped read) keeps its typed
+  // literal: the program can only store what that type allows.
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(whole));
+  const untyped = (part: ts.Type): boolean => {
+    if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+    if (!lowerer.checker.isArrayType(part)) return false;
+    const element = lowerer.checker.getTypeArguments(part as ts.TypeReference)[0];
+    return (
+      element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    );
+  };
+  if (!(type.isUnionType() ? ts.constituentTypes(type).every(untyped) : untyped(type))) return null;
+  // `any` and `any[]` have no mapping of their own; their values are held
+  // checked-dynamic all the same.
+  const own = lowerer.mapTypeOf(type);
+  if (own !== null && own.kind !== "dyn") return null;
+  return lowerer.lowerExprExpecting(literal, DYN);
 }
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic

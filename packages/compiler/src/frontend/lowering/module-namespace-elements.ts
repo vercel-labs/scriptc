@@ -40,7 +40,7 @@ export function lowerModuleNamespaceElement(
   if (!source) return null;
   const loc = locOf(expr);
   const name = `%module.element:${type.moduleId}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
     lowerer.currentClass = null;
@@ -48,8 +48,11 @@ export function lowerModuleNamespaceElement(
     try {
       const body: IrStmt[] = [];
       const symbol = lowerer.checker.getSymbolAtLocation(source);
+      const runtimeNames = lowerer.runtimeExportNames(source);
       for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
         const key = ts.symbolName(exported);
+        // A name a type-only export forwards has no runtime binding.
+        if (!runtimeNames.has(key)) continue;
         const target =
           exported.flags & ts.SymbolFlags.Alias
             ? lowerer.checker.getAliasedSymbol(exported)
@@ -128,9 +131,12 @@ export function moduleNamespaceObject(
   if (!symbol) return null;
   const exports: { key: string; identifier: ts.Identifier }[] = [];
   let exact = true;
+  const runtimeNames = lowerer.runtimeExportNames(source);
   // The module's resolved exports, which include `export *` members.
   for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
     const key = ts.symbolName(exported);
+    // A name a type-only export forwards has no runtime binding.
+    if (!runtimeNames.has(key)) continue;
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
     if (!(target.flags & ts.SymbolFlags.Value)) continue;
@@ -152,7 +158,7 @@ export function moduleNamespaceObject(
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.object:${ns.type.moduleId}`;
   const loc = ns.loc;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
     lowerer.currentClass = null;
@@ -201,7 +207,10 @@ function moduleNamespaceGetter(
   const symbol = lowerer.checker.getSymbolAtLocation(source);
   if (!symbol) return null;
   const exports: { key: string; declaration: ts.Node | undefined; symbol: ts.Symbol }[] = [];
+  const runtimeNames = lowerer.runtimeExportNames(source);
   for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
+    // A name a type-only export forwards has no runtime binding.
+    if (!runtimeNames.has(ts.symbolName(exported))) continue;
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
     if (!(target.flags & ts.SymbolFlags.Value)) continue;
@@ -214,7 +223,7 @@ function moduleNamespaceGetter(
   exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const name = `%module.namespace:${ns.type.moduleId}`;
   const loc = ns.loc;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
     lowerer.currentClass = null;

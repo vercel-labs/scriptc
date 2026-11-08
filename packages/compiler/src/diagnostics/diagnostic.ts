@@ -100,6 +100,7 @@
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
+import type { NodeIslandPackageMark, NodeIslandPathMark } from "../node-islands/policy.js";
 import type { DiagnosticCode } from "./codes.js";
 
 /* Internal prioritization buckets. NEVER rendered to users — user-facing
@@ -222,13 +223,17 @@ export function nativeCodegenDiag(
 }
 
 /** SC8005 — the program calls into Node.js (@scriptc/node), and the build
- * found no usable libnode pack to record into the binary. */
-export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+ * found no usable libnode pack to record into the binary. `hint` names what
+ * reached into Node and how to install this host's pack
+ * (node-islands/libnode.ts); the default is the pack-less self-build route. */
+export function nodeIslandNodeDiag(message: string, file: string, hint?: string): ScrDiagnostic {
   return {
     code: "SC8005",
     message,
     loc: { file, start: 0, end: 0 },
-    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
+    hint:
+      hint ??
+      "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
   };
 }
 
@@ -401,7 +406,125 @@ export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc
     code: "SC8006",
     message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this patch",
+  };
+}
+
+/** How a mark reads in a message: the flag, or the project setting. */
+function islandMarkOf(source: "cli" | "config"): string {
+  return source === "cli" ? "--node-island" : "scriptc.nodeIslands.modules";
+}
+
+/** SC8006 — the entry module is marked to run in a Node island. The entry
+ * always stays native (a whole-file island is a different feature), so the
+ * mark would be accepted and ignored: the build refuses it instead. */
+export function nodeIslandEntryMarkDiag(
+  file: string,
+  source: "cli" | "config",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks the entry module to run in a Node island, and the entry module stays native`,
+    loc,
+    hint: `move the code that needs Node into a module of its own and mark that module; the entry module ${file} is the program the build compiles`,
+  };
+}
+
+/** SC8006 — a user TypeScript module is marked to run in a Node island but
+ * uses syntax Node cannot run with type stripping only. */
+export function nodeIslandMarkStripDiag(
+  file: string,
+  source: "cli" | "config",
+  construct: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `${islandMarkOf(source)} marks '${file}' to run in a Node island, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a .js module can run in a Node island as it is",
+  };
+}
+
+/** The package a path under node_modules belongs to (the last
+ * `node_modules` segment, scope-aware), or null outside node_modules. */
+function packageOfNodeModulesPath(path: string): string | null {
+  const parts = path.replaceAll("\\", "/").split("/");
+  const at = parts.lastIndexOf("node_modules");
+  const first = at < 0 ? undefined : parts[at + 1];
+  if (first === undefined || first === "" || first.includes("*")) return null;
+  if (!first.startsWith("@")) return first;
+  const second = parts[at + 2];
+  return second === undefined || second === "" || second.includes("*")
+    ? null
+    : `${first}/${second}`;
+}
+
+/** SC8006 — a `--node-island` value read as a path or glob matches no
+ * module of the program: the build would run nothing in Node for it. The
+ * message says how the value was read, and the hint how to write the other
+ * reading. */
+export function nodeIslandUnmatchedMarkDiag(mark: NodeIslandPathMark, loc: SrcLoc): ScrDiagnostic {
+  const read =
+    mark.why === "glob"
+      ? `read as the glob ${mark.pattern}, because a value with '*' is a glob over the program's own modules`
+      : mark.why === "explicit"
+        ? `read as the path ${mark.pattern}, because a value that starts with '.' or '/' is a path`
+        : mark.why === "node-modules"
+          ? `read as the path ${mark.pattern}, because no package is named node_modules`
+          : `read as the path ${mark.pattern}, because that file exists and the entry module resolves no package of that name`;
+  const pkg = packageOfNodeModulesPath(mark.pattern);
+  const hint =
+    pkg !== null
+      ? `a path or glob marks the program's own modules; code under node_modules runs in a Node island by package: to mark the package write --node-island=${pkg}`
+      : mark.why === "file"
+        ? `a path marks one of the program's own modules, and the program loads no module from this file; while the file exists, a package of the same name is marked in package.json ("scriptc": { "packages": { "<name>": "node" } })`
+        : "a path or glob marks the program's own modules, resolved from the working directory; to mark a package write its name as the program imports it (--node-island=<package>)";
+  return {
+    code: "SC8006",
+    message: `--node-island=${mark.value} names no module of this program: ${read}`,
+    loc,
+    hint,
+  };
+}
+
+/** SC8006 — `--node-island` names a package the build runs nothing of in
+ * Node: scriptc compiles the package from its own implementation (`shim`),
+ * the package is a Node builtin under another name (`builtin`), `--native`
+ * names the same package (`native`), or the program loads no module of it
+ * from node_modules (`absent`: not imported, imported for its types only, or
+ * a workspace package compiled from source, which is the program's own
+ * code). The `absent` message says how the value was read, and the hint how
+ * to write the other reading. */
+export function nodeIslandUnmatchedPackageDiag(
+  mark: NodeIslandPackageMark,
+  why: "shim" | "builtin" | "native" | "absent",
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const { value, name } = mark;
+  const read =
+    mark.why === "installed"
+      ? `read as the package '${name}', because the entry module resolves a package of that name, which wins over the file ${mark.file}`
+      : `read as the package '${name}', because no file ${mark.file} exists`;
+  const message =
+    why === "shim"
+      ? `--node-island=${value} cannot run '${name}' in a Node island: scriptc compiles this package from its own implementation, not from the installed one`
+      : why === "builtin"
+        ? `--node-island=${value} cannot run '${name}' in a Node island: at its installed version the package is a Node builtin module, which the program reaches directly`
+        : why === "native"
+          ? `--node-island=${value} and --native=${name} contradict each other`
+          : `--node-island=${value} names no package this program loads from node_modules: ${read}`;
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint:
+      why === "absent"
+        ? `a package runs in a Node island when the program imports a module of it; a workspace package compiled from source is the program's own code, so mark its modules by path; a path starts with ./ (--node-island=./${value})`
+        : why === "native"
+          ? "drop one of the two flags: a package compiles natively or runs in a Node island"
+          : "drop the flag: this package has no island form",
   };
 }
 
@@ -441,7 +564,7 @@ export function nodeIslandReaderStripDiag(
     code: "SC8006",
     message: `'${file}' reads '${member}', which island module ${patchFile} patches, but Node cannot strip its types: ${construct}`,
     loc,
-    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this read",
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports and exports of types; a separate .js module can hold this read",
   };
 }
 
@@ -586,6 +709,25 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
     message: `${what} cannot cross into or out of a Node island yet`,
     loc,
     hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
+  };
+}
+
+/** SC8010 — a value a Node island made (a function it exports, an object of
+ * a type it declares) sits where the program needs a native value of that
+ * type, and the type has no native form. The package's implementation is
+ * not missing: it runs in the island, and the value is a handle. */
+export function nodeIslandNativeUseDiag(
+  what: string,
+  loc: SrcLoc,
+  callable: boolean,
+): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `${what} is used here as a native value, which a Node island's value of this type cannot become yet`,
+    loc,
+    hint: callable
+      ? "call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares"
+      : "use the value through the island (read its members, call its methods, pass it back), or declare the slot `unknown`",
   };
 }
 
@@ -1375,6 +1517,56 @@ export function recordShapeMismatchDiag(
     loc,
     milestone: "later",
     hint: "width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead",
+  };
+}
+
+/** A record-width conversion at a boundary where the program writes
+ * through the value afterwards (SC2021): the conversion builds a new
+ * object, so the write reaches only the copy, while Node keeps one object.
+ * The alternative — refusing — is what keeps a build from shipping a
+ * program whose writes go missing; the hint names the annotation that
+ * makes both names the same object. */
+export function widthCopyRefusalDiag(
+  site: "declaration" | "call" | "literal",
+  sourceType: string,
+  targetType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how =
+    site === "call"
+      ? `passing a '${sourceType}' to a parameter declared '${targetType}'`
+      : site === "literal"
+        ? `storing a '${sourceType}' in a '${targetType}' field`
+        : `declaring a '${sourceType}' value as '${targetType}'`;
+  return {
+    code: "SC2021",
+    message: `${how} copies the object, and the program writes through it: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
+  };
+}
+
+/** A store into a binding that kept its initializer's layout (SC2021): the
+ * kept slot represents the assigned value in a different layout, so the
+ * store rebuilds the object instead of sharing it, while Node keeps one
+ * object. Refusing the store keeps a later write through the assigned value
+ * from silently reaching only the copy. */
+export function keptLayoutStoreCopyDiag(
+  targetName: string,
+  sourceType: string,
+  detail: string,
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2021",
+    message: `assigning a '${sourceType}' to '${targetName}' copies the object, so a later write through the assigned value would reach only the copy: ${detail}`,
+    loc,
+    milestone: "later",
+    hint,
   };
 }
 

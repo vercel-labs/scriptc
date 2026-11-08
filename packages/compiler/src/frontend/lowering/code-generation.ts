@@ -10,8 +10,18 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { DYN, F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
-import { nodeThrowExpr } from "../../ir/build.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+  STRING,
+} from "../../ir/ir.js";
+import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
@@ -79,7 +89,21 @@ export function lowerCodeGenerationCall(
   for (const operand of indirectEvalPrefix(expr.expression)) {
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(operand), loc: locOf(operand) });
   }
-  for (const arg of expr.arguments?.nodes ?? []) {
+  const argNodes = expr.arguments?.nodes ?? [];
+  if (kind === "Function" && argNodes.some((arg) => ts.isSpreadElement(arg))) {
+    const spread = lowerFunctionSpreadCall(lowerer, argNodes, loc);
+    if (spread !== null) {
+      const type = useSiteType(lowerer, expr);
+      return {
+        kind: "seqExpr",
+        stmts: [...stmts, { kind: "exprStmt", expr: spread, loc }],
+        result: nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, type, loc),
+        type,
+        loc,
+      };
+    }
+  }
+  for (const arg of argNodes) {
     if (ts.isSpreadElement(arg)) {
       lowerer.noLowering(
         `${kind === "eval" ? "eval" : "the Function constructor"} with spread arguments`,
@@ -108,6 +132,136 @@ export function lowerCodeGenerationCall(
   const type = useSiteType(lowerer, expr);
   const refusal = nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, type, loc);
   return stmts.length === 0 ? refusal : { kind: "seqExpr", stmts, result: refusal, type, loc };
+}
+
+/** `new Function(...parts)` and `Function(a, ...rest)`: the arguments,
+ * spread operands flattened as any call of an untyped function flattens
+ * them, reach the constructor's value, which converts each to a string in
+ * order and throws. Null when an argument has no untyped form. */
+function lowerFunctionSpreadCall(
+  lowerer: Lowerer,
+  argNodes: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const args: IrExpr[] = [];
+  const spreads: { arg: number; what: string }[] = [];
+  for (const [index, arg] of argNodes.entries()) {
+    const node = ts.isSpreadElement(arg) ? arg.expression : arg;
+    const value = tryLowerExpression(lowerer, node);
+    if (value === null) return null;
+    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type)) return null;
+    args.push(lowerer.coerceToExpected(value, DYN));
+    if (ts.isSpreadElement(arg)) spreads.push({ arg: index, what: ts.getTextOfNode(node) });
+  }
+  return {
+    kind: "dynCall",
+    callee: functionConstructorValue(lowerer, loc),
+    calleeName: "Function",
+    args,
+    spreads,
+    type: DYN,
+    loc,
+  };
+}
+
+/** The Function constructor as a value that receives every argument: each
+ * converts to a string in order, with the conversion any single argument
+ * gets (an object's own toString runs, and its exception leaves before the
+ * refusal), then the EvalError. */
+function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  // A `%dyn.` helper: generated code, which the likely-hot report leaves out.
+  const name = "%dyn.FunctionConstructor";
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const values = varRef("values", DYN, loc);
+    const index = varRef("index", F64, loc);
+    const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "first", name: "first", type: DYN },
+        { localId: "values", name: "values", type: DYN },
+      ],
+      locals: [
+        { id: "first", name: "first", type: DYN, mutable: false },
+        { id: "values", name: "values", type: DYN, mutable: false },
+        { id: "index", name: "index", type: F64, mutable: true },
+      ],
+      returnType: DYN,
+      body: [
+        { kind: "varDecl", localId: "index", init: number(0), loc },
+        {
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "dynCheck",
+              value: {
+                kind: "dynKeyGet",
+                value: values,
+                key: strLit("length", loc),
+                type: DYN,
+                loc,
+              },
+              type: F64,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          loc,
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "dyn.toStringCoerce",
+                args: [
+                  {
+                    kind: "dynKeyGet",
+                    value: values,
+                    key: lowerer.coerceToExpected(index, DYN),
+                    type: DYN,
+                    loc,
+                  },
+                ],
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: "index",
+              value: { kind: "bin", op: "+", left: index, right: number(1), type: F64, loc },
+              loc,
+            },
+          ],
+        },
+        {
+          kind: "exprStmt",
+          expr: nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, F64, loc),
+          loc,
+        },
+        { kind: "return", value: dynUndefinedExpr(loc), loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN], ret: DYN, rest: true, argumentsAll: true },
+      loc,
+    },
+    fnName: "Function",
+    type: DYN,
+    loc,
+  };
 }
 
 function isPrimitiveIrType(t: IrType): boolean {

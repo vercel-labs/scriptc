@@ -854,7 +854,7 @@ export function lowerCheckedArrayFrom(
 
 export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Array.from";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
     try {
@@ -970,7 +970,7 @@ export function lowerArrayFromCall(
     !args.some(ts.isSpreadElement)
   ) {
     const name = "%builtin.Array.fromDirect";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    if (lowerer.liftedFnNamed(name) === undefined) {
       const context = newFnCtx(false, null, null, DYN);
       lowerer.fnStack.push(context);
       try {

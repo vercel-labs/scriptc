@@ -9,12 +9,58 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
+import { recordKeyResultOk } from "../lower-exprs.js";
 import type { Lowerer } from "../lowerer.js";
+
+/** Whether a record pair relates ONLY through the index-signature rule: the
+ * source keeps a field the target names in its overflow map instead of a
+ * declared slot. Constructing at a destination and keeping an established
+ * conversion (a literal's contextual layout, a union arm) ask this to leave
+ * such pairs on the path they took before overflow reads joined width
+ * plans. */
+export function widthFromOverflow(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (from.kind !== "record" || to.kind !== "record") return false;
+  const fromShape = lowerer.shapes.get(from.shapeId);
+  const toShape = lowerer.shapes.get(to.shapeId);
+  return (
+    fromShape !== undefined &&
+    toShape !== undefined &&
+    fromShape.indexValue !== undefined &&
+    !fromShape.tuple &&
+    toShape.indexValue === undefined &&
+    toShape.fields.some((field) => !fromShape.fields.some((own) => own.name === field.name))
+  );
+}
 
 export type FieldLift =
   | { src: IrType; lift: WidthLift }
+  /** A target field the source does not declare: TypeScript lets the
+   * source's index signature satisfy it, so the projection reads whatever
+   * the overflow holds under that key (a copy would complete undefined and
+   * drop a value the object really has). Only a dynamic index value takes
+   * this arm: its read answers the dyn undefined for a key the object never
+   * had, which the member's check rejects. */
+  | { overflow: IrType }
+  /** The same overflow read taken at the target member's own type: the
+   * index value surfaces there, and the type's undefined arm is what a key
+   * the object never had answers (a read at the index value alone has no
+   * value to give a missing key). */
+  | { overflowAt: IrType }
   | { absent: true; utag: number }
   | { absentDyn: true };
+
+/** Whether the source's index signature can answer a target member at the
+ * member's own type: the overflow value reads there and the type holds
+ * undefined, so a key the object never had is a value the member can take. */
+function overflowReadsAt(lowerer: Lowerer, from: IrRecordShape, to: IrType): boolean {
+  return (
+    from.indexValue !== undefined &&
+    from.indexValue.kind !== "dyn" &&
+    to.kind === "union" &&
+    lowerer.armTag(to.unionId, UNDEFINED_T) >= 0 &&
+    recordKeyResultOk(lowerer, { ...from, fields: [] }, to)
+  );
+}
 
 /** Plan one recursive structural conversion without interning helpers.
  * Validate the entire plan before building it; ambiguous union destinations
@@ -334,7 +380,8 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         ? { how: "ovf" }
         : null;
     }
-    return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
+    if (lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null) return { how: "width" };
+    return null;
   }
   if (dst.kind === "record" && src.kind === "union") {
     // A union of records can share a structural destination without
@@ -389,6 +436,55 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return null;
   }
   return null;
+}
+
+/** The checked widening's gates (see WidthLift's `checkedWiden`): every
+ * field the source declares is a destination field of the same type, the
+ * destination declares a REQUIRED member the source lacks (optional and
+ * `unknown` members are the field-copy plan's own absent completion, so a
+ * pair whose only missing members are those cannot reach here), the
+ * source crosses into a checked-dynamic value at all, and the destination
+ * is a shape dynCheck validates. */
+function checkedWidenPlan(lowerer: Lowerer, fromId: string, toId: string): boolean {
+  const from = lowerer.shapes.get(fromId);
+  const to = lowerer.shapes.get(toId);
+  if (!from || !to || from.tuple || to.tuple) return false;
+  if (from.indexValue !== undefined || to.indexValue !== undefined) return false;
+  for (const field of from.fields) {
+    const target = to.fields.find((tf) => tf.name === field.name);
+    if (!target || !typeEquals(target.type, field.type)) return false;
+  }
+  let missingRequired = false;
+  for (const field of to.fields) {
+    if (from.fields.some((ff) => ff.name === field.name)) continue;
+    if (field.type.kind === "dyn") continue;
+    if (field.type.kind === "union" && lowerer.armTag(field.type.unionId, UNDEFINED_T) >= 0)
+      continue;
+    missingRequired = true;
+  }
+  if (!missingRequired) return false;
+  const source: IrType = { kind: "record", shapeId: fromId };
+  return (
+    lowerer.dynConvertible(source) &&
+    canDynCheckTo(
+      { kind: "record", shapeId: toId },
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  );
+}
+
+/** The checked widening as its own conversion, for the sites that ask for
+ * it BY NAME: a written predicate narrowing an element to a record that
+ * declares required members the element's type lacks (filter-predicates.ts).
+ * It is deliberately not part of widthLiftPlan: that relation answers every
+ * speculative "could this pair convert?" question in the lowering, and a
+ * trapping answer there would change the code of programs that already
+ * compile. A caller that reaches this point has no field-copy plan, so only
+ * a program that refused before gains the conversion. */
+export function checkedWidthLift(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
+  if (src.kind !== "record" || dst.kind !== "record" || typeEquals(src, dst)) return null;
+  return checkedWidenPlan(lowerer, src.shapeId, dst.shapeId) ? { how: "checkedWiden" } : null;
 }
 
 /** True when the record arm `arm` has a field of every name the record
@@ -505,11 +601,10 @@ export function recordWidthPlan(
   const from = lowerer.shapes.get(fromId);
   const to = lowerer.shapes.get(toId);
   // INDEX-SIGNATURE sources narrow like any wider record — the target
-  // fields copy off the declared struct slots and the overflow drops
-  // with the rest of the width (divergence 36's stance; the absent-
-  // completion rule below is the one extra fence). Index-signature
-  // TARGETS keep the overflow CAPTURE helper (widthCoerce's other arm):
-  // a fresh hybrid needs keyed writes, not a field-list literal.
+  // fields copy off the declared struct slots, and a target field the
+  // source declares only through its signature reads the overflow key.
+  // Index-signature TARGETS keep the overflow CAPTURE helper (widthCoerce's
+  // other arm): a fresh hybrid needs keyed writes, not a field-list literal.
   if (!from || !to || to.indexValue) return null;
   // Tuple↔record pairs never relate; tuple↔tuple only arity-exact.
   if (!!from.tuple !== !!to.tuple) return null;
@@ -525,19 +620,37 @@ export function recordWidthPlan(
     for (const tf of to.fields) {
       const ff = from.fields.find((f) => f.name === tf.name);
       if (!ff) {
-        // A target field MISSING on the source: legal exactly when it is
-        // optional-flavored (an undefined-armed union) — the unset field
-        // IS the undefined arm, the same rule literal completion applies
-        // — or 'unknown' (a dyn slot holds the dyn undefined, exactly
-        // the absent-property read: the options-record call shape
-        // against `{ plugins: unknown, ... }`). Never for tuples: a
-        // completed position would change .length and JSON where Node
-        // keeps the source arity. Never for INDEX-SIGNATURE sources:
-        // the overflow may hold this very key at runtime (tsc lets the
-        // signature satisfy optional target members), so completing to
-        // undefined would drop a value Node keeps — the pair stays
-        // fenced.
-        if (from.tuple || from.indexValue) return null;
+        // A target field MISSING on the source: the source's INDEX
+        // SIGNATURE satisfies it, so the projection reads the key from
+        // the overflow — completing undefined would drop a value the
+        // object really holds.
+        if (from.indexValue !== undefined && !from.tuple) {
+          const iv = from.indexValue;
+          // A key the object never had has no value to give: plan the read
+          // only where its result type holds the undefined a miss answers.
+          // A member whose type the index value surfaces at, with an
+          // undefined arm, reads at the member's own type; a dynamic index
+          // value reads as dyn. A typed value read at its own type has no
+          // undefined to answer a miss with, so the pair keeps the checked
+          // conversion it takes without a plan.
+          if (overflowReadsAt(lowerer, from, tf.type)) {
+            plan.set(tf.name, { overflowAt: tf.type });
+            continue;
+          }
+          if (iv.kind === "dyn" && lowerer.dynExtractableTo(tf.type)) {
+            plan.set(tf.name, { overflow: iv });
+            continue;
+          }
+          return null;
+        }
+        // Otherwise legal exactly when it is optional-flavored (an
+        // undefined-armed union) — the unset field IS the undefined arm,
+        // the same rule literal completion applies — or 'unknown' (a dyn
+        // slot holds the dyn undefined, exactly the absent-property read:
+        // the options-record call shape against `{ plugins: unknown, ... }`).
+        // Never for tuples: a completed position would change .length and
+        // JSON where Node keeps the source arity.
+        if (from.tuple) return null;
         if (tf.type.kind === "dyn") {
           plan.set(tf.name, { absentDyn: true });
           continue;
@@ -588,6 +701,9 @@ export function describeRecordWidthBlocker(
         }
         return `field '${tf.name}': '${lowerer.fmt(sf.type)}' does not lift into '${lowerer.fmt(tf.type)}'`;
       }
+      // An optional checked-dynamic slot has an ABSENT state, so a source
+      // that never declares it still produces the right property surface.
+      if (tf.optional === true) continue;
       if (tf.type.kind !== "union" || lowerer.armTag(tf.type.unionId, UNDEFINED_T) < 0) {
         return `the expected field '${tf.name}' is required and the source has no field to copy into it`;
       }
@@ -628,8 +744,14 @@ export function describeRecordWidthBlocker(
     const ff = from.fields.find((f) => f.name === tf.name);
     if (!ff) {
       if (from.tuple) return null;
-      if (from.indexValue) {
-        return `'${tf.name}' is not a declared field of the source, and the source's index signature could hold it at runtime (a completed undefined would drop that value)`;
+      if (from.indexValue !== undefined) {
+        const iv = from.indexValue;
+        const ok =
+          overflowReadsAt(lowerer, from, tf.type) ||
+          (iv.kind === "dyn" && lowerer.dynExtractableTo(tf.type));
+        if (!ok)
+          return `'${tf.name}' is not a declared field of the source, and the source's '[key: string]: ${lowerer.fmt(iv)}' overflow cannot produce '${lowerer.fmt(tf.type)}'`;
+        continue;
       }
       if (tf.type.kind === "dyn") continue;
       if (tf.type.kind !== "union" || lowerer.armTag(tf.type.unionId, UNDEFINED_T) < 0) {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.8",
+  "compilerVersion": "0.4.9",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -854,11 +854,368 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.dns.ADDRCONFIG",
+      "kind": "node-builtin",
+      "name": "dns.ADDRCONFIG",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.ADDRGETNETWORKPARAMS",
+      "kind": "node-builtin",
+      "name": "dns.ADDRGETNETWORKPARAMS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.ALL",
+      "kind": "node-builtin",
+      "name": "dns.ALL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADFAMILY",
+      "kind": "node-builtin",
+      "name": "dns.BADFAMILY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADFLAGS",
+      "kind": "node-builtin",
+      "name": "dns.BADFLAGS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADHINTS",
+      "kind": "node-builtin",
+      "name": "dns.BADHINTS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADNAME",
+      "kind": "node-builtin",
+      "name": "dns.BADNAME",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADQUERY",
+      "kind": "node-builtin",
+      "name": "dns.BADQUERY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADRESP",
+      "kind": "node-builtin",
+      "name": "dns.BADRESP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.BADSTR",
+      "kind": "node-builtin",
+      "name": "dns.BADSTR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.CANCELLED",
+      "kind": "node-builtin",
+      "name": "dns.CANCELLED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.CONNREFUSED",
+      "kind": "node-builtin",
+      "name": "dns.CONNREFUSED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.DESTRUCTION",
+      "kind": "node-builtin",
+      "name": "dns.DESTRUCTION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.EOF",
+      "kind": "node-builtin",
+      "name": "dns.EOF",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.FILE",
+      "kind": "node-builtin",
+      "name": "dns.FILE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.FORMERR",
+      "kind": "node-builtin",
+      "name": "dns.FORMERR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.LOADIPHLPAPI",
+      "kind": "node-builtin",
+      "name": "dns.LOADIPHLPAPI",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NODATA",
+      "kind": "node-builtin",
+      "name": "dns.NODATA",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NOMEM",
+      "kind": "node-builtin",
+      "name": "dns.NOMEM",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NONAME",
+      "kind": "node-builtin",
+      "name": "dns.NONAME",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NOTFOUND",
+      "kind": "node-builtin",
+      "name": "dns.NOTFOUND",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NOTIMP",
+      "kind": "node-builtin",
+      "name": "dns.NOTIMP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.NOTINITIALIZED",
+      "kind": "node-builtin",
+      "name": "dns.NOTINITIALIZED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.REFUSED",
+      "kind": "node-builtin",
+      "name": "dns.REFUSED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.SERVFAIL",
+      "kind": "node-builtin",
+      "name": "dns.SERVFAIL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.TIMEOUT",
+      "kind": "node-builtin",
+      "name": "dns.TIMEOUT",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.V4MAPPED",
+      "kind": "node-builtin",
+      "name": "dns.V4MAPPED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.dns.promises",
       "kind": "node-builtin",
       "name": "dns/promises",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.dns.promises.ADDRGETNETWORKPARAMS",
+      "kind": "node-builtin",
+      "name": "dns/promises.ADDRGETNETWORKPARAMS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADFAMILY",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADFAMILY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADFLAGS",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADFLAGS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADHINTS",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADHINTS",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADNAME",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADNAME",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADQUERY",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADQUERY",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADRESP",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADRESP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.BADSTR",
+      "kind": "node-builtin",
+      "name": "dns/promises.BADSTR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.CANCELLED",
+      "kind": "node-builtin",
+      "name": "dns/promises.CANCELLED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.CONNREFUSED",
+      "kind": "node-builtin",
+      "name": "dns/promises.CONNREFUSED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.DESTRUCTION",
+      "kind": "node-builtin",
+      "name": "dns/promises.DESTRUCTION",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.EOF",
+      "kind": "node-builtin",
+      "name": "dns/promises.EOF",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.FILE",
+      "kind": "node-builtin",
+      "name": "dns/promises.FILE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.FORMERR",
+      "kind": "node-builtin",
+      "name": "dns/promises.FORMERR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.LOADIPHLPAPI",
+      "kind": "node-builtin",
+      "name": "dns/promises.LOADIPHLPAPI",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NODATA",
+      "kind": "node-builtin",
+      "name": "dns/promises.NODATA",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NOMEM",
+      "kind": "node-builtin",
+      "name": "dns/promises.NOMEM",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NONAME",
+      "kind": "node-builtin",
+      "name": "dns/promises.NONAME",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NOTFOUND",
+      "kind": "node-builtin",
+      "name": "dns/promises.NOTFOUND",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NOTIMP",
+      "kind": "node-builtin",
+      "name": "dns/promises.NOTIMP",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.NOTINITIALIZED",
+      "kind": "node-builtin",
+      "name": "dns/promises.NOTINITIALIZED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.REFUSED",
+      "kind": "node-builtin",
+      "name": "dns/promises.REFUSED",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.SERVFAIL",
+      "kind": "node-builtin",
+      "name": "dns/promises.SERVFAIL",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.dns.promises.TIMEOUT",
+      "kind": "node-builtin",
+      "name": "dns/promises.TIMEOUT",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.events",
@@ -2085,7 +2442,7 @@
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
       "status": "static",
-      "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
+      "note": "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules"
     },
     {
       "id": "node-builtin.process.getegid",
@@ -2340,6 +2697,43 @@
       "id": "node-builtin.readline.promises.createInterface",
       "kind": "node-builtin",
       "name": "readline/promises.createInterface",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea",
+      "kind": "node-builtin",
+      "name": "node:sea",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
+      "id": "node-builtin.sea.getAsset",
+      "kind": "node-builtin",
+      "name": "sea.getAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetAsBlob",
+      "kind": "node-builtin",
+      "name": "sea.getAssetAsBlob",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetKeys",
+      "kind": "node-builtin",
+      "name": "sea.getAssetKeys",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getRawAsset",
+      "kind": "node-builtin",
+      "name": "sea.getRawAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.isSea",
+      "kind": "node-builtin",
+      "name": "sea.isSea",
       "status": "static"
     },
     {
@@ -2975,6 +3369,13 @@
       "name": "worker_threads",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.worker_threads.SHARE_ENV",
+      "kind": "node-builtin",
+      "name": "worker_threads.SHARE_ENV",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.worker_threads.Worker",

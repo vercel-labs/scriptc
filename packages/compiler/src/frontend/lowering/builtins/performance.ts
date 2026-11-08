@@ -161,7 +161,7 @@ export function lowerPerfHooksCall(
  * same perf.now libCall. */
 function perfNowFnValueOf(lowerer: Lowerer): string {
   const name = "%perf.now.value";
-  if (!lowerer.liftedFns.some((f) => f.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const loc: SrcLoc = { file: "<builtin>", start: 0, end: 0 };
     lowerer.liftedFns.push({
       name,
@@ -229,7 +229,7 @@ function perfEntryRecord(
     loc,
   });
   const values: Record<string, IrExpr> = {
-    [PERF_ENTRY_MARKER]: lowerer.absentFieldValue(marker.type, loc)!,
+    [PERF_ENTRY_MARKER]: lowerer.absentFieldValue(marker, loc)!,
     detail: read("perf.entryDetail", DYN),
     duration: read("perf.entryDuration", F64),
     entryType: read("perf.entryType", STRING),
@@ -740,7 +740,7 @@ function lowerEventLoopUtilization(lowerer: Lowerer, expr: ts.CallExpression): I
 
 function eluHelperOf(lowerer: Lowerer, arity: number, recT: IrType & { kind: "record" }): string {
   const name = `%perf.elu.${arity}`;
-  if (lowerer.liftedFns.some((f) => f.name === name)) return name;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
   const loc: SrcLoc = { file: "<builtin>", start: 0, end: 0 };
   const f64Local = (id: string) => ({ id, name: id, type: F64, mutable: false });
   const params = Array.from({ length: arity }, (_, i) => ({

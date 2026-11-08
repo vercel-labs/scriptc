@@ -37,11 +37,13 @@ import {
 } from "../dts-paths.js";
 import {
   isForeignType,
+  islandOwnerOfFile,
   islandSubclassCount,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { type AdmittedOpinion } from "../tsc-codes.js";
 import { newSymbolProvenanceMemo, type SymbolProvenance } from "../type-mapper.js";
+import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { inPackageFile } from "./decl-origin.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
@@ -126,6 +128,7 @@ export class LoweringFacts {
   private opinionIndexVerified = false;
   private jsDynamicVerified = false;
   private protocols: ClassProtocols | null = null;
+  private asyncProtocols: AsyncProtocolHolders | null = null;
 
   /** Whether hits are recomputed and compared (SCRIPTC_LOWERING_FACTS_VERIFY). */
   readonly verify: boolean;
@@ -320,6 +323,39 @@ export class LoweringFacts {
   classProtocols(): ClassProtocols {
     this.protocols ??= new ClassProtocols(this.program.getTypeChecker(), this.moduleOrder);
     return this.protocols;
+  }
+
+  /** The async-iteration protocol types that hold a checked-dynamic value
+   * (async-protocol-holders.ts): a pure analysis of the checker and the
+   * program's modules (the round's entry and moduleOrder), so every pass of
+   * the round maps a protocol type the same way. */
+  asyncProtocolHolders(entry: ts.SourceFile, islands: NodeIslandSet | null): AsyncProtocolHolders {
+    this.asyncProtocols ??= new AsyncProtocolHolders(
+      this.program.getTypeChecker(),
+      this.moduleOrder.includes(entry) ? this.moduleOrder : [...this.moduleOrder, entry],
+      this.isStdlibFile,
+      () => this.islandProtocolFiles(islands),
+    );
+    return this.asyncProtocols;
+  }
+  /** The files of the round's Node islands (their declarations, and island
+   * modules of the program) whose text names an async-iteration protocol
+   * interface. The names and the text are read without a syntax tree, so a
+   * program whose islands never name one fetches none of their files. */
+  islandProtocolFiles(islands: NodeIslandSet | null): readonly ts.SourceFile[] {
+    if (islands === null) return [];
+    const files: ts.SourceFile[] = [];
+    for (const name of this.program.getSourceFileNames()) {
+      if (islandOwnerOfFile(islands, name) === null) continue;
+      if (this.program.getSourceText(name)?.includes("AsyncItera") !== true) continue;
+      const file = this.program.getSourceFile(name);
+      if (file !== undefined) files.push(file);
+    }
+    return files;
+  }
+  /** The analysis, once a pass has asked it (the timing line reads it). */
+  get askedAsyncProtocolHolders(): AsyncProtocolHolders | null {
+    return this.asyncProtocols;
   }
 
   private verifyHit<T>(fact: string, known: T, recompute: () => T): T {

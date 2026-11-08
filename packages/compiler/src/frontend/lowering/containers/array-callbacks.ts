@@ -6,6 +6,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import { canAssertClassValue, checkedClassAssertion } from "../class-assertions.js";
 import * as ts from "../../ts7/adapter.js";
 import { PoisonError, type Lowerer } from "../lowerer.js";
+import { valueListCallbackReturn } from "../lower-calls.js";
 import {
   BOOL,
   DYN,
@@ -55,6 +56,7 @@ import {
 import { typeKey } from "../../type-mapper.js";
 import {
   lowerArrayCallback,
+  requireFixedArityCallback,
   requireProducedArrayElement,
   unitOnlyArrayElement,
   callbackArrayElement,
@@ -287,8 +289,9 @@ function filterKeptElem(
     "(the checker then skips the predicate) or annotate the result with the receiver's own " +
     "element type — and narrow the elements after";
   // A record target that declares fields the receiver's record element has no
-  // slot for: the elements were narrowed when they were stored, so those
-  // fields no longer exist at runtime and no per-field check can recover them.
+  // slot for: no field copy can supply them, and the checked widening
+  // (width-lift.ts) covers only pairs whose element fields are target fields
+  // with equal types — one the element lacks for another reason stays here.
   const widened = supersetGuardFields(lowerer, elem, outElem);
   const missingFields =
     widened === null
@@ -296,9 +299,9 @@ function filterKeptElem(
       : ` (the receiver's element type has no slot for ${widened
           .slice(0, 4)
           .map((field) => `'${field}'`)
-          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — each ` +
-        `element was narrowed when it was stored, so those fields do not exist at runtime and ` +
-        `the predicate cannot make them real)`;
+          .join(", ")}${widened.length > 4 ? ` and ${widened.length - 4} more` : ""} — no ` +
+        `field copy can supply them, and the checked widening covers only an element whose ` +
+        `own fields the target declares with equal types)`;
   const written =
     !booleanFilter &&
     ((!ts.isArrowFunction(argNode) && !ts.isFunctionExpression(argNode)) ||
@@ -1846,6 +1849,11 @@ export function lowerArrayFlatMapCall(
     argNode,
     [callbackValueType(lowerer, elem, present)],
     arrT,
+    false,
+    // A callback that returns the values of a checked-dynamic object
+    // returns the native list of them, which the flatten below reads.
+    valueListCallbackReturn(lowerer, argNode),
+    true,
   );
   const { fnArg, arity } = lowered;
   // Only an array that can hold elements outside its element type needs to
@@ -1866,6 +1874,8 @@ export function lowerArrayFlatMapCall(
       loc,
     };
   }
+  // Every path below calls the callback from a helper's loop.
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (fnRet.kind === "union") {
     const def = lowerer.unions.get(fnRet.unionId);
     const plan = def?.arms.some((a) => a.kind === "array")
@@ -2916,6 +2926,32 @@ export function lowerArraySortCall(
   }
   let fnArg =
     undefinedArg ?? lowerOptionalElementComparator(lowerer, argNode, unwrappedArg, elem, arrT);
+  // A Node island's function as the comparator: its typed view, taken at
+  // the two elements the sort passes.
+  if (fnArg.type.kind === "func" && fnArg.type.ret.kind !== "void") {
+    const view = lowerer.islandFunctionViewAt(
+      fnArg,
+      unwrappedArg,
+      funcOf([elem, elem], fnArg.type.ret),
+    );
+    if (view !== null) fnArg = view;
+  }
+  // A comparator whose result may be `undefined` — the shape TS infers for a
+  // JavaScript function that falls off its end for equal elements (semver's
+  // `rcompare`) — still orders: JavaScript reads a comparator's result with
+  // ToNumber, so the adapter completes the unit arm as NaN, which the
+  // runtime's `result > 0` test reads as "not greater", exactly as Node.
+  if (fnArg.type.kind === "func") {
+    const numeric = lowerer.sortComparatorResultAdapter(fnArg.type, loc);
+    if (numeric !== null)
+      fnArg = {
+        kind: "call",
+        callee: numeric,
+        args: [fnArg],
+        type: funcOf(fnArg.type.params, F64),
+        loc,
+      };
+  }
   // Reusable JS comparators often accept checked values. Adapt the array's
   // element ABI just as other array callbacks do before sorting. A
   // comparator declaring MORE parameters than sort passes (`(a, b, loose?)`,
@@ -2950,6 +2986,7 @@ export function lowerArraySortCall(
   ) {
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
+  requireFixedArityCallback(lowerer, argNode, fnArg.type);
   const arity = fnArg.type.params.length;
   // The runtime sorts raw slots without per-move reference counting; this
   // beats the IR merge sort even when its comparator call becomes direct.
@@ -2995,7 +3032,7 @@ function recognizedSortKeys(
   fnArg: IrExpr,
   elem: IrType,
 ): readonly SortKeyOrder[] | null {
-  const keyed = closureKeyOrder(lowerer.liftedFns, fnArg);
+  const keyed = closureKeyOrder(lowerer, fnArg);
   if (!keyed) return null;
   if (keyed[0]!.read === null) return elem.kind === "f64" ? keyed : null;
   return elem.kind === "record" || elem.kind === "object" ? keyed : null;
@@ -3104,8 +3141,11 @@ export function lowerDynArrayFlatMapCall(
   if (call.arguments.nodes.length !== 1) return null;
   const argNode = call.arguments.nodes[0]!;
   const loc = locOf(call);
-  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN);
+  const { fnArg, arity } = lowerArrayCallback(lowerer, argNode, [DYN], DYN, false, undefined, true);
   const ret = fnArg.type.ret;
+  // Only the dynamic-returning path boxes the callback; the helper below
+  // calls it from its loop.
+  if (ret.kind !== "dyn") requireFixedArityCallback(lowerer, argNode, fnArg.type);
   if (ret.kind !== "array") {
     // A DYNAMIC-returning callback (`plugins.flatMap((plugin) =>
     // plugin.languages ?? [])` — the getSupportInfo shape, where the
@@ -3682,11 +3722,19 @@ export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | 
     return { ...stmt, init: varRef("bound.0", F64, stmt.loc) };
   });
   if (!replaced) return null;
+  // The copy owns its parameter and local records: the jsval promotion
+  // retypes a function's locals in place.
   lowerer.liftedFns.push({
     ...fn,
     name: bounded,
-    params: [...fn.params, { localId: "bound.0", name: "bound", type: F64 }],
-    locals: [...fn.locals, { id: "bound.0", name: "bound", type: F64, mutable: false }],
+    params: [
+      ...fn.params.map((param) => ({ ...param })),
+      { localId: "bound.0", name: "bound", type: F64 },
+    ],
+    locals: [
+      ...fn.locals.map((local) => ({ ...local })),
+      { id: "bound.0", name: "bound", type: F64, mutable: false },
+    ],
     body,
   });
   return bounded;

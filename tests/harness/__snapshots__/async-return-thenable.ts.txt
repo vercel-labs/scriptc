@@ -1,0 +1,20 @@
+async-return-thenable.ts:21:10 - error SC1090: returning a thenable 'Later' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. `new Promise((resolve, reject) => value.then(resolve, reject))`) is not supported yet
+
+  20 | async function read(text: string): Promise<Reading> {
+  21 |   return new Later(text);
+     |          ^~~~~~~~~~~~~~~
+  22 | }
+
+async-return-thenable.ts:24:60 - error SC1090: returning a thenable 'Later' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. `new Promise((resolve, reject) => value.then(resolve, reject))`) is not supported yet
+
+  23 | 
+  24 | const viaArrow = async (text: string): Promise<Reading> => new Later(text);
+     |                                                            ^~~~~~~~~~~~~~~
+  25 | 
+
+async-return-thenable.ts:28:10 - error SC1090: returning a thenable 'Later' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. `new Promise((resolve, reject) => value.then(resolve, reject))`) is not supported yet
+
+  27 |   yield 1;
+  28 |   return new Later(text);
+     |          ^~~~~~~~~~~~~~~
+  29 | }

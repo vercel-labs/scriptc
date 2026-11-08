@@ -123,6 +123,11 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* The process environment's value for one UTF-8, NUL-terminated name, copied:
+ * +1 for the caller to free, NULL when the variable is absent. The Win32
+ * environment on Windows, getenv(3) elsewhere, so a worker that shares the
+ * process environment reads what either thread wrote. Never throws. */
+char *scr_env_process_copy(const char *name);
 /* NODE_DEBUG as the process started (NULL when unset), for util.debuglog. */
 const char *scr_node_debug_initial(void);
 /* The whole environment as alternating [k, v, k, v, ...] strings in
@@ -310,6 +315,9 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data);
 void scr_fs_write_file_fd(double fd, ScrStr *data);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
 bool scr_fs_exists(ScrStr *path);
+/* existsSync over a statically typed byte path: the bytes decode as a string
+ * and the probe runs on it, the conversion the value form also does. */
+bool scr_fs_exists_bytes(ScrBytes *path);
 void scr_fs_mkdir(ScrStr *path);
 /* Files only, like Node's rmSync without `recursive` (a directory throws an
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
@@ -387,6 +395,19 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 /* writeFileSync(path, data, { mode, flag }): `exclusive` is "wx" (O_EXCL). */
 void scr_fs_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exclusive);
+/* writeFileSync(p, data, { encoding, mode, flag }) and appendFileSync's
+ * three-argument form: the string data encoded with `encoding` (an empty
+ * name is utf8) and written through Node's open(2) flag table, or the
+ * bytes of a Buffer/TypedArray argument written the same way (their
+ * encoding name is validated and otherwise ignored, as in Node). */
+void scr_fs_write_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                               ScrStr *flags);
+void scr_fs_append_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                ScrStr *flags);
+void scr_fs_write_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                     double mode, ScrStr *flags);
+void scr_fs_append_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                      double mode, ScrStr *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL
@@ -559,6 +580,9 @@ ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
+                                           double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);

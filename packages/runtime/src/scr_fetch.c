@@ -10,6 +10,7 @@
   6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080
 
 #include "scr_runtime.h"
+#include "scr_abort_signal.h"
 #include "scr_system_errors.h"
 #include "scr_url_internal.h"
 
@@ -25,8 +26,6 @@ static void sf_signal_install(void);
 #endif
 
 typedef struct SfTransfer SfTransfer;
-typedef struct SfSignal SfSignal;
-typedef struct SfSignalWatch SfSignalWatch;
 typedef struct SfStream SfStream;
 typedef struct SfReader SfReader;
 typedef struct SfResponse SfResponse;
@@ -53,30 +52,6 @@ struct SfReadRequest {
 struct SfTypedRef {
   ScrDyn *value;
   SfTypedRef *next;
-};
-
-struct SfSignalWatch {
-  SfSignal *source; /* weak; NULL after the source fires */
-  void *owner;      /* owner keeps source alive */
-  void (*fire)(SfSignalWatch *, SfSignal *);
-  SfSignalWatch *next;
-};
-
-struct SfSignal {
-  size_t rc;
-  bool aborted;
-  ScrDyn *reason;
-  ScrError *error_reason;
-  bool reason_self;
-  ScrDynHandleTag reason_self_tag;
-  bool reason_tracked;
-  SfSignal *reason_next;
-  ScrEventTargetCore core; /* listeners and the onabort attribute */
-  SfSignalWatch *watchers;
-  SfSignal **sources;
-  SfSignalWatch **source_watches;
-  size_t source_count;
-  double timer_id;
 };
 
 struct SfReader {
@@ -2450,7 +2425,7 @@ ScrDyn *scr_fetch_stream_new(ScrDyn *source) {
     if (type && type->kind != SCR_DYN_UNDEF) {
       sf_stream_release(s);
       scr_dyn_release(materialized);
-      sf_type_error("byte streams are not supported by static ReadableStream");
+      { static const char refused[] = "byte streams are not supported by static ReadableStream"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     const ScrDyn *pull = scr_dyn_obj_get(source_view, "pull", 4);
@@ -2656,7 +2631,7 @@ static ScrDyn *sf_stream_invoke(void *ptr, ScrDyn *self, const char *method,
     scr_dyn_release(materialized);
     if (scr_exc_pending()) return NULL;
     if (byob) {
-      sf_type_error("BYOB readers are not supported");
+      { static const char refused[] = "BYOB readers are not supported"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     SfReader *r = sf_stream_get_reader(s);

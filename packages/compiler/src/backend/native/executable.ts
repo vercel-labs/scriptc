@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -164,11 +165,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // A generator that binds its parameters at the call (scr_gen_bind.c).
   unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
+  // A generator function that reads `this` (scr_gen_receiver.c).
+  unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
+  unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
+  // The BYTE-data spellings of the options write and fs.promises.writeFile
+  // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
+  // program that writes no byte payload keeps both objects unchanged.
+  unit((u) => u.opts.fsBytesWrites === true, "scr_fs_bytes_write.c"),
   // string_decoder's checked-dynamic chunk forms, beside their typed twins.
   unit((u) => u.opts.strdecDyn === true, "scr_bytes_strdec_dyn.c"),
   // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
@@ -209,7 +218,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -219,6 +228,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // An untyped path of a synchronous fs function (dyn.validateFsPath).
+  unit((u) => u.opts.fsPathValue === true, "scr_fs_path_value.c"),
   // A standard library prototype object read as a value in a JavaScript
   // source: the dynamic tier's gated unit, whose work is JavaScript-only.
   unit(
@@ -343,7 +354,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The worker unit compares the env option against SHARE_ENV, its symbol
+  // (scr_worker_events.c), so a worker program links the symbol unit even
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -389,13 +403,26 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
+  // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
+  unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
+  // Reflect.getPrototypeOf's primitive-target check.
+  unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // `delete` of a key a record's type does not declare.
+  unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
+  // Record views of types whose values may also be frozen.
+  unit((u) => u.opts.recordViewFrozen === true, "scr_record_view_frozen.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // A dev executable's report of failed checked conversions.
+  unit((u) => u.opts.conversionTrace === true, "scr_conversion_trace.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // The keyed collections' prototype objects, member values, their
+  // constructors' adder lookup and the ES2025 Set compositions.
+  unit((u) => u.opts.dynCollections === true, "scr_dyn_collections.c"),
   // for await over checked-dynamic values that may hold native streams.
   unit(
     (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
@@ -467,6 +494,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
   ),
+  // A native AbortSignal or AbortController crossing into an island: the
+  // signal's twin there follows it through the signal unit's watcher list.
+  unit(
+    (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
+    "scr_node_island_abort.c",
+  ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
   // The dynamic global object's answer for the Node globals the native
@@ -504,11 +537,10 @@ const RUNTIME_DEFINES: readonly {
   // builds selected by runtime-pack-matrix.mjs, so the source build must name
   // the same builds.
   { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
-  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c),
+  // server.off (scr_net.c) and copyFile's mode form (scr_fs_cp.c). The source
+  // build compiles these units from source, so the defines must name the same
+  // builds runtime-pack-matrix.mjs selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
@@ -518,8 +550,6 @@ const RUNTIME_DEFINES: readonly {
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
-  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
   // scr_async.c's native promise reactions, which the web streams unit uses,
   // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
   // bodies of its streams.
@@ -604,7 +634,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];

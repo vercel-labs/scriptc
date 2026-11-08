@@ -41,6 +41,10 @@ process.exitCode = await runCli(process.argv.slice(2), {
   warmNativeCaches,
   mergeProfiles,
   typePatches,
+  reinvoke: (args) => ({
+    file: process.execPath,
+    args: [...process.execArgv, process.argv[1]!, ...args],
+  }),
   run: (binary) =>
     new Promise<number>((resolveExit) => {
       let child;

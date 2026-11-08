@@ -1,5 +1,10 @@
 - **Method values:** Borrowing a class method onto an unrelated object is unsupported.
   Detached methods that use `this`, builtin method values, abstract declarations, unspecialized generic methods, and incompatible override signatures produce runtime errors or compilation diagnostics.
   Supported class methods can be stored and passed as unbound functions.
+  A method of a TypeScript class that mentions `this` or `super` checks its receiver each time it is called through a value, and throws a `TypeError` unless the receiver is an instance of the class.
+  A method that tests its receiver (`this === undefined`, `!this`, `this instanceof C`) therefore throws that `TypeError` when it is called without an instance, where Node.js runs the method and takes the method's own branch.
+  The same holds when the call supplies another object as the receiver, where Node.js answers the test for that object.
+  A method that never mentions `this` runs without a receiver.
+  A member called through parentheses, a non-null assertion, or a type assertion (`(obj.method)()`, `obj.method!()`, `(obj.method as F)()`) is called on its object, as in Node.js; an element access in parentheses (`(obj["method"])()`), a parenthesized optional chain, and an optional method declared without a body and called with `!` lose the receiver.
   A field call supplies its containing instance as `this`; `call`, `apply`, and `bind` work when the signature supports runtime-checked conversion.
   Extracted overrides retain the selected method, and receiver validation accepts the declaring class and its subclasses.

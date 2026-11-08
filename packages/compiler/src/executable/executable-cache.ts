@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
@@ -71,14 +72,13 @@ export interface EarlyExecutableNativeFeatures {
   jsObjectModel?: boolean;
   /** The buffer views registry: scr_js_buffers.c and mutable bytes headers. */
   mutableBuffers: boolean;
-  stdioExtended?: boolean;
   fsFlags?: boolean;
+  fsExistsValue?: boolean;
+  fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
-  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
-  stdioWriteSlot?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
   nodeIsland?: boolean;
@@ -99,11 +99,18 @@ export interface EarlyExecutableNativeFeatures {
   handleProps?: boolean;
   childLifecycle?: boolean;
   childOptionExt?: boolean;
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  conversionTrace?: boolean;
   dynForAwait?: boolean;
+  dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
+  reflectProtoTarget?: boolean;
+  recordSourceDelete?: boolean;
+  recordViewFrozen?: boolean;
   genBind?: boolean;
+  genReceiver?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -111,6 +118,7 @@ export interface EarlyExecutableNativeFeatures {
   abortSignal?: boolean;
   utilTiming?: boolean;
   dynBuffer?: boolean;
+  fsPathValue?: boolean;
   builtinValues?: boolean;
   computedRequire?: boolean;
   events: boolean;
@@ -169,7 +177,7 @@ export interface EarlyExecutableNativeFeatures {
 }
 
 interface EarlyExecutableCacheStamp {
-  version: 1;
+  version: 2;
   key: string;
   frontend: FrontendInputSnapshot;
   files: {
@@ -180,8 +188,14 @@ interface EarlyExecutableCacheStamp {
   };
   nativeDependencies: NativeArtifactDependency[] | null;
   native: EarlyExecutableNativeFeatures;
-  /** The build's performance warnings (SC61xx), which a cache hit repeats. */
-  performance?: ScrDiagnostic[];
+  /** Every warning the build reported (SC6xxx divergences and performance
+   * notes, SC8001/SC8020/SC8023 Node island notices, SC803x type patches),
+   * which a cache hit repeats exactly. */
+  warnings?: ScrDiagnostic[];
+  /** The text the build's warnings were located in, for each file whose text
+   * on disk differs from it (a JSX file the frontend rewrote), by path. A hit
+   * frames a warning whose file is absent here from the file on disk. */
+  warningSources?: Record<string, string>;
   /** The Node islands the build ran, which a cache hit reports again. */
   islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
@@ -243,6 +257,10 @@ export interface EarlyExecutableCacheOptions {
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted for the default tier policy (`--tier=auto`), which keeps the
+   * keys it had. `static-only` refuses programs that `auto` compiles, so
+   * its verdict must not be answered from an `auto` entry. */
+  tier?: "static-only";
   /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
   heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
@@ -313,8 +331,12 @@ export interface EarlyExecutableCacheHit {
   executableRestored: boolean;
   native: EarlyExecutableNativeFeatures;
   frontend: FrontendInputSnapshot;
-  /** The performance warnings the build reported (SC61xx), repeated on a hit. */
-  performance?: ScrDiagnostic[];
+  /** The warnings the build reported, repeated on a hit. */
+  warnings?: ScrDiagnostic[];
+  /** The texts the build's warnings point into, for the files whose text on
+   * disk differs from the text the warnings were located in (a JSX file the
+   * frontend rewrote). A hit re-reads every other file. */
+  warningSources?: Record<string, string>;
   /** The Node islands the build ran, repeated on a hit. */
   islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
@@ -326,6 +348,10 @@ export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   /** The partitions the native helper compiled, when the build divided the
    * module; omitted when it linked one object. */
   partitions?: number;
+  /** The texts the build's warnings were located in, by file. The entry keeps
+   * the ones that differ from the file on disk (a JSX file the frontend
+   * rewrote), so a hit frames the warnings as the build did. */
+  warningTexts?: ReadonlyMap<string, string>;
 }
 
 function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
@@ -338,6 +364,39 @@ function isIslands(value: unknown): value is { packages: string[]; modules: stri
   );
 }
 
+/** The build's warnings as its cache entry holds them: the JSON of the
+ * diagnostics its warning sink produced. */
+function isWarnings(value: unknown): value is ScrDiagnostic[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => {
+      if (typeof item !== "object" || item === null) return false;
+      const warning = item as Record<string, unknown>;
+      const loc = warning.loc as Record<string, unknown> | undefined;
+      return (
+        typeof warning.code === "string" &&
+        typeof warning.message === "string" &&
+        typeof loc === "object" &&
+        loc !== null &&
+        typeof loc.file === "string" &&
+        typeof loc.start === "number" &&
+        typeof loc.end === "number"
+      );
+    })
+  );
+}
+
+/** The texts a cache entry keeps for its warnings: one string per file, read
+ * back as the map the frames render from. */
+function isWarningSources(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((text) => typeof text === "string")
+  );
+}
+
 function isProfileMatch(value: unknown): value is NativeProfileMatch {
   if (typeof value !== "object" || value === null) return false;
   const match = value as Record<string, unknown>;
@@ -347,53 +406,14 @@ function isProfileMatch(value: unknown): value is NativeProfileMatch {
   });
 }
 
-const BOOLEAN_NATIVE_KEYS = [
-  "regex",
-  "copying",
-  "textDecoderLegacy",
-  "bigintBytes",
+/** The keys a cached record always spells: the required keys of the link
+ * features it is built from (executableNativeFeatures in index.ts), and
+ * mutableBuffers, which the record spells where the link features leave it
+ * out when off. */
+const BOOLEAN_NATIVE_KEYS: readonly (keyof EarlyExecutableNativeFeatures)[] = [
+  ...REQUIRED_LINK_FEATURES,
   "mutableBuffers",
-  "fileHandle",
-  "fetch",
-  "zlib",
-  "assert",
-  "inspect",
-  "dynInvoke",
-  "dc",
-  "dynAsync",
-  "events",
-  "emitter",
-  "symbol",
-  "bigint",
-  "searchParams",
-  "qs",
-  "utilPromisify",
-  "dynBuiltinClass",
-  "dynBuiltinStream",
-  "parseArgs",
-  "stream",
-  "net",
-  "http",
-  "http2",
-  "dgram",
-  "dnsPromises",
-  "dgramDyn",
-  "textCodecDyn",
-  "watch",
-  "watchFile",
-  "foreignFfi",
-  "nodeTest",
-  "tls",
-  "tlsCa",
-  "cipher",
-  "ecdh",
-  "dh",
-  "pki",
-  "ed25519",
-  "x509",
-  "webcrypto",
-  "perfLoop",
-] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
+];
 
 function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeatures {
   return validSharedNativeFeatures<EarlyExecutableNativeFeatures>(
@@ -437,6 +457,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.tier === "static-only" ? ["tier-static-only"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
     ...(options.shapeOverlay ? ["shape-overlay"] : []),
@@ -494,6 +515,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.tier === "static-only") hash.update("tier-static-only\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
   if (options.shapeOverlay) hash.update("shape-overlay\0");
@@ -521,6 +543,17 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     hash.update(resolve(options.ffiProfile.path)).update("\0").update(options.ffiProfile.bytes);
   }
   return hash.digest("hex");
+}
+
+/** The two keys a build's cache entries are stored under: the entry's and
+ * the route's (the launcher's shortcut to it). For tests of what the keys
+ * cover; a build option that changes the verdict or the output must change
+ * both. */
+export function earlyExecutableCacheKeys(options: EarlyExecutableCacheOptions): {
+  entry: string;
+  route: string;
+} {
+  return { entry: cacheKey(options), route: routeKey(options) };
 }
 
 function routePath(
@@ -676,7 +709,7 @@ async function readExecutableCache(
     const stamp = JSON.parse(await readFile(path, "utf8")) as EarlyExecutableCacheStamp;
     const { integrity, ...unsigned } = stamp;
     if (
-      stamp.version !== 1 ||
+      stamp.version !== 2 ||
       stamp.key !== cacheKey(options) ||
       !validFrontendInputSnapshot(stamp.frontend) ||
       !validNativeFeatures(stamp.native) ||
@@ -845,9 +878,10 @@ async function readExecutableCache(
       native: stamp.native,
       executableRestored,
       frontend: stamp.frontend,
-      ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
-        ? { performance: stamp.performance }
+      ...(isWarnings(stamp.warnings) && stamp.warnings.length > 0
+        ? { warnings: stamp.warnings }
         : {}),
+      ...(isWarningSources(stamp.warningSources) ? { warningSources: stamp.warningSources } : {}),
       ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
@@ -974,6 +1008,26 @@ export async function publishEarlyExecutableRoute(
   }
 }
 
+/** The warning texts a cache entry keeps: the ones a hit cannot read back
+ * from disk, because the frontend rewrote the file (its JSX) before the
+ * warnings were located in it. */
+async function changedWarningTexts(
+  texts: ReadonlyMap<string, string> | undefined,
+): Promise<Record<string, string>> {
+  const changed: Record<string, string> = {};
+  for (const [file, text] of texts ?? []) {
+    let onDisk: string | null = null;
+    try {
+      onDisk = await readFile(file, "utf8");
+    } catch {
+      // A file that no longer exists cannot be re-read; the entry keeps the
+      // text the warnings were located in.
+    }
+    if (onDisk !== text) changed[file] = text;
+  }
+  return changed;
+}
+
 export async function publishEarlyExecutableCache(
   root: string | null,
   options: EarlyExecutableCacheOptions,
@@ -1025,8 +1079,9 @@ export async function publishEarlyExecutableCache(
       )
     )
       return;
+    const warningSources = await changedWarningTexts(result.warningTexts);
     const unsigned: Omit<EarlyExecutableCacheStamp, "integrity"> = {
-      version: 1,
+      version: 2,
       key: cacheKey(options),
       frontend: result.frontend,
       files: {
@@ -1040,9 +1095,10 @@ export async function publishEarlyExecutableCache(
       ...(executable !== null && result.partitions !== undefined
         ? { partitions: result.partitions }
         : {}),
-      ...(result.performance === undefined || result.performance.length === 0
+      ...(result.warnings === undefined || result.warnings.length === 0
         ? {}
-        : { performance: result.performance }),
+        : { warnings: result.warnings }),
+      ...(Object.keys(warningSources).length === 0 ? {} : { warningSources }),
       ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),

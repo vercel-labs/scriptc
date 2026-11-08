@@ -178,6 +178,17 @@ static ScrDyn *scr_fs_cb_option(const ScrDyn *options, const char *name) {
   return value;
 }
 
+/* Whether the options bag carries `name` as an own key. Node validates the
+ * value even when it is undefined, so presence differs from a non-absent
+ * read. */
+static bool scr_fs_cb_option_present(const ScrDyn *options, const char *name) {
+  if (scr_fs_dyn_absent(options)) return false;
+  ScrStr *key = scr_str_new(name, strlen(name));
+  bool present = scr_dyn_has_own(options, key);
+  scr_str_release(key);
+  return present;
+}
+
 static double scr_fs_cb_number(const ScrDyn *value, const char *name, double fallback) {
   if (scr_fs_dyn_absent(value)) return fallback;
   if (value->kind == SCR_DYN_BIGINT) return scr_bigint_to_f64(value->v.bigint);
@@ -802,6 +813,57 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     scr_fs_cb_schedule(callback, result, NULL);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  if (!strcmp(op, "opendir")) {
+    /* fs.opendir(path[, options], callback): validateFunction('callback'),
+     * then the path, then the options encoding, then the open. The
+     * bufferSize check runs in the Dir constructor, after the open, so an
+     * open error still reaches the callback. */
+    const ScrDyn *options = scr_fs_cb_arg(args, argc, 1);
+    const ScrDyn *callback = options->kind == SCR_DYN_FUNC ? options : scr_fs_cb_arg(args, argc, 2);
+    if (!scr_fs_cb_chk(callback, "callback")) return NULL;
+    ScrStr *path = scr_fs_checked_path(scr_fs_cb_arg(args, argc, 0), "path");
+    if (!path) return NULL;
+    if (options->kind == SCR_DYN_FUNC) options = scr_dyn_undefined();
+    if (!scr_fs_encoding_chk(options)) { scr_str_release(path); return NULL; }
+    bool has_buffer_size = scr_fs_cb_option_present(options, "bufferSize");
+    ScrDyn *buffer_value = has_buffer_size ? scr_fs_cb_option(options, "bufferSize") : NULL;
+    ScrDir *dir = scr_exc_pending() ? NULL : scr_fs_opendir_raw(path);
+    scr_str_release(path);
+    if (!dir) {
+      scr_dyn_release(buffer_value);
+      scr_fs_cb_schedule(callback, NULL, NULL);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    double buffer_size = 32;
+    bool valid = !scr_exc_pending();
+    if (valid && has_buffer_size) {
+      if (!buffer_value || buffer_value->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("options.bufferSize", "of type number",
+                              buffer_value ? buffer_value : scr_dyn_undefined());
+        valid = false;
+      } else {
+        buffer_size = buffer_value->v.num;
+      }
+    }
+    scr_dyn_release(buffer_value);
+    if (valid) valid = scr_dir_buffer_size_ok(buffer_size);
+    if (!valid) {
+      /* The Dir constructor closes the handle, then throws; the throw is
+       * the uncaught exception of the completion turn. Library links carry
+       * no event loop and refuse the callback surfaces before emission. */
+      scr_dir_close(dir);
+      scr_dir_release(dir);
+#ifndef SCR_LIB
+      scr_defer_pending_throw();
+#endif
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    scr_dir_buffer_size_set(dir, buffer_size);
+    ScrDyn *handle = scr_dir_dyn_handle(dir);
+    scr_dir_release(dir);
+    scr_fs_cb_schedule(callback, handle, NULL);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   if (!strcmp(op, "link") || !strcmp(op, "symlink") || !strcmp(op, "readlink")) {
     const ScrDyn *first = scr_fs_cb_arg(args, argc, 0);
     const ScrDyn *second = scr_fs_cb_arg(args, argc, 1);
@@ -1302,7 +1364,7 @@ bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
 static ScrBytes *scr_buffer_from_refusal(const char *detail) {
   char msg[192];
   int n = snprintf(msg, sizeof msg, "Buffer.from %s is not supported yet", detail);
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
   return NULL;
 }
 

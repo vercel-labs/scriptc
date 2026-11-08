@@ -11,6 +11,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
+import { sourceTextMatches } from "../ts7/adapter.js";
 import { thenReader } from "./checked-promise-all.js";
 import { builtinGlobalValue } from "./expressions/property-access.js";
 import type { Lowerer } from "./lowerer.js";
@@ -25,7 +26,7 @@ export function programMayDefineThenables(lowerer: Lowerer): boolean {
     const pattern = /(^|[^.\w$])then\s*[(<]|\bthen\s*:|['"`]then['"`]|(^|[^\w$])then\s*=(?![=>])/m;
     lowerer.thenablesMayBeDefined = lowerer.program
       .getImplementationSourceFiles()
-      .some((sf) => !sf.isDeclarationFile && pattern.test(sf.text));
+      .some((sf) => !sf.isDeclarationFile && sourceTextMatches(sf, pattern));
   }
   return lowerer.thenablesMayBeDefined;
 }

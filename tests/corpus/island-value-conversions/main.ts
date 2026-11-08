@@ -3,7 +3,7 @@
 // checked conversion (`as Item`, `as { label: string }`, `as number[]`)
 // reads the members through the handle, and JSON.stringify, Object.keys
 // and object spread read the island object's own properties.
-import { makeBody, makeCycle, makeHidden, makeHooks, makeInherited, makeList, makeProxyList, makeShapes, makeSymbols, makeWithMembers } from "value-pkg";
+import { makeBody, makeCounting, makeCycle, makeHidden, makeHooks, makeInherited, makeList, makeProxyList, makeShapes, makeSymbols, makeWithMembers } from "value-pkg";
 
 interface Item {
   label: string;
@@ -59,6 +59,21 @@ console.log("inherited", inherited.label, inherited.count);
 
 const hidden = makeHidden() as { [k: string]: number; hidden: number };
 console.log("hidden", hidden.hidden, hidden["visible"]);
+
+// A target that declares no field of its own converts through the same
+// object view, with an empty declared-field table: every own key converts.
+function listNumbers(r: { [k: string]: number }): string {
+  return `${Object.keys(r).join(",")}:${r["visible"]}`;
+}
+console.log("fieldless", listNumbers(makeHidden()));
+
+// An index-signature record's declared field is a getter: the conversion
+// that builds the record at the call reads it once, so the callee sees the
+// getter's first answer.
+function countIndexed(r: { [k: string]: number; counted: number }): string {
+  return `${r.counted}:${r.plain}`;
+}
+console.log("counting", countIndexed(makeCounting()));
 
 // Passing the island object where a parameter declares an index-signature
 // record builds the record at the call, so its declared fields read the

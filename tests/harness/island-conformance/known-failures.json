@@ -1,0 +1,433 @@
+{
+  "corpus/5227-url-legacy-dependency": {
+    "island:legacy-links": {
+      "category": "build",
+      "signature": "SC8010"
+    }
+  },
+  "corpus/6120-type-only-import-graph": {
+    "island:types-only-pkg": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/6126-punycode-dependency": {
+    "island:puny-dep": {
+      "category": "stdout",
+      "signature": "listener DEP0040"
+    }
+  },
+  "corpus/6295-jose-hs256": {
+    "island:jose": {
+      "category": "stdout",
+      "signature": "valid SC8010 scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) false TypeError undefined undefin"
+    }
+  },
+  "corpus/6331-jose-root-entry": {
+    "island:jose": {
+      "category": "stdout",
+      "signature": "valid TypeError scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+    }
+  },
+  "corpus/6413-sdk-declared-data-class": {
+    "island:upload-sdk": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/6590-npm-promise-mixin": {
+    "island:promise-mixin": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: expected string at $[0], got boolean"
+    }
+  },
+  "corpus/7132-jose-pbes2": {
+    "island:jose": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+    }
+  },
+  "corpus/7531-buffer-constructor-dependency": {
+    "island:legacy-buf": {
+      "category": "stdout",
+      "signature": "Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "corpus/7532-buffer-constructor-check-limit": {
+    "island:legacy-buf": {
+      "category": "stdout",
+      "signature": "listener DEP0005"
+    }
+  },
+  "corpus/7614-npm-local-class-per-instance": {
+    "island:ctor-kit": {
+      "category": "build",
+      "signature": "SC1090"
+    }
+  },
+  "corpus/7731-npm-any-string-index": {
+    "island:merge-path": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "corpus/7748-npm-any-bytes-receiver": {
+    "island:chunk-buffers": {
+      "category": "stdout",
+      "signature": "<Buffer 01 02 09 10 00 00 00 00 00 00 00 00 00 00 00 00>"
+    },
+    "island:etag-digest": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Unhandled promise rejection: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+    }
+  },
+  "corpus/8211-require-resolve-computed": {
+    "island:resolve-probe": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: const error = new Error("
+    }
+  },
+  "corpus/8212-native-helper-probe-no-display": {
+    "island:native-helper": {
+      "category": "stdout",
+      "signature": "candidate ..<root>/node_modules/native-helper/native/helper.node"
+    }
+  },
+  "corpus/8720-npm-typed-callback-config": {
+    "island:typed-sdk": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/8756-types-only-package-data-shape": {
+    "island:doc-types-pkg": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/fs-extra-package": {
+    "island:fs-extra": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/graceful-fs-alias": {
+    "island:graceful-fs": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/readable-stream-3": {
+    "island:readable-stream": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/readable-stream-disable": {
+    "island:readable-stream": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/undeclared-key-optional-chain": {
+    "island:hostilekit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $, got undefined"
+    }
+  },
+  "corpus/workspace-shipped-package-js": {
+    "island:wsshipped": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "corpus/workspace-source-package-js": {
+    "island:wsjs": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/any-chaining": {
+    "island:mediakit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)"
+    }
+  },
+  "npm/chalk5": {
+    "island:chalk": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/chalk5-builder": {
+    "island:chalk": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/commander-calc": {
+    "island:commander": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Usage: calc [options] [command]",
+      "argvs": [
+        "add 2 3",
+        "sub 10 4.25",
+        "mul 4 2.5",
+        "div 9 2",
+        "add 0.1 0.2",
+        "add 1e3 -0.5",
+        "echo hello",
+        "echo",
+        "echo hello --upper",
+        "echo hello -p say: ",
+        "echo --upper -p p:  mixed",
+        "--version",
+        "--help"
+      ]
+    }
+  },
+  "npm/create-require": {
+    "island:cjszoo": {
+      "category": "build",
+      "signature": "SC2004,SC2013"
+    },
+    "island:dual": {
+      "category": "build",
+      "signature": "SC2004,SC2013"
+    }
+  },
+  "npm/dual-entry": {
+    "island:dual": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: endsWith is not a function"
+    }
+  },
+  "npm/hidden-key-boundary": {
+    "island:kindkit": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught Error: for-in over this checked-dynamic kind is not supported yet [SC1090]"
+    }
+  },
+  "npm/hono-node-server": {
+    "island:@hono/node-server": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/hono-zod-default-hook": {
+    "island:@hono/zod-validator": {
+      "category": "build",
+      "signature": "SC8006"
+    },
+    "island:hono": {
+      "category": "build",
+      "signature": "SC0001"
+    }
+  },
+  "npm/hono-zod-validator": {
+    "island:@hono/zod-validator": {
+      "category": "build",
+      "signature": "SC8006"
+    },
+    "island:hono": {
+      "category": "build",
+      "signature": "SC0001"
+    },
+    "island:zod": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "npm/hot-shots-buffered": {
+    "island:hot-shots": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/hot-shots-send-error": {
+    "island:hot-shots": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/hot-shots-tcp": {
+    "island:hot-shots": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/hot-shots-udp": {
+    "island:hot-shots": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/import-refusal": {
+    "island:brokenrt": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/island-instanceof-regexp": {
+    "island:arrpack": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "npm/island-json-stringify": {
+    "island:arrpack": {
+      "category": "build",
+      "signature": "SC8010"
+    }
+  },
+  "npm/js-own-tostring": {
+    "island:nsutil": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: Reflect.get called on non-object"
+    }
+  },
+  "npm/jsval-into-dyn": {
+    "island:plugstub": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught Error: Own-property checks on this checked-dynamic kind are not supported yet [SC1090]"
+    }
+  },
+  "npm/jsval-iterate": {
+    "island:plugstub": {
+      "category": "stdout",
+      "signature": "caught: value is not iterable"
+    }
+  },
+  "npm/node24-fs-descriptors": {
+    "island:fszoo": {
+      "category": "stderr",
+      "signature": "Unhandled promise rejection: RangeError [ERR_OUT_OF_RANGE]: The value of \"position\" is out of range. It must be >= -1 && <= <n>. Received -2"
+    }
+  },
+  "npm/node24-promise-timers": {
+    "island:node24-promise-timers-fixture": {
+      "category": "exit",
+      "signature": "exit 13, Node 0: a race; a failing run stops at a different line each time and some runs match Node",
+      "unstable": true
+    }
+  },
+  "npm/node24-timers-unref": {
+    "island:node24-promise-timers-fixture": {
+      "category": "stdout",
+      "signature": "unreferenced timer fired"
+    }
+  },
+  "npm/top-level-await-pending-exit-listener": {
+    "island:defer": {
+      "category": "exit",
+      "signature": "exit 5, Node 7: <end of output; Node: Reparsing as ES module because module syntax was detected. This incurs a performance overhead.>"
+    }
+  },
+  "npm/tsc-enum-reverse-reads": {
+    "island:tscenumreverse": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $, got undefined"
+    }
+  },
+  "npm/types-boundary": {
+    "island:rowparse": {
+      "category": "build",
+      "signature": "SC1090"
+    }
+  },
+  "npm/undici5": {
+    "island:undici": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/undici7": {
+    "island:undici": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/workspace-dynamic-import-deps": {
+    "island:wsdynamicdeps": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/workspace-linked": {
+    "island:wslinked": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
+  "npm/zod3": {
+    "island:zod": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "npm/zod3-adoption": {
+    "island:zod": {
+      "category": "build",
+      "signature": "SC8010"
+    }
+  },
+  "npm/zod3-boundary": {
+    "island:zod": {
+      "category": "build",
+      "signature": "SC1090"
+    }
+  },
+  "npm/zod4-boundary": {
+    "island:zod": {
+      "category": "build",
+      "signature": "SC1090,SC8010"
+    }
+  },
+  "npm/zod4-record": {
+    "island:zod": {
+      "category": "stdout",
+      "signature": "class-instance ok {\"x\":1}"
+    }
+  },
+  "packages/commander": {
+    "island:commander": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: error: missing required argument 'name'",
+      "argvs": [
+        "ada --upper",
+        "ada",
+        "--help",
+        "--version",
+        "ada --nope"
+      ]
+    }
+  },
+  "packages/date-fns": {
+    "island:date-fns": {
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: scriptc: this native object cannot cross into a Node island yet (scope-B NI-5 exports native values by reference) [SC8010]"
+    }
+  },
+  "packages/process-argv": {
+    "island:process-reader": {
+      "category": "stdout",
+      "signature": "[] false",
+      "argvs": [
+        "first --flag last",
+        ""
+      ]
+    }
+  },
+  "packages/process-cwd": {
+    "island:process-reader": {
+      "category": "stdout",
+      "signature": "false false"
+    }
+  },
+  "packages/process-exit-code": {
+    "island:process-reader": {
+      "category": "exit",
+      "signature": "exit 4, Node 5: undefined 3"
+    }
+  }
+}

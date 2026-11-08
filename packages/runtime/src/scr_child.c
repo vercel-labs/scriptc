@@ -159,6 +159,14 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   return d;
 }
 
+/* The spawnSync capture accessors (scr_spawn_res_stdout_bytes /
+ * scr_spawn_res_stderr_bytes, and the one-Buffer-per-capture memo behind
+ * them) live in scr_child_capture.c, a unit linked only by programs that
+ * read an unencoded capture. Nothing in this unit names them: a unit of the
+ * always-linked set may not reference an optional one, because a link of
+ * that set alone (the runtime unit tests, and the precompiled pack's own
+ * archive) would carry the undefined symbol — which is exactly what broke
+ * every Windows program when the accessors lived here. */
 /* execSync/execFileSync: the spawnSync result's status, signal, output,
  * pid, stdout and stderr. out/err move in (null for a stream that was not
  * piped); output is [null, stdout, stderr]. A child that never started
@@ -2835,6 +2843,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->err_stream);
 }
 
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = c->spawn_errname;
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, (double)c->spawn_uv_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
+
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
     scr_closure_release(cb);
@@ -3021,9 +3062,19 @@ static void scr_child_settle_in(ScrChild *c) {
       _Exit(1);
     }
     scr_child_err_code = c->spawn_errname;
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -4268,6 +4319,10 @@ struct ScrChildStream {
   uint8_t *capture_data;
   size_t capture_len, capture_cap;
   bool armed;     /* EVFILT_READ registered on the child kqueue */
+  bool arm_queued; /* registers at the loop's next poll (scr_child_arm_queue) */
+  uint32_t arm_seq; /* names this registration in the kernel's events */
+  uint32_t born;    /* creation order among the thread's streams */
+  unsigned long eof_pass; /* the pass (scr_children_pass) that ended it */
   bool uncounted; /* counted into scr_children_unwatched (arm failure) */
   bool short_read_yields; /* a short read ends this pass's reads */
   unsigned long short_read_pass;
@@ -4314,6 +4369,9 @@ struct ScrChildWriter {
 };
 
 static SCR_TL ScrChildStream *scr_child_streams = NULL;
+/* Streams created so far, and how many of them existed at the loop's last
+ * poll (the order of a turn's stream events, below). */
+static SCR_TL uint32_t scr_child_streams_born = 0, scr_child_streams_polled_born = 0;
 /* Streams with a live consumer (data listener, not yet EOF): the loop's
  * keep-alive and service predicate. */
 static SCR_TL size_t scr_child_streams_watching = 0;
@@ -4324,6 +4382,22 @@ static void scr_child_writer_child_settled(ScrChildWriter *w);
 static void scr_child_writer_dearm(ScrChildWriter *w);
 static bool scr_child_writers_blocked(void);
 static bool scr_child_writers_ready(void);
+/* Registers the streams that asked for their read filter since the last
+ * poll (scr_child_streams_arm_flush, set by the thread's first stream that
+ * asks; per thread, like the queue it flushes, so worker threads do not
+ * share a write). The wait and the wake fd reach it through this pointer,
+ * and the pointer has external linkage, on purpose: a direct call, or a
+ * static pointer the compiler can see through, puts the registration code
+ * in front of the wait in this object, and with it the unit's first mention
+ * of the libc functions it calls. The linker orders an executable's imports
+ * by first mention, so every program that links any part of this unit would
+ * change. */
+SCR_TL void (*scr_child_streams_arm_flush_hook)(void) = NULL;
+/* How many events one poll of the child watch takes. Streams past that
+ * wait for the next poll: their filters are level-triggered, and the
+ * kernel queue keeps their order. */
+#define SCR_CHILD_READY_MAX 64
+static void scr_child_streams_polled(const void *events, int n);
 
 struct ScrChild {
   size_t rc;
@@ -4473,13 +4547,17 @@ static void scr_child_unwatch(pid_t pid) { (void)pid; }
  * wakes it immediately, and the caller's next reap pass settles the child.
  * Returns false when this can't wake for every pending child (no kqueue,
  * or an unwatched child exists): the caller falls back to the ~1ms polling
- * cap instead. Events are drained and DISCARDED — they are wakeups only;
- * the WNOHANG sweep stays the single reaping mechanism. */
+ * cap instead. Exit events are wakeups only — the WNOHANG sweep stays the
+ * single reaping mechanism — and the streams the wait reports are the
+ * next pass's, in the order reported (scr_child_streams_polled). */
 /* The pollable child-exit wake fd for the loop's poll(2) sleep (a kqueue
  * fd reads as ready while events are pending): valid only when the kqueue
  * can wake for EVERY pending child — same condition as scr_children_wait.
  * -1 tells the caller to keep the ~1ms reap cap instead. */
 int scr_children_wake_fd(void) {
+  /* Streams whose first consumer attached this turn join the watch now,
+   * before the sleep that must wake for them. */
+  if (scr_child_streams_arm_flush_hook != NULL) scr_child_streams_arm_flush_hook();
   /* A writer's queued bytes ride the same watch (its writability filter),
    * so only a writer the watch could not arm keeps the polling cap. */
   if (scr_child_writers_blocked()) return -1;
@@ -4495,24 +4573,27 @@ int scr_children_wake_fd(void) {
 }
 
 bool scr_children_wait(double max_wait_ms) {
+  if (scr_child_streams_arm_flush_hook != NULL) scr_child_streams_arm_flush_hook(); /* as the wake fd */
   if (scr_child_writers_blocked()) return false;
 #ifdef SCR_HAVE_KQUEUE
   if (scr_child_kq < 0 || scr_children_unwatched > 0) return false;
   if (!(max_wait_ms > 0)) max_wait_ms = 0;
   struct timespec ts = {(time_t)(max_wait_ms / 1000.0),
                         (long)((max_wait_ms - (double)((time_t)(max_wait_ms / 1000.0)) * 1000.0) * 1e6)};
-  struct kevent evs[8];
-  (void)kevent(scr_child_kq, NULL, 0, evs, 8, &ts); /* EINTR: spurious pass */
+  struct kevent evs[SCR_CHILD_READY_MAX];
+  /* EINTR: a spurious pass. */
+  scr_child_streams_polled(evs, kevent(scr_child_kq, NULL, 0, evs, SCR_CHILD_READY_MAX, &ts));
   return true;
 #elif defined(SCR_CHILD_HAVE_PIDFD)
   if (scr_child_ep < 0 || scr_children_unwatched > 0) return false;
   if (!(max_wait_ms > 0)) max_wait_ms = 0;
   double capped = max_wait_ms > 2147483000.0 ? 2147483000.0 : max_wait_ms;
-  struct epoll_event evs[8];
-  /* Events are wakeups only, discarded here exactly like the kqueue
-   * drain; level-triggered pidfds stay readable until the reap closes
-   * them, so nothing is lost. EINTR: a spurious pass. */
-  (void)epoll_wait(scr_child_ep, evs, 8, (int)(capped + 0.999));
+  struct epoll_event evs[SCR_CHILD_READY_MAX];
+  /* Exit events are wakeups only, exactly like the kqueue arm's;
+   * level-triggered pidfds stay readable until the reap closes them, so
+   * nothing is lost. EINTR: a spurious pass. */
+  scr_child_streams_polled(
+      evs, epoll_wait(scr_child_ep, evs, SCR_CHILD_READY_MAX, (int)(capped + 0.999)));
   return true;
 #else
   (void)max_wait_ms;
@@ -4652,6 +4733,7 @@ static ScrChildStream *scr_child_stream_new(int fd) {
   }
   fcntl(fd, F_SETFL, O_NONBLOCK);
   fcntl(fd, F_SETFD, FD_CLOEXEC);
+  s->born = ++scr_child_streams_born;
   s->next = scr_child_streams;
   scr_child_streams = scr_child_stream_retain(s);
   return s;
@@ -4781,6 +4863,7 @@ static void scr_child_stream_finish_in(ScrChildStream *s, bool fire_end) {
     scr_children_unwatched--;
   }
   s->eof = true;
+  s->eof_pass = scr_children_pass;
   if (s->fd >= 0) {
     close(s->fd);
     s->fd = -1;
@@ -4844,23 +4927,159 @@ static bool scr_child_stream_pump(ScrChildStream *s) {
   return false;
 }
 
-/* The registry's service walk: every watched stream pumps; EOF finishes
- * and unlinks (the children_poll unlink-before-fire pattern). */
-static void scr_child_streams_service(void) {
-  ScrChildStream **link = &scr_child_streams;
-  while (*link) {
-    ScrChildStream *s = *link;
-    bool ended = scr_child_stream_pump(s);
-    if (ended) {
-      *link = s->next;
-      s->next = NULL;
-      scr_child_stream_finish(s, true);
-      scr_child_stream_release(s); /* the registry's reference */
-    } else {
-      link = &s->next;
-    }
-    if (scr_exc_pending()) return;
+/* ── the order of a turn's stream events ─────────────────────────────────
+ *
+ * Node hands out a turn's I/O in the order its kernel queue reports it:
+ * libuv polls once per turn and walks the array epoll_wait (kevent on BSD)
+ * filled, running each descriptor's callback in that order (uv__io_poll).
+ * The kernel appends a descriptor to that queue when it becomes readable,
+ * or, when it already was readable, when it is registered. libuv registers
+ * a descriptor at its next poll after reading started, in the order reading
+ * started, and Node starts reading a child's pipes when spawn() creates
+ * them, stdout before stderr, whether or not anyone listens. So two pipes
+ * that fill while the loop sleeps come back in the order they filled, and
+ * two pipes that filled before the loop next polled (the program computed
+ * after spawn(), or the child was quicker than the program's way back to
+ * the loop) come back in the order they were created: stdout before
+ * stderr, an older child's before a newer one's. That second half is an
+ * accident of registration, not a documented order, and programs observe
+ * it: a child that writes stderr and then stdout while its parent computes
+ * is delivered stdout first, also when stderr's listener was attached
+ * first.
+ *
+ * Both halves are matched here on purpose, by doing what libuv does with
+ * the same kernel object. A stream's read filter is registered at the
+ * loop's next poll after its first consumer attached (the queue below),
+ * never at the attach itself, and streams created since the last poll
+ * register in creation order. The loop's poll is its wait
+ * (scr_children_wait), and the pass after it serves the streams that wait
+ * reported, in the order reported; a pass with no wait before it polls for
+ * itself. A stream no poll reported is not read in that pass. Before, a
+ * pass read every watched stream in the registry's order, newest first,
+ * which served stderr ahead of stdout whenever both were readable.
+ *
+ * A stream whose first consumer attaches after a poll has passed is where
+ * the two part: Node has been reading it into the stream's buffer and
+ * hands that over at the attach, in attach order; here the pipe is the
+ * buffer, and such streams register in attach order, ahead of the streams
+ * created since.
+ *
+ * One poll per pass matters. The Linux queue moves a level-triggered
+ * descriptor it has just reported behind any descriptor that became ready
+ * while it was reporting, so a second poll over streams the first one
+ * reported and nobody read can return them in the other order. Every
+ * stream a poll reports is therefore served before the next poll.
+ *
+ * Each registration carries a number, so an event names one registration
+ * of one stream: a descriptor closed and opened again between a poll and
+ * its pass does not hand its event to the stream that now owns the number.
+ * A stream the kernel queue could not take (a failed registration, a
+ * platform with neither queue) has no place in that order; the pass reads
+ * those after, in registry order, as it always did. */
+
+typedef struct {
+  int fd;
+  uint32_t seq; /* the registration's number (ScrChildStream.arm_seq) */
+} ScrChildReady;
+
+/* Streams whose first consumer attached since the loop last polled, in
+ * attach order (+1 each); the flush puts them in registration order. */
+static SCR_TL ScrChildStream **scr_child_arm_queue = NULL;
+static SCR_TL size_t scr_child_arm_queue_n = 0, scr_child_arm_queue_cap = 0;
+static SCR_TL uint32_t scr_child_arm_seq = 0;
+/* True while the flush registers the queue: scr_child_stream_arm then
+ * registers the stream it is given instead of queueing it. */
+static SCR_TL bool scr_child_arm_registering = false;
+static void scr_child_streams_arm_flush(void);
+
+/* What the loop's last wait reported, for the pass that follows it; n < 0
+ * when no wait ran since the last pass. */
+static SCR_TL ScrChildReady scr_child_polled[SCR_CHILD_READY_MAX];
+static SCR_TL int scr_child_polled_n = -1;
+
+/* The streams among `n` events of the child watch, in the events' order.
+ * Exit and writability events on the same watch name no stream: they are
+ * wakeups, and stay until the reap and the writer service consume their
+ * cause. */
+static int scr_child_streams_among(const void *events, int n, ScrChildReady *out) {
+  int found = 0;
+#ifdef SCR_HAVE_KQUEUE
+  const struct kevent *evs = events;
+  for (int i = 0; i < n; i++) {
+    if (evs[i].filter != EVFILT_READ || evs[i].udata == NULL) continue;
+    out[found++] = (ScrChildReady){(int)evs[i].ident, (uint32_t)(uintptr_t)evs[i].udata};
   }
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  const struct epoll_event *evs = events;
+  for (int i = 0; i < n; i++) {
+    uint32_t seq = (uint32_t)(evs[i].data.u64 >> 32);
+    if (seq == 0) continue; /* a pidfd or a writer: registered by fd alone */
+    out[found++] = (ScrChildReady){(int)(uint32_t)evs[i].data.u64, seq};
+  }
+#else
+  (void)events;
+  (void)n;
+  (void)out;
+#endif
+  return found;
+}
+
+/* The loop's wait hands over what it was woken with. */
+static void scr_child_streams_polled(const void *events, int n) {
+  scr_child_polled_n = scr_child_streams_among(events, n, scr_child_polled);
+}
+
+/* Where a queued stream registers: one that existed at the last poll keeps
+ * its place in attach order, ahead of the streams created since, which go
+ * in creation order (the note above). */
+static uint32_t scr_child_stream_arm_rank(const ScrChildStream *s) {
+  return s->born <= scr_child_streams_polled_born ? 0 : s->born;
+}
+
+/* The loop is about to poll: the queued streams register. One whose last
+ * consumer left, or that ended, since it was queued is skipped. */
+static void scr_child_streams_arm_flush(void) {
+  ScrChildStream **queue = scr_child_arm_queue;
+  size_t n = scr_child_arm_queue_n;
+  for (size_t i = 1; i < n; i++) { /* stable; the queue is a handful */
+    ScrChildStream *s = queue[i];
+    uint32_t rank = scr_child_stream_arm_rank(s);
+    size_t j = i;
+    for (; j > 0 && scr_child_stream_arm_rank(queue[j - 1]) > rank; j--) queue[j] = queue[j - 1];
+    queue[j] = s;
+  }
+  scr_child_arm_registering = true;
+  for (size_t i = 0; i < n; i++) {
+    ScrChildStream *s = queue[i];
+    if (s->arm_queued) {
+      s->arm_queued = false;
+      scr_child_stream_arm(s);
+    }
+    scr_child_stream_release(s);
+  }
+  scr_child_arm_registering = false;
+  scr_child_arm_queue_n = 0;
+  scr_child_streams_polled_born = scr_child_streams_born;
+}
+
+/* Polls the child watch without waiting: the streams it reports, in its
+ * order. */
+static int scr_child_streams_poll_now(ScrChildReady *out) {
+  scr_child_streams_arm_flush();
+#ifdef SCR_HAVE_KQUEUE
+  if (scr_child_kq < 0) return 0;
+  struct kevent evs[SCR_CHILD_READY_MAX];
+  struct timespec zero = {0, 0};
+  return scr_child_streams_among(
+      evs, kevent(scr_child_kq, NULL, 0, evs, SCR_CHILD_READY_MAX, &zero), out);
+#elif defined(SCR_CHILD_HAVE_PIDFD)
+  if (scr_child_ep < 0) return 0;
+  struct epoll_event evs[SCR_CHILD_READY_MAX];
+  return scr_child_streams_among(evs, epoll_wait(scr_child_ep, evs, SCR_CHILD_READY_MAX, 0), out);
+#else
+  (void)out;
+  return 0;
+#endif
 }
 
 /* The settle-path drain (Node's pinned ordering: stream 'end' before
@@ -4883,10 +5102,66 @@ static void scr_child_stream_drain_now(ScrChildStream *s) {
   }
 }
 
+/* The stream an event names, or NULL when that registration is gone (the
+ * stream ended or lost its last consumer earlier in the pass). */
+static ScrChildStream *scr_child_stream_ready_find(ScrChildReady ready) {
+  for (ScrChildStream *s = scr_child_streams; s != NULL; s = s->next) {
+    if (s->armed && s->fd == ready.fd && s->arm_seq == ready.seq) return s;
+  }
+  return NULL;
+}
+
+/* Pumps the streams a poll reported, in its order. EOF finishes and
+ * unlinks a stream (scr_child_stream_drain_now). */
+static void scr_child_streams_serve(const ScrChildReady *ready, int n) {
+  for (int i = 0; i < n; i++) {
+    scr_child_stream_drain_now(scr_child_stream_ready_find(ready[i]));
+    if (scr_exc_pending()) return;
+  }
+}
+
+/* The pass's stream service: the streams of the loop's poll (the note
+ * above), then the streams no poll can report, in registry order. */
+static void scr_child_streams_service(void) {
+  int polled = scr_child_polled_n;
+  scr_child_polled_n = -1;
+  if (scr_child_streams_watching == 0) return;
+  ScrChildReady ready[SCR_CHILD_READY_MAX];
+  if (polled >= 0) {
+    memcpy(ready, scr_child_polled, (size_t)polled * sizeof *ready);
+  } else {
+    polled = scr_child_streams_poll_now(ready);
+  }
+  scr_child_streams_serve(ready, polled);
+  if (scr_exc_pending() || scr_children_unwatched == 0) return;
+  /* `uncounted` marks the streams the queue could not take. A stream that
+   * is only waiting for the next poll to register is not one of them. */
+  for (ScrChildStream *s = scr_child_streams; s != NULL;) {
+    ScrChildStream *next = s->next; /* a listener adds streams at the head only */
+    if (s->uncounted) scr_child_stream_drain_now(s);
+    if (scr_exc_pending()) return;
+    s = next;
+  }
+}
+
+/* An exiting child's two streams, when both may still hold output: the
+ * child wrote to both and exited after this pass's poll, so the settle
+ * path is the first to see them, and its own drains would take stdout
+ * first whatever was written first. One more poll gives the kernel's
+ * order; it is served whole, other children's streams included, because a
+ * reported stream must be read before the next poll (the note above). */
+static void scr_child_streams_settle_order(ScrChildStream *a, ScrChildStream *b) {
+  if (a == NULL || b == NULL || !scr_child_stream_watching(a) || !scr_child_stream_watching(b))
+    return;
+  ScrChildReady ready[SCR_CHILD_READY_MAX];
+  scr_child_streams_serve(ready, scr_child_streams_poll_now(ready));
+}
+
 /* Drops the read filter when the LAST consumer leaves (a once-listener
  * removal): a level-triggered filter over an unread pipe would otherwise
  * wake every idle sleep for data nobody consumes. */
 static void scr_child_stream_dearm(ScrChildStream *s) {
+  s->arm_queued = false; /* a registration that had not happened yet */
   if (!s->armed) return;
   s->armed = false;
 #ifdef SCR_HAVE_KQUEUE
@@ -4903,35 +5178,58 @@ static void scr_child_stream_dearm(ScrChildStream *s) {
 #endif
 }
 
-/* Arms the level-triggered read filter for a consumer-owning stream (see
- * the design note: no EV_CLEAR — the wait's drain discards events). An
- * arm failure joins the unwatched fallback so the loop keeps the ~1ms
- * polling cap for it. */
+/* A consumer-owning stream wants its read filter. It joins the queue, and
+ * the loop's next poll registers the queue (scr_child_streams_arm_flush),
+ * as libuv registers a handle that started reading; called from that
+ * flush, this registers the level-triggered filter (see the design note:
+ * no EV_CLEAR — level readiness keeps the watch readable while unread data
+ * sits in the pipe, so no wakeup is lost). A registration failure joins
+ * the unwatched fallback so the loop keeps the ~1ms polling cap for the
+ * stream. */
 static void scr_child_stream_arm(ScrChildStream *s) {
   if (s->armed || s->fd < 0) return;
+  if (!scr_child_arm_registering) {
+    if (s->arm_queued) return;
+    if (scr_child_arm_queue_n == scr_child_arm_queue_cap) {
+      size_t cap = scr_child_arm_queue_cap ? scr_child_arm_queue_cap * 2 : 8;
+      ScrChildStream **grown = realloc(scr_child_arm_queue, cap * sizeof *grown);
+      if (!grown) scr_child_oom();
+      scr_child_arm_queue = grown;
+      scr_child_arm_queue_cap = cap;
+    }
+    scr_child_arm_queue[scr_child_arm_queue_n++] = scr_child_stream_retain(s);
+    s->arm_queued = true;
+    scr_child_streams_arm_flush_hook = &scr_child_streams_arm_flush;
+    return;
+  }
+  uint32_t seq = ++scr_child_arm_seq;
+  if (seq == 0) seq = ++scr_child_arm_seq; /* 0: an event that names no stream */
 #ifdef SCR_HAVE_KQUEUE
   if (scr_child_kq < 0) scr_child_kq = kqueue();
   if (scr_child_kq >= 0) {
     struct kevent ev;
-    EV_SET(&ev, (uintptr_t)s->fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    EV_SET(&ev, (uintptr_t)s->fd, EVFILT_READ, EV_ADD, 0, 0, (void *)(uintptr_t)seq);
     struct timespec zero = {0, 0};
     if (kevent(scr_child_kq, &ev, 1, NULL, 0, &zero) == 0) {
       s->armed = true;
+      s->arm_seq = seq;
       return;
     }
   }
 #elif defined(SCR_CHILD_HAVE_PIDFD)
-  /* Level-triggered EPOLLIN, exactly the kqueue arm's level filter: the
-   * wait's drain discards events, and level readiness keeps the epoll fd
-   * readable while unread data sits in the pipe — no wakeup is lost. */
+  /* Level-triggered EPOLLIN, exactly the kqueue arm's level filter. */
   if (scr_child_ep < 0) scr_child_ep = epoll_create1(EPOLL_CLOEXEC);
   if (scr_child_ep >= 0) {
-    struct epoll_event ev = {.events = EPOLLIN, .data = {.fd = s->fd}};
+    struct epoll_event ev = {.events = EPOLLIN,
+                             .data = {.u64 = ((uint64_t)seq << 32) | (uint32_t)s->fd}};
     if (epoll_ctl(scr_child_ep, EPOLL_CTL_ADD, s->fd, &ev) == 0) {
       s->armed = true;
+      s->arm_seq = seq;
       return;
     }
   }
+#else
+  (void)seq;
 #endif
   if (!s->uncounted) {
     s->uncounted = true;
@@ -5747,11 +6045,15 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 #endif
     if (c->unwatched) scr_children_unwatched++;
   }
-  /* The registry's reference: dropped when the child settles. */
+  /* The registry's reference: dropped when the child settles. The registry
+   * is in spawn order: a pass fires 'spawn', and the 'exit' of children it
+   * reaps together, oldest child first, as Node does (libuv's exit pass
+   * walks its process queue in spawn order, uv__wait_children). */
   c->reffed = true;
   scr_children_reffed_n++;
-  c->next = scr_children;
-  scr_children = scr_child_retain(c);
+  ScrChild **tail = &scr_children;
+  while (*tail) tail = &(*tail)->next;
+  *tail = scr_child_retain(c);
   scr_child_loop_install();
   return c;
 }
@@ -5966,6 +6268,13 @@ void scr_children_teardown(void) {
     scr_child_stream_finish(s, false);
     scr_child_stream_release(s);
   }
+  for (size_t i = 0; i < scr_child_arm_queue_n; i++) {
+    scr_child_arm_queue[i]->arm_queued = false;
+    scr_child_stream_release(scr_child_arm_queue[i]);
+  }
+  free(scr_child_arm_queue);
+  scr_child_arm_queue = NULL;
+  scr_child_arm_queue_n = scr_child_arm_queue_cap = 0;
   while (scr_child_writers != NULL) {
     ScrChildWriter *w = scr_child_writers;
     scr_child_writers = w->next;
@@ -6044,6 +6353,39 @@ void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn
   scr_child_stream_close_wait(c->out_stream);
   scr_child_stream_close_wait(c->err_stream);
 }
+
+/* A failed spawn's 'error' event carries Node's errnoException: one Error,
+ * the same object for every listener, with errno, code, syscall
+ * "spawn <file>", path and spawnargs (the arguments after the file), and a
+ * message that names the file Node ran (the shell, for a shell spawn). The
+ * settle path and the untyped handle table are linked by every program
+ * that uses child_process, so they reach this only through the hook below.
+ * A program that can register an 'error' listener installs it once at
+ * start (scr_child_error_event_install, emitted for the childErrorEvent
+ * program fact); every other program links none of the property code. +1.
+ * The pointer has external linkage on purpose: a static one that the unit
+ * stores once lets the compiler turn the settle path's call into a direct
+ * reference to the builder, which links it into every program. */
+ScrError *(*scr_child_spawn_error_hook)(ScrChild *c) = NULL;
+
+static ScrError *scr_child_spawn_error(ScrChild *c) {
+  const char *name = scr_errname(c->spawn_errno);
+  size_t cap = 6 + c->spawnfile->len + 1 + strlen(name) + 1;
+  char *text = malloc(cap);
+  if (!text) scr_child_oom();
+  int len = snprintf(text, cap, "spawn %s %s", c->spawnfile->data, name);
+  ScrStr *message = scr_str_new(text, (size_t)len);
+  free(text);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(error, name);
+  ScrArr *args = scr_arr_slice(c->spawnargs, 1, (double)scr_arr_len(c->spawnargs));
+  scr_child_error_spawn_fields(error, -(double)c->spawn_errno, "spawn", c->spawnfile, args);
+  scr_arr_release(args);
+  return error;
+}
+
+void scr_child_error_event_install(void) { scr_child_spawn_error_hook = &scr_child_spawn_error; }
 
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn) {
   if (c->settled) {
@@ -6132,6 +6474,11 @@ bool scr_children_failed_pending(void) {
   return false;
 }
 
+/* True for an output pipe that ended in the pass that is running. */
+static bool scr_child_stream_ended_now(const ScrChildStream *s) {
+  return s != NULL && s->eof && s->eof_pass == scr_children_pass;
+}
+
 static bool scr_child_close_ready(const ScrChild *c) {
   return (c->out_stream == NULL || c->out_stream->eof) &&
          (c->err_stream == NULL || c->err_stream->eof) &&
@@ -6211,6 +6558,7 @@ static void scr_child_settle_in(ScrChild *c) {
    * Node emits 'spawn' before any data or 'exit', so it fires here first. */
   if (c->state == SCR_CHILD_EXITED) {
     if (!c->spawn_done) scr_child_fire_spawn(c);
+    if (!scr_exc_pending()) scr_child_streams_settle_order(c->out_stream, c->err_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
@@ -6241,9 +6589,19 @@ static void scr_child_settle_in(ScrChild *c) {
     /* Node's spawn-failure error is an errnoException: `code` carries the
      * errno name. The thunk reads this while the pass runs. */
     scr_child_err_code = scr_errname(c->spawn_errno);
+    /* With an 'error' listener the event carries Node's error object
+     * (scr_child_spawn_error); the adapters hand out the payload. */
+    ScrError *spawn_error =
+        scr_child_spawn_error_hook != NULL && c->n_err > 0 ? scr_child_spawn_error_hook(c) : NULL;
+    ScrError *outer_payload = scr_event_error_payload;
+    if (spawn_error != NULL) scr_event_error_payload = spawn_error;
     for (size_t i = 0; i < c->n_err; i++) {
       c->err_cbs[i].fn(c->err_cbs[i].cb, c->err_msg);
       if (scr_exc_pending()) break; /* the loop surfaces it */
+    }
+    if (spawn_error != NULL) {
+      scr_event_error_payload = outer_payload;
+      scr_error_release(spawn_error);
     }
     scr_child_err_code = NULL;
     if (!scr_exc_pending()) scr_exec_file_fire(c);
@@ -6258,32 +6616,63 @@ static void scr_child_settle_in(ScrChild *c) {
   if (c->n_close == 0) {
     c->close_done = true;
     scr_child_release(c); /* the settle registry's reference */
-  } else if (scr_child_close_ready(c)) {
+  } else if (scr_child_close_ready(c) && !scr_child_stream_ended_now(c->out_stream) &&
+             !scr_child_stream_ended_now(c->err_stream)) {
+    /* Nothing to wait for: no output pipe, or pipes that ended in an
+     * earlier pass. 'close' follows 'exit' at once, in Node as well. */
     scr_child_fire_close(c);
   } else {
+    /* 'close' waits for the output pipes to end, and when they ended in
+     * this pass, for the end of the pass's sweep, where the closing list
+     * fires newest first. Node's order for children whose pipes end and
+     * that exit in one turn is every 'exit' in spawn order and then the
+     * 'close' events in reverse: a pipe's 'close' comes from libuv's
+     * closing queue, which runs after the turn's callbacks, last closed
+     * first. */
     c->next = scr_children_closing;
     scr_children_closing = c; /* transfer the settle registry's reference */
   }
 }
 
-/* One reap pass: piped streams service FIRST (arrived chunks fire their
- * 'data' listeners; a pipe that hit EOF fires 'end' — before any 'exit'
- * this pass delivers, the pinned ordering), then waitpid(WNOHANG) every
- * running child; spawn failures settle on their first pass (their "next
- * tick"). Listeners run synchronously on the main stack, like timer
- * callbacks — a throw stops the pass and leaves the exception pending
- * for the loop. */
-void scr_children_poll(void) {
-  scr_children_pass++;
-  for (ScrChild *c = scr_children; c; c = c->next) {
-    if (c->state == SCR_CHILD_RUNNING && !c->spawn_done) scr_child_fire_spawn(c);
+/* The events Node queues for its next tick when spawn() returns: 'spawn'
+ * for a child that started, 'error' for one that did not (the settle
+ * path). They fire in spawn order, the registry's order, and ahead of the
+ * I/O that follows: a failed spawn's 'error' comes before its pipes' 'end',
+ * which is a read of the pipe like any other. */
+static void scr_children_next_tick_events(void) {
+  ScrChild **link = &scr_children;
+  while (*link) {
+    ScrChild *c = *link;
+    if (c->state == SCR_CHILD_SPAWN_FAILED) {
+      *link = c->next; /* unlink BEFORE firing: callbacks may spawn */
+      c->next = NULL;
+      scr_child_settle(c);
+    } else {
+      if (c->state == SCR_CHILD_RUNNING && !c->spawn_done) scr_child_fire_spawn(c);
+      link = &c->next;
+    }
     if (scr_exc_pending()) return;
   }
+}
+
+/* One reap pass: the next-tick events of the children spawned since the
+ * last one, then piped streams service (arrived chunks fire their 'data'
+ * listeners; a pipe that hit EOF fires 'end' — before any 'exit' this pass
+ * delivers, the pinned ordering), the next-tick events of what those
+ * listeners spawned, then waitpid(WNOHANG) every running child. Listeners
+ * run synchronously on the main stack, like timer callbacks — a throw
+ * stops the pass and leaves the exception pending for the loop. */
+void scr_children_poll(void) {
+  scr_children_pass++;
+  scr_children_next_tick_events();
+  if (scr_exc_pending()) return;
   scr_ipc_service();
   if (scr_exc_pending()) return;
   scr_child_writers_service();
   if (scr_exc_pending()) return;
   scr_child_streams_service();
+  if (scr_exc_pending()) return;
+  scr_children_next_tick_events();
   if (scr_exc_pending()) return;
   /* Node's IPC read callback emits the messages it parsed, then on EOF
    * emits 'close' at once for a child that already exited, and defers
@@ -6294,6 +6683,9 @@ void scr_children_poll(void) {
   if (scr_exc_pending()) return;
   scr_ipc_service();
   if (scr_exc_pending()) return;
+  /* A child that a listener spawns during the sweep joins the registry's
+   * tail and is swept with the rest: a spawn failure among the new ones
+   * fires its 'error' in this pass, after the listener that spawned it. */
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
@@ -6334,6 +6726,9 @@ void scr_children_poll(void) {
       link = &c->next;
     }
   }
+  /* The children this sweep settled whose pipes have ended (see the
+   * settle path's last branch). */
+  scr_children_closing_poll();
 }
 
 #ifdef SCR_CHILD_CP_OPTIONS
@@ -6599,6 +6994,83 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
 
 #endif /* !_WIN32 */
 
+/* ── the spawnSync result in the checked-dynamic tree ──────────────────
+ * A SpawnSyncReturns boxes as a HANDLE by REFERENCE (identity, no copy):
+ * a dynamic wrapper hands the same result out, and the typed slot unwraps
+ * it through the tag check. A plain object that merely LOOKS like a
+ * spawn result is not one and fails the check (the checked-cast stance).
+ * Its members answer the accessors above; a call through the value is the
+ * usual "narrow first" fence. */
+static ScrDyn *scr_spawn_res_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                        ScrDyn *const *args, size_t argc, const char *what) {
+  (void)h;
+  (void)self;
+  (void)method;
+  (void)args;
+  (void)argc;
+  (void)what;
+  static const char msg[] =
+      "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  return NULL;
+}
+
+static ScrDyn *scr_spawn_res_dyn_str(ScrStr *s) {
+  ScrDyn *d = scr_dyn_new_str(s);
+  scr_str_release(s);
+  return d;
+}
+
+static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
+  ScrSpawnRes *r = h;
+  if (len == 6 && memcmp(key, "status", 6) == 0) {
+    return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
+  if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
+  if (len == 6 && memcmp(key, "signal", 6) == 0) {
+    return scr_spawn_res_has_signal(r) ? scr_spawn_res_dyn_str(scr_spawn_res_signal(r))
+                                       : scr_dyn_new_null();
+  }
+  if (len == 5 && memcmp(key, "error", 5) == 0) {
+    ScrError *e = scr_spawn_res_error(r);
+    if (!e) return NULL; /* the undefined arm, like Node */
+    ScrDyn *d = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return d;
+  }
+  return NULL;
+}
+
+static bool scr_spawn_res_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_spawn_res_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps ops = {
+      .cls = "SpawnSyncReturns",
+      .retain = scr_spawn_res_retain_v,
+      .release = scr_spawn_res_release_v,
+      .invoke = scr_spawn_res_dyn_invoke,
+      .get = scr_spawn_res_dyn_get,
+      .set = scr_spawn_res_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_SPAWN_RES, &ops);
+}
+
+ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r) {
+  scr_spawn_res_dyn_install();
+  return scr_dyn_new_handle(r, SCR_DYNH_SPAWN_RES);
+}
+
 static void scr_child_drop_spawn_listeners(ScrChild *c) {
   for (size_t i = 0; i < c->n_spawn; i++) scr_closure_release(c->spawn_cbs[i]);
   free(c->spawn_cbs);
@@ -6647,6 +7119,158 @@ static void scr_child_fire_spawn_in(ScrChild *c) {
     scr_closure_release(callbacks[i]);
   }
   free(callbacks);
+}
+
+/* ── Node's argument checks before a child starts ───────────────────────
+ *
+ * child_process validates what it hands to the operating system before it
+ * starts a process (normalizeSpawnArguments and normalizeExecArgs in
+ * lib/child_process.js): the file or command, each argument, the working
+ * directory and each environment key and value hold no NUL, because the
+ * operating system reads each of them up to the first one, and the file is
+ * not empty. Each failure is Node's ERR_INVALID_ARG_VALUE TypeError. */
+
+/* util.inspect's rendering of a string, as ERR_INVALID_ARG_VALUE prints
+ * the received value: a string longer than 76 UTF-16 units is quoted line
+ * by line (split after each line feed, joined by " +\n  "), and the text
+ * is cut to 128 units plus "...". +1. */
+static ScrStr *scr_child_arg_received(ScrStr *s /*borrowed*/) {
+  ScrStr *text;
+  if (scr_str_utf16_len(s) <= 76) {
+    text = scr_str_inspect_quoted(s, false);
+  } else {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    size_t start = 0;
+    while (start < s->len) {
+      const char *nl = memchr(s->data + start, '\n', s->len - start);
+      size_t end = nl != NULL ? (size_t)(nl - s->data) + 1 : s->len;
+      ScrStr *line = scr_str_new(s->data + start, end - start);
+      ScrStr *quoted = scr_str_inspect_quoted(line, false);
+      if (start > 0) scr_jb_puts(&b, " +\n  ");
+      scr_jb_put_str(&b, quoted);
+      scr_str_release(quoted);
+      scr_str_release(line);
+      start = end;
+    }
+    text = scr_jb_finish(&b);
+  }
+  if (scr_str_utf16_len(text) > 128) {
+    ScrStr *head = scr_str_slice(text, 0, 128);
+    ScrStr *dots = scr_str_new("...", 3);
+    scr_str_release(text);
+    text = scr_str_concat(head, dots);
+    scr_str_release(head);
+    scr_str_release(dots);
+  }
+  return text;
+}
+
+/* Throws ERR_INVALID_ARG_VALUE for `value` under the name name[0..len):
+ * "The argument '<name>' <reason>. Received <value>", with "property" for
+ * a dotted name, as errors.js chooses. */
+static void scr_child_arg_fail(const char *name, size_t len, const char *reason,
+                               ScrStr *value /*borrowed*/) {
+  ScrStr *received = scr_child_arg_received(value);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, memchr(name, '.', len) != NULL ? "The property '" : "The argument '");
+  scr_jb_write(&b, name, len);
+  scr_jb_puts(&b, "' ");
+  scr_jb_puts(&b, reason);
+  scr_jb_puts(&b, ". Received ");
+  scr_jb_put_str(&b, received);
+  scr_str_release(received);
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(msg);
+}
+
+static bool scr_child_arg_has_nul(const ScrStr *s) {
+  return memchr(s->data, '\0', s->len) != NULL;
+}
+
+static const char SCR_CHILD_NO_NUL[] = "must be a string without null bytes";
+
+/* The file or command, then each argument. `form` says where Node's
+ * `file` or `command` is: 0, `cmd` is the file and `args` its arguments;
+ * 1, the shell form of exec and execSync, whose command is args[1] (the
+ * launch is /bin/sh -c command); 2, the same launch for execFile with
+ * shell: true, whose args[1] is Node's file; 3, fork, which has no file to
+ * check and whose arguments follow the module path in the list Node
+ * spawns, so args[i] is Node's args[i + 1]. False with the exception
+ * pending. */
+static bool scr_child_check_file_args(int form, ScrStr *cmd /*borrowed*/, ScrArr *args /*borrowed*/) {
+  size_t n = (size_t)scr_arr_len(args);
+  ScrStr *file = form == 0                           ? scr_str_retain(cmd)
+                 : (form == 1 || form == 2) && n > 1 ? (ScrStr *)scr_arr_get_ref(args, 1)
+                                                     : NULL;
+  if (file != NULL) {
+    bool nul = scr_child_arg_has_nul(file);
+    if (nul) {
+      if (form == 1) scr_child_arg_fail("command", 7, SCR_CHILD_NO_NUL, file);
+      else scr_child_arg_fail("file", 4, SCR_CHILD_NO_NUL, file);
+    } else if (file->len == 0) {
+      scr_child_arg_fail("file", 4, "cannot be empty", file);
+    }
+    bool bad = nul || file->len == 0;
+    scr_str_release(file);
+    if (bad) return false;
+  }
+  if (form != 0 && form != 3) return true;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *arg = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    bool nul = scr_child_arg_has_nul(arg);
+    if (nul) {
+      char name[40];
+      int len = snprintf(name, sizeof name, "args[%zu]", form == 3 ? i + 1 : i);
+      scr_child_arg_fail(name, (size_t)len, SCR_CHILD_NO_NUL, arg);
+    }
+    scr_str_release(arg);
+    if (nul) return false;
+  }
+  return true;
+}
+
+/* options.cwd, as getValidatedPath checks it. */
+static bool scr_child_check_cwd(ScrStr *cwd /*borrowed, nullable*/) {
+  if (cwd == NULL || !scr_child_arg_has_nul(cwd)) return true;
+  scr_child_arg_fail("options.cwd", 11, "must be a string, Uint8Array, or URL without null bytes", cwd);
+  return false;
+}
+
+/* One environment entry: the key, then the value, both under the name
+ * options.env['<key>']. */
+static bool scr_child_check_env_entry(ScrStr *key /*borrowed*/, ScrStr *value /*borrowed*/) {
+  ScrStr *bad = scr_child_arg_has_nul(key) ? key : scr_child_arg_has_nul(value) ? value : NULL;
+  if (bad == NULL) return true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "options.env['");
+  scr_jb_write(&b, key->data, key->len);
+  scr_jb_puts(&b, "']");
+  ScrStr *name = scr_jb_finish(&b);
+  scr_child_arg_fail(name->data, name->len, SCR_CHILD_NO_NUL, bad);
+  scr_str_release(name);
+  return false;
+}
+
+/* cp.checkArgs: the checks above over one launch's values, in Node's
+ * order: the file or command and the arguments, the working directory
+ * ("" when the option is absent), then the environment's [key, value, ...]
+ * pairs (empty when the child inherits ours). Throws before the launch
+ * that follows it; all arguments are borrowed. */
+void scr_child_check_args(double form, ScrStr *cmd, ScrArr *args, ScrArr *env_pairs, ScrStr *cwd) {
+  if (!scr_child_check_file_args((int)form, cmd, args) || !scr_child_check_cwd(cwd)) return;
+  size_t n = env_pairs != NULL ? (size_t)scr_arr_len(env_pairs) : 0;
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *key = (ScrStr *)scr_arr_get_ref(env_pairs, (double)i);
+    ScrStr *value = (ScrStr *)scr_arr_get_ref(env_pairs, (double)(i + 1));
+    bool ok = scr_child_check_env_entry(key, value);
+    scr_str_release(key);
+    scr_str_release(value);
+    if (!ok) return;
+  }
 }
 
 /* Options produced by JavaScript helpers use the same native spawn core
@@ -6706,6 +7330,8 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
   bool detached = false, shell = false, has_env = false;
   double modes[3] = {3, 3, 3}, fds[3] = {0, 0, 0};
   if (!view) goto done;
+  /* Node checks the file and the arguments before it reads the options */
+  if (!scr_child_check_file_args(0, cmd, args)) goto done;
   if (view->kind != SCR_DYN_UNDEF &&
       (view->kind == SCR_DYN_NULL || !scr_dyn_is_object(view))) {
     scr_dyn_arg_type_fail("options", "of type object", view);
@@ -6744,6 +7370,7 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
       goto done;
     }
     scr_str_release(cwd); cwd = scr_str_retain(value->v.str);
+    if (!scr_child_check_cwd(cwd)) goto done;
   }
   scr_dyn_release(value); value = NULL;
   static const char *const booleans[] = {"detached", "shell", "windowsHide"};
@@ -6802,13 +7429,15 @@ ScrChild *scr_spawn_dynamic(ScrStr *cmd, ScrArr *args, const ScrDyn *options) {
     if (!keys || scr_exc_pending()) goto done;
     for (size_t i = 0; i < keys->v.arr.len; i++) {
       ScrStr *key = keys->v.arr.items[i]->v.str;
-      value = scr_spawn_option(env, key->data);
+      /* the key's own length: it may hold a NUL, which the check refuses */
+      value = scr_dyn_obj_read(env, key->data, key->len);
       if (!value || scr_exc_pending()) goto done;
       if (value->kind != SCR_DYN_UNDEF) {
         ScrStr *text = scr_dyn_string_coerce_js(value);
         if (!text) goto done;
         scr_arr_push_ref(pairs, scr_str_retain(key));
         scr_arr_push_ref(pairs, text);
+        if (!scr_child_check_env_entry(key, text)) goto done;
       }
       scr_dyn_release(value); value = NULL;
     }
@@ -7624,9 +8253,15 @@ static void scr_child_dyn_exit(ScrClosure *cb, bool has_code, double code, const
   scr_dyn_release(args[1]);
 }
 static void scr_child_dyn_error(ScrClosure *cb, ScrStr *message) {
-  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
-  if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
-  else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  ScrError *error;
+  if (scr_event_error_payload != NULL) {
+    /* A failed spawn's error object, shared by every listener. */
+    error = scr_error_retain(scr_event_error_payload);
+  } else {
+    error = scr_error_new(SCR_ERR_ERROR, message);
+    if (scr_child_err_code) scr_error_set_code(error, scr_child_err_code);
+    else if (scr_child_writer_err_code) scr_error_set_code(error, scr_child_writer_err_code);
+  }
   ScrDyn *arg = scr_dyn_from_error(error);
   scr_error_release(error);
   scr_child_dyn_fire(cb, &arg, 1);

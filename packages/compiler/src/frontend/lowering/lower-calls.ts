@@ -359,6 +359,7 @@ import {
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
+import { lowerFetchDispatcherHook } from "./fetch-dispatcher.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
 
@@ -13546,17 +13547,18 @@ function lowerShimIntrinsicCall(
   callee: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
-  const intrinsic = SHIM_INTRINSICS.get(callee.text);
-  if (intrinsic === undefined) return null;
   const decl = lowerer.checker.getSymbolAtLocation(callee)?.valueDeclaration;
   if (
     decl === undefined ||
     !ts.isFunctionDeclaration(decl) ||
     decl.body ||
-    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName) ||
-    expr.arguments.nodes.length !== intrinsic.args.length
+    !isPackageShimFile(ts.getSourceFileOfNode(decl).fileName)
   )
     return null;
+  const hook = lowerFetchDispatcherHook(lowerer, callee, expr, loc);
+  if (hook !== null) return hook;
+  const intrinsic = SHIM_INTRINSICS.get(callee.text);
+  if (intrinsic === undefined || expr.arguments.nodes.length !== intrinsic.args.length) return null;
   const args = expr.arguments.nodes.map((arg, i) =>
     lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
   );

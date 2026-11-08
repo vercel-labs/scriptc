@@ -473,6 +473,42 @@ describe("package shims", () => {
     );
   }, 180_000);
 
+  test("undici5: the global fetch sends a request through a dispatcher of the package", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-relay.ts");
+    // Node 24 with undici 5.29.0 installed: its global fetch dispatches
+    // through the package's objects.
+    expect(await run(binary, [], dir)).toBe(
+      [
+        'straight | 200 GET /parcels/1 bay=A parcel="" | tunnels 0',
+        'in the init | 200 GET /parcels/2 bay=B parcel="" | tunnels 1',
+        'in the init, with a body | 200 POST /parcels bay=none parcel="crate of pears" | tunnels 2',
+        'assigned | 200 PUT /parcels/3 bay=none parcel="two crates" | tunnels 2',
+        'assigned again | 200 GET /parcels/4 bay=C parcel="" | tunnels 2',
+        'own class | 200 GET /parcels/5 bay=none parcel="" | tunnels 2',
+        "handed on 1",
+        'agent | 200 GET /parcels/6 bay=D parcel="" | tunnels 2',
+        "agent used the relay: false",
+        'never set | 200 DELETE /parcels/7 bay=none parcel="" | tunnels 2',
+        'undefined | 200 GET /parcels/8 bay=none parcel="" | tunnels 2',
+        "",
+      ].join("\n"),
+    );
+  }, 180_000);
+
+  test("undici5: the global fetch refuses, by name, an object that is no dispatcher of the package", async () => {
+    // Written in the init, the object is refused when the program is built.
+    await expect(
+      buildInCase("undici5", "undici5-global-fetch-literal-dispatch.ts"),
+    ).rejects.toThrow(
+      /RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package/,
+    );
+    // Reached through a record, it is refused where the call runs.
+    const { dir, binary } = await buildInCase("undici5", "undici5-global-fetch-own-dispatch.ts");
+    expect(await run(binary, [], dir)).toBe(
+      "NotSupportedError | scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)\n",
+    );
+  }, 180_000);
+
   test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
     const dir = copyCase("undici7", "undici7-loose");
     // tsc accepts the shim's Request#body here because it is assigned in the

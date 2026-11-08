@@ -262,6 +262,38 @@ export function undiciFetch(
   return fetchThrough(dispatcher, input, init ?? {}, profile);
 }
 
+/** Compiler intrinsic (fetch-dispatcher.ts): stores the function the
+ * global fetch hands a request to when its init carries a dispatcher. */
+declare function scriptcFetchDispatcherHook(
+  hook: (input: unknown, init: unknown) => Promise<Response>,
+): (input: unknown, init: unknown) => Promise<Response>;
+
+/** Node's global fetch is undici's, so `fetch(url, { dispatcher })` sends
+ * the request through the dispatcher. The native global fetch knows none:
+ * a call whose init carries one comes here, with the values as the call
+ * had them, and goes the way this package's fetch goes. An object that is
+ * no dispatcher of this package is refused by name (requestInitOf). Each
+ * entry installs this once, when its module starts. */
+export function installGlobalFetchDispatcher(
+  createGlobal: () => Dispatcher,
+  profile: Profile,
+): void {
+  const through = (input: unknown, init: unknown): Promise<Response> => {
+    // A URL reads as its href; a Request has no dispatcher path here and
+    // fails as the address it is not.
+    const target = typeof input === "string" ? input : String(input);
+    return undiciFetch(target, init as UndiciFetchInit, createGlobal, profile);
+  };
+  // The intrinsic exists in a compiled program. Run as it is under Node
+  // (the package's own tests do), the name is not defined and this module
+  // has nothing to install: the global fetch there is undici's already.
+  try {
+    scriptcFetchDispatcherHook(through);
+  } catch {
+    return;
+  }
+}
+
 function normalizeMethod(method: string): string {
   const upper = method.toUpperCase();
   return ["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"].includes(upper)

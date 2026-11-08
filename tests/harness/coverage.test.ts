@@ -826,18 +826,15 @@ test("the unreached pass asks about an array type the reachable pass degraded, a
       outPath: join(outDir, "main.ir.json"),
       outDir,
     });
-    expect(built.ok).toBe(false);
-    if (built.ok) return;
+    // Whatever the build reports, the report says the same, site by site.
+    // The types a linked workspace package declares compile now, so this
+    // fixture builds and there is nothing to report; while its row type was
+    // refused, these were the build's five errors.
     const site = (d: { code: string; loc: { file: string; start: number; end: number } }) =>
       `${d.code} ${d.loc.file.replace(repoRoot + "/", "")}:${d.loc.start}-${d.loc.end}`;
-    expect(coverage.diagnostics.map(site).sort()).toEqual(built.diagnostics.map(site).sort());
-    expect(coverage.diagnostics.map((d) => d.code).sort()).toEqual([
-      "SC2004",
-      "SC2004",
-      "SC2013",
-      "SC2013",
-      "SC2013",
-    ]);
+    const reported = built.ok ? [] : built.diagnostics;
+    expect(coverage.diagnostics.map(site).sort()).toEqual(reported.map(site).sort());
+    expect(built.ok).toBe(true);
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }

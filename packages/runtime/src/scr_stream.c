@@ -8926,7 +8926,8 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
       scr_stream_release(scr_stream_end(stream, first->v.bytes, NULL, NULL));
     } else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
   } else if (!strcmp(method, "destroy")) {
-    ScrError *error = first->kind == SCR_DYN_UNDEF || first->kind == SCR_DYN_NULL ? NULL : scr_error_from_dyn(first);
+    /* Node tests `if (err)`: a falsy reason destroys without an error. */
+    ScrError *error = scr_dyn_truthy(first) ? scr_error_from_dyn(first) : NULL;
     scr_stream_release(scr_stream_destroy(stream, error));
     scr_error_release(error);
   } else if (!strcmp(method, "cork")) scr_stream_cork(stream);

@@ -77,7 +77,12 @@ import {
 } from "../lower-exprs.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { assertedMemberRead, classFieldTarget, lowerUnionKeyedRead } from "./property-access.js";
+import {
+  assertedMemberRead,
+  classFieldTarget,
+  erasedDeclareField,
+  lowerUnionKeyedRead,
+} from "./property-access.js";
 import {
   assertedOnlyMemberWrite,
   assertedProbeAccessOf,
@@ -109,7 +114,10 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { withInheritedMethods } from "../record-inherited.js";
-import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  lowerClassPrototypeComputedAssignment,
+} from "../class-prototypes.js";
 import { isClassCallback } from "../class-callbacks.js";
 import {
   isKeyedFieldAccess,
@@ -128,6 +136,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { refuseDefinedEnvWrite } from "../builtins/environment.js";
 import { nullishReadTypeError, throwAfterEach } from "../primitive-throws.js";
 
 /** The per-arm answer for a presence probe of an element read through an
@@ -2680,6 +2689,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         "indexing process.env with non-string keys",
       );
     }
+    refuseDefinedEnvWrite(lowerer, key, target);
     const value = lowerer.lowerExpr(expr.right);
     if (value.type.kind !== "string") {
       lowerer.unsupported(
@@ -2863,6 +2873,38 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
             ),
             loc: locOf(expr),
           };
+        }
+        // `instance["name"] = v` with a literal key the class does not
+        // declare is the bracket spelling of the dot write `instance.name =
+        // v` (which a class with an index signature admits): the same own
+        // property of the instance, through its checked-dynamic view. A
+        // name the class declares with `declare` keeps the refusal: on a
+        // class rooted in a runtime class the write by name can address the
+        // runtime object's own member of that name, and the two spellings
+        // must reach one place.
+        if (
+          isDynTypedRefType(receiver.type) &&
+          !erasedDeclareField(lowerer, receiver.type.className, key)
+        ) {
+          const info = lowerer.classes.get(receiver.type.className);
+          if (
+            info &&
+            !info.def.runtime &&
+            !info.builtinError &&
+            !info.builtinEmitter &&
+            !info.builtinStream &&
+            !isCompiledPrototypeMember(lowerer, info, key)
+          ) {
+            return {
+              kind: "exprStmt",
+              expr: lowerDynMemberAssignment(
+                lowerer,
+                expr,
+                lowerer.coerceInto(target.expression, receiver, DYN),
+              ),
+              loc: locOf(expr),
+            };
+          }
         }
         lowerer.unsupported(
           "SC1090",

@@ -235,7 +235,10 @@ async function coverageFastPath(
     // refuses.
     firstCliOptionOutside(values, CLI_FAST_PATHS.coverage.options) !== undefined ||
     (print !== undefined && print !== "diagnostics") ||
-    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences")
+    (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
+    // --fail-on=divergences checks the warning --no-copy-warning leaves out:
+    // the full CLI refuses the pair, and a replayed verdict must not pass it.
+    (failOn === "divergences" && values["copy-warning"] === false)
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
@@ -248,6 +251,8 @@ async function coverageFastPath(
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;
+  if (values["copy-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

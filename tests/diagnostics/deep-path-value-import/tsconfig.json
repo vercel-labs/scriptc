@@ -1,16 +1,7 @@
 {
   "compilerOptions": {
-    "module": "es2022",
     "moduleResolution": "node",
-    "target": "ES2021",
-    "lib": [
-      "ES2021",
-      "DOM"
-    ],
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true
+    "strict": true
   },
   "include": [
     "main.ts"

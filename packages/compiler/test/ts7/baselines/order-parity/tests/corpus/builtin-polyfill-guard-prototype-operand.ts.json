@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-polyfill-guard-prototype-operand.ts"
+ ],
+ "diags": []
+}

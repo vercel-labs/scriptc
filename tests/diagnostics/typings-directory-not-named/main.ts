@@ -1,8 +1,8 @@
-// The project's declarations for an untyped package sit in a directory its
-// tsconfig names neither in `typeRoots` nor in `include`: the project's tsc
-// does not read them, and neither does any load of the build.
-import tinyLines from "tiny-lines";
-import * as termCodes from "term-codes";
+// The project keeps declarations for a package that ships none, but in a
+// directory its tsconfig lists neither under `typeRoots` nor under
+// `include`. The project's tsc never reads them, and no load of the build
+// does either.
+import { scale } from "pantry-units";
+import * as oven from "oven-dial";
 
-const rows = tinyLines.parse('{"a":1}\n{"a":2}\n');
-console.log(rows.length, JSON.stringify(termCodes.eraseLine));
+console.log(scale([1, 2], 2).length, oven.gasMark(180));

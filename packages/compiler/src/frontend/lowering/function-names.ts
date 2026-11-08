@@ -1,11 +1,12 @@
-/* The JavaScript names of object literals' methods.
+/* The JavaScript names of object literals' methods and of the anonymous
+ * functions that initialize class fields.
  *
  * A function boxed into a checked value inside a record, an array or
  * another converted value has no static name at the box, so the backend
  * takes it from the function (LlEmitter.closureNames): its sourceName, or
- * for an object literal's method, whose stack-frame name differs, its
- * displayName. displayName is set only in modules that box such a
- * function, so other modules lower as before. */
+ * for an object literal's method and a class field's initializer, whose
+ * stack-frame names differ, its displayName. displayName is set only in
+ * modules that box such a function, so other modules lower as before. */
 import * as ts from "../ts7/adapter.js";
 import type { IrFunction, IrType } from "../../ir/ir.js";
 import { typeKey } from "../../ir/ir.js";
@@ -13,14 +14,43 @@ import { everyStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Notes the name of the lifted function `fnName` when `node` is a method
- * of an object literal with a static key. */
+ * of an object literal, or an anonymous function that initializes a class
+ * field (`read = (x) => x + 1` is named "read", as a `const` binding names
+ * its initializer), with a static key. */
 export function noteObjectMethodName(lowerer: Lowerer, node: ts.Node, fnName: string): void {
-  if (!ts.isMethodDeclaration(node) || !ts.isObjectLiteralExpression(node.parent)) return;
-  const name = node.name;
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name))
+  const name = namingKey(node);
+  if (name === null) return;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isPrivateIdentifier(name))
     lowerer.objectMethodNames.set(fnName, name.text);
   else if (ts.isNumericLiteral(name))
     lowerer.objectMethodNames.set(fnName, String(Number(name.text)));
+}
+
+/** The property key that names the function `node` defines; null when no
+ * key does. A class field names its initializer only when that is an
+ * anonymous function definition, through the parentheses and type
+ * assertions JavaScript does not see. */
+function namingKey(node: ts.Node): ts.PropertyName | null {
+  if (ts.isMethodDeclaration(node))
+    return ts.isObjectLiteralExpression(node.parent) ? node.name : null;
+  if (!ts.isArrowFunction(node) && !(ts.isFunctionExpression(node) && node.name === undefined))
+    return null;
+  let outer: ts.Node = node;
+  for (let p = outer.parent; p !== undefined; p = outer.parent) {
+    if (
+      !ts.isParenthesizedExpression(p) &&
+      !ts.isAsExpression(p) &&
+      !ts.isTypeAssertion(p) &&
+      !ts.isSatisfiesExpression(p) &&
+      !ts.isNonNullExpression(p)
+    )
+      break;
+    outer = p;
+  }
+  const field = outer.parent;
+  return field !== undefined && ts.isPropertyDeclaration(field) && field.initializer === outer
+    ? field.name
+    : null;
 }
 
 /** Gives the noted methods their displayName when the module boxes a

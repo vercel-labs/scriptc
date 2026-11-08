@@ -2534,7 +2534,17 @@ export class LlDyn {
     const want = host.cstr(dynDesc(t, this.host.recordsById, this.host.unionsById));
     const B = new BlockBuilder();
     if (t.kind === "classval") {
-      host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
+      // A constructor value of a class with a table of its static members
+      // may carry another instantiation's identity: the check answers the
+      // class object of the value itself.
+      const check = (className: string): string => {
+        const fn =
+          host.classStaticsHelper?.(className) !== undefined
+            ? "scr_dyn_class_check_own"
+            : "scr_dyn_class_check";
+        host.declare(`declare ptr @${fn}(ptr, ptr, ptr)`);
+        return fn;
+      };
       // A subclass's class value checks into the base class's slot when
       // construction through the slot can call its thunk with the base
       // constructor's arguments; any other subclass fails the check.
@@ -2550,14 +2560,14 @@ export class LlDyn {
           B.condBr(matched, yes, no);
           B.startBlock(yes);
           const sub = B.tmp();
-          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
+          B.line(`${sub} = call ptr @${check(className)}(ptr %d, ptr ${subKey}, ptr %path)`);
           B.terminate(`ret ptr ${sub}`);
           B.startBlock(no);
         }
       }
       const checked = B.tmp();
       B.line(
-        `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
+        `${checked} = call ptr @${check(t.className)}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
       );
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
@@ -4131,10 +4141,13 @@ export class LlDyn {
         break;
       }
       case "classval": {
-        host.declare(`declare ptr @scr_dyn_new_class(ptr, ptr)`);
-        const r = B.tmp();
-        B.line(`${r} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
+        // A class that carries a table of its static members takes the
+        // constructor value that can share another instantiation's identity.
         const statics = host.classStaticsHelper?.(t.className);
+        const make = statics !== undefined ? "scr_dyn_new_class_shared" : "scr_dyn_new_class";
+        host.declare(`declare ptr @${make}(ptr, ptr)`);
+        const r = B.tmp();
+        B.line(`${r} = call ptr @${make}(ptr %v, ptr ${host.cstr(key)})`);
         if (statics !== undefined) {
           // The first conversion of the constructor defines its class's
           // static members in the table the runtime just created.
@@ -4153,7 +4166,7 @@ export class LlDyn {
           host.declare(`declare void @scr_dyn_release(ptr)`);
           B.line(`call void @scr_dyn_release(ptr ${r})`);
           const again = B.tmp();
-          B.line(`${again} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
+          B.line(`${again} = call ptr @${make}(ptr %v, ptr ${host.cstr(key)})`);
           B.terminate(`ret ptr ${again}`);
           B.startBlock(done);
         }

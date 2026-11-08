@@ -7848,31 +7848,12 @@ static ScrDyn *scr_dyn_class_call(ScrClosure *closure, ScrDyn *const *args, size
 
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  /* The class object as a dynamic value: itself, or for an instantiation
-   * of a generic class the class object its table slot names
-   * (scr_dyn_class_share), which is a module-level class and outlives every
-   * value. That one carries the identity and the static table. */
-  ScrClassObj *identity = cls;
-  if (cls->static_data) {
-    ScrDyn *held = scr_box_get_ref(cls->static_data);
-    if (held && held->kind == SCR_DYN_FUNC && held->v.fn.class_obj) identity = held->v.fn.class_obj;
-    scr_dyn_release(held);
-  }
-  if (identity->static_data) closure->props = scr_box_retain(identity->static_data);
+  if (cls->static_data) closure->props = scr_box_retain(cls->static_data);
   closure->caps[0] = scr_box_new_obj(scr_classobj_retain_v, scr_classobj_release_v, scr_classobj_trace_v);
   scr_box_set_ref(closure->caps[0], scr_classobj_retain(cls));
   ScrDyn *value = scr_dyn_new_func(closure, scr_dyn_class_call, (uint32_t)cls->length, type_key, cls->name->data);
-  value->v.fn.class_obj = identity; /* borrowed: the closure's, or a module-level class */
+  value->v.fn.class_obj = cls; /* borrowed from the closure */
   return value;
-}
-
-/* The class object a constructor value constructs and casts to (borrowed
- * from its closure): its own, which for an instantiation of a generic
- * class is not the one that carries its identity. */
-static ScrClassObj *scr_dyn_class_own(const ScrDyn *value) {
-  ScrClassObj *own = scr_box_get_ref(value->v.fn.clo->caps[0]);
-  scr_classobj_release(own); /* the closure keeps it */
-  return own;
 }
 
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key) {
@@ -7889,7 +7870,7 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
     scr_dyn_check_fail(path, "class constructor", value);
     return NULL;
   }
-  return scr_classobj_retain(scr_dyn_class_own(value));
+  return scr_classobj_retain(value->v.fn.class_obj);
 }
 
 /* The compiler exposes this data view only for named data accesses and
@@ -9106,6 +9087,49 @@ ScrDyn *scr_dyn_class_inherit(ScrDyn *constructor, ScrDyn *base) {
   scr_dyn_release(table);
   scr_dyn_release(result);
   return scr_exc_pending() ? NULL : scr_dyn_retain(constructor);
+}
+
+/* The class object a constructor value constructs and casts to (borrowed
+ * from its closure): its own, which for an instantiation of a generic
+ * class is not the one that carries its identity. */
+static ScrClassObj *scr_dyn_class_own(const ScrDyn *value) {
+  ScrClassObj *own = scr_box_get_ref(value->v.fn.clo->caps[0]);
+  scr_classobj_release(own); /* the closure keeps it */
+  return own;
+}
+
+/* scr_dyn_new_class for a class that carries a static table (the compiler
+ * calls this one for exactly those classes). The class object as a dynamic
+ * value is itself, or for an instantiation of a generic class the class
+ * object its table slot names (scr_dyn_class_share), which is a
+ * module-level class and outlives every value. That one carries the
+ * identity and the static table; the closure keeps the class's own object
+ * for construction and the checked cast (scr_dyn_class_check_own). */
+ScrDyn *scr_dyn_new_class_shared(ScrClassObj *cls, const char *type_key) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  ScrClassObj *identity = cls;
+  if (cls->static_data) {
+    ScrDyn *held = scr_box_get_ref(cls->static_data);
+    if (held && held->kind == SCR_DYN_FUNC && held->v.fn.class_obj) identity = held->v.fn.class_obj;
+    scr_dyn_release(held);
+  }
+  if (identity->static_data) closure->props = scr_box_retain(identity->static_data);
+  closure->caps[0] = scr_box_new_obj(scr_classobj_retain_v, scr_classobj_release_v, scr_classobj_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_classobj_retain(cls));
+  ScrDyn *value = scr_dyn_new_func(closure, scr_dyn_class_call, (uint32_t)cls->length, type_key, cls->name->data);
+  value->v.fn.class_obj = identity; /* borrowed: the closure's, or a module-level class */
+  return value;
+}
+
+/* scr_dyn_class_check for a class that carries a static table: the class
+ * object of the constructor value itself, not the one it shares its
+ * identity with. */
+ScrClassObj *scr_dyn_class_check_own(const ScrDyn *value, const char *type_key, const ScrDynPath *path) {
+  if (!scr_dyn_class_is(value, type_key)) {
+    scr_dyn_check_fail(path, "class constructor", value);
+    return NULL;
+  }
+  return scr_classobj_retain(scr_dyn_class_own(value));
 }
 
 /* The static table of a compiled class, on the first conversion of its

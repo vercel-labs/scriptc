@@ -2232,6 +2232,11 @@ ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
  * and the compiler's helper then defines the class's static members and
  * `prototype` in it; static_slot marks one as backed by native storage. */
 bool scr_dyn_class_statics_begin(ScrDyn *constructor);
+/* scr_dyn_new_class for a class with such a table: an instantiation of a
+ * generic class shares the identity and the table of the first one
+ * (scr_dyn_class_share) and keeps its own class object, which
+ * scr_dyn_class_check_own answers. */
+ScrDyn *scr_dyn_new_class_shared(ScrClassObj *cls, const char *type_key);
 ScrDyn *scr_dyn_class_static_slot(ScrDyn *constructor, ScrDyn *key);
 ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first);
 /* EventEmitter and the stream constructors as untyped constructor values,
@@ -2320,6 +2325,7 @@ ScrUrl *scr_url_checked_from_path(const ScrDyn *value, const ScrDyn *options);
 ScrUrl *scr_dyn_native_url_check(const ScrDyn *value, const ScrDynPath *path);
 ScrRegex *scr_dyn_native_regex_check(const ScrDyn *value, const ScrDynPath *path);
 ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, const ScrDynPath *path);
+ScrClassObj *scr_dyn_class_check_own(const ScrDyn *value, const char *type_key, const ScrDynPath *path);
 
 /* The dynCheck failure path: builds "TypeError: expected <want> at <path>,
  * got <kind>" (got == NULL renders as "undefined" — a missing object

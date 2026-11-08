@@ -1813,8 +1813,12 @@ export class ClassDynamicDispatch {
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
     // A constructor that becomes a dynamic value carries the table of its
     // class's static members, and so do its base classes, whose tables it
-    // inherits from.
-    for (const name of this.boxedConstructors)
+    // inherits from. Only an operation on a dynamic value can reach the
+    // table: a program that converts the constructor and has none (a
+    // function-typed static called through the class name passes the class
+    // as the call's receiver) keeps the constructor value it had.
+    const tables = this.boxedConstructors.size > 0 && this.sites.usesDynamicValues(functions);
+    for (const name of tables ? this.boxedConstructors : [])
       for (let info = lowerer.classes.get(name) ?? null; info; info = info.base) {
         if (info.def.staticsHelper !== undefined || this.staticTablesDecided.has(info.def.name))
           continue;
@@ -1829,8 +1833,11 @@ export class ClassDynamicDispatch {
       }
     // A reflected prototype holds its class's methods, and an instance reads
     // a member through its own class's prototype first. Every class below a
-    // reflected one is therefore reflected too: otherwise the base class's
-    // method would answer for a subclass's override.
+    // reflected one that can have an instance is therefore reflected too:
+    // otherwise the base class's method would answer for a subclass's
+    // override. A class whose constructor nothing reaches (no `new`, no
+    // class value, no subclass that is constructed) has no instance and no
+    // one to read its prototype; its methods stay out of the program.
     const reflectBelow = (current: ClassInfo): void => {
       for (const sub of current.subclasses) {
         if (
@@ -1838,7 +1845,8 @@ export class ClassDynamicDispatch {
           !sub.prototypeReflectionRefusal &&
           sub.decl &&
           !sub.localClass &&
-          !inGenericChain(sub)
+          !inGenericChain(sub) &&
+          lowerer.classCanBeConstructed(sub)
         ) {
           const before = lowerer.diags.length;
           try {

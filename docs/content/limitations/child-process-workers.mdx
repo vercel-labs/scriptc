@@ -7,6 +7,12 @@ Supported options are default inherited stdio or an inline object with `cwd`, `e
 `execArgv` is accepted but has no native effect.
 Runtime worker paths, custom `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
 
+The callback forms of `exec()` and `execFile()` take `encoding: "utf8"`, `maxBuffer`, `cwd`, `env`, `timeout`, `killSignal`, `signal` and `shell: true` in an inline options object.
+A conditional spread such as `...(limited ? { timeout, signal } : {})` may carry `cwd`, `env`, `timeout`, `killSignal` and `signal`.
+`killSignal` is a signal's name; a signal number is refused at compile time.
+On Windows targets `env`, `timeout`, `killSignal` and `signal` are refused at compile time.
+The promisified forms run the child to completion before the call returns; they take `cwd`, `env`, `timeout` and `maxBuffer`, and refuse `signal` and a `killSignal` other than `SIGTERM` at compile time.
+
 Parent and child channels support `send(message, callback?)`, `connected`, `disconnect()`, and `on`/`once` for `message` and `disconnect`.
 Message listeners may return `void` or `Promise<void>`.
 Messages use newline-delimited JSON, so their static types must be JSON-stringifiable or `unknown` backed by a checked JSON tree.

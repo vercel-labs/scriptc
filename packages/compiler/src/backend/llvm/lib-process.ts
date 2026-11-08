@@ -20,7 +20,12 @@ import { frameText } from "./frame-positions.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
+  if (
+    e.fn === "cp.execFile" ||
+    e.fn === "cp.execFileCwd" ||
+    e.fn === "cp.execFileOpts" ||
+    e.fn === "cp.execFileSignal"
+  ) {
     const callbackArg = e.args[2];
     if (!callbackArg)
       throw new InternalCompilerError("llvm emitter bug: execFile callback missing");
@@ -43,6 +48,27 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
         `${out} = call ptr @scr_exec_file_cwd(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${shell.name}, ptr ${cwd.name})`,
       );
       return host.own({ name: out, type: e.type });
+    }
+    if (e.fn === "cp.execFileOpts" || e.fn === "cp.execFileSignal") {
+      // env, timeout and killSignal (SCR_CHILD_CP_OPTIONS), and with
+      // cp.execFileSignal spawn's signal.
+      const cwd = host.emitExpr(e.args[4]!);
+      const hasEnv = host.emitExpr(e.args[5]!);
+      const envPairs = host.emitExpr(e.args[6]!);
+      const timeout = host.emitExpr(e.args[7]!);
+      const killSignal = host.emitExpr(e.args[8]!);
+      const signal = e.fn === "cp.execFileSignal" ? host.emitExpr(e.args[9]!) : null;
+      const sym = signal === null ? "scr_exec_file_opts" : "scr_exec_file_signal";
+      host.declare(
+        `declare ptr @${sym}(ptr, ptr, ptr, ptr, i1 zeroext, ptr, i1 zeroext, ptr, double, ptr${signal === null ? "" : ", ptr"})`,
+      );
+      B.line(
+        `${out} = call ptr @${sym}(ptr ${cmd.name}, ptr ${argv.name}, ptr ${cb.name}, ptr @${adapter}, i1 zeroext ${shell.name}, ptr ${cwd.name}, i1 zeroext ${hasEnv.name}, ptr ${envPairs.name}, double ${timeout.name}, ptr ${killSignal.name}${signal === null ? "" : `, ptr ${signal.name}`})`,
+      );
+      const child = host.own({ name: out, type: e.type });
+      // validateAbortSignal throws before anything is spawned.
+      host.emitPendingCheck();
+      return child;
     }
     host.declare(`declare ptr @scr_exec_file(ptr, ptr, ptr, ptr, i1)`);
     B.line(

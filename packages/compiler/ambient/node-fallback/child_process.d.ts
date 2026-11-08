@@ -272,6 +272,26 @@ declare module "child_process" {
   export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): string;
   export function execSync(command: string, options?: ExecSyncOptions): string;
   export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+  /* The callback forms' options: the capture's members, and the ones
+   * that involve a timer or an AbortSignal. env REPLACES the child
+   * environment; a timeout above 0 kills with killSignal (a signal's name,
+   * SIGTERM without one), as a reached maxBuffer does; an aborted signal
+   * kills with SIGTERM and hands the callback an AbortError whose cause is
+   * the signal's reason. input and stdio are named so that the lowering
+   * refuses them where they are written. */
+  interface ExecFileOptions {
+    encoding?: "utf8" | "utf-8";
+    cwd?: string;
+    env?: { [k: string]: string | undefined };
+    input?: string;
+    timeout?: number | undefined;
+    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    maxBuffer?: number;
+    killSignal?: string | undefined;
+    signal?: AbortSignal | undefined;
+    windowsHide?: boolean;
+    shell?: boolean;
+  }
   /* The callback form starts an asynchronous child and captures utf8
    * stdout/stderr. The no-callback overload remains for util.promisify's
    * static target recognition; reached no-callback calls still fence. */
@@ -284,7 +304,7 @@ declare module "child_process" {
   export function execFile(
     file: string,
     args: string[] | null,
-    options: ExecSyncOptions,
+    options: ExecFileOptions,
     callback: ExecFileCallback,
   ): ChildProcess;
   export function execFile(
@@ -298,7 +318,7 @@ declare module "child_process" {
    * fence at their site. */
   export function exec(
     command: string,
-    options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
+    options?: ExecFileOptions | ((error: Error | null, stdout: string, stderr: string) => void),
     callback?: (error: Error | null, stdout: string, stderr: string) => void,
   ): ChildProcess;
 }

@@ -1,17 +1,26 @@
-child-process-option-values.ts:10:47 - error SC2020: 'execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+child-process-option-values.ts:11:59 - error SC2020: 'exec option 'timeout' written twice' is part of the standard library types but has no scriptc lowering yet
 
-   9 | 
-  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
-     |                                               ^~~~~~~~~~~~~~~~~~~~~
-  11 | exec("echo", { windowsHide: hidden() }, () => {});
+  10 | 
+  11 | exec("echo", { ...(dim ? { timeout: 50 } : {}), cwd: "/", timeout: 60 }, () => {});
+     |                                                           ^~~~~~~~~~~
+  12 | execFile("/bin/echo", [], { ...(dim ? { maxBuffer: 64 } : {}) }, () => {});
 
-  hint: pass a literal or a plain binding (this form has no place to run the expression)
+  hint: write the member once (an earlier value would be evaluated and replaced)
 
-child-process-option-values.ts:11:16 - error SC2020: 'exec option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+child-process-option-values.ts:12:29 - error SC2020: 'execFile with this options spread' is part of the standard library types but has no scriptc lowering yet
 
-  10 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
-  11 | exec("echo", { windowsHide: hidden() }, () => {});
-     |                ^~~~~~~~~~~~~~~~~~~~~
-  12 | 
+  11 | exec("echo", { ...(dim ? { timeout: 50 } : {}), cwd: "/", timeout: 60 }, () => {});
+  12 | execFile("/bin/echo", [], { ...(dim ? { maxBuffer: 64 } : {}) }, () => {});
+     |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | const shared = { timeout: 70 };
 
-  hint: pass a literal or a plain binding (this form has no place to run the expression)
+  hint: the supported spread is a conditional that carries cwd, env, timeout, killSignal or signal: `...(c ? { timeout, signal } : {})`; write other members inline
+
+child-process-option-values.ts:14:29 - error SC2020: 'execFile with this options spread' is part of the standard library types but has no scriptc lowering yet
+
+  13 | const shared = { timeout: 70 };
+  14 | execFile("/bin/echo", [], { ...shared, cwd: "/" }, () => {});
+     |                             ^~~~~~~~~
+  15 | 
+
+  hint: the supported spread is a conditional that carries cwd, env, timeout, killSignal or signal: `...(c ? { timeout, signal } : {})`; write other members inline

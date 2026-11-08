@@ -3236,6 +3236,35 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
       result: CHILD_T,
     },
+    /** The callback slice with `env`, `timeout` and `killSignal` (the same
+     * build): (cmd, argv, callback, shell, cwd, hasEnv, envPairs, timeout,
+     * killSignal). An absent cwd is "", an absent timeout 0, an absent
+     * killSignal "SIGTERM"; the pairs replace the child's environment when
+     * hasEnv. cp.execFileSignal adds spawn's `signal` (an AbortSignal or
+     * undefined) and throws ERR_INVALID_ARG_TYPE for any other value. */
+    "cp.execFileOpts": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
+      result: CHILD_T,
+    },
+    "cp.execFileSignal": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        null,
+        BOOL,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        DYN,
+      ],
+      result: CHILD_T,
+    },
+    /** execFile's validateTimeout (ERR_OUT_OF_RANGE unless a non-negative
+     * integer) and its sanitizeKillSignal for a name (ERR_UNKNOWN_SIGNAL). */
+    "cp.checkTimeout": { argTypes: [F64], result: VOID },
+    "cp.checkKillSignal": { argTypes: [STRING], result: VOID },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
     // 2 fd) with the out/err fds for mode 2, detached, env replacement
     // pairs, cwd ("" = inherit).

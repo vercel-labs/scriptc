@@ -1,5 +1,13 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, helperLoc, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  boolLit,
+  dynUndefinedExpr,
+  helperLoc,
+  nodeThrowExpr,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
@@ -70,9 +78,25 @@ export interface ChildMaxBuffer {
 }
 
 /** One evaluation of a launch, for the order the source gives them: an
- * argument of the launch by its index, or "limit" for a `maxBuffer` that
- * is not one of the arguments. */
-export type ChildEvalStep = number | "limit";
+ * argument of the launch by its index, "limit" for a `maxBuffer` that is
+ * not one of the arguments, or a statement that runs at that place (the
+ * condition of a conditional spread, which the members it carries read). */
+export type ChildEvalStep = number | "limit" | { run: IrStmt };
+
+/** What a launch's options hand the check: the `cwd` and environment-pairs
+ * arguments and the limit, and for execFile and exec with the timer
+ * options, their validations in Node's order: `validateFirst` before the
+ * limit's (validateTimeout), `validateAfterLimit` behind it
+ * (sanitizeKillSignal). `ordered` evaluates the launch's arguments in the
+ * source's order whatever the limit is. */
+export interface ChildCheckedOptions {
+  cwd?: IrExpr | undefined;
+  envPairs?: IrExpr | undefined;
+  maxBuffer?: ChildMaxBuffer | undefined;
+  validateFirst?: IrStmt[] | undefined;
+  validateAfterLimit?: IrStmt[] | undefined;
+  ordered?: boolean | undefined;
+}
 
 /** The limit of a launch that arms its own capture, or none. */
 export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuffer | undefined {
@@ -107,11 +131,7 @@ export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
   form: ChildLaunchForm,
-  options: (args: readonly IrExpr[]) => {
-    cwd?: IrExpr | undefined;
-    envPairs?: IrExpr | undefined;
-    maxBuffer?: ChildMaxBuffer | undefined;
-  },
+  options: (args: readonly IrExpr[]) => ChildCheckedOptions,
   loc: SrcLoc,
   sourceOrder?: readonly ChildEvalStep[],
 ): IrExpr {
@@ -135,7 +155,11 @@ export function withChildArgsCheck(
     given.maxBuffer === undefined ||
     (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
   const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
-  if (fileAndArgsPass && optionsPass && !limited) return launch;
+  const validated =
+    (given.validateFirst?.length ?? 0) > 0 || (given.validateAfterLimit?.length ?? 0) > 0;
+  if (fileAndArgsPass && optionsPass && !limited && !validated && given.ordered !== true) {
+    return launch;
+  }
   const stmts: IrStmt[] = [];
   // Literals and function literals have no evaluation to order, and a
   // function-typed local read is the callback itself.
@@ -161,8 +185,8 @@ export function withChildArgsCheck(
   const steps: ChildEvalStep[] = [];
   if (
     sourceOrder !== undefined &&
-    given.maxBuffer !== undefined &&
-    given.maxBuffer.value.kind !== "numLit"
+    (given.ordered === true ||
+      (given.maxBuffer !== undefined && given.maxBuffer.value.kind !== "numLit"))
   ) {
     // A member written twice keeps its last place, as its last value is
     // the one the launch reads.
@@ -175,7 +199,9 @@ export function withChildArgsCheck(
   const args: IrExpr[] = [...launch.args];
   let ownLimitHeld: IrExpr | undefined;
   steps.forEach((step, at) => {
-    if (step !== "limit") {
+    if (typeof step === "object") {
+      stmts.push(step.run);
+    } else if (step !== "limit") {
       const arg = launch.args[step]!;
       if (evaluates(arg)) args[step] = hold(arg);
     } else if (ownLimit !== undefined) {
@@ -183,7 +209,10 @@ export function withChildArgsCheck(
       // the local: Node has the limit's value before it evaluates those.
       const followed = steps
         .slice(at + 1)
-        .some((later) => later !== "limit" && evaluates(launch.args[later]!));
+        .some(
+          (later) =>
+            typeof later === "object" || (later !== "limit" && evaluates(launch.args[later]!)),
+        );
       ownLimitHeld =
         ownLimit.kind === "numLit" || (ownLimit.kind === "varRef" && !followed)
           ? ownLimit
@@ -228,8 +257,25 @@ export function withChildArgsCheck(
   // step, before the checks, and they and the launch read the local.
   let limit = limited ? held.maxBuffer : undefined;
   if (limit !== undefined && ownLimitHeld !== undefined) limit = { ...limit, value: ownLimitHeld };
-  if (limit === undefined) {
-    stmts.push(checkAll());
+  if (validated) {
+    // execFile validates the timeout, the limit and the kill signal, in
+    // that order, and then calls spawn, which checks the launch's values;
+    // exec has checked its command before all of them. The limit is armed
+    // after the last check.
+    if (form === 1 && !fileAndArgsPass) {
+      stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
+    }
+    stmts.push(...(held.validateFirst ?? []));
+    if (limit !== undefined && !limitPasses) stmts.push(maxBufferCall(limit.value, false));
+    stmts.push(...(held.validateAfterLimit ?? []));
+    if (form === 1) {
+      if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+    } else if (!(fileAndArgsPass && optionsPass)) {
+      stmts.push(checkAll());
+    }
+    if (limit !== undefined && limit.arm) stmts.push(maxBufferCall(limit.value, true));
+  } else if (limit === undefined) {
+    if (!(fileAndArgsPass && optionsPass)) stmts.push(checkAll());
   } else if (fileAndArgsPass && optionsPass) {
     stmts.push(maxBufferCall(limit.value, limit.arm));
   } else if (limit.sync || limitPasses) {
@@ -322,15 +368,14 @@ function stdioModeChain(
  * changes what the child receives on Windows, and the runtime's launch has
  * no unquoted form, so there it is refused unless it is literally `false`.
  * `evaluate` takes a value whose evaluation can be observed (a call, a
- * getter) to run where the member sits; a form with no place for it (null)
- * refuses such a value by name instead of dropping it. */
+ * getter) to run where the member sits. */
 function windowsOnlyOption(
   lowerer: Lowerer,
   what: string,
   name: string,
   member: ts.Node,
   valueNode: ts.Expression,
-  evaluate: ((value: IrExpr) => void) | null,
+  evaluate: (value: IrExpr) => void,
 ): void {
   if (
     name === "windowsVerbatimArguments" &&
@@ -344,15 +389,7 @@ function windowsOnlyOption(
     );
   }
   const value = lowerer.lowerExpr(valueNode);
-  if (isSafeToDiscard(value)) return;
-  if (evaluate === null) {
-    lowerer.noLowering(
-      `${what} option '${name}' with a value that must be evaluated`,
-      member,
-      "pass a literal or a plain binding (this form has no place to run the expression)",
-    );
-  }
-  evaluate(value);
+  if (!isSafeToDiscard(value)) evaluate(value);
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
@@ -1926,6 +1963,84 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   );
 }
 
+/** Signal names every POSIX target's table has: a killSignal literal from
+ * this set needs no run-time check. Any other name is checked where the
+ * launch runs, as Node checks it (ERR_UNKNOWN_SIGNAL). */
+const EVERY_POSIX_SIGNAL_NAMES = new Set([
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGABRT",
+  "SIGKILL",
+  "SIGUSR1",
+  "SIGUSR2",
+  "SIGPIPE",
+  "SIGALRM",
+  "SIGTERM",
+  "SIGCONT",
+  "SIGSTOP",
+]);
+
+/** execFile's `timeout` as a number: a value whose type admits undefined
+ * reads 0 there (Node's `timeout: undefined` arms no timer and is not
+ * validated), read once. */
+function execTimeoutValue(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const type = lowerer.typeOf(node);
+  const mapped = lowerer.mapTypeOf(type);
+  if (type.flags & ts.TypeFlags.Undefined || mapped?.kind === "undefinedT") {
+    const value = lowerer.lowerExpr(node);
+    return isSafeToDiscard(value)
+      ? numLit(0, loc)
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: value, loc }],
+          result: numLit(0, loc),
+          type: F64,
+          loc,
+        };
+  }
+  if (mapped?.kind === "union") {
+    const def = lowerer.unions.get(mapped.unionId);
+    const absentTag = lowerer.armTag(mapped.unionId, UNDEFINED_T);
+    const numberTag = lowerer.armTag(mapped.unionId, F64);
+    if (def !== undefined && def.arms.length === 2 && absentTag >= 0 && numberTag >= 0) {
+      const read = lowerer.lowerExpr(node);
+      const slot = lowerer.declareHiddenLocal("%execTimeout", read.type);
+      const held = varRef(slot.id, read.type, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: slot.id, init: read, loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: mapped.unionId,
+            tag: absentTag,
+            negated: false,
+            value: held,
+            type: BOOL,
+            loc,
+          },
+          then: numLit(0, loc),
+          else_: {
+            kind: "unionNarrow",
+            unionId: mapped.unionId,
+            tag: numberTag,
+            value: held,
+            type: F64,
+            loc,
+          },
+          type: F64,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+    }
+  }
+  return lowerer.lowerExprExpecting(node, F64);
+}
+
 /** `execFile(file[, args][, options], callback)` — the asynchronous callback
  * slice. With `shell`, `exec(command[, options], callback)`: the command
  * line runs with /bin/sh -c, as execSync runs it, and failure messages show
@@ -1934,8 +2049,14 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
  * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
- * to each stream as in Node (1 MiB without the option). Other options remain
- * fenced until their lifecycle can share this asynchronous core. */
+ * to each stream as in Node (1 MiB without the option). `env`, `timeout`,
+ * `killSignal` (a signal's name) and `signal` ride the cp.execFileOpts /
+ * cp.execFileSignal launch (POSIX targets): the environment replaces the
+ * child's, the timeout and a reached limit kill with killSignal, and an
+ * aborted signal kills with SIGTERM and hands the callback Node's
+ * AbortError. A conditional spread `...(c ? { timeout, signal } : {})` may
+ * carry them and `cwd`: its condition runs once, where the spread stands.
+ * Other options stay fenced by name. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1963,13 +2084,92 @@ export function lowerExecFileCall(
   // failure messages). execFile's `shell: true` below turns it into the
   // same shape, so the launch values are final only after the options.
   let execShell = false;
+  // A Windows-only member whose value must be evaluated: the launch's
+  // arguments are then evaluated in the source's order around it.
+  let observedOption = false;
   // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
   // one launch member the callback slice lacked.
   let cwd: IrExpr | null = null;
   let maxBuffer: IrExpr | null = null;
-  // The options that are evaluated, as written: `cwd` is the launch's
-  // fifth argument.
+  // The timer options (the cp.execFileOpts launch): the environment pairs
+  // with their presence, the timeout, the kill signal's name, the signal.
+  const timer: {
+    hasEnv: IrExpr | null;
+    envPairs: IrExpr | null;
+    timeout: IrExpr | null;
+    killSignal: IrExpr | null;
+    signal: IrExpr | null;
+  } = { hasEnv: null, envPairs: null, timeout: null, killSignal: null, signal: null };
+  // The options that are evaluated, as written, by the launch argument each
+  // one becomes: `cwd` is the fifth, the pairs the seventh, then the
+  // timeout, the kill signal and the signal.
   const optionSteps: ChildEvalStep[] = [];
+  const emptyPairs = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
+  /** One of the timer options or a carried `cwd`. `present` is the
+   * condition of the spread that carries the member (its hidden local and
+   * which arm holds the member), absent for a member written inline: a
+   * carried member reads Node's default where the spread adds nothing. */
+  const timerOption = (
+    name: string,
+    property: ts.Node,
+    valueNode: ts.Expression,
+    present: { local: IrExpr; whenTrue: boolean } | null,
+  ): void => {
+    const carried = (value: IrExpr, absent: IrExpr): IrExpr =>
+      present === null
+        ? value
+        : {
+            kind: "ternary",
+            cond: present.local,
+            then: present.whenTrue ? value : absent,
+            else_: present.whenTrue ? absent : value,
+            type: value.type,
+            loc,
+          };
+    const once = (taken: IrExpr | null): void => {
+      if (taken !== null) {
+        lowerer.noLowering(
+          `${what} option '${name}' written twice`,
+          property,
+          "write the member once (an earlier value would be evaluated and replaced)",
+        );
+      }
+    };
+    if (name === "cwd") {
+      once(cwd);
+      cwd = carried(lowerer.lowerExprExpecting(valueNode, STRING), strLit("", loc));
+      optionSteps.push(4);
+    } else if (name === "env") {
+      once(timer.envPairs);
+      timer.envPairs = carried(recordToEnvPairs(lowerer, valueNode), emptyPairs());
+      timer.hasEnv = carried(boolLit(true, loc), boolLit(false, loc));
+      optionSteps.push(6);
+    } else if (name === "timeout") {
+      once(timer.timeout);
+      timer.timeout = carried(execTimeoutValue(lowerer, valueNode, loc), numLit(0, loc));
+      optionSteps.push(7);
+    } else if (name === "killSignal") {
+      once(timer.killSignal);
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(valueNode));
+      if (mapped?.kind !== "string") {
+        lowerer.noLowering(
+          `${what} option 'killSignal' that is not a signal name`,
+          valueNode,
+          'pass the signal\'s name as a string ("SIGKILL"); a signal number has no lowering here',
+        );
+      }
+      timer.killSignal = carried(
+        lowerer.lowerExprExpecting(valueNode, STRING),
+        strLit("SIGTERM", loc),
+      );
+      optionSteps.push(8);
+    } else {
+      once(timer.signal);
+      timer.signal = carried(lowerer.lowerExprExpecting(valueNode, DYN), dynUndefinedExpr(loc));
+      optionSteps.push(9);
+    }
+  };
+  const TIMER_OPTIONS = new Set(["env", "timeout", "killSignal", "signal"]);
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1984,14 +2184,54 @@ export function lowerExecFileCall(
       );
     }
     for (const property of options.properties.nodes) {
+      if (ts.isSpreadAssignment(property)) {
+        // `...(c ? { timeout, signal } : {})`, either orientation: the
+        // condition runs once, where the spread stands, and each carried
+        // member reads it.
+        const spread = conditionalSpreadOf(property.expression);
+        if (
+          spread === null ||
+          spread === "unsupported" ||
+          !spread.props.every((p) => p.name.text === "cwd" || TIMER_OPTIONS.has(p.name.text))
+        ) {
+          lowerer.noLowering(
+            `${what} with this options spread`,
+            property,
+            "the supported spread is a conditional that carries cwd, env, timeout, killSignal or signal: `...(c ? { timeout, signal } : {})`; write other members inline",
+          );
+        }
+        const held = lowerer.declareHiddenLocal("%execSpread", BOOL);
+        optionSteps.push({
+          run: {
+            kind: "varDecl",
+            localId: held.id,
+            init: lowerer.lowerCondition(spread.cond),
+            loc,
+          },
+        });
+        const present = { local: varRef(held.id, BOOL, loc), whenTrue: spread.whenTrue };
+        for (const carried of spread.props) {
+          timerOption(
+            carried.name.text,
+            carried,
+            ts.isPropertyAssignment(carried)
+              ? carried.initializer
+              : (carried.name as ts.Identifier),
+            present,
+          );
+        }
+        continue;
+      }
       const member = optionMember(property);
       if (!member)
         lowerer.noLowering(
           `${what} with this options shape`,
           property,
-          "use plain encoding and maxBuffer properties without spreads or computed keys",
+          "use plain encoding and maxBuffer properties without computed keys",
         );
-      if (member.name === "encoding") {
+      if (TIMER_OPTIONS.has(member.name)) {
+        timerOption(member.name, property, member.value, null);
+      } else if (member.name === "encoding") {
         if (
           !ts.isStringLiteral(member.value) ||
           (member.value.text !== "utf8" && member.value.text !== "utf-8")
@@ -2010,9 +2250,12 @@ export function lowerExecFileCall(
         optionSteps.push(4);
       } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
         // Windows-only presentation and quoting: Node reads neither on
-        // POSIX. This form binds no member values, so a value whose
-        // evaluation could be observed has no place to run and is refused.
-        windowsOnlyOption(lowerer, what, member.name, property, member.value, null);
+        // POSIX. A value whose evaluation can be observed runs where the
+        // member stands.
+        windowsOnlyOption(lowerer, what, member.name, property, member.value, (value) => {
+          optionSteps.push({ run: { kind: "exprStmt", expr: value, loc } });
+          observedOption = true;
+        });
       } else if (member.name === "shell" && !shell) {
         // Node's shell form: [file, ...args].join(" ") through /bin/sh -c.
         // exec itself already IS the shell form, so its member stays out.
@@ -2028,7 +2271,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -2114,6 +2357,69 @@ export function lowerExecFileCall(
   // The source evaluates the file or command, the argument list, the
   // options as written, and the callback last.
   const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
+  if (
+    timer.envPairs !== null ||
+    timer.timeout !== null ||
+    timer.killSignal !== null ||
+    timer.signal !== null
+  ) {
+    if (lowerer.targetPlatform === "win32") {
+      lowerer.noLowering(
+        `${what} with env, timeout, killSignal or signal on a Windows target`,
+        optionsNode ?? expr,
+        "the callback form's timer options are implemented for POSIX targets",
+      );
+    }
+    const launchArgs: IrExpr[] = [
+      cmd,
+      argv,
+      callback,
+      boolLit(shellForm, loc),
+      cwd ?? strLit("", loc),
+      timer.hasEnv ?? boolLit(false, loc),
+      timer.envPairs ?? emptyPairs(),
+      timer.timeout ?? numLit(0, loc),
+      timer.killSignal ?? strLit("SIGTERM", loc),
+    ];
+    if (timer.signal !== null) launchArgs.push(timer.signal);
+    const checkCall = (fn: "cp.checkTimeout" | "cp.checkKillSignal", value: IrExpr): IrStmt => ({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn, args: [value], type: VOID, loc },
+      loc,
+    });
+    return withChildArgsCheck(
+      lowerer,
+      {
+        kind: "libCall",
+        fn: timer.signal !== null ? "cp.execFileSignal" : "cp.execFileOpts",
+        args: launchArgs,
+        type: CHILD_T,
+        loc,
+      },
+      form,
+      (a) => {
+        const time = a[7]!;
+        const name = a[8]!;
+        return {
+          cwd: cwd !== null ? a[4] : undefined,
+          envPairs: timer.envPairs !== null ? a[6] : undefined,
+          maxBuffer: armedMaxBuffer(maxBuffer, false),
+          // A literal that passes needs no check.
+          validateFirst:
+            time.kind === "numLit" && Number.isInteger(time.value) && time.value >= 0
+              ? []
+              : [checkCall("cp.checkTimeout", time)],
+          validateAfterLimit:
+            name.kind === "strLit" && EVERY_POSIX_SIGNAL_NAMES.has(name.value)
+              ? []
+              : [checkCall("cp.checkKillSignal", name)],
+          ordered: true,
+        };
+      },
+      loc,
+      sourceOrder,
+    );
+  }
   if (cwd !== null) {
     return withChildArgsCheck(
       lowerer,
@@ -2125,7 +2431,11 @@ export function lowerExecFileCall(
         loc,
       },
       form,
-      (a) => ({ cwd: a[4], maxBuffer: armedMaxBuffer(maxBuffer, false) }),
+      (a) => ({
+        cwd: a[4],
+        maxBuffer: armedMaxBuffer(maxBuffer, false),
+        ...(observedOption ? { ordered: true } : {}),
+      }),
       loc,
       sourceOrder,
     );
@@ -2140,7 +2450,10 @@ export function lowerExecFileCall(
       loc,
     },
     form,
-    () => ({ maxBuffer: armedMaxBuffer(maxBuffer, false) }),
+    () => ({
+      maxBuffer: armedMaxBuffer(maxBuffer, false),
+      ...(observedOption ? { ordered: true } : {}),
+    }),
     loc,
     sourceOrder,
   );

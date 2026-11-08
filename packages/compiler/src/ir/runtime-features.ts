@@ -255,6 +255,7 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "cp.execFileSignal",
   "events.onceSignal",
   "http.clientSignal",
   "http.requestDyn",
@@ -1339,7 +1340,16 @@ const RUNTIME_FEATURE_RULES = {
    * own, so a program that never passes those options keeps the default
    * object, byte for byte. */
   childOptionExt: rule({
-    fns: ["cp.spawnSyncExt", "cp.spawnSyncExtEnv", "cp.execFileCwd"],
+    fns: [
+      "cp.spawnSyncExt",
+      "cp.spawnSyncExtEnv",
+      "cp.execFileCwd",
+      // The callback form's env, timeout, killSignal and signal.
+      "cp.execFileOpts",
+      "cp.execFileSignal",
+      "cp.checkTimeout",
+      "cp.checkKillSignal",
+    ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never

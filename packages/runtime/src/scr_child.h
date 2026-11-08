@@ -223,6 +223,24 @@ ScrChild *scr_exec_file(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * (SCR_CHILD_CP_OPTIONS), like the spawnSync cwd/input entries. */
 ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                             ScrExecFileFn fn, bool shell, ScrStr *cwd);
+/* The callback slice with `env`, `timeout` and `killSignal` (the same
+ * build; POSIX): the environment replaces the child's when has_env, a
+ * timeout above 0 kills with kill_signal (a name from the signal table) as
+ * Node's execFile does, and a reached maxBuffer sends the same signal.
+ * scr_child_check_timeout and scr_child_check_kill_signal are execFile's
+ * validations of the two values (ERR_OUT_OF_RANGE, ERR_UNKNOWN_SIGNAL). */
+void scr_child_check_timeout(double timeout);
+void scr_child_check_kill_signal(ScrStr *name);
+ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                             ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                             ScrArr *env_pairs, double timeout, ScrStr *kill_signal);
+/* The same with spawn's `signal` (an AbortSignal or undefined, borrowed):
+ * an abort kills the child with SIGTERM and hands the callback Node's
+ * AbortError. A value that is not an AbortSignal throws and answers NULL. */
+ScrChild *scr_exec_file_signal(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
+                               ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
+                               ScrArr *env_pairs, double timeout, ScrStr *kill_signal,
+                               ScrDyn *signal);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

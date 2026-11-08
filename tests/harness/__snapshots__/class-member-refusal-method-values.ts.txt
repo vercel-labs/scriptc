@@ -1,0 +1,99 @@
+class-member-refusal-method-values.ts:15:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
+
+  14 | class Bicycle extends Vehicle {
+  15 |   honk(): string {
+     |   ^~~~
+  16 |     return `ring ${arguments.length}`;
+
+class-member-refusal-method-values.ts:20:25 - error SC2004: uses of 'Bicycle.honk' inherit the blocker on its declaration
+
+  19 | const garage: Vehicle[] = [new Vehicle(), new Bicycle()];
+  20 | const horn = garage[1]!.honk;
+     |                         ^~~~
+  21 | console.log(horn.name);
+
+  hint: the declaration of 'Bicycle.honk' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:30:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
+
+  29 | class Envelope extends Parcel {
+  30 |   label(): string {
+     |   ^~~~~
+  31 |     return `flat ${arguments.length}`;
+
+class-member-refusal-method-values.ts:35:28 - error SC2004: uses of 'Envelope.label' inherit the blocker on its declaration
+
+  34 | const post: Parcel[] = [new Parcel(), new Envelope()];
+  35 | console.log(new Envelope().label());
+     |                            ^~~~~
+  36 | const stamp = post[0]!.label;
+
+  hint: the declaration of 'Envelope.label' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:36:24 - error SC2004: uses of 'Envelope.label' inherit the blocker on its declaration
+
+  35 | console.log(new Envelope().label());
+  36 | const stamp = post[0]!.label;
+     |                        ^~~~~
+  37 | console.log(stamp.name, stamp.call(post[0]!, "north", 20));
+
+  hint: the declaration of 'Envelope.label' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:48:22 - error SC2004: uses of 'Drum.play' inherit the blocker on its declaration
+
+  47 |   title(): string {
+  48 |     const own = this.play;
+     |                      ^~~~
+  49 |     return own.name;
+
+  hint: the declaration of 'Drum.play' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:48:22 - error SC2004: uses of 'Kit.play' inherit the blocker on its declaration
+
+  47 |   title(): string {
+  48 |     const own = this.play;
+     |                      ^~~~
+  49 |     return own.name;
+
+  hint: the declaration of 'Kit.play' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:53:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
+
+  52 | class Drum extends Instrument {
+  53 |   play(): string {
+     |   ^~~~
+  54 |     return `hit ${arguments.length}`;
+
+class-member-refusal-method-values.ts:58:3 - error SC1090: overriding a method with a different signature (parameter types must match the base declaration exactly; returns may narrow to a subclass) is not supported yet
+
+  57 | class Kit extends Drum {
+  58 |   play(note: string = "rest", beats?: number): string {
+     |   ^~~~
+  59 |     return `kit ${note}/${beats}`;
+
+class-member-refusal-method-values.ts:64:20 - error SC2004: uses of 'Drum.play' inherit the blocker on its declaration
+
+  63 | const seated: Drum = new Kit();
+  64 | console.log(seated.play());
+     |                    ^~~~
+  65 | console.log(band.map((member) => member.title()).join());
+
+  hint: the declaration of 'Drum.play' did not compile — fix the diagnostic reported there and these sites clear with it
+
+class-member-refusal-method-values.ts:74:9 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+
+  73 | class Shy extends Sensor {
+  74 |   watch(target: WeakRef<object>): number {
+     |         ^~~~~~
+  75 |     return target.deref() === undefined ? 0 : 1;
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+class-member-refusal-method-values.ts:79:27 - error SC2004: uses of 'Shy.watch' inherit the blocker on its declaration
+
+  78 | const sensors: Sensor[] = [new Sensor(), new Shy()];
+  79 | const probe = sensors[1]!.watch;
+     |                           ^~~~~
+  80 | console.log(probe.name);
+
+  hint: the declaration of 'Shy.watch' did not compile — fix the diagnostic reported there and these sites clear with it

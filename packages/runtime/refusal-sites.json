@@ -1512,10 +1512,22 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_node_island.c",
+  "function": "ni_async_main_thread",
+  "message": "asynchronous island calls from a worker thread are not supported; call the island synchronously (@scriptc/node callSync) from the worker [SC8012]",
+  "code": "SC8012"
+ },
+ {
   "file": "scr_node_island_export.c",
   "function": "scr_ni_host_shared_get",
   "message": "scriptc: an array exported by a shared module cannot cross into a Node island yet",
   "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_worker_await_refusal",
+  "message": "awaiting an island value from a worker thread is not supported; await it on the main thread, which owns the Node island [SC8012]",
+  "code": "SC8012"
  },
  {
   "file": "scr_node_island_handle.c",

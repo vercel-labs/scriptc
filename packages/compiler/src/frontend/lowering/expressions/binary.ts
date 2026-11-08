@@ -3340,6 +3340,13 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
         }
       }
     }
+    // `a && b` whose left can be a read the checker narrowed to `null` or
+    // `undefined` and the lowering restored (restoredAndResult): the pair's
+    // checker type says nothing about `b`.
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const restored = restoredAndResult(lowerer, expr, left.type, right.type, target);
+      if (restored !== null) target = restored;
+    }
     // A broad-JSDoc npm-static body can leave the CHECKER result `any`
     // even after declaration-backed specialization has recovered both
     // operands (`helpOption && args.find(...)` in commander). When the
@@ -3658,6 +3665,39 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
     type: left.type,
     loc,
   };
+}
+
+/** The type of `a && b` where `a` can evaluate to a read the checker
+ * narrowed to nothing but `null` or `undefined` and whose stored value the
+ * lowering reads instead (NarrowingStability.restoredNothingRead: a `let`
+ * that only a closure assigns, a member a callback sets). The checker typed
+ * the pair as that nothing, so `b` has no part in its type although `b` is
+ * what the pair answers once the binding holds a value. The pair then holds
+ * what its operands leave: the left's values that can be falsy, and the
+ * right's. Null when the checker's type (`target`) already takes every
+ * value of the right operand, which leaves every pair that lowered before
+ * as it was, and when an operand has no value to hold. */
+function restoredAndResult(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  left: IrType,
+  right: IrType,
+  target: IrType | null,
+): IrType | null {
+  const armsOf = (type: IrType): readonly IrType[] | null =>
+    type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? null) : [type];
+  const kept = armsOf(left);
+  const answered = armsOf(right);
+  if (kept === null || answered === null) return null;
+  if ([...kept, ...answered].some((arm) => arm.kind === "void" || arm.kind === "dyn")) return null;
+  const held = target === null ? [] : (armsOf(target) ?? []);
+  if (answered.every((arm) => held.some((other) => typeEquals(other, arm)))) return null;
+  if (lowerer.narrowing.restoredNothingRead(expr.left) === null) return null;
+  const byKey = new Map<string, IrType>();
+  for (const arm of kept) if (!REF_TRUTHY_KINDS.has(arm.kind)) byKey.set(typeKey(arm), arm);
+  for (const arm of answered) byKey.set(typeKey(arm), arm);
+  const arms = sortArms([...byKey.values()]);
+  return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
 /** Whether the checker leaves any non-unit value of `type` that can be

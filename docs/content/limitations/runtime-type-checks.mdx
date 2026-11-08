@@ -66,3 +66,6 @@ A mismatch rejects the promise that `catch` or `then` returned with a `TypeError
 
 A non-null assertion (`value!`) checks the value when it extracts an object, array or other non-nullable member from a union.
 If the value holds `null` or `undefined`, the assertion throws a `TypeError`, even when the result is never used; Node.js continues until a property of the value is read.
+
+A callback of `filter`, `find` or `findLast` that is written as a type predicate, such as `(item): item is Tagged => "tags" in item` or a guard function passed by name, runs as an ordinary test.
+The elements it accepts are checked against the predicate's type: an element that is not of that type throws a `TypeError`, where Node.js answers the element unchanged.

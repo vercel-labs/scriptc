@@ -281,10 +281,12 @@ import { recordKeysArrayCall } from "./lower-calls.js";
 import { registerOverloadedCallableAlias } from "./call-signatures.js";
 import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
+import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
 import { isCompiledPrototypeMember } from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
+import { classesHoldingOwnCode, classHoldsOwnCode } from "./builtins/errors.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import {
   classHasIndexSignature,
@@ -10836,6 +10838,7 @@ export function lowerExprStatement(
         }
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
+          checkRefusedAccessorWrite(lowerer, target, expr.left.name);
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);
           refuseCopiedStore(lowerer, expr.left, target.fieldType, expr.right);
           return lowerer.fieldSetStmt(target, value, locOf(expr), expr.left);
@@ -10911,21 +10914,96 @@ export function lowerExprStatement(
           // system-error members (errno, syscall, path, dest) read
           // through the checked-dynamic node and keep the dynamic write, as
           // do JavaScript files, whose reads use that node too.
-          // A class with an index signature reads `code` as it reads every
-          // name it does not declare, from the instance's checked-dynamic
-          // view, so the write goes there too (the fallback below).
-          const receiverClass =
-            recv?.type.kind === "object" ? lowerer.classes.get(recv.type.className) : undefined;
-          const indexedErrorClass =
-            receiverClass !== undefined && classHasIndexSignature(receiverClass);
+          // A class that keeps `code` itself (a field, or a name declared
+          // without storage by an index signature or a `declare` field,
+          // which it reads from the instance's checked-dynamic view) takes
+          // the write there too (the fallback below), whatever view of the
+          // instance spells it.
+          const instanceOwnsCode =
+            recv?.type.kind === "object" && classHoldsOwnCode(lowerer, recv.type.className);
           if (
             !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
             recv?.type.kind === "object" &&
             lowerer.isErrorRootedClass(recv.type.className) &&
             expr.left.name.text === "code" &&
-            !indexedErrorClass
+            !instanceOwnsCode
           ) {
             const loc = locOf(expr);
+            // A receiver typed as a base class can hold an instance of a
+            // class that keeps `code` itself (a field, or an own property
+            // of the instance): that instance takes the write through its
+            // checked-dynamic view, every other error through the slot.
+            const holders = classesHoldingOwnCode(lowerer, recv.type.className);
+            if (holders.length > 0) {
+              const target = lowerer.declareHiddenLocal("%codeTarget", recv.type);
+              const written = lowerer.declareHiddenLocal("%codeValue", DYN);
+              const targetRef = (): IrExpr => varRef(target.id, recv.type, loc);
+              const writtenRef = (): IrExpr => varRef(written.id, DYN, loc);
+              const isHolder = holders
+                .map((className): IrExpr => ({
+                  kind: "instanceOf",
+                  value: targetRef(),
+                  className,
+                  type: BOOL,
+                  loc,
+                }))
+                .reduce((acc, test) => ({
+                  kind: "logical",
+                  op: "||",
+                  left: acc,
+                  right: test,
+                  type: BOOL,
+                  loc,
+                }));
+              const viaInstance: IrStmt = {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.keySet",
+                  args: [
+                    lowerer.coerceToExpected(targetRef(), DYN),
+                    { kind: "strLit", value: "code", type: STRING, loc },
+                    writtenRef(),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              };
+              const viaSlot: IrStmt = {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "error.setCodeDyn",
+                  args: [targetRef(), writtenRef()],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              };
+              // One expression holds both locals for as long as the write
+              // needs them.
+              return {
+                kind: "exprStmt",
+                expr: {
+                  kind: "seqExpr",
+                  stmts: [
+                    { kind: "varDecl", localId: target.id, init: recv, loc },
+                    {
+                      kind: "varDecl",
+                      localId: written.id,
+                      init: lowerer.lowerExprExpecting(expr.right, DYN),
+                      loc,
+                    },
+                    { kind: "if", cond: isHolder, then: [viaInstance], else_: [viaSlot], loc },
+                  ],
+                  result: { kind: "boolLit", value: true, type: BOOL, loc },
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              };
+            }
             const stringValue = isStringTyped(lowerer.typeOf(expr.right));
             return {
               kind: "exprStmt",
@@ -13210,6 +13288,19 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
           return lowerForOfArrayIter(lowerer, stmt, container, proj);
         }
       }
+      // A fixed tuple's keys()/entries(): the same walk over its positions,
+      // each read when the walk reaches it. `values` falls through to the
+      // receiver unwrap below, like an array's.
+      if (
+        recv?.kind === "record" &&
+        lowerer.shapes.get(recv.shapeId)?.tuple &&
+        (proj === "keys" || proj === "entries")
+      ) {
+        const container = lowerer.lowerExpr(src.expression.expression);
+        if (container.type.kind === "record" && lowerer.shapes.get(container.type.shapeId)?.tuple) {
+          return lowerForOfArrayIter(lowerer, stmt, container, proj);
+        }
+      }
       // Typed arrays expose the same live indexed iterator projections.
       // Their fixed length makes the walk simpler, but the yielded keys
       // and [key, numeric value] pairs are identical to Array's.
@@ -13270,10 +13361,14 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       ts.isPropertyAccessExpression(e.expression) &&
       !e.expression.questionDotToken &&
       e.expression.name.text === "values" &&
-      lowerer.isStdlibMember(e.expression) &&
-      lowerer.mapTypeOf(lowerer.typeOf(e.expression.expression))?.kind === "array"
+      lowerer.isStdlibMember(e.expression)
     ) {
-      iterSrc = e.expression.expression;
+      const valuesOf = lowerer.mapTypeOf(lowerer.typeOf(e.expression.expression));
+      if (
+        valuesOf?.kind === "array" ||
+        (valuesOf?.kind === "record" && lowerer.shapes.get(valuesOf.shapeId)?.tuple === true)
+      )
+        iterSrc = e.expression.expression;
     }
   }
   iterSrc ??= stmt.expression;

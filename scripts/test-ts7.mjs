@@ -68,8 +68,13 @@ if (missing.length > 0 || unexpected.length > 0) {
 const compilerPackage = JSON.parse(
   readFileSync(resolve(repoRoot, "packages/compiler/package.json"), "utf8"),
 );
-if (compilerPackage.scripts?.build !== "node node_modules/typescript/bin/tsc -p tsconfig.json") {
+if (compilerPackage.scripts?.build !== "node node_modules/tsc-ts/bin/tsc-ts.js -p tsconfig.json") {
   console.error("@scriptc/compiler must build with the TypeScript 7 toolchain");
+  process.exit(1);
+}
+const cliPackage = JSON.parse(readFileSync(resolve(repoRoot, "packages/cli/package.json"), "utf8"));
+if (cliPackage.scripts?.build !== "node node_modules/tsc-ts/bin/tsc-ts.js -p tsconfig.json") {
+  console.error("scriptc must build with the TypeScript 7 toolchain");
   process.exit(1);
 }
 

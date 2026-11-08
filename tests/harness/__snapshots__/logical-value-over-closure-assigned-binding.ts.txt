@@ -1,0 +1,24 @@
+logical-value-over-closure-assigned-binding.ts:19:16 - error SC2003: union conversion has no unambiguous layout mapping: expected 'string | undefined', got 'null | { n: number }' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  18 | // checker typed the pair (and the binding below) as the right operand alone.
+  19 | const either = seen || word();
+     |                ^~~~
+  20 | const fallback = seen ?? word();
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's
+
+logical-value-over-closure-assigned-binding.ts:20:18 - error SC1090: '??' where the default changes the result type (left is 'null | { n: number }' but the whole expression is 'string | undefined' — give both sides one type) is not supported yet
+
+  19 | const either = seen || word();
+  20 | const fallback = seen ?? word();
+     |                  ^~~~~~~~~~~~~~
+  21 | console.log(typeof either, typeof fallback);
+
+logical-value-over-closure-assigned-binding.ts:26:23 - error SC2003: union conversion has no unambiguous layout mapping: expected 'null | undefined', got 'boolean | undefined' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  25 | let never: { n: number } | null = null;
+  26 | const none = never && flag();
+     |                       ^~~~~~
+  27 | console.log(typeof none);
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's

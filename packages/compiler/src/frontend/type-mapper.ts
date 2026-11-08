@@ -1661,9 +1661,6 @@ export interface TypeMapperCtx {
   verifySymbolProvenance?: (sym: ts.Symbol, answer: SymbolProvenance) => void;
 
   isNpmFile: (sf: ts.SourceFile) => boolean;
-  /** The declaration file of @scriptc/experimental, wherever it is installed
-   * (a workspace links it outside node_modules). */
-  isExperimentalFile?: (sf: ts.SourceFile) => boolean;
   /** True for a declaration file explicitly mapped by coverage's
    * --external-types option. These declarations are trusted as structural
    * type descriptions for project-owned values, but their imported runtime
@@ -6305,6 +6302,26 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             byKey.delete(typeKey(mapped));
         }
       }
+      // A class arm beside an interface it implements, where that interface
+      // is held as the checked view of its objects (a class-backed protocol:
+      // the view holds the instance itself): the class arm is contained in
+      // the interface's, as the subclass arm above is in its ancestor's. The
+      // checker folds such a class into the interface by itself, except
+      // when the interface has optional members the class leaves out
+      // (`swap ? new Label() : item` over `Piece` with `press?()` is typed
+      // `Label | Piece`). Kept as an arm of its own, the class would make
+      // the interface's arm a record, and an instance of ANOTHER class of
+      // the interface would enter the union as a record copy: not the
+      // object, and no instance of its class.
+      if (classParts.length > 0 && byKey.has(typeKey(DYN)) && ctx.classImplementedProtocol) {
+        const views = parts.filter((part) => ctx.classImplementedProtocol!(part));
+        if (views.length > 0) {
+          for (const { source, mapped } of classParts) {
+            if (views.some((view) => checker.isTypeAssignableTo(source, view)))
+              byKey.delete(typeKey(mapped));
+          }
+        }
+      }
       const arms = [...byKey.values()];
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
       // `Cond<T> | undefined` whose conditional selects never for the
@@ -8959,11 +8976,6 @@ function isMappedShape(t: ts.Type): boolean {
   );
 }
 
-/** A declaration file an installed package ships (its own or an @types
- * twin), outside the standard library and @types/node: the type surface
- * of a package the program does not compile. Its pure type shapes —
- * interfaces, aliases, type literals — describe data a program can build
- * itself (`import type` from a types-only package such as type-fest). */
 /** A class an SDK declares only to describe data (aws-sdk's
  * `declare class PresignedPost { url: string; fields: Fields }`, which
  * arrives as JSON and is never constructed): public instance fields and
@@ -9006,15 +9018,13 @@ function isTypeOnlyNamespace(d: ts.Node): boolean {
   );
 }
 
-function packageTypeFile(
-  sf: ts.SourceFile,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExperimentalFile">,
-): boolean {
-  return (
-    sf.isDeclarationFile &&
-    (/[\\/]node_modules[\\/]/.test(sf.fileName) || ctx.isExperimentalFile?.(sf) === true) &&
-    !ctx.isStdlibFile(sf)
-  );
+/** A declaration file whose pure type declarations describe data the
+ * program builds: a package's, and equally the project's own (a
+ * `types.d.ts` beside the sources, a workspace package's declarations
+ * reached through its link, which resolve outside `node_modules`). Only
+ * the standard library's declarations are another type world. */
+function packageTypeFile(sf: ts.SourceFile, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  return sf.isDeclarationFile && !ctx.isStdlibFile(sf);
 }
 
 /** `type`'s declarations — through its alias, or its own symbol when the
@@ -9041,7 +9051,7 @@ function packageDeclarations(
  * or implementation shape, null when no package declares it. */
 function packageDataPart(
   type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean | null {
   const aliasDecls = packageDeclarations(type.getAliasSymbol(), ctx);
   const ownDecls = packageDeclarations(type.getSymbol(), ctx);
@@ -9059,7 +9069,7 @@ function packageDataPart(
  * no implementation either: the program fills it with its own closure. */
 function purePackageDeclarations(
   decls: readonly ts.Node[] | null,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean {
   return (
     decls === null ||
@@ -9089,7 +9099,7 @@ function purePackageDeclarations(
  * of its own. */
 export function packageTypeIsData(
   type: ts.Type,
-  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile" | "isExperimentalFile">,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
 ): boolean {
   // `npmPackageOf` reaches the declaring package through the union's
   // members; the value-shape test is per member and never recurses (a

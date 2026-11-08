@@ -15,11 +15,6 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
 
   fully static — all analyzed statements compile to native code.
 
-  differs from Node   1 site (compiles; the native program can behave differently)
-      ×1  SC6007  asserting a value a Node island made as 'Config' copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own objec…
-          at tests/coverage-fixtures/node-islands-type-claims/main.ts:31:16
-          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
-
   trusts unverified types   14 checked conversions on 10 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
       ×1  tc-island@3.1.0 declares started() as Date (index.d.ts:8): a Node island value the program reads as Date, which throws for every object the island made
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:32:20
@@ -40,8 +35,8 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
       ×1  tc-island@3.1.0 declares label() as string (index.d.ts:6): a Node island value
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:35:42
           fix: if the declaration is wrong, patch it: scriptc types patch tc-island 'label()' '<type>' (a type that starts with | widens the declared one, as in '| undefined')
-      ×1  tc-island@3.1.0 declares load() as any (index.d.ts:9): a Node island value the program reads as { name: string; retries: number }
-          at tests/coverage-fixtures/node-islands-type-claims/main.ts:31:16
+      ×1  tc-island@3.1.0 declares load() as any (index.d.ts:9): a Node island value the program reads as string
+          at tests/coverage-fixtures/node-islands-type-claims/main.ts:35:13
           fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch tc-island 'load()' '<type>'
       ×1  the program asserts the type of 'table()', a value it holds dynamically: { a: { n: number } }
           at tests/coverage-fixtures/node-islands-type-claims/main.ts:45:17

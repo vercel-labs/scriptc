@@ -433,7 +433,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
-const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
   "propertyIsEnumerable",

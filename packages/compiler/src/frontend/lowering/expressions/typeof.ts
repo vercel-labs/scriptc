@@ -49,6 +49,7 @@ import { nodeValueTypeof } from "../node-value-reads.js";
 import { nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
+import { undeclaredGlobalTypeof } from "../global-object-names.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   // typeof is a READ, not a use: Node has these constructors, so the answer is
@@ -295,7 +296,9 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   if (ts.isIdentifier(tested) && !isUnresolvedCjsExports(lowerer, tested)) {
     const sym = lowerer.checker.getSymbolAtLocation(tested);
     if (!sym) {
-      return { kind: "strLit", value: "undefined", type: STRING, loc };
+      // Undeclared, unless Node's global object has or inherits the name.
+      const value = undeclaredGlobalTypeof(tested.text) ?? "undefined";
+      return { kind: "strLit", value, type: STRING, loc };
     }
     // A declared global Node 24 does not define (the temporal global,
     // localStorage): typeof answers "undefined" without reading it, like

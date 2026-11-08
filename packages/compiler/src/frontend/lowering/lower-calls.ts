@@ -322,7 +322,11 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { funduleMemberOf } from "./lower-fundule.js";
-import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
+import {
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeMemberOf,
+  isGlobalObjectRead,
+} from "./host-globals.js";
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
@@ -10686,7 +10690,16 @@ function lowerObjectStaticCall(
           : member === "values"
             ? "dyn.objValues"
             : "dyn.objEntries";
-      let v = isHandle ?? lowerer.lowerExpr(argNode);
+      // The global object's enumerable own properties are the keys a for-in
+      // over it visits (it inherits none that enumerate): Node's enumerable
+      // globals in Node's order, then the properties the program wrote. Its
+      // own key walk would answer only what the handle models.
+      const globalKeys = member === "keys" && isGlobalObjectRead(lowerer, argNode);
+      let v: IrExpr =
+        isHandle ??
+        (globalKeys
+          ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc: locOf(call) }
+          : lowerer.lowerExpr(argNode));
       if (v.type.kind !== "dyn")
         v = {
           kind: "dynFrom",

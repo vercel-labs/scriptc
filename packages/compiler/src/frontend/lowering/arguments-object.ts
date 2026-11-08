@@ -19,11 +19,27 @@
  * property of it or hands it to other code keeps the list's answers. An
  * arguments object that has left for an untyped slot (passed on, stored,
  * returned) is the array everywhere else.
+ *
+ * Two rules hold for every question here:
+ *
+ * - A question is asked of the builtin, and a member's name does not say
+ *   which function it is. `concat`, `toString`, `call`, `apply` and the rest
+ *   are recognized by the declaration the checker resolves them to (the
+ *   standard library's, on the interface that owns the builtin), and
+ *   `Array`, `Object` and `JSON` by the global binding. A member a program
+ *   defines on an object literal or a class, a binding that shadows a
+ *   global, and an untyped receiver are not the builtin: such a call is an
+ *   ordinary call that passes the list, as everywhere else.
+ * - An answer replaces a call's value and never its evaluation. The other
+ *   arguments of an answered call are still evaluated, in source order, and
+ *   a constant that holds the object is still read (a read before its
+ *   declaration throws).
  */
 import * as ts from "../ts7/adapter.js";
 import { isArgumentsRead, isWritten } from "../arguments-usage.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
-import { BOOL, DYN, STRING, type IrExpr, type SrcLoc } from "../../ir/ir.js";
+import { locOf } from "../program.js";
+import { BOOL, DYN, STRING, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 
 const CONCAT_FEATURE =
@@ -33,6 +49,64 @@ const CONCAT_HINT =
 const JSON_FEATURE =
   "JSON.stringify of the arguments object (Node writes an object keyed by index, while the compiled argument list is an array)";
 const JSON_HINT = "copy the arguments into an array first, or build the object the caller expects";
+
+/** The standard library interfaces that declare the builtins this module
+ * recognizes: `concat` of an array or a string, a method of
+ * Array.prototype or Object.prototype, and `call` / `apply` of a function. */
+const ARRAY_OWNERS: ReadonlySet<string> = new Set(["Array", "ReadonlyArray"]);
+const CONCAT_OWNERS: ReadonlySet<string> = new Set(["Array", "ReadonlyArray", "String"]);
+const OBJECT_OWNERS: ReadonlySet<string> = new Set(["Object"]);
+const FUNCTION_OWNERS: ReadonlySet<string> = new Set([
+  "Function",
+  "CallableFunction",
+  "NewableFunction",
+]);
+
+/** The methods of Array.prototype and Object.prototype that keep a borrowed
+ * receiver to themselves: they neither return it (`sort`, `reverse`,
+ * `valueOf`) nor hand it to a callback (`forEach`, `map`, `reduce`: the
+ * callback's last parameter is the receiver). */
+const ARRAY_KEEPING_METHODS: ReadonlySet<string> = new Set([
+  "at",
+  "includes",
+  "indexOf",
+  "join",
+  "lastIndexOf",
+  "pop",
+  "push",
+  "shift",
+  "slice",
+  "splice",
+  "unshift",
+]);
+const OBJECT_KEEPING_METHODS: ReadonlySet<string> = new Set([
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+  "toString",
+]);
+
+/** Whether `access` names a member the standard library declares on one of
+ * `owners`: the builtin by its declaration, not by its name. A member a
+ * program defines has its own declaration, and the member of an untyped
+ * receiver has none. */
+function isBuiltinMember(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  owners: ReadonlySet<string>,
+): boolean {
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  if (symbol === undefined || symbol.declarations.length === 0) return false;
+  // Every declaration: a member a program adds to or merges with is its own.
+  return symbol.declarations.every((declaration) => {
+    const owner = declaration.parent;
+    return (
+      owner !== undefined &&
+      ts.isInterfaceDeclaration(owner) &&
+      owners.has(owner.name.text) &&
+      lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))
+    );
+  });
+}
 
 /** Whether `fn`'s own body assigns `arguments` (sloppy JavaScript only):
  * the name then holds whatever was assigned. */
@@ -68,7 +142,8 @@ function argumentsFunction(node: ts.Node): ts.Node | undefined {
 
 /** Whether `node` is the arguments object by its type: the name itself or a
  * constant initialized with it, through parentheses and assertions. Only a
- * name qualifies, so answering for it evaluates nothing. */
+ * name qualifies: the name `arguments` evaluates nothing, and a constant is
+ * read by the answer (heldConstantRead). */
 function isArgumentsObject(lowerer: Lowerer, node: ts.Expression): boolean {
   const operand = withoutParenthesesTypeWrappers(node);
   if (!ts.isIdentifier(operand)) return false;
@@ -93,6 +168,49 @@ function isArgumentsObject(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
+/** The read an answer about `operand` keeps: none for the name `arguments`,
+ * the constant's own read for a constant that holds the object, because a
+ * constant read before its declaration throws. */
+function heldConstantRead(lowerer: Lowerer, operand: ts.Expression): IrStmt[] {
+  const name = withoutParenthesesTypeWrappers(operand);
+  if (ts.isIdentifier(name) && name.text === "arguments") return [];
+  return [{ kind: "exprStmt", expr: lowerer.lowerExpr(name), loc: locOf(name) }];
+}
+
+/** `answer` once `operand` has been read and `others`, the call's remaining
+ * arguments, have been evaluated in source order for their effects. A spread
+ * among them iterates: the call is then made as any other call (`ordinary`)
+ * and only its answer is replaced. */
+function answerAfter(
+  lowerer: Lowerer,
+  operand: ts.Expression,
+  others: readonly ts.Expression[],
+  answer: IrExpr,
+  loc: SrcLoc,
+  ordinary: () => IrExpr,
+): IrExpr {
+  if (others.some((other) => ts.isSpreadElement(other) || ts.isOmittedExpression(other)))
+    return answerOfOrdinaryCall(answer, loc, ordinary);
+  const stmts = heldConstantRead(lowerer, operand);
+  for (const other of others)
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(other), loc: locOf(other) });
+  return stmts.length === 0
+    ? answer
+    : { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+}
+
+/** `answer` in place of the value of the call made as any other call: the
+ * call evaluates and checks what it evaluates and checks everywhere else. */
+function answerOfOrdinaryCall(answer: IrExpr, loc: SrcLoc, ordinary: () => IrExpr): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: ordinary(), loc }],
+    result: answer,
+    type: answer.type,
+    loc,
+  };
+}
+
 /** The name of a constant initialized with a name in `names`, or null. */
 function constantHolding(declaration: ts.Node, names: ReadonlySet<string>): string | null {
   if (
@@ -106,8 +224,44 @@ function constantHolding(declaration: ts.Node, names: ReadonlySet<string>): stri
   return ts.isIdentifier(held) && names.has(held.text) ? declaration.name.text : null;
 }
 
+/** `Object.prototype.toString`, spelled through the prototype or through an
+ * empty object literal (which has no member of its own). */
+function isObjectPrototypeToString(lowerer: Lowerer, method: ts.PropertyAccessExpression): boolean {
+  if (method.name.text !== "toString" || method.questionDotToken !== undefined) return false;
+  const holder = withoutParentheses(method.expression);
+  if (ts.isObjectLiteralExpression(holder)) return holder.properties.nodes.length === 0;
+  return (
+    ts.isPropertyAccessExpression(holder) &&
+    holder.name.text === "prototype" &&
+    lowerer.isStdlibGlobal(holder.expression, "Object") &&
+    isBuiltinMember(lowerer, method, OBJECT_OWNERS)
+  );
+}
+
+/** Whether `method`, borrowed for the arguments object with `call` or
+ * `apply`, is a builtin that keeps its receiver to itself: a listed method
+ * of Array.prototype or Object.prototype, spelled through the prototype or
+ * through a literal (`[].slice`, `{}.toString`). */
+function isKeepingBorrowedMethod(lowerer: Lowerer, method: ts.PropertyAccessExpression): boolean {
+  if (method.questionDotToken !== undefined) return false;
+  const name = method.name.text;
+  const holder = withoutParentheses(method.expression);
+  if (ts.isArrayLiteralExpression(holder))
+    return ARRAY_KEEPING_METHODS.has(name) && isBuiltinMember(lowerer, method, ARRAY_OWNERS);
+  if (ts.isObjectLiteralExpression(holder))
+    return OBJECT_KEEPING_METHODS.has(name) && holder.properties.nodes.length === 0;
+  if (!ts.isPropertyAccessExpression(holder) || holder.name.text !== "prototype") return false;
+  if (lowerer.isStdlibGlobal(holder.expression, "Array"))
+    return ARRAY_KEEPING_METHODS.has(name) && isBuiltinMember(lowerer, method, ARRAY_OWNERS);
+  return (
+    lowerer.isStdlibGlobal(holder.expression, "Object") &&
+    OBJECT_KEEPING_METHODS.has(name) &&
+    isBuiltinMember(lowerer, method, OBJECT_OWNERS)
+  );
+}
+
 /** Whether a mention of the arguments object reads it or asks one of this
- * module's questions, and nothing else. */
+ * module's questions of a builtin, and nothing else. */
 function keepsToItself(
   lowerer: Lowerer,
   mention: ts.Identifier,
@@ -131,26 +285,31 @@ function keepsToItself(
   const callee = withoutParentheses(parent.expression);
   if (!ts.isPropertyAccessExpression(callee)) return false;
   const name = callee.name.text;
+  // The value asked about is the first argument; a later one is handed on
+  // (the receiver `Array.from` gives its callback).
   if (name === "isArray" || name === "from")
-    return lowerer.isStdlibGlobal(callee.expression, "Array");
-  if (name === "stringify") return lowerer.isStdlibGlobal(callee.expression, "JSON");
-  if (name === "concat") return true;
+    return index === 0 && lowerer.isStdlibGlobal(callee.expression, "Array");
+  if (name === "stringify") return index === 0 && lowerer.isStdlibGlobal(callee.expression, "JSON");
+  // An item of the builtin `concat`: the question refused below.
+  if (name === "concat") return isBuiltinMember(lowerer, callee, CONCAT_OWNERS);
   if (name !== "call" && name !== "apply") return false;
+  if (!isBuiltinMember(lowerer, callee, FUNCTION_OWNERS)) return false;
   // The argument list of `apply` is copied into the call.
   if (name === "apply" && index === 1) return true;
   const method = withoutParentheses(callee.expression);
   if (!ts.isPropertyAccessExpression(method)) return false;
-  // An item of `concat.call(receiver, ...items)`: the question refused below.
-  if (index > 0) return name === "call" && method.name.text === "concat";
-  // The receiver of a method of Array.prototype or Object.prototype, spelled
-  // through the prototype or through a literal (`[].slice`, `{}.toString`).
-  const holder = withoutParentheses(method.expression);
-  if (ts.isArrayLiteralExpression(holder) || ts.isObjectLiteralExpression(holder)) return true;
+  // An item of `concat.call(receiver, ...items)`, refused below.
+  if (index > 0)
+    return (
+      name === "call" &&
+      method.name.text === "concat" &&
+      isBuiltinMember(lowerer, method, CONCAT_OWNERS)
+    );
+  // The receiver of a builtin: `concat` (refused below) or a method that
+  // keeps the receiver to itself.
   return (
-    ts.isPropertyAccessExpression(holder) &&
-    holder.name.text === "prototype" &&
-    (lowerer.isStdlibGlobal(holder.expression, "Array") ||
-      lowerer.isStdlibGlobal(holder.expression, "Object"))
+    (method.name.text === "concat" && isBuiltinMember(lowerer, method, CONCAT_OWNERS)) ||
+    isKeepingBorrowedMethod(lowerer, method)
   );
 }
 
@@ -190,9 +349,9 @@ function argumentsObjectUntouched(lowerer: Lowerer, use: ts.Node): boolean {
   return untouched;
 }
 
-/** Refuses `concat` over the arguments object `item`. A function that names
- * `Symbol.isConcatSpreadable` may have made its arguments object spreadable,
- * which is what the list is: it keeps the list's lowering. */
+/** Refuses the builtin `concat` over the arguments object `item`. A function
+ * that names `Symbol.isConcatSpreadable` may have made its arguments object
+ * spreadable, which is what the list is: it keeps the list's lowering. */
 function refuseConcat(lowerer: Lowerer, item: ts.Expression): void {
   const owner = argumentsFunction(item);
   let spreadable = false;
@@ -208,40 +367,46 @@ function refuseConcat(lowerer: Lowerer, item: ts.Expression): void {
   if (!spreadable) lowerer.unsupported("SC1090", item, CONCAT_FEATURE, CONCAT_HINT);
 }
 
-/** `Object.prototype` or an empty object literal: a receiver whose
- * `toString` is Object.prototype's. */
-function isObjectPrototypeLike(lowerer: Lowerer, node: ts.Expression): boolean {
-  const receiver = withoutParentheses(node);
-  if (ts.isObjectLiteralExpression(receiver)) return receiver.properties.nodes.length === 0;
-  return (
-    ts.isPropertyAccessExpression(receiver) &&
-    receiver.name.text === "prototype" &&
-    lowerer.isStdlibGlobal(receiver.expression, "Object")
-  );
-}
-
 /** A call that asks an arguments object what it is, or null for every other
- * call. The callee's name decides before any type is read. */
+ * call. `ordinary` lowers the call as any other call. The callee's name
+ * selects the question before any type is read; the declaration behind the
+ * name decides whether it is the builtin's. */
 export function lowerArgumentsObjectCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
+  ordinary: () => IrExpr,
 ): IrExpr | null {
-  if (expr.questionDotToken !== undefined) return null;
   const callee = withoutParentheses(expr.expression);
-  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return null;
+  if (!ts.isPropertyAccessExpression(callee)) return null;
   const name = callee.name.text;
   const args = expr.arguments.nodes;
   const first = args[0];
+  if (name === "concat") {
+    // The `concat` of an array or of a string (which converts the object to
+    // its tag), also through an optional chain.
+    const item = args.find((arg) => isArgumentsObject(lowerer, arg));
+    if (item !== undefined && isBuiltinMember(lowerer, callee, CONCAT_OWNERS))
+      refuseConcat(lowerer, item);
+    return null;
+  }
+  if (expr.questionDotToken !== undefined || callee.questionDotToken !== undefined) return null;
   if (name === "isArray") {
     if (
-      args.length === 1 &&
-      first !== undefined &&
-      lowerer.isStdlibGlobal(callee.expression, "Array") &&
-      isArgumentsObject(lowerer, first)
+      first === undefined ||
+      !lowerer.isStdlibGlobal(callee.expression, "Array") ||
+      !isArgumentsObject(lowerer, first)
     )
-      return { kind: "boolLit", value: false, type: BOOL, loc };
-    return null;
+      return null;
+    // `isArray` reads its first argument only.
+    return answerAfter(
+      lowerer,
+      first,
+      args.slice(1),
+      { kind: "boolLit", value: false, type: BOOL, loc },
+      loc,
+      ordinary,
+    );
   }
   if (name === "stringify") {
     if (
@@ -250,12 +415,6 @@ export function lowerArgumentsObjectCall(
       isArgumentsObject(lowerer, first)
     )
       lowerer.unsupported("SC1090", first, JSON_FEATURE, JSON_HINT);
-    return null;
-  }
-  if (name === "concat") {
-    // Any receiver: a string's concat converts the object to its tag.
-    const item = args.find((arg) => isArgumentsObject(lowerer, arg));
-    if (item !== undefined) refuseConcat(lowerer, item);
     return null;
   }
   if (name !== "call" && name !== "apply") return null;
@@ -276,24 +435,49 @@ export function lowerArgumentsObjectCall(
               : []),
           ];
     const item = items.find((arg) => isArgumentsObject(lowerer, arg));
-    if (item !== undefined) refuseConcat(lowerer, item);
+    // The builtin `concat` through a function's own `call` or `apply`, not
+    // members of those names.
+    if (
+      item !== undefined &&
+      isBuiltinMember(lowerer, callee, FUNCTION_OWNERS) &&
+      isBuiltinMember(lowerer, method, CONCAT_OWNERS)
+    )
+      refuseConcat(lowerer, item);
     return null;
   }
   if (
-    method.name.text === "toString" &&
-    first !== undefined &&
-    (name === "call" ? args.length === 1 : args.length <= 2) &&
-    isObjectPrototypeLike(lowerer, method.expression) &&
-    isArgumentsObject(lowerer, first) &&
-    argumentsObjectUntouched(lowerer, first)
-  ) {
-    // The checker types the call as `any`.
-    return lowerer.coerceToExpected(
-      { kind: "strLit", value: "[object Arguments]", type: STRING, loc },
-      DYN,
+    first === undefined ||
+    method.name.text !== "toString" ||
+    !isArgumentsObject(lowerer, first) ||
+    !isBuiltinMember(lowerer, callee, FUNCTION_OWNERS) ||
+    !isObjectPrototypeToString(lowerer, method) ||
+    !argumentsObjectUntouched(lowerer, first)
+  )
+    return null;
+  // The checker types the call as `any`.
+  const tag = lowerer.coerceToExpected(
+    { kind: "strLit", value: "[object Arguments]", type: STRING, loc },
+    DYN,
+  );
+  // `toString` takes no argument: what follows the receiver of `call` is
+  // evaluated and dropped.
+  if (name === "call") return answerAfter(lowerer, first, args.slice(1), tag, loc, ordinary);
+  // `apply` reads its list before the function runs: an object or nothing,
+  // then its length and its elements. A literal list is its elements, and
+  // what follows the list is evaluated and dropped; any other list is read
+  // by the call made as any other call.
+  const list = args[1] === undefined ? undefined : withoutParentheses(args[1]);
+  if (list === undefined) return answerAfter(lowerer, first, [], tag, loc, ordinary);
+  if (ts.isArrayLiteralExpression(list))
+    return answerAfter(
+      lowerer,
+      first,
+      [...list.elements.nodes, ...args.slice(2)],
+      tag,
+      loc,
+      ordinary,
     );
-  }
-  return null;
+  return answerOfOrdinaryCall(tag, loc, ordinary);
 }
 
 /** `arguments instanceof Array` (false) and `arguments instanceof Object`
@@ -311,5 +495,9 @@ export function lowerArgumentsObjectInstanceOf(
     !argumentsObjectUntouched(lowerer, expr.left)
   )
     return null;
-  return { kind: "boolLit", value: right.text === "Object", type: BOOL, loc };
+  const answer: IrExpr = { kind: "boolLit", value: right.text === "Object", type: BOOL, loc };
+  const read = heldConstantRead(lowerer, expr.left);
+  return read.length === 0
+    ? answer
+    : { kind: "seqExpr", stmts: read, result: answer, type: BOOL, loc };
 }

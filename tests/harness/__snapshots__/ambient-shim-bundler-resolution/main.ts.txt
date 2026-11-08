@@ -1,20 +1,20 @@
-ambient-shim-bundler-resolution/main.ts:5:15 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'CliCommand'.
+ambient-shim-bundler-resolution/main.ts:5:10 - error SC0001: Module '"spice-rack/blends"' has no exported member 'blend'.
 
-  4 | // load of the build.
-  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
-    |               ^~~~~~~~~~
-  6 | import * as termCodes from "term-codes";
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |          ^~~~~
+  6 | import * as oven from "oven-dial";
 
-ambient-shim-bundler-resolution/main.ts:5:27 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'commands'.
+ambient-shim-bundler-resolution/main.ts:5:17 - error SC0001: Module '"spice-rack/blends"' has no exported member 'titles'.
 
-  4 | // load of the build.
-  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
-    |                           ^~~~~~~~
-  6 | import * as termCodes from "term-codes";
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |                 ^~~~~~
+  6 | import * as oven from "oven-dial";
 
-ambient-shim-bundler-resolution/main.ts:5:37 - error SC0001: Module '"shapes-kit/cli"' has no exported member 'run'.
+ambient-shim-bundler-resolution/main.ts:5:30 - error SC0001: Module '"spice-rack/blends"' has no exported member 'Blend'.
 
-  4 | // load of the build.
-  5 | import { type CliCommand, commands, run } from "shapes-kit/cli";
-    |                                     ^~~
-  6 | import * as termCodes from "term-codes";
+  4 | // every imported member as missing. Each load of the build does the same.
+  5 | import { blend, titles, type Blend } from "spice-rack/blends";
+    |                              ^~~~~
+  6 | import * as oven from "oven-dial";

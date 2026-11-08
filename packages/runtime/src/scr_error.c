@@ -612,3 +612,13 @@ void scr_throw_error_named(ScrStr *name, ScrStr *message) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v,
                  scr_error_traced ? &scr_error_trace : NULL);
 }
+
+/* The `name` a read of the error gives when it has no own one: what its
+ * class answers (a `name` getter, through the installed reader), else the
+ * name it inherits, which the slot holds. An own name is the slot. +1, or
+ * NULL with the getter's exception pending. Last in the unit: only
+ * structuredClone of an error links it. */
+ScrStr *scr_error_read_name(ScrError *e) {
+  return !e->name_present && scr_error_name_reader ? scr_error_name_reader(scr_error_retain(e))
+                                                   : scr_str_retain(e->name);
+}

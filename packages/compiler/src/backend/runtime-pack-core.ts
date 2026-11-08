@@ -96,6 +96,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   handleProps: boolean;
   childLifecycle: boolean;
   processFeatures: boolean;
+  islandChild: boolean;
   childOptionExt: boolean;
   spawnCaptureBytes: boolean;
   childErrorFields: boolean;
@@ -383,6 +384,7 @@ export function effectiveRuntimeFeatures(
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
     processFeatures: features.processFeatures === true,
+    islandChild: features.islandChild === true,
     childOptionExt: features.childOptionExt === true,
     spawnCaptureBytes: features.spawnCaptureBytes === true,
     childErrorFields: features.childErrorFields === true,

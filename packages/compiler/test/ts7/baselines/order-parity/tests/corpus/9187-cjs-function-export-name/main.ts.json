@@ -1,0 +1,14 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9187-cjs-function-export-name/named.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/anonymous.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/arrow.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/bound.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/declared.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/klass.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/named-klass.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/via-require.cjs",
+  "<repo>/tests/corpus/9187-cjs-function-export-name/main.ts"
+ ],
+ "diags": []
+}

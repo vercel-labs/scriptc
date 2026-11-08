@@ -285,10 +285,10 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos and islands; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main and merge queue groups run every lane except macos; the nightly sweep and manual runs run every lane", () => {
   for (const event of ["push", "merge_group"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=false\n",
+      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
     );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);

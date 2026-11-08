@@ -1453,6 +1453,29 @@ export function stackTraceHookDiag(loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A TypeScript read, through an ES module namespace of a builtin module
+ * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a name the
+ * module's exports object owns without enumerating it. The namespace object
+ * has exactly the module's exports, so Node reads undefined, and the
+ * declaration, which describes the exports object, gives the name a type
+ * that cannot hold undefined. */
+export function namespaceNonExportDiag(
+  module: string,
+  member: string,
+  hasConstants: boolean,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${module}.${member}' is not an export of node:${module}: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow`,
+    loc,
+    milestone: "later",
+    hint: hasConstants
+      ? `the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (${module}.constants.${member} for one of the module's constants)`
+      : "the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it",
+  };
+}
+
 /** A use of a Node 24 global the native runtime does not implement
  * (host-globals.ts): constructing or calling its constructor value, or
  * reading one of its members. A bare read compiles and answers the
@@ -1467,6 +1490,39 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
     milestone: "later",
     hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
     reason: "host-global",
+  };
+}
+
+/** A JavaScript source used a Node value native code has no value for
+ * (node-values.ts): it read a value that is not a function, or it called or
+ * constructed the function value such a read answers. Node defines the
+ * value, so answering undefined or a stand-in would diverge silently.
+ * `surface` names it as the program does (`worker_threads.SHARE_ENV`,
+ * `process.finalization`, `URL`). */
+export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is a Node value that native code does not provide as a value`,
+    loc,
+    milestone: "later",
+    hint:
+      hint ??
+      "Node defines this value, and native code has no value to answer with: a function reads as a function that refuses when it is called or constructed, and any other value is refused where it is read. Uses the compiler lowers where they are spelled (a direct call, `new`, a member read) are not affected",
+  };
+}
+
+/** A JavaScript source assigned a member of a Node global object through
+ * the object held as a value (`const held = process; held.exitCode = 1`).
+ * The held object answers reads (node-value-reads.ts); the state behind the
+ * member lives in the runtime and is written where the member is spelled,
+ * so a write accepted here would leave `process.exitCode` unchanged. */
+export function nodeObjectMemberWriteDiag(object: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `assigning a member of '${object}' through a stored value is not supported yet`,
+    loc,
+    milestone: "later",
+    hint: `Assign the member where it is spelled (\`${object}.<member> = value\`): the stored object has Node's members to read, and a write through it would not reach the runtime's state`,
   };
 }
 

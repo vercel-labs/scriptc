@@ -3,14 +3,17 @@ import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
   BOOL,
+  DYN,
   type IrExpr,
   type IrStmt,
   type IrType,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
 } from "../../../ir/ir.js";
-import { nodeThrowExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
+import { resultIsDiscarded } from "../call-position.js";
 import { processHasIpc } from "./process.js";
 
 /** Method calls on ChildProcess receivers: `child.on("exit"|"error", cb)`
@@ -139,6 +142,60 @@ function lowerChannelLessSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr
     loc,
   };
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
+}
+
+/** process.disconnect(), process.disconnect!() and process.disconnect?.().
+ * Node defines the method only in a process that has an IPC channel, as it
+ * does process.send: without one the call throws Node's TypeError for an
+ * undefined member, and the optional call answers undefined. A fork child
+ * closes the channel it opened; the channel a Node.js parent opened
+ * (NODE_CHANNEL_FD) has no lowering and fences when the call runs. */
+export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
+  const loc = locOf(call);
+  if (call.arguments.nodes.length !== 0) {
+    lowerer.noLowering(`process.disconnect with ${call.arguments.nodes.length} arguments`, call);
+  }
+  if (!resultIsDiscarded(call)) {
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      "using the result of process.disconnect() (call it as its own statement)",
+    );
+  }
+  const present: IrExpr =
+    lowerer.forkTargets.length === 0
+      ? nodeThrowExpr(
+          0,
+          "SC2020",
+          "process.disconnect over an IPC channel opened by a Node.js parent (NODE_CHANNEL_FD) is not supported yet",
+          VOID,
+          loc,
+        )
+      : { kind: "libCall", fn: "process.disconnect", args: [], type: VOID, loc };
+  const absent: IrStmt[] | null = call.questionDotToken
+    ? null
+    : [
+        {
+          kind: "exprStmt",
+          expr: nodeThrowExpr(1, "", "process.disconnect is not a function", VOID, loc),
+          loc,
+        },
+      ];
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "if",
+        cond: processHasIpc(lowerer, loc),
+        then: [{ kind: "exprStmt", expr: present, loc }],
+        else_: absent,
+        loc,
+      },
+    ],
+    result: dynUndefinedExpr(loc),
+    type: DYN,
+    loc,
+  };
 }
 
 export function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {

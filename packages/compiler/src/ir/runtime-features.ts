@@ -317,6 +317,10 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynNative",
   "stream.dynNativePipe",
   "stream.errored",
+  "stream.is",
+  "stream.isDyn",
+  "stream.stateDyn",
+  "stream.asyncDispose",
   "stream.pipeDyn",
   "stream.prop",
   "stream.stdioWritable",
@@ -1325,6 +1329,11 @@ const RUNTIME_FEATURE_RULES = {
       "child.signalCode",
     ],
   }),
+  /** process.features read as a value (an alias, `in`, Object.keys): the
+   * stable flags object of scr_process_features.c, a unit of its own so
+   * every other program keeps scr_lib.c's object. A member read
+   * (`process.features.tls`) is a constant and links nothing. */
+  processFeatures: rule({ fns: ["process.features"] }),
   /** spawnSync's and the exec/execFile callback form's `cwd`/`input`/
    * `shell` entries (SCR_CHILD_CP_OPTIONS): a build of scr_child.c of its
    * own, so a program that never passes those options keeps the default
@@ -1346,6 +1355,14 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** pause(), resume(), isPaused() and readableFlowing on a child's output
+   * stream: Node's flowing state lives on the handle in a build of
+   * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
+   * calls them keeps the default object, where a stream reads its pipe only
+   * while it has a 'data' listener and holds nothing back. */
+  childStreamFlow: rule({
+    fns: ["stream.childPause", "stream.childResume", "stream.childIsPaused", "stream.childFlowing"],
+  }),
   /** The program can register an 'error' listener on a ChildProcess: a
    * typed or an untyped registration, or a child that converts to an
    * untyped value, whose `on` the handle table serves. Such a program
@@ -1823,6 +1840,38 @@ const RUNTIME_FEATURE_RULES = {
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
+   * and compose() in every form, a call of a member named pipe or unpipe
+   * (or a computed member) on an untyped value, which can reach a native
+   * stream's own method, and either name as a string. It links
+   * scr_stream_pipe_events.c, which installs Node's pipe lifecycle into
+   * the stream unit: the destination hears 'unpipe' when it finishes,
+   * closes or errors, and unpipe pauses the source as Node's does. A
+   * program that never pipes links none of it. */
+  streamPipeEvents: rule({
+    fns: [
+      "readable.pipe",
+      "readable.pipeGeneral",
+      "readable.unpipe",
+      "stream.pipeline",
+      "stream.pipelineDyn",
+      "stream.pipelineStages",
+      "stream.pipelineStagesDyn",
+      "stream.compose",
+      "stream.composeStages",
+      "sp.pipeline",
+      "sp.pipelineOpts",
+      "sp.pipelineOptsSignal",
+      "sp.pipelineStages",
+      "sp.pipelineStagesOpts",
+    ],
+    expr: (node) =>
+      (node.kind === "dynInvoke" &&
+        (node.method === "pipe" ||
+          node.method === "unpipe" ||
+          node.calleeNameValue !== undefined)) ||
+      (node.kind === "strLit" && (node.value === "pipe" || node.value === "unpipe")),
+  }),
 
   /** The program holds a process output stream as a value: the
    * process.stdio lib call, process.stdioSlot for the write method's own
@@ -2137,6 +2186,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     urlIdna: false,
     stdioObject: false,
     streamWriteErrors: false,
+    streamPipeEvents: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
@@ -2147,9 +2197,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
+    processFeatures: false,
     childOptionExt: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childStreamFlow: false,
     childErrorEvent: false,
     declAdopt: false,
     typeOrigins: false,

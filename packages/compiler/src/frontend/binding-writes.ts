@@ -182,23 +182,3 @@ function insideLoopBody(node: ts.Node): boolean {
   }
   return false;
 }
-
-/** Strips the value-preserving wrappers off an expression: parens,
- * non-null assertions, `as`/`satisfies`/angle-bracket casts. What
- * remains is the expression that actually evaluates. */
-export function stripValueWrappers(e: ts.Expression): ts.Expression {
-  let v: ts.Expression = e;
-  for (;;) {
-    if (
-      ts.isParenthesizedExpression(v) ||
-      ts.isNonNullExpression(v) ||
-      ts.isAsExpression(v) ||
-      ts.isSatisfiesExpression(v) ||
-      ts.isTypeAssertion(v)
-    ) {
-      v = v.expression;
-      continue;
-    }
-    return v;
-  }
-}

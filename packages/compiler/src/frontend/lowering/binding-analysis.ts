@@ -7,7 +7,6 @@ import { isGenericCallableMemberType } from "../type-mapper.js";
 export {
   bindingNeverReassigned,
   fileWritesBinding,
-  stripValueWrappers,
   type BindingScope,
 } from "../binding-writes.js";
 /** An identifier that reads or declares a binding (not a member name).

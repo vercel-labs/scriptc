@@ -8,6 +8,7 @@ import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import {
   BOOL,
   CHILD_T,
@@ -181,6 +182,45 @@ function stdioModeChain(
     type: F64,
     loc,
   };
+}
+
+/** An option Node reads on Windows only (`windowsHide`: no console window;
+ * `windowsVerbatimArguments`: no argument quoting). On every other target
+ * it is evaluated and has no effect, as in Node. `windowsVerbatimArguments`
+ * changes what the child receives on Windows, and the runtime's launch has
+ * no unquoted form, so there it is refused unless it is literally `false`.
+ * `evaluate` takes a value whose evaluation can be observed (a call, a
+ * getter) to run where the member sits; a form with no place for it (null)
+ * refuses such a value by name instead of dropping it. */
+function windowsOnlyOption(
+  lowerer: Lowerer,
+  what: string,
+  name: string,
+  member: ts.Node,
+  valueNode: ts.Expression,
+  evaluate: ((value: IrExpr) => void) | null,
+): void {
+  if (
+    name === "windowsVerbatimArguments" &&
+    lowerer.targetPlatform === "win32" &&
+    valueNode.kind !== ts.SyntaxKind.FalseKeyword
+  ) {
+    lowerer.noLowering(
+      `${what} option 'windowsVerbatimArguments' on a Windows target`,
+      member,
+      "the native launch always quotes arguments: pass false, or leave the option out",
+    );
+  }
+  const value = lowerer.lowerExpr(valueNode);
+  if (isSafeToDiscard(value)) return;
+  if (evaluate === null) {
+    lowerer.noLowering(
+      `${what} option '${name}' with a value that must be evaluated`,
+      member,
+      "pass a literal or a plain binding (this form has no place to run the expression)",
+    );
+  }
+  evaluate(value);
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
@@ -1474,7 +1514,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           plain = false;
           break;
         case "windowsHide":
-          lowerer.lowerExpr(m.value); // Node no-op on POSIX
+        case "windowsVerbatimArguments":
+          // Node reads them on Windows only (no console window; no
+          // argument quoting). The value is evaluated where the member sits.
+          windowsOnlyOption(lowerer, "spawn", m.name, p, m.value, (value) => {
+            bind(m.name === "windowsHide" ? "%spawnWindowsHide" : "%spawnVerbatimArguments", value);
+            plain = false;
+          });
           break;
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
@@ -1495,7 +1541,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           lowerer.noLowering(
             `spawn option '${m.name}'`,
             p,
-            "stdio, detached, env, cwd, windowsHide, and shell are the supported options",
+            "stdio, detached, env, cwd, windowsHide, windowsVerbatimArguments, and shell are the supported options",
           );
       }
     }
@@ -1843,6 +1889,11 @@ export function lowerExecFileCall(
         }
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
+      } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
+        // Windows-only presentation and quoting: Node reads neither on
+        // POSIX. This form binds no member values, so a value whose
+        // evaluation could be observed has no place to run and is refused.
+        windowsOnlyOption(lowerer, what, member.name, property, member.value, null);
       } else if (member.name === "shell" && !shell) {
         // Node's shell form: [file, ...args].join(" ") through /bin/sh -c.
         // exec itself already IS the shell form, so its member stays out.
@@ -1858,7 +1909,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', a pure numeric maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }

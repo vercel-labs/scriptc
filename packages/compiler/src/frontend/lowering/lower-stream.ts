@@ -6715,6 +6715,89 @@ export function lowerStreamMethodCall(
     }
   };
 
+  // Whether an end() chunk's static type admits null or undefined: the
+  // null and undefined literals, and a union with either. A chunk typed
+  // `any` or `unknown` is not asked here: it keeps the dynamic write.
+  const chunkAdmitsNullish = (node: ts.Expression): boolean => {
+    if (node.kind === ts.SyntaxKind.NullKeyword) return true;
+    const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+    const t = lowerer.typeOf(node);
+    if ((t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+    if ((t.flags & nullish) !== 0) return true;
+    return t.isUnionType() && ts.constituentTypes(t).some((arm) => (arm.flags & nullish) !== 0);
+  };
+  // end(chunk[, encoding][, cb]) for such a chunk. Node evaluates the
+  // receiver and the arguments in order, then looks at the chunk: each is
+  // bound once, and the two endings (with the chunk, through the dynamic
+  // write that takes a string or bytes; without it) read the bound values.
+  const lowerEndOfNullableChunk = (
+    receiver: IrExpr,
+    chunkNode: ts.Expression,
+    encNode: ts.Expression | undefined,
+    cbArg: ts.Expression | undefined,
+  ): IrExpr => {
+    const stmts: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    const stream = bind("%endStream", receiver);
+    const chunk = bind("%endChunk", lowerer.lowerExprExpecting(chunkNode, DYN));
+    const encoding =
+      encNode === undefined ? null : bind("%endEncoding", lowerer.lowerExprExpecting(encNode, DYN));
+    let callback: IrExpr | null = null;
+    if (cbArg !== undefined) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
+        lowerer.noLowering(
+          "end callbacks with parameters",
+          cbArg,
+          "() => void callbacks are supported",
+        );
+      }
+      callback = bind("%endCallback", cb);
+    }
+    const ending = (withChunk: boolean): IrExpr => {
+      const tail: IrExpr[] = [];
+      let flags = 0;
+      if (withChunk) {
+        flags |= 8;
+        tail.push(chunk);
+        if (encoding !== null) {
+          flags |= 16;
+          tail.push(encoding);
+        }
+      }
+      if (callback !== null) {
+        flags |= 4;
+        tail.push(callback);
+      }
+      return {
+        kind: "libCall",
+        fn: "writable.end",
+        args: [stream, numLit(flags, loc), ...tail],
+        type: receiver.type,
+        loc,
+      };
+    };
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "nullish", value: chunk, type: BOOL, loc },
+        then: ending(false),
+        else_: ending(true),
+        type: receiver.type,
+        loc,
+      },
+      type: receiver.type,
+      loc,
+    };
+  };
   // Chunk classification for push/unshift/write/end. Union-typed chunks
   // over {Buffer, string, null} dispatch by tag at runtime — the
   // `push(more ? next : null)` idiom.
@@ -7271,13 +7354,24 @@ export function lowerStreamMethodCall(
       cbArg = args[2];
     }
     const receiver = streamReceiverExpr(lowerer, access.expression);
+    // end(chunk) where the chunk's TYPE admits null or undefined
+    // (`string | null`, `Buffer | undefined`, the literals): Node writes the
+    // chunk only when it is neither (`if (chunk !== null && chunk !==
+    // undefined) this.write(chunk, encoding)`), so the stream ends with or
+    // without it by the value the call finds.
+    if (chunkNode !== undefined && chunkAdmitsNullish(chunkNode)) {
+      return lowerEndOfNullableChunk(receiver, chunkNode, encNode, cbArg);
+    }
     let flags = 0;
     const tail: IrExpr[] = [];
     if (chunkNode !== undefined) {
       // end(chunk, encoding[, cb]) writes the chunk with the encoding
       // argument as passed (flags 16), through the dyn write
-      const kind = encNode !== undefined ? "dyn" : chunkKind(chunkNode);
-      if (kind === "null" || kind === "union") lowerer.noLowering("end(null)", call);
+      // A `string | Buffer` chunk rides the dynamic write, which takes
+      // either (a union that admits null took the path above).
+      const classified = encNode !== undefined ? "dyn" : chunkKind(chunkNode);
+      const kind = classified === "union" ? "dyn" : classified;
+      if (kind === "null") lowerer.noLowering("end(null)", call);
       flags |= kind === "bytes" ? 1 : kind === "dyn" ? 8 : 2;
       tail.push(
         kind === "bytes"

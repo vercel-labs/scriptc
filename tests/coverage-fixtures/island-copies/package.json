@@ -1,0 +1,1 @@
+{ "name": "island-copies-coverage-fixture", "private": true, "type": "module", "scriptc": { "packages": { "copy-kit": "node" } } }

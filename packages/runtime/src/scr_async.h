@@ -38,11 +38,15 @@ ScrPromise *scr_promise_new(void);
  * reported, and none of them is reported as unhandled after that.
  * `transferred` is set when a view first copies its source's rejection and
  * takes the tracking over (scr_promise_settle_from): from then on the
- * source's own mark means "a view tracks it", not "a reaction handled it". */
+ * source's own mark means "a view tracks it", not "a reaction handled it".
+ * `reported` is set while one of them has been delivered as unhandled and
+ * none has gained a reaction since: the first reaction on any of them is the
+ * late handling of that report (scr_prom_observe), told once. */
 typedef struct ScrPromiseIdentity {
   size_t rc;
   bool observed;
   bool transferred;
+  bool reported;
 } ScrPromiseIdentity;
 typedef struct ScrPromiseHead {
   size_t rc;
@@ -300,6 +304,10 @@ extern SCR_TL bool (*scr_urj_deliver_fn)(ScrPromise *p);
  * promise the report already delivered as unhandled gains a handler.
  * Runtime-internal. */
 extern SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p);
+/* The delivery of the late handlings collected for 'rejectionHandled'
+ * listeners, called first by the checkpoint report while any is held
+ * (scr_async_dyn.c). Runtime-internal. */
+extern SCR_TL bool (*scr_rjh_flush_fn)(void);
 /* The attach-time handled mark (a dyn then/catch carrying a rejection
  * handler, or the module loader taking ownership of an evaluation
  * promise): marks pending and rejected sources observed at Node's attach

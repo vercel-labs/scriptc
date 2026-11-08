@@ -376,9 +376,10 @@ export type IrType =
    * Runtime representation is a refcounted snapshot box (ScrCaught) holding
    * the taken exception: a kind tag plus the payload. Even NARROWER than
    * dyn: the only expressions a caught value may appear in are `caughtTest`
-   * (kind/instanceof tests), `caughtNarrow` (extraction under a proven
-   * test, verified at run time), and the `rethrow` statement — the frontend
-   * rejects every other use with the narrowing hint. */
+   * (kind/instanceof tests), `caughtNarrow` and `caughtCheck` (extraction
+   * under a proven test or an assertion, verified at run time),
+   * `caughtToDyn` (the checked-dynamic value every other read of the
+   * binding takes), `toString`, and the `rethrow` statement. */
   | { kind: "caught" }
   | { kind: "promise"; inner: IrType } // heap, refcounted, settled-once
   /** A sync generator object (`function*`'s result — scr_async.c's ScrGen):

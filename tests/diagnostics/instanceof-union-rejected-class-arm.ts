@@ -1,11 +1,12 @@
 // An `instanceof` test on a value whose type is a union with a class the
-// compiler rejected (here: a class with an index signature), against
-// another class. The rejected class has no layout to test against: the
-// test is refused by name where it stands, beside the class's own
-// diagnostic, instead of ending the compiler.
+// compiler rejected (here: a class with a number-keyed index signature),
+// against another class. The rejected class has no layout to test against:
+// the test is refused by name where it stands, beside the class's own
+// diagnostic, instead of ending the compiler. The same program with a
+// `[key: string]: any` signature compiles (corpus 9365).
 class Failure extends Error {
   status: number;
-  [key: string]: any;
+  [index: number]: unknown;
   constructor(message: string, status: number) {
     super(message);
     this.status = status;

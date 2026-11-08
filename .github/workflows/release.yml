@@ -260,7 +260,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes g++ zlib1g-dev libzstd-dev
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
           tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
           echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
@@ -307,7 +307,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
-          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          curl.exe -fL --retry 4 --retry-delay 30 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
           & $sevenZip x -y "-o$expanded" $archive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"

@@ -17,9 +17,12 @@ export type UndiciHeaders = Record<string, string | string[] | undefined> | stri
 export type RequestBody = string | Buffer | Uint8Array | null;
 
 /** The request methods undici's declarations name (HttpMethod in
- * types/dispatcher.d.ts). 7.x's declaration also admits any other string;
- * request() takes one here in both entries (RequestOptions). */
-export type HttpMethod =
+ * types/dispatcher.d.ts): these nine in 5.x, and any other string beside
+ * them in 7.x (`Autocomplete<…>` there). request() takes any string in
+ * both entries (RequestOptions). */
+export type HttpMethod = NamedHttpMethod | OtherMethods[keyof OtherMethods];
+
+export type NamedHttpMethod =
   | "GET"
   | "HEAD"
   | "POST"
@@ -29,6 +32,12 @@ export type HttpMethod =
   | "OPTIONS"
   | "TRACE"
   | "PATCH";
+
+/** What a release's declarations admit as a method beside the nine names.
+ * Nothing here; the entry of a release that admits more adds a member
+ * (v7.ts), so the classes both entries share declare dispatch() the way
+ * the installed release does. */
+export interface OtherMethods {}
 
 /** undici's Dispatcher.DispatchOptions. dispatch() declares the method the
  * way undici does, so that this record is one of what a project's own

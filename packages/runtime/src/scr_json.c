@@ -21597,8 +21597,18 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * entry of the native table has it. */
 #define SCR_WEAK_ISLAND_KIND (~0u)
 
+/* Whether the island's collection holds the entries of `key`: an island
+ * object, and, in a program with Node islands, a symbol. An island symbol
+ * is a native symbol paired with it (scr_node_island_handle.c), so a symbol
+ * key is the island's to hold whichever side made it: V8 holds an
+ * unregistered symbol weakly and refuses a registered one, as Node does.
+ * Without the island units a symbol is no weak key yet (scr_weak_key). */
+static bool scr_weak_island_key(const ScrDyn *key) {
+  return scr_ni_dyn_handle(key) || (key->kind == SCR_DYN_SYMBOL && scr_ni_dyn_ops != NULL);
+}
+
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
-  if (scr_ni_dyn_handle(key)) return scr_ni_dyn_ops->weak_set(&map->island, map->is_set, key, value);
+  if (scr_weak_island_key(key)) return scr_ni_dyn_ops->weak_set(&map->island, map->is_set, key, value);
   void *ptr = NULL;
   unsigned kind = 0;
   int supported = scr_weak_key(key, &ptr, &kind);
@@ -21642,7 +21652,7 @@ static ScrDyn *scr_weak_map_invoke(void *ptr, ScrDyn *self, const char *method,
     return scr_dyn_retain(self);
   }
   if ((!map->is_set && strcmp(method, "get") == 0) || strcmp(method, "has") == 0 || strcmp(method, "delete") == 0) {
-    if (scr_ni_dyn_handle(key)) {
+    if (scr_weak_island_key(key)) {
       if (strcmp(method, "get") == 0) return scr_ni_dyn_ops->weak_get(map->island, key);
       int found = scr_ni_dyn_ops->weak_test(map->island, map->is_set, key, strcmp(method, "delete") == 0);
       return found < 0 ? NULL : scr_dyn_new_bool(found);

@@ -7,6 +7,12 @@
  * the Error cannot turn a compiler gap into an unexplained wrong answer.
  * SCRIPTC_DEFERRED_REPORT=0 silences the lines.
  *
+ * A site that sits in the `try` block of a `try`/`catch` of its own
+ * function has the program's handler for exactly that statement, and the
+ * build named it (SC6012). It throws through scr_deferred_fence_guarded,
+ * which writes nothing unless SCRIPTC_DEFERRED_REPORT=all asks for every
+ * site: a program that guards an optional call keeps Node's stderr.
+ *
  * Only a program that contains a runtimeFence references this unit, so no
  * other program links it or can print the line. */
 #include "scr_runtime.h"
@@ -23,8 +29,12 @@ static size_t scr_fence_sites_len, scr_fence_sites_cap;
 /* Worker threads reach fences too. */
 static char scr_fence_lock;
 
-/* Whether this is the first time `site` fires in the process. */
-static bool scr_fence_first(const char *site) {
+/* Whether this is the first time `site` fires in the process and its
+ * report is wanted. `guarded` is a site inside its own try/catch. */
+static bool scr_fence_first(const char *site, bool guarded) {
+  const char *setting = getenv("SCRIPTC_DEFERRED_REPORT");
+  if (setting != NULL && strcmp(setting, "0") == 0) return false;
+  if (guarded && (setting == NULL || strcmp(setting, "all") != 0)) return false;
   while (__atomic_test_and_set(&scr_fence_lock, __ATOMIC_ACQUIRE)) {
   }
   bool first = true;
@@ -49,8 +59,6 @@ static bool scr_fence_first(const char *site) {
   bool hint = first && scr_fence_sites_len <= 1;
   __atomic_clear(&scr_fence_lock, __ATOMIC_RELEASE);
   if (!first) return false;
-  const char *setting = getenv("SCRIPTC_DEFERRED_REPORT");
-  if (setting != NULL && strcmp(setting, "0") == 0) return false;
   /* Settle stdout before the stderr lines when both share an fd, as the
    * uncaught-error report does. */
   scr_stdout_settle();
@@ -63,8 +71,8 @@ static bool scr_fence_first(const char *site) {
   return true;
 }
 
-void scr_deferred_fence(const char *message, size_t len, const char *code) {
-  if (scr_fence_first(message)) {
+static void scr_fence_throw(const char *message, size_t len, const char *code, bool guarded) {
+  if (scr_fence_first(message, guarded)) {
     fputs("scriptc: not compiled: ", stderr);
     fwrite(message, 1, len, stderr);
     /* A message that carries no position still names its code. */
@@ -73,4 +81,12 @@ void scr_deferred_fence(const char *message, size_t len, const char *code) {
     fflush(stderr);
   }
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, len, code);
+}
+
+void scr_deferred_fence(const char *message, size_t len, const char *code) {
+  scr_fence_throw(message, len, code, false);
+}
+
+void scr_deferred_fence_guarded(const char *message, size_t len, const char *code) {
+  scr_fence_throw(message, len, code, true);
 }

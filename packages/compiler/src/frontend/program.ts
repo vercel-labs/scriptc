@@ -43,7 +43,7 @@ import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "./outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
 import { InternalCompilerError } from "../errors.js";
 import { moduleKindName, scriptTargetName } from "./ts7/enums.js";
 import { isSourcePhaseImport } from "./ts7/ast-node.js";
@@ -2222,6 +2222,7 @@ function requireSpecOf7(node: ts.Node): string | null {
     ts.isParenthesizedExpression(value) ||
     ts.isAsExpression(value) ||
     ts.isTypeAssertion(value) ||
+    ts.isSatisfiesExpression(value) ||
     ts.isNonNullExpression(value)
   ) {
     value = value.expression;
@@ -3258,6 +3259,7 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
       (ts.isParenthesizedExpression(outer.parent) ||
         ts.isAsExpression(outer.parent) ||
         ts.isTypeAssertion(outer.parent) ||
+        ts.isSatisfiesExpression(outer.parent) ||
         ts.isNonNullExpression(outer.parent))
     ) {
       outer = outer.parent;
@@ -3678,14 +3680,14 @@ function exportedCreateRequireUseReason7(program: ts.Program, symbol: ts.Symbol)
 }
 
 function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boolean {
-  const init = withoutParenthesesAssertionsNonNull(expr);
+  const init = withoutParenthesesTypeWrappers(expr);
   // `createRequire ? createRequire(import.meta.url) : undefined`: the
   // import binding is always a function, so the true arm is the value.
   // Only that polarity folds: with the arms swapped the binding is
   // undefined at run time.
   if (ts.isConditionalExpression(init)) {
-    const cond = withoutParenthesesAssertionsNonNull(init.condition);
-    const other = withoutParenthesesAssertionsNonNull(init.whenFalse);
+    const cond = withoutParenthesesTypeWrappers(init.condition);
+    const other = withoutParenthesesTypeWrappers(init.whenFalse);
     return (
       ts.isIdentifier(cond) &&
       isCreateRequireImport7(program, cond) &&
@@ -3702,7 +3704,7 @@ function isCreateRequireBaseCall7(program: ts.Program, expr: ts.Expression): boo
   ) {
     return false;
   }
-  const base = withoutParenthesesAssertionsNonNull(init.arguments.nodes[0]!);
+  const base = withoutParenthesesTypeWrappers(init.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && base.text === "__filename") return !sourceBinding7(program, base);
   return (
     ts.isPropertyAccessExpression(base) &&
@@ -3848,7 +3850,7 @@ function npmStaticModuleImportReason7(
  * can mistake them for module syntax. */
 function requireCallBindingKind7(program: ts.Program, node: ts.Node): RequireCallBindingKind7 {
   const raw = ts.isVariableDeclaration(node) ? node.initializer : node;
-  const call = raw && ts.isExpression(raw) ? withoutParenthesesAssertionsNonNull(raw) : raw;
+  const call = raw && ts.isExpression(raw) ? withoutParenthesesTypeWrappers(raw) : raw;
   if (!call || !ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) return "ambient";
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(call.expression);

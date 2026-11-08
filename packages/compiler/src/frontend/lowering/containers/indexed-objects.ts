@@ -1,5 +1,6 @@
 import { lowerWrapperToObject, programCreatesWrappers } from "../primitive-wrappers.js";
 import { keyedHelperName } from "../stable-names.js";
+import { COPY_HELPERS } from "../width-lift.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
@@ -1072,7 +1073,7 @@ export function lowerRecordOvfCaptureHelper(
 ): string | null {
   return buildRecordCaptureHelper(lowerer, fromId, toId, loc, {
     key: `ovf:${fromId}:${toId}`,
-    namePrefix: "%rec.capture",
+    namePrefix: COPY_HELPERS.ovf,
     excluded: EMPTY_CAPTURE_EXCLUSION,
     propagateNullProto: true,
     keepSourceTail: true,

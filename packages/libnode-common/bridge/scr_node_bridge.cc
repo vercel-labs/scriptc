@@ -78,6 +78,7 @@ using v8::Value;
 
 const ScrNodeBridgeHost *g_host = nullptr;
 void DropAllHandles();
+void ResetPairHelpers();
 void DropAllExports();
 void FlushReleasedExports();
 bool StartCollector(v8::Isolate *isolate);
@@ -750,6 +751,7 @@ void Stop() {
   g_call.Reset();
   g_load.Reset();
   g_twin_prototypes.clear();
+  ResetPairHelpers();
   StopCollector(isolate);
   DropAllHandles();
   DropAllExports();
@@ -818,13 +820,21 @@ int IdentityHash(Local<Value> v) {
   return 0;
 }
 
-uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingStore> store = nullptr) {
-  int hash = IdentityHash(v);
-  auto range = g_ids.equal_range(hash);
+// The id the runtime holds `v` under, or 0. *hash: its identity hash.
+uint32_t Imported(Isolate *isolate, Local<Value> v, int *hash = nullptr) {
+  int h = IdentityHash(v);
+  if (hash != nullptr) *hash = h;
+  auto range = g_ids.equal_range(h);
   for (auto it = range.first; it != range.second; ++it) {
     Slot &slot = *g_slots[it->second];
     if (slot.value.Get(isolate)->StrictEquals(v)) return it->second;
   }
+  return 0;
+}
+
+// A new entry for a value Imported did not find.
+uint32_t ImportNew(Isolate *isolate, Local<Value> v, int hash,
+                   std::shared_ptr<v8::BackingStore> store = nullptr) {
   uint32_t id;
   if (!g_free_ids.empty()) {
     id = g_free_ids.back();
@@ -851,6 +861,12 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
   return id;
 }
 
+uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingStore> store = nullptr) {
+  int hash;
+  uint32_t id = Imported(isolate, v, &hash);
+  return id != 0 ? id : ImportNew(isolate, v, hash, std::move(store));
+}
+
 [[noreturn]] void CollectedInUse(uint32_t id) {
   std::fprintf(stderr,
                "scriptc: internal error: island handle %u was used after V8 collected its "
@@ -860,7 +876,16 @@ uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingSto
   std::abort();
 }
 
+// The runtime's views that crossed for the first time since its last
+// young_flush, kept alive and no more: most are dropped on both sides
+// before the flush, and never cost an entry of the table.
+std::vector<Global<Value>> g_young;
+
 Local<Value> HandleValue(Isolate *isolate, uint32_t id) {
+  if (id & SCR_NODE_YOUNG) {
+    size_t i = id & ~SCR_NODE_YOUNG;
+    return i < g_young.size() ? g_young[i].Get(isolate) : Local<Value>(v8::Undefined(isolate));
+  }
   if (id == 0 || id >= g_slots.size() || !g_slots[id] || !g_slots[id]->live)
     return v8::Undefined(isolate);
   Slot &slot = *g_slots[id];
@@ -1260,6 +1285,224 @@ uint32_t ElemOf(Local<v8::ArrayBufferView> view) {
   return 0; // DataView: bytes
 }
 
+// ── values paired with runtime objects: byte views and symbols ──────────
+// A typed array, Buffer, DataView or ArrayBuffer and a symbol are one
+// object on each side. The import table holds the V8 half under one id and
+// the runtime's pin table pairs that id with its own object, so each half
+// crosses as the other for as long as the runtime holds its half. The
+// bootstrap's helpers (captured before island code runs) answer what only
+// JavaScript can: the Buffer prototype, Symbol.keyFor, the well-known
+// symbols.
+Global<Object> g_buffer_prototype;
+Global<Function> g_symbol_info, g_symbol_of;
+Global<Value> g_detach_key; // of the ArrayBuffers over the runtime's memory
+bool g_pair_helpers = false;
+
+bool PairHelpers(Isolate *isolate, Local<Context> context) {
+  if (g_pair_helpers) return true;
+  Local<Value> helpers, proto;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (!g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) ||
+      !helpers->IsObject())
+    return false;
+  Local<Object> h = helpers.As<Object>();
+  if (!h->Get(context, Utf8(isolate, "bufferPrototype")).ToLocal(&proto) || !proto->IsObject() ||
+      !TakeFunction(isolate, context, h, "symbolInfo", &g_symbol_info) ||
+      !TakeFunction(isolate, context, h, "symbolOf", &g_symbol_of))
+    return false;
+  g_buffer_prototype.Reset(isolate, proto.As<Object>());
+  g_pair_helpers = true;
+  return true;
+}
+
+void ResetPairHelpers() {
+  g_young.clear();
+  g_buffer_prototype.Reset();
+  g_detach_key.Reset();
+  g_symbol_info.Reset();
+  g_symbol_of.Reset();
+  g_pair_helpers = false;
+}
+
+// Buffer.isBuffer: Buffer.prototype is on the view's prototype chain
+// (node::Buffer::HasInstance answers true for every ArrayBufferView).
+bool IsNodeBuffer(Isolate *isolate, Local<Context> context, Local<v8::ArrayBufferView> view) {
+  if (!view->IsUint8Array() || !PairHelpers(isolate, context)) return false;
+  Local<Object> buffer_proto = g_buffer_prototype.Get(isolate);
+  Local<Value> proto = view->GetPrototypeV2();
+  for (int depth = 0; depth < 64 && proto->IsObject(); depth++) {
+    if (proto == buffer_proto) return true;
+    proto = proto.As<Object>()->GetPrototypeV2();
+  }
+  return false;
+}
+
+// The young view `v` is, as its handle, or 0.
+uint32_t YoungView(Local<Value> v) {
+  for (size_t i = 0; i < g_young.size(); i++)
+    if (g_young[i] == v) return SCR_NODE_YOUNG | static_cast<uint32_t>(i);
+  return 0;
+}
+
+// The young view whose ArrayBuffer `buffer` is, as its handle, or 0: the
+// buffer made with the view of a typed array that is its own storage has
+// no handle of its own.
+uint32_t YoungBuffer(Isolate *isolate, Local<v8::ArrayBuffer> buffer) {
+  for (size_t i = 0; i < g_young.size(); i++) {
+    Local<Value> view = g_young[i].Get(isolate);
+    if (view->IsArrayBufferView() && view.As<v8::ArrayBufferView>()->Buffer() == buffer)
+      return SCR_NODE_YOUNG | static_cast<uint32_t>(i);
+  }
+  return 0;
+}
+
+// The handle of an ArrayBuffer leaving V8: its entry, the young view it
+// belongs to, or a new entry (which keeps the store).
+uint32_t BufferHandle(Isolate *isolate, Local<v8::ArrayBuffer> buffer,
+                      std::shared_ptr<v8::BackingStore> store) {
+  // Consecutive views are often of one buffer (the chunks an island cuts
+  // from a pooled Buffer): the entry answered last is tried first.
+  static uint32_t last = 0;
+  if (last != 0 && last < g_slots.size() && g_slots[last] && g_slots[last]->live &&
+      !g_slots[last]->dead && g_slots[last]->value == buffer)
+    return last;
+  int hash;
+  uint32_t id = Imported(isolate, buffer, &hash);
+  if (id == 0 && !g_young.empty()) id = YoungBuffer(isolate, buffer);
+  if (id != 0 && (id & SCR_NODE_YOUNG) == 0) last = id;
+  return id != 0 ? id : (last = ImportNew(isolate, buffer, hash, std::move(store)));
+}
+
+// Whether the runtime can hold this view as bytes of its own: fixed,
+// unshared storage, and an element kind its typed arrays have.
+bool BytesView(Local<v8::ArrayBufferView> view) {
+  return !view->IsBigInt64Array() && !view->IsBigUint64Array();
+}
+
+void FreeRuntimeBytes(void *, size_t, void *owner);
+size_t ElemSize(uint32_t elem);
+
+// The ArrayBuffer of the runtime storage a BYTES in-value names: the one
+// bound to it, or the buffer of the view bound to the storage's own typed
+// array (an owner typed array is its own storage, and its view's buffer is
+// the storage's). Else a new one over the runtime's memory (*fresh), which
+// the caller binds; *store: its backing store holds the storage.
+Local<v8::ArrayBuffer> RuntimeBuffer(Isolate *isolate, const ScrNodeValue *in, bool *fresh,
+                                     int *store) {
+  *fresh = false;
+  *store = 0;
+  uint32_t id = in->u.bytes.buffer != 0
+                    ? in->u.bytes.buffer
+                    : g_host->bound(SCR_NODE_BIND_BUFFER, in->u.bytes.root);
+  if (id != 0) {
+    Local<Value> known = HandleValue(isolate, id);
+    if (known->IsArrayBuffer()) return known.As<v8::ArrayBuffer>();
+  }
+  if (uint32_t view = g_host->bound(SCR_NODE_BIND_VIEW, in->u.bytes.root)) {
+    Local<Value> known = HandleValue(isolate, view);
+    if (known->IsArrayBufferView()) return known.As<v8::ArrayBufferView>()->Buffer();
+  }
+  *fresh = true;
+  uint8_t *base = in->u.bytes.data != nullptr ? in->u.bytes.data - in->u.bytes.offset : nullptr;
+  if (in->u.bytes.buffer_len == 0 || base == nullptr) return v8::ArrayBuffer::New(isolate, 0);
+  std::unique_ptr<v8::BackingStore> backing = v8::ArrayBuffer::NewBackingStore(
+      base, in->u.bytes.buffer_len, FreeRuntimeBytes, in->u.bytes.root);
+  Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, std::move(backing));
+  *store = 1;
+  // A compiled view is a pointer and a length: it cannot follow a detach.
+  // With a detach key, island code that transfers or detaches the buffer
+  // (structuredClone, postMessage, ArrayBuffer.prototype.transfer, a BYOB
+  // read) gets a TypeError instead of a buffer the program still uses.
+  if (g_detach_key.IsEmpty())
+    g_detach_key.Reset(isolate, v8::Symbol::New(isolate, Utf8(isolate, "scriptc.program-buffer")));
+  buffer->SetDetachKey(g_detach_key.Get(isolate));
+  return buffer;
+}
+
+// The ArrayBuffer of a runtime storage crossing as a value.
+Local<Value> RuntimeBufferValue(Isolate *isolate, const ScrNodeValue *in) {
+  bool fresh;
+  int store;
+  Local<v8::ArrayBuffer> buffer = RuntimeBuffer(isolate, in, &fresh, &store);
+  if (fresh)
+    g_host->bind(SCR_NODE_BIND_BUFFER, in->u.bytes.root,
+                 ImportNew(isolate, buffer, IdentityHash(buffer)), store);
+  return buffer;
+}
+
+// The V8 view of a runtime view crossing for the first time.
+Local<Value> RuntimeView(Isolate *isolate, const ScrNodeValue *in) {
+  if (uint32_t id = g_host->bound(SCR_NODE_BIND_VIEW, in->u.bytes.owner))
+    return HandleValue(isolate, id); // bound earlier in this same conversion
+  bool fresh;
+  int store;
+  Local<v8::ArrayBuffer> buffer = RuntimeBuffer(isolate, in, &fresh, &store);
+  // A typed array that is its own storage binds once, as the view: the
+  // runtime finds the ArrayBuffer through it (YoungBuffer, and by the
+  // store's memory once the view has a handle). Any other new buffer is
+  // bound itself.
+  bool own = fresh && store != 0 && in->u.bytes.owner == in->u.bytes.root;
+  if (fresh && !own)
+    g_host->bind(SCR_NODE_BIND_BUFFER, in->u.bytes.root,
+                 ImportNew(isolate, buffer, IdentityHash(buffer)), store);
+  size_t offset = in->u.bytes.offset;
+  size_t n = in->u.bytes.len;
+  size_t byte_len = n * ElemSize(in->u.bytes.elem);
+  Local<Value> view;
+  if (in->flags & SCR_NVF_DATAVIEW) {
+    view = v8::DataView::New(buffer, offset, byte_len);
+  } else if (in->flags & SCR_NVF_BUFFER) {
+    view = node::Buffer::New(isolate, buffer, offset, byte_len).ToLocalChecked();
+  } else {
+    switch (in->u.bytes.elem) {
+    case 1: view = v8::Uint32Array::New(buffer, offset, n); break;
+    case 2: view = v8::Float32Array::New(buffer, offset, n); break;
+    case 3: view = v8::Int32Array::New(buffer, offset, n); break;
+    case 4: view = v8::Float64Array::New(buffer, offset, n); break;
+    case 5: view = v8::Int8Array::New(buffer, offset, n); break;
+    case 6: view = v8::Uint16Array::New(buffer, offset, n); break;
+    case 7: view = v8::Int16Array::New(buffer, offset, n); break;
+    case 8: view = v8::Uint8ClampedArray::New(buffer, offset, n); break;
+    case 9: view = v8::Float16Array::New(buffer, offset, n); break;
+    default: view = v8::Uint8Array::New(buffer, offset, n); break;
+    }
+  }
+  uint32_t young = SCR_NODE_YOUNG | static_cast<uint32_t>(g_young.size());
+  g_young.emplace_back(isolate, view);
+  g_host->bind(SCR_NODE_BIND_VIEW, in->u.bytes.owner, young, own ? 1 : 0);
+  return view;
+}
+
+// The V8 symbol of a runtime symbol crossing for the first time: the
+// registry's or the well-known one where it is one, else a new symbol of
+// the same description; bound either way, so it comes back as the
+// runtime's own symbol.
+Local<Value> RuntimeSymbol(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
+  if (uint32_t id = g_host->bound(SCR_NODE_BIND_SYMBOL, in->u.sym.owner))
+    return HandleValue(isolate, id);
+  Local<Value> symbol;
+  Local<String> text = FromWtf8(isolate, in->u.sym.text != nullptr ? in->u.sym.text : "",
+                                in->u.sym.len);
+  if ((in->u.sym.kind == SCR_NODE_SYMBOL_REGISTERED ||
+       in->u.sym.kind == SCR_NODE_SYMBOL_WELL_KNOWN) &&
+      PairHelpers(isolate, context)) {
+    Local<Value> argv[] = {v8::Integer::NewFromUnsigned(isolate, in->u.sym.kind), text};
+    TryCatch try_catch(isolate);
+    if (!g_symbol_of.Get(isolate)->Call(context, v8::Undefined(isolate), 2, argv).ToLocal(&symbol) ||
+        !symbol->IsSymbol())
+      symbol = Local<Value>();
+  }
+  if (symbol.IsEmpty()) {
+    symbol = in->u.sym.kind == SCR_NODE_SYMBOL_NO_DESCRIPTION
+                 ? v8::Symbol::New(isolate)
+                 : in->u.sym.kind == SCR_NODE_SYMBOL_WELL_KNOWN
+                       ? v8::Symbol::New(isolate, String::Concat(isolate, Utf8(isolate, "Symbol."), text))
+                       : v8::Symbol::New(isolate, text);
+  }
+  g_host->bind(SCR_NODE_BIND_SYMBOL, in->u.sym.owner, Import(isolate, symbol), 0);
+  return symbol;
+}
+
 size_t ElemSize(uint32_t elem) {
   static const size_t sizes[] = {1, 4, 4, 4, 8, 1, 2, 2, 1, 2};
   return elem < 10 ? sizes[elem] : 1;
@@ -1427,8 +1670,46 @@ uint32_t InfoId(const v8::PropertyCallbackInfo<T> &info) {
   return HolderId(info.HolderV2());
 }
 
-void NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
-  FromV8(isolate, context, name, key);
+// Whether the symbol names the same key on both sides whether or not the
+// runtime was told of it: a Symbol.for symbol, whose registry key makes one
+// symbol per key, or a well-known one. Program code can name no other symbol
+// it did not send across, so the runtime cannot have a unique symbol this
+// side made.
+bool RuntimeSymbolKey(Isolate *isolate, Local<Context> context, Local<v8::Symbol> symbol) {
+  if (!PairHelpers(isolate, context)) return false;
+  Local<Value> argv[] = {symbol}, info;
+  TryCatch try_catch(isolate);
+  if (!g_symbol_info.Get(isolate)
+           ->Call(context, v8::Undefined(isolate), 1, argv)
+           .ToLocal(&info) ||
+      !info->IsArray())
+    return false;
+  Local<Value> kind;
+  if (!info.As<v8::Array>()->Get(context, 0).ToLocal(&kind) || !kind->IsUint32()) return false;
+  uint32_t value = kind.As<v8::Uint32>()->Value();
+  return value == SCR_NODE_SYMBOL_REGISTERED || value == SCR_NODE_SYMBOL_WELL_KNOWN;
+}
+
+// The key of a named interceptor, false for a key the runtime does not
+// answer. A symbol reaches the runtime when it names the same key on both
+// sides, registered or well-known, or when the runtime holds the native
+// symbol paired with it; a property under any other symbol is island code's
+// own and stays on the representative.
+bool NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
+  if (!name->IsSymbol()) {
+    FromV8(isolate, context, name, key);
+    return true;
+  }
+  uint32_t known = Imported(isolate, name);
+  if (known == 0 || !g_host->holds(known)) {
+    if (!RuntimeSymbolKey(isolate, context, name.As<v8::Symbol>())) return false;
+    if (known == 0) known = Import(isolate, name);
+  }
+  std::memset(key, 0, sizeof *key);
+  key->tag = SCR_NV_HANDLE;
+  key->flags = SCR_NVF_SYMBOL;
+  key->u.handle = known;
+  return true;
 }
 
 void IndexKey(uint32_t index, ScrNodeValue *key) {
@@ -1490,26 +1771,30 @@ v8::Intercepted DeleteKey(const v8::PropertyCallbackInfo<v8::Boolean> &info,
 v8::Intercepted NamedGet(Local<v8::Name> name, const v8::PropertyCallbackInfo<Value> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return GetKey(info, &key);
 }
 v8::Intercepted NamedSet(Local<v8::Name> name, Local<Value> value,
                          const v8::PropertyCallbackInfo<void> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return SetKey(info, &key, value);
 }
 v8::Intercepted NamedQuery(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Integer> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return QueryKey(info, &key);
 }
 v8::Intercepted NamedDelete(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Boolean> &info) {
   HostCall scope;  // the key's text lives in the scratch this call keeps
   ScrNodeValue key;
-  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  if (!NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key))
+    return v8::Intercepted::kNo;
   return DeleteKey(info, &key);
 }
 v8::Intercepted IndexedGet(uint32_t index, const v8::PropertyCallbackInfo<Value> &info) {
@@ -1563,6 +1848,14 @@ Local<v8::Array> ExportKeys(const v8::PropertyCallbackInfo<v8::Array> &info, boo
       }
     }
   }
+  // The symbol keys of the program's object, which cross as the symbols
+  // paired with them.
+  for (uint32_t i = 0; !indices; i++) {
+    std::memset(&out, 0, sizeof out);
+    if (g_host->export_symbol(InfoId(info), i, &out) != 0) break;
+    Local<Value> symbol = ToV8(isolate, context, &out);
+    if (symbol->IsSymbol()) keep.push_back(symbol);
+  }
   return v8::Array::New(isolate, keep.data(), keep.size());
 }
 
@@ -1577,9 +1870,10 @@ Local<v8::ObjectTemplate> ExportTemplate(Isolate *isolate) {
   if (g_export_template.IsEmpty()) {
     Local<v8::ObjectTemplate> t = v8::ObjectTemplate::New(isolate);
     t->SetInternalFieldCount(1);
+    // Symbol keys included (NameKey decides which reach the runtime).
     t->SetHandler(v8::NamedPropertyHandlerConfiguration(
         NamedGet, NamedSet, NamedQuery, NamedDelete, NamedEnum, Local<Value>(),
-        v8::PropertyHandlerFlags::kOnlyInterceptStrings));
+        v8::PropertyHandlerFlags::kNone));
     t->SetHandler(v8::IndexedPropertyHandlerConfiguration(IndexedGet, IndexedSet, IndexedQuery,
                                                           IndexedDelete, IndexedEnum));
     g_export_template.Reset(isolate, t);
@@ -2157,8 +2451,17 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
     out->u.str.data = Scratch(Wtf8(isolate, text), &out->u.str.len);
     return;
   }
-  if (v->IsArrayBufferView()) {
+  if (v->IsArrayBufferView() && BytesView(v.As<v8::ArrayBufferView>())) {
     Local<v8::ArrayBufferView> view = v.As<v8::ArrayBufferView>();
+    // A view the runtime holds as its own view object: its handle says all.
+    int hash;
+    uint32_t known = Imported(isolate, v, &hash);
+    if (known == 0 && !g_young.empty()) known = YoungView(v);
+    if (known != 0 && ((known & SCR_NODE_YOUNG) || g_host->holds(known))) {
+      out->tag = SCR_NV_BYTES;
+      out->u.bytes.handle = known;
+      return;
+    }
     bool dataview = view->IsDataView();
     // Buffer() moves on-heap elements off the heap: the data stays put.
     Local<v8::ArrayBuffer> buffer = view->Buffer();
@@ -2167,11 +2470,28 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
       uint32_t elem = dataview ? 0 : ElemOf(view);
       out->tag = SCR_NV_BYTES;
       out->u.bytes.elem = elem;
+      out->u.bytes.offset = view->ByteOffset();
+      out->u.bytes.buffer_len = buffer->ByteLength();
       out->u.bytes.data = static_cast<uint8_t *>(store->Data()) + view->ByteOffset();
       out->u.bytes.len = view->ByteLength() / ElemSize(elem);
-      if (node::Buffer::HasInstance(v)) out->flags |= SCR_NVF_BUFFER;
       if (dataview) out->flags |= SCR_NVF_DATAVIEW;
-      out->u.bytes.handle = Import(isolate, v, store);
+      else if (IsNodeBuffer(isolate, context, view)) out->flags |= SCR_NVF_BUFFER;
+      // The ArrayBuffer's slot keeps the store: memory the runtime aliases
+      // stays valid for as long as it holds the buffer, which its views do.
+      out->u.bytes.buffer = BufferHandle(isolate, buffer, store);
+      out->u.bytes.handle = known != 0 ? known : ImportNew(isolate, v, hash);
+      return;
+    }
+  }
+  if (v->IsArrayBuffer()) {
+    Local<v8::ArrayBuffer> buffer = v.As<v8::ArrayBuffer>();
+    std::shared_ptr<v8::BackingStore> store = buffer->GetBackingStore();
+    if (!store->IsResizableByUserJavaScript()) {
+      out->tag = SCR_NV_BYTES;
+      out->flags = SCR_NVF_ARRAYBUFFER;
+      out->u.bytes.data = static_cast<uint8_t *>(store->Data());
+      out->u.bytes.buffer_len = buffer->ByteLength();
+      out->u.bytes.buffer = BufferHandle(isolate, buffer, store);
       return;
     }
   }
@@ -2221,7 +2541,7 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
 }
 
 void FreeRuntimeBytes(void *, size_t, void *owner) {
-  if (owner != nullptr) g_host->bytes_free(owner);
+  if (owner != nullptr && g_host != nullptr) g_host->bytes_free(owner);
 }
 
 Local<Value> ErrorConstructor(Isolate *isolate, Local<Context> context, uint32_t kind) {
@@ -2534,36 +2854,11 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
   case SCR_NV_STRING: return FromWtf8(isolate, in->u.str.data, in->u.str.len);
   case SCR_NV_BIGINT: return BigIntFromText(context, in->u.str.data, in->u.str.len);
   case SCR_NV_HANDLE: return HandleValue(isolate, in->u.handle);
-  case SCR_NV_BYTES: {
+  case SCR_NV_BYTES:
+    if (in->flags & SCR_NVF_ARRAYBUFFER) return RuntimeBufferValue(isolate, in);
     if (in->u.bytes.handle != 0) return HandleValue(isolate, in->u.bytes.handle);
-    size_t elem_size = ElemSize(in->u.bytes.elem);
-    size_t byte_len = in->u.bytes.len * elem_size;
-    Local<v8::ArrayBuffer> buffer;
-    if (byte_len == 0 || in->u.bytes.data == nullptr) {
-      buffer = v8::ArrayBuffer::New(isolate, 0);
-      if (in->u.bytes.owner != nullptr) g_host->bytes_free(in->u.bytes.owner);
-    } else {
-      std::unique_ptr<v8::BackingStore> store = v8::ArrayBuffer::NewBackingStore(
-          in->u.bytes.data, byte_len, FreeRuntimeBytes, in->u.bytes.owner);
-      buffer = v8::ArrayBuffer::New(isolate, std::move(store));
-    }
-    size_t n = in->u.bytes.len;
-    if (in->flags & SCR_NVF_DATAVIEW) return v8::DataView::New(buffer, 0, byte_len);
-    if (in->flags & SCR_NVF_BUFFER)
-      return node::Buffer::New(isolate, buffer, 0, byte_len).ToLocalChecked();
-    switch (in->u.bytes.elem) {
-    case 1: return v8::Uint32Array::New(buffer, 0, n);
-    case 2: return v8::Float32Array::New(buffer, 0, n);
-    case 3: return v8::Int32Array::New(buffer, 0, n);
-    case 4: return v8::Float64Array::New(buffer, 0, n);
-    case 5: return v8::Int8Array::New(buffer, 0, n);
-    case 6: return v8::Uint16Array::New(buffer, 0, n);
-    case 7: return v8::Int16Array::New(buffer, 0, n);
-    case 8: return v8::Uint8ClampedArray::New(buffer, 0, n);
-    case 9: return v8::Float16Array::New(buffer, 0, n);
-    default: return v8::Uint8Array::New(buffer, 0, n);
-    }
-  }
+    return RuntimeView(isolate, in);
+  case SCR_NV_SYMBOL: return RuntimeSymbol(isolate, context, in);
   case SCR_NV_ERROR: {
     // Read before the runtime is entered again: `in` may be its scratch.
     uint32_t id = in->u.error.export_id;
@@ -2964,6 +3259,46 @@ void ErrorInfo(uint32_t h, ScrNodeErrorInfo *out) {
     out->arrow = Scratch(Wtf8(op.e.isolate, arrow.As<String>()), &out->arrow_len);
 }
 
+// What an island symbol is: registered (its key), well-known (its name on
+// Symbol), or unique (its description, if it has one).
+void SymbolInfo(uint32_t h, ScrNodeSymbolInfo *out) {
+  Op op;
+  std::memset(out, 0, sizeof *out);
+  out->kind = SCR_NODE_SYMBOL_NO_DESCRIPTION;
+  Local<Value> v = HandleValue(op.e.isolate, h);
+  if (!v->IsSymbol()) return;
+  Local<Value> info;
+  if (PairHelpers(op.e.isolate, op.e.context)) {
+    Local<Value> argv[] = {v};
+    if (!g_symbol_info.Get(op.e.isolate)
+             ->Call(op.e.context, v8::Undefined(op.e.isolate), 1, argv)
+             .ToLocal(&info))
+      op.try_catch.Reset();
+  }
+  Local<Value> kind, text;
+  if (!info.IsEmpty() && info->IsArray() &&
+      info.As<v8::Array>()->Get(op.e.context, 0).ToLocal(&kind) && kind->IsUint32() &&
+      info.As<v8::Array>()->Get(op.e.context, 1).ToLocal(&text) && text->IsString()) {
+    out->kind = kind.As<v8::Uint32>()->Value();
+  } else {
+    text = v.As<v8::Symbol>()->Description(op.e.isolate);
+    if (!text->IsString()) return;
+    out->kind = SCR_NODE_SYMBOL_UNIQUE;
+  }
+  out->text = Scratch(Wtf8(op.e.isolate, text.As<String>()), &out->len);
+}
+
+// The end of the young views: the ones the program still holds enter the
+// import table, the others are let go.
+void YoungFlush(const uint8_t *keep, size_t n, uint32_t *ids) {
+  if (!g_setup) return;
+  Isolate *isolate = g_setup->isolate();
+  HandleScope handles(isolate);
+  for (size_t i = 0; i < n; i++)
+    ids[i] = keep[i] && i < g_young.size() ? Import(isolate, g_young[i].Get(isolate)) : 0;
+  g_young.clear();
+}
+
 void DropHandle(uint32_t h) {
   if (!g_setup) return;
   Isolate *isolate = g_setup->isolate();
@@ -3059,6 +3394,8 @@ const ScrNodeBridge kBridge = {
     ExportSettle,
     SharedPush,
     GcStats,
+    SymbolInfo,
+    YoungFlush,
 };
 
 }  // namespace

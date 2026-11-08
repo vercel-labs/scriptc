@@ -2445,8 +2445,11 @@ export type IrStmt =
    * In a JavaScript source, a message that ends with its diagnostic's tag
    * ("[SC2020 at file:line]") marks a diagnostic deferred from a
    * statement, which the program reports on stderr the first time the site
-   * fires (deferred-fence.ts). */
-  | { kind: "runtimeFence"; code: string; message: string; loc: SrcLoc }
+   * fires (deferred-fence.ts). `guarded` marks such a fence that sits in the
+   * `try` block of a `try`/`catch` of the same function, in the source: the
+   * program has its own handler for the statement, so the build names the
+   * site (SC6012) and the run reports it only when asked to. */
+  | { kind: "runtimeFence"; code: string; message: string; guarded?: true; loc: SrcLoc }
   /** Rethrow of a catch binding (`throw e` where e is the binding):
    * re-raises the SAVED exception exactly — kind and payload preserved,
    * payload retained (the binding stays live until its scope exits).
@@ -3397,6 +3400,22 @@ export type IrExpr =
       type: IrType;
       loc: SrcLoc;
     }
+  /** Whether the function value `value` is a view of another function
+   * value. With `adapter`, the view a signature adapter makes: `adapter`
+   * names that adapter's body, the code of an `adapts` closure, whose
+   * captures[0] is the function it forwards to. With `adapter` null, the
+   * view the checked-dynamic function boundary makes (a `dynCheck` of a
+   * callable into a function type), whose captures[0] is the checked-dynamic
+   * callable. Reads the closure's code pointer or its kind and nothing
+   * else. A consumer that hands a function more arguments than the value's
+   * type has asks this first, and starts from the function instead of from
+   * the view (function-views.ts). */
+  | { kind: "viewOf"; value: IrExpr; adapter: string | null; type: IrType; loc: SrcLoc }
+  /** What the view `value` forwards to (+1): captures[0] of the closure,
+   * the function of type `type` for a signature adapter's view and the
+   * checked-dynamic callable for the boundary's. Valid only where `viewOf`
+   * with the same operands answered true. */
+  | { kind: "viewSource"; value: IrExpr; adapter: string | null; type: IrType; loc: SrcLoc }
   /** The currently-executing closure, as a value (+1). Valid only inside a
    * lifted function. Exists so a named nested function can recurse on itself
    * WITHOUT capturing its own binding — a box holding its own closure would
@@ -3494,11 +3513,14 @@ export type IrExpr =
   /** `new Promise<T>((resolve) => ...)`: creates a pending promise and runs
    * the executor synchronously with a resolve closure; an executor throw
    * rejects the promise (JS-exact). Result +1.
-   * `resolves`: the resolve function runs the promise resolution procedure
-   * on a checked-dynamic value that the static types do not prove plain: a
-   * promise it is given is adopted, and from then on neither resolving
-   * function nor a throw of the executor changes the promise. Only on a
-   * promise of a checked-dynamic value. */
+   * `resolves`: the resolve function runs the promise resolution procedure:
+   * a promise it is given is adopted, and from then on neither resolving
+   * function nor a throw of the executor changes the promise. On a promise
+   * of a checked-dynamic value the resolve function asks each value the
+   * static types do not prove plain. On a typed promise the resolve function
+   * is the fulfilling one, sharing its target with the reject function, and
+   * the executor hands it a promise through `promise.adopt` where the
+   * value's static type has a promise arm. */
   | { kind: "newPromise"; executor: IrExpr; resolves?: true; type: IrType; loc: SrcLoc }
   /** `Promise.withResolvers<T>()`: a pending promise plus its runtime
    * resolve/reject closures (the newPromise pieces without an executor),

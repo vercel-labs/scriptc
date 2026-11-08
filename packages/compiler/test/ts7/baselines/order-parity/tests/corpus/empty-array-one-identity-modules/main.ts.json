@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/empty-array-one-identity-modules/state.ts",
+  "<repo>/tests/corpus/empty-array-one-identity-modules/main.ts"
+ ],
+ "diags": []
+}

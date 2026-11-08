@@ -8446,9 +8446,7 @@ static void scr_promise_protocol_fence(const ScrStr *key) {
  * island object (scr_dyn_promise_key_get), so an operation that would only
  * change the mirror's own-property table refuses it instead. */
 static bool scr_promise_island_fence(const ScrDyn *d, const char *operation) {
-  if (scr_ni_dyn_ops == NULL || scr_ni_dyn_ops->promise_is_island == NULL ||
-      !scr_ni_dyn_ops->promise_is_island(d))
-    return false;
+  if (scr_ni_dyn_ops == NULL || !scr_ni_dyn_ops->promise_is_island(d)) return false;
   ScrJsonBuf message;
   scr_jb_init(&message);
   scr_jb_puts(&message, operation);
@@ -8474,7 +8472,7 @@ ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDyn *method = scr_dyn_promise_member_fn ? scr_dyn_promise_member_fn(k->data, k->len) : NULL;
   /* An island promise is an island object too: an island class that
    * extends Promise has members of its own, which V8 answers. */
-  if (!method && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_get != NULL) {
+  if (!method && scr_ni_dyn_ops != NULL) {
     ScrDyn *island = NULL;
     if (scr_ni_dyn_ops->promise_get(d, k->data, k->len, &island)) return island;
   }
@@ -14078,13 +14076,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   if (scr_dyn_has_key(v, key)) return true;
   if (scr_exc_pending()) return false;
   /* The view of an error island code threw: the V8 error answers for what
-   * the view does not hold (scr_dyn_obj_read_receiver reads it there). */
-  if (v->kind == SCR_DYN_OBJ && scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_has != NULL) {
-    size_t island_hit = scr_errdyn_find(v, false);
-    if (island_hit != SIZE_MAX) {
-      int has = scr_ni_dyn_ops->error_has(scr_errdyn_cache[island_hit].err, key->data, key->len);
-      if (has >= 0) return has == 1;
-    }
+   * the view does not hold (scr_dyn_obj_read_receiver reads it there). The
+   * island unit decides whether `v` is such a view: this unit is in every
+   * program, so the site is the table test and the call. */
+  if (v->kind == SCR_DYN_OBJ && scr_ni_dyn_ops != NULL) {
+    int has = scr_ni_dyn_ops->error_has(v, key->data, key->len);
+    if (has >= 0) return has == 1;
   }
   if (v->kind == SCR_DYN_OBJ) return scr_dyn_builtin_inherited(v, key);
   if (v->kind == SCR_DYN_ARR) {
@@ -14097,7 +14094,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     for (size_t i = 0; i < 3; i++)
       if (strlen(names[i]) == key->len && memcmp(names[i], key->data, key->len) == 0) return true;
     /* An island promise is an island object too (scr_dyn_promise_key_get). */
-    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_has != NULL) {
+    if (scr_ni_dyn_ops != NULL) {
       int has = scr_ni_dyn_ops->promise_has(v, key->data, key->len);
       if (has >= 0) return has == 1;
     }
@@ -14574,7 +14571,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (recv->kind == SCR_DYN_PROMISE) {
     /* An island promise is an island object too (scr_dyn_promise_key_get):
      * a member other than then, catch and finally is written there. */
-    if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->promise_set != NULL &&
+    if (scr_ni_dyn_ops != NULL &&
         scr_ni_dyn_ops->promise_set(recv, key->data, key->len, (ScrDyn *)value))
       return;
     if (scr_promise_protocol_name(key)) {
@@ -18058,9 +18055,185 @@ static ScrDyn *scr_native_set_clone(void *ptr) {
   return result;
 }
 
+/* The copies of the errors one structuredClone call has made, by source
+ * error: an error referenced twice clones once, as Node's serializer
+ * answers a second reference with the first copy, and an error whose
+ * `cause` leads back to it finds its own copy. Both sides retained. */
+typedef struct {
+  ScrError *source;
+  ScrDyn *copy; /* the copy's checked-dynamic node */
+} ScrScErrorCopy;
+static SCR_TL struct {
+  ScrScErrorCopy *items;
+  size_t count, capacity;
+} scr_sc_errors;
+
+static void scr_sc_errors_drop(void) {
+  for (size_t i = 0; i < scr_sc_errors.count; i++) {
+    scr_error_release(scr_sc_errors.items[i].source);
+    scr_dyn_release(scr_sc_errors.items[i].copy);
+  }
+  free(scr_sc_errors.items);
+  scr_sc_errors.items = NULL;
+  scr_sc_errors.count = scr_sc_errors.capacity = 0;
+}
+
+/* The constructor Node's serializer gives the copy of an error: the one of
+ * Error's six native subclasses its `name` spells, else Error. The name is
+ * what a property read gives, converted to a string. `bag` holds the
+ * error's properties (its node, or a class view's snapshot). The slot is
+ * the error's own name, current after a typed write where a node keeps the
+ * string it had when the error first crossed, so it answers unless the own
+ * property is an accessor or holds something that is not a string. Without
+ * an own name the error inherits one: from a prototype the program made (a
+ * JavaScript class's getter or value), read through the properties, or from
+ * its class or kind (scr_error_read_name), which the properties show only
+ * as the default they were built with. -1 with the exception pending when
+ * the read or the string conversion throws. */
+static int scr_sc_error_kind(const ScrDyn *bag, ScrError *e) {
+  const ScrDyn *holder = scr_dyn_property_owner(bag, "name", 4);
+  const ScrDynEntry *entry = holder && holder->kind == SCR_DYN_OBJ ? scr_dyn_find_entry(holder, "name", 4) : NULL;
+  bool plain = entry && !entry->accessor && entry->value->kind == SCR_DYN_STR;
+  bool read;
+  if (entry && holder == bag && !plain) read = true;
+  else if (e->name_present) read = false;
+  else read = entry && holder != bag && !(plain && scr_str_eq(entry->value->v.str, e->name));
+  ScrStr *name;
+  if (read) {
+    ScrDyn *value = scr_dyn_obj_read_receiver(bag, "name", 4, bag);
+    if (!value) return -1;
+    name = scr_dyn_string_coerce_js(value);
+    scr_dyn_release(value);
+  } else {
+    name = e->name_present ? scr_str_retain(e->name) : scr_error_read_name(e);
+  }
+  if (!name) return -1;
+  static const struct { const char *name; int kind; } kinds[] = {
+      {"TypeError", SCR_ERR_TYPE},           {"RangeError", SCR_ERR_RANGE}, {"SyntaxError", SCR_ERR_SYNTAX},
+      {"ReferenceError", SCR_ERR_REFERENCE}, {"EvalError", SCR_ERR_EVAL},   {"URIError", SCR_ERR_URI},
+  };
+  int kind = SCR_ERR_ERROR;
+  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+    if (name->len == strlen(kinds[i].name) && memcmp(name->data, kinds[i].name, name->len) == 0) kind = kinds[i].kind;
+  scr_str_release(name);
+  return kind;
+}
+
+/* What a read of the error's `stack` gives, +1, or NULL with the exception
+ * pending. The runtime's own accessor answers the error's formatted stack
+ * (a name or message getter may run and throw); a value or an accessor the
+ * program put there reads as the program sees it. */
+static ScrDyn *scr_sc_error_stack(const ScrDyn *bag, ScrError *e) {
+  const ScrDynEntry *own = scr_dyn_find_entry(bag, "stack", 5);
+  if (own && !scr_dyn_setter_is_error_stack(own->accessor, own->setter))
+    return scr_dyn_obj_read_receiver(bag, "stack", 5, bag);
+  ScrStr *text = scr_error_stack(e);
+  if (!text) return NULL;
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+}
+
+/* structuredClone of an error, as Node's serializer copies one: a new error
+ * of the kind above with the source's own data `message` (as a string), its
+ * `stack` when that is a string, and a clone of its own `cause`; no own
+ * name, none of its other properties (a subclass's fields, `code`, an
+ * AggregateError's `errors`). A DOMException copies its name and message
+ * (scr_domex_clone). The copy is an ordinary error and the result its
+ * ordinary node, as when a message is decoded (scr_message.c). `e` is the
+ * source, `v` its node and `bag` the object holding its properties (the
+ * node, or a class view's snapshot); +1, or NULL with the exception
+ * pending. */
+static ScrDyn *scr_sc_clone_error(const ScrDyn *v, const ScrDyn *bag, ScrError *e, const ScrScParent *up,
+                                  ScrDynRegion *region) {
+  /* The node is shared with every other holder of the copy: not a leaf an
+   * intact region may hold. */
+  region->intact = false;
+  for (size_t i = 0; i < scr_sc_errors.count; i++)
+    if (scr_sc_errors.items[i].source == e) return scr_dyn_retain(scr_sc_errors.items[i].copy);
+  ScrError *copy;
+  bool domex = e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+  if (domex) {
+    copy = scr_domex_clone(e, NULL);
+  } else {
+    int kind = scr_sc_error_kind(bag, e);
+    if (kind < 0) return NULL;
+    const ScrDynEntry *own = scr_dyn_find_entry(bag, "message", 7);
+    ScrStr *message = NULL;
+    if (own && own->accessor) {
+      /* An accessor is not a data property: the copy has no own message. */
+    } else if (own && own->value->kind != SCR_DYN_STR) {
+      message = scr_dyn_string_coerce_js(own->value);
+      if (!message) return NULL;
+    } else if (e->message_present) {
+      message = scr_str_retain(e->message);
+    }
+    ScrDyn *stack = scr_sc_error_stack(bag, e);
+    if (!stack) {
+      scr_str_release(message);
+      return NULL;
+    }
+    copy = scr_error_new(kind, message);
+    scr_str_release(message);
+    if (stack->kind == SCR_DYN_STR) {
+      scr_error_set_stack(copy, stack->v.str);
+    } else {
+      /* The copy's `stack` is undefined: its node's accessor stores that. */
+      ScrDyn *node = scr_dyn_from_error(copy);
+      ScrStr *key = scr_str_new("stack", 5);
+      scr_dyn_key_set(node, key, scr_dyn_undefined());
+      scr_str_release(key);
+      scr_dyn_release(node);
+    }
+    scr_dyn_release(stack);
+  }
+  ScrDyn *out = scr_dyn_from_error(copy);
+  if (scr_sc_errors.count == scr_sc_errors.capacity) {
+    size_t capacity = scr_sc_errors.capacity ? scr_sc_errors.capacity * 2 : 4;
+    ScrScErrorCopy *items = realloc(scr_sc_errors.items, capacity * sizeof *items);
+    if (!items) scr_trap("scriptc: out of memory\n");
+    scr_sc_errors.items = items;
+    scr_sc_errors.capacity = capacity;
+  }
+  scr_sc_errors.items[scr_sc_errors.count++] = (ScrScErrorCopy){scr_error_retain(e), scr_dyn_retain(out)};
+  /* Only an own data `cause` is copied, as with the message: when the
+   * program made `cause` an accessor the slot holds that entry's
+   * placeholder, not a value, and the copy has no own cause. */
+  const ScrDynEntry *own_cause = domex ? NULL : scr_dyn_find_entry(bag, "cause", 5);
+  if (!domex && e->error_cause && !(own_cause && own_cause->accessor)) {
+    /* The copy is entered above, so a cause that leads back to the error
+     * answers the copy; one that leads back to a plain container is the
+     * cycle the tree cannot hold. */
+    ScrScParent self = {v, up};
+    ScrDyn *cause = scr_sc_clone(e->error_cause, &self, region);
+    if (!cause) {
+      scr_dyn_release(out);
+      scr_error_release(copy);
+      return NULL;
+    }
+    scr_error_install_cause_drop(&scr_error_cause_drop_impl);
+    copy->error_cause = scr_dyn_retain(cause);
+    copy->cause_enumerable = false;
+    scr_dyn_obj_set(out, "cause", 5, cause); /* ownership moves */
+    scr_dyn_obj_dict_entries(out)[out->v.obj.len - 1].enumerable = false;
+  }
+  scr_error_release(copy);
+  return out;
+}
+
+/* Whether a class view that is not its instance's own node is a view of an
+ * Error subclass instance: its snapshot carries the error marker and it
+ * points at the error. */
+static bool scr_sc_error_view(const ScrDyn *v, const ScrDyn *snapshot) {
+  return snapshot && snapshot->kind == SCR_DYN_OBJ && v->v.typed_ref.type_key_len > 7 &&
+         memcmp(v->v.typed_ref.type_key, "object:", 7) == 0 && scr_dyn_obj_get(snapshot, "%error", 6) != NULL &&
+         scr_error_is(v->v.typed_ref.ptr);
+}
+
 /* The clone is a fresh tree (shared inputs are copied per path, cycles
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
- * region may not hold clears it. */
+ * region may not hold clears it. An error is the exception: it clones to
+ * one error however often the input holds it. */
 static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region) {
   if (scr_uncloneable_count && scr_uncloneable_marked(v)) {
     scr_throw_domex("DataCloneError", "Cannot clone object of unsupported type.");
@@ -18069,6 +18242,20 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
   if (v->kind == SCR_DYN_PROXY) {
     scr_throw_domex("DataCloneError", "#<Object> could not be cloned.");
     return NULL;
+  }
+  /* An error is the value its checked-dynamic node stands for. An object
+   * that only has a `%error` key is not one (scr_dyn_throw draws the same
+   * line). */
+  ScrError *error = v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_TYPED_REF ? scr_errdyn_err_of(v) : NULL;
+  if (error) {
+    /* A class view's properties are in its snapshot. */
+    ScrDyn *view = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
+    const ScrDyn *bag = v->kind == SCR_DYN_TYPED_REF ? view : v;
+    ScrDyn *out = bag && bag->kind == SCR_DYN_OBJ && !scr_exc_pending()
+                      ? scr_sc_clone_error(v, bag, error, up, region) : NULL;
+    scr_dyn_release(view);
+    scr_error_release(error);
+    return out;
   }
   switch (v->kind) {
   case SCR_DYN_SYMBOL: {
@@ -18168,7 +18355,9 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
 
   case SCR_DYN_TYPED_REF: {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
-    ScrDyn *out = scr_sc_clone(materialized, up, region);
+    ScrDyn *out = scr_sc_error_view(v, materialized)
+                      ? scr_sc_clone_error(v, materialized, (ScrError *)v->v.typed_ref.ptr, up, region)
+                      : scr_sc_clone(materialized, up, region);
     scr_dyn_release(materialized);
     return out;
   }
@@ -18223,7 +18412,17 @@ ScrDyn *scr_structured_clone(const ScrDyn *value, const ScrDyn *options) {
   scr_sc_validate_options(options);
   if (scr_exc_pending()) return NULL;
   ScrDynRegion *region = scr_dyn_region_new();
+  /* Each call copies errors on its own: one a getter starts while this one
+   * runs shares none of its copies. */
+  ScrScErrorCopy *outer_items = scr_sc_errors.items;
+  size_t outer_count = scr_sc_errors.count, outer_capacity = scr_sc_errors.capacity;
+  scr_sc_errors.items = NULL;
+  scr_sc_errors.count = scr_sc_errors.capacity = 0;
   ScrDyn *out = scr_sc_clone(value, NULL, region);
+  scr_sc_errors_drop();
+  scr_sc_errors.items = outer_items;
+  scr_sc_errors.count = outer_count;
+  scr_sc_errors.capacity = outer_capacity;
   scr_dyn_region_unref(region); /* the clone's own reference */
   return out;
 }
@@ -18313,12 +18512,9 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
    * errno, cause, an AggregateError's errors), a method or accessor of its
    * class, and its `constructor`, which is its own realm's (the island's
    * TypeError is the one `e.constructor` names). */
-  if (scr_ni_dyn_ops != NULL && scr_ni_dyn_ops->error_get != NULL) {
-    size_t island_hit = scr_errdyn_find(d, false);
+  if (scr_ni_dyn_ops != NULL) {
     ScrDyn *island = NULL;
-    if (island_hit != SIZE_MAX &&
-        scr_ni_dyn_ops->error_get(scr_errdyn_cache[island_hit].err, key, key_len, &island))
-      return island;
+    if (scr_ni_dyn_ops->error_get(d, key, key_len, &island)) return island;
   }
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
     /* An error's constructor: the interned function value its global

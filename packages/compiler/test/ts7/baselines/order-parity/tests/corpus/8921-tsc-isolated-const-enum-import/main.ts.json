@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8921-tsc-isolated-const-enum-import/levels.ts",
+  "<repo>/tests/corpus/8921-tsc-isolated-const-enum-import/modes.ts",
+  "<repo>/tests/corpus/8921-tsc-isolated-const-enum-import/main.ts"
+ ],
+ "diags": []
+}

@@ -4,12 +4,7 @@ import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile } from "../program.js";
 import { dynFallbackType } from "./lowerer.js";
 import { isGenericCallableMemberType } from "../type-mapper.js";
-export {
-  bindingNeverReassigned,
-  fileWritesBinding,
-  stripValueWrappers,
-  type BindingScope,
-} from "../binding-writes.js";
+export { bindingNeverReassigned, fileWritesBinding, type BindingScope } from "../binding-writes.js";
 /** An identifier that reads or declares a binding (not a member name).
  * `o.value`, `{ value: 1 }`, `const { value: v } = o` and `value?: T` all put
  * the identifier in a NAME position: the checker answers the MEMBER's symbol

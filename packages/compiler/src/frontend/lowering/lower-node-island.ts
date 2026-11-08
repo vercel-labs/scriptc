@@ -57,6 +57,7 @@ import {
   crossingOf,
   isCopiedTsType,
   isForeignType,
+  isIslandDeclared,
   isIslandSubclassDecl,
   markIslandSubclass,
   islandOwnerOfFile,
@@ -626,20 +627,62 @@ function registerIslandReexport(
     lowerer.islandReexports.set(lowerer.checker.getAliasedSymbol(found), binding);
 }
 
-/** The island binding an alias chain reaches, or null: a name re-exported
- * by a native module resolves to the island's export symbol itself. */
+/** The island binding an alias chain reaches, or null. The chain is walked
+ * one declaration at a time and ends on a name a native module re-exports
+ * from an island package (`export { a } from "pkg"`, registered when the
+ * module was collected) or on a binding a native module imported from one
+ * and passes on (`import { a } from "pkg"; export { a };`, `export default
+ * a`): its importers bind the island's own export, whatever they call it.
+ * The answer depends only on the program's declarations and on the island
+ * modules the collection found, so it is kept per symbol for as long as
+ * that collection stands. */
 function islandReexportOf(lowerer: Lowerer, symbol: ts.Symbol | undefined): IslandBinding | null {
-  if (symbol === undefined || lowerer.islandReexports.size === 0) return null;
+  if (symbol === undefined) return null;
+  const memo = lowerer.islandAliasBindings;
+  const collected = lowerer.islandModules.size + lowerer.islandReexports.size;
+  if (memo.collected !== collected) {
+    memo.collected = collected;
+    memo.bySymbol.clear();
+  }
+  const known = memo.bySymbol.get(symbol);
+  if (known !== undefined) return known;
+  let found: IslandBinding | null = null;
   const seen = new Set<ts.Symbol>();
   let s: ts.Symbol | undefined = symbol;
   while (s !== undefined && !seen.has(s)) {
     seen.add(s);
     const bound = lowerer.islandReexports.get(s);
-    if (bound !== undefined) return bound;
-    if ((s.flags & ts.SymbolFlags.Alias) === 0) return null;
-    s = lowerer.checker.getAliasedSymbol(s);
+    if (bound !== undefined) {
+      found = bound;
+      break;
+    }
+    if ((s.flags & ts.SymbolFlags.Alias) === 0) break;
+    if (s !== symbol) {
+      const passedOn = islandImportOf(lowerer, s);
+      if (passedOn !== null) {
+        found = passedOn;
+        break;
+      }
+    }
+    s = lowerer.checker.getImmediateAliasedSymbol(s);
   }
-  return null;
+  memo.bySymbol.set(symbol, found);
+  return found;
+}
+
+/** The binding of a symbol that is itself an import of an island module
+ * (a named, default or namespace import, or a `require` binding), or null. */
+function islandImportOf(lowerer: Lowerer, symbol: ts.Symbol | undefined): IslandBinding | null {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return null;
+  const site = islandImportSite(lowerer.checker, islands, symbol);
+  if (site === null) return null;
+  const module = lowerer.islandModules.get(site.path);
+  if (module === undefined) return null;
+  if (site.form === "required") return { kind: "required", module };
+  if (site.form === "namespace") return { kind: "namespace", module };
+  if (site.form === "default") return { kind: "default", module };
+  return { kind: "named", module, name: site.form.name };
 }
 
 function moduleSpecifierOf(decl: ts.Node | undefined): string | null {
@@ -655,58 +698,70 @@ export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): b
   return islandBindingOf(lowerer, ident) !== null;
 }
 
-export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
-  const islands = lowerer.nodeIslands;
-  if (islands === null) return null;
-  // A shorthand property's name (`{ compare }`) reads the binding of that
-  // name: the checker answers the property for the name itself.
+/** The symbol an identifier in value position binds. A shorthand property's
+ * name (`{ compare }`) reads the binding of that name: the checker answers
+ * the property for the name itself. */
+function bindingSymbolOf(checker: ts.TypeChecker, ident: ts.Identifier): ts.Symbol | undefined {
   const shorthand =
     ident.parent !== undefined &&
     ts.isShorthandPropertyAssignment(ident.parent) &&
     ident.parent.name === ident
-      ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
+      ? checker.getShorthandAssignmentValueSymbol(ident.parent)
       : undefined;
-  const symbol = shorthand ?? lowerer.checker.getSymbolAtLocation(ident);
-  // A name a native module re-exports from an island package binds the
-  // island's own export: the import's alias chain reaches it.
-  const reexport = islandReexportOf(lowerer, symbol);
-  if (reexport !== null) return reexport;
+  return shorthand ?? checker.getSymbolAtLocation(ident);
+}
+
+/** What a binding's declaration takes from an island module: the module's
+ * file and the form of the binding. */
+interface IslandImportSite {
+  path: string;
+  form: "required" | "namespace" | "default" | { name: string };
+}
+
+/** The island module a binding's own declaration names, or null: an import
+ * (default, named or namespace) or a `require` of one. A pure function of
+ * the checker and the island set, so the class protocol index can ask it
+ * before any module is lowered; islandBindingOf answers for the modules a
+ * lowering loaded. */
+function islandImportSite(
+  checker: ts.TypeChecker,
+  islands: NodeIslandSet,
+  symbol: ts.Symbol | undefined,
+): IslandImportSite | null {
   const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
-  let binding: "namespace" | "default" | { name: string };
+  let form: IslandImportSite["form"];
   if (ts.isNamespaceImport(decl)) {
     importDecl = decl.parent?.parent;
-    binding = "namespace";
+    form = "namespace";
   } else if (ts.isImportClause(decl)) {
     importDecl = decl.parent;
-    binding = "default";
+    form = "default";
   } else if (ts.isImportSpecifier(decl)) {
     importDecl = decl.parent?.parent?.parent;
     const name = decl.propertyName?.text ?? decl.name.text;
-    binding = name === "default" ? "default" : { name };
+    form = name === "default" ? "default" : { name };
   } else {
     // `const { name } = require("pkg")`: a member of module.exports, read
     // at each use (shortcut: not copied once at the declaration).
     const property = requiredPropertyOf(decl);
     if (property !== null && loadsAtStatement(property.declaration)) {
-      const spec = requireInitSpecOf(lowerer, property.declaration);
+      const spec = requireInitSpecOf(checker, property.declaration);
       if (spec === null) return null;
       const file = ts.getSourceFileOfNode(decl).fileName;
       const path = islandModuleFile(islands, file, spec, "require");
-      const module = path === null ? undefined : lowerer.islandModules.get(path);
-      return module === undefined ? null : { kind: "named", module, name: property.name };
+      return path === null ? null : { path, form: { name: property.name } };
     }
     // `const x = require("pkg")` (a CommonJS module of a native package
     // requiring an island package): x is module.exports. Only at the
     // module's top level: a function's own binding is a local.
     const statement = decl.parent?.parent;
     if (statement === undefined || !ts.isSourceFile(statement.parent)) return null;
-    const spec = requireSpecOf(lowerer, decl);
+    const spec = requireSpecOf(checker, decl);
     if (spec === null) return null;
     const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
-    const module = path === null ? undefined : lowerer.islandModules.get(path);
-    return module === undefined ? null : { kind: "required", module };
+    return path === null ? null : { path, form: "required" };
   }
   const spec = moduleSpecifierOf(importDecl);
   if (spec === null || importDecl === undefined) return null;
@@ -716,12 +771,35 @@ export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandB
     spec,
     "import",
   );
-  if (path === null) return null;
-  const module = lowerer.islandModules.get(path);
-  if (module === undefined) return null;
-  if (binding === "namespace") return { kind: "namespace", module };
-  if (binding === "default") return { kind: "default", module };
-  return { kind: "named", module, name: binding.name };
+  return path === null ? null : { path, form };
+}
+
+/** Whether `ident` binds a value an island module exports, by its
+ * declaration alone: an import or a `require` of an island module, or a
+ * name a native module re-exports from one (the alias chain ends at a
+ * declaration the island owns). This is the origin the class protocol index
+ * marks received types by (class-protocols.ts, markIslandView): the value
+ * comes out of the island whatever type the program names for it. */
+export function bindsIslandExport(
+  checker: ts.TypeChecker,
+  islands: NodeIslandSet,
+  ident: ts.Identifier,
+): boolean {
+  const symbol = bindingSymbolOf(checker, ident);
+  if (symbol === undefined) return false;
+  if (islandImportSite(checker, islands, symbol) !== null) return true;
+  if ((symbol.flags & ts.SymbolFlags.Alias) === 0) return false;
+  const target = checker.getAliasedSymbol(symbol);
+  return target !== symbol && isIslandDeclared(islands, target);
+}
+
+export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return null;
+  const symbol = bindingSymbolOf(lowerer.checker, ident);
+  const imported = islandImportOf(lowerer, symbol);
+  if (imported !== null) return imported;
+  return islandReexportOf(lowerer, symbol);
 }
 
 /** The raw (dyn) value an island import binding reads. */
@@ -931,6 +1009,17 @@ function islandValueAt(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrEx
     return raw;
   }
   if (mapped.kind === "void") return raw;
+  // A timer the island created stays the island's Timeout or Immediate (the
+  // program's own handles are numbers): the program clears it, calls its
+  // methods and passes it back through the handle.
+  if (islandTimerType(lowerer, tsType)) {
+    if (handleUseOk(lowerer, node)) return raw;
+    boundaryFail(
+      lowerer,
+      `an island value of type '${lowerer.checker.typeToString(tsType)}' used as a native value (a timer created by island code stays the island's object: keep it in a const, clear it, call its methods or pass it back to the island)`,
+      node,
+    );
+  }
   // An island promise is the same promise on both sides (the runtime keeps
   // one ScrPromise per V8 promise): PromiseResolve of the dyn value, whose
   // settlement value meets the declared type when it is awaited.
@@ -1258,12 +1347,61 @@ function isForeignExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   return isIslandHandleExpr(lowerer, inner);
 }
 
+/** Whether `type` is the Timeout or Immediate of the standard library or
+ * @types/node (nullish arms aside). A timer island code created is the
+ * island's object: the program's own timer handles are numbers, which it is
+ * not, so it stays a handle the program clears, calls methods on and passes
+ * back. */
+function islandTimerType(lowerer: Lowerer, type: ts.Type): boolean {
+  if (type.isUnionType()) {
+    const parts = ts
+      .constituentTypes(type)
+      .filter(
+        (t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) === 0,
+      );
+    return parts.length > 0 && parts.every((t) => islandTimerType(lowerer, t));
+  }
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (name !== "Timeout" && name !== "Immediate") return false;
+  return symbol.declarations.some(
+    (d) =>
+      (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+      lowerer.isStdlibFile(ts.getSourceFileOfNode(d)),
+  );
+}
+
+/** Whether `callee` names clearTimeout, clearInterval or clearImmediate: the
+ * globals or the node:timers functions. Their argument may be an island's
+ * timer, which Node's own function clears (lower-timers.ts). */
+function isTimerClearCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
+  const c = withoutParenthesesTypeWrappers(callee);
+  const clear = (name: string): boolean =>
+    name === "clearTimeout" || name === "clearInterval" || name === "clearImmediate";
+  if (ts.isPropertyAccessExpression(c)) {
+    const member = lowerer.builtinMemberOf(c);
+    return member !== null && member.module === "timers" && clear(member.member);
+  }
+  if (!ts.isIdentifier(c)) return false;
+  const imported = lowerer.builtinImportOf(c);
+  if (imported) return imported.module === "timers" && clear(imported.member);
+  if (!clear(c.text)) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(c)?.declarations ?? [];
+  return (
+    declarations.length > 0 &&
+    declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+  );
+}
+
 /** Whether a value of TypeScript type `type` coming out of an island is
  * an object the island does not declare and the program cannot take by
- * reference natively (arrays, tuples, Maps, Sets): it stays a handle. */
+ * reference natively (arrays, tuples, Maps, Sets, timers): it stays a
+ * handle. */
 function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
   if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
+  if (islandTimerType(lowerer, type)) return true;
   const mapped = lowerer.mapTypeOf(type);
   // No native representation at all: the island's object is the only one
   // there is. A function object keeps its own rule (fromIsland).
@@ -1396,8 +1534,10 @@ export function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
 /** Whether `node` is a value a Node island made, as far as the compiler
  * sees it, in a slot where an island object stays the island's (typed `any`,
  * `unknown` or by the island): an island read, call, index or `new`, awaited
- * or not, or a `const` initialized with one. The divergence scan asks this
- * of the operand of a checked conversion (SC6007). */
+ * or not, a `const` initialized with one, or a value whose origin the view
+ * marking follows to an island (through the program's own untyped
+ * parameters and returns: class-protocols.ts, islandOrigin). The divergence
+ * scan asks this of the operand of a checked conversion (SC6007). */
 export function islandMadeValue(lowerer: Lowerer, node: ts.Expression, depth = 0): boolean {
   const islands = lowerer.nodeIslands;
   if (islands === null) return false;
@@ -1408,6 +1548,7 @@ export function islandMadeValue(lowerer: Lowerer, node: ts.Expression, depth = 0
     !isForeignType(islands, type, lowerer.checker)
   )
     return false;
+  if (depth === 0 && lowerer.islandOrigin(e)) return true;
   while (ts.isAwaitExpression(e)) e = withoutParenthesesTypeWrappers(e.expression);
   if (ts.isIdentifier(e)) {
     if (depth >= 4) return false;
@@ -1584,8 +1725,16 @@ function handleUseOk(lowerer: Lowerer, node: ts.Expression): boolean {
       return isForeignExpr(lowerer, c.expression);
     return isForeignExpr(lowerer, c);
   };
-  if (ts.isCallExpression(p) || ts.isNewExpression(p))
-    return p.expression === n || islandCallee(p.expression);
+  if (ts.isCallExpression(p) || ts.isNewExpression(p)) {
+    if (p.expression === n || islandCallee(p.expression)) return true;
+    // clearTimeout(islandTimer): Node's own clear function clears it.
+    return (
+      ts.isCallExpression(p) &&
+      p.arguments.nodes[0] === n &&
+      islandTimerType(lowerer, lowerer.typeOf(node)) &&
+      isTimerClearCallee(lowerer, p.expression)
+    );
+  }
   if (ts.isSpreadElement(p)) {
     const q = p.parent;
     if (ts.isArrayLiteralExpression(q)) return true;
@@ -3097,12 +3246,12 @@ function plainLiteral(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpressi
 
 /** The specifier of `x = require("spec")` (a variable declaration binding
  * an identifier to a literal require), or null. */
-function requireSpecOf(lowerer: Lowerer, decl: ts.Node): string | null {
+function requireSpecOf(checker: ts.TypeChecker, decl: ts.Node): string | null {
   if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
   // Only a const keeps the module: a let or var can be reassigned.
   const list = decl.parent;
   if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) return null;
-  return requireInitSpecOf(lowerer, decl);
+  return requireInitSpecOf(checker, decl);
 }
 
 /** The property a destructured CommonJS require binds: `name` in
@@ -3162,7 +3311,7 @@ export function lowerIslandRequireAtStatement(
 ): IrStmt | null {
   const islands = lowerer.nodeIslands;
   if (islands === null || !loadsAtStatement(decl)) return null;
-  const spec = requireInitSpecOf(lowerer, decl);
+  const spec = requireInitSpecOf(lowerer.checker, decl);
   if (spec === null) return null;
   const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
   const module = path === null ? undefined : lowerer.islandModules.get(path);
@@ -3176,7 +3325,7 @@ export function lowerIslandRequireAtStatement(
 
 /** The specifier of a variable declaration initialized with a literal
  * `require("spec")`, whatever its binding name or pattern, or null. */
-function requireInitSpecOf(lowerer: Lowerer, decl: ts.VariableDeclaration): string | null {
+function requireInitSpecOf(checker: ts.TypeChecker, decl: ts.VariableDeclaration): string | null {
   if (decl.initializer === undefined) return null;
   let init: ts.Expression = decl.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
@@ -3189,7 +3338,7 @@ function requireInitSpecOf(lowerer: Lowerer, decl: ts.VariableDeclaration): stri
     return null;
   // The global require, not a function of the program named require.
   if (
-    lowerer.checker
+    checker
       .getSymbolAtLocation(init.expression)
       ?.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
   )
@@ -3214,7 +3363,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       // here on; the statement itself loads the module at its position
       // (lowerIslandRequireAtStatement).
       if (loadsAtStatement(decl)) {
-        const spec = requireInitSpecOf(lowerer, decl);
+        const spec = requireInitSpecOf(lowerer.checker, decl);
         const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
         if (path !== null) {
           lowerer.noteIslandOnWorkerThread(spec!, decl);
@@ -3223,7 +3372,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
         }
         continue;
       }
-      const spec = requireSpecOf(lowerer, decl);
+      const spec = requireSpecOf(lowerer.checker, decl);
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");
       if (path === null) continue;

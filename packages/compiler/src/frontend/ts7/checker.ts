@@ -671,6 +671,14 @@ export class CheckerFacade {
     return aliased;
   }
 
+  /** The symbol one declaration further along an alias chain (the export
+   * an import names, the binding a local export passes on), or undefined
+   * where the chain ends. getAliasedSymbol answers the chain's end. */
+  getImmediateAliasedSymbol(symbol: Ts7Symbol): Ts7Symbol | undefined {
+    this.ensureActive();
+    return this.raw.getImmediateAliasedSymbol(symbol);
+  }
+
   /** A module symbol's exports, with the members of its `export *`
    * declarations resolved (a symbol's own export table lists only the
    * module's own declarations). */

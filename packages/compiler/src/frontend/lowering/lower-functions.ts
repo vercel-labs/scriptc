@@ -387,6 +387,12 @@ export function lowerLambda(
   // fence at the reference (identifiers.ts) with that use's own target
   // (a call, or `const g = f` under an annotated slot). Fencing it here
   // refused declarations that are only ever CALLED.
+  // A member of a class that extends an island class keeps the rule,
+  // although lowerIslandSubclass boxes each one into the checked-dynamic
+  // function the JavaScript class calls: such a class does not answer its
+  // `length` as Node does yet, and an instance that travels through a
+  // union-typed value loses its class. Both differ without an error, so no
+  // further program is admitted into them until they are right.
   if (
     !ts.isFunctionDeclaration(node) &&
     !(
@@ -738,6 +744,16 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
+    // In TypeScript a parameter default, an object-assignment shorthand and
+    // an assignment to an identifier name an anonymous definition as in
+    // JavaScript, but its stack-frame name (sourceName) stays as it was, so
+    // typed programs lower as before: the JavaScript name is the function's
+    // displayName, set only in a module that boxes a function without a
+    // static name (function-names.ts).
+    if (lifted.sourceName === "<anonymous>") {
+      const named = jsFuncNameOf(node, undefined, { everyForm: true });
+      if (named !== null) lowerer.objectMethodNames.set(fnName, named);
+    }
     return {
       kind: "closure",
       fnName,

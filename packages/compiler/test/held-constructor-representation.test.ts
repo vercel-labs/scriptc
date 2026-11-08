@@ -20,6 +20,10 @@ async function compileSource(source: string) {
       dynamicSlots: (result.ok ? (result.warnings ?? []) : [])
         .filter((d) => d.code === "SC6104")
         .map((d) => d.message),
+      // SC6015: the statements that compile to a throw.
+      throwing: (result.ok ? (result.warnings ?? []) : [])
+        .filter((d) => d.code === "SC6015")
+        .map((d) => d.message),
     };
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -72,4 +76,43 @@ test("a single held constructor handed to a consumer the typed form refuses", as
 console.log("name" in read, Object.keys(read).length, read("4") + 1);
 `);
   expect(result.errors).toEqual([]);
+});
+
+// A statement whose refusal waits for it to run, or that hands a held
+// constructor to an operation the runtime refuses, is named by the build:
+// a TypeScript program is otherwise told at build time what does not compile.
+test("the build names each statement that throws when it runs", async () => {
+  const result = await compileSource(`import { format } from "node:util";
+${SHELF}function pick(reader: Reader): Reader {
+  return reader;
+}
+const held = pick(String);
+function seldom(): void {
+  const wrapped = new held("4");
+  const shown = format("%o", held);
+  const parent = Object.getPrototypeOf(held);
+  console.log(typeof wrapped, shown, parent === null);
+}
+if (process.argv.length > 9) seldom();
+console.log(held("7"), shelf.pages === Number, format("%s", held.name));
+`);
+  expect(result.errors).toEqual([]);
+  expect(result.throwing).toHaveLength(3);
+  expect(result.throwing[0]).toContain("SC1090: 'new' through a held String, Number, Boolean");
+  expect(result.throwing[1]).toContain("util.format %o of function values");
+  expect(result.throwing[2]).toContain("Object.getPrototypeOf of a held built-in constructor");
+});
+
+// The prototype of a held constructor is refused by name, whether the value
+// is read from a member or from a binding; the constructor's own name is
+// not a held value.
+test("the prototype of a constructor held in a binding is refused at build time", async () => {
+  const result = await compileSource(`${SHELF}function pick(reader: Reader): Reader {
+  return reader;
+}
+const held = pick(String);
+console.log(held.prototype === String.prototype);
+`);
+  expect(result.ok).toBe(false);
+  expect(result.errors.join("\\n")).toContain("prototype");
 });

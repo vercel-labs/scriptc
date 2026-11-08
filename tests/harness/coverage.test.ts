@@ -1402,10 +1402,15 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // that copy and the warnings that were not needed. SC6012 names a
     // refused statement inside its own try block, and a corpus program that
     // has one is written so that Node throws there too (a guarded require
-    // of a module that is not there), which is how it matches.
+    // of a module that is not there), which is how it matches. SC6015
+    // names a TypeScript statement that throws when it runs, and a corpus
+    // program that has one does not reach it (`new` through a held
+    // constructor in a function the program never calls).
     expect
       .soft(
-        (coverage.divergences ?? []).filter((d) => d.code !== "SC6001" && d.code !== "SC6012"),
+        (coverage.divergences ?? []).filter(
+          (d) => d.code !== "SC6001" && d.code !== "SC6012" && d.code !== "SC6015",
+        ),
         file,
       )
       .toEqual([]);

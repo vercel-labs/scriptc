@@ -455,6 +455,15 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
   );
 }
 
+/** Whether `node` is an identifier that names a declaration of the standard
+ * library (the global `String`), not a binding of the program. */
+function namesStdlibGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const raw = lowerer.checker.getSymbolAtLocation(node);
+  const sym = raw && raw.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(raw) : raw;
+  return sym !== undefined && lowerer.isStdlibSymbol(sym);
+}
+
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -467,12 +476,14 @@ export function lowerPropertyAccessExpr(
     lowerer.buffersMutable = true;
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
-  // TypeScript source; JavaScript reads it from the untyped value).
+  // TypeScript source; JavaScript reads it from the untyped value). The
+  // constructor's own name (`String.prototype`) is not a held value: a
+  // binding that holds one (`const held = pick(String)`) is.
   if (
     lowerer.untypedConstructors &&
     expr.name.text === "prototype" &&
     !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
-    !ts.isIdentifier(expr.expression) &&
+    !namesStdlibGlobal(lowerer, expr.expression) &&
     builtinConstructorNames(lowerer, expr.expression) !== null
   )
     lowerer.noLowering("the prototype of a held built-in constructor", expr);

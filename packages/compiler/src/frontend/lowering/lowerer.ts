@@ -105,7 +105,7 @@ import {
   type WidthCopyFact,
 } from "./width-copies.js";
 import { guardedDeferredFences } from "../../ir/deferred-fence.js";
-import { guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
+import { deferredRefusalDiag, guardedDeferredFenceDiag } from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
 import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-statics.js";
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
@@ -2062,6 +2062,7 @@ function lowerToIrWithIslands(
     ...scanDivergences(resultLowerer, moduleOrder),
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
+    ...resultLowerer.deferredRefusalWarnings,
     // Deferred refusals inside their own try/catch: named here, since the
     // binary does not report them (ir/deferred-fence.ts).
     ...(result.module === null
@@ -4807,6 +4808,10 @@ export class Lowerer {
    * run load (noteIslandOnWorkerThread), one per load site. Warnings, so
    * they leave with the divergences and never fail the build. */
   readonly islandWorkerWarnings: ScrDiagnostic[] = [];
+  /** SC6015 warnings: the TypeScript statements that compile to a throw
+   * (noteDeferredRefusal), one per statement. Warnings, so they leave with
+   * the divergences and never fail the build. */
+  readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5440,6 +5445,7 @@ export class Lowerer {
       // is journaled like `diags` (the plan itself is unjournaled).
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
       checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
+      checkedTable("deferredRefusalWarnings", () => this.deferredRefusalWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -14565,6 +14571,36 @@ export class Lowerer {
       )
     )
       this.islandWorkerWarnings.push(diag);
+  }
+
+  /** SC6015 for the TypeScript statement at `node`, which compiles to a
+   * throw of `refusal` (deferredRefusalDiag): once per statement. A
+   * JavaScript source has its own report (ir/deferred-fence.ts). */
+  noteDeferredRefusal(node: ts.Node, refusal: string, hint: string): void {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const diag = deferredRefusalDiag(refusal, locOf(node), hint);
+    if (
+      !this.deferredRefusalWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.deferredRefusalWarnings.push(diag);
+  }
+
+  /** Whether the value of `node`, lowered as `value`, is a function the
+   * runtime holds as a plain function value: a typed function, or a held
+   * built-in constructor in an untyped slot. */
+  isFunctionValue(node: ts.Expression, value: IrExpr): boolean {
+    return (
+      value.type.kind === "func" ||
+      (value.type.kind === "dyn" && this.holdsBuiltinConstructor(node))
+    );
+  }
+
+  /** Whether every value of `node` is a built-in primitive constructor
+   * (`String`, a slot typed `typeof String | typeof Number`). */
+  holdsBuiltinConstructor(node: ts.Expression): boolean {
+    return holdsPrimitiveConstructors(this.typeOf(node), this.typeCtx);
   }
 
   refuseIslandWorkerValue(node: ts.Node, kind: string): never {

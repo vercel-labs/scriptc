@@ -13386,6 +13386,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       "call the held constructor as a function for the primitive, or construct with the constructor's own name",
     );
     lowerer.runtimeFences.push(diag);
+    // The build names the statement (SC6015): its refusal waits for it to run.
+    lowerer.noteDeferredRefusal(expr, `${diag.code}: ${diag.message}`, diag.hint ?? "");
     const line =
       ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), diag.loc.start).line + 1;
     const never = lowerer.declareHiddenLocal("%never", DYN);

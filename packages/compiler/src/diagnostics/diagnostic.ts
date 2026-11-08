@@ -1382,6 +1382,19 @@ export function noLoweringDiag(
   };
 }
 
+/** An assignment of a formatter to Error.prepareStackTrace
+ * (lowering/builtins/stack-trace-hook.ts). By design: a compiled program
+ * has no V8 call sites to pass one. */
+export function stackTraceHookDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message:
+      "'Error.prepareStackTrace' cannot be given a formatter: a compiled program has no V8 call sites (structured stack frames) to pass it, and an error's stack is always its text",
+    loc,
+    hint: "code that reads a caller's file from a call site can take the module's own location instead (import.meta.url, import.meta.dirname, __filename); assigning undefined, or restoring a saved value that is undefined, compiles",
+  };
+}
+
 /** A use of a Node 24 global the native runtime does not implement
  * (host-globals.ts): constructing or calling its constructor value, or
  * reading one of its members. A bare read compiles and answers the

@@ -752,7 +752,7 @@ function islandImportSite(
       if (spec === null) return null;
       const file = ts.getSourceFileOfNode(decl).fileName;
       const path = islandModuleFile(islands, file, spec, "require");
-      if (path === null || !keepsRequiredModule(checker, property.declaration)) return null;
+      if (path === null || !keepsRequiredModule(islands, checker, property.declaration)) return null;
       return { path, form: { name: property.name } };
     }
     // `const x = require("pkg")` (a CommonJS module of a native package
@@ -764,7 +764,7 @@ function islandImportSite(
     const spec = requireSpecOf(checker, decl);
     if (spec === null) return null;
     const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
-    if (path === null || !keepsRequiredModule(checker, decl)) return null;
+    if (path === null || !keepsRequiredModule(islands, checker, decl)) return null;
     return { path, form: "required" };
   }
   const spec = moduleSpecifierOf(importDecl);
@@ -3504,11 +3504,6 @@ function requireSpecOf(checker: ts.TypeChecker, decl: ts.VariableDeclaration): s
   return requireInitSpecOf(checker, decl);
 }
 
-/* Whether a `let` or `var` binding is never written after its declaration,
- * per binding symbol. The symbols are a program's own, so the table empties
- * with the program. */
-const unwrittenBindings = new WeakMap<ts.Symbol, boolean>();
-
 /** Whether the names `decl` binds hold the required module for good, so
  * each is the module (or its member) at every use: a `const`, or a `let` or
  * `var` that nothing in its file writes again (binding-writes.ts: an
@@ -3520,7 +3515,11 @@ const unwrittenBindings = new WeakMap<ts.Symbol, boolean>();
  * function called above the declaration) finds the module global unassigned
  * and stops the program, where Node reads undefined; a `const` stops there
  * in Node too. */
-function keepsRequiredModule(checker: ts.TypeChecker, decl: ts.VariableDeclaration): boolean {
+function keepsRequiredModule(
+  islands: NodeIslandSet,
+  checker: ts.TypeChecker,
+  decl: ts.VariableDeclaration,
+): boolean {
   const list = decl.parent;
   if (!ts.isVariableDeclarationList(list)) return false;
   if ((list.flags & ts.NodeFlags.Const) !== 0) return true;
@@ -3535,10 +3534,11 @@ function keepsRequiredModule(checker: ts.TypeChecker, decl: ts.VariableDeclarati
     if (name === undefined || !ts.isIdentifier(name)) return false;
     const symbol = checker.getSymbolAtLocation(name);
     if (symbol === undefined) return false;
-    let unwritten = unwrittenBindings.get(symbol);
+    const answers = (islands.bindingsNeverWritten ??= new Map<object, boolean>());
+    let unwritten = answers.get(symbol);
     if (unwritten === undefined) {
       unwritten = !fileWritesBinding(symbol, file, (ident) => bindingSymbolOf(checker, ident));
-      unwrittenBindings.set(symbol, unwritten);
+      answers.set(symbol, unwritten);
     }
     if (!unwritten) return false;
   }
@@ -3607,7 +3607,7 @@ export function lowerIslandRequireAtStatement(
   const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
   const module = path === null ? undefined : lowerer.islandModules.get(path);
   if (path === null || module === undefined) return null;
-  if (!keepsRequiredModule(lowerer.checker, decl)) return null;
+  if (!keepsRequiredModule(islands, lowerer.checker, decl)) return null;
   const loc = locOf(decl);
   const load = runsAtModuleEvaluation(decl)
     ? deferIslandModule(lowerer, path, loc)
@@ -3657,7 +3657,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       if (loadsAtStatement(decl)) {
         const spec = requireInitSpecOf(lowerer.checker, decl);
         const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
-        if (path !== null && keepsRequiredModule(lowerer.checker, decl)) {
+        if (path !== null && keepsRequiredModule(islands, lowerer.checker, decl)) {
           lowerer.noteIslandOnWorkerThread(spec!, decl);
           lowerer.usesNodeIsland = true;
           islandModuleGlobal(lowerer, path);
@@ -3667,7 +3667,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       const spec = requireSpecOf(lowerer.checker, decl);
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");
-      if (path === null || !keepsRequiredModule(lowerer.checker, decl)) continue;
+      if (path === null || !keepsRequiredModule(islands, lowerer.checker, decl)) continue;
       lowerer.noteIslandOnWorkerThread(spec, decl);
       lowerer.usesNodeIsland = true;
       const loc = locOf(decl);

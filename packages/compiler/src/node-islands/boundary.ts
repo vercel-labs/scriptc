@@ -82,6 +82,11 @@ export interface NodeIslandSet {
    * that names a module of an island package (islandOfModuleBlock), by
    * file spelling (same lifetime as packagesOfFile). */
   moduleBlocksOfFile?: Map<string, boolean>;
+  /** Whether a `let` or `var` binding of a require of an island module is
+   * never written after its declaration, by binding symbol (the lowering's
+   * keepsRequiredModule; same lifetime as packagesOfFile, and the symbols
+   * are those of the program the set was assembled for). */
+  bindingsNeverWritten?: Map<object, boolean>;
 }
 
 /** An island set with the boundary's directory index in place. */

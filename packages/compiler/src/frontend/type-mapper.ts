@@ -8820,14 +8820,51 @@ function isTypeOnlyNamespace(d: ts.Node): boolean {
   );
 }
 
+/** Whether each declaration file declares types only, by file. */
+const typeOnlyDeclarationFiles = new WeakMap<ts.SourceFile, boolean>();
+
+/** Whether a declaration file declares nothing but types: interfaces, type
+ * aliases, namespaces and module blocks that hold only those (`declare
+ * global { interface X {} }`), imports, and exports of its own names or of
+ * types. A file that also declares a value (a `declare module` block with a
+ * value export, a function, a class, a variable, a re-export of another
+ * module) describes an implementation that lives elsewhere, and the types
+ * it declares may be the shapes of that implementation's values. */
+function declaresTypesOnly(sf: ts.SourceFile): boolean {
+  let known = typeOnlyDeclarationFiles.get(sf);
+  if (known === undefined) {
+    known = sf.statements.nodes.every(
+      (statement) =>
+        ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement) ||
+        ts.isImportDeclaration(statement) ||
+        isTypeOnlyNamespace(statement) ||
+        (ts.isExportDeclaration(statement) &&
+          (statement.isTypeOnly || statement.moduleSpecifier === undefined)),
+    );
+    typeOnlyDeclarationFiles.set(sf, known);
+  }
+  return known;
+}
+
+/** A declaration file whose pure type declarations describe data the
+ * program builds: a package's (under `node_modules`, or the experimental
+ * package's), and the project's own when the file declares types only (a
+ * `types.d.ts` beside the sources, a workspace's shared types package
+ * reached through its link, which resolves outside `node_modules`). A
+ * project declaration file that also declares values types an
+ * implementation the program does not hold, such as an untyped package
+ * that runs in a Node island, and keeps its own treatment; the standard
+ * library's declarations are another type world. */
 function packageTypeFile(
   sf: ts.SourceFile,
   ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExperimentalFile">,
 ): boolean {
+  if (!sf.isDeclarationFile || ctx.isStdlibFile(sf)) return false;
   return (
-    sf.isDeclarationFile &&
-    (/[\\/]node_modules[\\/]/.test(sf.fileName) || ctx.isExperimentalFile?.(sf) === true) &&
-    !ctx.isStdlibFile(sf)
+    /[\\/]node_modules[\\/]/.test(sf.fileName) ||
+    ctx.isExperimentalFile?.(sf) === true ||
+    declaresTypesOnly(sf)
   );
 }
 

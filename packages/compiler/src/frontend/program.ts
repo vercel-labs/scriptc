@@ -154,6 +154,7 @@ import {
   jsOpinion,
   jsTscCodeTriage,
   type Opinion,
+  type OpinionView,
 } from "./tsc-codes.js";
 import {
   trackedAccessibleEntries,
@@ -161,6 +162,7 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "./input-tracker.js";
+import { NODE_GLOBAL_NAMES } from "./node-global-names.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { isBundledLibraryFile } from "./default-library.js";
 import { forkTargetPaths } from "./fork-target.js";
@@ -238,6 +240,83 @@ const FORCED_OPTIONS: ts.Ts7CompilerOptions = {
   resolveJsonModule: true,
   noEmit: true,
 };
+
+/** A tsconfig `lib` entry as the tsconfig spells it (`dom`), whichever
+ * spelling the config parser answers (`lib.dom.d.ts` is tsc's file name). */
+function libraryName(entry: string): string {
+  const lower = entry.toLowerCase();
+  return lower.startsWith("lib.") && lower.endsWith(".d.ts") ? lower.slice(4, -5) : lower;
+}
+
+/** The libraries FORCED_OPTIONS.lib already holds: ES2025 with every
+ * earlier year and their slices (each year's library includes the one
+ * before it), the decorator declarations ES5 includes, and the three
+ * ESNext slices named there. */
+const OWN_LIBRARY = /^(?:es(?:[5-7]|201[5-9]|202[0-5])(?:\..+)?|decorators(?:\.legacy)?)$/;
+const OWN_ESNEXT_SLICES: ReadonlySet<string> = new Set([
+  "esnext.disposable",
+  "esnext.array",
+  "esnext.error",
+]);
+
+/** The libraries a project's `lib` names that scriptc's own set does not
+ * hold (`dom`, `dom.iterable`, `webworker`, `esnext`, …), as file names.
+ * They never join the program the lowering compiles; they answer which
+ * names the project's own tsc resolves (LoadResult.libraryWorld). */
+export function projectOnlyLibraries(projectLib: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const entry of projectLib ?? []) {
+    const name = libraryName(entry);
+    if (OWN_LIBRARY.test(name) || OWN_ESNEXT_SLICES.has(name)) continue;
+    const file = `lib.${name}.d.ts`;
+    if (!out.includes(file)) out.push(file);
+  }
+  return out;
+}
+
+/** TypeScript's "cannot find name" family: TS2304, its did-you-mean
+ * spelling TS2552, its spelling for a name another library declares
+ * TS2584, and TS2503 for a namespace. */
+const LIBRARY_NAME_CODES: ReadonlySet<number> = new Set([2304, 2552, 2584, 2503]);
+
+/** The errors of the lowering world that a library of the project's `lib`
+ * can answer (preflightGate7, projectLibraryName), by what the error's span
+ * names: an unresolved name; a property of the global object (TS7017,
+ * "Element implicitly has an 'any' type because type 'typeof globalThis' has
+ * no index signature", under `noImplicitAny`); a parameter, binding element
+ * or rest parameter that is implicitly `any` (TS7006, TS7031, TS7019). Null
+ * for every other code. */
+function libraryErrorFamily(code: number): "name" | "member" | "implicit" | null {
+  if (LIBRARY_NAME_CODES.has(code)) return "name";
+  if (code === 7017) return "member";
+  if (code === 7006 || code === 7031 || code === 7019) return "implicit";
+  return null;
+}
+
+/** Whether the name at `node` is read as a type: the entity name of a type
+ * reference, of a `typeof` type query, or of an `implements` or interface
+ * `extends` clause. A class's `extends` clause evaluates its expression. */
+function namesType(node: ts.Node): boolean {
+  let name = node;
+  while (
+    name.parent !== undefined &&
+    (ts.isQualifiedName(name.parent) || ts.isPropertyAccessExpression(name.parent))
+  )
+    name = name.parent;
+  const user = name.parent;
+  if (user === undefined) return false;
+  if (ts.isExpressionWithTypeArguments(user)) {
+    const clause = user.parent;
+    return !(
+      clause !== undefined &&
+      ts.isHeritageClause(clause) &&
+      clause.token === ts.SyntaxKind.ExtendsKeyword &&
+      clause.parent !== undefined &&
+      (ts.isClassDeclaration(clause.parent) || ts.isClassExpression(clause.parent))
+    );
+  }
+  return ts.isTypeReferenceNode(user) || ts.isTypeQueryNode(user);
+}
 
 /** JSONC syntax validation for a tsconfig text: tsgo's parseConfigFile
  * RECOVERS over syntax errors without reporting them (probed: a hard-broken
@@ -647,8 +726,10 @@ export interface LoadResult {
   dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** The JavaScript checker diagnostics preflight admitted under an opinion
    * row (tsc-codes.ts, JS_OPINIONS), each recorded only where no other
-   * filter would have suppressed it. Empty for every program that admits
-   * none — every TypeScript program, and every JavaScript program that
+   * filter would have suppressed it, and the TypeScript diagnostics about
+   * names only the project's libraries declare (libraryWorld). Empty for
+   * every program that admits none — every TypeScript program whose
+   * tsconfig names no such library, and every JavaScript program that
    * compiles without one. Filled by checkPreflight. */
   admittedOpinions?: readonly AdmittedOpinion[];
   /** Node's startup refusal, when the graph carries an import edge Node
@@ -712,6 +793,13 @@ export interface LoadResult {
    * declaration surface. */
   externalTypeSpecifiersByFile: ReadonlyMap<string, readonly string[]>;
   projectWorld: () => ts.Program;
+  /** The program checked with the libraries the project's `lib` names
+   * beside scriptc's own (projectOnlyLibraries): the world in which the
+   * project's own tsc resolves a name such as `HTMLElement`. Preflight asks
+   * it which "cannot find name" errors of the lowering world are names
+   * those libraries declare; nothing is lowered from it. Absent when the
+   * tsconfig names no such library. */
+  libraryWorld?: () => ts.Program;
 }
 
 function declarationReexportTarget(fromFile: string, specifier: string): string | null {
@@ -1661,9 +1749,25 @@ function loadProgram7(
     if (!entry) throw new Error(`could not load ${entryPath}`);
     const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
     let projectWorld: ts.Program | null = null;
+    const projectLibraries = projectOnlyLibraries(config.projectLib);
+    let libraryWorld: ts.Program | null = null;
     return {
       program,
       entry,
+      ...(projectLibraries.length === 0
+        ? {}
+        : {
+            libraryWorld: () =>
+              (libraryWorld ??= host.createProgram(
+                [...programRoots, overridesDtsPath()],
+                {
+                  ...options,
+                  lib: [...((options.lib as string[] | undefined) ?? []), ...projectLibraries],
+                },
+                false,
+                lineage,
+              )),
+          }),
       shapeOverlayState: captureShapeOverlayState(),
       moduleOrder: [],
       configDiags: config.diags,
@@ -1689,6 +1793,7 @@ function loadProgram7(
         )),
       disposeAll: () => {
         try {
+          libraryWorld?.dispose();
           projectWorld?.dispose();
           tscWorld?.projectWorld?.dispose();
           tscWorld?.program.dispose();
@@ -7838,6 +7943,72 @@ function preflightGate7(load: LoadResult): PreflightGate {
       end: lowered.rewrittenPosition(site.end, true),
     };
   };
+  // A name the project's libraries declare and scriptc's do not (`lib`
+  // names the DOM, say): the project's own tsc resolves it, and Node
+  // resolves it at run time, where nothing defines it. In a TypeScript
+  // source its "cannot find name" error is therefore the opinion the
+  // JavaScript rows for the same codes hold (tsc-codes.ts): as a type the
+  // name is the checker's error type, which the lowering stores as a
+  // checked-dynamic value, and as a value a read throws Node's
+  // ReferenceError and `typeof` answers "undefined" (view `throw`). The
+  // same name read off the global object (`globalThis.document`, TS7017
+  // under `noImplicitAny`) is a property the global object does not have:
+  // the ordinary lowering answers undefined (view `checker`). And a
+  // callback parameter that such a name would have typed
+  // (`document.addEventListener("click", (event) => …)`) is implicitly
+  // `any` here and typed in the project: `any` is a truthful bound, so the
+  // ordinary lowering applies (view `checker`). The library world answers
+  // per file which of these errors remain with the project's libraries
+  // loaded; it is built only when such an error exists.
+  const libraryRemaining = new Map<string, ReadonlySet<string>>();
+  const remainingWithProjectLibraries = (fileName: string): ReadonlySet<string> | null => {
+    let remaining = libraryRemaining.get(fileName);
+    if (remaining === undefined) {
+      const world = load.libraryWorld?.();
+      const sf = world?.getSourceFile(fileName);
+      if (world === undefined || sf === undefined) return null;
+      const found = new Set<string>();
+      for (const d of world.getSemanticDiagnostics(sf)) {
+        const family = libraryErrorFamily(d.code);
+        if (family === null || d.pos === undefined || d.end === undefined) continue;
+        found.add(`${family}:${ts.sourceTextRange(sf, d.pos, d.end)}`);
+      }
+      remaining = found;
+      libraryRemaining.set(fileName, remaining);
+    }
+    return remaining;
+  };
+  const projectLibraryName = (p: ts.Program, d: ts.Diagnostic): OpinionView | null => {
+    if (load.libraryWorld === undefined) return null;
+    const family = libraryErrorFamily(d.code);
+    if (family === null) return null;
+    if (d.fileName === undefined || d.pos === undefined || d.end === undefined) return null;
+    if (isJsSourceFileName(d.fileName)) return null;
+    const sf = p.getSourceFile(d.fileName);
+    if (sf === undefined) return null;
+    const name = ts.sourceTextRange(sf, d.pos, d.end);
+    if (family !== "implicit") {
+      const node = diagnosticNode7(sf, d.pos, d.end);
+      if (family === "member") {
+        const access = node.parent;
+        if (
+          access === undefined ||
+          !ts.isPropertyAccessExpression(access) ||
+          access.name !== node ||
+          !ts.isIdentifier(access.expression) ||
+          access.expression.text !== "globalThis"
+        )
+          return null;
+      }
+      // A global Node defines is never absent at run time. As a value such
+      // a name keeps its error (scriptc's declarations do not declare it);
+      // as a type it names no value.
+      if (NODE_GLOBAL_NAMES.has(name) && (family === "member" || !namesType(node))) return null;
+    }
+    const remaining = remainingWithProjectLibraries(d.fileName);
+    if (remaining === null || remaining.has(`${family}:${name}`)) return null;
+    return family === "name" ? "throw" : "checker";
+  };
   // keptErrors drops every diagnostic of these files: the gate does not ask
   // the checker for them.
   const diagnosticsKept = (fileName: string): boolean =>
@@ -7907,6 +8078,19 @@ function preflightGate7(load: LoadResult): PreflightGate {
         d.code <= 8999
       )
         return false;
+      const libraryView = projectLibraryName(p, d);
+      if (libraryView !== null) {
+        recordAdmittedOpinion(
+          admittedSite(p, {
+            file: d.fileName!,
+            pos: d.pos!,
+            end: d.end!,
+            code: d.code,
+            view: libraryView,
+          }),
+        );
+        return false;
+      }
       const opinion = jsOpinionOf7(p, d, projectCheckJs, syntacticOf);
       if (opinion !== null) {
         admitted.push({ d, opinion });
@@ -9328,7 +9512,13 @@ function typeWorldHint(d: ts.Diagnostic, message: string, load: LoadResult): str
       return `'${quoted}' is another runtime's global; scriptc's type world declares the ES2025 library and Node only — feature-test it through globalThis instead, e.g. '(globalThis as { ${quoted}?: unknown }).${quoted}' (the native program runs as Node would, where it is undefined)`;
     }
     if (quoted !== undefined && DOM_GLOBALS.has(quoted)) {
-      return `'${quoted}' comes from the DOM library, which scriptc's type world does not include (it checks with the ES2025 library and Node types regardless of the project's "lib") — declare the shape you need locally, or move browser-only code out of the program`;
+      // With the DOM library in the project's "lib" the name is admitted
+      // (preflightGate7, projectLibraryName) unless it is read as a value
+      // and Node defines a global of that name (`navigator`).
+      if (NODE_GLOBAL_NAMES.has(quoted)) {
+        return `'${quoted}' is a Node.js global, but the Node declarations this build type-checks with do not declare it — install a current @types/node in the project`;
+      }
+      return `'${quoted}' comes from the DOM library, which the project's tsconfig does not name in "lib" (scriptc checks with the ES2025 library, Node types and the names of the libraries "lib" lists) — add "dom" to "lib": the name then type-checks as under the project's tsc, and at run time it is absent as under Node.js (a read throws ReferenceError, typeof answers "undefined"); or declare the shape you need locally`;
     }
     if (d.code === 2583) {
       return `scriptc checks with the ES2025 library regardless of the project's "lib" setting, and '${quoted ?? "this name"}' comes from a newer library that does not compile yet`;

@@ -3358,12 +3358,16 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
       name = own_name->v.str->data;
       name_len = own_name->v.str->len;
     }
+    /* The tag names the function's call kind as Node does: a generator
+     * is [GeneratorFunction: name], an async function [AsyncFunction: name]. */
+    static const char *const kinds[] = {"[Function", "[GeneratorFunction", "[AsyncFunction", "[AsyncGeneratorFunction"};
+    ib_cstr(&out, kinds[owner->function_kind & SCR_CLOSURE_KIND_CALL_MASK]);
     if (name_len) {
-      ib_cstr(&out, "[Function: ");
+      ib_cstr(&out, ": ");
       ib_bytes(&out, name, name_len);
       ib_char(&out, ']');
     } else {
-      ib_cstr(&out, "[Function (anonymous)]");
+      ib_cstr(&out, " (anonymous)]");
     }
   }
   ScrStr *tag = ib_take(&out);

@@ -83,6 +83,15 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // scr_http_server_off drops the last entry of the event's listener list
+  // that stands for the function; a function that is not in the list, or a
+  // closed server, leaves the list as it is. No 'removeListener' event runs.
+  "http.serverOff",
+  // scr_net_server_listeners and scr_http_server_listeners copy the event's
+  // listener list into a new array of the registered functions; running out
+  // of memory ends the process.
+  "net.serverListeners",
+  "http.serverListeners",
   // scr_record_source_has_key asks the record's kept view whether it holds
   // an own key: no accessor runs, and a record without a view answers false.
   "record.sourceHasKey",

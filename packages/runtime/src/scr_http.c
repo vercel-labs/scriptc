@@ -4453,6 +4453,13 @@ void scr_http_server_allow_missing_host_header(ScrNetServer *s) {
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_HTTP1) ctx->require_host_header = false;
 }
 
+/* An HTTP event's add: 'newListener' fires first, and a handler's throw
+ * abandons the registration, as in Node's addListener. */
+static bool scr_http_add_blocked(ScrNetServer *s, const char *event) {
+  scr_net_server_notify_new_listener(s, event);
+  return scr_exc_pending();
+}
+
 /* Late 'request' listener installs (server.on/once("request", ...)): the
  * http2 allowHTTP1 server's handler route, and http.Server's 'request'
  * event. On a server with no HTTP parser the closure releases
@@ -4464,12 +4471,16 @@ void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
     /* an h2 server's ctx: the compat seam — scr_http2.c's hook owns the
      * registration (Http2ServerRequest/Response over h2 streams) */
     if (scr_http_h2_request_hook != NULL && !scr_net_server_settled(s)) {
+      if (scr_http_add_blocked(s, "request")) {
+        scr_closure_release(cb);
+        return;
+      }
       scr_http_h2_request_hook(ctx, cb, (void *)fn, once);
       return;
     }
     ctx = NULL;
   }
-  if (ctx == NULL || scr_net_server_settled(s)) {
+  if (ctx == NULL || scr_net_server_settled(s) || scr_http_add_blocked(s, "request")) {
     /* no parser, or the server already settled ('request' can never fire
      * again — an install would only re-arm the cycle the settle broke) */
     scr_closure_release(cb);
@@ -4482,13 +4493,46 @@ void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
 void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               bool expectation) {
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
-  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_net_server_settled(s)) {
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_net_server_settled(s) ||
+      scr_http_add_blocked(s, expectation ? "checkExpectation" : "checkContinue")) {
     scr_closure_release(cb);
     return;
   }
   scr_net_ls_add(expectation ? &ctx->check_expectation_ls : &ctx->check_continue_ls, cb, (void *)fn,
                  once);
 }
+
+#ifdef SCR_HTTP_SERVER_META
+/* The HTTP request-side event lists off/removeListener and listeners
+ * address; `kind` is SCR_HTTP_OFF_*. */
+static ScrNetLs *scr_http_event_list(ScrHttpSrvCtx *ctx, double kind) {
+  switch ((int)kind) {
+  case SCR_HTTP_OFF_REQUEST: return &ctx->request_ls;
+  case SCR_HTTP_OFF_CHECK_CONTINUE: return &ctx->check_continue_ls;
+  case SCR_HTTP_OFF_CHECK_EXPECTATION: return &ctx->check_expectation_ls;
+  case SCR_HTTP_OFF_UPGRADE: return &ctx->upgrade_ls;
+  case SCR_HTTP_OFF_CONNECT: return &ctx->connect_ls;
+  case SCR_HTTP_OFF_CLIENT_ERROR: return &ctx->client_error_ls;
+  default: return NULL;
+  }
+}
+
+void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_net_server_settled(s)) return;
+  ScrNetLs *l = scr_http_event_list(ctx, kind);
+  if (l != NULL) scr_net_ls_remove_last(l, cb);
+}
+
+ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
+  ScrNetLs *l = NULL;
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_HTTP1 && !scr_net_server_settled(s)) {
+    l = scr_http_event_list(ctx, kind);
+  }
+  return scr_net_ls_closure_array(l);
+}
+#endif
 
 /* ── the h2 compat pair (built by scr_http2.c per server stream) ───────
  *
@@ -4625,12 +4669,16 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) {
     if (scr_http_h2_connect_hook != NULL && !scr_net_server_settled(s)) {
+      if (scr_http_add_blocked(s, "connect")) {
+        scr_closure_release(cb);
+        return;
+      }
       scr_http_h2_connect_hook(ctx, cb, (void *)h1_fn, (void *)h2_fn, once);
       return;
     }
     ctx = NULL;
   }
-  if (ctx == NULL) {
+  if (ctx == NULL || scr_http_add_blocked(s, "connect")) {
     /* no HTTP parser on this server: the event can never fire (Node's
      * net server never emits 'connect' either) — honest dead weight */
     scr_closure_release(cb);
@@ -4642,7 +4690,7 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
 void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                      ScrHttpClientErrorFn fn, bool once) {
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
-  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_http_add_blocked(s, "clientError")) {
     /* no HTTP/1 parser on this server: the event never fires */
     scr_closure_release(cb);
     return;
@@ -4670,12 +4718,16 @@ void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) {
     if (scr_http_h2_upgrade_hook != NULL && !scr_net_server_settled(s)) {
+      if (scr_http_add_blocked(s, "upgrade")) {
+        scr_closure_release(cb);
+        return;
+      }
       scr_http_h2_upgrade_hook(ctx, cb, (void *)fn, once);
       return;
     }
     ctx = NULL;
   }
-  if (ctx == NULL) {
+  if (ctx == NULL || scr_http_add_blocked(s, "upgrade")) {
     scr_closure_release(cb);
     return;
   }

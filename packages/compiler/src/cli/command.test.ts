@@ -72,6 +72,7 @@ const VALUES: Partial<Record<CliOptionName, string>> = {
   emit: "exe",
   print: "diagnostics",
   "fail-on": "blockers",
+  coverage: "reached",
   backend: "llvm",
   optimization: "dev",
   "windows-subsystem": "gui",

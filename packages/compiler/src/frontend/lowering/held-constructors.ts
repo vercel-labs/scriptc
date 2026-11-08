@@ -366,9 +366,7 @@ export function untypedConstructorAsFunction(
   }
   sortArms(results);
   const type = primitiveConstructorType(
-    results.length === 1
-      ? results[0]!
-      : { kind: "union", unionId: lowerer.unions.intern(results) },
+    results.length === 1 ? results[0]! : { kind: "union", unionId: lowerer.unions.intern(results) },
   );
   return { kind: "dynCheck", value, type, loc: value.loc };
 }

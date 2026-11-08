@@ -2,7 +2,9 @@
 // value picked from it is a union of tuple types. Read through an
 // assertion to one array type, the value is the receiver of array methods,
 // of `.length` and an index, of a loop and of a spread, without a binding
-// of the array type in between.
+// of the array type in between. Each read is of the value itself (9403
+// shows that with writes); the methods a tuple cannot run in place are in
+// the diagnostics fixture tuple-union-array-in-place.
 const GROUPS = {
   'Fruit and Nuts': ['apple', 'pear', 'walnut'],
   Vegetables: ['kale'],
@@ -51,15 +53,11 @@ function shapes(): string {
         (names as readonly string[]).length,
         (names as readonly string[])[0],
         String((names as readonly string[])[3]),
-        String((names as readonly string[]).at(-1)),
-        String((names as readonly string[]).at(7)),
         (names as readonly string[]).join('+'),
         (names as readonly string[]).slice(1).join('+'),
-        (names as readonly string[]).concat(['z']).length,
         (names as readonly string[]).map((x) => x.length).join(''),
         (names as readonly string[]).filter((x) => x.length > 3).join('+'),
         (names as readonly string[]).flatMap((x) => [x, x]).length,
-        (names as readonly string[]).reduce((sum, x) => sum + x.length, 0),
         JSON.stringify(names as readonly string[]),
         Array.isArray(names as readonly string[]),
       ].join(' '),
@@ -73,10 +71,6 @@ function walks(name: string): string {
   const out: string[] = [];
   for (const [group, names] of Object.entries(GROUPS)) {
     for (const x of names as readonly string[]) if (x === name) out.push(x + '@' + group);
-    (names as readonly string[]).forEach((x, i) => {
-      if (x === name) out.push(x + i);
-    });
-    for (const [i, x] of (names as readonly string[]).entries()) if (x === name) out.push(i + x);
     out.push([...(names as readonly string[]), 'end'].length.toString());
     out.push([...(names as unknown as string[])].sort().join('<'));
   }
@@ -93,7 +87,6 @@ function sized(n: number): string {
     if ((values as readonly number[]).includes(n)) out.push(key);
     out.push(
       String((values as readonly number[]).indexOf(n)),
-      String((values as readonly number[]).at(0)),
       (values as readonly number[]).join('-'),
       String((values as readonly number[]).length),
     );

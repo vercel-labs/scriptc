@@ -130,7 +130,7 @@ import {
   arrayValueType,
   unionArrayValueRead,
   unionArrayValueType,
-  unionReadAsArray,
+  unionArmsView,
   unionTupleJoin,
   lowerSafeIndexRead,
 } from "./array-values.js";
@@ -12878,7 +12878,13 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   // A union of native arrays (`string[] | Chunk[]`): one walk over the
   // value, whose length and element reads dispatch on the arm the value
   // holds. `elem` is the join of the arms' element values.
-  let arrayUnionSource: { unionId: string; arms: readonly IrType[]; elem: IrType } | null = null;
+  let arrayUnionSource: {
+    unionId: string;
+    arms: readonly IrType[];
+    elem: IrType;
+    /** Some arms are tuples, read at the cursor's position. */
+    moving: boolean;
+  } | null = null;
   // A nested loop receiver can be an OOB-safe array read from the outer
   // loop (`for (const row of grid) for (const cell of row)`). The checker
   // sees the inner value as an array, while its runtime slot retains
@@ -12916,16 +12922,22 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
       };
   }
   // A union of tuples and arrays the checker reads as one array, or whose
-  // elements all have one type: the loop walks the array the value converts
-  // to (unionReadAsArray).
+  // elements all have one type: the loop reads each position of the value
+  // itself when it reaches it (unionArmsView), as it does for one tuple, so
+  // it sees what its own body writes.
+  let unionArmsLoop = false;
   if (!stmt.awaitModifier) {
-    const array = unionReadAsArray(
+    const view = unionArmsView(
       lowerer,
+      iterSrc,
       iterable,
       checkerIterable?.kind === "array" ? checkerIterable : unionTupleJoin(lowerer, iterable.type),
       locOf(iterSrc),
     );
-    if (array) iterable = array;
+    if (view) {
+      iterable = view;
+      unionArmsLoop = view.type.kind === "union";
+    }
   }
   if (iterable.type.kind === "bytes" || indexedUnionArms(lowerer, iterable.type)) {
     return lowerForOfBytes(lowerer, stmt, iterable, labels);
@@ -13084,11 +13096,17 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
             loc: locOf(iterSrc),
           };
       }
-      const arms = arrayArms(iterable.type);
-      const elem = arms === null ? null : unionArrayValueType(lowerer, iterable.type);
+      const arms =
+        arrayArms(iterable.type) ??
+        (unionArmsLoop && iterable.type.kind === "union"
+          ? (lowerer.unions.get(iterable.type.unionId)?.arms ?? null)
+          : null);
+      const moving = unionArmsLoop && arms !== null && arms.some((arm) => arm.kind !== "array");
+      const elem =
+        arms === null ? null : unionArrayValueType(lowerer, iterable.type, null, false, moving);
       if (iterable.type.kind !== "union" || arms === null || elem === null)
         lowerer.badType(stmt.expression, lowerer.typeOf(stmt.expression));
-      arrayUnionSource = { unionId: iterable.type.unionId, arms, elem };
+      arrayUnionSource = { unionId: iterable.type.unionId, arms, elem, moving };
     }
   }
   const elementType =
@@ -13220,6 +13238,8 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
         varRef(source.id, sourceT, loc),
         varRef(cursor.id, F64, loc),
         loc,
+        undefined,
+        arrayUnionSource.moving,
       )!;
     } else if (presentElements) {
       yielded = {
@@ -13288,15 +13308,20 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     // The live length of the arm a union of arrays holds: a tag test per
     // arm but the last, which answers untested.
     const unionLength = (union: { unionId: string; arms: readonly IrType[] }): IrExpr => {
-      const armLength = (tag: number): IrExpr =>
-        lengthOf({
+      const armLength = (tag: number): IrExpr => {
+        const arm = union.arms[tag]!;
+        // A tuple arm has as many positions as fields.
+        const tuple = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+        if (tuple?.tuple) return numLit(tuple.fields.length, loc);
+        return lengthOf({
           kind: "unionNarrow",
           unionId: union.unionId,
           tag,
           value: varRef(source.id, sourceT, loc),
-          type: union.arms[tag]!,
+          type: arm,
           loc,
         });
+      };
       let result = armLength(union.arms.length - 1);
       for (let tag = union.arms.length - 2; tag >= 0; tag--) {
         result = {

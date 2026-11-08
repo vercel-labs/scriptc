@@ -1,7 +1,6 @@
-// A union of tuples read as one array converts arm by arm, and a tuple arm
-// becomes a new array (corpus 9401). A method that writes its receiver
-// would change that copy where Node changes the table's own array, so it
-// is refused.
+// A union of tuples read as one array is read arm by arm, in place (corpus
+// 9401). A method that writes its receiver has no single array to write
+// where Node changes the table's own array, so it is refused.
 const GROUPS = {
   Vegetables: ['kale'],
   Grains: ['rye', 'oat', 'rice', 'millet'],

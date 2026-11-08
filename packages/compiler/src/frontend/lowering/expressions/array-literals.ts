@@ -684,7 +684,7 @@ export function lowerArrayLiteral(
       // literal's array type: the array the value converts to spreads
       // (unionReadAsArray).
       if (!typeEquals(src.type, type)) {
-        const array = unionReadAsArray(lowerer, src, type, locOf(el.expression));
+        const array = unionReadAsArray(lowerer, el.expression, src, type, locOf(el.expression));
         if (array) src = array;
       }
       if (!typeEquals(src.type, type)) {

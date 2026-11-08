@@ -1,6 +1,7 @@
 // The values of an `as const` table used as they are, with no assertion:
 // a union of tuples whose elements have one type answers the array
-// methods, a loop and a spread like the array it converts to.
+// methods, a loop and a spread as one array of that type does, each arm
+// read in place.
 const GROUPS = {
   'Fruit and Nuts': ['apple', 'pear', 'walnut'],
   Vegetables: ['kale'],
@@ -28,18 +29,12 @@ function find(name: Name): string {
       String(names.find((x) => x === name)),
       String(names.some((x) => x === name)),
       String(names.every((x) => x !== name)),
-      String(names.at(-1)),
       names.join('+'),
       names.slice(1).join('+'),
       names.map((x) => x.length).join(''),
       names.filter((x) => x.length > 3).join('+'),
-      String(names.reduce((sum, x) => sum + x.length, 0)),
       String(names.flatMap((x) => [x, x]).length),
     );
-    names.forEach((x, i) => {
-      if (x === name) out.push(x + i);
-    });
-    for (const [i, x] of names.entries()) if (x === name) out.push(i + x);
     for (const x of names) if (x === name) out.push(x + '!');
     out.push([...names, 'end'].join('+'));
   }

@@ -1,0 +1,10 @@
+{
+  "name": "node-island-byte-view-churn",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "churn-pkg": "node"
+    }
+  }
+}

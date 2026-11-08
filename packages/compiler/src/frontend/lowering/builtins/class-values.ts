@@ -1,5 +1,5 @@
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { type ClassInfo } from "../lower-classes.js";
 import { isJsSourceFile } from "../../program.js";
@@ -25,7 +25,7 @@ export type BuiltinClassRef =
  * an imported alias), through parentheses and type assertions. Null for
  * anything else. */
 export function builtinClassRefOf(lowerer: Lowerer, expr: ts.Expression): BuiltinClassRef | null {
-  const e = withoutParenthesesAssertionsNonNull(expr);
+  const e = withoutParenthesesTypeWrappers(expr);
   // Checker lookups only: answering must not run the fences and deferred
   // diagnostics of a lowered reference (resolveValueSymbol).
   let symbol: ts.Symbol | undefined;

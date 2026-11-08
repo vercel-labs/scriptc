@@ -57,6 +57,8 @@ export interface NativeLinkFeatures {
   /** existsSync over a path value that is not statically a string:
    * scr_fs_exists_dyn.c. */
   fsExistsValue?: boolean;
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache?: boolean;
   /** The BYTE-data spellings of the options write and
    * fs.promises.writeFile: scr_fs_bytes_write.c. */
   fsBytesWrites?: boolean;

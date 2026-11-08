@@ -1,7 +1,8 @@
 /* Island modules the build writes (frontend/lowering/closed-island-init.ts):
  * the module-level constants of the program whose initializers only call
- * into Node islands, moved into the island so that the deferral of island
- * modules (snapshot.ts) applies to them.
+ * into Node islands, and its module-level statements that only do, moved
+ * into the island so that the deferral of island modules (snapshot.ts)
+ * applies to them.
  *
  * A generated module is a file of the shipped module tree (modules.ts) that
  * no file on the build machine holds: the tree's entry carries its text.
@@ -10,7 +11,8 @@
  * executable. Its text has one fixed form:
  *
  *   import <clause> from "<relative specifier>";     (zero or more)
- *   export const <name> = <expression>;              (one or more)
+ *   export const <name> = <expression>;              (a constant)
+ *   <expression>;                                    (a statement)
  *
  * The build-time probe evaluates a copy outside the user's source tree
  * (probeCopy), whose imports name the build machine's files instead. */
@@ -29,12 +31,13 @@ export interface GeneratedImport {
 }
 
 export interface GeneratedModule {
-  /** The program module the constants come from (a real path). */
+  /** The program module the constant or statement comes from (a real
+   * path). */
   source: string;
   /** Its position among the generated modules of `source`. */
   index: number;
   imports: GeneratedImport[];
-  /** The `export const` statements, in source order. */
+  /** The `export const` statement of a constant, or the statement. */
   body: string;
 }
 

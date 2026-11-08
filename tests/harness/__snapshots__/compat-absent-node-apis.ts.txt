@@ -24,39 +24,25 @@ compat-absent-node-apis.ts:8:10 - error SC0001: Module '"node:fs"' has no export
   7 | import { EventEmitterAsyncResource } from "node:events";
   8 | import { openAsBlob } from "node:fs";
     |          ^~~~~~~~~~
-  9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
+  9 | import { findPackageJSON, register } from "node:module";
 
-compat-absent-node-apis.ts:9:10 - error SC0001: Module '"node:module"' has no exported member 'enableCompileCache'.
+compat-absent-node-apis.ts:9:10 - error SC0001: Module '"node:module"' has no exported member 'findPackageJSON'.
 
    8 | import { openAsBlob } from "node:fs";
-   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
-     |          ^~~~~~~~~~~~~~~~~~
+   9 | import { findPackageJSON, register } from "node:module";
+     |          ^~~~~~~~~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
 
-compat-absent-node-apis.ts:9:30 - error SC0001: Module '"node:module"' has no exported member 'findPackageJSON'.
+compat-absent-node-apis.ts:9:27 - error SC0001: Module '"node:module"' has no exported member 'register'.
 
    8 | import { openAsBlob } from "node:fs";
-   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
-     |                              ^~~~~~~~~~~~~~~
-  10 | import { PerformanceObserver, performance } from "node:perf_hooks";
-
-compat-absent-node-apis.ts:9:47 - error SC0001: Module '"node:module"' has no exported member 'flushCompileCache'.
-
-   8 | import { openAsBlob } from "node:fs";
-   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
-     |                                               ^~~~~~~~~~~~~~~~~
-  10 | import { PerformanceObserver, performance } from "node:perf_hooks";
-
-compat-absent-node-apis.ts:9:66 - error SC0001: Module '"node:module"' has no exported member 'register'.
-
-   8 | import { openAsBlob } from "node:fs";
-   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
-     |                                                                  ^~~~~~~~
+   9 | import { findPackageJSON, register } from "node:module";
+     |                           ^~~~~~~~
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
 
 compat-absent-node-apis.ts:10:10 - error SC0001: Module '"node:perf_hooks"' has no exported member 'PerformanceObserver'.
 
-   9 | import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
+   9 | import { findPackageJSON, register } from "node:module";
   10 | import { PerformanceObserver, performance } from "node:perf_hooks";
      |          ^~~~~~~~~~~~~~~~~~~
   11 | import { Readable, Writable } from "node:stream";

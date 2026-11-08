@@ -6,7 +6,7 @@ import { AsyncResource } from "node:async_hooks";
 import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
-import { enableCompileCache, findPackageJSON, flushCompileCache, register } from "node:module";
+import { findPackageJSON, register } from "node:module";
 import { PerformanceObserver, performance } from "node:perf_hooks";
 import { Readable, Writable } from "node:stream";
 
@@ -35,10 +35,8 @@ process.finalization.register({ n: 1 }, () => {});
 process.ref(timer);
 process.unref(timer);
 
-// module: loader hooks, the compile cache and package lookup.
+// module: loader hooks and package lookup.
 register("./hooks.mjs", import.meta.url);
-enableCompileCache();
-flushCompileCache();
 console.log(findPackageJSON("..", import.meta.url));
 
 // async_hooks and events: async resources.

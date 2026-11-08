@@ -4,7 +4,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
-import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
@@ -361,7 +361,7 @@ function windowsOnlyOption(
  * `shell: true`, and a native build has no warning channel to match it. */
 function staticallyEmptyArgs(node: ts.Expression | undefined): boolean {
   if (!node) return true;
-  const bare = withoutParenthesesAssertionsNonNull(node);
+  const bare = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(bare) && bare.text === "undefined") return true;
   return ts.isArrayLiteralExpression(bare) && bare.elements.nodes.length === 0;
 }

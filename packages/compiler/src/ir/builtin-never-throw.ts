@@ -16,6 +16,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "closure.shareIdentity",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_resolve_adopt queues a job; a promise resolved with itself is
+  // rejected, not thrown.
+  "promise.adopt",
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
@@ -59,4 +62,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",
+  // scr_module_compile_cache_dir answers the undefined value, and
+  // scr_module_constants builds two objects of constants once per thread;
+  // neither takes an argument, and running out of memory ends the process.
+  "module.compileCacheDir",
+  "module.compileCacheConstants",
 ]);

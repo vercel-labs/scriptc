@@ -51,6 +51,7 @@ import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { inPackageFile } from "./decl-origin.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
+import { LayoutAdoptions } from "./layout-adoption.js";
 
 /** SCRIPTC_LOWERING_FACTS_VERIFY: `1` recomputes and compares every shared
  * fact, `stats` does the same and also prints the hit count when the process
@@ -425,6 +426,16 @@ export class LoweringFacts {
     );
     return this.protocols;
   }
+
+  /** The constant tables that are built in the layout of the structural
+   * type the program reads them through (layout-adoption.ts): a pure
+   * analysis of the checker and the program's modules, so every pass of the
+   * round maps a table's type the same way. */
+  layoutAdoptions(): LayoutAdoptions {
+    this.adoptions ??= new LayoutAdoptions(this.program.getTypeChecker(), this.moduleOrder);
+    return this.adoptions;
+  }
+  private adoptions: LayoutAdoptions | null = null;
 
   /** The async-iteration protocol types that hold a checked-dynamic value
    * (async-protocol-holders.ts): a pure analysis of the checker and the

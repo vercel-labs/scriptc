@@ -1,0 +1,35 @@
+create-require-held-loader-members.ts:11:20 - error SC2020: 'createRequire loader member 'cache' read through a value that holds the loader' is part of the standard library types but has no scriptc lowering yet
+
+  10 | const room = "crypt" + String(process.argv.length);
+  11 | console.log(typeof guide.narrate.cache);
+     |                    ^~~~~~~~~~~~~~~~~~~
+  12 | console.log(guide.narrate.resolve("./narration-" + room + ".js"));
+
+  hint: a held loader is a run-time require function without the properties Node's require carries: read them through the createRequire binding itself
+
+create-require-held-loader-members.ts:12:13 - error SC2020: 'createRequire loader member 'resolve' read through a value that holds the loader' is part of the standard library types but has no scriptc lowering yet
+
+  11 | console.log(typeof guide.narrate.cache);
+  12 | console.log(guide.narrate.resolve("./narration-" + room + ".js"));
+     |             ^~~~~~~~~~~~~~~~~~~~~
+  13 | console.log(guide.narrate.main === undefined);
+
+  hint: a held loader is a run-time require function without the properties Node's require carries: read them through the createRequire binding itself
+
+create-require-held-loader-members.ts:13:13 - error SC2020: 'createRequire loader member 'main' read through a value that holds the loader' is part of the standard library types but has no scriptc lowering yet
+
+  12 | console.log(guide.narrate.resolve("./narration-" + room + ".js"));
+  13 | console.log(guide.narrate.main === undefined);
+     |             ^~~~~~~~~~~~~~~~~~
+  14 | console.log(narrate("./narration-" + room + ".js"));
+
+  hint: a held loader is a run-time require function without the properties Node's require carries: read them through the createRequire binding itself
+
+create-require-held-loader-members.ts:14:13 - error SC2020: 'createRequire's require with a computed specifier or this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  13 | console.log(guide.narrate.main === undefined);
+  14 | console.log(narrate("./narration-" + room + ".js"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 | 
+
+  hint: the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded

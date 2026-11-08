@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import * as packMatrix from "../runtime-pack-matrix.mjs";
 import { createRuntimePackMatrix, variantsFor } from "../runtime-pack-matrix.mjs";
 
 const runtimeSources = fileURLToPath(new URL("../../runtime/src", import.meta.url));
@@ -155,7 +156,12 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // build: its view slot answers NULL for a field a partial record view does
   // not have in every build.
   const variants = variantsFor("scr_json.c");
-  expect(variants.map((variant: { id: string }) => variant.id)).toEqual(["default", "js-om"]);
+  expect(variants.map((variant: { id: string }) => variant.id)).toEqual([
+    "default",
+    "fn-member-props",
+    "js-om",
+    "js-om-fn-member-props",
+  ]);
   for (const variant of variants) {
     if (!variant.id.startsWith("js-om")) continue;
     expect(variant.when.jsObjectModel).toBe(true);
@@ -178,6 +184,23 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   expect(
     selected("scr_json.c", { workers: false, jsObjectModel: true, nodeIsland: true }).defines,
   ).toEqual(["SCR_JS_OBJECT_MODEL"]);
+  // A program that writes, defines or deletes a function's inherited member
+  // name selects the fn-member-props build, alone and beside the object
+  // model build it may also carry; a Node island adds no define to it.
+  expect(selected("scr_json.c", { workers: false, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  expect(
+    selected("scr_json.c", { workers: false, nodeIsland: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS"]);
+  expect(
+    selected("scr_json.c", {
+      workers: false,
+      jsObjectModel: true,
+      nodeIsland: true,
+      fnMemberProps: true,
+    }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
   // A partial record assertion selects nothing: the view slot answers NULL in
   // every build, so a program with one keeps the build its other features
   // name, alone or beside the object model build.
@@ -193,6 +216,26 @@ test("scr_json builds one object per flavor, plus its object model twin", () => 
   // A program that reaches none of the features keeps the default object.
   expect(selected("scr_json.c", { workers: false }).id).toBe("default");
   expect(selected("scr_json.c", { workers: false }).defines).toEqual([]);
+});
+
+test("the dynamic call path reads an own call/apply/bind in one build", () => {
+  // scr_dyn_invoke.c reads a function's own call/apply/bind before the
+  // native lowering, in the same build as scr_json.c's member write path
+  // (both compile with SCR_FN_MEMBER_PROPS for a fnMemberProps program).
+  const plain = { workers: false, jsObjectModel: false, fnMemberProps: false };
+  expect(selected("scr_dyn_invoke.c", plain).defines).toEqual([]);
+  expect(selected("scr_dyn_invoke.c", { ...plain, fnMemberProps: true }).defines).toEqual([
+    "SCR_FN_MEMBER_PROPS",
+  ]);
+  // A program that also needs the object model build keeps one object.
+  expect(
+    selected("scr_dyn_invoke.c", { ...plain, jsObjectModel: true, fnMemberProps: true }).defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_JS_OBJECT_MODEL"]);
+  // And a worker program keeps its thread-state build.
+  expect(
+    selected("scr_dyn_invoke.c", { workers: true, jsObjectModel: false, fnMemberProps: true })
+      .defines,
+  ).toEqual(["SCR_FN_MEMBER_PROPS", "SCR_WORKERS"]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
@@ -282,6 +325,22 @@ test("reading a spawnSync result's error selects the child build with its fields
   // A program that spawns but never reads `.error` keeps the default object
   // and the result container exactly as they were, byte for byte.
   expect(selected("scr_child.c", { workers: false, childErrorFields: false }).defines).toEqual([]);
+});
+
+test("fs stream options that can hold a signal select the signal build of the fs stream unit", () => {
+  // The build applies options.signal with the event-target unit's abort
+  // listener; a program whose stream options cannot hold one keeps the
+  // default object, byte for byte.
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+  ]);
+  expect(selected("scr_fs_stream.c", { workers: false, fsStreamSignal: false }).defines).toEqual(
+    [],
+  );
+  expect(selected("scr_fs_stream.c", { workers: true, fsStreamSignal: true }).defines).toEqual([
+    "SCR_FS_STREAM_SIGNAL",
+    "SCR_WORKERS",
+  ]);
 });
 
 test("extended spawn options beside an error read keep both child builds", () => {
@@ -427,4 +486,52 @@ test("the installed island table has every entry the shared units call through i
     for (const match of source(name).matchAll(/\bscr_ni_dyn_ops->(\w+)\(/g)) called.add(match[1]!);
   expect([...called].filter((entry) => !installed.includes(entry))).toEqual([]);
   expect([...called]).toEqual(expect.arrayContaining(["weak_get", "weak_test", "weak_set"]));
+});
+
+test("a unit has one build for every combination of the features its builds name", () => {
+  // A program links one build of each unit: the one that carries the define
+  // of every feature it has. Two features that each add a build column to
+  // the same unit therefore need a build that carries both defines, also
+  // when the columns were added by changes that did not know of each other.
+  // A combination no program can have needs none: a feature that implies
+  // another never comes without it. The matrix names those implications in
+  // RUNTIME_FEATURE_IMPLIES when it has any; without the table every
+  // combination is possible.
+  const implies: Record<string, string[]> =
+    Reflect.get(packMatrix, "RUNTIME_FEATURE_IMPLIES") ?? {};
+  const withImplied = (feature: string, seen = new Set<string>()): Set<string> => {
+    if (seen.has(feature)) return seen;
+    seen.add(feature);
+    for (const need of implies[feature] ?? []) withImplied(need, seen);
+    return seen;
+  };
+  for (const { source } of matrix.runtime_units as { source: string }[]) {
+    const variants: { id: string; when: Record<string, boolean>; defines: string[] }[] =
+      variantsFor(source);
+    const named = (when: Record<string, boolean>): string =>
+      Object.keys(when)
+        .filter((name) => when[name])
+        .sort()
+        .join("+");
+    const features = [...new Set(variants.flatMap((variant) => Object.keys(variant.when)))].sort();
+    // A feature's own defines: those of the smallest build a program with
+    // that feature can link, the one naming it and what it implies.
+    const alone = (feature: string): string[] => {
+      const smallest = [...withImplied(feature)].sort().join("+");
+      return variants.find((variant) => named(variant.when) === smallest)?.defines ?? [];
+    };
+    for (let mask = 0; mask < 1 << features.length; mask++) {
+      const on = features.filter((_, index) => (mask & (1 << index)) !== 0);
+      const possible = on.every((name) => (implies[name] ?? []).every((need) => on.includes(need)));
+      const builds = variants.filter((variant) => named(variant.when) === on.join("+"));
+      expect(
+        builds.map((variant) => variant.id),
+        `${source} with ${on.join("+") || "no feature"}`,
+      ).toHaveLength(possible ? 1 : 0);
+      if (!possible) continue;
+      expect([...builds[0]!.defines].sort(), `${source} with ${on.join("+")}`).toEqual(
+        [...new Set(on.flatMap(alone))].sort(),
+      );
+    }
+  }
 });

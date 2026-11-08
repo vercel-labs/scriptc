@@ -1,5 +1,6 @@
 `node:worker_threads` runs workers as native threads.
 Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`.
+A computed entry the build can bound to a finite set of files (a `new URL` of bounded text against `import.meta.url`, the value a module-local function returns, a branch of `?:`, `??` or `||`) starts the compiled file its value names; a value outside that set throws `ERR_SCRIPTC_WORKER_ENTRY` when the constructor runs, where Node would start that file.
 Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap.
 Nested workers inherit their parent's environment snapshot.
 Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
@@ -42,6 +43,17 @@ Atomics operations run as sequentially consistent atomic instructions and take n
 Other reads and writes of shared storage access each element atomically; a copy, fill, or conversion that runs while another thread writes the same storage can observe some of those writes, as in Node.
 `terminate` unwinds at runtime checkpoints, including loops and parked atomic waits, without running JavaScript catch or finally blocks.
 Blocking native calls finish before the next checkpoint.
+
+A worker that reaches a Node island posts each island operation to the thread that started the island, the main thread, and waits there for its answer, so a synchronous island call works from a worker.
+The program has one instance of each island module for all its threads, where Node gives every worker an instance of its own: what an island module keeps between calls (a counter, a cache, a registered listener) is shared by the main thread and the workers.
+The build warns at each load of an island module in a module that worker threads run (SC6011).
+A program module that island code imports too is shared the same way: island code uses the main thread's instance of it whichever thread called the island, while a worker's own code uses that worker's instance, and the build warns for such a module as well (SC6011).
+The main thread answers a worker's island operations from its event loop, so a worker's island call waits while the main thread runs synchronous code, and it is never answered when the main thread blocks until that worker is done, as with `Atomics.wait`.
+An asynchronous island call from a worker rejects with `ERR_SCRIPTC_ISLAND_WORKER_ASYNC`, an island promise, symbol or byte value (a typed array, a Buffer or an ArrayBuffer) crossing into a worker throws `ERR_SCRIPTC_ISLAND_WORKER_VALUE`, and so does a worker's own symbol or byte value crossing into the island, and a native value the island passes by reference (a function, an object, an array, a Map, a Set, a promise, or an error) crossing between a worker and its island in either direction.
+The error's message names the kind of value and the call, read, or write it was part of.
+A promise that a worker resolves with an island thenable rejects with the same code, and one resolved with any other island object is fulfilled with it.
+In a module that only worker threads run, an island call whose argument has a function, byte, promise, or symbol type is refused at build time (SC8012).
+A worker entry must be a compiled module, so a Node island module as the worker's entry is refused at build time (SC8012).
 
 Workers are unsupported in WASI, compiled libraries, and executables that use foreign-thread native callbacks.
 Ordinary callbacks that run on their owning script thread remain supported.

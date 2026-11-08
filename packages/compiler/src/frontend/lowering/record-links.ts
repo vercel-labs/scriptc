@@ -236,7 +236,14 @@ export function linkedCopyBranches(
  * to their plain form. Helpers this registers are completed too, and
  * method calls a link source shadows are refused. */
 export function finalizeRecordLinks(lowerer: Lowerer, functions: IrFunction[]): void {
-  if (lowerer.linkedHelpers.length === 0 && lowerer.recordLinks.size === 0) return;
+  // A finalizer may be the only work (a width copy that can read a target
+  // field off its source's kept view, record-sources.ts).
+  if (
+    lowerer.linkedHelpers.length === 0 &&
+    lowerer.recordLinks.size === 0 &&
+    lowerer.linkedHelperFinalizers.length === 0
+  )
+    return;
   const lifted = lowerer.liftedFns.length;
   const scan = scanModule(lowerer, [...functions, ...lowerer.liftedFns]);
   const sourced = scan.sourced;

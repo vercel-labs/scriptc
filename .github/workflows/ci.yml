@@ -234,6 +234,7 @@ jobs:
           name: native-linux-x64-gnu
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/icu-downloads
       - run: pnpm build
       # Node island tests (`// @requires-libnode` corpus programs and
       # node-island.test.ts) load Node from a libnode pack, and fail rather
@@ -306,6 +307,7 @@ jobs:
           name: native-darwin-arm64
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
+      - uses: ./.github/actions/icu-downloads
       - run: pnpm build
       # Node island tests load Node from a libnode pack, and fail rather
       # than skip on macOS CI when none is configured.
@@ -1299,6 +1301,7 @@ jobs:
       - name: Build Windows helper
         run: pnpm --filter @scriptc/llvm-win32-x64-msvc build:native
       - uses: ./.github/actions/zig
+      - uses: ./.github/actions/icu-downloads
       - name: Build Windows runtime pack
         run: pnpm --filter @scriptc/runtime-win32-x64-msvc build:native
       - run: pnpm build

@@ -67,23 +67,6 @@ function memberOf(
  * own refusal. */
 const READONLY_FN_MEMBERS = new Set(["length", "name", "caller", "arguments", "prototype"]);
 
-/** The members the runtime's function-table property fence refuses
- * (`scr_dyn_fn_property_fence`, scr_json.c): the native call/apply/bind and
- * Object.prototype operations own those names, so no table store for them
- * exists. A callable interface that declares one (`fn.apply = ...`) is an
- * explicit refusal rather than a store that would throw at run time. */
-const FENCED_FN_MEMBERS = new Set([
-  "apply",
-  "bind",
-  "call",
-  "valueOf",
-  "toLocaleString",
-  "hasOwnProperty",
-  "propertyIsEnumerable",
-  "isPrototypeOf",
-  "constructor",
-]);
-
 /** The member key of an assignment target / read site: a spelled or
  * folded string name, a unique-symbol const's ts.Symbol, or null (not a
  * routable key). */
@@ -192,10 +175,7 @@ export function collectExpandoMembers(lowerer: Lowerer, sf: ts.SourceFile): void
       if (existing) {
         existing.firstWriteStart = Math.min(existing.firstWriteStart, ts.tokenStartOfNode(node));
       } else if (
-        !(
-          typeof w.key === "string" &&
-          (READONLY_FN_MEMBERS.has(w.key) || FENCED_FN_MEMBERS.has(w.key))
-        ) &&
+        !(typeof w.key === "string" && READONLY_FN_MEMBERS.has(w.key)) &&
         !nsOwnedMember(lowerer, w.access)
       ) {
         const entry: ExpandoMember = {
@@ -305,14 +285,6 @@ export function fenceReadonlyExpandoWrite(
       "SC1090",
       access,
       `assigning the read-only function member '${key}' (strict-mode JS — every module — throws TypeError here)`,
-    );
-    return;
-  }
-  if (typeof key === "string" && FENCED_FN_MEMBERS.has(key)) {
-    lowerer.unsupported(
-      "SC1090",
-      access,
-      `assigning the function prototype member '${key}' (reserved by the native call/apply/bind and Object.prototype lowerings)`,
     );
   }
 }

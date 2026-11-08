@@ -57,6 +57,9 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.3.3
+      tsc-ts:
+        specifier: 0.0.10
+        version: 0.0.10
       typescript:
         specifier: ^5
         version: 5.9.3
@@ -1251,6 +1254,10 @@ packages:
   '@radix-ui/rect@1.1.2':
     resolution: {integrity: sha512-xnXE7wG13PI+cxieVssYXlQJuYVRhH9NBoxt3KNwzghDIA69GMm7d4wXRouHIYjE+KvS6U/MsMO73NdS2MH9ZA==}
 
+  '@scriptc/threads@0.4.5':
+    resolution: {integrity: sha512-wHYrCItM68xYAwjnvM6VrRLDWd9+lAEQNjKh6PyLA8RdE7D8ts/VMoTFLmXRu2uvRywJuY18WPSCoEFRf3qfiA==}
+    engines: {node: '>=24.0.0'}
+
   '@shikijs/core@3.23.0':
     resolution: {integrity: sha512-NSWQz0riNb67xthdm5br6lAkvpDJRTgB36fxlo37ZzM2yq0PQFFzbd8psqC2XMPgCzo1fW6cVi18+ArJ44wqgA==}
 
@@ -1469,6 +1476,41 @@ packages:
 
   '@ts-morph/common@0.28.1':
     resolution: {integrity: sha512-W74iWf7ILp1ZKNYXY5qbddNaml7e9Sedv5lvU1V8lftlitkc9Pq1A+jlH23ltDgWYeZFFEqGCD1Ies9hqu3O+g==}
+
+  '@tsc-ts/darwin-arm64@0.0.10':
+    resolution: {integrity: sha512-mRctKijCzWRxJgxiVAdsk+x9WB7kZz9GBbJ4eVP95bJFkIz9D11uw3xC0m6jWYNoaShF6zn48eLMTYOyJNxBdA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@tsc-ts/darwin-x64@0.0.10':
+    resolution: {integrity: sha512-oV78/mi3ot8CG3BA9QxrsamvNXutpschgae+qV5skU4gAqimmBsBHy/MWTf9SCssvtWeqrX4uZvcwE0h/AJ+MQ==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@tsc-ts/linux-arm64-gnu@0.0.10':
+    resolution: {integrity: sha512-O5msxFydn9r64QVm9WDWG8CKkXLjXWo12XeJWDncHlQYK80SoM4T8/C1UTDLtb6A2P+NQ5a+Xq4AaHmNb8VIqg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@tsc-ts/linux-arm64-musl@0.0.10':
+    resolution: {integrity: sha512-v9N5HuqcEW97MzwzLqPNAN5tfAcXIAlLRtp7BSJJd5VKfBu6DplqNZzwCH+//NuAQOtWGSr/Dq565JFPmDRt5w==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@tsc-ts/linux-x64-gnu@0.0.10':
+    resolution: {integrity: sha512-sRTPB/50uAJSpMjlA3sc9GTAySnLwIlf1txR8eHlcVpKE6q0QgWvEkKqCSGtFXkn8IQ8z8O68jrAk9WjmRTaYQ==}
+    cpu: [x64]
+    os: [linux]
+
+  '@tsc-ts/linux-x64-musl@0.0.10':
+    resolution: {integrity: sha512-U4qZwP0JzrR/l4kzhh+w+y6o2guEEinC/wminfXXDhez2DtjNTOrM1GxMPfZ7JkCIcKEruL7iCC2telapFk5LQ==}
+    cpu: [x64]
+    os: [linux]
+
+  '@tsc-ts/win32-x64-msvc@0.0.10':
+    resolution: {integrity: sha512-TsiK6k0ljFW3pNR5lvF7SL0nv3aGxr31ZbBCfIXcBrqAvpumINOy/G0ESfTvZWx8llwOQt3PxBS414gF/J0tFA==}
+    cpu: [x64]
+    os: [win32]
 
   '@types/d3-array@3.2.2':
     resolution: {integrity: sha512-hOLWVbm7uRza0BYXpIIW5pxfrKe0W+D5lrFiAEYR+pb6w3N2SwSMaJbXdUfSEv+dT4MfHBLtn5js0LAWaO6otw==}
@@ -2846,7 +2888,7 @@ packages:
   phase@0.5.4:
     resolution: {integrity: sha512-3nCOrMZ/dW1q0nLCbVZBcGW/60TEApcoBPCT7s8SsQ2I0/rHLeSMkxlPhaGfW/yEKgkLkCfmd+YGss65ZwR77Q==}
     engines: {node: 24.x}
-    deprecated: phase is now the scan tool; the runtime library moved to @usephase/core and @usephase/react
+    deprecated: 'phase is now the scan tool; the runtime library moved to @usephase/core and @usephase/react. Run: npx @usephase/codemod@latest migrate-phase-to-usephase .'
     peerDependencies:
       react: '>=18'
     peerDependenciesMeta:
@@ -3211,6 +3253,11 @@ packages:
 
   ts-morph@27.0.2:
     resolution: {integrity: sha512-fhUhgeljcrdZ+9DZND1De1029PrE+cMkIP7ooqkLRTrRLTqcki2AstsyJm0vRNbTbVCNJ0idGlbBrfqc7/nA8w==}
+
+  tsc-ts@0.0.10:
+    resolution: {integrity: sha512-oF5hZbeNgJXwJ868adnvBAihxYUwra1rj6Sa2+UhuhW477t5MmGnOsZgGTSGz511uTfuUxDz6e/gLIzvvScbGw==}
+    engines: {node: '>=20'}
+    hasBin: true
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
@@ -4504,6 +4551,8 @@ snapshots:
 
   '@radix-ui/rect@1.1.2': {}
 
+  '@scriptc/threads@0.4.5': {}
+
   '@shikijs/core@3.23.0':
     dependencies:
       '@shikijs/types': 3.23.0
@@ -4725,6 +4774,27 @@ snapshots:
       minimatch: 10.2.6
       path-browserify: 1.0.1
       tinyglobby: 0.2.17
+
+  '@tsc-ts/darwin-arm64@0.0.10':
+    optional: true
+
+  '@tsc-ts/darwin-x64@0.0.10':
+    optional: true
+
+  '@tsc-ts/linux-arm64-gnu@0.0.10':
+    optional: true
+
+  '@tsc-ts/linux-arm64-musl@0.0.10':
+    optional: true
+
+  '@tsc-ts/linux-x64-gnu@0.0.10':
+    optional: true
+
+  '@tsc-ts/linux-x64-musl@0.0.10':
+    optional: true
+
+  '@tsc-ts/win32-x64-msvc@0.0.10':
+    optional: true
 
   '@types/d3-array@3.2.2': {}
 
@@ -7077,6 +7147,18 @@ snapshots:
     dependencies:
       '@ts-morph/common': 0.28.1
       code-block-writer: 13.0.3
+
+  tsc-ts@0.0.10:
+    dependencies:
+      '@scriptc/threads': 0.4.5
+    optionalDependencies:
+      '@tsc-ts/darwin-arm64': 0.0.10
+      '@tsc-ts/darwin-x64': 0.0.10
+      '@tsc-ts/linux-arm64-gnu': 0.0.10
+      '@tsc-ts/linux-arm64-musl': 0.0.10
+      '@tsc-ts/linux-x64-gnu': 0.0.10
+      '@tsc-ts/linux-x64-musl': 0.0.10
+      '@tsc-ts/win32-x64-msvc': 0.0.10
 
   tslib@2.8.1: {}
 

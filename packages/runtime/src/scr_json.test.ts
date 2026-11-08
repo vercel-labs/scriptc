@@ -28,6 +28,7 @@ test.each([false, true])(
         ...[
           "scr_json.test.c",
           "scr_json.c",
+          "scr_record_source_get.c",
           "scr_string.c",
           "scr_array.c",
           "scr_arena.c",

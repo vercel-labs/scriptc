@@ -1914,7 +1914,7 @@ export class ClassDynamicDispatch {
         this.prototypeClasses.add(className);
         const loc = this.prototypeHelper.loc;
         const type: IrType = { kind: "object", className };
-        const value = varRef("value", DYN, loc);
+        const value = varRef("p.0", DYN, loc);
         const prototype = reflectClassPrototype(lowerer, info, loc, {
           kind: "dynCheck",
           value,
@@ -2710,13 +2710,11 @@ export class ClassDynamicDispatch {
             const loc = expr.loc;
             this.prototypeHelper = {
               name: "%dyn.class.getPrototype",
-              params: [{ localId: "value", name: "value", type: DYN }],
-              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+              params: [{ localId: "p.0", name: "value", type: DYN }],
+              locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
               returnType: DYN,
               loc,
-              body: [
-                { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
-              ],
+              body: [{ kind: "return", value: { ...expr, args: [varRef("p.0", DYN, loc)] }, loc }],
             };
             lowerer.liftedFns.push(this.prototypeHelper);
             this.generated.add(this.prototypeHelper);
@@ -6243,6 +6241,9 @@ export class ClassDynamicDispatch {
       ...[...this.computed.values()].map((dispatch) => dispatch.fn),
       ...[...this.dispatches.values()].flatMap((dispatch) => [dispatch.fn, dispatch.callback]),
       ...this.protocols,
+      // A capsule keeps its static class while its object may be a subclass
+      // instance, whose prototype is the subclass's.
+      ...(this.prototypeHelper ? [this.prototypeHelper] : []),
     ];
   }
 

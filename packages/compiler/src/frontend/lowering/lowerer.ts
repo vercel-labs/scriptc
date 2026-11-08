@@ -265,7 +265,6 @@ import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
 import {
   ClassDynamicDispatch,
   boxClassInstancesExactly,
-  orderErrorOwnMembers,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
 import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
@@ -12963,7 +12962,6 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     routeWrapperConsumers(this, functions);
     trackClassFieldCreation(this, functions);
-    orderErrorOwnMembers(this, functions);
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);

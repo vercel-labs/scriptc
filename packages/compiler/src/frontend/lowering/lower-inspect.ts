@@ -1015,7 +1015,7 @@ function errorInspectHelper(
   // declared fields, or a write through an untyped reference) add a
   // property bag to a class after this helper was built. The rendering
   // reads only a `cause` from it, so an instance whose bag holds another
-  // property is rendered from its checked-dynamic view instead.
+  // property throws a named refusal instead of printing a partial object.
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const bagged = [info, ...userErrorClasses(info)].filter(
       (c) =>
@@ -1061,34 +1061,13 @@ function errorInspectHelper(
         then: [
           {
             kind: "return",
-            // The instance's view lists its own properties in creation
-            // order, the ones its property list holds among them: the
-            // runtime's inspector renders that.
-            value: {
-              kind: "libCall",
-              fn: "insp.dyn",
-              args: [
-                {
-                  kind: "dynFrom",
-                  value:
-                    c.def.name === t.className
-                      ? v()
-                      : {
-                          kind: "downcast",
-                          value: v(),
-                          type: { kind: "object", className: c.def.name },
-                          loc,
-                        },
-                  liveRef: true,
-                  type: DYN,
-                  loc,
-                },
-                varRef("r.0", F64, loc),
-                varRef("d.0", F64, loc),
-              ],
-              type: STRING,
+            value: nodeThrowExpr(
+              0,
+              "SC2020",
+              `inspecting a '${c.def.jsName ?? c.def.name.replace(/^%/, "")}' error with properties created at run time is not supported yet`,
+              STRING,
               loc,
-            },
+            ),
             loc,
           },
         ],

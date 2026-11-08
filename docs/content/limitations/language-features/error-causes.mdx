@@ -1,8 +1,6 @@
 - **Error causes:** Accessor constructor options are unsupported.
-  Subclasses may redeclare `cause` as a field (for example `cause?: unknown` or `cause: Error`), which defines the own property after `super()` returns as Node does; parameter properties and accessors named `cause` are unsupported.
-  A redeclared `cause` with a type other than `unknown` or `object` is checked against that type at each read: reading it before the constructor assigns it, or after a value of another type was written through the `Error` base class, throws a `TypeError`, where Node.js answers the value.
+  Subclasses may redeclare `cause` as `unknown` or `object` (for example `cause?: unknown`), which defines the own property after `super()` returns as Node does; redeclarations with other types, parameter properties, and accessors named `cause` are unsupported.
   `Error`, `TypeError`, `RangeError`, and `SyntaxError` otherwise accept `{ cause }`, including through inherited constructors.
   Reads, writes, deletion, and `"cause" in error` distinguish an absent cause from an explicitly undefined cause.
   Constructor causes are non-enumerable; assignment to an absent cause creates an enumerable property.
-  An error's own properties are listed in the order they were created: a `cause` or a `code` assigned after construction follows the class's fields, and a redeclared `cause` sits at its declaration's position unless the constructor's options created it first.
   Property descriptors and checked-value aliases share the cause, including getters and setters installed after construction.

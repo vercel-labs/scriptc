@@ -1661,23 +1661,10 @@ export interface IrClassDef {
    * class of the chain sets `name` during construction, and then an own
    * `name` follows every other own property. */
   errorNameAfter?: string | null;
-  /** Error subclasses whose chain declares `cause` again as a field: the
-   * field the instance's `cause` follows among its own properties, or null
-   * when it precedes every field. An instance whose ERROR_CAUSE_HEADER flag
-   * is set keeps the cause where the Error constructor created it. */
-  errorCauseAfter?: string | null;
   /** JavaScript Error subclasses with a property bag: a view committed by a
    * dynamic write keeps `name` and `message` where the bag recorded them
    * (scr_error_dyn_follow_bag). */
   errorBagOrder?: boolean;
-  /** Error subclasses with a property bag, in a program that can create an
-   * own property of an instance after its fields exist under a name the
-   * runtime error has a slot for (`cause`, `code`), or create a field after
-   * the bag's first entry: the bag keeps a place for each such member, a
-   * committed view keeps a place for every field, and the instance's view
-   * lists what the bag names in the bag's order
-   * (scr_error_view_follow_list). */
-  errorOwnOrder?: boolean;
   /** Stable symbol identities for public instance layout fields: the
    * module global holding the key, or the name of the well-known symbol
    * (`toStringTag` for `Symbol.toStringTag`). */
@@ -4737,13 +4724,6 @@ export function isClassOwnEnumerableFieldName(name: string): boolean {
 
 /** Compiler-owned storage for properties added through untyped references. */
 export const DYN_CLASS_PROPERTIES = "%dynProperties";
-
-/** Compiler-owned flag of an instance of an Error subclass that declares
- * `cause` again as a field: whether the constructor's options had already
- * created the cause when the field was defined. Node then redefines the
- * property in place, so it keeps the constructor's position; otherwise it
- * sits where the class declares it (IrClassDef.errorCauseAfter). */
-export const ERROR_CAUSE_HEADER = "%causeHeader";
 
 /** Compiler-owned integrity state of a class instance whose hierarchy is
  * passed to Object.freeze, Object.seal, Object.preventExtensions or

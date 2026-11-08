@@ -662,8 +662,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.stack",
   "error.cause",
   "error.setCause",
-  "error.assignCause",
-  "error.assignCodeDyn",
   "error.assign",
   "error.deleteCause",
   "dyn.objectTag",

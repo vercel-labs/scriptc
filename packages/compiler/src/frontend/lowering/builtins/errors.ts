@@ -4,7 +4,6 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { builtinErrorNew, classHasIndexSignature } from "../lower-classes.js";
-import { errorSlotAssignHelper } from "../class-dynamic-dispatch.js";
 import {
   BOOL,
   CAUGHT,
@@ -290,103 +289,6 @@ export function classesHoldingOwnCode(lowerer: Lowerer, className: string): stri
   return holders.filter(
     (name) => !holders.some((other) => other !== name && lowerer.isSubclassOf(name, other)),
   );
-}
-
-/** The program's Error classes at or below `className`, outermost only (an
- * instance of a subclass is an instance of the class listed). An instance
- * of one of them has class fields and a property list of its own, so a
- * `cause` or a `code` it gains after construction is recorded there
- * (class-dynamic-dispatch.ts, errorSlotMember); the runtime's own error
- * classes keep both in their slots alone. */
-export function programErrorClasses(lowerer: Lowerer, className: string): string[] {
-  const names: string[] = [];
-  for (const [name, info] of lowerer.classes) {
-    if (name.startsWith("%") || info.def.runtime || info.builtinError) continue;
-    if (name !== className && !lowerer.isSubclassOf(name, className)) continue;
-    if (!lowerer.isErrorRootedClass(name)) continue;
-    names.push(name);
-  }
-  return names.filter(
-    (name) => !names.some((other) => other !== name && lowerer.isSubclassOf(name, other)),
-  );
-}
-
-/** `target.<name> = value` where `target` may be an instance of a program
- * Error class: that instance takes the write through its checked-dynamic
- * view at its own class, so the class is one the property dispatch knows
- * and gives a property list, where a member the write creates is recorded
- * in creation order; every other error takes `slot`. Null when no program
- * class can be the target. Both hidden locals live inside one expression
- * for as long as the write needs them. */
-export function lowerErrorMemberWrite(
-  lowerer: Lowerer,
-  target: IrExpr,
-  name: string,
-  value: IrExpr,
-  slot: (target: IrExpr, value: IrExpr) => IrStmt,
-  loc: IrExpr["loc"],
-): IrStmt | null {
-  if (target.type.kind !== "object") return null;
-  const classes = programErrorClasses(lowerer, target.type.className);
-  if (classes.length === 0) return null;
-  const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
-  const viaInstance = (receiver: IrExpr, written: IrExpr): IrStmt => {
-    // `cause` and `code` have a helper per class, which stores the slot
-    // and keeps the member's place in the instance's property list.
-    const helper =
-      receiver.type.kind === "object"
-        ? errorSlotAssignHelper(lowerer, receiver.type.className, name, loc)
-        : null;
-    return {
-      kind: "exprStmt",
-      expr: helper
-        ? { kind: "call", callee: helper, args: [receiver, written], type: VOID, loc }
-        : {
-            kind: "libCall",
-            fn: "dyn.keySet",
-            args: [lowerer.coerceToExpected(receiver, DYN), key, written],
-            type: VOID,
-            loc,
-          },
-      loc,
-    };
-  };
-  if (classes.length === 1 && classes[0] === target.type.className)
-    return viaInstance(target, value);
-  const targetType = target.type;
-  const held = lowerer.declareHiddenLocal("%memberTarget", targetType);
-  const written = lowerer.declareHiddenLocal("%memberValue", DYN);
-  const heldRef = (): IrExpr => ({ kind: "varRef", localId: held.id, type: targetType, loc });
-  const writtenRef = (): IrExpr => ({ kind: "varRef", localId: written.id, type: DYN, loc });
-  let write: IrStmt = slot(heldRef(), writtenRef());
-  for (const className of [...classes].reverse())
-    write = {
-      kind: "if",
-      cond: { kind: "instanceOf", value: heldRef(), className, type: BOOL, loc },
-      then: [
-        viaInstance(
-          { kind: "downcast", value: heldRef(), type: { kind: "object", className }, loc },
-          writtenRef(),
-        ),
-      ],
-      else_: [write],
-      loc,
-    };
-  return {
-    kind: "exprStmt",
-    expr: {
-      kind: "seqExpr",
-      stmts: [
-        { kind: "varDecl", localId: held.id, init: target, loc },
-        { kind: "varDecl", localId: written.id, init: value, loc },
-        write,
-      ],
-      result: { kind: "boolLit", value: true, type: BOOL, loc },
-      type: BOOL,
-      loc,
-    },
-    loc,
-  };
 }
 
 /** Whether values of `type` are errors: class instances whose class is

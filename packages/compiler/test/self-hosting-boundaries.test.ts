@@ -7,10 +7,17 @@ import { analyze } from "../src/index.js";
 // These refusals protect native layouts: a second Error.cause slot would
 // disagree with accesses through the Error base class. (An asserted
 // predicate of `.find` is no longer one of them: the element it answers is
-// converted checked, see find-written-predicate.test.ts. A `cause` field of
-// any declared type is not a second slot either: it is the error's own
-// cause, read at the declared type.)
+// converted checked, see find-written-predicate.test.ts.)
 test.each([
+  [
+    "cause field",
+    `
+    class Own extends Error { override cause = "own"; }
+    const error: Error = new Own("message", { cause: "constructor" });
+    console.log(error.cause);
+  `,
+    "redeclaring Error.cause",
+  ],
   [
     "cause parameter property",
     `

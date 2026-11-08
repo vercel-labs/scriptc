@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/9491-error-late-members-order.ts"
- ],
- "diags": []
-}

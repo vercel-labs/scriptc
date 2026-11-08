@@ -7826,12 +7826,31 @@ static ScrDyn *scr_dyn_class_call(ScrClosure *closure, ScrDyn *const *args, size
 
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  if (cls->static_data) closure->props = scr_box_retain(cls->static_data);
+  /* The class object as a dynamic value: itself, or for an instantiation
+   * of a generic class the class object its table slot names
+   * (scr_dyn_class_share), which is a module-level class and outlives every
+   * value. That one carries the identity and the static table. */
+  ScrClassObj *identity = cls;
+  if (cls->static_data) {
+    ScrDyn *held = scr_box_get_ref(cls->static_data);
+    if (held && held->kind == SCR_DYN_FUNC && held->v.fn.class_obj) identity = held->v.fn.class_obj;
+    scr_dyn_release(held);
+  }
+  if (identity->static_data) closure->props = scr_box_retain(identity->static_data);
   closure->caps[0] = scr_box_new_obj(scr_classobj_retain_v, scr_classobj_release_v, scr_classobj_trace_v);
   scr_box_set_ref(closure->caps[0], scr_classobj_retain(cls));
   ScrDyn *value = scr_dyn_new_func(closure, scr_dyn_class_call, (uint32_t)cls->length, type_key, cls->name->data);
-  value->v.fn.class_obj = cls; /* borrowed from the closure */
+  value->v.fn.class_obj = identity; /* borrowed: the closure's, or a module-level class */
   return value;
+}
+
+/* The class object a constructor value constructs and casts to (borrowed
+ * from its closure): its own, which for an instantiation of a generic
+ * class is not the one that carries its identity. */
+static ScrClassObj *scr_dyn_class_own(const ScrDyn *value) {
+  ScrClassObj *own = scr_box_get_ref(value->v.fn.clo->caps[0]);
+  scr_classobj_release(own); /* the closure keeps it */
+  return own;
 }
 
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key) {
@@ -7848,7 +7867,7 @@ ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, cons
     scr_dyn_check_fail(path, "class constructor", value);
     return NULL;
   }
-  return scr_classobj_retain(value->v.fn.class_obj);
+  return scr_classobj_retain(scr_dyn_class_own(value));
 }
 
 /* The compiler exposes this data view only for named data accesses and
@@ -9079,16 +9098,16 @@ bool scr_dyn_class_statics_begin(ScrDyn *constructor) {
   return true;
 }
 
-const void *scr_class_shared_identity(const ScrClassObj *c) {
-  ScrDyn *table = scr_box_get_ref(c->static_data);
-  scr_dyn_release(table); /* the box keeps it */
-  return table;
-}
-
-/* Makes `constructor`, the class object of an instantiation of a generic
- * class, answer with the static table of `first`, the first constructor of
- * that class that became a dynamic value (itself when it is the first), and
- * the two one value to identity. Returns the constructor (+1). */
+/* Makes the class object of `constructor`, an instantiation of a generic
+ * class, stand for `first` as a dynamic value: `first` is the first
+ * constructor of that class that became one (itself when it is the first).
+ * JavaScript has one class object per declaration, so every constructor
+ * value made from this class object afterwards carries the identity and the
+ * static table of `first` (scr_dyn_new_class) and keeps its own type key
+ * and class object for construction and the checked cast. The class
+ * object's table slot holds `first` from here on; the constructor values
+ * made before this call keep the table they had and are dropped by the
+ * conversion that made them. Returns the constructor (+1). */
 ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first) {
   if (constructor->kind != SCR_DYN_FUNC || !constructor->v.fn.class_obj || first->kind != SCR_DYN_FUNC ||
       !first->v.fn.class_obj) {
@@ -9096,14 +9115,15 @@ ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  ScrClassObj *cls = constructor->v.fn.class_obj;
-  ScrClassObj *of = first->v.fn.class_obj;
-  ScrDyn *table = scr_dyn_fn_table(first);
-  scr_dyn_release(scr_dyn_fn_table(constructor));
-  if (cls != of) scr_box_set_ref(cls->static_data, scr_dyn_retain(table));
-  scr_dyn_release(table);
-  cls->own_static_fields |= SCR_CLASS_SHARES_STATICS;
-  of->own_static_fields |= SCR_CLASS_SHARES_STATICS;
+  ScrClassObj *cls = scr_dyn_class_own(constructor);
+  if (cls != first->v.fn.class_obj) {
+    scr_dyn_release(scr_dyn_fn_table(first));
+    ScrBox *alias = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+    scr_box_set_ref(alias, scr_dyn_retain(first));
+    ScrBox *old = cls->static_data;
+    cls->static_data = alias;
+    scr_box_release(old);
+  }
   return scr_dyn_retain(constructor);
 }
 
@@ -17761,10 +17781,7 @@ bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b) {
     /* The ScrDyn box is a boundary artifact — one closure crossing the
      * dyn boundary twice is still ONE JS function value, so identity
      * lives in the boxed closure, not the box. */
-    if (a->v.fn.class_obj || b->v.fn.class_obj)
-      return a->v.fn.class_obj == b->v.fn.class_obj ||
-             (a->v.fn.class_obj && b->v.fn.class_obj &&
-              scr_class_identity(a->v.fn.class_obj) == scr_class_identity(b->v.fn.class_obj));
+    if (a->v.fn.class_obj || b->v.fn.class_obj) return a->v.fn.class_obj == b->v.fn.class_obj;
     return a == b || scr_closure_identity_equal(a->v.fn.clo, b->v.fn.clo);
   case SCR_DYN_BYTES:
     return a->v.bytes == b->v.bytes;
@@ -21847,7 +21864,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   case SCR_DYN_BYTES:
     *ptr = key->v.bytes; *kind = 1; return 1;
   case SCR_DYN_FUNC:
-    *ptr = key->v.fn.class_obj ? (void *)scr_class_identity(key->v.fn.class_obj) : (void *)scr_closure_identity(key->v.fn.clo);
+    *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)scr_closure_identity(key->v.fn.clo);
     *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&

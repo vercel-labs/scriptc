@@ -4096,7 +4096,15 @@ export class LlDyn {
           B.condBr(begin, define, done);
           B.startBlock(define);
           B.line(`call void @${mangleFunction(statics)}()`);
-          B.br(done);
+          // The helper may have made the class stand for another one as a
+          // dynamic value (an instantiation of a generic class, whose
+          // declaration is one class object in JavaScript): the value made
+          // before it ran does not carry that identity, a new one does.
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${r})`);
+          const again = B.tmp();
+          B.line(`${again} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
+          B.terminate(`ret ptr ${again}`);
           B.startBlock(done);
         }
         B.terminate(`ret ptr ${r}`);

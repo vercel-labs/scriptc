@@ -64,16 +64,6 @@ static inline ScrClassObj *scr_classobj_retain(ScrClassObj *c) {
   return c;
 }
 void scr_classobj_release(ScrClassObj *c);
-/* Bit 1 of own_static_fields, set at run time (scr_dyn_class_share): the
- * class object is an instantiation of a generic class whose constructor
- * became a dynamic value. JavaScript has one class object per declaration,
- * so the instantiations of one declaration share one static table, and that
- * table is their identity as dynamic values. */
-#define SCR_CLASS_SHARES_STATICS ((size_t)2)
-const void *scr_class_shared_identity(const ScrClassObj *c);
-static inline const void *scr_class_identity(const ScrClassObj *c) {
-  return c && (c->own_static_fields & SCR_CLASS_SHARES_STATICS) ? scr_class_shared_identity(c) : (const void *)c;
-}
 void scr_classobj_clear_properties(ScrClassObj *c);
 ScrClassObj *scr_classobj_new(const ScrClassObj *tpl, size_t ncaps);
 void scr_classobj_trace_v(void *c, ScrTraceVisit visit, void *ctx);

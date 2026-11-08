@@ -60,7 +60,7 @@ import {
   cjsAccessorSnapshotOf,
   isArrayIterationCallback,
   primitiveConversionCallback,
-  primitiveCtorClosure,
+  primitiveCtorValue,
   runtimeOptionalElementKey,
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
@@ -941,7 +941,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         loc,
         isJsSourceFile(ts.getSourceFileOfNode(expr)),
       );
-    return primitiveCtorClosure(lowerer, primitiveName, loc);
+    return primitiveCtorValue(lowerer, primitiveName, loc);
   }
   if (lowerer.isStdlibGlobal(expr, "ArrayBuffer"))
     return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };

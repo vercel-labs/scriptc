@@ -754,6 +754,13 @@ import {
 } from "./lower-assert.js";
 import type { AssertInstanceOptions } from "./assert-instances.js";
 import { lowerUtilModuleCall } from "./lower-inspect.js";
+import {
+  constructorRefusals,
+  fewerRefusals,
+  namedConstructorBox,
+  otherErrors,
+  untypedConstructorAsFunction,
+} from "./held-constructors.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
 import {
   lowerComptime,
@@ -1311,6 +1318,12 @@ export interface LowererMode {
    * dynamic, never to its pushed-down shape (lowerToIr's comparison
    * pass). */
   wholeSlotDegradation?: boolean;
+  /** Hold the primitive constructors a program holds as values untyped
+   * (TypeMapperCtx.untypedConstructors: their types map as `unknown` does)
+   * instead of typing them by the constructors' own function types. lowerToIr sets it
+   * on the comparison pass of a program whose first pass met a refusal that
+   * involves a held constructor (held-constructors.ts). */
+  untypedConstructors?: boolean;
   /** End the pass where it asks for the next stream mode, because that
    * pass replaces its result outright (lowerToIrWithIslands sets this on
    * the push-down pass and on the general stream pass). */
@@ -1691,49 +1704,94 @@ function lowerToIrWithIslands(
     throw new InternalCompilerError(
       "lowerer bug: a stream-flags abort without the general stream flag",
     );
-  // Localized failure (stage L3): push-down must never cost a failing
-  // program more errors than the whole-slot checked dynamic. A pushed-down
-  // type is baked into the globals, fields and signatures that hold it, so
-  // when the program still fails, the emit runs once more with every
-  // degraded type held whole, and the pass with fewer errors wins (ties
-  // keep push-down). A program that compiles never takes this path.
-  if (
-    !generalNodeStreams &&
-    result.diagnostics.length > 0 &&
-    reachableEmit.hasPartialDegradedTypes()
-  ) {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      parameterPropertiesFirst: options.parameterPropertiesFirst,
-      targetPlatform,
-      define: options.define,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      typeClaims,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
+  // The comparison round. A failing program lowers once more in another
+  // representation, and the pass with fewer refusals stands (ties keep the
+  // standing pass). A program that compiles with nothing refused never
+  // takes this path. Two representations are compared, in ONE pass when the
+  // program asks for both:
+  //   - Localized failure (stage L3): push-down must never cost a failing
+  //     program more errors than the whole-slot checked dynamic. A
+  //     pushed-down type is baked into the globals, fields and signatures
+  //     that hold it, so when the program still fails, the emit runs with
+  //     every degraded type held whole.
+  //   - Held constructors (held-constructors.ts): the function form of a
+  //     primitive constructor held as a value must never cost a program a
+  //     refusal. When a refusal involves one, a build error or one deferred
+  //     to run time, the emit runs with the constructors in checked-dynamic
+  //     slots.
+  // A program whose errors all involve a held constructor compares that
+  // representation alone first: its degraded types are not what failed. If
+  // the standing pass then still fails with pushed-down types, it takes the
+  // whole-slot comparison as any failing program does.
+  const comparisonRounds = (general: boolean): void => {
+    let constructorsCompared = false;
+    for (;;) {
+      const partial = result.diagnostics.length > 0 && resultLowerer.hasPartialDegradedTypes();
+      const untyped =
+        !constructorsCompared && !resultLowerer.untypedConstructors && constructorRefusals(result);
+      const whole = partial && (!untyped || otherErrors(result));
+      if (!whole && !untyped) return;
+      if (untyped) constructorsCompared = true;
+      const pass = new Lowerer(program, entry, moduleOrder, {
+        facts,
+        frontendServices: options.frontendServices,
+        projectCheckJs: options.projectCheckJs ?? false,
+        parameterPropertiesFirst: options.parameterPropertiesFirst,
+        ...(general
+          ? {
+              generalNodeStreams: true,
+              ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
+              dynamicImportRejections: options.dynamicImportRejections,
+            }
+          : {}),
+        targetPlatform,
+        define: options.define,
+        startupCrash,
+        admittedOpinions: options.admittedOpinions,
+        inlineRequireCycleCalls,
+        ffiImports,
+        libraryCallbacks,
+        forkTargets,
+        workerTargets,
+        externalTypes,
+        externalTypeSpecifiersByFile,
+        tierMode,
+        runtimeOptionalReport,
+        typeClaims,
+        ffiBindingSymbols: ffiValidation.symbolsByName,
+        ...(whole ? { wholeSlotDegradation: true } : {}),
+        ...(untyped || resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
+      });
+      for (const d of extraModuleCycleDiags) pass.pushDiag(d);
+      for (const d of ffiValidation.diagnostics) pass.pushDiag(d);
+      const emitted = pass.emitReachable(options.libRoots);
+      // The whole-slot comparison alone judges build errors, as it always
+      // has; a comparison that involves held constructors also counts the
+      // refusals deferred to run time.
+      const fewer = untyped
+        ? fewerRefusals(emitted.result, result)
+        : emitted.result.diagnostics.length < result.diagnostics.length;
+      if (fewer) {
+        reachable = emitted.reachable;
+        result = emitted.result;
+        resultLowerer = pass;
+      }
+      timing(whole ? "whole-slot-relower" : "untyped-constructors-relower", {
+        reachable: emitted.reachable.size,
+        ...(whole && untyped ? { constructors: "untyped" } : {}),
+        ...(untyped
+          ? {
+              kept: fewer,
+              errors: emitted.result.diagnostics.length,
+              deferred: emitted.result.runtimeFences.length,
+            }
+          : {}),
+      });
+      if (whole) return;
     }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-  }
+  };
+  // Stream programs take it after their stream passes (below).
+  if (!generalNodeStreams) comparisonRounds(false);
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
@@ -1841,6 +1899,7 @@ function lowerToIrWithIslands(
       runtimeOptionalReport,
       typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1848,51 +1907,11 @@ function lowerToIrWithIslands(
     resultLowerer = emit;
     timing("historical-order-relower");
   }
-  // A stream program whose passes still fail takes the whole-slot
-  // comparison here, against the pass whose result stands: the stream pass
-  // replaces the earlier result outright, so the comparison is only worth
-  // paying for on the pass it would judge. The rule is unchanged — the
-  // whole-slot pass is kept only when it has strictly fewer errors.
-  if (
-    generalNodeStreams &&
-    result.diagnostics.length > 0 &&
-    resultLowerer.hasPartialDegradedTypes()
-  ) {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      parameterPropertiesFirst: options.parameterPropertiesFirst,
-      generalNodeStreams: true,
-      ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
-      targetPlatform,
-      define: options.define,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      dynamicImportRejections: options.dynamicImportRejections,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      typeClaims,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
-    }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-  }
+  // A stream program whose passes still fail takes the comparison round
+  // here, against the pass whose result stands: the stream pass replaces
+  // the earlier result outright, so the comparison is only worth paying for
+  // on the pass it would judge.
+  if (generalNodeStreams) comparisonRounds(true);
   // LIBRARY mode: the profile's export names resolved to the units that
   // supply them — the entry's own unit for a direct export, the declaring
   // module's tagged unit for a re-exported one. The export-map resolution
@@ -2037,6 +2056,7 @@ function lowerToIrWithIslands(
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
+      ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
@@ -5440,6 +5460,14 @@ export class Lowerer {
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
+    "untypedConstructors",
+    // Which refusals involve a held constructor (held-constructors.ts): a
+    // count and its mark for the statement being lowered, and the answers
+    // per named type, computed again when asked.
+    "constructorTouches",
+    "constructorTouchMark",
+    "constructorHolders",
+    "constructorFunctionMemo",
     "abortOnStreamFlags",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
@@ -5744,6 +5772,11 @@ export class Lowerer {
         () => this.partialDegradedTypesMapped,
         () => (this.partialDegradedTypesMapped = true),
       ),
+      flag(
+        "constructorFunctionTypes",
+        () => this.constructorFunctionTypes,
+        () => (this.constructorFunctionTypes = true),
+      ),
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
@@ -5902,6 +5935,23 @@ export class Lowerer {
   readonly priorRetriedSymbols: ReadonlySet<ts.Symbol>;
   /** LowererMode.wholeSlotDegradation. */
   readonly wholeSlotDegradation: boolean;
+  /** LowererMode.untypedConstructors. */
+  readonly untypedConstructors: boolean;
+  /** The program holds a primitive constructor by the constructor's own
+   * function type: such a type mapped, or the constructor was read as a
+   * value. Until then nothing of held-constructors.ts is asked. */
+  constructorFunctionTypes = false;
+  /** How often lowering met a value or a type that holds a constructor's
+   * function type (lowerExpr, the type mapper). */
+  constructorTouches = 0;
+  /** constructorTouches when the innermost statement being lowered began
+   * (lowerStmts): a diagnostic made past it is marked heldConstructor. */
+  constructorTouchMark = 0;
+  /** held-constructors.ts: whether a record shape, a union or a class holds
+   * a constructor's function type. */
+  readonly constructorHolders = new Map<string, boolean>();
+  /** TypeMapperCtx.constructorFunctionMemo. */
+  readonly constructorFunctionMemo = new Set<number>();
   /** Bodies run() skipped because their declaration had not registered. */
   readonly skippedBodies = new Set<ts.Node>();
   /** Declarations retryDeferred registered, in order: run() lowers the
@@ -6477,6 +6527,7 @@ export class Lowerer {
         });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
+    this.untypedConstructors = mode.untypedConstructors ?? false;
     this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
@@ -6660,6 +6711,12 @@ export class Lowerer {
       typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
+      ...(this.untypedConstructors ? { untypedConstructors: true } : {}),
+      onConstructorFunctionType: () => {
+        this.constructorFunctionTypes = true;
+        this.constructorTouches++;
+      },
+      constructorFunctionMemo: this.constructorFunctionMemo,
       // The protocol types that hold a checked-dynamic value are a fact of
       // the program (async-protocol-holders.ts), the same in every pass.
       asyncProtocolHoldsImplementor: (element) => this.asyncProtocolHoldsImplementor(element),
@@ -13766,6 +13823,9 @@ export class Lowerer {
     const d = this.instantiationContext
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
+    // Made after the statement being lowered met a held constructor
+    // (held-constructors.ts).
+    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in
@@ -16336,6 +16396,10 @@ export class Lowerer {
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    // An untyped primitive constructor enters a function-typed slot as the
+    // constructor's own function (held-constructors.ts).
+    if (this.untypedConstructors && expected.kind === "func" && expr.type.kind === "dyn")
+      expr = untypedConstructorAsFunction(this, node, expr) ?? expr;
     const outerNode = this.slotSiteNode;
     const outerType = this.slotSiteType;
     this.slotSiteNode = node;
@@ -16552,6 +16616,7 @@ export class Lowerer {
     // its box takes the function's own name. A constructor written as an
     // array method's callback is its conversion closure, not the
     // constructor value, and is named by its spelling like any closure.
+    e = namedConstructorBox(e);
     if (
       e.kind === "dynFrom" &&
       e.value.type.kind === "func" &&

@@ -873,6 +873,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const sinkMark = lowerer.diagSinkMark();
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
+      // A refusal of this statement involves a held constructor when the
+      // statement meets one before it (held-constructors.ts).
+      const touchMark = lowerer.constructorTouchMark;
+      lowerer.constructorTouchMark = lowerer.constructorTouches;
       const pendingSlots: DynamicSlot[] = [];
       // A declarator that initializes a forward-captured TDZ box takes it
       // out of tdzPredeclared; a retry after a later declarator degrades
@@ -983,6 +987,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
         }
       } finally {
         lowerer.failureTouches.pop();
+        lowerer.constructorTouchMark = touchMark;
       }
     }
     // Each acquisition protects the remainder of its lexical statement

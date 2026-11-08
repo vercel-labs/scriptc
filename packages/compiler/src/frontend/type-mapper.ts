@@ -1586,6 +1586,26 @@ export interface TypeMapperCtx {
    * checker type its signature instantiates, or null. Consulted only when
    * the symbolic form does not map. */
   resolveBoundAliasTs?: TypeParamTsResolver;
+  /** How a standard-library primitive constructor held as a value is typed
+   * (lowerToIr decides it per program). Off (the default): `typeof String`
+   * is the constructor's own function type (primitiveConstructorType) and a
+   * union of several constructors is one function arm. On: a primitive
+   * constructor type, a union that holds one, and a list or a table of them
+   * (an array, a tuple, an index signature) is the checked-dynamic value,
+   * as `unknown` is; a declared member that holds one is an untyped member,
+   * and a Map or a Set of them keeps its collection with untyped values
+   * (`new Map` builds a typed collection). That is the tier that held a
+   * table of constructors before the function form existed. The value in
+   * it is the same function. */
+  untypedConstructors?: boolean;
+  /** Called each time a primitive constructor type maps to the
+   * constructor's own function type (never under untypedConstructors). */
+  onConstructorFunctionType?: () => void;
+  /** The memo keys (mapType) of the types whose mapping reached
+   * onConstructorFunctionType: an answer taken from the memo calls it again,
+   * so a type that holds a constructor's function type reports it wherever
+   * it is mapped, not only where it was mapped first. */
+  constructorFunctionMemo?: Set<number>;
   /** Localized failure: the lenient mapping of a type whose strict mapping
    * failed at a committed slot (Lowerer.degradedTypes), or null. Consulted
    * only after the strict mapping (and its bound-alias retry) returns null,
@@ -2318,6 +2338,7 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // is scope-specific too: without this the parent could enter the shared
       // memo and serve this instance's representation to every later one.
       if (ctx.typeMemoShared?.get(memoKey) !== own) noteScopeSensitiveMapping();
+      noteConstructorFunctionMemo(ctx, memoKey);
       return own;
     }
     const shared = ctx.typeMemoShared;
@@ -2325,12 +2346,14 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const hit = shared.get(memoKey);
       if (hit !== undefined) {
         if (verifySharedTypeMemo && topLevel) verifySharedMapping(type, ctx, hit);
+        noteConstructorFunctionMemo(ctx, memoKey);
         return hit;
       }
     }
   }
   const sensitivityAtEntry = contextResolutions;
   const scopeReadsAtEntry = scopeSensitivity;
+  const constructorMappingsAtEntry = constructorFunctionMappings;
   mapTypeDepth++;
   try {
     let mapped: IrType | null;
@@ -2406,6 +2429,8 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // assumption.)
       if (liveMemo === contextMemo) {
         liveMemo?.set(memoKey, mapped);
+        if (constructorFunctionMappings !== constructorMappingsAtEntry)
+          ctx.constructorFunctionMemo?.add(memoKey);
         // An answer that read no scope state is every scope's answer, so it
         // also serves the shared memo — including the scopes entered later.
         const shared = ctx.typeMemoShared;
@@ -2417,6 +2442,25 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** How many mappings reached a primitive constructor's own function type
+ * (noteConstructorFunctionType): a frame that moved it holds such a type. */
+let constructorFunctionMappings = 0;
+
+/** A primitive constructor type mapped to the constructor's own function
+ * type (TypeMapperCtx.onConstructorFunctionType). */
+function noteConstructorFunctionType(ctx: TypeMapperCtx): void {
+  constructorFunctionMappings++;
+  ctx.onConstructorFunctionType?.();
+}
+
+/** An answer taken from the memo reports the constructor function type its
+ * mapping reached (TypeMapperCtx.constructorFunctionMemo). */
+function noteConstructorFunctionMemo(ctx: TypeMapperCtx, memoKey: number): void {
+  const reached = ctx.constructorFunctionMemo;
+  if (reached !== undefined && reached.size > 0 && reached.has(memoKey))
+    noteConstructorFunctionType(ctx);
 }
 
 /** SCRIPTC_TYPE_MEMO_VERIFY: recomputes a shared memo entry in the scope
@@ -2790,10 +2834,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // constructor's primitive. The result differs per constructor; a union
   // of several of them is one function arm whose result joins theirs (the
   // union rule below). Provenance-gated like the boxed wrappers above: a
-  // user's own `interface StringConstructor` maps as a record.
+  // user's own `interface StringConstructor` maps as a record. Under
+  // untypedConstructors the type, and a collection of such values, is the
+  // checked-dynamic value.
+  if (ctx.untypedConstructors === true && holdsUntypedConstructor(widened, ctx, 4)) return DYN;
   {
     const ctorResult = primitiveConstructorResult(widened, ctx);
-    if (ctorResult !== null) return primitiveConstructorType(ctorResult);
+    if (ctorResult !== null) {
+      noteConstructorFunctionType(ctx);
+      return primitiveConstructorType(ctorResult);
+    }
   }
   // `symbol` and `unique symbol` (the type of `const k = Symbol(...)` —
   // getBaseTypeOfLiteralType widens unique symbols, but check both flags)
@@ -5651,10 +5701,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // checker joins such a union into has fixed parameters (and Boolean's
   // type parameter), and a constructor reads the arguments its caller
   // actually passed (`String()` is "", `String(undefined)` is "undefined").
-  const callSigs =
-    widened.isUnionType() && onlyPrimitiveConstructorsCallable(widened, ctx)
-      ? []
-      : checker.getCallSignatures(widened);
+  const constructorUnion = widened.isUnionType() ? constructorMembers(widened, ctx) : "none";
+  const callSigs = constructorUnion === "only-callable" ? [] : checker.getCallSignatures(widened);
   // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
   // (als.snapshot), called through the dyn call path.
   if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
@@ -6012,7 +6060,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         // Primitive constructors join into ONE function arm (below): which
         // constructor a value is stays its identity, as for any function.
-        const constructed = primitiveConstructorResult(part, ctx);
+        const constructed =
+          constructorUnion === "none" ? null : primitiveConstructorResult(part, ctx);
         if (constructed !== null) {
           constructorResults.set(typeKey(constructed), constructed);
           continue;
@@ -6069,6 +6118,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       // and a second function arm would make its tag a fact about the
       // static type that an untyped round trip could not restore.
       if (constructorResults.size > 0) {
+        noteConstructorFunctionType(ctx);
         const results = [...constructorResults.values()];
         sortArms(results);
         const joined = primitiveConstructorType(
@@ -6204,15 +6254,41 @@ export function holdsPrimitiveConstructors(
   return parts.length > 0 && parts.every((part) => primitiveConstructorResult(part, ctx) !== null);
 }
 
-/** Whether the union `type` holds a primitive constructor and none of its
- * other members is callable. */
-function onlyPrimitiveConstructorsCallable(type: ts.Type, ctx: TypeMapperCtx): boolean {
+/** TypeMapperCtx.untypedConstructors: whether `type` is a primitive
+ * constructor's type, a union that holds one, or a list or table of such
+ * values (an array, a tuple, an index signature), to `depth` levels. A
+ * declared member and a Map's or Set's argument are not looked into: the
+ * record or collection keeps its shape and the member maps by this rule
+ * itself. */
+function holdsUntypedConstructor(type: ts.Type, ctx: TypeMapperCtx, depth: number): boolean {
+  if (depth === 0) return false;
+  if (primitiveConstructorResult(type, ctx) !== null) return true;
+  const inner = (t: ts.Type): boolean => holdsUntypedConstructor(t, ctx, depth - 1);
+  if (type.isUnionType()) return ts.constituentTypes(type).some(inner);
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const checker = ctx.checker;
+  if (checker.isArrayType(type) || checker.isTupleType(type))
+    return checker.getTypeArguments(type as ts.TypeReference).some(inner);
+  return checker.getIndexInfosOfType(type).some((info) => inner(info.type));
+}
+
+/** The primitive constructors among the members of the union `type`:
+ * "none"; "only-callable" when it holds one and none of its other members
+ * is callable; "some" when another member is callable too. A union without
+ * a constructor is answered from its members' symbols alone: the checker is
+ * asked for call signatures only when a constructor is among them. */
+function constructorMembers(type: ts.Type, ctx: TypeMapperCtx): "none" | "only-callable" | "some" {
+  const parts = ts.constituentTypes(type);
+  let others: ts.Type[] | null = null;
   let constructors = false;
-  for (const part of ts.constituentTypes(type)) {
+  for (const part of parts) {
     if (primitiveConstructorResult(part, ctx) !== null) constructors = true;
-    else if (ctx.checker.getCallSignatures(part).length > 0) return false;
+    else (others ??= []).push(part);
   }
-  return constructors;
+  if (!constructors) return "none";
+  if (others !== null)
+    for (const part of others) if (ctx.checker.getCallSignatures(part).length > 0) return "some";
+  return "only-callable";
 }
 
 /** The primitive a standard-library primitive-constructor interface

@@ -155,6 +155,11 @@ export interface ScrDiagnostic {
    * deferred declaration's diagnostics, and on the diagnostics of a
    * declaration statement whose bindings were blocked. */
   rejects?: string;
+  /** Report-only: the diagnostic was made after the statement being lowered
+   * met a value or a type that holds a primitive constructor by the
+   * constructor's own function type (lowering/held-constructors.ts). Never
+   * part of the rendered message. */
+  heldConstructor?: true;
   /** Localized failure, report-only: the failure groups (rejected
    * declarations, blocked statements) that the statement committing this
    * diagnostic used. A cascade clears when every one of them would

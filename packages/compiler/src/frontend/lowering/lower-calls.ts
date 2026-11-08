@@ -362,6 +362,7 @@ import {
 
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import { lowerRecordInheritedCall } from "./record-inherited.js";
+import { builtinConstructorNames, builtinConstructorText } from "./held-constructors.js";
 import { fenceDatePrototypeWriteCall } from "./expressions/property-access.js";
 
 const ZLIB_STREAM_METHODS: ReadonlySet<string> = new Set(["flush", "params", "close", "reset"]);
@@ -500,6 +501,20 @@ function lowerCallableMemberCall(lowerer: Lowerer, call: ts.CallExpression): IrE
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `c.toString()` of a builtin constructor value is the constructor's text,
+  // whatever tier holds the value (held-constructors.ts).
+  if (
+    expr.arguments.nodes.length === 0 &&
+    expr.questionDotToken === undefined &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    expr.expression.questionDotToken === undefined &&
+    expr.expression.name.text === "toString" &&
+    builtinConstructorNames(lowerer, expr.expression.expression) !== null
+  ) {
+    const receiver = expr.expression.expression;
+    const text = builtinConstructorText(lowerer, receiver, lowerer.lowerExpr(receiver));
+    if (text) return text;
+  }
   const loc = locOf(expr);
   // A JavaScript source calling a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
@@ -1232,6 +1247,9 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (name === "Boolean") return lowerer.lowerCondition(argNode);
     if (name === "Number") return lowerNumberConstructorValue(lowerer, argNode, loc);
     const arg = lowerer.lowerExpr(argNode);
+    const constructorText =
+      name === "String" ? builtinConstructorText(lowerer, argNode, arg) : null;
+    if (constructorText) return constructorText;
     if (
       name === "String" &&
       (arg.type.kind === "dyn" ||
@@ -1248,11 +1266,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         loc,
       };
     }
-    if (name === "String") {
-      const constructorText = builtinConstructorText(lowerer, argNode, arg, loc);
-      if (constructorText) return constructorText;
-      return lowerer.ensureString(arg, argNode);
-    }
+    if (name === "String") return lowerer.ensureString(arg, argNode);
   }
 
   // Computed calls preserve their evaluated receiver just like dotted
@@ -2968,77 +2982,6 @@ function lowerStringMethodCallWithOptionalArgs(
     changed = true;
   }
   return changed ? { ...lowered, args } : lowered;
-}
-
-/** `String(c)` of a value the checker types as a builtin constructor whose
- * function value is compiled or has no text of its own in the runtime
- * (`typeof String`, a union of the primitive constructors, `typeof
- * Function`): Node's `function String() { [native code] }`. One constructor
- * type names its constructor; a union's value carries the name. Null for
- * any other argument. */
-function builtinConstructorText(
-  lowerer: Lowerer,
-  node: ts.Expression,
-  value: IrExpr,
-  loc: SrcLoc,
-): IrExpr | null {
-  const type = lowerer.typeOf(node);
-  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
-  const names = parts.map((part) => {
-    const symbol = part.getSymbol();
-    if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
-    const name = ts.symbolName(symbol);
-    return name === "StringConstructor" ||
-      name === "NumberConstructor" ||
-      name === "BooleanConstructor" ||
-      name === "BigIntConstructor" ||
-      name === "FunctionConstructor"
-      ? name.slice(0, -"Constructor".length)
-      : null;
-  });
-  if (names.length === 0 || names.some((name) => name === null)) return null;
-  const text = (name: IrExpr): IrExpr => ({
-    kind: "strConcat",
-    left: {
-      kind: "strConcat",
-      left: { kind: "strLit", value: "function ", type: STRING, loc },
-      right: name,
-      type: STRING,
-      loc,
-    },
-    right: { kind: "strLit", value: "() { [native code] }", type: STRING, loc },
-    type: STRING,
-    loc,
-  });
-  if (names.length === 1) {
-    const result: IrExpr = {
-      kind: "strLit",
-      value: `function ${names[0]}() { [native code] }`,
-      type: STRING,
-      loc,
-    };
-    if (isSafeToDiscard(value)) return result;
-    return {
-      kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: value, loc }],
-      result,
-      type: STRING,
-      loc,
-    };
-  }
-  if (value.type.kind !== "func") return null;
-  return text({
-    kind: "dynCheck",
-    value: {
-      kind: "dynKeyGet",
-      value: lowerer.coerceToExpected(value, DYN),
-      key: { kind: "strLit", value: "name", type: STRING, loc },
-      type: DYN,
-      loc,
-    },
-    type: STRING,
-    loc,
-  });
 }
 
 /** `.then(String)` / `.then(Number)` / `.then(Boolean)` over a promise of

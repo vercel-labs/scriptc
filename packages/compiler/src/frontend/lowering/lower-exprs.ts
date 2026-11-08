@@ -30,6 +30,11 @@ import { constituentTypes } from "../ts7/checker.js";
 import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  CONSTRUCTOR_FUNCTION_PREFIX,
+  holdsConstructorFunction,
+  namedConstructorBox,
+} from "./held-constructors.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { recordStringCall } from "./record-links.js";
 import { nullProtoRecordShape } from "./null-prototype.js";
@@ -376,6 +381,11 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // typed view there. Programs without islands skip it.
     if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")
       lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
+    // A value that holds a primitive constructor by the constructor's own
+    // function type: a refusal of the statement around it is counted
+    // (held-constructors.ts). Programs that hold no constructor skip it.
+    if (lowerer.constructorFunctionTypes && holdsConstructorFunction(lowerer, lowered.type))
+      lowerer.constructorTouches++;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))
@@ -4355,6 +4365,20 @@ export function primitiveConversionCallback(
   return { kind: "closure", fnName, captures: [], type: fnT, loc };
 }
 
+/** A primitive constructor written as a value expression: the function
+ * itself (primitiveCtorClosure) while the program types its constructors by
+ * their own function types, and that function as an untyped value in the
+ * pass that holds them untyped (Lowerer.untypedConstructors), where a
+ * constructor's type is the checked-dynamic value. */
+export function primitiveCtorValue(
+  lowerer: Lowerer,
+  name: "String" | "Number" | "Boolean" | "BigInt",
+  loc: SrcLoc,
+): IrExpr {
+  const fn = primitiveCtorClosure(lowerer, name, loc);
+  return lowerer.untypedConstructors ? namedConstructorBox(lowerer.coerceToExpected(fn, DYN)) : fn;
+}
+
 /** A primitive constructor read as a VALUE (`String`, `Number`, `Boolean`,
  * `BigInt`): the zero-capture closure over the program's one function for
  * that constructor, in TypeScript and JavaScript sources alike, so every
@@ -4376,7 +4400,7 @@ export function primitiveCtorClosure(
   const key = `${name}:value`;
   let fnName = lowerer.primitiveCtorFns.get(key);
   if (!fnName) {
-    fnName = `%builtin.constructor.${name}`;
+    fnName = `${CONSTRUCTOR_FUNCTION_PREFIX}${name}`;
     lowerer.primitiveCtorFns.set(key, fnName);
     // `value` is the declared parameter and `args` the hidden array of
     // the arguments the caller actually passed (argumentsAll).
@@ -4428,5 +4452,6 @@ export function primitiveCtorClosure(
     };
     lowerer.liftedFns.push(fn);
   }
+  lowerer.constructorFunctionTypes = true;
   return { kind: "closure", fnName, captures: [], type: primitiveConstructorType(ret), loc };
 }

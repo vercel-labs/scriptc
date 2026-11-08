@@ -122,6 +122,7 @@ import {
   matchAllRegexOf,
   namedCaptureGroupsOfPattern,
   primitiveCtorClosure,
+  primitiveCtorValue,
   recordKeyResultOk,
   representedClassFieldTarget,
   staticRegexPatternOf,
@@ -250,6 +251,7 @@ import { keyedFieldRead } from "./keyed-field-targets.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
+import { builtinConstructorNames } from "../held-constructors.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -428,6 +430,17 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  // The prototype of a held primitive constructor stays refused by name in
+  // the pass that holds constructors untyped, as it is in the typed form (a
+  // TypeScript source; JavaScript reads it from the untyped value).
+  if (
+    lowerer.untypedConstructors &&
+    expr.name.text === "prototype" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !ts.isIdentifier(expr.expression) &&
+    builtinConstructorNames(lowerer, expr.expression) !== null
+  )
+    lowerer.noLowering("the prototype of a held built-in constructor", expr);
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `x.constructor`, `x.constructor.name` and a static read through
@@ -2535,7 +2548,7 @@ export function lowerIntrinsicProperty(
     | "BigInt"
   )[]) {
     if (!lowerer.chainBlocked(expr) && lowerer.isStdlibGlobal(expr, name)) {
-      return primitiveCtorClosure(lowerer, name, locOf(expr));
+      return primitiveCtorValue(lowerer, name, locOf(expr));
     }
   }
   // A Reflect member read as a value (a callback table's `Reflect.has`): the

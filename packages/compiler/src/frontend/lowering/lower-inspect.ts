@@ -67,6 +67,7 @@ import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 import { errorConstructionOrder } from "./error-name-order.js";
+import { builtinConstructorText } from "./held-constructors.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -4580,6 +4581,12 @@ function formatSValue(
 ): IrExpr {
   const t = value.type;
   if (t.kind === "string") return value;
+  // %s of a primitive constructor held as a value is the constructor's text
+  // (programs that hold none skip it).
+  if (lowerer.constructorFunctionTypes && (t.kind === "func" || t.kind === "dyn")) {
+    const text = builtinConstructorText(lowerer, node, value, false);
+    if (text) return text;
+  }
   if (t.kind === "f64")
     return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };

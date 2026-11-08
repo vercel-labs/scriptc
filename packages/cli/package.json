@@ -21,12 +21,13 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "build": "node node_modules/tsc-ts/bin/tsc-ts.js -p tsconfig.json",
     "prepack": "node scripts/prepare-native.mjs",
     "postinstall": "node scripts/install-native.mjs"
   },
   "devDependencies": {
-    "@scriptc/compiler": "workspace:*"
+    "@scriptc/compiler": "workspace:*",
+    "tsc-ts": "0.0.10"
   },
   "optionalDependencies": {
     "@scriptc/cli-darwin-arm64": "workspace:*",

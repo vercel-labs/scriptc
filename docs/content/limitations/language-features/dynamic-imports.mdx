@@ -1,5 +1,7 @@
-- **Dynamic imports:** A specifier the build can bound to a finite set compiles to one load per value, and values naming supported Node builtins load natively; the bound covers a string literal, a `const` or never-reassigned binding, string concatenation and template parts, `?:`/`??`/`||` branches, and a parameter of a module-local function whose every call passes one of these.
+- **Dynamic imports:** A specifier the build can bound to a finite set compiles to one load per value; the bound covers a string literal, a `const` or never-reassigned binding, string concatenation and template parts, `?:`/`??`/`||` branches, the pure String methods `replace`, `replaceAll`, `slice`, `toLowerCase`, `toUpperCase`, `trim` and `concat` over bounded values, and a parameter of a module-local function whose every call passes one of these.
   A specifier the build cannot bound is refused with `SC1090`, naming the source that stopped it.
-  Computed specifiers whose values name program modules, import attributes, CommonJS namespace synthesis, and imports of shipped JavaScript packages are unsupported unless the target is a compiled ESM module.
+  A value naming a supported Node builtin loads it natively.
+  A value naming one of the program's own modules compiles that module and answers the one instance, however many static and dynamic edges reach it; a value that names no file rejects at run time with Node's `ERR_MODULE_NOT_FOUND`, so a missing `.js` variant never falls back to the `.ts` beside it.
+  Import attributes, CommonJS namespace synthesis, and imports of shipped JavaScript packages are unsupported unless the target is a compiled ESM module.
   Literal `import()` of compiled ESM and TypeScript modules and of supported Node builtins compiles.
   Evaluation is lazy and microtask-delayed, top-level `await` is honored, repeated imports share namespace identity, exported mutable bindings stay live, and namespace keys use Node's sorted order.

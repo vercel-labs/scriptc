@@ -273,8 +273,8 @@ export interface EarlyExecutableCacheOptions {
   profile?: string;
   /** Omitted without a function layout; otherwise the digest of its bytes. */
   functionLayout?: string;
-  /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
-   * tsc-ts executable's file identity. */
+  /** Omitted for the tsgo checker; otherwise the tsc-ts executable's file
+   * identity (frontend/ts7/checker-backend.ts checkerCacheIdentity). */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;

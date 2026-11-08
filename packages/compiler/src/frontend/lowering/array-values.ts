@@ -1,6 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import { InternalCompilerError } from "../../errors.js";
-import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, helperLoc, numLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
@@ -18,7 +18,6 @@ import {
   sortArms,
   typeKey,
   unionContainerArmsOk,
-  VOID,
 } from "../../ir/ir.js";
 import { everyExpr } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
@@ -663,96 +662,6 @@ export function unionArrayValueRead(
           };
   }
   return result;
-}
-
-/** Whether a type is a tuple record or a native array: an arm a position
- * read or a length read can answer. */
-function isTupleOrArrayArm(lowerer: Lowerer, arm: IrType): boolean {
-  return (
-    arm.kind === "array" ||
-    (arm.kind === "record" && lowerer.shapes.get(arm.shapeId)?.tuple === true)
-  );
-}
-
-/** A union of several tuples or arrays that also holds undefined or null,
- * as the union of the tuples and arrays alone: the value is evaluated
- * once, and a unit arm throws the TypeError JavaScript throws for reading
- * `member` of it (the stored binding of a value the checker narrowed past
- * `undefined` still has the arm). The result is a stable read of a hidden
- * local. Null when the value is no such union. */
-export function presentTupleUnion(
-  lowerer: Lowerer,
-  value: IrExpr,
-  member: string,
-  loc: SrcLoc,
-): IrExpr | null {
-  if (value.type.kind !== "union") return null;
-  const unionId = value.type.unionId;
-  const arms = lowerer.unions.get(unionId)?.arms;
-  const present = arms?.filter((arm) => !isUnitType(arm));
-  if (
-    !arms ||
-    !present ||
-    present.length < 2 ||
-    present.length === arms.length ||
-    !present.every((arm) => isTupleOrArrayArm(lowerer, arm))
-  )
-    return null;
-  const type: IrType = { kind: "union", unionId: lowerer.unions.intern(present) };
-  const held = lowerer.declareHiddenLocal("%tupleUnion", value.type);
-  const ref = (): IrExpr => ({ kind: "varRef", localId: held.id, type: value.type, loc });
-  const stmts: IrStmt[] = [{ kind: "varDecl", localId: held.id, init: value, loc }];
-  for (const [tag, arm] of arms.entries()) {
-    if (!isUnitType(arm)) continue;
-    const unit = arm.kind === "undefinedT" ? "undefined" : "null";
-    stmts.push({
-      kind: "if",
-      cond: { kind: "unionIsTag", unionId, tag, value: ref(), negated: false, type: BOOL, loc },
-      then: [
-        {
-          kind: "exprStmt",
-          expr: nodeThrowExpr(
-            1,
-            "",
-            `Cannot read properties of ${unit} (reading '${member}')`,
-            VOID,
-            loc,
-          ),
-          loc,
-        },
-      ],
-      else_: null,
-      loc,
-    });
-  }
-  const narrowed = lowerer.coerceToExpected(ref(), type);
-  if (!typeEquals(narrowed.type, type)) return null;
-  const out = lowerer.declareHiddenLocal("%tupleUnionPresent", type);
-  stmts.push({ kind: "varDecl", localId: out.id, init: narrowed, loc });
-  return {
-    kind: "seqExpr",
-    stmts,
-    result: { kind: "varRef", localId: out.id, type, loc },
-    type,
-    loc,
-  };
-}
-
-/** `u.length` on a union the checker itself types as a union of tuples
- * (and arrays): the length of the arm the value holds (unionArmsLength). A
- * unit arm throws as JavaScript does (presentTupleUnion). Null for any
- * other union. */
-export function tupleUnionLength(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrExpr | null {
-  if (value.type.kind !== "union") return null;
-  const all = lowerer.unions.get(value.type.unionId)?.arms ?? [];
-  const source = all.some((arm) => isUnitType(arm))
-    ? presentTupleUnion(lowerer, value, "length", loc)
-    : value;
-  if (source === null || source.type.kind !== "union") return null;
-  const arms = lowerer.unions.get(source.type.unionId)?.arms;
-  if (!arms || arms.length < 2 || !arms.every((arm) => isTupleOrArrayArm(lowerer, arm)))
-    return null;
-  return unionArmsLength(lowerer, source, loc);
 }
 
 /** Expression kinds that evaluate without running other code or writing

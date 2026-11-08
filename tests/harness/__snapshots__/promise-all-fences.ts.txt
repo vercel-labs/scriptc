@@ -1,17 +1,62 @@
-promise-all-fences.ts:7:44 - error SC2020: 'Promise.allSettled over this argument shape' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:12:44 - error SC2020: 'Promise.allSettled over this argument shape' is part of the standard library types but has no scriptc lowering yet
 
-  6 | async function settled(): Promise<void> {
-  7 |   const results = await Promise.allSettled([
-    |                                            ^
-  8 |     new Promise<string>((resolve) => resolve("s")),
+  11 | async function settledOfGenerator(): Promise<void> {
+  12 |   const results = await Promise.allSettled(pending());
+     |                                            ^~~~~~~~~
+  13 |   console.log(results.length);
 
-  hint: the entries must share ONE promise type — Promise.allSettled([p, q]) lowers when p and q are the same Promise<T>
+  hint: an array of promises (Promise<T>[]) is the supported form
 
-promise-all-fences.ts:17:33 - error SC2020: 'Promise.any over this argument shape' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:16:44 - error SC2020: 'Promise.allSettled over this argument shape' is part of the standard library types but has no scriptc lowering yet
 
-  16 | async function anyOfGenerator(): Promise<void> {
-  17 |   console.log(await Promise.any(pending()));
+  15 | async function settledOfNothing(): Promise<void> {
+  16 |   const results = await Promise.allSettled([]);
+     |                                            ^~
+  17 |   console.log(results.length);
+
+  hint: an array of promises (Promise<T>[]) is the supported form
+
+promise-all-fences.ts:20:34 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  19 | async function allOfSet(waiting: Set<Promise<number>>): Promise<void> {
+  20 |   console.log((await Promise.all(waiting)).length);
+     |                                  ^~~~~~~
+  21 | }
+
+  hint: an array of promises (Promise<T>[]) is the supported form
+
+promise-all-fences.ts:24:43 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  23 | async function allOfThenable(): Promise<void> {
+  24 |   const [value, text] = await Promise.all([thenable, Promise.resolve("s")]);
+     |                                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  25 |   console.log(value, text);
+
+  hint: an entry is a promise, a value whose type shows no `then` (it fulfils as itself), or `cond ? promise : value` — a thenable, a value that may hold a `then` its type does not show, and a spread have no lowering
+
+promise-all-fences.ts:25:15 - error SC2004: uses of 'value' inherit the blocker on its declaration
+
+  24 |   const [value, text] = await Promise.all([thenable, Promise.resolve("s")]);
+  25 |   console.log(value, text);
+     |               ^~~~~
+  26 | }
+
+  hint: the declaration of 'value' did not compile — fix the diagnostic reported there and these sites clear with it
+
+promise-all-fences.ts:28:35 - error SC2020: 'Promise.any over this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  27 | async function anyOfLiteral(): Promise<void> {
+  28 |   const first = await Promise.any([
+     |                                   ^
+  29 |     new Promise<string>((resolve) => resolve("s")),
+
+  hint: the entries must share ONE promise type — Promise.any([p, q]) lowers when p and q are the same Promise<T>
+
+promise-all-fences.ts:35:33 - error SC2020: 'Promise.any over this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  34 | async function anyOfGenerator(): Promise<void> {
+  35 |   console.log(await Promise.any(pending()));
      |                                 ^~~~~~~~~
-  18 | }
+  36 | }
 
   hint: an array of promises (Promise<T>[]) is the supported form

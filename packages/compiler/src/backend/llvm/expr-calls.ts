@@ -780,6 +780,20 @@ export function emitCallExpr(
         // Declared function as a value: the interned immortal closure —
         // every mention yields the same pointer, so `f === f` is true.
         host.fnValues.add(e.fnName);
+        if (e.length !== undefined) {
+          // The interned closure has one length for every mention, so each
+          // mention records the same one, as below: the closure names itself
+          // as its identity root and its boxes report the recorded length.
+          const closure = `@${mangleFnClosure(e.fnName)}`;
+          const lengthPtr = B.tmp();
+          const identityPtr = B.tmp();
+          B.line(`${lengthPtr} = getelementptr inbounds %ScrClosure, ptr ${closure}, i64 0, i32 5`);
+          B.line(`store i32 ${e.length}, ptr ${lengthPtr}`);
+          B.line(
+            `${identityPtr} = getelementptr inbounds %ScrClosure, ptr ${closure}, i64 0, i32 6`,
+          );
+          B.line(`store ptr ${closure}, ptr ${identityPtr}`);
+        }
         return host.own({
           name: host.retainFrame(`@${mangleFnClosure(e.fnName)}`, e.type),
           type: e.type,

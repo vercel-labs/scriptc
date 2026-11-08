@@ -64,9 +64,12 @@ import {
   STR_METHODS,
   DYN_COLLECTION_CLASSES,
   type DynCollectionClass,
+  globalObjectMemberName,
   isChildSurfaceMember,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
+import { lowerIdentifierExpr } from "./identifiers.js";
+import { globalObjectWrites } from "../global-object-writes.js";
 import {
   isGenericCallableMemberType,
   isLegacyUrlSymbol,
@@ -148,6 +151,7 @@ import {
   lowerStaticFieldRead,
   lowerStaticSuperRead,
 } from "../lower-classes.js";
+import { checkRefusedMemberUse } from "../class-member-refusals.js";
 import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
@@ -162,7 +166,13 @@ import {
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
-import { COMMONJS_MODULE_BINDINGS, TEMPORAL_GLOBAL } from "../../builtin-modules.js";
+import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
+import {
+  nodeGlobalObjectOf,
+  unloweredGlobalObjectMember,
+  unloweredGlobalValue,
+  untypedNodeMemberRead,
+} from "../node-value-reads.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import {
   applyDeferredAssertion,
@@ -195,6 +205,7 @@ import {
   ambientUndefVarRootOf,
   contextualUndefReadType,
   fenceEarlyNsMemberRef,
+  nodeUndefinedGlobalName,
   nsMemberIdentOf,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -219,6 +230,7 @@ import {
 import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
+  fenceHeldLoaderMember,
 } from "../builtins/module-resolution.js";
 import {
   builtinMethodValue,
@@ -451,6 +463,7 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
+  fenceHeldLoaderMember(lowerer, expr);
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `x.constructor`, `x.constructor.name` and a static read through
@@ -1131,6 +1144,13 @@ export function lowerPropertyAccessExpr(
     )
       return weakCollectionMethodValue(lowerer, expr, weak.names, weak.nullable, expr.name.text);
   }
+  // The member reads of a JavaScript source that Node answers with a value
+  // the declared type does not describe (node-value-reads.ts): answered
+  // before the typed lowerings and never narrowed to the declared type.
+  if (!expr.questionDotToken && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const untyped = untypedNodeMemberRead(lowerer, expr, loc);
+    if (untyped !== null) return untyped;
+  }
   const handled =
     lowerer.lowerProcessEnvGet(expr) ??
     lowerer.lowerServerProperty(expr) ??
@@ -1214,15 +1234,38 @@ export function lowerPropertyAccessExpr(
   ) {
     return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
   }
+  // In a TypeScript source, a built-in function or constructor read from
+  // the global object (`globalThis.URL`, `global.Map`) is the read of its
+  // bare name where that name has a value. Where it has none (a timer, a
+  // built-in the compiler only calls), the read stays what it was: the
+  // refusal below, raised when the statement runs, so a read in code the
+  // program never reaches does not stop its build. A program that assigns
+  // the member reads its own value back. A name Node does not define on
+  // the global object (one the declarations type and Node 24 lacks, the
+  // CommonJS module bindings) is not concerned: its member read answers
+  // undefined where its bare name throws.
+  if (!expr.questionDotToken && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const member = globalObjectMemberName(lowerer, expr);
+    if (
+      member !== null &&
+      !nodeUndefinedGlobalName(member.text) &&
+      !COMMONJS_MODULE_BINDINGS.has(member.text) &&
+      builtinGlobalIsCallable(lowerer, member) &&
+      !writesGlobalMember(lowerer, expr.expression, member.text)
+    ) {
+      const value = bareBuiltinValue(lowerer, member, loc);
+      if (value !== null) return value;
+    }
+  }
   // `globalThis.<name>` that no lowering above claimed
   // (globalThis.SubtleCrypto, globalThis.localStorage
   // — the harness's capability-conditional knownGlobals adds): the
   // PROPERTY spelling of the identifier chokepoint's JS rule — a stdlib
-  // global taken as a VALUE in a JavaScript source is the same opaque
-  // IDENTITY TOKEN the bare spelling answers (`globalThis.crypto` IS
-  // `crypto` — one global, one token, or identity flows through Sets
-  // and === would disagree between the two spellings). TypeScript
-  // sources keep the SC2020 member fence below, like the bare form.
+  // global taken as a VALUE in a JavaScript source reads the value the
+  // bare spelling reads (`globalThis.crypto` IS `crypto`, or identity
+  // flows through Sets and === would disagree between the two spellings),
+  // and one Node 24 does not define reads undefined. TypeScript sources
+  // keep the SC2020 member fence below, like the bare form.
   if (
     !expr.questionDotToken &&
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
@@ -1231,20 +1274,39 @@ export function lowerPropertyAccessExpr(
     const canonical = stdlibGlobalNameOf(lowerer, expr);
     if (canonical !== null) {
       if (canonical === "globalThis") return lowerGlobalValue(lowerer, expr);
-      // Typed for the programs that name it, absent in Node 24, and the
-      // CommonJS module bindings, which the global object does not hold.
-      if (canonical === TEMPORAL_GLOBAL || COMMONJS_MODULE_BINDINGS.has(canonical))
+      // A global the declarations type and Node 24 does not define (the
+      // temporal global, localStorage), and the CommonJS module bindings,
+      // which the global object does not hold.
+      if (nodeUndefinedGlobalName(canonical) || COMMONJS_MODULE_BINDINGS.has(canonical))
         return dynUndefinedExpr(loc);
       const value = jsSpecialGlobalValue(lowerer, canonical, loc);
       if (value) return value;
       return (
-        builtinGlobalValueAt(lowerer, expr, canonical, loc, true) ?? {
-          kind: "strLit",
-          value: `[builtin ${canonical}]`,
-          type: STRING,
-          loc,
-        }
+        builtinGlobalValueAt(lowerer, expr, canonical, loc, true) ??
+        unloweredGlobalValue(lowerer, canonical, expr, loc)
       );
+    }
+  }
+  // A member of a Node global object that no lowering above claimed
+  // (`process.debugPort`, `performance.timeOrigin`, `crypto.subtle.digest`
+  // as a value), in a JavaScript source: what Node has under that name
+  // decides (node-value-reads.ts). A name Node's object does not have reads
+  // undefined, as in Node (`process.browser`); a function is a function
+  // value that refuses when it is called; any other value is refused by
+  // name. Without this the member would be read off whatever the object
+  // itself lowers to as a value, and the object has none.
+  if (!expr.questionDotToken && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const object = nodeGlobalObjectOf(lowerer, expr.expression);
+    if (object !== null) {
+      const value = unloweredGlobalObjectMember(
+        lowerer,
+        object,
+        expr.name.text,
+        expr,
+        loc,
+        lowerer.isStdlibMember(expr),
+      );
+      if (value !== null) return value;
     }
   }
   // A JS receiver whose CHECKER type has no mapping (`mustCallChecks
@@ -1699,6 +1761,23 @@ export function lowerPropertyAccessExpr(
       };
       const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
+    }
+  }
+  // `name` or `message` of a value that is an error object, read through an
+  // intersection that restates the member (`Error & { name?: string }`, the
+  // result of an assertion or a type guard): the value is the error itself,
+  // so the error reader answers, as it does on the class.
+  if (
+    !expr.questionDotToken &&
+    (expr.name.text === "name" || expr.name.text === "message") &&
+    lowerer.typeOf(expr.expression).isIntersectionType()
+  ) {
+    const error = tryLowerExpression(lowerer, expr.expression);
+    if (
+      error?.type.kind === "object" &&
+      (error.type.className === "%Error" || lowerer.isSubclassOf(error.type.className, "%Error"))
+    ) {
+      return lowerer.maybeNarrow(errorPropertyRead(lowerer, error, expr.name.text), expr);
     }
   }
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
@@ -4076,7 +4155,10 @@ export function lowerGroupsProjection(
  * an interned unbound callable; invocation supplies its receiver separately. */
 /** Whether a receiver is a binding or `this`, or a chain of property reads
  * from one whose every member is a plain property (no accessor), so that
- * reading it has no effect. */
+ * reading it has no effect. A member the standard library declares is not
+ * such a field: its read is a builtin's, with a lowering or a refusal of
+ * its own that a caller must not skip (`child.stdio` has none, and is
+ * declared as a 5-tuple where Node's array has one entry per stdio slot). */
 function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
   let current = node;
   while (ts.isPropertyAccessExpression(current)) {
@@ -4085,6 +4167,7 @@ function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
     if (member === undefined || (member.flags & ts.SymbolFlags.Property) === 0) return false;
     if ((member.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0)
       return false;
+    if (lowerer.isStdlibMember(current)) return false;
     current = current.expression;
   }
   return ts.isIdentifier(current) || current.kind === ts.SyntaxKind.ThisKeyword;
@@ -5886,6 +5969,7 @@ export function fieldGetExpr(
         `reading a property that has only a setter ('${target.field}' — Node would yield undefined)`,
       );
     }
+    checkRefusedMemberUse(lowerer, getF.declarer, `get:${target.field}`, blame);
     if (
       !target.field.startsWith("#") &&
       isJsSourceFile(ts.getSourceFileOfNode(blame)) &&
@@ -6177,7 +6261,8 @@ export function builtinFunctionValue(name: string, loc: SrcLoc): IrExpr {
 
 /** The value a source reads for the stdlib global `canonical` (builtin
  * constructors in both languages, builtin functions in JavaScript), or
- * null when it stays an identity token (JavaScript) or fenced. */
+ * null when no lowering has a value for it (JavaScript reads answer by
+ * node-value-reads.ts; TypeScript reads are fenced). */
 export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): IrExpr | null {
   if (js && GLOBAL_FUNCTION_VALUES.has(canonical)) return builtinFunctionValue(canonical, loc);
   if (js && canonical === "Buffer")
@@ -6766,6 +6851,42 @@ function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
  * value flows into a function type (argument-counts.ts contextualCallCount). */
 function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varies" | null {
   return ts.isFunctionExpression(fn) ? contextualCallCount(lowerer, fn) : null;
+}
+
+/** Whether the program writes `name` on the global object `receiver`
+ * spells, by any spelling (global-object-writes.ts). */
+function writesGlobalMember(lowerer: Lowerer, receiver: ts.Expression, name: string): boolean {
+  const writes = globalObjectWrites(lowerer, lowerer.typeOf(staticallySelected(lowerer, receiver)));
+  return writes.computed || writes.names.has(name);
+}
+
+/** The value the bare name of a built-in global reads, or null where the
+ * name has none (its read is refused). The refusal's diagnostics are
+ * dropped: the caller answers the read another way. */
+function bareBuiltinValue(lowerer: Lowerer, name: ts.Identifier, loc: SrcLoc): IrExpr | null {
+  const saved = lowerer.diagSink;
+  const captured: typeof lowerer.diags = [];
+  lowerer.diagSink = captured;
+  let value: IrExpr;
+  try {
+    value = lowerIdentifierExpr(lowerer, name, loc);
+  } catch (error) {
+    lowerer.diagSink = saved;
+    if (error instanceof PoisonError) return null;
+    throw error;
+  }
+  lowerer.diagSink = saved;
+  for (const diagnostic of captured) lowerer.pushDiag(diagnostic);
+  return value;
+}
+
+/** Whether the built-in global `name` names is a function or a constructor. */
+function builtinGlobalIsCallable(lowerer: Lowerer, name: ts.Identifier): boolean {
+  const type = lowerer.typeOf(name);
+  return (
+    lowerer.checker.getCallSignatures(type).length !== 0 ||
+    lowerer.checker.getConstructSignatures(type).length !== 0
+  );
 }
 
 /** The property names the program assigns on the global object, through

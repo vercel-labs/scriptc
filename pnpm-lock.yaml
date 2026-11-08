@@ -70,6 +70,9 @@ importers:
       '@scriptc/compiler':
         specifier: workspace:*
         version: link:../compiler
+      tsc-ts:
+        specifier: 0.0.10
+        version: 0.0.10
     optionalDependencies:
       '@scriptc/cli-darwin-arm64':
         specifier: workspace:*

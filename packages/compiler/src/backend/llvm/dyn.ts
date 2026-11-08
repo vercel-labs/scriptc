@@ -42,6 +42,7 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  DYN,
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -260,12 +261,18 @@ export interface DynHost extends WalkerHost {
   /** The closures with a jsval body (IrFunction.jsEntry) on targets with
    * jsval words, which the box builders give a jsval entry. */
   jsEntryClosures?(): readonly JsEntryClosure[];
+  /** The view bodies whose closures box as the function they forward to
+   * (IrFunction.boxesSource). */
+  boxedViews?(): readonly BoxedView[];
   /** The entry point and JavaScript name of each named function the module
    * makes closures of (LlEmitter.closureNames). */
   closureNames?(): readonly { entry: string; name: string }[];
   /** The module's mutable globals are per thread (a Worker program or a
    * thread-instanced library), so the state a helper keeps is too. */
   threadLocalState?: boolean;
+  /** emitter.ts's pendingBailReleaseLines: what a bail releases of the
+   * call its pending test follows. */
+  pendingBailReleaseLines(type: IrType, value: string): string[];
 }
 
 /** A closure with a jsval body (IrFunction.jsEntry), for the box builders. */
@@ -278,6 +285,17 @@ export interface JsEntryClosure {
   body: string;
   bodyParams: readonly IrType[];
   bodyRet: IrType;
+}
+
+/** A view body whose closures box as the function they forward to
+ * (IrFunction.boxesSource), for the box builders. */
+export interface BoxedView {
+  /** The view's entry symbol (ScrClosure.fn) and signature. */
+  closure: string;
+  params: readonly IrType[];
+  ret: IrType;
+  /** The type of the function in the view's first capture. */
+  source: IrType & { kind: "func" };
 }
 
 const FN_ATTRS = "#0";
@@ -1364,20 +1382,34 @@ export class LlDyn {
     B.startBlock(deep);
     const built = B.tmp();
     B.line(`${built} = call ptr @${this.dynCheckHelper(arm)}(ptr %d, ptr %path)`);
-    this.pendingBail(B, "dcu.deep", () => {}, "ptr null");
+    this.pendingBail(B, "dcu.deep", () => {}, "ptr null", arm, built);
     const rc = vAdapters(host, arm);
     B.line(`call void ${rc.release}(ptr ${built})`);
     B.br(outer);
     B.startBlock(outer);
   }
 
-  private pendingBail(B: BlockBuilder, hint: string, cleanup: () => void, dummy: string): void {
+  /** Tests the pending flag after a call and, when it is set, runs `cleanup`
+   * and returns `dummy`. `made`, of type `madeType`, is the value that call
+   * returned, when nothing else owns it yet: the bail releases it where the
+   * flag can be set although the call succeeded (pendingBailReleaseLines). */
+  private pendingBail(
+    B: BlockBuilder,
+    hint: string,
+    cleanup: () => void,
+    dummy: string,
+    madeType?: IrType,
+    made?: string,
+  ): void {
     const p = B.tmp();
     for (const line of this.host.pendingTestLines(p)) B.line(line.trimStart());
     const lu = B.newLabel(`${hint}.u`);
     const lk = B.newLabel(`${hint}.k`);
     B.condBr(p, lu, lk);
     B.startBlock(lu);
+    if (madeType !== undefined && made !== undefined)
+      for (const line of this.host.pendingBailReleaseLines(madeType, made))
+        B.line(line.trimStart());
     cleanup();
     B.terminate(`ret ${dummy}`);
     B.startBlock(lk);
@@ -2447,6 +2479,8 @@ export class LlDyn {
           B.line(`call void @scr_arr_release(ptr ${a})`);
         },
         "ptr null",
+        elem,
+        v,
       );
       const pushed = B.tmp();
       B.line(`${pushed} = call double @scr_arr_push_${acc}(ptr ${a}, ${accTy} ${v})`);
@@ -3267,6 +3301,8 @@ export class LlDyn {
                   this.releaseIslandSource(B, src, srcOwned);
                 },
                 "ptr null",
+                iv,
+                ev,
               );
             }
             const ek = B.tmp();
@@ -3377,6 +3413,8 @@ export class LlDyn {
               this.releaseIslandSource(B, source, owned);
             },
             "ptr null",
+            elem,
+            v,
           );
           const pushed = B.tmp();
           B.line(`${pushed} = call double @scr_arr_push_${acc}(ptr ${a}, ${accTy} ${v})`);
@@ -6006,6 +6044,8 @@ export class LlDyn {
             });
           },
           "ptr null",
+          p,
+          a,
         );
         argNames.push(a);
         return;
@@ -6060,6 +6100,8 @@ export class LlDyn {
             });
           },
           "ptr null",
+          p,
+          a,
         );
         // Declaration-typed boundary programs: an argument package code
         // passes keeps its identity (scr_dyn_decl_adopt).
@@ -6107,12 +6149,12 @@ export class LlDyn {
     } else if (t.ret.kind === "dyn") {
       const r = B.tmp();
       B.line(`${r} = call ptr ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
       B.terminate(`ret ptr ${r}`);
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null");
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
       // A record or array result crosses the way `dynFrom liveRef` boxes
       // one — a LIVE capsule of the closure's own object — so the caller's
       // `() => shared` through an untyped slot still answers `shared`
@@ -6187,7 +6229,7 @@ export class LlDyn {
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
-      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r);
       if (ret.kind === "jsval") {
         B.terminate(`ret ptr ${r}`);
       } else if (ret.kind === "f64") {
@@ -6404,9 +6446,44 @@ export class LlDyn {
         );
       });
     }
+    // A view of this signature that stands for a function an untyped
+    // caller must reach (IrFunction.boxesSource) boxes as that function:
+    // captures[0] of a view is the box of what it forwards to (viewSource).
+    const views =
+      t.rest === true
+        ? []
+        : (host.boxedViews?.() ?? []).filter(
+            (view) =>
+              view.params.length === t.params.length &&
+              view.params.every((p, i) => typeKey(p) === typeKey(t.params[i]!)) &&
+              typeKey(view.ret) === typeKey(t.ret),
+          );
+    const through: string[] = [];
+    if (views.length > 0) {
+      through.push(
+        `  %vfnp = getelementptr inbounds %ScrClosure, ptr %v, i64 0, i32 1`,
+        `  %vfn = load ptr, ptr %vfnp`,
+      );
+      views.forEach((view, i) => {
+        const source = this.dynFuncBoxHelper(view.source);
+        through.push(
+          `  %view${i} = icmp eq ptr %vfn, @${view.closure}`,
+          `  br i1 %view${i}, label %source${i}, label %own${i}`,
+          `source${i}:`,
+          `  %caps${i} = getelementptr %ScrClosure, ptr %v, i64 1 ; caps`,
+          `  %box${i} = load ptr, ptr %caps${i}`,
+          `  %slot${i} = getelementptr inbounds %ScrBox, ptr %box${i}, i64 0, i32 5`,
+          `  %fn${i} = load ptr, ptr %slot${i}`,
+          `  %boxed${i} = call ptr @${source}(ptr %fn${i}, ptr %fname)`,
+          `  ret ptr %boxed${i}`,
+          `own${i}:`,
+        );
+      });
+    }
     this.defs.push(
       `define internal ptr @${name}(ptr %v, ptr %fname) ${FN_ATTRS} { ; box ${key} into dyn`,
       `entry:`,
+      ...through,
       `  %c = call ptr @scr_closure_retain_v(ptr %v)`,
       `  %r = call ptr @scr_dyn_new_func(ptr %c, ptr @${thunk}, i32 ${t.params.length - (t.restAbi === "typed" ? 1 : 0)}, ptr ${sigLit}, ptr %fname)`,
       ...register,
@@ -6825,7 +6902,7 @@ export class LlDyn {
       );
     B.line(`call void @scr_dyn_release(ptr ${fnv})`);
     for (const v of argVals) B.line(`call void @scr_dyn_release(ptr ${v})`);
-    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy);
+    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r);
     if (t.ret.kind === "void") {
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret void`);

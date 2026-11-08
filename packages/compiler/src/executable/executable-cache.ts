@@ -75,6 +75,9 @@ export interface EarlyExecutableNativeFeatures {
   fsFlags?: boolean;
   fsExistsValue?: boolean;
   moduleCompileCache?: boolean;
+  /** A function's inherited member shadowed by an own data property:
+   * SCR_FN_MEMBER_PROPS. */
+  fnMemberProps?: boolean;
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
@@ -83,8 +86,14 @@ export interface EarlyExecutableNativeFeatures {
   /** A process output stream held as a value: with Node islands,
    * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
   stdioObject?: boolean;
+  /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
+  streamPipeEvents?: boolean;
+  /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
+  fsStreamSignal?: boolean;
   /** The spawnSync result's `.error` errnoException fields: SCR_CHILD_ERR_FIELDS. */
   childErrorFields?: boolean;
+  /** A child output stream's flowing state: SCR_CHILD_STREAM_FLOW. */
+  childStreamFlow?: boolean;
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
@@ -102,6 +111,8 @@ export interface EarlyExecutableNativeFeatures {
   streamDyn?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  /** process.features as a value: scr_process_features.c. */
+  processFeatures?: boolean;
   childOptionExt?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
@@ -115,6 +126,9 @@ export interface EarlyExecutableNativeFeatures {
   recordViewFrozen?: boolean;
   genBind?: boolean;
   genReceiver?: boolean;
+  /** The kept-source read of a record-to-record conversion:
+   * scr_record_source_get.c. Absent (false) otherwise. */
+  recordSourceGet?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
@@ -145,6 +159,8 @@ export interface EarlyExecutableNativeFeatures {
   /** A runtimeFence that stands for a deferred diagnostic:
    * scr_deferred_fence.c. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -259,8 +275,8 @@ export interface EarlyExecutableCacheOptions {
   profile?: string;
   /** Omitted without a function layout; otherwise the digest of its bytes. */
   functionLayout?: string;
-  /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
-   * tsc-ts executable's file identity. */
+  /** Omitted for the tsgo checker; otherwise the tsc-ts executable's file
+   * identity (frontend/ts7/checker-backend.ts checkerCacheIdentity). */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;

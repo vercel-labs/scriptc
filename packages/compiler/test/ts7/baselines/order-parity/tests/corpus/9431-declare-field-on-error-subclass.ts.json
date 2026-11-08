@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9431-declare-field-on-error-subclass.ts"
+ ],
+ "diags": []
+}

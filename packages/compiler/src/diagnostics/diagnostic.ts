@@ -100,6 +100,8 @@
  *            object-model constructs in user JavaScript (SC8101–SC8105,
  *            behind --strict-user-js); programs that call into Node.js
  *            where the build finds no usable libnode pack (SC8005), or
+ *            a Node island as a native worker's entry, or a value a
+ *            worker-only module cannot pass to an island (SC8012), or
  *            cannot collect the modules a call loads (SC8006); and type
  *            patches from `scriptc.typePatches` that did not apply as
  *            written (SC8030–SC8033, warnings)
@@ -352,6 +354,38 @@ export function guardedDeferredFenceDiag(
   };
 }
 
+/** SC6011 — a module that worker threads run loads a Node island module.
+ * Under Node a worker thread has an instance of its own of every module it
+ * loads; a compiled program has one Node island, on the main thread, and a
+ * worker's island operations are answered there, so the module is the one
+ * instance the main thread and every worker share. Whatever the module
+ * keeps between calls (a counter, a cache, a registered listener, a
+ * configured default) is therefore shared, where under Node it is not. */
+export function nodeIslandWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6011",
+    message: `worker threads run this module, and it loads the Node island module '${module}': the program has one instance of that module for all its threads, while under Node each worker thread has its own, so what the module keeps between calls (a counter, a cache, a registered listener) is shared with the main thread and the other workers`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use it from one thread only, or pass the state in and out of each call",
+  };
+}
+
+/** SC6011, second subject — a module the program shares with its Node
+ * island (island code imports it too, scope-B NI-6) that worker threads
+ * also run. The island has one instance of everything it imports, the main
+ * thread's, whichever thread calls it; a worker thread's own code runs that
+ * thread's instance of the module. Under Node a worker has one instance for
+ * both, so a value the worker's code writes there is the one its island
+ * code reads. */
+export function sharedModuleWorkerInstanceDiag(module: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC6011",
+    message: `worker threads run the module '${module}', and Node island code imports it too: island code uses the main thread's instance of the module whichever thread called it, while a worker thread's own code uses that thread's instance; under Node each worker thread has one instance for both, so what the module keeps (an exported binding, a registry, a counter) differs between a worker's own code and the island code it calls`,
+    loc,
+    hint: "nothing differs when the module keeps no state between calls; otherwise use the module from the main thread only, or pass the state through the island call's arguments and result",
+  };
+}
+
 /** SC6002 — an object literal whose written key order differs from the
  * order its declared type compiles to, for a type the program observes
  * (JSON.stringify, Object.keys/values/entries, for-in, console output). */
@@ -471,6 +505,37 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
         : `a native class extending a class owned by a Node island cannot have ${detail} yet`,
     loc,
     hint: "keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this",
+  };
+}
+
+/** SC8012 — a native worker's entry module is itself a Node island, so the
+ * native program has no compiled module for the worker thread to run. Island
+ * *operations* from a worker thread are routed to the island's thread, but a
+ * worker whose entry IS the island has nothing native to start, and the
+ * island module's own semantics (sloppy-only constructs, for example) are
+ * not implemented by compiled code — so the build refuses it by name. */
+export function nodeIslandWorkerThreadDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message:
+      "the Worker's entry module runs in a Node island, so a native worker thread cannot run it",
+    loc,
+    hint: "give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program",
+  };
+}
+
+/** SC8012 — a module that only worker threads run passes a Node island a
+ * value a worker thread cannot pass: a function the island would call back,
+ * bytes, a promise, or a symbol. The island belongs to the main thread and
+ * such a value to the worker's heap, so the runtime refuses the crossing by name
+ * (ERR_SCRIPTC_ISLAND_WORKER_VALUE); where the module and the value's type
+ * already say so, the build does. `kind` names the value. */
+export function nodeIslandWorkerValueDiag(loc: SrcLoc, kind: string): ScrDiagnostic {
+  return {
+    code: "SC8012",
+    message: `this module runs on worker threads only, and a worker thread cannot pass ${kind} to a Node island`,
+    loc,
+    hint: "the island belongs to the main thread and this value to the worker's heap: pass what the island can copy (strings, numbers, plain objects and arrays of those) or island values, or make the call on the main thread",
   };
 }
 
@@ -801,6 +866,20 @@ export function nodeIslandNativeUseDiag(
     hint: callable
       ? "call it from a function of the program, such as `(a, b) => f(a, b)`, or give the slot a function type the program declares"
       : "use the value through the island (read its members, call its methods, pass it back), or declare the slot `unknown`",
+  };
+}
+
+/** SC8010 — an array that holds generators in a program that can hand a
+ * value to a Node island. A generator that crosses the boundary is not the
+ * same value on the other side yet, so the checked-dynamic array such a
+ * slot becomes in a program without an island would find, compare and hand
+ * back another generator than Node does. */
+export function nodeIslandGeneratorArrayDiag(type: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8010",
+    message: `values of type '${type}' (an array that holds generators) are not supported in a program that runs a Node island yet`,
+    loc,
+    hint: "a generator does not keep its identity across the island boundary yet; the same array compiles in a program that runs no Node island",
   };
 }
 
@@ -1440,6 +1519,29 @@ export function noLoweringDiag(
   };
 }
 
+/** A TypeScript read, through an ES module namespace of a builtin module
+ * (`import * as zlib from "node:zlib"; zlib.Z_NO_FLUSH`), of a name the
+ * module's exports object owns without enumerating it. The namespace object
+ * has exactly the module's exports, so Node reads undefined, and the
+ * declaration, which describes the exports object, gives the name a type
+ * that cannot hold undefined. */
+export function namespaceNonExportDiag(
+  module: string,
+  member: string,
+  hasConstants: boolean,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${module}.${member}' is not an export of node:${module}: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow`,
+    loc,
+    milestone: "later",
+    hint: hasConstants
+      ? `the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (${module}.constants.${member} for one of the module's constants)`
+      : "the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it",
+  };
+}
+
 /** A use of a Node 24 global the native runtime does not implement
  * (host-globals.ts): constructing or calling its constructor value, or
  * reading one of its members. A bare read compiles and answers the
@@ -1454,6 +1556,39 @@ export function hostGlobalDiag(name: string, loc: SrcLoc): ScrDiagnostic {
     milestone: "later",
     hint: "the class exists at run time in Node 24, and native code cannot construct it or provide its members; run the module in a Node island (--node-islands=auto) or avoid the use",
     reason: "host-global",
+  };
+}
+
+/** A JavaScript source used a Node value native code has no value for
+ * (node-values.ts): it read a value that is not a function, or it called or
+ * constructed the function value such a read answers. Node defines the
+ * value, so answering undefined or a stand-in would diverge silently.
+ * `surface` names it as the program does (`worker_threads.SHARE_ENV`,
+ * `process.finalization`, `URL`). */
+export function nodeValueDiag(surface: string, loc: SrcLoc, hint?: string): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `'${surface}' is a Node value that native code does not provide as a value`,
+    loc,
+    milestone: "later",
+    hint:
+      hint ??
+      "Node defines this value, and native code has no value to answer with: a function reads as a function that refuses when it is called or constructed, and any other value is refused where it is read. Uses the compiler lowers where they are spelled (a direct call, `new`, a member read) are not affected",
+  };
+}
+
+/** A JavaScript source assigned a member of a Node global object through
+ * the object held as a value (`const held = process; held.exitCode = 1`).
+ * The held object answers reads (node-value-reads.ts); the state behind the
+ * member lives in the runtime and is written where the member is spelled,
+ * so a write accepted here would leave `process.exitCode` unchanged. */
+export function nodeObjectMemberWriteDiag(object: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `assigning a member of '${object}' through a stored value is not supported yet`,
+    loc,
+    milestone: "later",
+    hint: `Assign the member where it is spelled (\`${object}.<member> = value\`): the stored object has Node's members to read, and a write through it would not reach the runtime's state`,
   };
 }
 

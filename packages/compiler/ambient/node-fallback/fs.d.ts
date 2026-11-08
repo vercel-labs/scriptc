@@ -212,6 +212,17 @@ declare module "node:fs" {
     path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): void;
+  /* The callback forms of rmSync: the removal runs when called and the
+   * callback receives the error, or null. */
+  export function rm(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function rm(
+    path: string | URL,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
   /* The recursive form: every entry below the path, relative to it. */
@@ -307,7 +318,9 @@ declare module "node:fs" {
    * over a file (scr_fs_stream.c). The options are checked at runtime
    * with Node's rules; flags and mode are checked when the file opens, so
    * their errors arrive as 'error' events. Instances also emit 'open'
-   * (with the fd) and 'ready'. */
+   * (with the fd) and 'ready'. `signal` destroys the stream with an
+   * AbortError when it aborts, as stream.addAbortSignal does; null is in
+   * the type as in @types/node, and Node throws for it. */
   export interface StreamOptions {
     flags?: string;
     encoding?: BufferEncoding;
@@ -316,6 +329,7 @@ declare module "node:fs" {
     autoClose?: boolean;
     emitClose?: boolean;
     start?: number;
+    signal?: AbortSignal | null;
     highWaterMark?: number;
   }
   export interface ReadStreamOptions extends StreamOptions {

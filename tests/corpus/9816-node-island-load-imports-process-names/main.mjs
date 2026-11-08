@@ -5,7 +5,8 @@
 // read. The build's load recorder took the first module that imported
 // `node:process` to have read everything (it stayed eager) and the second
 // to have read nothing: its `pid` was the build's, as a constant. A module
-// that imports only what every run agrees on still waits.
+// that imports only what every run agrees on still waits, when it comes
+// before the one that reads `pid`: Node is running after that one.
 import { system } from "first-kit";
 import { id, parentId } from "second-kit";
 import { lines, system as again } from "third-kit";

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/namespace-record-assertion/mod.ts",
+  "<repo>/tests/corpus/namespace-record-assertion/main.ts"
+ ],
+ "diags": []
+}

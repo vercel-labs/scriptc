@@ -16,6 +16,7 @@ runs:
       run: |
         "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+    - uses: ./.github/actions/icu-downloads
     - name: Build and verify mobile runtime pack
       shell: bash
       env:

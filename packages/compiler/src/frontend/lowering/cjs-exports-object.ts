@@ -61,6 +61,20 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
   );
 }
 
+/** `exports` in a CommonJS JavaScript file where the checker resolves no
+ * symbol for it (the module assigns no member of it, so nothing declares
+ * the name for the checker): still the module's exports object, which Node
+ * passes to every CommonJS module, never an undeclared name. The folds that
+ * answer `typeof <undeclared name>` with "undefined" ask this first. */
+export function isUnresolvedCjsExports(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return (
+    isCjsExportsIdentifier(lowerer, inner) &&
+    lowerer.checker.getSymbolAtLocation(inner) === undefined
+  );
+}
+
 /** `module.exports` over the CommonJS `module` global in a CommonJS file. */
 export function isCjsModuleExports(lowerer: Lowerer, node: ts.Expression): boolean {
   return (

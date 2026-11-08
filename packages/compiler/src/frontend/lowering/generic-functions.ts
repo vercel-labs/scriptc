@@ -29,6 +29,7 @@ import { typeKey } from "../type-mapper.js";
 import { literalValues } from "../literal-values.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
+import { reportRefusedMemberUse, type RefusedClassMember } from "./class-member-refusals.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { findGenericMethodOn, storedClassValueType, type ClassInfo } from "./lower-classes.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
@@ -103,6 +104,10 @@ export interface GenericFnInfo {
    * module functions with an exact receiver or the this/super fence. Absent for
    * top-level functions and object-literal methods. */
   member?: { cls: ClassInfo; kind: "method" | "static" };
+  /** A class member whose form was refused without rejecting its class
+   * (class-member-refusals.ts): no instance of it is ever made, and every
+   * demand for one reports the refusal. */
+  refused?: RefusedClassMember;
   /** Direct static calls specialize lexical this for the proven receiver. */
   staticReceiver?: ClassInfo;
   receiverSpecializations?: Map<string, GenericFnInfo>;
@@ -424,6 +429,7 @@ export function genericCallInstance(
   expr: ts.CallExpression,
   info: GenericFnInfo,
 ): GenericInstance {
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, expr);
   const rsig = lowerer.checker.getResolvedSignature(expr);
   // A GENERIC function with overload signatures: the call resolved to a
   // signature that is not the implementation's, so the per-instantiation
@@ -1128,6 +1134,7 @@ function internGenericInstance(
   // (extraKey): the IR signature alone under-discriminates there — two
   // literals can map to one IR signature while their bodies read
   // different fields.
+  if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, blame);
   const key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
   let inst = info.instances.get(key);
   if (!inst) {
@@ -1493,6 +1500,60 @@ function typeParamUnifier(
           unify(d, matches[0]!, depth + 1);
         }
         if (bare.length === 1 && remaining.length === 1) unify(bare[0]!, remaining[0]!, depth + 1);
+      } else if (dParts.length > 1 && iParts.length > dParts.length) {
+        // `T | A | B` against `X | Y | A | B`: the one bare type parameter
+        // stands for every part the named ones leave (the checker infers
+        // it so: a source part identical to a named target is matched to
+        // it, the rest goes to the parameter). No checker type names that
+        // rest, so the binding is the stored union without the named
+        // arms; it needs each named part and each remaining part to be
+        // stored in an arm of its own.
+        const bare = dParts.filter((d) => (d.flags & ts.TypeFlags.TypeParameter) !== 0);
+        const sym: ts.Symbol | undefined = bare.length === 1 ? bare[0]!.getSymbol() : undefined;
+        if (!sym || !tpSet.has(sym) || bindings.has(sym)) return;
+        const whole = lowerer.mapTypeOf(inst);
+        const arms = whole?.kind === "union" ? lowerer.unions.get(whole.unionId)?.arms : undefined;
+        if (!arms) return;
+        const tagOf = (part: ts.Type): number => {
+          // A unit part has no mapping of its own; its arm is the unit's.
+          if (part.flags & ts.TypeFlags.Null) return arms.findIndex((a) => a.kind === "nullT");
+          if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void))
+            return arms.findIndex((a) => a.kind === "undefinedT");
+          const arm = lowerer.mapTypeOf(part);
+          return arm ? arms.findIndex((candidate) => typeEquals(candidate, arm)) : -1;
+        };
+        const named = new Set<number>();
+        const remaining = [...iParts];
+        const pairs: [ts.Type, ts.Type][] = [];
+        for (const d of dParts) {
+          if (d === bare[0]) continue;
+          const target = d.getSymbol() ?? d.getAliasSymbol();
+          if (target === undefined) return;
+          const matches = remaining.filter((i) => (i.getSymbol() ?? i.getAliasSymbol()) === target);
+          if (matches.length !== 1) return;
+          remaining.splice(remaining.indexOf(matches[0]!), 1);
+          const tag = tagOf(matches[0]!);
+          if (tag < 0 || named.has(tag)) return;
+          named.add(tag);
+          pairs.push([d, matches[0]!]);
+        }
+        const rest = new Set<number>();
+        for (const part of remaining) {
+          const tag = tagOf(part);
+          if (tag < 0 || named.has(tag)) return;
+          rest.add(tag);
+        }
+        if (rest.size + named.size !== arms.length) return;
+        for (const [d, match] of pairs) unify(d, match, depth + 1);
+        // A named part that mentions the parameter (`T | T[]`) has bound
+        // it by now; the first binding wins.
+        if (bindings.has(sym)) return;
+        // Filtering preserves the canonical arm order.
+        const kept = arms.filter((_, tag) => rest.has(tag));
+        bindings.set(
+          sym,
+          kept.length === 1 ? kept[0]! : { kind: "union", unionId: lowerer.unions.intern(kept) },
+        );
       }
       return;
     }
@@ -3549,7 +3610,15 @@ export function implicitLocalFnNodeOf(
     if (redeclared) return null;
     if (!isConst && !bindingNeverReassigned(lowerer.bindingScope(), sym, decl)) return null;
     // Instances are module functions with no frame.
-    return capturesEnclosingFrame(lowerer, init, decl, init.body) ? null : init;
+    if (capturesEnclosingFrame(lowerer, init, decl, init.body)) return null;
+    // ...and a mention of the binding as a value is the one closure of an
+    // instance, for the whole program. That is the function a declaration
+    // makes when it runs once. A declaration in a function or a loop makes a
+    // new function each time it runs: two of them are different objects with
+    // their own properties, so a binding whose value is read there is a
+    // closure made where it is declared.
+    if (runsMoreThanOnce(decl) && readAsValue(lowerer, sym, decl, init)) return null;
+    return init;
   };
   const node = probe();
   if (node === null) {
@@ -3557,6 +3626,62 @@ export function implicitLocalFnNodeOf(
     return null;
   }
   return node;
+}
+
+/** True when the declaration can run more than once in one program: it is
+ * inside a function, a class member or a loop. */
+function runsMoreThanOnce(decl: ts.VariableDeclaration): boolean {
+  for (
+    let p: ts.Node | undefined = decl.parent;
+    p !== undefined && !ts.isSourceFile(p);
+    p = p.parent
+  ) {
+    if (ts.isFunctionLike(p) || ts.isClassLikeDeclaration(p)) return true;
+    switch (p.kind) {
+      case ts.SyntaxKind.ForStatement:
+      case ts.SyntaxKind.ForInStatement:
+      case ts.SyntaxKind.ForOfStatement:
+      case ts.SyntaxKind.WhileStatement:
+      case ts.SyntaxKind.DoStatement:
+        return true;
+    }
+  }
+  return false;
+}
+
+/** True when the function bound by `decl` is read anywhere other than as
+ * the function a call calls: returned, stored, passed on, compared, or the
+ * receiver of a member read or write, under the binding's name or under a
+ * function expression's own name. A binding's references are all inside the
+ * function (or the file) that declares it. */
+function readAsValue(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.VariableDeclaration,
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+): boolean {
+  let scope: ts.Node = decl;
+  while (scope.parent !== undefined && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope))
+    scope = scope.parent;
+  const own = ts.isFunctionExpression(fn) ? fn.name : undefined;
+  const ownSym = own !== undefined ? lowerer.checker.getSymbolAtLocation(own) : undefined;
+  const name = ts.symbolName(sym);
+  let read = false;
+  const scan = (n: ts.Node): void => {
+    if (read) return;
+    if (ts.isTypeNode(n)) return;
+    if (ts.isIdentifier(n)) {
+      if (n === decl.name || n === own || (n.text !== name && n.text !== own?.text)) return;
+      const parent = n.parent;
+      if (parent !== undefined && ts.isCallExpression(parent) && parent.expression === n) return;
+      const s = lowerer.checker.getSymbolAtLocation(n);
+      if (s !== undefined && (s === sym || s === ownSym)) read = true;
+      return;
+    }
+    ts.forEachChild(n, scan);
+  };
+  scan(scope);
+  return read;
 }
 
 /** True when `fn`, bound by `decl`, uses its enclosing function's frame

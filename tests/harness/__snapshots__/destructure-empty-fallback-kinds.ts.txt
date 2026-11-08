@@ -1,0 +1,36 @@
+destructure-empty-fallback-kinds.ts:13:38 - error SC2001: values of type '[string | undefined, number | undefined]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  12 |   let count: number | undefined;
+  13 |   [label, count] = shelves[shelf] ?? [];
+     |                                      ^~
+  14 |   return `${label} ${count}`;
+
+destructure-empty-fallback-kinds.ts:18:70 - error SC2001: values of type '[string, number]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  17 | // A parameter pattern whose default is the fallback.
+  18 | function defaulted(shelf: string, [label, count] = shelves[shelf] ?? []): string {
+     |                                                                      ^~
+  19 |   return `${label} ${count}`;
+
+destructure-empty-fallback-kinds.ts:25:14 - error SC1031: array destructuring of non-array values (the source is union-typed) are not supported yet
+
+  24 |   let line = "";
+  25 |   for (const [label, count] of [stocked ? shelves[shelf] : []]) line += `${label} ${count}`;
+     |              ^~~~~~~~~~~~~~
+  26 |   return line;
+
+destructure-empty-fallback-kinds.ts:32:59 - error SC2001: values of type '[{ tag: string; }, number]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  31 | function tagged(bin: string): string {
+  32 |   const [{ tag } = { tag: "none" }, count] = bins[bin] ?? [];
+     |                                                           ^~
+  33 |   return `${tag} ${count}`;
+
+destructure-empty-fallback-kinds.ts:33:13 - error SC2004: uses of 'tag' inherit the blocker on its declaration
+
+  32 |   const [{ tag } = { tag: "none" }, count] = bins[bin] ?? [];
+  33 |   return `${tag} ${count}`;
+     |             ^~~
+  34 | }
+
+  hint: the declaration of 'tag' did not compile — fix the diagnostic reported there and these sites clear with it

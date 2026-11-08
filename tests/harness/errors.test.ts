@@ -1125,6 +1125,65 @@ console.log(cells.join(","));
     );
   });
 
+  test("a member assigned to a promise the program made is a named runtime fence", async () => {
+    // A promise typed with extra members is held as a checked-dynamic
+    // value. Node adds the member to the promise object; a compiled promise
+    // holds no members of its own, so the statement throws by name when it
+    // runs, after the output before it.
+    const r = await compileAndRun(
+      "promise-member-write",
+      `import type { Ticket } from "./ticket.ts";
+function issue<T>(): Ticket<T> {
+  let accept: (value: T) => void = () => {};
+  const ticket = new Promise<T>((resolve) => {
+    accept = resolve;
+  }) as Ticket<T>;
+  console.log("issued");
+  ticket.redeem = accept;
+  return ticket;
+}
+const stub = issue<string>();
+stub.redeem("seat 4");
+console.log(await stub);
+`,
+      "ts",
+      { "ticket.ts": `export type Ticket<T> = Promise<T> & { redeem: (value: T) => void };\n` },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("issued\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: writing 'redeem' on a promise the program made \(.*\) is not supported yet \[SC1090 at .*promise-member-write\.ts:8\]\n$/,
+    );
+  });
+
+  test("the promise member fence evaluates the assigned value first and can be caught", async () => {
+    const r = await compileAndRun(
+      "promise-member-write-caught",
+      `import type { Numbered } from "./numbered.ts";
+let drawn = 0;
+function draw(): number {
+  drawn += 1;
+  return drawn;
+}
+function number<T>(work: Promise<T>): Numbered<T> {
+  const numbered = work as Numbered<T>;
+  try {
+    numbered.place = draw();
+  } catch (error) {
+    console.log((error as Error).message.includes("[SC1090 at"), drawn);
+  }
+  return numbered;
+}
+console.log(await number(Promise.resolve("served")));
+`,
+      "ts",
+      { "numbered.ts": `export type Numbered<T> = Promise<T> & { place: number };\n` },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true 1\nserved\n");
+    expect(r.stderr).toBe("");
+  });
+
   test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
     // Node answers the closing require with the dependency's partial exports
     // ({ fromA: 1 } at this point), which the static export model cannot
@@ -1584,11 +1643,12 @@ console.log(max(1, 2));
     );
   });
 
-  test("an OPAQUE global's destructured member binds a token; uses fence lazily per site (JS lane)", async () => {
+  test("a member destructured from the WebCrypto object is the member (JS lane)", async () => {
     // The node-suite webcrypto prologue: `const { subtle } =
-    // globalThis.crypto` binds the member identity token, so the program
-    // RUNS past the destructure (the eager pattern fence used to kill it
-    // at that line) and each use meets its own named fence.
+    // globalThis.crypto` binds the SubtleCrypto object, and a call through
+    // the binding is the call through `crypto.subtle`: this one reaches
+    // WebCrypto's own argument check, as in Node, where the binding used to
+    // be a placeholder with no methods ("subtle.digest is not a function").
     const r = await compileAndRun(
       "destructure-opaque-global",
       `'use strict';
@@ -1600,7 +1660,9 @@ subtle.digest('SHA-256');
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("bound true\n");
-    expect(r.stderr).toMatch(/^Uncaught TypeError: subtle\.digest is not a function\n$/);
+    expect(r.stderr).toMatch(
+      /^Unhandled promise rejection: TypeError \[ERR_MISSING_ARGS\]: Failed to execute 'digest' on 'SubtleCrypto': 2 arguments required, but only 1 present\.\n$/,
+    );
   });
 
   test("a 7000-level expression is a named deferred fence, not a stack overflow (JS lane)", async () => {
@@ -1770,6 +1832,26 @@ export type Other = string;
     expect(r.stdout).toBe("");
     expect(r.stderr).toBe(
       "Uncaught SyntaxError: The requested module './types.ts' does not provide an export named 'Other'\n",
+    );
+  });
+
+  test("a builtin's named import of a name its exports object does not enumerate", async () => {
+    // node:zlib owns the deprecated Z_* constants without enumerating them:
+    // they are not exports, and the first missing binding by local name is
+    // reported, before any module evaluates.
+    const r = await compileAndRun(
+      "esm-builtin-link",
+      `import './side.ts';
+import { Z_NO_FLUSH, gzipSync, Z_BEST_COMPRESSION as best } from 'node:zlib';
+console.log('never runs', Z_NO_FLUSH, best, gzipSync('a').length);
+`,
+      "ts",
+      { "side.ts": "console.log('side evaluated');\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe(
+      "Uncaught SyntaxError: The requested module 'node:zlib' does not provide an export named 'Z_NO_FLUSH'\n",
     );
   });
 
@@ -3005,14 +3087,12 @@ console.log(count(require("./lib.cjs")));
 });
 
 describe("builtin constructor values (JS lane)", () => {
-  test("constructing one without a lowering keeps its fence, not a token-spelled TypeError", async () => {
+  test("constructing one without a lowering throws the refusal that names it", async () => {
     // `AsyncResource` has no lowering, so a JavaScript source reads the
-    // import as the identifier chokepoint's identity token: an IR string
-    // whose text Node never produces. A String's construction does throw
-    // "… is not a constructor", but from the token that reports a class
-    // Node constructs as if the program could see the carrier — the wrong
-    // error class AND a fabricated message. The construction keeps the
-    // named refusal instead.
+    // import as a function value that refuses when it is used
+    // (builtin-function-fences.ts). Node constructs the class, so "… is not
+    // a constructor" would be the wrong error class and a fabricated
+    // message: the construction is refused by name where it is written.
     const r = await compileAndRun(
       "builtin-token-construction",
       `import { AsyncResource } from "node:async_hooks";
@@ -3027,14 +3107,13 @@ run();
     expect(r.stdout).toBe("before\n");
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(
-      /^Uncaught Error: constructing values other than classes declared in the program is not supported yet \[SC1090 at .*builtin-token-construction\.mjs:3\]\n$/,
+      /^Uncaught Error: 'new async_hooks\.AsyncResource' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:3\]\n$/,
     );
   });
 
   test("a program's own string casts keep Node's answers at the same sites", async () => {
-    // The token is recognized by the text it interns, so a real string the
-    // program widens to `any` is no token: every object-coercion site runs
-    // and answers exactly as Node does.
+    // A string the program widens to `any` is a string at every
+    // object-coercion site, which runs and answers exactly as Node does.
     const r = await compileAndRun(
       "string-cast-object-coercion",
       `"use strict";

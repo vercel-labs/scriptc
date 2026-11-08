@@ -42,6 +42,13 @@ export interface CanonMapNotes {
    * did (`string | {}`): the result holds a dynamic part the form did not
    * spell as `unknown`. */
   collapsedToDynamic: boolean;
+  /** The form holds an array whose elements are generators (iterators map
+   * to the same kind), which have no array storage. */
+  generatorArray?: boolean;
+  /** Set by the caller: such an array maps to an array type all the same.
+   * No value of that type can be built, so every use of one is refused
+   * (generator-arrays.ts). */
+  generatorArraysMap?: boolean;
 }
 
 /** The structural mappings one walk has finished: by object node, then by
@@ -103,6 +110,11 @@ function mapCanonicalAt(
       return viaChecker();
     case "array": {
       const elem = mapCanonicalAt(c.elem, ctx, depth + 1, notes, walk);
+      if (elem === null || elem.kind === "void") return null;
+      if (elem.kind === "generator" && notes !== undefined) {
+        notes.generatorArray = true;
+        if (notes.generatorArraysMap === true) return { kind: "array", elem };
+      }
       // A type that is itself an array of checked-dynamic elements is the
       // checked-dynamic value, as mapType maps `unknown[]`: an `any[]` value
       // is held that way wherever it comes from, so a native array of
@@ -111,15 +123,13 @@ function mapCanonicalAt(
       // shape (a record's field) keeps its array of untyped elements, the
       // layout the record has without this rule, which a declaration that
       // keeps an existing record's layout shares with it.
-      if (elem?.kind === "dyn" && depth === 0) {
+      if (elem.kind === "dyn" && depth === 0) {
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }
       // The storage contract mapType's array rule applies: an element kind
       // without array storage (a generator, an opaque handle) has no array.
-      return elem === null || elem.kind === "void" || !isSupportedArrayElem(elem)
-        ? null
-        : { kind: "array", elem };
+      return isSupportedArrayElem(elem) ? { kind: "array", elem } : null;
     }
     case "union": {
       const byKey = new Map<string, IrType>();
@@ -134,7 +144,15 @@ function mapCanonicalAt(
       }
       const arms = [...byKey.values()];
       if (arms.length === 1) return arms[0]!;
-      if (arms.some((a) => a.kind === "dyn")) {
+      // An arm of a union that is the type itself is that type for the array
+      // rule above: `any[] | undefined` holds the value `any[]` holds, so it
+      // is the checked-dynamic value too, as `unknown[] | undefined` is. An
+      // array arm of a union inside a shape keeps its layout, as there.
+      if (
+        arms.some(
+          (a) => a.kind === "dyn" || (depth === 0 && a.kind === "array" && a.elem.kind === "dyn"),
+        )
+      ) {
         if (notes !== undefined) notes.collapsedToDynamic = true;
         return DYN;
       }

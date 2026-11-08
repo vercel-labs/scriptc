@@ -1340,6 +1340,19 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     );
   }, 120_000);
 
+  test("an untyped package calls a callback back as the callback declares it", async () => {
+    // The package function is compiled for the callback type it is handed,
+    // a slot's function type the package never wrote.
+    const entry = join(pilotRoot, "callback-caller-cli.ts");
+    const binary = await buildStatic(entry, ["callback-caller"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
   test("a named package's untyped dependency compiles with it", () => {
     const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
     expect(coverage.npmStatic).toContainEqual({ package: "ms", status: "static" });

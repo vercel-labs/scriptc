@@ -39,6 +39,7 @@ import {
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { builtRecordResultType } from "../built-record-results.js";
+import { dynamicArrayOperand } from "./array-literals.js";
 import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
@@ -51,7 +52,8 @@ import {
   viewHostedArmTags,
 } from "./hosted-narrowing.js";
 import { bindingIdentityUse } from "../divergences.js";
-import { nodeThrowExpr, varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, strLit, varRef } from "../../../ir/build.js";
+import { throwTypeError } from "../primitive-throws.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
   hasClassPayload,
@@ -205,6 +207,12 @@ export function lowerTernary(
       }
       const lit = armLiteral(e);
       if (lit && ctxArray) return lowerer.lowerArrayLiteral(lit, ctxArray);
+      // An arm of a conditional whose own value is the checked-dynamic
+      // array (`list ? list : []` over an `unknown[]`): the dynamic array.
+      if (lit) {
+        const dynamic = dynamicArrayOperand(lowerer, lit, expr);
+        if (dynamic) return dynamic;
+      }
       if (lit && siblingType?.kind === "array") {
         if (emptyUntypedArrayArm(e)) {
           return { kind: "arrayLit", elems: [], type: siblingType, loc: locOf(lit) };
@@ -738,6 +746,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // An instanceof narrow retains the native view after validating its
     // exact element kind. Buffer also matches Uint8Array.
     if (narrowed?.kind === "bytes" || narrowed?.kind === "url") {
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+    }
+    // The same for a URLSearchParams. The operand of an assertion is left
+    // to the assertion, which makes the same check.
+    if (
+      narrowed?.kind === "searchParams" &&
+      !(
+        node.parent !== undefined &&
+        (ts.isAsExpression(node.parent) || ts.isTypeAssertion(node.parent)) &&
+        node.parent.expression === node
+      )
+    ) {
       return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
     }
     // An `instanceof Error` narrow: the checked-dynamic tree's error encoding rebuilds a
@@ -1718,7 +1738,14 @@ export function lowerAsExpression(
     // Recorded before the branches below so every path carries it, the
     // erasure included.
     const claimable = (type: IrType | null | undefined): type is IrType =>
-      type?.kind === "union" || type?.kind === "record" || type?.kind === "array";
+      type?.kind === "union" ||
+      type?.kind === "record" ||
+      type?.kind === "array" ||
+      // A module namespace is an object the assertion can claim members of
+      // (`(await import("./m.mjs")) as Dyn`): the conversion boxes the
+      // namespace as the live-read dynamic value an untyped flow builds and
+      // checks the claimed shape against it.
+      type?.kind === "moduleNs";
     if (claimable(target) && claimable(inner.type)) lowerer.assertedValues.set(inner, target);
     // A PRESENCE PROBE of a member read through the assertion (`typeof
     // (u as R).member`, `(u as R).member !== undefined`): the read answers
@@ -1986,6 +2013,11 @@ export function lowerAsExpression(
   const target = mappedTarget ?? dynFallbackType(lowerer, expr.type, targetTs);
   if (!target) lowerer.badType(expr.type, targetTs);
   if (target.kind === "dyn") return inner; // `as unknown`: erasure
+  // `value as undefined`, `value as void`, and `value as T` in a function
+  // instantiated with one of them (a standalone unit type maps to the
+  // return-position `void`): the cast checks that the value is undefined
+  // and answers it in the slot a unit value lives in.
+  if (target.kind === "void") return checkedUndefinedCast(lowerer, expr, inner);
   // The declaration-typed boundary (decl-projection.ts): an identity-
   // preserving checked conversion of a value package code produced.
   if (isDeclBoundaryTypeNode(expr.type)) {
@@ -2029,7 +2061,6 @@ export function lowerAsExpression(
   const iterable = iterableSlotValue(lowerer, inner, target);
   if (iterable) return iterable;
   if (
-    target.kind === "void" ||
     !canDynCheckTo(
       target,
       (id) => lowerer.shapes.get(id),
@@ -2042,11 +2073,67 @@ export function lowerAsExpression(
     lowerer.unsupported(
       "SC1090",
       expr,
-      `a checked cast of 'unknown' to '${target.kind === "void" ? "void" : lowerer.fmt(target)}' ` +
+      `a checked cast of 'unknown' to '${lowerer.fmt(target)}' ` +
         `(${lowerer.dynCheckBlocker(target) ?? "this target"} is outside the checked conversion's domain)`,
     );
   }
   return checkedDynCast(lowerer, expr, inner, target);
+}
+
+/** `value as undefined` over a dynamic value: the checked conversion into
+ * the unit slot (the `null | undefined` union every unit value lives in,
+ * unitOnlyUnion), which throws the conversion's TypeError for any value
+ * that is neither. The slot also holds null, which is not undefined: that
+ * one throws here, in the conversion's wording. A boundary cast names the
+ * package declaration its type comes from, like every other. */
+function checkedUndefinedCast(
+  lowerer: Lowerer,
+  expr: ts.AsExpression | ts.TypeAssertion,
+  inner: IrExpr,
+): IrExpr {
+  const loc = locOf(expr);
+  const unit = unitOnlyUnion(lowerer.unions);
+  if (unit.kind !== "union")
+    throw new InternalCompilerError("lowerer bug: the unit slot is a union");
+  const checked =
+    (isDeclBoundaryTypeNode(expr.type)
+      ? declBoundaryCast(lowerer, inner, unit, loc, expr)
+      : null) ?? checkedDynCast(lowerer, expr, inner, unit);
+  const nullTag = lowerer.unions.get(unit.unionId)?.arms.findIndex((arm) => arm.kind === "nullT");
+  if (nullTag === undefined || nullTag < 0)
+    throw new InternalCompilerError("lowerer bug: the unit slot has no null arm");
+  const held = lowerer.declareHiddenLocal("%undefinedCast", unit);
+  const heldRef = varRef(held.id, unit, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: held.id, init: checked, loc },
+      {
+        kind: "if",
+        cond: {
+          kind: "unionIsTag",
+          unionId: unit.unionId,
+          tag: nullTag,
+          negated: false,
+          value: heldRef,
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: throwTypeError(strLit("expected undefined at $, got null", loc), VOID, loc),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    result: heldRef,
+    type: unit,
+    loc,
+  };
 }
 
 /** The checked conversion of a dynamic value. A record or array built from

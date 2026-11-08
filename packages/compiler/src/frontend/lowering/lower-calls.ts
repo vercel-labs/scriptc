@@ -19,6 +19,11 @@ import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
+import {
+  lowerIntlFormatterCall,
+  lowerIntlFormatterMethodCall,
+  lowerNumberToLocaleString,
+} from "./builtins/intl-formatters.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
 import { lowerDynStreamMemberCall } from "./dyn-streams.js";
@@ -1866,6 +1871,11 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerBigIntStaticCall(lowerer, expr, expr.expression) ??
       lowerer.lowerNumberStaticCall(expr, expr.expression) ??
       lowerer.lowerDateCall(expr, expr.expression) ??
+      // Intl.NumberFormat and Intl.DateTimeFormat: the call without `new`,
+      // and `format` on a formatter (a checked-dynamic handle, so before
+      // the dynamic receiver path).
+      lowerIntlFormatterCall(lowerer, expr) ??
+      lowerIntlFormatterMethodCall(lowerer, expr, expr.expression) ??
       lowerer.lowerTextCodecCall(expr, expr.expression) ??
       lowerer.lowerStringStaticCall(expr, expr.expression) ??
       lowerer.lowerStringLastIndexOfCall(expr, expr.expression) ??
@@ -1997,9 +2007,6 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerSymbolStaticCall(lowerer, expr, expr.expression) ??
       lowerSymbolMethodCall(lowerer, expr, expr.expression) ??
       lowerRegExpStaticCall(lowerer, expr, expr.expression) ??
-      // The composed en-US Intl.NumberFormat form — before the member
-      // fences (the receiver's Intl.NumberFormat type has no mapping).
-      lowerIntlNumberFormatCall(lowerer, expr, expr.expression) ??
       lowerGroupByStaticCall(lowerer, expr, expr.expression) ??
       // Iterator-helper chains rooted at arr.values() — before the
       // array method paths (the terminal names collide with array
@@ -6458,8 +6465,8 @@ function lowerPrimitiveProtoCall(
   // Number.prototype.toLocaleString("en-US") — the spec makes it
   // NumberFormat(locale).format(this), so the en-US embedded formatter
   // answers exactly. Without a locale (or with `undefined`) the DEFAULT
-  // locale answers, over the ICU data scr_intl.c loads; other locales and
-  // options bags stay fenced.
+  // locale answers, over the ICU data scr_intl.c loads; with options, the
+  // formatter those options build (lowerNumberToLocaleString).
   if (name === "toLocaleString" && recvKind === "f64") {
     // Exactly undefined (or void): what the absent form means. A union that
     // merely includes undefined may hold a locale at run time and falls
@@ -6505,32 +6512,20 @@ function lowerPrimitiveProtoCall(
       };
       return stmts.length ? { kind: "seqExpr", stmts, result: call_, type: STRING, loc } : call_;
     }
-    if (call.arguments.nodes.length > 1) {
-      lowerer.noLowering(
-        "Number.prototype.toLocaleString with an options bag",
-        call,
-        "what lowers is the DEFAULT options shape (decimal notation, up to 3 fraction digits, " +
-          "grouping) at the default locale or at en-US — omit the options bag",
-      );
-    }
-    const locNode = call.arguments.nodes[0]!;
-    if (
-      ts.isSpreadElement(locNode) ||
-      !ts.isStringLiteralLike(locNode) ||
-      locNode.text !== "en-US"
-    ) {
-      lowerer.noLowering(
-        !ts.isSpreadElement(locNode) && ts.isStringLiteralLike(locNode)
-          ? `Number.prototype.toLocaleString at locale "${locNode.text}"`
-          : "Number.prototype.toLocaleString with a non-literal locale",
-        locNode,
-        "what lowers is the default locale (no argument) and the composed en-US form — " +
-          "other locales are ICU data the binary does not negotiate yet",
-      );
-    }
     const operand = lowerer.lowerExpr(recv);
     if (operand.type.kind !== "f64") return null;
-    return { kind: "libCall", fn: "intl.numFormatEnUs", args: [operand], type: STRING, loc };
+    // The en-US locale with no options: the formatter the runtime embeds.
+    const locNode = call.arguments.nodes[0]!;
+    if (
+      call.arguments.nodes.length === 1 &&
+      !ts.isSpreadElement(locNode) &&
+      ts.isStringLiteralLike(locNode) &&
+      locNode.text === "en-US"
+    )
+      return { kind: "libCall", fn: "intl.numFormatEnUs", args: [operand], type: STRING, loc };
+    // Any other form constructs the Intl.NumberFormat the specification
+    // names, over ICU, for this one call.
+    return lowerNumberToLocaleString(lowerer, call, operand);
   }
   if (
     name === "charAt" &&
@@ -9013,89 +9008,6 @@ function lowerRegExpStaticCall(
   if (arg.type.kind !== "string")
     lowerer.badType(call.arguments.nodes[0]!, lowerer.typeOf(call.arguments.nodes[0]!));
   return { kind: "libCall", fn: "regexp.escape", args: [arg], type: STRING, loc: locOf(call) };
-}
-
-/** The composed en-US Intl.NumberFormat form: `new Intl.NumberFormat(
- * "en-US").format(x)` (and the callable spelling without `new` — the
- * spec makes them the same formatter). Only the COMPOSED form lowers —
- * formatter values have no representation — and only the one locale
- * whose data the runtime embeds, with default options: decimal
- * notation, 0–3 fraction digits rounded half-up on the shortest
- * round-tripping decimal (ICU's rounding input — format(1.0005) is
- * "1.001" though toFixed(3) answers "1.000"), "," grouping. The
- * unlowered forms fence by NAME (no locale — the host environment's
- * default, which a compiled binary cannot carry; other locales — ICU
- * data the binary does not embed; options bags; non-number arguments).
- * Null when the callee isn't a NumberFormat-construction .format. */
-function lowerIntlNumberFormatCall(
-  lowerer: Lowerer,
-  call: ts.CallExpression,
-  access: ts.PropertyAccessExpression,
-): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
-  if (access.name.text !== "format") return null;
-  let recv: ts.Expression = access.expression;
-  while (ts.isParenthesizedExpression(recv)) recv = recv.expression;
-  let ctorArgs: readonly ts.Expression[];
-  if (ts.isNewExpression(recv) || (ts.isCallExpression(recv) && !recv.questionDotToken)) {
-    const ctor = recv.expression;
-    if (
-      !ts.isPropertyAccessExpression(ctor) ||
-      ctor.questionDotToken ||
-      ctor.name.text !== "NumberFormat" ||
-      !lowerer.isStdlibGlobal(ctor.expression, "Intl")
-    ) {
-      return null;
-    }
-    ctorArgs = recv.arguments?.nodes ?? [];
-  } else {
-    return null;
-  }
-  const loc = locOf(call);
-  if (ctorArgs.length === 0) {
-    lowerer.noLowering(
-      "Intl.NumberFormat without a locale",
-      recv,
-      "the default locale is the host environment's, which a compiled binary cannot carry — " +
-        'pass it explicitly: new Intl.NumberFormat("en-US").format(x)',
-    );
-  }
-  if (ctorArgs.length > 1) {
-    lowerer.noLowering(
-      "Intl.NumberFormat with an options bag",
-      ctorArgs[1]!,
-      "the embedded data covers DEFAULT options only (decimal notation, up to 3 fraction digits, " +
-        'grouping) — new Intl.NumberFormat("en-US").format(x)',
-    );
-  }
-  const locArg = ctorArgs[0]!;
-  if (ts.isSpreadElement(locArg) || !ts.isStringLiteralLike(locArg) || locArg.text !== "en-US") {
-    lowerer.noLowering(
-      !ts.isSpreadElement(locArg) && ts.isStringLiteralLike(locArg)
-        ? `Intl.NumberFormat at locale "${locArg.text}"`
-        : "Intl.NumberFormat with a non-literal locale",
-      locArg,
-      '"en-US" (Node\'s default-build locale) is the one locale whose data the runtime embeds — ' +
-        "everything else is ICU data the binary does not carry",
-    );
-  }
-  if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!)) {
-    lowerer.noLowering(
-      `Intl.NumberFormat("en-US").format with ${call.arguments.nodes.length} arguments`,
-      call,
-    );
-  }
-  const argNode = call.arguments.nodes[0]!;
-  if (lowerer.mapTypeOf(lowerer.typeOf(argNode))?.kind !== "f64") {
-    lowerer.noLowering(
-      `Intl.NumberFormat("en-US").format over a '${lowerer.checker.typeToString(lowerer.typeOf(argNode))}'`,
-      argNode,
-      "a number argument is the lowered form (bigint and numeric-string inputs have no representation)",
-    );
-  }
-  const arg = lowerer.lowerExprExpecting(argNode, F64);
-  if (arg.type.kind !== "f64") lowerer.badType(argNode, lowerer.typeOf(argNode));
-  return { kind: "libCall", fn: "intl.numFormatEnUs", args: [arg], type: STRING, loc };
 }
 
 /** Object.is over statically disjoint kinds: the constant false, with

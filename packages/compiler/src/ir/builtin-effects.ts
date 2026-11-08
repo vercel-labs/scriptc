@@ -260,6 +260,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "icu.numFormatDefault",
   "icu.dateLocaleString",
   "icu.dateLocaleTimeString",
+  // The formatter constructors read the options object (a getter or a
+  // proxy trap may run) and raise ECMA-402's RangeError and TypeError;
+  // format raises RangeError for a time value out of range.
+  "icu.numberFormatNew",
+  "icu.numberFormatFormat",
+  "icu.numberFormatFormatDyn",
+  "icu.dateTimeFormatFormatDyn",
+  "icu.numToLocaleString",
+  "icu.dateTimeFormatNew",
+  "icu.dateTimeFormatFormat",
+  "icu.dateToLocale",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",

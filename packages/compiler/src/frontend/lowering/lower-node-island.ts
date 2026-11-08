@@ -627,20 +627,62 @@ function registerIslandReexport(
     lowerer.islandReexports.set(lowerer.checker.getAliasedSymbol(found), binding);
 }
 
-/** The island binding an alias chain reaches, or null: a name re-exported
- * by a native module resolves to the island's export symbol itself. */
+/** The island binding an alias chain reaches, or null. The chain is walked
+ * one declaration at a time and ends on a name a native module re-exports
+ * from an island package (`export { a } from "pkg"`, registered when the
+ * module was collected) or on a binding a native module imported from one
+ * and passes on (`import { a } from "pkg"; export { a };`, `export default
+ * a`): its importers bind the island's own export, whatever they call it.
+ * The answer depends only on the program's declarations and on the island
+ * modules the collection found, so it is kept per symbol for as long as
+ * that collection stands. */
 function islandReexportOf(lowerer: Lowerer, symbol: ts.Symbol | undefined): IslandBinding | null {
-  if (symbol === undefined || lowerer.islandReexports.size === 0) return null;
+  if (symbol === undefined) return null;
+  const memo = lowerer.islandAliasBindings;
+  const collected = lowerer.islandModules.size + lowerer.islandReexports.size;
+  if (memo.collected !== collected) {
+    memo.collected = collected;
+    memo.bySymbol.clear();
+  }
+  const known = memo.bySymbol.get(symbol);
+  if (known !== undefined) return known;
+  let found: IslandBinding | null = null;
   const seen = new Set<ts.Symbol>();
   let s: ts.Symbol | undefined = symbol;
   while (s !== undefined && !seen.has(s)) {
     seen.add(s);
     const bound = lowerer.islandReexports.get(s);
-    if (bound !== undefined) return bound;
-    if ((s.flags & ts.SymbolFlags.Alias) === 0) return null;
-    s = lowerer.checker.getAliasedSymbol(s);
+    if (bound !== undefined) {
+      found = bound;
+      break;
+    }
+    if ((s.flags & ts.SymbolFlags.Alias) === 0) break;
+    if (s !== symbol) {
+      const passedOn = islandImportOf(lowerer, s);
+      if (passedOn !== null) {
+        found = passedOn;
+        break;
+      }
+    }
+    s = lowerer.checker.getImmediateAliasedSymbol(s);
   }
-  return null;
+  memo.bySymbol.set(symbol, found);
+  return found;
+}
+
+/** The binding of a symbol that is itself an import of an island module
+ * (a named, default or namespace import, or a `require` binding), or null. */
+function islandImportOf(lowerer: Lowerer, symbol: ts.Symbol | undefined): IslandBinding | null {
+  const islands = lowerer.nodeIslands;
+  if (islands === null) return null;
+  const site = islandImportSite(lowerer.checker, islands, symbol);
+  if (site === null) return null;
+  const module = lowerer.islandModules.get(site.path);
+  if (module === undefined) return null;
+  if (site.form === "required") return { kind: "required", module };
+  if (site.form === "namespace") return { kind: "namespace", module };
+  if (site.form === "default") return { kind: "default", module };
+  return { kind: "named", module, name: site.form.name };
 }
 
 function moduleSpecifierOf(decl: ts.Node | undefined): string | null {
@@ -755,18 +797,9 @@ export function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandB
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
   const symbol = bindingSymbolOf(lowerer.checker, ident);
-  // A name a native module re-exports from an island package binds the
-  // island's own export: the import's alias chain reaches it.
-  const reexport = islandReexportOf(lowerer, symbol);
-  if (reexport !== null) return reexport;
-  const site = islandImportSite(lowerer.checker, islands, symbol);
-  if (site === null) return null;
-  const module = lowerer.islandModules.get(site.path);
-  if (module === undefined) return null;
-  if (site.form === "required") return { kind: "required", module };
-  if (site.form === "namespace") return { kind: "namespace", module };
-  if (site.form === "default") return { kind: "default", module };
-  return { kind: "named", module, name: site.form.name };
+  const imported = islandImportOf(lowerer, symbol);
+  if (imported !== null) return imported;
+  return islandReexportOf(lowerer, symbol);
 }
 
 /** The raw (dyn) value an island import binding reads. */

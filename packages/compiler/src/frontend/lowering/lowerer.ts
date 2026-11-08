@@ -4645,6 +4645,13 @@ export class Lowerer {
   /** Names a native module re-exports from an island package, by the
    * symbol an alias chain reaches (lower-node-island.ts). */
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
+  /** The island binding each symbol's alias chain reaches (null: none),
+   * for the island modules and re-exports collected so far: `collected`
+   * is their count when the answers were made (lower-node-island.ts). */
+  readonly islandAliasBindings = {
+    collected: 0,
+    bySymbol: new Map<ts.Symbol, IslandBinding | null>(),
+  };
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
   /** Module-level constants and statements the island evaluates
@@ -5704,6 +5711,10 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
+    // The island binding an alias chain reaches: a pure function of the
+    // program's declarations and of the two collections above, emptied
+    // whenever either grows.
+    "islandAliasBindings",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides

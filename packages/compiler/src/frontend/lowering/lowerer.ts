@@ -876,8 +876,10 @@ import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
 import {
   type EmptyArrayOrigin,
+  type EmptyArrayPlace,
   untypedArrayBindingType,
   untypedArrayPropertyType,
+  untypedArrayUnionType,
   untypedEmptyArraySlot,
 } from "./empty-array-places.js";
 import { lowerTernary } from "./lower-exprs.js";
@@ -4362,7 +4364,7 @@ export class Lowerer {
    * computed on first use. `active` and `reentered` guard a search whose
    * own type mapping asks for the property being searched. */
   readonly emptyArrayPlaces = {
-    decided: new Map<EmptyArrayOrigin, IrType | null>(),
+    decided: new Map<EmptyArrayOrigin, EmptyArrayPlace | null>(),
     active: new Set<EmptyArrayOrigin>(),
     reentered: new Set<EmptyArrayOrigin>(),
   };
@@ -15465,6 +15467,11 @@ export class Lowerer {
     {
       const alias = untypedArrayBindingType(this, node, t);
       if (alias !== null) return alias;
+      // An expression one of whose operands reads such an array (`wide ?
+      // full.knobs : quiet.knobs`, and a binding of it) holds it at that
+      // type too.
+      const joined = t.isUnionType() ? untypedArrayUnionType(this, node as ts.Expression, t) : null;
+      if (joined !== null) return joined;
     }
     // JS inference can leave mutable fields, accessor parameters and
     // locals at null/undefined despite later writes. Keep mutable native

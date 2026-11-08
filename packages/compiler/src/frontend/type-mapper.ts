@@ -10358,16 +10358,22 @@ function mapRecordTypeInner(
       // reaches it, so where a declared type names its elements it is an
       // array of those from the start (empty-array-places.ts); no typed
       // slot then has to convert it.
+      // A property an object spread carried over (`{ ...base, name }`) has
+      // no value declaration of its own: it is the property `base` wrote.
       if (
         pt?.kind === "array" &&
         ctx.untypedArrayPropertyType !== undefined &&
-        p.valueDeclaration !== undefined &&
-        (ts.isPropertyAssignment(p.valueDeclaration) ||
-          ts.isShorthandPropertyAssignment(p.valueDeclaration)) &&
         (isUnitOnlyIr(pt.elem, ctx) || isNeverArrayType(fieldTs, checker))
       ) {
-        const decided = ctx.untypedArrayPropertyType(p.valueDeclaration);
-        if (decided !== null) pt = decided;
+        const written =
+          p.valueDeclaration ?? (p.declarations?.length === 1 ? p.declarations[0] : undefined);
+        if (
+          written !== undefined &&
+          (ts.isPropertyAssignment(written) || ts.isShorthandPropertyAssignment(written))
+        ) {
+          const decided = ctx.untypedArrayPropertyType(written);
+          if (decided !== null) pt = decided;
+        }
       }
       if (pt === null && (fieldTs.flags & ts.TypeFlags.Any) !== 0) pt = DYN;
       // An `any[]` field (`list: any[]` in an SDK's message type, also

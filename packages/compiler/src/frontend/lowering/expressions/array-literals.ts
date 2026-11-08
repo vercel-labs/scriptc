@@ -25,7 +25,9 @@ import {
   isSupportedArrayElem,
   isUnitType,
   typeEquals,
+  typeKey,
 } from "../../../ir/ir.js";
+import { keyedHelperName } from "../stable-names.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { underConstAssertion, unitOnlyUnion } from "../../type-mapper.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
@@ -149,6 +151,69 @@ function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
  * literal itself builds the slot's empty array instead (widthCoerce).
  * never's f64 element mapping would make it a `number[]`, which no
  * `string[]` slot accepts. */
+/** Interned `%arr.nospread.<n>(a)`: what a spread of the untyped empty
+ * array `a` adds to an array literal of another element type: nothing, as
+ * a new empty array of the literal's type. The checker's type says the
+ * array is empty; one that holds elements after all (an assertion put them
+ * there) has none the literal can hold, and throws. */
+function emptySpreadHelper(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "array" },
+  toT: IrType & { kind: "array" },
+  loc: SrcLoc,
+): string {
+  const key = `nospread:${typeKey(fromT.elem)}:${typeKey(toT.elem)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%arr.nospread", key);
+  lowerer.valueHelpers.set(key, name);
+  const a: IrExpr = { kind: "varRef", localId: "a.0", type: fromT, loc };
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "a.0", name: "a", type: fromT }],
+    returnType: toT,
+    locals: [{ id: "a.0", name: "a", type: fromT, mutable: true }],
+    body: [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "!==",
+          left: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc },
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "throw",
+            value: {
+              kind: "libCall",
+              fn: "error.new",
+              args: [
+                {
+                  kind: "strLit",
+                  value: `expected ${lowerer.fmt(toT)} elements (a non-empty ${lowerer.fmt(fromT)} has none the array can hold)`,
+                  type: STRING,
+                  loc,
+                },
+              ],
+              type: { kind: "object", className: "%TypeError" },
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: [],
+        loc,
+      },
+      { kind: "return", value: { kind: "arrayLit", elems: [], type: toT, loc }, loc },
+    ],
+    loc,
+  });
+  return name;
+}
+
 function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
   if (expr.elements.nodes.length > 0 || isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const own = lowerer.typeOf(expr);
@@ -714,6 +779,20 @@ export function lowerArrayLiteral(
       if (!typeEquals(src.type, type)) {
         const array = unionReadAsArray(lowerer, el.expression, src, type, locOf(el.expression));
         if (array) src = array;
+      }
+      // A spread of an array the checker leaves untyped (`[...quiet.knobs]`
+      // over `{ knobs: [] }`, held as the unit-element array): it has no
+      // element to copy, so the literal takes none from it whatever its own
+      // element type is. The literal is a new array, so no identity is lost.
+      if (
+        !typeEquals(src.type, type) &&
+        src.type.kind === "array" &&
+        type.kind === "array" &&
+        lowerer.unitOnlyElem(src.type.elem) &&
+        isUntypedArrayType(lowerer.checker, lowerer.typeOf(el.expression))
+      ) {
+        const helper = emptySpreadHelper(lowerer, src.type, type, locOf(el));
+        src = { kind: "call", callee: helper, args: [src], type, loc: locOf(el) };
       }
       if (!typeEquals(src.type, type)) {
         lowerer.unsupported(

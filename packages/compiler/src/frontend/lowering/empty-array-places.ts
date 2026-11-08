@@ -14,14 +14,17 @@
  * conditional and logical operands, spreads, callback results and generic
  * calls, until a declared type names the array's element. When every slot
  * reached names the same array type, the property has that type and the
- * literal is built as that array.
+ * literal is built as that array. Where no slot names one, the constraint
+ * of a type parameter the array is passed for does (`<T extends readonly
+ * Knob[]>(knobs: T)`): the checker binds T to the literal's own type, which
+ * says nothing, and every array T can be holds the constraint's elements.
  *
  * The search is a choice of representation, not a proof: a flow it does not
  * see leaves the property the unit-element array, and a typed slot that
  * then receives it is refused by name (emptyArrayDiag), as is one array
  * used at two element types. */
 import type { IrType } from "../../ir/ir.js";
-import { arrayOf, typeEquals } from "../../ir/ir.js";
+import { arrayOf, sortArms, typeEquals } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
 import * as ts from "../ts7/adapter.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../type-mapper.js";
@@ -55,6 +58,13 @@ function panicSafe<T>(query: () => T, fallback: T): T {
  * (`const NONE = [] as const`). A plain `const xs = []` is not one: the
  * checker types its reads by the elements written (evolvingArrayType). */
 export type EmptyArrayOrigin = ts.PropertyAssignment | ts.VariableDeclaration;
+
+/** What was decided for an untyped empty array: the array type it is built
+ * as, and the checker's type for the slot that named it. */
+export interface EmptyArrayPlace {
+  readonly type: ArrayType;
+  readonly named: ts.Type;
+}
 
 /** The empty array literal `decl` is initialized with when it is an
  * EmptyArrayOrigin, through parentheses and a const assertion; null for
@@ -96,6 +106,13 @@ function insideGenericDeclaration(node: ts.Node): boolean {
  * the one array type the typed slots its value reaches agree on. Null when
  * no slot names one or the slots disagree: it keeps the unit-element array. */
 export function emptyArrayPlaceType(lowerer: Lowerer, decl: EmptyArrayOrigin): IrType | null {
+  return emptyArrayPlace(lowerer, decl)?.type ?? null;
+}
+
+/** The decision for the untyped empty array of `decl`: its array type
+ * (emptyArrayPlaceType) and the checker type that named it. Null when
+ * nothing decides it. */
+export function emptyArrayPlace(lowerer: Lowerer, decl: EmptyArrayOrigin): EmptyArrayPlace | null {
   const places = lowerer.emptyArrayPlaces;
   const known = places.decided.get(decl);
   if (known !== undefined) return known;
@@ -112,12 +129,20 @@ export function emptyArrayPlaceType(lowerer: Lowerer, decl: EmptyArrayOrigin): I
     return null;
   }
   places.active.add(decl);
-  let decided: IrType | null = null;
+  let decided: EmptyArrayPlace | null = null;
   let generic = false;
   try {
     const search = new Search(lowerer, decl);
     search.origin(literal);
-    decided = search.conflict || search.votes.length !== 1 ? null : search.votes[0]!;
+    // A declared slot decides; a type parameter's constraint only where no
+    // declared slot names an element.
+    if (!search.conflict)
+      decided =
+        search.votes.length === 1
+          ? search.votes[0]!
+          : search.votes.length === 0 && search.constraints.length === 1
+            ? search.constraints[0]!
+            : null;
     generic = search.generic;
   } finally {
     places.active.delete(decl);
@@ -176,7 +201,10 @@ export function emptyArrayLiteralPlaceType(
 }
 
 class Search {
-  readonly votes: ArrayType[] = [];
+  readonly votes: EmptyArrayPlace[] = [];
+  /** Array types named by the constraint of a type parameter the value is
+   * passed for: they decide only where no declared slot votes. */
+  readonly constraints: EmptyArrayPlace[] = [];
   conflict = false;
   /** A slot reached names its element by a type parameter. */
   generic = false;
@@ -200,7 +228,7 @@ class Search {
 
   /** Record the array types `type` names at `path`. True when it named one
    * (the value is typed here and needs no further following). */
-  private vote(type: ts.Type, path: readonly Step[]): boolean {
+  private vote(type: ts.Type, path: readonly Step[], into = this.votes): boolean {
     const reached = this.navigate(type, path, 0);
     let named = false;
     for (const array of reached) {
@@ -211,10 +239,26 @@ class Search {
       const element = this.checker.getTypeArguments(array as ts.TypeReference)[0];
       if (element !== undefined && (element.flags & ts.TypeFlags.TypeParameter) !== 0)
         this.generic = true;
-      if (!this.votes.some((vote) => typeEquals(vote, mapped))) this.votes.push(mapped);
+      if (!into.some((vote) => typeEquals(vote.type, mapped)))
+        into.push({ type: mapped, named: array });
     }
     if (this.votes.length > 1) this.conflict = true;
     return named;
+  }
+
+  /** The constraint of the type parameter that the parameter receiving
+   * `argument` of `call` is declared as (`knobs: T` with `T extends readonly
+   * Knob[]`); undefined when the parameter is declared any other way. */
+  private parameterConstraint(
+    call: ts.CallExpression | ts.NewExpression,
+    argument: ts.Expression,
+  ): ts.Type | undefined {
+    const { checker } = this;
+    const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+    if (index < 0) return undefined;
+    const declaration = panicSafe(() => checker.getResolvedSignature(call), undefined)?.declaration;
+    if (declaration === undefined || !ts.isFunctionLike(declaration)) return undefined;
+    return typeParameterConstraint(checker, declaration.parameters.nodes[index]);
   }
 
   /** The settled array types at `path` inside `type`: through null and
@@ -651,6 +695,8 @@ class Search {
       // parameter, a callback's inferred result): the checker built the
       // call's type from the argument's, so the value is in the result
       // where the literal's type is.
+      const constraint = this.parameterConstraint(parent, node);
+      if (constraint !== undefined) this.vote(constraint, path, this.constraints);
       const result = panicSafe(() => this.lowerer.typeOf(parent), undefined);
       if (result === undefined) return;
       if (this.untypedAt(result, path, 0)) {
@@ -670,6 +716,26 @@ class Search {
     if (own !== undefined && !this.untypedAt(own, path, 0) && this.vote(own, path)) return;
     this.carried(expr, path, depth + 1);
   }
+}
+
+/** The constraint of the type parameter `parameter` is declared as
+ * (`knobs: T` with `T extends readonly Knob[]`); undefined for a rest
+ * parameter and for a parameter declared any other way. */
+export function typeParameterConstraint(
+  checker: ts.TypeChecker,
+  parameter: ts.ParameterDeclaration | undefined,
+): ts.Type | undefined {
+  const annotation = parameter?.type;
+  if (annotation === undefined || parameter?.dotDotDotToken !== undefined) return undefined;
+  if (!ts.isTypeReferenceNode(annotation)) return undefined;
+  const declared = panicSafe(() => checker.getTypeFromTypeNode(annotation), undefined);
+  if (declared === undefined || (declared.flags & ts.TypeFlags.TypeParameter) === 0)
+    return undefined;
+  const written = declared.getSymbol()?.declarations?.[0];
+  if (written === undefined || !ts.isTypeParameterDeclaration(written)) return undefined;
+  const constraint = written.constraint;
+  if (constraint === undefined) return undefined;
+  return panicSafe(() => checker.getTypeFromTypeNode(constraint), undefined);
 }
 
 /** Whether the checker leaves `type` an untyped array: `never[]`, or the
@@ -850,10 +916,115 @@ export function untypedArrayBindingType(
       return mapped?.kind === "func" ? { ...mapped, ret: result } : null;
     }
   }
-  if (!isUntypedArrayType(lowerer.checker, type)) return null;
+  if (!isUntypedArrayType(lowerer.checker, type)) {
+    // `const picked = wide ? full.knobs : quiet.knobs`: one member of the
+    // binding's type is the untyped array its initializer can read.
+    return ts.isVariableDeclaration(declaration) &&
+      declaration.type === undefined &&
+      declaration.initializer !== undefined
+      ? untypedArrayUnionType(lowerer, declaration.initializer, type)
+      : null;
+  }
   const origin = bindingOrigin(lowerer, declaration, 0);
   if (origin === null) return null;
   return emptyArrayPlaceType(lowerer, origin) ?? arrayOf(unitOnlyUnion(lowerer.unions));
+}
+
+/** The untyped empty arrays the value of `expr` can be: the operands of a
+ * conditional or logical expression, and the initializer of an unannotated
+ * binding, that read one (untypedArrayOrigin). */
+function operandOrigins(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  depth: number,
+  into: EmptyArrayOrigin[],
+): EmptyArrayOrigin[] {
+  if (depth > MAX_DEPTH) return into;
+  let value = expr;
+  while (ts.isParenthesizedExpression(value) || ts.isNonNullExpression(value))
+    value = value.expression;
+  if (ts.isConditionalExpression(value)) {
+    operandOrigins(lowerer, value.whenTrue, depth + 1, into);
+    return operandOrigins(lowerer, value.whenFalse, depth + 1, into);
+  }
+  if (ts.isBinaryExpression(value)) {
+    const operator = value.operatorToken.kind;
+    if (operator === ts.SyntaxKind.QuestionQuestionToken || operator === ts.SyntaxKind.BarBarToken)
+      operandOrigins(lowerer, value.left, depth + 1, into);
+    else if (
+      operator !== ts.SyntaxKind.AmpersandAmpersandToken &&
+      operator !== ts.SyntaxKind.CommaToken
+    )
+      return into;
+    return operandOrigins(lowerer, value.right, depth + 1, into);
+  }
+  const origin = untypedArrayOrigin(lowerer, value, depth);
+  if (origin !== null) {
+    if (!into.includes(origin)) into.push(origin);
+    return into;
+  }
+  if (!ts.isIdentifier(value)) return into;
+  const declaration = panicSafe(
+    () => lowerer.checker.getSymbolAtLocation(value),
+    undefined,
+  )?.valueDeclaration;
+  if (
+    declaration !== undefined &&
+    ts.isVariableDeclaration(declaration) &&
+    declaration.type === undefined &&
+    declaration.initializer !== undefined
+  )
+    operandOrigins(lowerer, declaration.initializer, depth + 1, into);
+  return into;
+}
+
+/** The type of an expression the checker types as a union with an untyped
+ * array member (`readonly [] | readonly [A, B]` for `wide ? full.knobs :
+ * quiet.knobs`) because an operand reads an untyped empty array: that
+ * member is the array the operand reads, at the type decided where it was
+ * written, so the value keeps the array's identity through the union. Null
+ * for other expressions, and where the operands' arrays are undecided or
+ * decided differently. */
+export function untypedArrayUnionType(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  type: ts.Type,
+): IrType | null {
+  if (!type.isUnionType()) return null;
+  const { checker } = lowerer;
+  if (!ts.constituentTypes(type).some((part) => isUntypedArrayType(checker, part))) return null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  let decided: IrType | null = null;
+  for (const origin of operandOrigins(lowerer, expr, 0, [])) {
+    const one = emptyArrayPlaceType(lowerer, origin);
+    if (one === null || (decided !== null && !typeEquals(decided, one))) return null;
+    decided = one;
+  }
+  if (decided === null) return null;
+  const mapped = panicSafe(() => lowerer.mapTypeOf(type), null);
+  if (mapped?.kind !== "union") return null;
+  const arms: IrType[] = [];
+  let replaced = false;
+  for (const arm of lowerer.unions.get(mapped.unionId)?.arms ?? []) {
+    const untyped = arm.kind === "array" && lowerer.unitOnlyElem(arm.elem);
+    const next = untyped ? decided : arm;
+    replaced ||= untyped;
+    if (!arms.some((kept) => typeEquals(kept, next))) arms.push(next);
+  }
+  if (!replaced) return null;
+  if (arms.length === 1) return arms[0]!;
+  return { kind: "union", unionId: lowerer.unions.intern(sortArms(arms)) };
+}
+
+/** The decision (emptyArrayPlace) for the untyped empty array that the
+ * argument `expr` reads (`plan(quiet.knobs)`); null when it reads none or
+ * nothing decided it. */
+export function untypedArrayArgumentPlace(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): EmptyArrayPlace | null {
+  const origin = untypedArrayOrigin(lowerer, expr, 0);
+  return origin === null ? null : emptyArrayPlace(lowerer, origin);
 }
 
 /** The unannotated binding whose value the function `decl` is

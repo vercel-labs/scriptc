@@ -401,11 +401,9 @@ import {
   isNodeEsmFile,
   locOf,
   orderedImportsOf,
-  npmStaticDepSf7,
   requireSpecOf,
   isJsWriteTarget7,
   isStrictCode,
-  resolveImport,
   workspacePackageOfPath,
   type CycleEdge,
 } from "../program.js";
@@ -7442,7 +7440,7 @@ export class Lowerer {
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl)) return decl;
     }
-    return resolveImport(this.program, from, spec.text);
+    return this.facts.importedModule(from, spec.text);
   }
 
   /** Follow one project-module export through the checker's resolved export
@@ -7595,7 +7593,7 @@ export class Lowerer {
       }
       if (d === undefined || spec === undefined || !ts.isStringLiteral(spec) || name !== "default")
         return null;
-      const dep = resolveImport(this.program, ts.getSourceFileOfNode(d), spec.text);
+      const dep = this.facts.importedModule(ts.getSourceFileOfNode(d), spec.text);
       if (!dep) return null;
       sym = defaultExportSymbolOf(this, dep) ?? undefined;
     }
@@ -7711,8 +7709,8 @@ export class Lowerer {
     // Project aliases/self-references resolve through the same entry point as
     // relative imports; an opted-in --npm-static package is the fallback.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(importDecl), spec) ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(importDecl), spec);
+      this.facts.importedModule(ts.getSourceFileOfNode(importDecl), spec) ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(importDecl), spec);
     if (!dep || !isJsSourceFile(dep) || isNodeEsmFile(dep, this.program)) return null;
     return dep;
   }
@@ -7752,8 +7750,8 @@ export class Lowerer {
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
       return (
-        resolveImport(this.program, ts.getSourceFileOfNode(decl), directSpec, "require") ??
-        npmStaticDepSf7(this.program, ts.getSourceFileOfNode(decl), directSpec, "require")
+        this.facts.importedModule(ts.getSourceFileOfNode(decl), directSpec, "require") ??
+        this.facts.npmStaticModule(ts.getSourceFileOfNode(decl), directSpec, "require")
       );
     }
     return createRequireProgramModuleOf(this, decl.initializer)?.dep ?? null;
@@ -7776,8 +7774,8 @@ export class Lowerer {
     if (spec === null) return null;
     const sf = stmt.parent;
     const dep =
-      resolveImport(this.program, sf, spec, "require") ??
-      npmStaticDepSf7(this.program, sf, spec, "require");
+      this.facts.importedModule(sf, spec, "require") ??
+      this.facts.npmStaticModule(sf, spec, "require");
     return dep !== null && cjsNamespaceModule(this, dep) ? dep : null;
   }
 
@@ -8458,8 +8456,8 @@ export class Lowerer {
     // those globals stay uninitialized: the dep's module body would never
     // run.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(node), spec, "require") ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(node), spec, "require");
+      this.facts.importedModule(ts.getSourceFileOfNode(node), spec, "require") ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
       this.unsupported(

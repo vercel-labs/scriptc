@@ -9,7 +9,8 @@
  * provenance, whether a type is an island handle, the admitted-opinion site
  * index, the package-file and declaration-boundary flags, the JavaScript
  * dynamic-declaration set, the class protocol index, the names each file's
- * identifiers spell) would be computed again identically in every pass.
+ * identifiers spell, and the module an import specifier names) would be
+ * computed again identically in every pass.
  *
  * This object computes each of them once per round. The rule for what may
  * live here: the answer must be a pure function of (program, island set,
@@ -41,6 +42,7 @@ import {
   islandSubclassCount,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
+import { npmStaticDepSf7, resolveImport } from "../program.js";
 import { type AdmittedOpinion } from "../tsc-codes.js";
 import { newSymbolProvenanceMemo, type SymbolProvenance } from "../type-mapper.js";
 import { AsyncProtocolHolders } from "./async-protocol-holders.js";
@@ -132,6 +134,10 @@ export class LoweringFacts {
   /** maySpellIdentifier's index: by file, the hashes of the names its
    * identifiers spell. */
   private readonly identifierNames = new Map<ts.SourceFile, Set<number>>();
+  /** importedModule's and npmStaticModule's answers, by importing file and
+   * then by resolution kind and specifier. */
+  private readonly importedModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
+  private readonly npmStaticModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
 
   /** Whether hits are recomputed and compared (SCRIPTC_LOWERING_FACTS_VERIFY). */
   readonly verify: boolean;
@@ -342,6 +348,58 @@ export class LoweringFacts {
         );
     }
     return false;
+  }
+
+  /** The program module `specifier` names when `from` imports or requires
+   * it (program.ts's resolveImport), or null. Every reference to an imported
+   * binding asks (Lowerer.resolveValueSymbol), and an answer walks the
+   * candidate paths of the specifier: the program, its packages and the
+   * files on disk do not change while a round lowers, so each (file, kind,
+   * specifier) is resolved once. */
+  importedModule(
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require" = "import",
+  ): ts.SourceFile | null {
+    return this.moduleAnswer("importedModule", this.importedModules, from, specifier, kind, () =>
+      resolveImport(this.program, from, specifier, kind),
+    );
+  }
+
+  /** The module of a natively compiled package `specifier` names from `from`
+   * (program.ts's npmStaticDepSf7), or null: resolved once, as importedModule
+   * is. */
+  npmStaticModule(
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require" = "import",
+  ): ts.SourceFile | null {
+    return this.moduleAnswer("npmStaticModule", this.npmStaticModules, from, specifier, kind, () =>
+      npmStaticDepSf7(this.program, from, specifier, kind),
+    );
+  }
+
+  private moduleAnswer(
+    fact: string,
+    answers: Map<ts.SourceFile, Map<string, ts.SourceFile | null>>,
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require",
+    resolveModule: () => ts.SourceFile | null,
+  ): ts.SourceFile | null {
+    let ofFile = answers.get(from);
+    if (ofFile === undefined) {
+      ofFile = new Map();
+      answers.set(from, ofFile);
+    }
+    const key = kind === "require" ? `r:${specifier}` : `i:${specifier}`;
+    const known = ofFile.get(key);
+    if (known === undefined) {
+      const module = resolveModule();
+      ofFile.set(key, module);
+      return module;
+    }
+    return this.verifyHit(fact, known, resolveModule);
   }
 
   /** The program's class protocol index (class-protocols.ts). Each pass

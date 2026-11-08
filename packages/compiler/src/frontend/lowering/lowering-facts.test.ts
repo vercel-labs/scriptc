@@ -166,3 +166,41 @@ export function tend(count: number): number {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("an import specifier is resolved once for every pass that asks", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-lowering-facts-"));
+  try {
+    writeFileSync(
+      join(directory, "main.ts"),
+      `import tend from "./beds.ts";
+console.log(tend(3));
+`,
+    );
+    writeFileSync(
+      join(directory, "beds.ts"),
+      `export default function tend(count: number): number {
+  return count + 1;
+}
+`,
+    );
+    const load = loadProgram(join(directory, "main.ts"));
+    try {
+      const facts = new LoweringFacts(load.program, load.moduleOrder, new Map(), { verify: true });
+      const main = load.program.getSourceFile(join(directory, "main.ts"))!;
+      const beds = load.program.getSourceFile(join(directory, "beds.ts"))!;
+      expect(facts.importedModule(main, "./beds.ts")).toBe(beds);
+      expect(facts.importedModule(main, "./beds.ts")).toBe(beds);
+      expect(facts.importedModule(main, "./missing.ts")).toBeNull();
+      expect(facts.importedModule(main, "./missing.ts")).toBeNull();
+      // An import and a require of one specifier are separate answers.
+      expect(facts.importedModule(main, "./beds.ts", "require")).toBe(beds);
+      expect(facts.verifiedHits("importedModule")).toBe(2);
+      // No package of the program is compiled from node_modules.
+      expect(facts.npmStaticModule(main, "./beds.ts")).toBeNull();
+    } finally {
+      load.dispose();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

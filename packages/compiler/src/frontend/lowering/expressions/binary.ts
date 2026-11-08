@@ -487,6 +487,26 @@ function untypedCollectionFallback(lowerer: Lowerer, node: ts.Expression): boole
   });
 }
 
+/** Whether every arm of `type` is a unit: a value of it is null or
+ * undefined, whatever it was computed from. */
+function holdsOnlyUnits(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind !== "union") return false;
+  const arms = lowerer.unions.get(type.unionId)?.arms;
+  return arms !== undefined && arms.length > 0 && arms.every(isUnitType);
+}
+
+/** `result`, once `operand` has been evaluated for its effects. */
+function afterEvaluating(operand: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(operand)) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: operand, loc }],
+    result,
+    type: result.type,
+    loc,
+  };
+}
+
 export function lowerNullishPair(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -516,6 +536,9 @@ export function lowerNullishPair(
   if (!def) lowerer.badType(expr.left, lowerer.typeOf(expr.left));
   if (!def.arms.some(isUnitType)) return left;
   const rest = def.arms.filter((a) => !isUnitType(a));
+  // A left operand that can only be null or undefined: the result is the
+  // default, after the operand is evaluated.
+  if (rest.length === 0) return afterEvaluating(left, lowerer.lowerExpr(expr.right), loc);
   // `optionalMap ?? new Map()` carries its element contract on the left;
   // the empty fallback may use it without constructing a Map<any, any>
   // arm that has no first-class union representation.
@@ -3237,6 +3260,12 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   // units only — computed unit-typed values keep the fences below.
   if (left.kind === "unitLit") {
     return op === ts.SyntaxKind.BarBarToken ? right : left;
+  }
+  // A computed value that can only be null or undefined (a `null`-typed
+  // parameter or binding: every arm of its type is a unit) is as falsy as
+  // the literal: `x || y` is y after x is evaluated, `x && y` is x.
+  if (holdsOnlyUnits(lowerer, left.type)) {
+    return op === ts.SyntaxKind.BarBarToken ? afterEvaluating(left, right, loc) : left;
   }
   // JS objects and symbols are always truthy. In `ref || fallback`
   // the fallback is therefore unreachable and the result is the

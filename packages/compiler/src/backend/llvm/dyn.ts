@@ -2497,6 +2497,67 @@ export class LlDyn {
     return name;
   }
 
+  /** The checked conversion of the dynamic value `d` to the record type `t`
+   * at a call site: the name of the converted record (+1).
+   *
+   * A record type's own values come back as capsules that still carry the
+   * address of the type key they were boxed with. One address compare finds
+   * them and hands out the same object, with no call. Every other value,
+   * and a capsule boxed with another copy of the key constant (a second
+   * object file of one program), takes the helper, whose first test compares
+   * the key by content and whose remaining paths view, convert or throw. */
+  checkedRecordConversion(
+    B: BlockBuilder,
+    t: IrType & { kind: "record" },
+    d: string,
+    path: string,
+    preserveRefs = false,
+  ): string {
+    const helper = this.dynCheckHelper(t, preserveRefs);
+    const host = this.host;
+    // A codec handle's record is found through its box, never as a capsule.
+    if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) {
+      const converted = B.tmp();
+      B.line(`${converted} = call ptr @${helper}(ptr ${d}, ptr ${path})`);
+      return converted;
+    }
+    const capsule = B.tmp();
+    B.line(`${capsule} = icmp eq i32 ${this.kindOf(B, d)}, ${DYN_KIND.TYPED_REF}`);
+    const lCapsule = B.newLabel("dc.own.cap");
+    const lOwn = B.newLabel("dc.own.hit");
+    const lOther = B.newLabel("dc.own.other");
+    const lDone = B.newLabel("dc.own.done");
+    B.condBr(capsule, lCapsule, lOther);
+    B.startBlock(lCapsule);
+    // scr_dyn.h pins both offsets: the referent at 16, its type key three
+    // pointers after it.
+    const keyAt = B.tmp();
+    const key = B.tmp();
+    const own = B.tmp();
+    B.line(
+      `${keyAt} = getelementptr inbounds i8, ptr ${d}, i64 ${16 + 3 * (this.S === "i64" ? 8 : 4)} ; ->typed_ref.type_key`,
+    );
+    B.line(`${key} = load ptr, ptr ${keyAt}`);
+    B.line(`${own} = icmp eq ptr ${key}, ${host.cstr(typeKey(t))}`);
+    B.condBr(own, lOwn, lOther);
+    B.startBlock(lOwn);
+    const refAt = B.tmp();
+    const ref = B.tmp();
+    const held = B.tmp();
+    B.line(`${refAt} = getelementptr inbounds i8, ptr ${d}, i64 16 ; ->typed_ref.ptr`);
+    B.line(`${ref} = load ptr, ptr ${refAt}`);
+    B.line(`${held} = call ptr ${vAdapters(host, t).retain}(ptr ${ref})`);
+    B.br(lDone);
+    B.startBlock(lOther);
+    const checked = B.tmp();
+    B.line(`${checked} = call ptr @${helper}(ptr ${d}, ptr ${path})`);
+    B.br(lDone);
+    B.startBlock(lDone);
+    const converted = B.tmp();
+    B.line(`${converted} = phi ptr [ ${held}, %${lOwn} ], [ ${checked}, %${lOther} ]`);
+    return converted;
+  }
+
   dynCheckHelper(t: IrType, preserveRefs = false): string {
     // A `(T | undefined)[]` stored as T elements also takes undefined ones.
     const key = checkedConversionKey(t);
@@ -6087,10 +6148,15 @@ export class LlDyn {
         B.line(`store ptr null, ptr ${kp2}`);
         B.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr ${pathSlot}, i64 0, i32 2`);
         B.line(`store ${host.sizeType} ${i}, ptr ${ip}`);
-        const a = B.tmp();
-        B.line(
-          `${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p)}(ptr ${ad}, ptr ${pathSlot})`,
-        );
+        let a: string;
+        if (p.kind === "record") {
+          a = this.checkedRecordConversion(B, p, ad, pathSlot);
+        } else {
+          a = B.tmp();
+          B.line(
+            `${a} = call ${this.valTy(p)} @${this.dynCheckHelper(p)}(ptr ${ad}, ptr ${pathSlot})`,
+          );
+        }
         this.pendingBail(
           B,
           "dfk",

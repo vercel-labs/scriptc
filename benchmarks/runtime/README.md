@@ -37,6 +37,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
 | `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
+| `untyped-handoff` | cpu | typed records stored as `unknown` beside the function that declared their type and handed back to it: annotated, `satisfies`, a parameter typed by the reader's own parameter, and a bare literal read with `as` |
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |
 | `regex-replacers` | cpu | regex `replace`/`replaceAll` with inline callbacks whose parameters have no annotations: dictionary placeholders, snake_case to camelCase, date reordering, optional captures, capitalization, and a string search that reads the offset |

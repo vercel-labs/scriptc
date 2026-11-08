@@ -3690,6 +3690,62 @@ export class Lowerer {
     return fallback ?? null;
   }
 
+  /** The record layout a fresh data literal takes when it flows into an
+   * untyped slot while the checker names one closed record type as its
+   * target (`contextual`: the constituents of its contextual type): that
+   * type, when the literal's own type widens into it member for member
+   * (the checker has proven the assignment; optional members the literal
+   * omits are absent). Null keeps the literal's own layout: no single
+   * record target, a target with an index signature or a tuple, a member
+   * the target does not declare, or a literal that is more than data (a
+   * spread, a method, an accessor, a computed name). */
+  contextualRecordLayout(
+    literal: ts.ObjectLiteralExpression,
+    contextual?: readonly ts.Type[],
+  ): (IrType & { kind: "record" }) | null {
+    if (contextual === undefined) {
+      // A declaration's initializer: the same rule, from the literal's own
+      // contextual type. A JavaScript literal and one that holds a binding
+      // whose array is still taking shape keep their dynamic form.
+      if (isJsSourceFile(ts.getSourceFileOfNode(literal)) || holdsEvolvingArray(this, literal))
+        return null;
+      const type = this.checker.getContextualType(literal);
+      const widened = type ? this.checker.getBaseTypeOfLiteralType(type) : undefined;
+      if (!widened) return null;
+      contextual = widened.isUnionType() ? ts.constituentTypes(widened) : [widened];
+    }
+    const targets = contextual.filter(
+      (part) =>
+        (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0,
+    );
+    if (targets.length !== 1) return null;
+    const target = targets[0]!;
+    if (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter))
+      return null;
+    const plain = literal.properties.nodes.every((prop) => {
+      if (ts.isShorthandPropertyAssignment(prop)) return true;
+      if (!ts.isPropertyAssignment(prop) || ts.isComputedPropertyName(prop.name)) return false;
+      let init: ts.Expression = prop.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      return !(
+        ts.isFunctionExpression(init) ||
+        ts.isArrowFunction(init) ||
+        ts.isClassExpression(init)
+      );
+    });
+    if (!plain) return null;
+    const own = this.mapTypeOf(this.typeOf(literal));
+    const declared = this.mapTypeOf(target);
+    if (own?.kind !== "record" || declared?.kind !== "record" || typeEquals(own, declared))
+      return null;
+    const from = this.shapes.get(own.shapeId);
+    const to = this.shapes.get(declared.shapeId);
+    if (!from || !to || from.tuple || to.tuple || from.indexValue || to.indexValue) return null;
+    if (!from.fields.every((field) => to.fields.some((other) => other.name === field.name)))
+      return null;
+    return this.widthLiftPlan(own, declared) === null ? null : declared;
+  }
+
   /** An object or array literal in an untyped context: its contextual type
    * is `unknown` or `any` from a slot the program declares (a variable,
    * field, parameter, return type or `unknown[]` element; a library
@@ -17661,6 +17717,16 @@ export class Lowerer {
           holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
+        }
+        // The checker names one closed record type as this literal's target
+        // (`{…} satisfies T`, an argument whose declared type the slot keeps
+        // dynamic). The value is read back at that type, so it is built in
+        // that type's layout, as an annotated binding builds it: the checked
+        // conversion back then finds the layout it asks for and hands out
+        // this object instead of converting a copy of it on every read.
+        const declared = this.contextualRecordLayout(x, parts);
+        if (declared) {
+          return this.coerceExistingInto(node, this.lowerObjectLiteral(x, declared), expected);
         }
       }
     }

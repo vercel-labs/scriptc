@@ -11,13 +11,23 @@
 // Client; here every tunnel has its own connection, which a proxy cannot
 // tell apart (a CONNECT request never shares a connection).
 //
+// The headers and the token a program gives are checked as undici's
+// request checks them before anything is written: a line break in a name
+// or a value fails the request with InvalidArgumentError and never
+// reaches the proxy. For an https origin the certificate is checked
+// against the name undici checks it against: `requestTls.servername`,
+// else the origin's host.
+//
 // Not implemented, refused by name where it is asked for: `clientFactory`,
-// and a proxy URL that is neither http: nor https:. Reading the proxy from
-// the environment (HTTP_PROXY and its relatives) is not part of ProxyAgent
-// in undici either: the program decides.
+// a proxy URL that is neither http: nor https:, a `host`,
+// `content-length` or `connection` header for the CONNECT request (undici
+// frames those itself), and the members of `requestTls` and `proxyTls`
+// that are not applied. Reading the proxy from the environment
+// (HTTP_PROXY and its relatives) is not part of ProxyAgent in undici
+// either: the program decides.
 import type { Socket } from "node:net";
 import * as tls from "node:tls";
-import { buildConnector } from "./connector.ts";
+import { buildConnector, serverNameOf } from "./connector.ts";
 import { Dispatcher, DispatcherBase } from "./dispatcher.ts";
 import {
   InvalidArgumentError,
@@ -25,6 +35,7 @@ import {
   RequestAbortedError,
   SocketError,
 } from "./errors.ts";
+import { headerCharRegex, tokenRegExp } from "./request.ts";
 import type {
   AgentOptions,
   Connector,
@@ -82,14 +93,20 @@ export class ProxyAgent extends DispatcherBase {
       );
     }
     // The proxy's request headers, in undici's order: the caller's, then
-    // the credentials.
-    const proxyHeaders: [string, string][] = [];
+    // the credentials. A value given as a list is one line per entry.
+    const proxyHeaders: [string, string[]][] = [];
     const given = opts.headers;
     if (given !== undefined) {
       for (const name of Object.keys(given)) {
         const value = given[name];
         if (value === undefined) continue;
-        proxyHeaders.push([name, typeof value === "string" ? value : value.join(", ")]);
+        const lower = name.toLowerCase();
+        if (lower === "host" || lower === "content-length" || lower === "connection") {
+          throw new NotSupportedError(
+            `scriptc's undici ProxyAgent does not take a '${name}' header for the CONNECT request (undici frames that header itself)`,
+          );
+        }
+        proxyHeaders.push([name, typeof value === "string" ? [value] : value]);
       }
     }
     const proxy = new URL(opts.uri);
@@ -112,6 +129,16 @@ export class ProxyAgent extends DispatcherBase {
         `scriptc's undici ProxyAgent tunnels through http: and https: proxies, not '${proxy.protocol}'`,
       );
     }
+    appliedOnly("requestTls", opts.requestTls, ["servername", "rejectUnauthorized", "ca"]);
+    appliedOnly("proxyTls", opts.proxyTls, [
+      "servername",
+      "rejectUnauthorized",
+      "ca",
+      "timeout",
+      "maxCachedSessions",
+      "socketPath",
+      "lookup",
+    ]);
     const requestTls = opts.requestTls;
     const connect = tunnelConnector(
       proxy,
@@ -175,14 +202,60 @@ export class ProxyAgent extends DispatcherBase {
 
 /** Sets a header by exact name, keeping the position of a caller's entry
  * of that name (assigning an object key keeps its place). */
-function setHeader(headers: [string, string][], name: string, value: string): void {
+function setHeader(headers: [string, string[]][], name: string, value: string): void {
   for (const entry of headers) {
     if (entry[0] === name) {
-      entry[1] = value;
+      entry[1] = [value];
       return;
     }
   }
-  headers.push([name, value]);
+  headers.push([name, [value]]);
+}
+
+/** A connector option record of which only `applied` members are acted
+ * on: any other member that is set is refused by name, so no option is
+ * taken and then ignored. */
+function appliedOnly(
+  option: string,
+  record: ConnectorBuildOptions | undefined,
+  applied: readonly string[],
+): void {
+  if (record === undefined) return;
+  const set: string[] = [];
+  if (record.timeout !== undefined) set.push("timeout");
+  if (record.maxCachedSessions !== undefined) set.push("maxCachedSessions");
+  if (record.socketPath !== undefined) set.push("socketPath");
+  if (record.port !== undefined) set.push("port");
+  if (record.rejectUnauthorized !== undefined) set.push("rejectUnauthorized");
+  if (record.ca !== undefined) set.push("ca");
+  if (record.servername !== undefined) set.push("servername");
+  if (record.lookup !== undefined) set.push("lookup");
+  if (record.keepAlive !== undefined) set.push("keepAlive");
+  if (record.keepAliveInitialDelay !== undefined) set.push("keepAliveInitialDelay");
+  if (record.noDelay !== undefined) set.push("noDelay");
+  if (record.autoSelectFamily !== undefined) set.push("autoSelectFamily");
+  if (record.autoSelectFamilyAttemptTimeout !== undefined)
+    set.push("autoSelectFamilyAttemptTimeout");
+  for (const member of set) {
+    if (applied.includes(member)) continue;
+    throw new NotSupportedError(
+      `scriptc's undici ProxyAgent does not apply '${member}' of ${option} yet (applied: ${applied.join(", ")})`,
+    );
+  }
+}
+
+/** What undici's request checks of a header before it writes the CONNECT
+ * request (core/request.js, processHeader): the names it frames itself or
+ * does not send, then the name as a token and the value's characters. A
+ * line break in either fails the request here. */
+function checkTunnelHeader(name: string, value: string): void {
+  const lower = name.toLowerCase();
+  if (lower === "transfer-encoding" || lower === "keep-alive" || lower === "upgrade") {
+    throw new InvalidArgumentError(`invalid ${lower} header`);
+  }
+  if (lower === "expect") throw new NotSupportedError("expect header not supported");
+  if (!tokenRegExp.test(name)) throw new InvalidArgumentError("invalid header key");
+  if (headerCharRegex.test(value)) throw new InvalidArgumentError(`invalid ${name} header`);
 }
 
 /** proxy-agent.js's buildHeaders: fetch hands the header list over as a
@@ -204,11 +277,16 @@ function headerRecord(
  * through the proxy. */
 function tunnelConnector(
   proxy: URL,
-  proxyHeaders: readonly [string, string][],
+  proxyHeaders: readonly [string, string[]][],
   dialProxy: Connector,
   requestTls: ConnectorBuildOptions | undefined,
 ): Connector {
   return (params: ConnectorOptions, callback: ConnectorCallback): Socket => {
+    // Before the proxy is dialed: a header undici would not send fails the
+    // request, as the request undici makes for the tunnel does.
+    for (const [name, values] of proxyHeaders) {
+      for (const value of values) checkTunnelHeader(name, value);
+    }
     let requestedHost = params.host ?? params.hostname;
     if (params.port === "") requestedHost += params.protocol === "https:" ? ":443" : ":80";
     let pending: ConnectorCallback | null = callback;
@@ -225,7 +303,9 @@ function tunnelConnector(
           return;
         }
         let head = `CONNECT ${requestedHost} HTTP/1.1\r\nhost: ${proxy.host}\r\nconnection: close\r\n`;
-        for (const [name, value] of proxyHeaders) head += `${name}: ${value}\r\n`;
+        for (const [name, values] of proxyHeaders) {
+          for (const value of values) head += `${name}: ${value}\r\n`;
+        }
         // The listeners stay on the socket (the native socket has no way
         // to take one off) and do nothing once the answer has been read.
         let answer: Buffer = Buffer.alloc(0);
@@ -257,9 +337,18 @@ function tunnelConnector(
             settle(null, tunnel);
             return;
           }
-          const servername = requestTls !== undefined ? requestTls.servername : params.servername;
+          // undici's name for the certificate check: requestTls's when
+          // requestTls is given, else the client's; without one, the
+          // origin's host (for an IP literal no name is sent and the
+          // certificate is checked against the address).
+          const asked = requestTls !== undefined ? requestTls.servername : params.servername;
+          const servername =
+            asked !== undefined && asked !== ""
+              ? asked
+              : serverNameOf(params.host ?? params.hostname);
           const secure = tls.connect({
             socket: tunnel,
+            host: params.hostname,
             ...(servername !== undefined && servername !== "" ? { servername } : {}),
             rejectUnauthorized:
               requestTls !== undefined && requestTls.rejectUnauthorized !== undefined
@@ -279,7 +368,8 @@ function tunnelConnector(
         tunnel.on("close", () => {
           if (!answered) settle(new SocketError("other side closed"), null);
         });
-        tunnel.write(head + "\r\n");
+        // As undici writes a request head: one byte per character.
+        tunnel.write(Buffer.from(head + "\r\n", "latin1"));
       },
     );
   };

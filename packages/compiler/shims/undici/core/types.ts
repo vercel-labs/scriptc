@@ -16,31 +16,20 @@ export type UndiciHeaders = Record<string, string | string[] | undefined> | stri
  * bodies are outside the implemented subset. */
 export type RequestBody = string | Buffer | Uint8Array | null;
 
-/** The request methods undici's declarations name (HttpMethod in
- * types/dispatcher.d.ts). 7.x's declaration also admits any other string;
- * request() takes one here in both entries (RequestOptions). */
-export type HttpMethod =
-  | "GET"
-  | "HEAD"
-  | "POST"
-  | "PUT"
-  | "DELETE"
-  | "CONNECT"
-  | "OPTIONS"
-  | "TRACE"
-  | "PATCH";
-
-/** undici's Dispatcher.DispatchOptions. dispatch() declares the method the
- * way undici does, so that this record is one of what a project's own
- * undici-types declare (the dispatcher of the global fetch's init is typed
- * by those, and a program hands it to a slot typed by this package).
- * `Method` is `string` for the callers that pass any token on:
- * request() and fetch(). */
-export interface DispatchOptions<Method extends string = HttpMethod> {
+/** undici's Dispatcher.DispatchOptions. The method is any string, as it
+ * is in 7.x's declarations (5.x's name nine). A dispatcher typed by a
+ * project's own undici-types (the dispatcher of the global fetch's init)
+ * is handed to slots typed by this package's dispatch(): for that, every
+ * member here takes at least what undici-types declare for it, and a
+ * value this implementation does not send is refused where it is read. */
+export interface DispatchOptions {
   origin?: string | URL;
   path: string;
-  method: Method;
-  body?: RequestBody;
+  method: string;
+  /** undici-types declare streams and FormData here beside strings and
+   * bytes; what is sent is RequestBody, and any other value is refused
+   * where the request is made (request.ts). */
+  body?: unknown;
   headers?: UndiciHeaders;
   idempotent?: boolean;
   blocking?: boolean;
@@ -52,6 +41,10 @@ export interface DispatchOptions<Method extends string = HttpMethod> {
   // dispatch() is copied to this shape, and interceptors read them back
   // through a `params as Dispatcher.RequestOptions` cast, as with undici.
   opaque?: unknown;
+  /** Set by this package's fetch for a request undici would hand to
+   * Node's own dispatcher: the client frames it as a 7.x client does
+   * (client.ts, expectsPayload). */
+  __framedAsNode?: boolean;
   signal?: AbortSignal | null;
   onInfo?: (info: { statusCode: number; headers: IncomingHttpHeaders }) => void;
   highWaterMark?: number;

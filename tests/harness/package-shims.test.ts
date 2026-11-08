@@ -36,6 +36,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -94,6 +95,41 @@ async function buildInCase(name: string, entry: string): Promise<{ dir: string; 
   });
   if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
   return { dir, binary: result.binaryPath };
+}
+
+/** The cells of an options table (`label: outcome` lines): how many are
+ * the same under the real undici and the built-in one, how many the
+ * built-in refuses by name, and the labels of any other difference. */
+function cellsAgainst(
+  undici: string,
+  builtIn: string,
+): { same: number; refused: number; different: string[] } {
+  const cells = (text: string): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      const at = line.indexOf(": ");
+      if (at !== -1) out.set(line.slice(0, at), line.slice(at + 2));
+    }
+    return out;
+  };
+  const theirs = cells(undici);
+  const ours = cells(builtIn);
+  let same = 0;
+  let refused = 0;
+  const different: string[] = [];
+  for (const [label, outcome] of theirs) {
+    const here = ours.get(label);
+    if (here === outcome) same++;
+    else if (
+      here !== undefined &&
+      here.includes("NotSupportedError") &&
+      here.includes("scriptc's undici")
+    )
+      refused++;
+    else different.push(label);
+  }
+  for (const label of ours.keys()) if (!theirs.has(label)) different.push(label);
+  return { same, refused, different };
 }
 
 /** Runs `binary <port>` against undici-hostile-peer.mjs. */
@@ -508,6 +544,77 @@ describe("package shims", () => {
       "NotSupportedError | scriptc's undici fetch takes a dispatcher made by this undici (Agent, Pool, Client, ProxyAgent or a subclass of Dispatcher)\n",
     );
   }, 180_000);
+
+  // Every RequestInit member, one value per cell, without a dispatcher and
+  // through an Agent. `expected` is the built-in undici's output; `undici`
+  // is the real package's under Node 24 (5.29.0 for the 5.x entry, 7.30.0
+  // for the 7.x one). A cell is the same in both, or the built-in refuses
+  // it naming the member: nothing is taken and then not acted on.
+  test.each([
+    ["undici5", "5.29.0", 132, 64],
+    ["undici7", "7.30.0", 131, 65],
+  ])(
+    "%s: every RequestInit member is acted on as undici %s does, or refused by name",
+    async (name, release, same, refused) => {
+      const { dir, binary } = await buildInCase(name, "undici-fetch-members.ts");
+      const expected = readFileSync(join(shimFixtures, `undici-fetch-members.${name}.txt`), "utf8");
+      const undici = readFileSync(
+        join(shimFixtures, `undici-fetch-members.undici-${release}.txt`),
+        "utf8",
+      );
+      expect(await run(binary, [], dir)).toBe(expected);
+      expect(cellsAgainst(undici, expected)).toEqual({ same, refused, different: [] });
+    },
+    180_000,
+  );
+
+  test("undici5: every ProxyAgent option is applied as undici 5.29.0 applies it, or refused by name", async () => {
+    const { dir, binary } = await buildInCase("undici5", "undici5-proxy-agent-options.ts");
+    cpSync(join(shimFixtures, "tls"), join(dir, "tls"), { recursive: true });
+    const expected = readFileSync(
+      join(shimFixtures, "undici5-proxy-agent-options.undici5.txt"),
+      "utf8",
+    );
+    const undici = readFileSync(
+      join(shimFixtures, "undici5-proxy-agent-options.undici-5.29.0.txt"),
+      "utf8",
+    );
+    expect(await run(binary, [], dir)).toBe(expected);
+    // Among the cells that are the same: a line break in a token or a
+    // header fails the request before the proxy is dialed, and an https
+    // origin's certificate is checked against the origin's name.
+    expect(cellsAgainst(undici, expected)).toEqual({ same: 42, refused: 13, different: [] });
+    expect(expected).toContain(
+      "token with a line break: threw InvalidArgumentError UND_ERR_INVALID_ARG: invalid proxy-authorization header | proxy saw nothing",
+    );
+    expect(expected).toContain(
+      "tls, certificate of the proxy's address: threw Error ERR_TLS_CERT_ALTNAME_INVALID",
+    );
+  }, 180_000);
+
+  // The global RequestInit a program holds, spread whole into the package's
+  // fetch and into a wrapper's init that names the package's dispatch(),
+  // under the declarations the compiler bundles (these cases have no
+  // @types/node); undici-shim-types.test.ts has the same under the Node
+  // types of the 20 line.
+  test.each(["undici5", "undici7"])(
+    "%s: the bundled RequestInit spread whole fits the package's fetch and dispatch()",
+    async (name) => {
+      const dir = copyCase(name, `${name}-whole-init`);
+      copyFileSync(join(shimFixtures, "undici-whole-init.ts"), join(dir, "main.ts"));
+      const out = join(dir, ".scriptc");
+      const result = await compile(join(dir, "main.ts"), {
+        outPath: join(out, "program"),
+        outDir: out,
+        outputKind: "ir",
+      });
+      expect(
+        result.ok,
+        !result.ok ? result.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n") : "",
+      ).toBe(true);
+    },
+    120_000,
+  );
 
   test("undici7: the shim compiles under a project with strictPropertyInitialization off", async () => {
     const dir = copyCase("undici7", "undici7-loose");

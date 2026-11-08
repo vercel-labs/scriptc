@@ -4,4 +4,5 @@
   A value naming one of the program's own modules compiles that module and answers the one instance, however many static and dynamic edges reach it; a value that names no file rejects at run time with Node's `ERR_MODULE_NOT_FOUND`, so a missing `.js` variant never falls back to the `.ts` beside it.
   Import attributes, CommonJS namespace synthesis, and imports of shipped JavaScript packages are unsupported unless the target is a compiled ESM module.
   Literal `import()` of compiled ESM and TypeScript modules and of supported Node builtins compiles.
+  A literal `import()` of a package that nothing imports statically loads the package in a Node island at the call; with `--node-islands=off` it is a build error that names the package.
   Evaluation is lazy and microtask-delayed, top-level `await` is honored, repeated imports share namespace identity, exported mutable bindings stay live, and namespace keys use Node's sorted order.

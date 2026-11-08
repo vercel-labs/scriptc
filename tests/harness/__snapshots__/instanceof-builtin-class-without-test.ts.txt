@@ -1,0 +1,13 @@
+instanceof-builtin-class-without-test.ts:4:24 - error SC1090: 'instanceof AbortController' (this built-in class has no run-time class test yet: test what the value has instead, such as `typeof value === "object" && value !== null && "member" in value`) is not supported yet
+
+  3 | function describe(value: unknown): string {
+  4 |   if (value instanceof AbortController) return "controller";
+    |                        ^~~~~~~~~~~~~~~
+  5 |   if (value instanceof WeakRef) return "reference";
+
+instanceof-builtin-class-without-test.ts:5:24 - error SC1090: 'instanceof WeakRef' (this built-in class has no run-time class test yet: test what the value has instead, such as `typeof value === "object" && value !== null && "member" in value`) is not supported yet
+
+  4 |   if (value instanceof AbortController) return "controller";
+  5 |   if (value instanceof WeakRef) return "reference";
+    |                        ^~~~~~~
+  6 |   return "other";

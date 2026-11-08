@@ -26,7 +26,6 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
@@ -388,21 +387,24 @@ export function lowerLambda(
   // fence at the reference (identifiers.ts) with that use's own target
   // (a call, or `const g = f` under an annotated slot). Fencing it here
   // refused declarations that are only ever CALLED.
-  // A member of a class that extends an island class (its constructor
-  // included) is never a typed value either: lowerIslandSubclass boxes each
-  // one into the checked-dynamic function the JavaScript class calls, and
-  // that box completes omitted arguments with undefined like any other
-  // checked-dynamic function, so a boxable signature passes as it does
-  // under an 'any' slot.
-  const boxedAtBirth =
-    ((ts.isMethodDeclaration(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) ||
-      isIslandSubclassDecl(node.parent)) &&
-    canBoxFuncIntoDyn(
-      funcType,
-      (id) => lowerer.shapes.get(id),
-      (id) => lowerer.unions.get(id),
-    );
-  if (!ts.isFunctionDeclaration(node) && !boxedAtBirth)
+  // A member of a class that extends an island class keeps the rule,
+  // although lowerIslandSubclass boxes each one into the checked-dynamic
+  // function the JavaScript class calls: such a class does not answer its
+  // `length` as Node does yet, and an instance that travels through a
+  // union-typed value loses its class. Both differ without an error, so no
+  // further program is admitted into them until they are right.
+  if (
+    !ts.isFunctionDeclaration(node) &&
+    !(
+      ts.isMethodDeclaration(node) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      canBoxFuncIntoDyn(
+        funcType,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    )
+  )
     lowerer.requireExactArityValue(
       node,
       ts.isArrowFunction(node) || ts.isFunctionExpression(node) ? node : null,

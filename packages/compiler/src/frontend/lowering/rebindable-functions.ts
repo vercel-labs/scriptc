@@ -5,8 +5,9 @@
  * `function bufferFrom(...) { bufferFrom = modern; ... }`). A top-level
  * declaration normally lowers to a static function, which cannot change.
  * A reassigned one instead becomes a mutable module global holding the
- * function as a checked-dynamic value: the module initializer assigns it
- * before its first statement (the declaration's hoisting), and reads,
+ * function as a checked-dynamic value: shared ESM bindings instantiate
+ * before evaluation; other module initializers assign them before their
+ * first statement (the declaration's hoisting). Reads,
  * calls and writes of the name all go through the global. TypeScript
  * rejects such writes, so only JavaScript sources take this path. */
 import * as ts from "../ts7/adapter.js";

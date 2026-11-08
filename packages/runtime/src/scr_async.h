@@ -6,6 +6,8 @@
 
 #include "scr_dyn.h"
 
+#include <stdlib.h>
+
 /* ── node:timers/promises (scr_async.c) ──────────────────────────────
  * The promisified pair: a PENDING void promise a one-shot heap timer /
  * the immediate queue fulfills (the armed entry keeps the loop alive
@@ -21,6 +23,52 @@ ScrPromise *scr_tp_set_immediate(void);
  * tiebreaks) drives everything after %main returns. See scr_async.c.
  */
 ScrPromise *scr_promise_new(void);
+/* The identity cell of a promise: what a promise adopted across inner types
+ * shares with its source (scr_promise_share_identity) and what a Set or a
+ * Map keys a promise by (scr_promise_map_identity). Each promise that points
+ * at a cell holds one count of it; a promise has none until its first share
+ * or its first key.
+ *
+ * A WeakMap or a WeakSet keys a promise by the same cell. Their unit, the
+ * checked-dynamic core, is linked by programs that have no promise and calls
+ * nothing of this unit, so it reads and creates the cell through the head
+ * below: the first two words of every promise. A cell starts zeroed, with
+ * one count and one promise for the promise that creates it.
+ *
+ * The cell also holds the promise's own properties (`p.status = "pending"`):
+ * a checked-dynamic object the dyn unit creates on the first write and
+ * releases through `release_properties`. The table is not traced: the
+ * collector counts it as an outside reference, as it does the box-to-promise
+ * edge. Only a promise reads the table, so it is released when the last
+ * promise that points at the cell lets go of it (`promises`), even while a
+ * WeakMap, a WeakSet or a Node island still holds the cell. */
+typedef struct ScrPromiseIdentity {
+  size_t rc;
+  size_t promises;
+  void *properties;
+  void (*release_properties)(void *);
+} ScrPromiseIdentity;
+/* Gives up one count of the cell; the last count frees it. */
+static inline void scr_promise_identity_release(ScrPromiseIdentity *identity) {
+  if (--identity->rc != 0) return;
+  if (identity->properties) identity->release_properties(identity->properties);
+  free(identity);
+}
+/* Gives up the count of a promise that points at the cell: the last such
+ * promise releases the own-property table first. The cell keeps that count
+ * while the table is released, so it outlives the release. */
+static inline void scr_promise_identity_release_promise(ScrPromiseIdentity *identity) {
+  if (--identity->promises == 0 && identity->properties) {
+    void *properties = identity->properties;
+    identity->properties = NULL;
+    identity->release_properties(properties);
+  }
+  scr_promise_identity_release(identity);
+}
+typedef struct ScrPromiseHead {
+  size_t rc;
+  ScrPromiseIdentity *identity;
+} ScrPromiseHead;
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
 void *scr_promise_map_identity(void *promise);
@@ -33,7 +81,8 @@ void scr_promise_identity_hold(const void *key);
 void scr_promise_identity_drop(const void *key);
 /* The slot of the own-property table the promise's identity shares (NULL
  * when the promise has no identity and `create` is false). The table is
- * released through `release` with the identity's last promise. */
+ * released through `release` with the identity's last count (a promise or
+ * a WeakMap or WeakSet entry). */
 void **scr_promise_properties_slot(ScrPromise *p, bool create, void (*release)(void *));
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
@@ -524,8 +573,9 @@ bool scr_timer_has_ref(double handle);
 void scr_timer_refresh(double handle);
 /* setImmediate/clearImmediate — Node's check phase: FIFO once per loop
  * turn after due timers, immediates queued mid-phase wait for the next
- * turn. The handle is an f64 id in its own space (clearTimeout of an
- * Immediate is a no-op, like Node); the Immediate ref trio mirrors the
+ * turn. The handle is an f64 id from the timer sequence, so its number
+ * names no timeout (clearTimeout of an Immediate is a no-op, like Node);
+ * the Immediate ref trio mirrors the
  * Timeout one (unref'd pending immediates don't keep the loop alive and
  * never fire once nothing reffed remains). scr_timers_teardown sweeps
  * the immediate queue too. */

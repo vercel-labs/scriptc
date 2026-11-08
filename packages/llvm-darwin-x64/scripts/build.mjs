@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { buildComptimeEvaluator } from "../../../native/llvm-codegen/comptime/build.mjs";
 import { nativeTargetCmakeArgs } from "../../../native/llvm-codegen/targets.mjs";
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -38,3 +39,10 @@ const output = join(root, "bin", "scriptc-llvm-codegen");
 copyFileSync(join(build, "scriptc-llvm-codegen"), output);
 execFileSync("strip", ["-x", output], { stdio: "inherit" });
 chmodSync(output, 0o755);
+// The evaluator targets the macOS release compiled programs target.
+buildComptimeEvaluator({
+  compiler: ["clang", "-arch", "x86_64", "-mmacosx-version-min=14.0"],
+  platform: "darwin",
+  build: join(repo, "node_modules/.cache/scriptc-llvm-darwin-x64-comptime"),
+  output: join(root, "bin", "scriptc-comptime"),
+});

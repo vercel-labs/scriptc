@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9890-node-island-child-off-during-emit/main.ts"
+ ],
+ "diags": []
+}

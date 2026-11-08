@@ -12105,6 +12105,12 @@ typedef struct {
    * view sets `fields_view`. */
   ScrDyn *view_prototype;
   bool fields_view;
+  /* The node is not a view of the error: it is the value the error stands
+   * for where the runtime carries a reason as an Error (a stream destroyed
+   * with a number, a string or a plain object). Boxing the error answers
+   * that value, and nothing finds the entry from the value: the value is
+   * not an Error, and a constant's node is shared by every use of it. */
+  bool carried;
 } ScrErrDynEnt;
 
 static SCR_TL ScrErrDynEnt *scr_errdyn_cache = NULL;
@@ -12186,7 +12192,10 @@ static void scr_errdyn_sweep(void) {
   for (size_t i = 0; i < scr_errdyn_n; i++) {
     ScrErrDynEnt ent = scr_errdyn_cache[i];
     size_t boxed = ent.dyn->kind == SCR_DYN_TYPED_REF && ent.dyn->v.typed_ref.ptr == (void *)ent.err;
-    if (ent.dyn->rc == 1 + scr_errdyn_self_refs(ent.dyn) && ent.err->rc == 1 + boxed) {
+    /* Nothing reaches a carried entry from its value, so it goes with the
+     * last other reference to its error. */
+    if (ent.carried ? ent.err->rc == 1
+                    : ent.dyn->rc == 1 + scr_errdyn_self_refs(ent.dyn) && ent.err->rc == 1 + boxed) {
       if (dead == NULL) {
         dead = malloc((scr_errdyn_n - i) * sizeof *dead);
         if (!dead) scr_trap("scriptc: out of memory\n");
@@ -12203,19 +12212,22 @@ static void scr_errdyn_sweep(void) {
   memset(scr_errdyn_by_dyn, 0, scr_errdyn_slots * sizeof *scr_errdyn_by_dyn);
   for (size_t i = 0; i < scr_errdyn_n; i++) {
     scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
-    scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+    if (!scr_errdyn_cache[i].carried) scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
   }
   for (size_t i = 0; i < n_dead; i++) {
     scr_error_release(dead[i].err);
-    scr_errdyn_release_node(dead[i].dyn);
+    /* A carried value is the program's own: released, never changed. */
+    if (dead[i].carried) scr_dyn_release(dead[i].dyn);
+    else scr_errdyn_release_node(dead[i].dyn);
     scr_dyn_release(dead[i].code);
     scr_dyn_release(dead[i].view_prototype);
   }
   free(dead);
 }
 
-/* Appends an entry (both sides retained) and indexes it. */
-static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
+/* Appends an entry (both sides retained) and indexes it: by the error, and
+ * by the node unless the node is a carried value. */
+static void scr_errdyn_append_entry(ScrError *e, ScrDyn *d, bool carried) {
   if (scr_errdyn_n >= scr_errdyn_sweep_at) scr_errdyn_sweep();
   if (scr_errdyn_n == scr_errdyn_cap) {
     scr_errdyn_cap = scr_errdyn_cap ? scr_errdyn_cap * 2 : 8;
@@ -12233,6 +12245,7 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
   scr_errdyn_cache[scr_errdyn_n].code = NULL;
   scr_errdyn_cache[scr_errdyn_n].view_prototype = NULL;
   scr_errdyn_cache[scr_errdyn_n].fields_view = false;
+  scr_errdyn_cache[scr_errdyn_n].carried = carried;
   scr_errdyn_n++;
   if (scr_errdyn_n * 2 > scr_errdyn_slots) {
     free(scr_errdyn_by_err);
@@ -12243,12 +12256,21 @@ static void scr_errdyn_append(ScrError *e, ScrDyn *d) {
     if (!scr_errdyn_by_err || !scr_errdyn_by_dyn) scr_trap("scriptc: out of memory\n");
     for (size_t i = 0; i < scr_errdyn_n; i++) {
       scr_errdyn_index_put(scr_errdyn_by_err, scr_errdyn_cache[i].err, i, true);
-      scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
+      if (!scr_errdyn_cache[i].carried) scr_errdyn_index_put(scr_errdyn_by_dyn, scr_errdyn_cache[i].dyn, i, false);
     }
   } else {
     scr_errdyn_index_put(scr_errdyn_by_err, e, scr_errdyn_n - 1, true);
-    scr_errdyn_index_put(scr_errdyn_by_dyn, d, scr_errdyn_n - 1, false);
+    if (!carried) scr_errdyn_index_put(scr_errdyn_by_dyn, d, scr_errdyn_n - 1, false);
   }
+}
+
+static void scr_errdyn_append(ScrError *e, ScrDyn *d) { scr_errdyn_append_entry(e, d, false); }
+
+/* The entry whose node is a view of error `e` (not a value it carries), or
+ * SIZE_MAX. */
+static size_t scr_errdyn_find_view(const ScrError *e) {
+  size_t hit = scr_errdyn_find(e, true);
+  return hit != SIZE_MAX && scr_errdyn_cache[hit].carried ? SIZE_MAX : hit;
 }
 
 typedef struct {
@@ -12287,7 +12309,8 @@ static void scr_errdyn_teardown(void) {
   scr_errdyn_sweep_at = 64;
   for (size_t i = 0; i < n; i++) {
     scr_error_release(cache[i].err);
-    scr_errdyn_release_node(cache[i].dyn);
+    if (cache[i].carried) scr_dyn_release(cache[i].dyn);
+    else scr_errdyn_release_node(cache[i].dyn);
     scr_dyn_release(cache[i].code);
     scr_dyn_release(cache[i].view_prototype);
   }
@@ -12700,7 +12723,7 @@ void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg
 /* The error's checked-dynamic node when it has one (borrowed), else NULL:
  * util.inspect reads its extra own properties. */
 ScrDyn *scr_errdyn_view_of(const ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   return hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].dyn;
 }
 
@@ -12768,6 +12791,18 @@ void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
 ScrError *scr_error_from_dyn(const ScrDyn *d) {
   ScrError *hit = scr_errdyn_err_of(d);
   if (hit) return hit;
+  /* Only a node with the error encoding's marker is an Error. Any other
+   * value (a stream's reason may be a number, a string, a plain object) is
+   * carried: the error stands for it where the runtime holds an Error, and
+   * boxes back to the value itself, which stays what it was. Typed code
+   * that is handed the error reads what the value's own `name`, `message`
+   * and `code` say (a string's text as the message). */
+  bool carried = d->kind != SCR_DYN_OBJ || scr_dyn_obj_get(d, "%error", 6) == NULL;
+  if (d->kind != SCR_DYN_OBJ) {
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, d->kind == SCR_DYN_STR ? d->v.str : NULL);
+    scr_errdyn_append_entry(e, (ScrDyn *)d, true);
+    return e;
+  }
   const ScrDyn *en = scr_dyn_obj_get(d, "name", 4);
   const ScrDyn *em = scr_dyn_obj_get(d, "message", 7);
   const ScrDyn *ec = scr_dyn_obj_get(d, "code", 4);
@@ -12799,7 +12834,7 @@ ScrError *scr_error_from_dyn(const ScrDyn *d) {
       if (entry->key_len == 5 && memcmp(entry->key, "cause", 5) == 0) e->cause_enumerable = entry->enumerable;
     }
   }
-  scr_errdyn_put(e, (ScrDyn *)d);
+  scr_errdyn_append_entry(e, (ScrDyn *)d, carried);
   return e;
 }
 
@@ -20882,7 +20917,7 @@ ScrError *scr_suppressed_new(const ScrDyn *error, const ScrDyn *suppressed, cons
 }
 
 ScrDyn *scr_error_cause(ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrDyn *value = scr_errdyn_cache[hit].dyn;
     if (value->kind == SCR_DYN_TYPED_REF) {
@@ -20897,7 +20932,7 @@ ScrDyn *scr_error_cause(ScrError *e) {
 }
 
 void scr_error_set_cause(ScrError *e, ScrDyn *value) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
     scr_dyn_key_set(scr_errdyn_cache[hit].dyn, key, value);
@@ -20917,7 +20952,7 @@ void scr_error_define_cause(ScrError *e, ScrDyn *value) {
 }
 
 void scr_error_delete_cause(ScrError *e) {
-  size_t hit = scr_errdyn_find(e, true);
+  size_t hit = scr_errdyn_find_view(e);
   if (hit != SIZE_MAX) {
     ScrStr *key = scr_str_new("cause", 5);
     scr_dyn_key_delete(scr_errdyn_cache[hit].dyn, key, true);
@@ -21935,6 +21970,38 @@ static void scr_weak_map_release(void *ptr) {
   scr_cyc_free(map);
 }
 
+/* ── promises as weak keys ────────────────────────────────────────────
+ * A promise is keyed by its identity cell (ScrPromiseHead), not by its
+ * address: a typed promise enters the checked-dynamic tier as a fresh adapter
+ * promise each time it is boxed, and the adapters and their source share
+ * one cell, as they do for `===` and for Set and Map keys.
+ *
+ * Every cell that is a key is held once, so its address names that
+ * identity for as long as an entry has it. The holds are the entries of a
+ * collection of this unit's own (scr_weak_promise_cells), which no program
+ * sees: its keys are the cells in use. Nothing reports the end of a cell (it
+ * is plain memory, and the promise unit calls nothing here), so a cell whose
+ * promises are gone is found by its count: the hold is the only one left.
+ * The sweep runs when the number of held cells has doubled since the last
+ * one; it ends the entries of the dead cells and gives up the holds of cells
+ * no collection keys any more. */
+/* Above every other kind: a handle's kind is 4 plus its tag, and a tag can
+ * be any small number. */
+#define SCR_WEAK_PROMISE_KIND 0x10000u
+static SCR_TL ScrWeakMap *scr_weak_promise_cells;
+static SCR_TL size_t scr_weak_promise_held, scr_weak_promise_sweep_at;
+
+static void *scr_weak_promise_cell(ScrPromise *promise) {
+  ScrPromiseHead *head = (ScrPromiseHead *)promise;
+  if (!head->identity) {
+    head->identity = calloc(1, sizeof *head->identity);
+    if (!head->identity) scr_json_oom();
+    head->identity->rc = 1;
+    head->identity->promises = 1;
+  }
+  return head->identity;
+}
+
 /* Return 1 for an observed identity, 0 for a primitive, and -1 for a
  * reference whose native lifetime has no observer contract yet. */
 static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
@@ -21969,7 +22036,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
     if (!key->v.typed_ref.observed) return -1;
     *ptr = key->v.typed_ref.ptr; *kind = 32; return 1;
   case SCR_DYN_PROMISE:
-    *ptr = key->v.promise; *kind = 33; return 1;
+    *ptr = scr_weak_promise_cell(key->v.promise); *kind = SCR_WEAK_PROMISE_KIND; return 1;
 
   default: return 0;
   }
@@ -21996,6 +22063,54 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * Without the island units a symbol is no weak key yet (scr_weak_key). */
 static bool scr_weak_island_key(const ScrDyn *key) {
   return scr_ni_dyn_handle(key) || (key->kind == SCR_DYN_SYMBOL && scr_ni_dyn_ops != NULL);
+}
+
+static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value);
+
+/* Gives up the holds of the cells that no promise has any more (their
+ * entries end with them) and of the cells that no collection keys any more
+ * (see "promises as weak keys"). The cells are found first: ending an entry
+ * releases its value, which can free other keys and change the tables. */
+static void scr_weak_promise_sweep(void) {
+  size_t gone_len = 0, gone_cap = 0;
+  ScrPromiseIdentity **gone = NULL;
+  for (ScrWeakEntry *held = scr_weak_promise_cells->entries; held; held = held->next) {
+    ScrPromiseIdentity *identity = held->key;
+    bool keyed = held->key_next != NULL || held->key_prev != NULL;
+    if (keyed && identity->rc > 1) continue;
+    if (gone_len == gone_cap) {
+      gone_cap = gone_cap ? gone_cap * 2 : 16;
+      gone = realloc(gone, gone_cap * sizeof *gone);
+      if (!gone) scr_json_oom();
+    }
+    gone[gone_len++] = identity;
+  }
+  for (size_t i = 0; i < gone_len; i++) {
+    scr_weak_disposed(gone[i]);
+    scr_weak_promise_held--;
+    scr_promise_identity_release(gone[i]);
+  }
+  free(gone);
+}
+
+/* Holds the cell of a promise key that just got its first entry. */
+static void scr_weak_promise_hold(ScrDyn *key, ScrPromiseIdentity *identity) {
+  if (!scr_weak_promise_cells) {
+    static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
+    scr_weak_promise_cells = scr_cyc_alloc(sizeof *scr_weak_promise_cells, &cyc_type);
+    if (!scr_weak_promise_cells) scr_json_oom();
+    scr_weak_promise_cells->rc = 1;
+    scr_weak_promise_cells->is_set = true;
+  }
+  if (scr_weak_find(scr_weak_promise_cells, identity, SCR_WEAK_PROMISE_KIND)) return;
+  if (!scr_weak_set(scr_weak_promise_cells, key, scr_dyn_undefined())) return;
+  identity->rc++;
+  if (++scr_weak_promise_held > (scr_weak_promise_sweep_at ? scr_weak_promise_sweep_at : 64)) {
+    /* The key in hand is alive (its box holds a promise of the cell) and has
+     * the entry being made, so the sweep leaves it. */
+    scr_weak_promise_sweep();
+    scr_weak_promise_sweep_at = scr_weak_promise_held * 2 + 64;
+  }
 }
 
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
@@ -22030,6 +22145,7 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   if (map->entries) map->entries->prev = entry;
   map->entries = entry;
   scr_weak_link(entry);
+  if (kind == SCR_WEAK_PROMISE_KIND && map != scr_weak_promise_cells) scr_weak_promise_hold(key, ptr);
   return true;
 }
 

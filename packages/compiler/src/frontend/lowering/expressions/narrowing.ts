@@ -2015,7 +2015,22 @@ export function lowerAsExpression(
     // casts keep the historic erasure.
     if (inner.type.kind === "union") {
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
-        const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, locOf(expr));
+        // At the declaration-typed boundary the failure names the package
+        // declaration the asserted type comes from (decl-origin.ts).
+        const outerOrigin = lowerer.coercionFieldOrigin;
+        if (isDeclBoundaryTypeNode(expr.type)) {
+          try {
+            lowerer.coercionFieldOrigin = recordedBoundaryOrigin(lowerer, expr) ?? outerOrigin;
+          } catch {
+            lowerer.coercionFieldOrigin = outerOrigin;
+          }
+        }
+        let helper: string | null;
+        try {
+          helper = lowerer.narrowedArmHelper(inner.type.unionId, target, locOf(expr));
+        } finally {
+          lowerer.coercionFieldOrigin = outerOrigin;
+        }
         if (helper) {
           return lowerer.checkedNarrowCall(helper, inner, target, locOf(expr));
         }

@@ -13,6 +13,11 @@
  *   projected alias instead;
  * - package-produced expressions (`S.parse(x)`, `r.data`) are wrapped in
  *   `(<expr> as __scriptc_decl_N)`, the boundary cast;
+ * - so is a call that selects one of several declared signatures where the
+ *   JavaScript body's inferred result holds more arms than the selected
+ *   signature declares (`weigh("3kg")` declared `number`, body `number |
+ *   string | undefined`): the cast is the checked extraction of the
+ *   declared arms;
  * - untyped parameters of user callbacks the package calls gain the alias.
  *
  * The lowering world is then rebuilt from the rewritten text, so the
@@ -270,6 +275,19 @@ class TypePrinter {
       this.declarations.push(`type ${name} = ${text};`);
     }
     return name;
+  }
+
+  /** The printed arms of a type (its own print when it is no union), with
+   * null for an arm that is not pure data. Registers no alias. */
+  arms(type: ts.Type): (string | null)[] {
+    const was = this.dry;
+    this.dry = true;
+    try {
+      const parts = type.isUnionType() ? type.getTypes() : [type];
+      return parts.map((part) => (part.flags & ANYISH ? null : this.print(part, 1)));
+    } finally {
+      this.dry = was;
+    }
   }
 
   private print(type: ts.Type, depth: number): string | null {
@@ -692,6 +710,38 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       return false;
     }
   };
+  const jsPrinter = new TypePrinter(jsChecker);
+  /** Whether a call selects one of several declared signatures whose result
+   * is some, and not all, of the arms the JavaScript world infers for the
+   * call. The JavaScript body's result is the union over every way the
+   * function is called; the declaration world's overload resolution chose
+   * one, which the body cannot say. The declared arms must all be data,
+   * and each must be an arm the body can return: a declared type the body
+   * does not hold at all is left to the body's own type. */
+  const selectsNarrowerResult = (
+    call: ts.Expression,
+    jsType: ts.Type,
+    declType: ts.Type,
+  ): boolean => {
+    if (!jsType.isUnionType()) return false;
+    let signatures = 0;
+    try {
+      if (ts.isCallExpression(call)) {
+        const callee = typeAt(declChecker, call.expression);
+        signatures = callee === null ? 0 : declChecker.getCallSignatures(callee).length;
+      } else if (ts.isNewExpression(call)) {
+        const callee = typeAt(declChecker, call.expression);
+        signatures = callee === null ? 0 : declChecker.getConstructSignatures(callee).length;
+      }
+    } catch {
+      return false;
+    }
+    if (signatures < 2) return false;
+    const declared = printer.arms(declType);
+    if (declared.some((arm) => arm === null || arm === "unknown")) return false;
+    const inferred = new Set(jsPrinter.arms(jsType));
+    return declared.every((arm) => inferred.has(arm)) && inferred.size > new Set(declared).size;
+  };
   const namesPackageSymbol = (node: ts.Node): boolean => {
     let found = false;
     const visit = (n: ts.Node): void => {
@@ -772,11 +822,18 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       const jsType = typeAt(jsChecker, jsNode);
       if (jsType === null) return;
       // A typed JavaScript value crosses only where its object type lacks a
-      // member the declaration promises (missesDeclaredMembers).
+      // member the declaration promises (missesDeclaredMembers), or where a
+      // call selected a declared signature narrower than the body's result
+      // (selectsNarrowerResult).
       const typedJs = !isAnyish(jsType);
       if (typedJs) {
         const declType = typeAt(declChecker, declNode);
-        if (declType === null || !missesDeclaredMembers(jsType, declType)) return;
+        if (declType === null) return;
+        if (
+          !missesDeclaredMembers(jsType, declType) &&
+          !selectsNarrowerResult(declNode as ts.Expression, jsType, declType)
+        )
+          return;
       }
       // Package-produced?
       const d = declNode as ts.Expression;

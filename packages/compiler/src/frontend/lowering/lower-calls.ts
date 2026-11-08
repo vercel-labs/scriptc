@@ -2215,6 +2215,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         lowerUnionOptionalCallableCall(lowerer, expr, expr.expression);
       if (unionCall) return unionCall;
     }
+    {
+      const presentCall = lowerPresentArmReceiverMethodCall(lowerer, expr, expr.expression);
+      if (presentCall) return presentCall;
+    }
     lowerer.unsupported("SC1090", expr, `method calls like '${ts.getTextOfNode(expr.expression)}'`);
   }
 
@@ -4571,8 +4575,10 @@ function lowerUnionReceiverMethodCall(
  * function; here every arm holds `F | undefined`, so the shared-field read
  * dispatches on the runtime tag as it does for any same-typed field and
  * the checker's narrowing extracts the function, exactly as the
- * single-record receiver's optional callback does. The last attempt before
- * the method-call fence: no call another lowering answers reaches it.
+ * single-record receiver's optional callback does. The last typed attempt
+ * before the method-call fence (only lowerPresentArmReceiverMethodCall, for
+ * an untyped receiver in JavaScript, follows): no call another typed
+ * lowering answers reaches it.
  * Null when the arms disagree on the member, or the checker left it
  * possibly undefined (the fence names the call). */
 function lowerUnionOptionalCallableCall(
@@ -4616,6 +4622,116 @@ function lowerUnionOptionalCallableCall(
   return { kind: "callValue", callee, args, type: callee.type.ret, loc };
 }
 
+/** A METHOD call in a JavaScript file on a receiver the checker leaves
+ * untyped whose VALUE is `T | undefined` (or `| null`): a parameter
+ * instantiated with the caller's record reads an optional member, and the
+ * code guards the call with a test the checker cannot use on an untyped
+ * value (`e.tags === undefined ? "" : e.tags.join("+")`, an early return, a
+ * `const tags = e.tags` tested the same way). No typed lowering claims the
+ * union, and the dynamic dispatch above has no arm for an array, a Set, a
+ * Map or a function.
+ *
+ * JavaScript reads the member off the value it has: a nullish receiver
+ * throws V8's TypeError before any argument is evaluated, anything else is
+ * the present value. So the receiver is evaluated once, each nullish arm
+ * throws that error, and the call dispatches again with the receiver bound
+ * to the present value, as the body of an optional chain does (the guard in
+ * the source makes the throw unreachable; without one it is Node's own
+ * error). The present value keeps its identity: a method that writes its
+ * receiver writes the member's array.
+ *
+ * Null when the receiver is typed by the checker, is already bound (the
+ * dispatch this function started, or an optional chain), or has no nullish
+ * arm beside a present one. */
+function lowerPresentArmReceiverMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
+  if (lowerer.chainRecvByNode.has(access.expression)) return null;
+  const untyped = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+  if ((lowerer.checker.getTypeAtLocation(access.expression).flags & untyped) === 0) return null;
+  const value = tryLowerExpression(lowerer, access.expression);
+  if (value?.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  const def = lowerer.unions.get(unionId);
+  if (!def) return null;
+  const rest = def.arms.filter((arm) => !isUnitType(arm));
+  if (rest.length === 0 || rest.length === def.arms.length) return null;
+  const present: IrType =
+    rest.length === 1 ? rest[0]! : { kind: "union", unionId: lowerer.unions.transform(def, rest) };
+  const loc = locOf(access.expression);
+  const source = lowerer.declareHiddenLocal("%nullishReceiver", value.type);
+  const sourceRef = (): IrExpr => varRef(source.id, value.type, loc);
+  let narrowed: IrExpr =
+    rest.length === 1
+      ? {
+          kind: "unionNarrow",
+          unionId,
+          tag: lowerer.armTag(unionId, present),
+          value: sourceRef(),
+          type: present,
+          loc,
+        }
+      : lowerer.coerceInto(access.expression, sourceRef(), present);
+  for (let tag = def.arms.length - 1; tag >= 0; tag--) {
+    const arm = def.arms[tag]!;
+    if (!isUnitType(arm)) continue;
+    narrowed = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId,
+        tag,
+        negated: false,
+        value: sourceRef(),
+        type: BOOL,
+        loc,
+      },
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot read properties of ${arm.kind === "nullT" ? "null" : "undefined"} (reading '${access.name.text}')`,
+        present,
+        loc,
+      ),
+      else_: narrowed,
+      type: present,
+      loc,
+    };
+  }
+  const receiver = lowerer.declareHiddenLocal("%presentReceiver", present);
+  // Where the bindings give the receiver a type (bindingTypedRetry), the
+  // bound value has that type without its nullish members.
+  const declared = lowerer.typeOf(access.expression);
+  const typed =
+    (declared.flags & untyped) === 0 && !lowerer.chainNarrowedType.has(access.expression);
+  if (typed)
+    lowerer.chainNarrowedType.set(access.expression, lowerer.checker.getNonNullableType(declared));
+  let body: IrExpr;
+  try {
+    body = lowerer.withExpressionOverride(
+      access.expression,
+      varRef(receiver.id, present, loc),
+      () => lowerer.lowerExpr(call),
+    );
+  } finally {
+    if (typed) lowerer.chainNarrowedType.delete(access.expression);
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: source.id, init: value, loc },
+      { kind: "varDecl", localId: receiver.id, init: narrowed, loc },
+    ],
+    result: body,
+    type: body.type,
+    loc: locOf(call),
+  };
+}
+
 /** Primitive arms a union receiver may carry next to its object/record
  * arms (commander's `string | Command`): the dynamic value holds each one
  * as its own kind, so a member the arm does not have reads as undefined. */
@@ -4650,6 +4766,28 @@ function unionArmsDispatchMember(
   )
     return false;
   const receiver = lowerer.typeOf(access.expression);
+  // A receiver the checker leaves untyped says nothing about its arms: the
+  // value's own primitive arms answer instead (a number has `toFixed`
+  // whatever the checker calls the expression that holds it).
+  if ((receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    for (const arm of arms) {
+      const primitive =
+        arm.kind === "string"
+          ? lowerer.checker.getStringType()
+          : arm.kind === "f64"
+            ? lowerer.checker.getNumberType()
+            : arm.kind === "bool"
+              ? lowerer.checker.getBooleanType()
+              : null;
+      if (arm.kind === "bigint") return false;
+      if (
+        primitive !== null &&
+        lowerer.checker.getPropertyOfType(primitive, access.name.text) !== undefined
+      )
+        return false;
+    }
+    return true;
+  }
   const parts = receiver.isUnionType() ? ts.constituentTypes(receiver) : [receiver];
   for (const part of parts) {
     if ((part.flags & ts.TypeFlags.Object) !== 0) continue;

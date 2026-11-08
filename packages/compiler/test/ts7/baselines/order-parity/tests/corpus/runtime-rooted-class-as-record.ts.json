@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/runtime-rooted-class-as-record.ts"
+ ],
+ "diags": []
+}

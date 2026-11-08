@@ -8,10 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
-import {
-  NODE_GLOBALS_WITHOUT_NATIVE,
-  hostGlobalLength,
-} from "../src/frontend/lowering/host-globals.js";
+import { NODE_GLOBALS_WITHOUT_NATIVE } from "../src/frontend/lowering/host-globals.js";
+import { nodeGlobalKind } from "../src/frontend/lowering/node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../src/frontend/builtin-modules.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
@@ -119,14 +117,15 @@ test("an imported value with a listed global's name is the program's binding", a
 
 test("every listed global's length is Node's, and the value answers it", () => {
   // A read answers a constructor carrying Node's Function length, so a
-  // `FormData.length` read must see what Node shows. The table is pinned
-  // against the running Node (the release the differential corpus runs).
+  // `FormData.length` read must see what Node shows. The length comes from
+  // the census of the pinned Node (node-values.ts), checked here against the
+  // running Node (the release the differential corpus runs).
   const globals = globalThis as unknown as Record<string, unknown>;
   for (const name of NODE_GLOBALS_WITHOUT_NATIVE) {
     const value = globals[name] as { length?: number } | undefined;
     expect(value, name).toBeDefined();
     expect(typeof value, name).toBe("function");
-    expect(hostGlobalLength(name), name).toBe(value!.length);
+    expect(nodeGlobalKind(name), name).toEqual({ kind: "function", length: value!.length });
   }
 });
 

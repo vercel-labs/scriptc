@@ -53,6 +53,31 @@ export function lowerChildArgsArg(
  * a file, and whose list follows the module path in what Node spawns. */
 export type ChildLaunchForm = 0 | 1 | 2 | 3;
 
+/** A capturing launch's own `maxBuffer` (without one the runtime applies
+ * Node's 1 MiB default). cp.maxBuffer validates it as validateMaxBuffer
+ * does (ERR_OUT_OF_RANGE for a negative or NaN value); `arm` also makes it
+ * the limit of the next capture, which is the launch. The promisified
+ * forms arm inside their helper and only validate at the call. `sync`
+ * names the order of Node's checks: spawnSync validates the limit after
+ * normalizeSpawnArguments has checked the launch's values; execFile
+ * validates it before spawn checks them, and exec checks its command
+ * before it calls execFile. */
+export interface ChildMaxBuffer {
+  value: IrExpr;
+  arm: boolean;
+  sync: boolean;
+}
+
+/** One evaluation of a launch, for the order the source gives them: an
+ * argument of the launch by its index, or "limit" for a `maxBuffer` that
+ * is not one of the arguments. */
+export type ChildEvalStep = number | "limit";
+
+/** The limit of a launch that arms its own capture, or none. */
+export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuffer | undefined {
+  return value === null ? undefined : { value, arm: true, sync };
+}
+
 /** Node checks what a child launch hands to the operating system before
  * it starts a process (normalizeSpawnArguments and normalizeExecArgs): a
  * NUL in the file or command, an argument, `cwd` or an environment key or
@@ -60,8 +85,23 @@ export type ChildLaunchForm = 0 | 1 | 2 | 3;
  * arguments are evaluated first, in their order, into hidden locals; the
  * may-throw cp.checkArgs call reads them; the launch follows. `launch`
  * starts with the command and the argument list; `options` picks the
- * `cwd` and environment-pairs arguments it carries, if any. A launch
- * whose checked values are all literals that pass gets no check.
+ * `cwd` and environment-pairs arguments it carries, if any, and names a
+ * capturing launch's `maxBuffer`. A launch whose checked values are all
+ * literals that pass gets no check.
+ *
+ * The limit shares the evaluated arguments, so a capture one of them runs
+ * has finished before the limit is armed, and it is armed last: a check
+ * that throws leaves no limit behind for another capture. Its own value is
+ * evaluated with the arguments, before any check. Where both the limit and
+ * a value can be refused, the checks run in Node's order.
+ *
+ * `sourceOrder` is the order in which the source evaluates what the launch
+ * reads: its arguments by index, and "limit" for a limit that is not one of
+ * them. An options literal evaluates its members as written, so a limit
+ * written before `cwd` is evaluated before it, and the options before a
+ * callback that follows them. It applies when the limit has an evaluation
+ * of its own (anything but a number literal); a launch without one keeps
+ * the order of its arguments.
  *
  * `launched` maps the arguments Node checks to the ones the entry point
  * takes, for a launch that builds its command from them: a shell launch
@@ -70,13 +110,21 @@ export type ChildLaunchForm = 0 | 1 | 2 | 3;
  * arguments and `cwd`, and before it checks the environment, so the mapped
  * arguments are evaluated between those two checks. Such a launch reads
  * its list through cp.checkShellArgs, which takes a hole as Node does (the
- * join reads it as the empty string). */
+ * join reads it as the empty string). The line is one of the launch's
+ * checked values in Node's order, so a limit that is validated after them
+ * is validated after the line is built, and one that is validated before
+ * them (execFile's) before it. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
   form: ChildLaunchForm,
-  options: (args: readonly IrExpr[]) => { cwd?: IrExpr | undefined; envPairs?: IrExpr | undefined },
+  options: (args: readonly IrExpr[]) => {
+    cwd?: IrExpr | undefined;
+    envPairs?: IrExpr | undefined;
+    maxBuffer?: ChildMaxBuffer | undefined;
+  },
   loc: SrcLoc,
+  sourceOrder?: readonly ChildEvalStep[],
   launched?: (args: readonly IrExpr[]) => IrExpr[],
 ): IrExpr {
   const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
@@ -95,30 +143,73 @@ export function withChildArgsCheck(
         : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
   const beforeLinePass = fileAndArgsPass && passes(given.cwd, true);
   const envPasses = allPass(given.envPairs);
-  if (beforeLinePass && envPasses) {
+  const optionsPass = passes(given.cwd, true) && envPasses;
+  // A literal limit in range cannot be refused; it is still armed.
+  const limitPasses =
+    given.maxBuffer === undefined ||
+    (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
+  const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
+  if (fileAndArgsPass && optionsPass && !limited) {
     return launched === undefined ? launch : { ...launch, args: launched(launch.args) };
   }
   const stmts: IrStmt[] = [];
   // Literals and function literals have no evaluation to order, and a
   // function-typed local read is the callback itself.
-  const held = (arg: IrExpr): IrExpr => {
-    if (
+  const evaluates = (arg: IrExpr): boolean =>
+    !(
       arg.kind === "numLit" ||
       arg.kind === "strLit" ||
       arg.kind === "boolLit" ||
       arg.kind === "closure" ||
       (arg.kind === "varRef" && arg.type.kind === "func")
-    )
-      return arg;
-    const local = lowerer.declareHiddenLocal("%childArg", arg.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: arg, loc });
-    return varRef(local.id, arg.type, loc);
+    );
+  const hold = (value: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%childArg", value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, value.type, loc);
   };
-  const args = launch.args.map(held);
-  const checked = options(args);
+  // A limit that is not an argument of the launch is evaluated at its own
+  // step. (One that is an argument is evaluated as that argument.)
+  const ownLimit =
+    limited && given.maxBuffer !== undefined && !launch.args.includes(given.maxBuffer.value)
+      ? given.maxBuffer.value
+      : undefined;
+  const steps: ChildEvalStep[] = [];
+  if (
+    sourceOrder !== undefined &&
+    given.maxBuffer !== undefined &&
+    given.maxBuffer.value.kind !== "numLit"
+  ) {
+    // A member written twice keeps its last place, as its last value is
+    // the one the launch reads.
+    sourceOrder.forEach((step, at) => {
+      if (sourceOrder.lastIndexOf(step) === at) steps.push(step);
+    });
+  }
+  for (let i = 0; i < launch.args.length; i++) if (!steps.includes(i)) steps.push(i);
+  if (!steps.includes("limit")) steps.push("limit");
+  const args: IrExpr[] = [...launch.args];
+  let ownLimitHeld: IrExpr | undefined;
+  steps.forEach((step, at) => {
+    if (step !== "limit") {
+      const arg = launch.args[step]!;
+      if (evaluates(arg)) args[step] = hold(arg);
+    } else if (ownLimit !== undefined) {
+      // A local read is held only where a later evaluation could assign
+      // the local: Node has the limit's value before it evaluates those.
+      const followed = steps
+        .slice(at + 1)
+        .some((later) => later !== "limit" && evaluates(launch.args[later]!));
+      ownLimitHeld =
+        ownLimit.kind === "numLit" || (ownLimit.kind === "varRef" && !followed)
+          ? ownLimit
+          : hold(ownLimit);
+    }
+  });
+  const held = options(args);
   const noStrings = (): IrExpr => ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc });
   const check = (
-    checkedForm: ChildLaunchForm,
+    checked: ChildLaunchForm,
     file: IrExpr,
     values: IrExpr,
     envPairs: IrExpr | undefined,
@@ -129,34 +220,83 @@ export function withChildArgsCheck(
     expr: {
       kind: "libCall",
       fn,
-      args: [
-        numLit(checkedForm, loc),
-        file,
-        values,
-        envPairs ?? noStrings(),
-        cwd ?? strLit("", loc),
-      ],
+      args: [numLit(checked, loc), file, values, envPairs ?? noStrings(), cwd ?? strLit("", loc)],
       type: VOID,
       loc,
     },
     loc,
   });
   const file = form === 3 ? strLit("", loc) : args[0]!;
-  if (launched === undefined) {
-    stmts.push(check(form, file, args[1]!, checked.envPairs, checked.cwd));
-    return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
+  /** The checks of the launch's values that can be refused, in Node's
+   * order; answers the arguments the entry point takes after them. */
+  const checkAll = (): IrExpr[] => {
+    if (launched === undefined) {
+      if (!(fileAndArgsPass && optionsPass)) {
+        stmts.push(check(form, file, args[1]!, held.envPairs, held.cwd));
+      }
+      return args;
+    }
+    // The file, the arguments and `cwd`; the line; then the environment.
+    // Form 3 with no list checks neither a file nor an argument.
+    if (!beforeLinePass) {
+      stmts.push(check(form, file, args[1]!, undefined, held.cwd, "cp.checkShellArgs"));
+    }
+    // With nothing to check or arm after the line, the launch builds it.
+    if (envPasses && !limited) return launched(args);
+    const taken = launched(args).map((arg, i) =>
+      arg === args[i] || !evaluates(arg) ? arg : hold(arg),
+    );
+    if (!envPasses) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, undefined));
+    return taken;
+  };
+  const maxBufferCall = (value: IrExpr, arm: boolean): IrStmt => ({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "cp.maxBuffer",
+      args: [value, boolLit(arm, loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  // The limit is an option, and Node has every option's value before it
+  // checks anything: an expression that changes the argument list has done
+  // so when the list is checked. So its value was evaluated above, at its
+  // step, before the checks, and they and the launch read the local.
+  let limit = limited ? held.maxBuffer : undefined;
+  if (limit !== undefined && ownLimitHeld !== undefined) limit = { ...limit, value: ownLimitHeld };
+  let taken: IrExpr[];
+  if (limit === undefined) {
+    taken = checkAll();
+  } else if (
+    limit.sync ||
+    limitPasses ||
+    (launched === undefined && fileAndArgsPass && optionsPass)
+  ) {
+    taken = checkAll();
+    stmts.push(maxBufferCall(limit.value, limit.arm));
+  } else {
+    // exec and execFile, callback or promisified, where the limit and a
+    // launch value can both be refused. The limit is validated first and
+    // armed after the last check.
+    const value = limit.value;
+    if (form === 1 && launched === undefined) {
+      // exec: normalizeExecArgs checks the command, execFile the limit,
+      // spawn the options. Form 3 with no list checks neither a file nor
+      // an argument, which leaves the options. (exec's command is its own
+      // line: a launch that builds one from separate arguments is
+      // execFile's, below.)
+      if (!fileAndArgsPass) stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
+      stmts.push(maxBufferCall(value, false));
+      if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+      taken = args;
+    } else {
+      stmts.push(maxBufferCall(value, false));
+      taken = checkAll();
+    }
+    if (limit.arm) stmts.push(maxBufferCall(value, true));
   }
-  if (envPasses) {
-    stmts.push(check(form, file, args[1]!, undefined, checked.cwd, "cp.checkShellArgs"));
-    const result = { ...launch, args: launched(args) };
-    return { kind: "seqExpr", stmts, result, type: launch.type, loc };
-  }
-  // The file, the arguments and `cwd`; the line; then the environment.
-  // Form 3 with no list checks neither a file nor an argument.
-  if (!beforeLinePass)
-    stmts.push(check(form, file, args[1]!, undefined, checked.cwd, "cp.checkShellArgs"));
-  const taken = launched(args).map((arg, i) => (arg === args[i] ? arg : held(arg)));
-  stmts.push(check(3, strLit("", loc), noStrings(), checked.envPairs, undefined));
   return { kind: "seqExpr", stmts, result: { ...launch, args: taken }, type: launch.type, loc };
 }
 
@@ -427,6 +567,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             0,
             (a) => ({ cwd: a[7], envPairs: a[11] }),
             loc,
+            undefined,
             shellArgs ? shellLaunch(10, argv.type, loc) : undefined,
           );
         // An absent `env` inherits our environment; a present one replaces
@@ -830,6 +971,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       0,
       (a) => ({ cwd: a[7], envPairs: a[11] }),
       loc,
+      undefined,
       shellJoinsArgs ? shellLaunch(null, argv.type, loc) : undefined,
     );
     return prelude.length === 0
@@ -1636,6 +1778,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       0,
       (a) => ({ envPairs: a[10], cwd: a[11] }),
       loc,
+      undefined,
       shellJoinsArgs ? shellLaunch(shellEnabled ? null : 8, argv.type, loc) : undefined,
     );
   if (valuePrelude.length === 0) return callOf(cmd, argv);
@@ -1840,9 +1983,8 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
  * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
  * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
- * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
- * is not enforced by the growing native capture, as
- * with the synchronous and promisified capture forms. Other options remain
+ * `encoding: "utf8"` and a numeric `maxBuffer` are accepted; the limit applies
+ * to each stream as in Node (1 MiB without the option). Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
 export function lowerExecFileCall(
   lowerer: Lowerer,
@@ -1874,6 +2016,10 @@ export function lowerExecFileCall(
   // `cwd` (the SCR_CHILD_CP_OPTIONS build): the child's directory, the
   // one launch member the callback slice lacked.
   let cwd: IrExpr | null = null;
+  let maxBuffer: IrExpr | null = null;
+  // The options that are evaluated, as written: `cwd` is the launch's
+  // fifth argument.
+  const optionSteps: ChildEvalStep[] = [];
   const optionsNode =
     expr.arguments.nodes.length === (shell ? 3 : 4)
       ? expr.arguments.nodes[shell ? 1 : 2]
@@ -1887,18 +2033,6 @@ export function lowerExecFileCall(
         "pass encoding and maxBuffer in an inline object literal",
       );
     }
-    const pureNumber = (node: ts.Expression): boolean =>
-      ts.isNumericLiteral(node) ||
-      (ts.isParenthesizedExpression(node) && pureNumber(node.expression)) ||
-      (ts.isBinaryExpression(node) &&
-        [
-          ts.SyntaxKind.PlusToken,
-          ts.SyntaxKind.MinusToken,
-          ts.SyntaxKind.AsteriskToken,
-          ts.SyntaxKind.SlashToken,
-        ].includes(node.operatorToken.kind) &&
-        pureNumber(node.left) &&
-        pureNumber(node.right));
     for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
@@ -1919,15 +2053,11 @@ export function lowerExecFileCall(
           );
         }
       } else if (member.name === "maxBuffer") {
-        if (!pureNumber(member.value)) {
-          lowerer.noLowering(
-            `${what} with a non-literal maxBuffer`,
-            member.value,
-            "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
-          );
-        }
+        maxBuffer = lowerer.lowerExprExpecting(member.value, F64);
+        optionSteps.push("limit");
       } else if (member.name === "cwd") {
         cwd = lowerer.lowerExprExpecting(member.value, STRING);
+        optionSteps.push(4);
       } else if (member.name === "shell" && !shell) {
         // Node's shell form: [file, ...args].join(" ") through /bin/sh -c.
         // exec itself already IS the shell form, so its member stays out.
@@ -1943,7 +2073,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -2027,6 +2157,9 @@ export function lowerExecFileCall(
   // exec's first argument is Node's `command`; execFile's is its `file`,
   // in the shell launch too.
   const form: ChildLaunchForm = shell ? 1 : execShell ? 2 : 0;
+  // The source evaluates the file or command, the argument list, the
+  // options as written, and the callback last.
+  const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
   if (cwd !== null) {
     return withChildArgsCheck(
       lowerer,
@@ -2038,8 +2171,9 @@ export function lowerExecFileCall(
         loc,
       },
       form,
-      (a) => ({ cwd: a[4] }),
+      (a) => ({ cwd: a[4], maxBuffer: armedMaxBuffer(maxBuffer, false) }),
       loc,
+      sourceOrder,
     );
   }
   return withChildArgsCheck(
@@ -2052,7 +2186,8 @@ export function lowerExecFileCall(
       loc,
     },
     form,
-    () => ({}),
+    () => ({ maxBuffer: armedMaxBuffer(maxBuffer, false) }),
     loc,
+    sourceOrder,
   );
 }

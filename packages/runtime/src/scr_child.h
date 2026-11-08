@@ -94,6 +94,12 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
  * ordinary SIGTERM command failures), each error with Node's code, killed,
  * signal, cmd, stdout and stderr properties. +1 ScrSpawnRes on success
  * (stdout + stderr; status unused). All args borrowed. */
+/* cp.maxBuffer: the program's maxBuffer for the capturing call that
+ * follows (scr_spawn_sync*, scr_exec_sync, scr_exec_capture,
+ * scr_exec_file*). A negative or NaN value throws Node's ERR_OUT_OF_RANGE;
+ * `arm` makes it the next capture's limit, else the call only validates.
+ * Without it a capture has Node's default, 1024 * 1024. */
+void scr_child_max_buffer(double max_buffer, bool arm);
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
                                bool has_env, ScrArr *env_pairs, double timeout_ms);
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r);
@@ -285,6 +291,13 @@ void scr_child_stream_on_data_str(ScrChildStream *s, ScrClosure *cb /*moves*/,
                                    ScrChildStreamDataStrFn fn, bool once);
 void scr_child_stream_on_end(ScrChildStream *s, ScrClosure *cb /*moves*/, bool once);
 ScrChildStream *scr_child_stream_set_encoding(ScrChildStream *s, ScrStr *enc); /* +1 */
+/* pause(), resume(), isPaused() and readableFlowing: the entries of
+ * scr_child.c's SCR_CHILD_STREAM_FLOW build (scr_child_flow.h), which a
+ * program that calls one of them links in place of the default build. */
+ScrChildStream *scr_child_stream_pause(ScrChildStream *s);  /* +1 */
+ScrChildStream *scr_child_stream_resume(ScrChildStream *s); /* +1 */
+bool scr_child_stream_is_paused(ScrChildStream *s);
+double scr_child_stream_flowing(ScrChildStream *s); /* 0 false, 1 true, -1 null */
 void scr_child_stream_thunk0(ScrClosure *cb, ScrBytes *chunk);
 void scr_child_stream_thunk_bytes(ScrClosure *cb, ScrBytes *chunk);
 void scr_child_stream_thunk_str(ScrClosure *cb, ScrStr *chunk);

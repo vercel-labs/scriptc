@@ -4,6 +4,8 @@
   Generic classes can extend generic bases when each specialization has a concrete layout.
   Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
   Other generic calls compile when the target resolves statically.
+  Generic generator methods, sync and async, compile like other generic methods.
+  A generic async generator method called through an untyped value, or through an interface whose receiver's class the compiler does not know, throws a coded SC2020 error.
   Generic function values require a concrete signature at use and a binding that is never reassigned.
 - **Variadic wrappers:** A generic higher-order wrapper is specialized to each wrapped function's exact signature.
   `Parameters<F>`, `ReturnType<F>`, and rest parameters typed as fixed tuples become that signature's parameter list.

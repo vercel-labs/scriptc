@@ -134,6 +134,19 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["namesWebStreamClass"],
   },
   {
+    name: "reads-node-object-value",
+    file: `${SRC}/frontend/lowering/node-value-reads.ts`,
+    symbol: "programReadsGlobalValue",
+    source: "symbols",
+    scope: "program",
+    setBy: "a read of `process` or `performance` as a value in a JavaScript source",
+    gates:
+      "computed reads of the global object answer the object the value read answers, which the program then carries",
+    narrower: "the name read",
+    tracked: null,
+    lowererFields: ["nodeObjectValueReads"],
+  },
+  {
     name: "web-stream-only-members",
     file: `${SRC}/frontend/lowering/builtins/web-streams-dyn.ts`,
     symbol: "programUsesWebStreamOnlyMembers",
@@ -635,6 +648,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "frontend/lowering/builtins/web-streams-dyn.ts#programUsesWebStreamOnlyMembers",
     1,
     "web-stream-only-members",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
+    1,
+    "closed-world",
+    "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeSplitRequireBinding",

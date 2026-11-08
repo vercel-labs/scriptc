@@ -486,6 +486,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_dyn_fn_own.c",
+  "function": "scr_dyn_fn_own_set",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_dyn_handle_props.c",
   "function": "hp_props_of_box",
   "message": "own properties on a %s are not supported yet",
@@ -745,6 +751,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_res_on_prefinish",
+  "message": "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"
@@ -765,6 +777,24 @@
   "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_settings_validate",
+  "message": "HTTP/2 customSettings are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_read",
+  "message": "reading '%s' from an %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_call",
+  "message": "'%s' on an %s is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1701,6 +1731,18 @@
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_stage_returned_stream",
   "message": "pipeline function stages that return a stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_su_foreign_refuse",
+  "message": "%s over a child process or process stdio stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_util_is_value",
+  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
   "code": "SC2020"
  },
  {

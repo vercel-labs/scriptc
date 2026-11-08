@@ -37,6 +37,9 @@ These types use checked dynamic storage, which is slower than native record fiel
 A type whose values are only read field by field, from fields the class does not write after construction and does not implement as accessors, stays a native record and holds a copy.
 Object spread of a class instance is refused.
 Dense array literals created directly in checked storage preserve identity, and supported native handles pass by reference.
+A type derived from a built-in class whose values are native handles, such as an interface that extends `Response` or an `Omit` or `Pick` of it, an intersection with it, or a subset alias, names the built-in object itself and uses checked dynamic storage, also for an object the program makes for the type.
+A member such a type adds or declares again is read from the object by name and checked against its declared type, so reading a required member that the built-in object does not have throws a `TypeError`, where Node.js answers `undefined`.
+Assigning a member that the built-in object does not have throws, where Node.js stores it on the object.
 
 `Object.keys`, `Object.values`, `Object.entries`, `for...in`, `JSON.stringify`, and `util.inspect` enumerate a record's keys in the order the object created them, as in Node.js.
 scriptc chooses one order per record type from the order in which the program's object literals create the keys, follows object spread, rest destructuring, and record conversions back to the values they copy, and places an optional key that the program assigns after construction after the keys the object was built with.

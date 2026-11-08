@@ -1,0 +1,67 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-stream-absent.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'setDefaultHighWaterMark' does not exist on type 'typeof import(\"stream\")'. Did you mean 'getDefaultHighWaterMark'?",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 472,
+    "end": 495
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'duplexPair' does not exist on type 'typeof import(\"stream\")'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 579,
+    "end": 589
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'duplexPair' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'wrap' does not exist on type 'Readable'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 789,
+    "end": 793
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'fromWeb' does not exist on type 'typeof Writable'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 917,
+    "end": 924
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'fromWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Object literal may only specify known properties, and 'readable' does not exist in type 'ReadableStream<unknown>'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 1023,
+    "end": 1031
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'toWeb' does not exist on type 'typeof Duplex'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
+    "start": 1106,
+    "end": 1111
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

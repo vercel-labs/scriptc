@@ -2144,6 +2144,166 @@ function isDynInterfaceSubset(type: ts.Type, ctx: TypeMapperCtx): boolean {
   );
 }
 
+/** The lib's homomorphic utility aliases that keep a subset or a
+ * re-attributed copy of their first argument's members. */
+const MEMBER_SUBSET_ALIASES: ReadonlySet<string> = new Set([
+  "Omit",
+  "Pick",
+  "Partial",
+  "Required",
+  "Readonly",
+]);
+
+function isMemberSubsetAlias(symbol: ts.Symbol, ctx: TypeMapperCtx): boolean {
+  return (
+    MEMBER_SUBSET_ALIASES.has(ts.symbolName(symbol)) &&
+    symbol.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
+  );
+}
+
+/** The type whose members a member-subset alias keeps (`Omit<T, K>`'s `T`).
+ * A program alias of one (`type Brief = Pick<T, K>`) is the alias the
+ * checker reports for the type, so it is followed through its declaration.
+ * Null for every other type. */
+function memberSubsetSource(type: ts.Type, alias: ts.Symbol, ctx: TypeMapperCtx): ts.Type | null {
+  if (isMemberSubsetAlias(alias, ctx)) return type.getAliasTypeArguments()?.[0] ?? null;
+  const declaration = programTypeAliasOf(alias, ctx);
+  return declaration === null ? null : memberSubsetSourceNode(declaration.type, ctx, 0);
+}
+
+function memberSubsetSourceNode(
+  node: ts.TypeNode,
+  ctx: TypeMapperCtx,
+  depth: number,
+): ts.Type | null {
+  if (depth > 8) return null;
+  while (ts.isParenthesizedTypeNode(node)) node = node.type;
+  if (!ts.isTypeReferenceNode(node)) return null;
+  const symbol = ctx.checker.getSymbolAtLocation(node.typeName);
+  if (symbol === undefined) return null;
+  if (isMemberSubsetAlias(symbol, ctx)) {
+    const sourceNode = node.typeArguments?.nodes[0];
+    return sourceNode === undefined ? null : ctx.checker.getTypeFromTypeNode(sourceNode);
+  }
+  const declaration = programTypeAliasOf(symbol, ctx);
+  return declaration === null ? null : memberSubsetSourceNode(declaration.type, ctx, depth + 1);
+}
+
+/** The type alias declaration a symbol has outside the standard library. */
+function programTypeAliasOf(symbol: ts.Symbol, ctx: TypeMapperCtx): ts.TypeAliasDeclaration | null {
+  for (const declaration of symbol.declarations) {
+    if (
+      ts.isTypeAliasDeclaration(declaration) &&
+      !ctx.isStdlibFile(ts.getSourceFileOfNode(declaration))
+    )
+      return declaration;
+  }
+  return null;
+}
+
+/** Whether `type` is the instance type of a class the standard library
+ * provides: its symbol is declared there as a class, or as an interface
+ * beside a value of the same name (`interface Response` with `declare var
+ * Response`). A pure library interface (an options dictionary such as
+ * `RequestInit`) has no value side and is not one. */
+function isBuiltinClassInstanceType(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  const symbol = type.getSymbol();
+  if (symbol === undefined) return false;
+  if (
+    (symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Variable | ts.SymbolFlags.Function)) ===
+    0
+  )
+    return false;
+  if (!provenanceOf(symbol, ctx).stdlibClass) return false;
+  // `typeof C`, the class value, shares the class symbol.
+  return ctx.checker.getConstructSignatures(type).length === 0;
+}
+
+/** The built-in class instance type a program type is derived from, or
+ * null: an interface that extends the class or a member subset of it
+ * (`Omit`, `Pick`, `Partial`, `Required`, `Readonly`), such a subset
+ * itself, an intersection of one of these with plain object refinements,
+ * and any of these over another derived type. Exactly one class may stand
+ * behind the type; other heritage must be program interfaces with no class
+ * behind them. */
+function builtinClassViewBase(type: ts.Type, ctx: TypeMapperCtx, depth = 0): ts.Type | null {
+  if (depth > 8) return null;
+  const { checker } = ctx;
+  const through = (part: ts.Type): ts.Type | null =>
+    isBuiltinClassInstanceType(part, ctx) ? part : builtinClassViewBase(part, ctx, depth + 1);
+  if (type.isIntersectionType()) {
+    let base: ts.Type | null = null;
+    for (const part of ts.constituentTypes(type)) {
+      const found = through(part);
+      if (found !== null) {
+        if (base !== null && base !== found) return null;
+        base = found;
+        continue;
+      }
+      const partSymbol = part.getSymbol();
+      if (
+        (part.flags & ts.TypeFlags.Object) === 0 ||
+        checker.getCallSignatures(part).length > 0 ||
+        checker.getConstructSignatures(part).length > 0 ||
+        (partSymbol !== undefined && (partSymbol.flags & ts.SymbolFlags.Class) !== 0)
+      )
+        return null;
+    }
+    return base;
+  }
+  if ((type.flags & ts.TypeFlags.Object) === 0) return null;
+  const alias = type.getAliasSymbol();
+  if (alias !== undefined) {
+    const source = memberSubsetSource(type, alias, ctx);
+    if (source !== null) return through(source);
+  }
+  const symbol = type.getSymbol();
+  if (
+    symbol === undefined ||
+    (symbol.flags & ts.SymbolFlags.Interface) === 0 ||
+    (symbol.flags & ts.SymbolFlags.Class) !== 0 ||
+    !type.isClassOrInterface() ||
+    symbol.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
+  )
+    return null;
+  let base: ts.Type | null = null;
+  for (const parent of checker.getBaseTypes(type)) {
+    const found = through(parent);
+    if (found === null) continue;
+    if (base !== null && base !== found) return null;
+    base = found;
+  }
+  return base;
+}
+
+/** The representation of a type derived from a built-in class whose values
+ * are opaque handles: the class's own (the checked-dynamic value for the
+ * fetch handles, a handle kind for sockets, servers and process streams).
+ * Classes with a native layout of their own (errors, emitters, dates,
+ * collections) keep the mapping they have. */
+function mapBuiltinClassView(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  const base = builtinClassViewBase(type, ctx);
+  if (base === null) return null;
+  const mapped = mapType(base, ctx);
+  if (mapped === null) return null;
+  return mapped.kind === "dyn" || BUILTIN_HANDLE_KINDS.has(mapped.kind) ? mapped : null;
+}
+
+/** The IR kinds of the opaque runtime handles. process.stdout's own type is
+ * the refined intersection `WriteStream & { fd: 1 }`, so the scalar stream
+ * kind is one of them. */
+const BUILTIN_HANDLE_KINDS: ReadonlySet<string> = new Set([
+  "netServer",
+  "netSocket",
+  "httpReq",
+  "httpRes",
+  "httpClientReq",
+  "dgramSocket",
+  "childWriter",
+  "procStream",
+]);
+
 /** fetch's HeadersInit (undici-types): a union of the stdlib Headers
  * class with header-pair arrays and/or a header record, plus nullish
  * values. Native fetch reads it at run time like the init around it. */
@@ -3238,24 +3398,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // part must be a plain object refinement — no call/construct signatures,
   // no class identity of its own.
   if (widened.isIntersectionType()) {
-    const HANDLE_KINDS = new Set([
-      "netServer",
-      "netSocket",
-      "httpReq",
-      "httpRes",
-      "httpClientReq",
-      "dgramSocket",
-      "childWriter",
-      // process.stdout's own type IS the refined intersection
-      // `WriteStream & { fd: 1 }` — the scalar stream kind rides the same
-      // refinement rule.
-      "procStream",
-    ]);
     let handle: IrType | null = null;
     let refined = true;
     for (const part of ts.constituentTypes(widened)) {
       const mapped = mapType(part, ctx);
-      if (mapped && HANDLE_KINDS.has(mapped.kind)) {
+      if (mapped && BUILTIN_HANDLE_KINDS.has(mapped.kind)) {
         if (handle !== null && handle.kind !== mapped.kind) {
           refined = false;
           break;
@@ -4137,6 +4284,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     isStdlibInterface("PropertyDescriptorMap") ||
     isStdlibInterface("ProcessVersions") ||
     isStdlibInterface("ProcessRelease") ||
+    isStdlibInterface("ProcessFeatures") ||
     isStdlibInterface("ProcessReport")
   )
     return DYN;
@@ -4727,6 +4875,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dyn" };
   }
+  // http.InformationEvent — the argument of a ClientRequest's
+  // 'information' event is an ordinary object the runtime builds (seven
+  // keys, a real `headers` object), so the TYPE maps to dyn like Agent's:
+  // a listener parameter declared with it takes the object as it is, and
+  // member reads go through the checked-dynamic path. Module-checked like
+  // the rest.
+  if (
+    psym !== undefined &&
+    psymName === "InformationEvent" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "http"),
+    )
+  ) {
+    return { kind: "dyn" };
+  }
   // http.IncomingMessage / http.ServerResponse — module-checked like
   // net.Server (the names repeat nowhere today, but provenance stays the
   // rule).
@@ -5023,7 +5189,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // (required — the "WithStringEncoding" refinement), cwd/input/timeout,
   // stdio (the "pipe"/"ignore" string or 3-tuple forms — a runtime array
   // is string[]; unsupported runtime modes throw at the call), and the
-  // accepted-but-inert maxBuffer/windowsHide. Members outside this set
+  // maxBuffer and the accepted-but-inert windowsHide. Members outside this set
   // (env, killSignal, shell, uid, ...) keep the shape unmatched — their
   // literals fence at the shape check instead of being dropped without a
   // diagnostic.
@@ -6032,6 +6198,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ? { kind: "object", className: "%Writable" }
         : { kind: "childWriter" };
     }
+  }
+  // A type DERIVED from a built-in class whose values are opaque handles
+  // (`interface Loose extends Omit<Response, "json"> { json(): Promise<any> }`,
+  // `Pick<Response, "status" | "ok">`, `Response & { note?: string }`) names
+  // that class's object: a record of its members would be a second object
+  // the built-in value cannot convert into. The type is the class's own
+  // representation, so the built-in object is held as itself, and an object
+  // the program makes for the type is held the way an object asserted to
+  // the class is. Every member is read from the object by name and checked
+  // against its declared type, the members the derivation adds or declares
+  // again included.
+  if (flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection) && callSigs.length === 0) {
+    const viewed = mapBuiltinClassView(widened, ctx);
+    if (viewed) return viewed;
   }
   if (flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection) && callSigs.length === 0) {
     const viaMapped = mapBoundMappedType(widened, ctx);

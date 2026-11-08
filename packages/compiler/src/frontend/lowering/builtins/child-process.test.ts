@@ -88,11 +88,13 @@ execSync("");
   ).toEqual([0, 0, 0, 1]);
 });
 
-/** A one-file program's cp.checkArgs calls (`args:<form>`), the
- * cp.checkShellArgs calls of a launch that joins its list (`list:<form>`)
- * and cp.shellLine calls (`line`), in the order the IR holds them. */
-async function checksAndLines(source: string): Promise<string[]> {
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-child-line-"));
+/** The checks a one-file program's launches carry, in the order the IR
+ * holds them: `args:<form>` for cp.checkArgs, `list:<form>` for the
+ * cp.checkShellArgs of a launch that joins its list, `line` for the
+ * cp.shellLine that joins it, `limit` for a cp.maxBuffer that only
+ * validates and `arm` for one that sets the next capture's limit. */
+async function checks(source: string): Promise<string[]> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-child-checks-"));
   try {
     const entry = join(dir, "main.ts");
     const outPath = join(dir, "main.ir.json");
@@ -113,6 +115,8 @@ async function checksAndLines(source: string): Promise<string[]> {
       if (record.kind === "libCall" && record.fn === "cp.checkShellArgs")
         found.push(`list:${Number(record.args?.[0]?.value)}`);
       if (record.kind === "libCall" && record.fn === "cp.shellLine") found.push("line");
+      if (record.kind === "libCall" && record.fn === "cp.maxBuffer")
+        found.push(record.args?.[1]?.value === true ? "arm" : "limit");
       for (const value of Object.values(node)) visit(value);
     };
     visit(deserializeModule(await readFile(outPath, "utf8")).functions);
@@ -127,15 +131,59 @@ test("a shell launch joins its arguments after they are checked and before the e
   // The file and the arguments Node checks are the ones the call names,
   // not the line built from them.
   expect(
-    await checksAndLines(`${imports}${name}spawnSync(name, ["a"], { shell: true });
+    await checks(`${imports}${name}spawnSync(name, ["a"], { shell: true });
 spawnSync("echo", [name], { shell: true, cwd: name });
 `),
   ).toEqual(["list:0", "line", "list:0", "line"]);
   // An environment that can be refused is checked after the line: form 3
   // checks no file and no argument.
   expect(
-    await checksAndLines(
+    await checks(
       `${imports}${name}spawnSync("echo", [name], { shell: true, env: { A: name } });\n`,
     ),
   ).toEqual(["list:0", "line", "args:3"]);
+});
+
+const runtimeValues = `const name: string = process.argv[2] ?? "echo";
+const limit: number = Number(process.argv[3] ?? "16");
+`;
+
+test("a capture's maxBuffer is armed after the launch's values are checked", async () => {
+  // spawnSync checks the values, then the limit: one call does both.
+  expect(
+    await checks(`${imports}${runtimeValues}execFileSync(name, [], { maxBuffer: limit });
+execSync(name, { cwd: name, maxBuffer: limit });
+`),
+  ).toEqual(["args:0", "arm", "args:1", "arm"]);
+  // Nothing to check: the limit alone.
+  expect(
+    await checks(`${imports}${runtimeValues}execSync("echo a", { maxBuffer: limit });
+execFile("echo", ["a"], { maxBuffer: 16 }, () => {});
+`),
+  ).toEqual(["arm", "arm"]);
+  // A literal limit in range cannot be refused, so it has no place in the order.
+  expect(
+    await checks(`${imports}${runtimeValues}execFile(name, [], { maxBuffer: 16 }, () => {});
+exec(name, { cwd: name, maxBuffer: 16 }, () => {});
+`),
+  ).toEqual(["args:0", "arm", "args:1", "arm"]);
+});
+
+test("execFile validates the limit before spawn checks the values, exec after its command", async () => {
+  expect(
+    await checks(`${imports}${runtimeValues}execFile(name, [], { maxBuffer: limit }, () => {});
+execFile(name, [], { shell: true, maxBuffer: limit }, () => {});
+`),
+  ).toEqual(["limit", "args:0", "arm", "limit", "args:2", "arm"]);
+  expect(
+    await checks(`${imports}${runtimeValues}exec(name, { maxBuffer: limit }, () => {});
+exec(name, { cwd: name, maxBuffer: limit }, () => {});
+exec("echo a", { cwd: name, maxBuffer: limit }, () => {});
+`),
+  ).toEqual([
+    ...["args:1", "limit", "arm"],
+    // The command, the limit, then the options: form 3 checks no file.
+    ...["args:1", "limit", "args:3", "arm"],
+    ...["limit", "args:3", "arm"],
+  ]);
 });

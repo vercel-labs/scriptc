@@ -77,6 +77,9 @@ export interface NativeLinkFeatures {
    * scr_node_island.c, which join the island's process.stdout.write and
    * process.stderr.write to the program's write slots. */
   stdioObject?: boolean;
+  /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
+   * which installs Node's pipe lifecycle into the stream unit. */
+  streamPipeEvents?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -123,6 +126,9 @@ export interface NativeLinkFeatures {
   /** The joined command line of a shell-enabled call with separate
    * arguments links scr_child_shell.c; absent (false) otherwise. */
   childShellLine?: boolean;
+  /** process.features read as a value links scr_process_features.c (the
+   * stable flags object); absent (false) otherwise. */
+  processFeatures?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
@@ -134,6 +140,10 @@ export interface NativeLinkFeatures {
    * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
    * (false) otherwise. */
   childErrorFields?: boolean;
+  /** pause(), resume(), isPaused() or readableFlowing on a child's output
+   * stream selects scr_child.c's SCR_CHILD_STREAM_FLOW build; absent (false)
+   * otherwise. */
+  childStreamFlow?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** The executable carries debug sources (`--optimization dev` without
@@ -211,6 +221,9 @@ export interface NativeLinkFeatures {
   /** A runtimeFence that stands for a deferred diagnostic links
    * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
   deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value links scr_dyn_fn_own.c;
+   * absent (false) otherwise. */
+  functionOwnWrite?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;

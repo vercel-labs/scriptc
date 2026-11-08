@@ -48,7 +48,7 @@ child-process.ts:39:24 - error SC2020: 'execFile option 'killSignal'' is part of
      |                        ^~~~~~~~~~~~~~~~~~~~~
   40 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
-  hint: encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form
+  hint: encoding: 'utf8', maxBuffer, cwd, and shell: true are the supported options in the callback form
 
 child-process.ts:40:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
 
@@ -58,15 +58,6 @@ child-process.ts:40:20 - error SC2020: 'execFile with shell enabled and separate
   41 | const bufferLimit = 1024;
 
   hint: put the complete shell command in the first argument and pass [] (Node joins separate shell arguments unescaped and warns DEP0190; only spawnSync has that form)
-
-child-process.ts:42:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
-
-  41 | const bufferLimit = 1024;
-  42 | execFile("true", [], { maxBuffer: bufferLimit }, () => {});
-     |                                   ^~~~~~~~~~~
-  43 | const getEncoding = (): "utf8" => "utf8";
-
-  hint: pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)
 
 child-process.ts:44:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 

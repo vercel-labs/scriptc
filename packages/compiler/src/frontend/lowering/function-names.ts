@@ -78,6 +78,7 @@ function namingKey(node: ts.Node): ts.PropertyName | null {
 /** Gives the noted methods their displayName when the module boxes a
  * function without a static name, or a value that can hold one. */
 export function finalizeFunctionNames(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  finalizeHeldFunctionNames(lowerer, functions);
   if (lowerer.objectMethodNames.size === 0) return;
   const seen = new Map<string, boolean>();
   let boxes = false;
@@ -102,6 +103,41 @@ export function finalizeFunctionNames(lowerer: Lowerer, functions: readonly IrFu
   for (const fn of functions) {
     const name = lowerer.objectMethodNames.get(fn.name);
     if (name !== undefined) fn.displayName = name;
+  }
+}
+
+/** Gives the function the compiler lifts for a primitive constructor held
+ * as a typed value its displayName in a program that prints a function
+ * held in a typed slot: the inspector renders such a function through a
+ * box without a static name (lower-inspect.ts), which the backend names
+ * from the function. A program that prints none keeps its functions as
+ * they were. A method read as a value, static or not, is named with the
+ * other methods above. */
+function finalizeHeldFunctionNames(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  if (lowerer.heldFunctionNames.size === 0) return;
+  let prints = false;
+  for (const fn of functions) {
+    everyStmtList(fn.body, {
+      stmt: () => !prints,
+      expr: (e) => {
+        if (e.kind === "libCall" && (e.fn === "insp.dyn" || e.fn === "insp.dynS")) {
+          const boxed = e.args[0];
+          if (
+            boxed?.kind === "dynFrom" &&
+            boxed.value.type.kind === "func" &&
+            (boxed.fnName === undefined || boxed.fnName === "")
+          )
+            prints = true;
+        }
+        return !prints;
+      },
+    });
+    if (prints) break;
+  }
+  if (!prints) return;
+  for (const fn of functions) {
+    const name = lowerer.heldFunctionNames.get(fn.name);
+    if (name !== undefined && fn.displayName === undefined) fn.displayName = name;
   }
 }
 

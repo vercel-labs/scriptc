@@ -366,6 +366,7 @@ import {
   UNSUPPORTED,
   unsupportedDiag,
   unsupportedTypeDiag,
+  nodeIslandBoundaryDiag,
 } from "../../diagnostics/diagnostic.js";
 import type { UnionWidthAmbiguity } from "../../diagnostics/diagnostic.js";
 import type {
@@ -4445,6 +4446,12 @@ export class Lowerer {
    * without a diagnostic and the mismatch surfaces as a runtime release
    * trap instead. */
   readonly freshClosureAdapters = new Set<string>();
+  /** The lifted function literals whose result the checker types as an
+   * island value (an instance of an island class, or of a program class
+   * that extends one): adapting one to a slot whose result is a native
+   * class is refused by name (coerceToExpected). Filled only when the
+   * program has Node islands. */
+  readonly islandResultLambdas = new Set<string>();
   /** The stores of a variadic function under a fixed signature that no
    * adapter marks in the IR (noteVariadicStore): each entry is the slot's
    * type and the store's place, for variadic-functions.ts. */
@@ -4892,9 +4899,15 @@ export class Lowerer {
   readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
-  /** The JavaScript names of object literals' methods, by lifted function
-   * (function-names.ts). */
+  /** The JavaScript names of methods (an object literal's, a class's, the
+   * function that stands for a method read as a value, a static method
+   * read as a value) and of the functions that initialize class fields, by
+   * function (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
+  /** The JavaScript names of the functions the compiler lifts for primitive
+   * constructors held as typed values. Given only in a program that prints
+   * a function held in a typed slot (function-names.ts). */
+  readonly heldFunctionNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -5447,6 +5460,7 @@ export class Lowerer {
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
       setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
+      setTable("islandResultLambdas", this.islandResultLambdas),
       setTable("notedVariadicStores", this.notedVariadicStores),
       setTable("notedLongerCalls", this.notedLongerCalls),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
@@ -5660,6 +5674,7 @@ export class Lowerer {
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
       checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
+      checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
       checkedTable("funduleMembers", () => this.funduleMembers.size),
@@ -16623,6 +16638,30 @@ export class Lowerer {
       if (adapter) {
         return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
       }
+    }
+    // A function literal whose result the checker types as an island value
+    // (lower-node-island.ts, returnsIslandValue), in a slot whose result is
+    // a native class: the island's declarations derive the value's class
+    // from it (an island class that extends Error reduces to Error beside
+    // one), but an island object stays an island value, so every call
+    // through the slot would throw the checked conversion's TypeError. A
+    // program that catches everything would take it for its own error:
+    // refused by name instead.
+    if (
+      expr.kind === "closure" &&
+      expected.kind === "func" &&
+      expected.ret.kind === "object" &&
+      expr.type.kind === "func" &&
+      expr.type.ret.kind === "dyn" &&
+      this.islandResultLambdas.has(expr.fnName)
+    ) {
+      this.pushDiag(
+        nodeIslandBoundaryDiag(
+          `a function whose result is an island value, used where its result is the native '${this.fmt(expected.ret)}' (an island object stays an island value: give the slot the island's type or 'unknown')`,
+          expr.loc,
+        ),
+      );
+      throw new PoisonError();
     }
     const covariant = this.coerceCovariantFunction(expr, expected);
     if (covariant) return covariant;

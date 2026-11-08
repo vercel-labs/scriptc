@@ -74,6 +74,13 @@ export interface RegionGroups {
   leakFree: Set<string>;
   /** Functions that allocate, directly or through what they call. */
   allocates: Set<string>;
+  /** The calls and fresh copies in a root's function whose value may hold a
+   * reference into the root's group: a call that keeps the root's value in
+   * its own result (or a reference read out of it, or the value of a local
+   * that shares it), and a copy of its elements. The root's proof keeps
+   * each of them in the frame; it does not say where their own memory
+   * comes from (region-sites.ts decides that). Computed on request. */
+  holders: (root: Node) => Set<Node>;
 }
 
 /** Projections whose result is a reference read out of the operand.
@@ -1293,6 +1300,75 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     for (const st of fn.body) scanAll(st, callees);
   }
   const closed = new Set<Node>();
+  /** Adds to `out` what holds the value of `node` on its way up `parents`,
+   * followed the way useOf and resultUse follow it: through the expressions
+   * that pass it on and the reads of a reference out of it, into each copy
+   * of its elements and into the result of each call that keeps it. */
+  const holdersAbove = (node: Node, parents: readonly Node[], out: Set<Node>): void => {
+    let value: Node = node;
+    let at = parents.length - 1;
+    for (let hops = 0; hops < 64; hops++) {
+      for (; at >= 0; at--) {
+        const p = parents[at]!;
+        if (copiesElements(value, p)) out.add(p);
+        else if (!transparent(value, p) && !projection(value, p)) break;
+        value = p;
+      }
+      const p = at >= 0 ? parents[at]! : undefined;
+      // A callee that only borrows the value keeps nothing of it.
+      if (p === undefined || p.kind !== "call" || keeps(value, p)) return;
+      if (internal.get(p.callee)?.has(indexOfNode(p.args, value)) !== true) return;
+      out.add(p);
+      value = p;
+      at--;
+    }
+  };
+  // Per function, walked once however many roots it has: where each source
+  // is, and what holds the value read from each local.
+  const holderFacts = new Map<
+    string,
+    { sources: Map<Node, number>; byLocal: Map<string, Set<Node>> }
+  >();
+  const holderFactsOf = (
+    fn: IrFunction,
+  ): { sources: Map<Node, number>; byLocal: Map<string, Set<Node>> } => {
+    const memo = holderFacts.get(fn.name);
+    if (memo !== undefined) return memo;
+    const flat = flatOf(fn);
+    const sources = new Map<Node, number>();
+    for (const i of flat.sources) sources.set(flat.nodes[i]!, i);
+    const byLocal = new Map<string, Set<Node>>();
+    const parents: Node[] = [];
+    const above = new Set<Node>();
+    for (const i of flat.refs) {
+      const node = flat.nodes[i]!;
+      if (node.kind !== "varRef") continue;
+      above.clear();
+      holdersAbove(node, ancestors(flat, i, parents), above);
+      if (above.size === 0) continue;
+      let set = byLocal.get(node.localId);
+      if (set === undefined) byLocal.set(node.localId, (set = new Set()));
+      for (const h of above) set.add(h);
+    }
+    const facts = { sources, byLocal };
+    holderFacts.set(fn.name, facts);
+    return facts;
+  };
+  const held = new Map<Node, Set<Node>>();
+  const holders = (root: Node): Set<Node> => {
+    const memo = held.get(root);
+    if (memo !== undefined) return memo;
+    const out = new Set<Node>();
+    held.set(root, out);
+    const fn = rootFunction.get(root);
+    if (fn === undefined) return out;
+    const facts = holderFactsOf(fn);
+    const at = facts.sources.get(root);
+    if (at !== undefined) holdersAbove(root, ancestors(flatOf(fn), at, []), out);
+    for (const id of rootLocals.get(root) ?? new Set<string>())
+      for (const h of facts.byLocal.get(id) ?? new Set<Node>()) out.add(h);
+    return out;
+  };
   return {
     roots,
     calls,
@@ -1304,6 +1380,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     fresh,
     leakFree,
     allocates,
+    holders,
   };
 }
 

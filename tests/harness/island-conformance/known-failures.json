@@ -208,7 +208,7 @@
   "npm/hidden-key-boundary": {
     "island:kindkit": {
       "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught Error: for-in over this checked-dynamic kind is not supported yet [SC1090]"
+      "signature": "exit 1, Node 0: Uncaught Error: Object.getOwnPropertyNames on this value is not supported yet [SC2020]"
     }
   },
   "npm/hono-node-server": {

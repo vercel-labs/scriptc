@@ -83,6 +83,11 @@ import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { replaceChildExpr } from "../../ir/fields.generated.js";
 import { InternalCompilerError } from "../../errors.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import {
+  keyOrderUntracedDiag,
+  type KeyOrderUntracedCause,
+  type ScrDiagnostic,
+} from "../../diagnostics/diagnostic.js";
 
 /** The statements a key-order helper runs for record `ref`: `walks[0]`,
  * its walk over the shape's table, or, for a shape with orderVariants, a
@@ -178,6 +183,10 @@ export class KeyOrderNotes {
    * (lower-calls.ts) stay static for every other shape, and the pass reads
    * it back as a spread source that can already hold one. */
   readonly keptSourceShapes = new Set<string>();
+  /** SC6002 for each observed shape whose values create their keys in an
+   * order this pass could not follow: the shape kept one table for every
+   * value (applyKeyOrderWitnesses). */
+  readonly warnings: ScrDiagnostic[] = [];
 
   /** The sizes of the notes' tables (unit-journal.ts). */
   journalSizes(): number[] {
@@ -290,6 +299,7 @@ interface WriteSite {
   binding: string | null;
   loop: string;
   pos: number;
+  loc: SrcLoc;
 }
 
 interface BindingInit {
@@ -302,7 +312,9 @@ interface BindingInit {
 
 interface ShapeFacts {
   literals: KeyOrderSegment[][];
-  copies: { source: string; keys: Set<string> }[];
+  copies: { source: string; keys: Set<string>; loc: SrcLoc }[];
+  /** The first construction of the shape the walk met. */
+  site: SrcLoc | null;
   /** A construction in today's order (synthesized literal). */
   pinned: boolean;
   /** An opaque runtime producer: today's order, any key may be absent. */
@@ -427,6 +439,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       f = {
         literals: [],
         copies: [],
+        site: null,
         pinned: false,
         opaque: false,
         runtime: false,
@@ -563,6 +576,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
    * (keepRecordClones). */
   const cloneSites: { node: IrExpr; fn: IrFunction }[] = [];
   const literalSites = new Map<KeyOrderSegment[], number>();
+  /** Where the first literal of each witness is written. */
+  const literalLocs = new Map<readonly KeyOrderSegment[], SrcLoc>();
   const loops: number[] = [];
   let loopIds = 0;
   const loopKey = (): string => loops.join("/");
@@ -608,6 +623,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       case "recordLit": {
         if (e.type.kind !== "record") return;
         const f = factsOf(e.type.shapeId);
+        f.site ??= e.loc;
         const presentKeys = new Set<string>();
         for (const field of e.fields) {
           if (field.overflow) continue;
@@ -624,7 +640,9 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         if (segments !== undefined) {
           f.literals.push(segments);
           literalSites.set(segments, (literalSites.get(segments) ?? 0) + 1);
-        } else if (copy !== undefined) f.copies.push({ source: copy, keys: presentKeys });
+          if (!literalLocs.has(segments)) literalLocs.set(segments, e.loc);
+        } else if (copy !== undefined)
+          f.copies.push({ source: copy, keys: presentKeys, loc: e.loc });
         else f.pinned = true;
         return;
       }
@@ -632,9 +650,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         if (e.type.kind !== "record") return;
         if (notes.isClone(e) && currentFn !== null) cloneSites.push({ node: e, fn: currentFn });
         const f = factsOf(e.type.shapeId);
+        f.site ??= e.loc;
         f.clones = true;
         for (const o of e.overrides)
-          f.writes.push({ field: o.name, kind: "clone", fn: fnName, binding: null, loop: "", pos });
+          f.writes.push({
+            field: o.name,
+            kind: "clone",
+            fn: fnName,
+            binding: null,
+            loop: "",
+            pos,
+            loc: e.loc,
+          });
         return;
       }
       case "assignExpr":
@@ -739,6 +766,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           binding: bindingOf(st.obj),
           loop: loopKey(),
           pos,
+          loc: st.loc,
         });
         return;
       case "varDecl":
@@ -1179,6 +1207,23 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
 
   // ── resolution over inheritance edges ───────────────────────────────
   const result = new Map<string, Resolved>();
+  /** Why a shape the program constructs did not resolve, and a construction
+   * the order depends on. A shape that is out of scope or that the program
+   * never constructs natively has no entry. */
+  const untraced = new Map<string, { cause: KeyOrderUntracedCause; loc: SrcLoc | null }>();
+  const unknownFor = (id: string, cause: KeyOrderUntracedCause, loc: SrcLoc | null): "unknown" => {
+    untraced.set(id, { cause, loc });
+    return "unknown";
+  };
+  /** A construction of the shape whose keys can arrive in more than one
+   * order: a literal with a spread, else a write of a key that may be
+   * absent, else the first construction. */
+  const orderSite = (id: string, f: ShapeFacts): SrcLoc | null => {
+    for (const segments of f.literals)
+      if (segments.some((s) => s.kind !== "key")) return literalLocs.get(segments) ?? f.site;
+    const write = f.writes.find((w) => w.kind !== "delete" && maybeAbsent(id, w.field));
+    return write?.loc ?? f.site;
+  };
   /** A shape's late-write edges: they read that shape's facts only, so they
    * stay valid until the facts change (a shape becomes built at run time,
    * below). */
@@ -1222,6 +1267,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     raw: (source: string) => Resolved,
   ): Resolved => {
     const shape = shapes.get(id);
+    untraced.delete(id);
     if (!inScope(shape)) return "unknown";
     const table = tableOf(shape);
     const f = facts.get(id);
@@ -1231,19 +1277,19 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       return "unknown";
     // Clones copy their source's own key order, which a checked
     // conversion leaves unknown.
-    if (f.runtime && f.clones) return "unknown";
+    if (f.runtime && f.clones) return unknownFor(id, "clone", f.site);
     const keySet = new Set(table);
     const edges: [string, string][] = [];
     if (f.pinned) chain(table, edges);
     for (const segments of f.literals) {
       if (copiesItself(id, f, table, segments)) continue;
       const sequences = literalSequences(segments, keySet, current, raw);
-      if (sequences === null) return "unknown";
+      if (sequences === null) return unknownFor(id, "spread", literalLocs.get(segments) ?? f.site);
       for (const seq of sequences) chain(seq, edges);
     }
     for (const c of f.copies) {
       const source = current(c.source);
-      if (source === "unknown") return "unknown";
+      if (source === "unknown") return unknownFor(id, "copy", c.loc);
       chain(
         source.order.filter((k) => keySet.has(k) && c.keys.has(k)),
         edges,
@@ -1252,9 +1298,13 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const cached = late.get(id);
     const lateFor = cached !== undefined ? cached : lateEdges(id, table);
     if (cached === undefined) late.set(id, lateFor);
-    if (lateFor === "unknown") return "unknown";
+    if (lateFor === "unknown") {
+      const write = f.writes.find((w) => w.kind !== "delete" && maybeAbsent(id, w.field));
+      return unknownFor(id, "writes", write?.loc ?? f.site);
+    }
     for (const edge of lateFor) edges.push(edge);
-    return merge(table, edges);
+    const merged = merge(table, edges);
+    return merged === "unknown" ? unknownFor(id, "orders", orderSite(id, f)) : merged;
   };
   /** A source's order as its copies see it: values of a shape built by a
    * checked conversion keep their source's own order. */
@@ -1325,7 +1375,13 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
           }
         }
       }
-      for (const id of scc) result.set(id, stable ? guess.get(id)! : "unknown");
+      for (const id of scc) {
+        if (!stable && inScope(shapes.get(id)) && !untraced.has(id)) {
+          const f = facts.get(id);
+          if (f !== undefined) untraced.set(id, { cause: "orders", loc: orderSite(id, f) });
+        }
+        result.set(id, stable ? guess.get(id)! : "unknown");
+      }
     }
   };
   // Ordered spreads join once their source resolves; each one can let its
@@ -1621,6 +1677,59 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
   const templateKey = (t: Template): string => JSON.stringify([t.source, t.prefix, t.suffix]);
   const copyTemplate = (source: string): Template => ({ source, prefix: [], suffix: [] });
   const mirrors = new Map<string, Template>();
+  /** Shapes whose source's orders all agree over their keys: one table. */
+  const agreed = new Set<string>();
+  /** SC6002 for each observed shape that kept one table for every value
+   * although its values create their keys in an order nothing above could
+   * follow: no resolved order, and no per-instance orders (`ordered`).
+   * A warning only: it changes nothing the program is compiled to. */
+  const reportUntraced = (ordered: ReadonlySet<string>): void => {
+    const warned = new Set<string>();
+    for (const [id, why] of untraced) {
+      if (result.get(id) !== "unknown" || !observed.has(id)) continue;
+      if (ordered.has(id) || agreed.has(id) || why.loc === null) continue;
+      const shape = shapes.get(id);
+      if (!inScope(shape)) continue;
+      warned.add(id);
+      notes.warnings.push(
+        keyOrderUntracedDiag(
+          lowerer.fmt({ kind: "record", shapeId: id }),
+          tableOf(shape).join(", "),
+          why.cause,
+          why.loc,
+        ),
+      );
+    }
+    // Object.assign's helper copies its source's fields in the order the
+    // source's type stores them, so the properties it adds to a target that
+    // lacks them arrive in that order, whatever order the source object
+    // created them in. With two or more such properties the target's order
+    // can differ from Node's, also where the target records its own order.
+    for (const [id, f] of facts) {
+      if (warned.has(id) || !observed.has(id)) continue;
+      const shape = shapes.get(id);
+      if (!inScope(shape)) continue;
+      const added = new Map<string, Set<string>>();
+      for (const w of f.writes) {
+        if (w.kind !== "write" || !w.fn.startsWith("%obj.assign") || !maybeAbsent(id, w.field))
+          continue;
+        const keys = added.get(w.fn) ?? new Set<string>();
+        keys.add(w.field);
+        added.set(w.fn, keys);
+        if (keys.size !== 2) continue;
+        warned.add(id);
+        notes.warnings.push(
+          keyOrderUntracedDiag(
+            lowerer.fmt({ kind: "record", shapeId: id }),
+            tableOf(shape).join(", "),
+            "assign",
+            w.loc,
+          ),
+        );
+        break;
+      }
+    }
+  };
   for (const [id, f] of facts) {
     if (variants.has(id) || f.pinned || f.runtime || f.opaque) continue;
     const candidate = orderable(id, f);
@@ -1678,12 +1787,16 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       const only: string[] = mirrored[0] ?? table;
       if (!sameOrder(only, table))
         shape.declaredOrder = [...shape.declaredOrder!.filter(isArrayIndex), ...only];
+      agreed.add(id);
       continue;
     }
     variants.set(id, mirrored);
     mirrors.set(id, template);
   }
-  if (variants.size === 0) return;
+  if (variants.size === 0) {
+    reportUntraced(new Set());
+    return;
+  }
 
   // Every construction of those shapes, to give each its order index. A
   // copy reads its source's index, so its source must be a plain binding.
@@ -1959,6 +2072,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       stmt: (st) => replaced.get(st) ?? st,
     });
   }
+  reportUntraced(new Set([...variants.keys()].filter((id) => !dropped.has(id))));
   for (const [id, orders] of variants) {
     if (dropped.has(id)) continue;
     const shape = shapes.get(id)!;

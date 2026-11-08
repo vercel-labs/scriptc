@@ -376,6 +376,45 @@ export function keyOrderDivergenceDiag(
   };
 }
 
+/** How a record type's values come to create their keys in an order the
+ * key-order pass cannot follow (key-order-witness.ts). */
+export type KeyOrderUntracedCause = "spread" | "copy" | "writes" | "orders" | "clone" | "assign";
+
+/** SC6002 — a record type the program observes the key order of, whose
+ * values create their keys in an order scriptc does not follow: every value
+ * of the type then enumerates in the one order named here, where Node lists
+ * each object's keys in the order that object created them. Reported once
+ * per type, at a construction that the order depends on. */
+export function keyOrderUntracedDiag(
+  typeText: string,
+  nativeOrder: string,
+  cause: KeyOrderUntracedCause,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const how: Record<KeyOrderUntracedCause, string> = {
+    spread: "an object spread here copies keys from a value whose key order is not known",
+    copy: "a copy here takes its keys from a value whose key order is not known",
+    writes:
+      "assignments here (or Object.assign) add optional properties to an existing object in an order that depends on the path the program takes",
+    orders:
+      "objects of this type create their keys in different orders, here by a spread or an assignment that adds an optional property the object lacks",
+    clone: "a copy here takes its keys from a value converted at run time",
+    assign:
+      "Object.assign here adds more than one optional property to its target, in the order the type stores them rather than the order its source created them in",
+  };
+  const observed =
+    "the program observes the key order of this type (JSON.stringify, Object.keys, for-in, console output or a value passed to untyped code)";
+  return {
+    code: "SC6002",
+    message:
+      cause === "assign"
+        ? `${how[cause]}, so the keys of a '${typeText}' value can enumerate in another order than under Node, and ${observed}`
+        : `every '${typeText}' value enumerates its keys as '${nativeOrder}' natively, but ${how[cause]}; under Node each object lists its keys in the order it created them, and ${observed}`,
+    loc,
+    hint: "create every property in one object literal, in the order wanted (set a property that comes later to undefined), or do not rely on the key order of these objects",
+  };
+}
+
 /** SC6003 — one-argument localeCompare over text outside the root-locale
  * collation table the runtime carries: those characters compare by code
  * point natively, where Node applies full ICU collation. */

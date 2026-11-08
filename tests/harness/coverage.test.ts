@@ -135,6 +135,26 @@ test("a Node island value converted to a native type reports as a copy", async (
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-island-copies.txt");
 });
 
+test("a key order the compiler does not follow reports where the type is observed", () => {
+  // SC6002 from the key-order pass, once per record type: a spread that
+  // also sets an optional key its source lacks (in a type built in two
+  // orders), and Object.assign adding two optional keys to its target.
+  // Path-dependent assignments and literals in two orders are followed per
+  // value, a type with one order needs nothing, and a type whose order the
+  // program never observes is not reported.
+  const entry = fixture("key-order-untraced.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  const source = readFileSync(entry, "utf8");
+  const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
+  expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
+    ["SC6002", 14],
+    ["SC6002", 25],
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+});
+
 test("ordinary code reports no divergence", () => {
   const { coverage } = analyze(fixture("no-divergences.ts"));
   expect(coverage.diagnostics).toEqual([]);

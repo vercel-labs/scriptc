@@ -1959,9 +1959,21 @@ function lowerToIrWithIslands(
     for (const line of traceWidthCopies(resultLowerer, widthCopies))
       process.stderr.write(line + "\n");
   if (widthCopies.length > 0) result = { ...result, widthCopies };
+  const scanned = scanDivergences(resultLowerer, moduleOrder);
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
-    ...scanDivergences(resultLowerer, moduleOrder),
+    ...scanned,
+    // Key orders the witness pass could not follow, except where the scan
+    // already names the same construction.
+    ...resultLowerer.keyOrder.warnings.filter(
+      (warning) =>
+        !scanned.some(
+          (found) =>
+            found.code === warning.code &&
+            found.loc.file === warning.loc.file &&
+            found.loc.start === warning.loc.start,
+        ),
+    ),
     ...resultLowerer.sharedModuleWarnings,
     // Deferred refusals inside their own try/catch: named here, since the
     // binary does not report them (ir/deferred-fence.ts).

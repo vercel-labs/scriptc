@@ -10,6 +10,12 @@
  * keeps its distance from that token's start. An offset that cannot be
  * carried over with certainty makes the versions not equivalent.
  *
+ * A file the frontend compiled in another form (SourceTextRewrite: spans
+ * blanked, a tail appended) records the rewrite with the reads of that form.
+ * The edited version's form is made again from its own text, with the
+ * blanks placed by its tokens, and the form's reads are answered over the
+ * two forms. An offset in the tail keeps its distance from the tail's start.
+ *
  * Two versions are equivalent when they have the same tokens, in the same
  * order, with line breaks between the same pairs of tokens (automatic
  * semicolon insertion depends on them), and differ only in whitespace and
@@ -43,9 +49,13 @@
  * The scanner models only what these rules name; anything else makes the
  * versions not equivalent, which rebuilds. */
 
-import type { SourceTextReads } from "./input-tracker.js";
+import type { SourceTextFact, SourceTextReads } from "./input-tracker.js";
 import { astLineOfPosition, astLineStarts } from "./ts7/ast-text.js";
-import { sourceTextPredicateTest } from "./ts7/ast-node.js";
+import {
+  rewrittenSourceText,
+  rewrittenTailStart,
+  sourceTextPredicateTest,
+} from "./ts7/ast-node.js";
 
 interface Token {
   text: string;
@@ -487,19 +497,22 @@ function carriedOffset(
   return certain ? carried : -1;
 }
 
-/** `reads`, the reads recorded of `previous`, as reads of `current`, a
- * version with the same tokens: every offset carried over, when every read
- * has the same answer over both. Else the first read that does not, in
- * words. */
-function carriedTextReads(
-  reads: SourceTextReads,
+/** One set of reads: of a file's text, or of the form it was compiled in. */
+interface TextReadSet {
+  ranges: number[];
+  positions: number[];
+  facts: SourceTextFact[];
+}
+
+/** `reads`, recorded of `previous`, as reads of `current`: every offset
+ * carried over by `carry`, when every read has the same answer over both
+ * texts. Else the first read that does not, in words. */
+function carriedReadSet(
+  reads: TextReadSet,
   previous: string,
   current: string,
-  left: readonly Token[],
-  right: readonly Token[],
-): SourceTextReads | string {
-  const carry = (offset: number, anchor: Anchor): number =>
-    carriedOffset(offset, anchor, previous, current, left, right);
+  carry: (offset: number, anchor: Anchor) => number,
+): TextReadSet | string {
   /** An anchored range in both versions: its texts and its anchored offsets
    * in `current`, or null. */
   const range = (
@@ -519,7 +532,7 @@ function carriedTextReads(
       end: newEnd * 2 + (anchoredEnd % 2),
     };
   };
-  const carried: SourceTextReads = { ranges: [], positions: [], facts: [] };
+  const carried: TextReadSet = { ranges: [], positions: [], facts: [] };
   for (const fact of reads.facts) {
     // A recorded answer is the one over `previous`; a predicate that no
     // longer gives it there cannot be replayed.
@@ -574,6 +587,61 @@ function carriedTextReads(
   return carried;
 }
 
+/** `reads`, the reads recorded of `previous`, as reads of `current`, a
+ * version with the same tokens: every offset carried over, when every read
+ * has the same answer over both. Else the first read that does not, in
+ * words. The reads of a rewritten form are answered over the forms of the
+ * two versions; with `positions`, the form's tail must also start at the
+ * same line in both, since the tokens of the tail have positions too. */
+function carriedTextReads(
+  reads: SourceTextReads,
+  previous: string,
+  current: string,
+  left: readonly Token[],
+  right: readonly Token[],
+  positions: boolean,
+): SourceTextReads | string {
+  const carry = (offset: number, anchor: Anchor): number =>
+    carriedOffset(offset, anchor, previous, current, left, right);
+  const carried = carriedReadSet(reads, previous, current, carry);
+  if (typeof carried === "string") return carried;
+  const form = reads.rewritten;
+  if (form === undefined) return carried;
+  // The blanks, placed in `current` by its tokens.
+  const blanks: number[] = [];
+  let at = 0;
+  for (let index = 0; index + 1 < form.blanks.length; index += 2) {
+    const start = carry(form.blanks[index]! >> 1, form.blanks[index]! % 2 === 1 ? "start" : "end");
+    const end = carry(
+      form.blanks[index + 1]! >> 1,
+      form.blanks[index + 1]! % 2 === 1 ? "start" : "end",
+    );
+    if (start < at || end < start)
+      return "the frontend compiled a rewritten form of it, and a rewritten span cannot be placed in the new text";
+    blanks.push(start * 2 + (form.blanks[index]! % 2), end * 2 + (form.blanks[index + 1]! % 2));
+    at = end;
+  }
+  const formBefore = rewrittenSourceText(previous, form);
+  const rewrite = { blanks, tail: form.tail };
+  const formAfter = rewrittenSourceText(current, rewrite);
+  // Below the tail an offset of the form is an offset of the text, and the
+  // form's tokens there are tokens of the text. The tail moves as a whole.
+  const tailBefore = rewrittenTailStart(previous, form);
+  const tailAfter = rewrittenTailStart(current, rewrite);
+  const carryForm = (offset: number, anchor: Anchor): number =>
+    form.tail !== "" && offset >= tailBefore
+      ? offset - tailBefore + tailAfter
+      : carry(offset, anchor);
+  const carriedForm = carriedReadSet(form, formBefore, formAfter, carryForm);
+  if (typeof carriedForm === "string") return `in its rewritten form, ${carriedForm}`;
+  if (positions && form.tail !== "") {
+    const lineBefore = astLineOfPosition(astLineStarts(formBefore), tailBefore);
+    if (lineBefore !== astLineOfPosition(astLineStarts(formAfter), tailAfter))
+      return "the declarations the frontend added after its last line moved, and the build records source positions";
+  }
+  return { ...carried, rewritten: { ...rewrite, ...carriedForm } };
+}
+
 /** An edit that is equivalent: the reads recorded of the previous text, as
  * reads of the current one (undefined when none were recorded). */
 export interface EquivalentSourceEdit {
@@ -601,7 +669,9 @@ function sourceEdit(
       return "a line break between two tokens changed";
   }
   const carried =
-    reads === undefined ? undefined : carriedTextReads(reads, previous, current, left, right);
+    reads === undefined
+      ? undefined
+      : carriedTextReads(reads, previous, current, left, right, positions);
   if (typeof carried === "string") return carried;
   if (positions) {
     const before = tokenPositions(previous, left);

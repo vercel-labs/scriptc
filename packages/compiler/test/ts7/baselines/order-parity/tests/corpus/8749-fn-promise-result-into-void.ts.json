@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8749-fn-promise-result-into-void.ts"
+ ],
+ "diags": []
+}

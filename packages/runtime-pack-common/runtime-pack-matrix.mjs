@@ -289,9 +289,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
   ["scr_node_island_gc.c", "nodeIsland"],
+  // One process.stdout.write for the program and its islands: a program that
+  // holds a process output stream as a value can replace its write method,
+  // and its islands then read and write the same slot. It is called by the
+  // SCR_NODE_ISLAND_STDIO build of scr_node_island.c.
+  ["scr_node_island_stdio.c", all("nodeIsland", "stdioObject")],
   // A native AbortSignal's twin in an island: programs with islands and
   // native signals (the signal unit or the fetch unit).
   ["scr_node_island_abort.c", { all: ["nodeIsland"], any: ["abortSignal", "nativeFetch"] }],
+  ["scr_node_island_events.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
@@ -371,6 +377,17 @@ export function variantsFor(source) {
   if (source === "scr_js_object.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects.
+  // A method call on an island promise reaches the island object for the
+  // methods an island Promise subclass adds (a request promise's
+  // `withResponse()`): the Node island build of the invoke unit asks it.
+  // Pushed first, so each build gets its object model twin.
+  if (source === "scr_dyn_invoke.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+  }
   if (source === "scr_inspect.c" || source === "scr_assert.c" || source === "scr_dyn_invoke.c") {
     withJsObjectModel(variants);
   }
@@ -417,6 +434,21 @@ export function variantsFor(source) {
       when: { warningReplace: true, processExtras: true },
       defines: ["SCR_WARNING_REPLACE", "SCR_PROCESS_EXTRAS"],
     });
+    // Programs with Node islands get a build of their own. An island object
+    // with a `then` method is a thenable to every promise resolution
+    // (Promise.resolve, a combinator's entry, an async function's return):
+    // the Node island build reads `then` in V8. It also moves the process
+    // event listeners onto Node's `process` once Node is loaded
+    // (scr_node_island_events.c). The selector takes the variant with the
+    // most conditions, so each build above gets its island twin; every other
+    // program keeps its object, byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      variants.push({
+        id: id === "default" ? "node-island" : `${id}-node-island`,
+        when: { ...when, nodeIsland: true },
+        defines: [...defines, "SCR_NODE_ISLANDS"],
+      });
+    }
   }
   // copyFileSync's mode argument reuses scr_fs_cp.c's reflink walk, so the
   // entry lives in a build of this unit rather than a unit of its own.
@@ -520,6 +552,18 @@ export function variantsFor(source) {
       ],
     ])
       variants.push({ id, when, defines });
+  }
+  // A program with islands that holds a process output stream as a value:
+  // the bootstrap carries the accessor that joins the island's
+  // process.stdout.write to the program's write slot, and the start of Node
+  // calls scr_node_island_stdio.c to install it. Every other program with
+  // islands keeps the default object, byte for byte.
+  if (source === "scr_node_island.c") {
+    variants.push({
+      id: "stdio",
+      when: { stdioObject: true },
+      defines: ["SCR_NODE_ISLAND_STDIO"],
+    });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default

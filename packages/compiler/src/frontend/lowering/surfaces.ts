@@ -1467,12 +1467,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.
@@ -3358,6 +3373,22 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
 /** The `length` Node's filesystem callback functions carry
  * (`fs.readFile.length` is 3). The value adapter reports it through
  * Function.length; the direct call accepts the arguments it always did. */

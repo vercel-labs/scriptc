@@ -28,9 +28,14 @@ import { SyntaxKind, NodeFlags } from "./enums.js";
  * text (a node's own text, its leading trivia), the line and character of a
  * `position`, or the answer of a predicate over the text or a range of it
  * (`fact`; `start` is negative for the whole text). Every other read of the
- * text is `whole`: the reader may depend on any of it. */
+ * text is `whole`: the reader may depend on any of it.
+ *
+ * A pass that compiles a file in another form says how the form is made
+ * from the text (`rewrite`, SourceTextRewrite): `rewritten` is the form,
+ * and reads of a syntax tree that holds it are reads of that form. */
 export interface SourceTextObserver {
   whole(fileName: string): void;
+  rewrite(fileName: string, text: string, rewrite: SourceTextRewrite, rewritten: string): void;
   range(fileName: string, text: string, start: number, end: number, span: SourceTextSpan): void;
   position(fileName: string, text: string, position: number): void;
   fact(
@@ -59,6 +64,79 @@ export const FULL_SPAN: SourceTextSpan = 0;
 /** From the end of the token before a node (its `pos`) to a token's start:
  * the comments and whitespace that lead up to that token. */
 export const LEADING_SPAN: SourceTextSpan = 2;
+/** From a token's start to a later token's start: text with the comments,
+ * whitespace and separators that follow it, up to the next thing. */
+export const UP_TO_TOKEN_SPAN: SourceTextSpan = 3;
+
+/** A form of a source file that keeps every offset of its text: the text of
+ * each of `blanks` replaced by spaces (line breaks stay), and `tail`
+ * appended on lines of its own. `blanks` holds `start, end` pairs in order,
+ * apart from each other, each offset anchored as a range's are
+ * (SourceTextSpan): doubled, plus one when it is the start of a token rather
+ * than the place the token before it ended. A token-equivalent version of
+ * the file has the same form: its tokens place the blanks, and `tail` is
+ * text the rewriter made from the tokens. */
+export interface SourceTextRewrite {
+  blanks: number[];
+  tail: string;
+}
+
+/** `text` in the form `rewrite` describes (SourceTextRewrite). */
+export function rewrittenSourceText(text: string, rewrite: SourceTextRewrite): string {
+  const { blanks, tail } = rewrite;
+  let out = "";
+  let at = 0;
+  for (let index = 0; index + 1 < blanks.length; index += 2) {
+    const start = blanks[index]! >> 1;
+    const end = blanks[index + 1]! >> 1;
+    out += text.slice(at, start);
+    for (let offset = start; offset < end; offset++) {
+      const code = text.charCodeAt(offset);
+      out += code === 10 || code === 13 ? text[offset] : " ";
+    }
+    at = end;
+  }
+  out += text.slice(at);
+  return tail === "" ? out : `${out}${out.endsWith("\n") ? "" : "\n"}${tail}`;
+}
+
+/** Where the tail of `rewrite` starts in the form of `text`: after the line
+ * break that ends the text, which the form adds when the text has none. */
+export function rewrittenTailStart(text: string, rewrite: SourceTextRewrite): number {
+  return rewrite.tail === "" || text.endsWith("\n") ? text.length : text.length + 1;
+}
+
+/** One span of a rewrite's blanks, before it is anchored. */
+export interface SourceTextBlank {
+  start: number;
+  end: number;
+  span: SourceTextSpan;
+}
+
+/** The text of source file `sf` with `blanks` blanked and `tail` appended
+ * (SourceTextRewrite), reported as that rewrite instead of a read of the
+ * text: the caller takes nothing else from it. Blanks that start inside an
+ * earlier one are dropped. */
+export function sourceTextRewritten(
+  sf: AstNode,
+  blanks: readonly SourceTextBlank[],
+  tail: string,
+): string {
+  const anchored: number[] = [];
+  let at = 0;
+  for (const blank of [...blanks].sort((a, b) => a.start - b.start)) {
+    if (blank.start < at || blank.end < blank.start) continue;
+    anchored.push(blank.start * 2 + (blank.span & 1), blank.end * 2 + ((blank.span >> 1) & 1));
+    at = blank.end;
+  }
+  const rewrite: SourceTextRewrite = { blanks: anchored, tail };
+  const file = treeOf(sf);
+  const text = file === undefined ? (sf.text ?? "") : file.sourceText();
+  const rewritten = rewrittenSourceText(text, rewrite);
+  if (sourceTextObserver !== undefined && file !== undefined)
+    sourceTextObserver.rewrite(file.root.fileName, text, rewrite, rewritten);
+  return rewritten;
+}
 
 /** A question about text that can be asked again of another version of it:
  * whether it includes `needle`, or whether the regular expression `source`

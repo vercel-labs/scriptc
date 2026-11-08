@@ -35,7 +35,7 @@ import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -154,7 +154,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {

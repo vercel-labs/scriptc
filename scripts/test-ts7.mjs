@@ -30,6 +30,7 @@ const ALLOWED_TYPESCRIPT5_IMPORTS = new Set([
   "packages/compiler/src/frontend/ts7/source-parser.test.ts",
   "packages/compiler/src/node-islands/effect-gate.ts",
   "packages/compiler/src/library/semantic-source.ts",
+  "packages/compiler/test/import-elision.test.ts",
   "packages/compiler/test/ts7/harness.ts",
   "packages/compiler/test/ts7/resolver-parity.test.ts",
 ]);

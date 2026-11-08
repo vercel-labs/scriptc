@@ -1,0 +1,35 @@
+empty-array-two-element-types.ts:27:22 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as '{ minutes: number; town: string }[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  26 | const depot = { line: "depot", stops: [] } as const;
+  27 | console.log(describe(depot));
+     |                      ^~~~~
+  28 | console.log(after("Arle", depot.stops));
+
+  hint: give the literal its type where it is written, for example `[] as ElementType[]`, or annotate the object or binding that holds it
+
+empty-array-two-element-types.ts:28:27 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'string[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  27 | console.log(describe(depot));
+  28 | console.log(after("Arle", depot.stops));
+     |                           ^~~~~~~~~~~
+  29 | 
+
+  hint: give the literal its type where it is written, for example `[] as string[]`, or annotate the object or binding that holds it
+
+empty-array-two-element-types.ts:32:34 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'string[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  31 | const NOTHING = [] as const;
+  32 | const texts: readonly string[] = NOTHING;
+     |                                  ^~~~~~~
+  33 | console.log(texts.length, after(1, NOTHING));
+
+  hint: give the literal its type where it is written, for example `[] as string[]`, or annotate the object or binding that holds it
+
+empty-array-two-element-types.ts:33:36 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'number[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  32 | const texts: readonly string[] = NOTHING;
+  33 | console.log(texts.length, after(1, NOTHING));
+     |                                    ^~~~~~~
+  34 | 
+
+  hint: give the literal its type where it is written, for example `[] as number[]`, or annotate the object or binding that holds it

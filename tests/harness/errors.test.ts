@@ -1573,29 +1573,26 @@ Object.setPrototypeOf(inner, proto);`,
       "set in another function": `function arm(fn) { Object.setPrototypeOf(fn, { call(self, n) { return self === undefined ? n : -n; } }); }
 arm(inner);`,
     }),
-  )(
-    "a function is refused a prototype that defines 'call', %s",
-    async ([, define]) => {
-      const r = await compileAndRun(
-        "function-prototype-own-call",
-        `import * as lib from "./lib.mjs";
+  )("a function is refused a prototype that defines 'call', %s", async ([, define]) => {
+    const r = await compileAndRun(
+      "function-prototype-own-call",
+      `import * as lib from "./lib.mjs";
 console.log(lib.read(1));
 `,
-        "mjs",
-        {
-          "lib.mjs": `const inner = function (n) { return n; };
+      "mjs",
+      {
+        "lib.mjs": `const inner = function (n) { return n; };
 ${define}
 export const read = (n) => inner.call(undefined, n);
 `,
-        },
-      );
-      expect(r.exitCode).toBe(1);
-      expect(r.stdout).toBe("");
-      expect(r.stderr).toMatch(
-        /^Uncaught Error: giving a value that can be a function a prototype that defines 'apply', 'bind' or 'call'.*\[SC1090 at .*lib\.mjs:\d\]\n$/,
-      );
-    },
-  );
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: giving a value that can be a function a prototype that defines 'apply', 'bind' or 'call'.*\[SC1090 at .*lib\.mjs:\d\]\n$/,
+    );
+  });
 
   // A statement can give a function its own `call` after the binding that
   // holds it: the proof reads no statements, so a program that defines

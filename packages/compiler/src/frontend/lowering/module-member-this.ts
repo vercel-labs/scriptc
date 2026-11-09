@@ -776,7 +776,9 @@ function isWritten(access: ts.Expression): boolean {
     }
     if (ts.isBinaryExpression(parent))
       return parent.left === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
-    return (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node;
+    return (
+      (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node
+    );
   }
 }
 

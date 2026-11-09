@@ -42,10 +42,12 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  adoptsAtTypedSlot,
   DYN,
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
   isDirentShape,
+  boxesAsLiveCapsule,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
@@ -292,6 +294,10 @@ export interface DynHost extends WalkerHost {
   liveDynUnionRefAdapter(t: IrType & { kind: "union" }): string;
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
+  /** The program links the adoption unit (RuntimeFeatures declAdopt): a
+   * typed slot's checked conversion keeps one identity with the dynamic
+   * value it was converted from (dynCheckAdoptingHelper). */
+  declAdopt?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
    * conversion reads them there; a kind in ISLAND_ADOPTED_KINDS converts
@@ -369,6 +375,10 @@ const DISCRIMINANT_DISPATCH_VALUES = 4;
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
   private readonly dynBuilders = new Map<string, string>();
+  /** The adopting variants of checked conversions (dynCheckAdoptingHelper),
+   * apart from dynBuilders: its size numbers the plain helpers, and a
+   * program that adopts keeps every one of their names. */
+  private readonly dynAdopters = new Set<string>();
   private readonly toDynFns = new Map<string, string>();
   private readonly dynFuncThunks = new Map<string, string>();
   private readonly dynFuncBoxes = new Map<string, string>();
@@ -408,6 +418,12 @@ export class LlDyn {
         return this.jsonParseHelper(args[0] as IrType)!;
       case "dyn.dynCheckHelper":
         return this.dynCheckHelper(args[0] as IrType, args[1] as boolean, args[2] === true);
+      case "dyn.dynCheckAdoptingHelper":
+        return this.dynCheckAdoptingHelper(
+          args[0] as IrType,
+          args[1] as boolean,
+          args[2] as boolean,
+        );
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
       case "dyn.promiseDynAdapterHelper":
@@ -3092,15 +3108,20 @@ export class LlDyn {
    * them and hands out the same object, with no call. Every other value,
    * and a capsule boxed with another copy of the key constant (a second
    * object file of one program), takes the helper, whose first test compares
-   * the key by content and whose remaining paths view, convert or throw. */
+   * the key by content and whose remaining paths view, convert or throw.
+   *
+   * A typed slot's conversion (dynCheck.shared) passes `adopting`, the
+   * type's dynCheckAdoptingHelper, which then stands in the helper's place:
+   * the site's text differs from the unflagged site's in that name only. */
   checkedRecordConversion(
     B: BlockBuilder,
     t: IrType & { kind: "record" },
     d: string,
     path: string,
     preserveRefs = false,
+    adopting?: string,
   ): string {
-    const helper = this.dynCheckHelper(t, preserveRefs);
+    const helper = adopting ?? this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
     // A codec handle's record is found through its box, never as a capsule.
     if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) {
@@ -3143,6 +3164,92 @@ export class LlDyn {
     const converted = B.tmp();
     B.line(`${converted} = phi ptr [ ${held}, %${lOwn} ], [ ${checked}, %${lOther} ]`);
     return converted;
+  }
+
+  /** dynCheckHelper for a typed slot's conversion that keeps one object
+   * (dynCheck.shared): the same signature and the same result, and a plain
+   * object or array that converted becomes a live capsule of the value
+   * built from it (scr_dyn_adopt_whole), so the dynamic value and the
+   * typed one stay one object. The runtime adopts all of the value or none
+   * of it: where a node cannot be adopted, the conversion stays the copy and
+   * the source is left as it was. The adoption lives here, out of line: a call
+   * site is the unflagged site's text with this callee, `<plain>_adopt`
+   * (`<plain>_adopt_held` for a borrowed source).
+   *
+   * Only a plain object or array has nodes to adopt (the kinds
+   * scr_dyn_adoptable names): every other value goes to the plain helper in
+   * a tail call. A failed check leaves its error pending and adopts nothing.
+   * A `borrowed` source is held for the adoption: the binding it was read
+   * from is a holder its count does not show, and the lenient walk adopts a
+   * node only when something else holds it.
+   *
+   * The plain helper itself where the program does not link the adoption
+   * unit (a library), the type has no live capsule, or the adoption could
+   * reach a record without fields, which would lose its source's properties
+   * (adoptsAtTypedSlot). */
+  dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {
+    const plain = this.dynCheckHelper(t, preserveRefs);
+    const host = this.host;
+    if (host.declAdopt?.() !== true) return plain;
+    const adopts = adoptsAtTypedSlot(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+    if (!adopts) return plain;
+    // Named after the plain helper, one name per (plain helper, borrowed):
+    // the variant takes no number of the `sc_dc_<n>` sequence, so a program
+    // that adopts differs from the same program without the flag only in
+    // its flagged sites and the helpers added for them.
+    const name = `${plain}_adopt${borrowed ? "_held" : ""}`;
+    if (this.dynAdopters.has(name)) return name;
+    this.dynAdopters.add(name);
+    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
+    host.declare(`declare void @scr_dyn_adopt_whole(ptr, ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    const B = new BlockBuilder();
+    const kind = this.kindOf(B, "%d");
+    const isArr = B.tmp();
+    const isObj = B.tmp();
+    const plainData = B.tmp();
+    B.line(`${isArr} = icmp eq i32 ${kind}, ${DYN_KIND.ARR}`);
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    B.line(`${plainData} = or i1 ${isArr}, ${isObj}`);
+    const lData = B.newLabel("dca.data");
+    const lOther = B.newLabel("dca.other");
+    const lAdopt = B.newLabel("dca.adopt");
+    const lDone = B.newLabel("dca.done");
+    B.condBr(plainData, lData, lOther);
+    B.startBlock(lOther);
+    const passed = B.tmp();
+    B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
+    B.terminate(`ret ptr ${passed}`);
+    B.startBlock(lData);
+    const built = B.tmp();
+    B.line(`${built} = call ptr @${plain}(ptr %d, ptr %path)`);
+    const failed = B.tmp();
+    B.line(`${failed} = call zeroext i1 @scr_exc_pending()`);
+    B.condBr(failed, lDone, lAdopt);
+    B.startBlock(lAdopt);
+    const capsule = this.liveToDyn(B, t, built);
+    if (capsule !== null) {
+      const held = borrowed ? this.retainDyn(B, "%d") : null;
+      B.line(`call void @scr_dyn_adopt_whole(ptr %d, ptr ${capsule})`);
+      if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
+      B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+    }
+    B.br(lDone);
+    B.startBlock(lDone);
+    B.terminate(`ret ptr ${built}`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) noinline ${FN_ATTRS} {`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    host.journalBuilt?.();
+    return name;
   }
 
   dynCheckHelper(t: IrType, preserveRefs = false, soleOwner = false): string {
@@ -6642,10 +6749,13 @@ export class LlDyn {
    * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
     const host = this.host;
-    if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) return null;
+    const live = boxesAsLiveCapsule(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+    if (!live) return null;
     if (t.kind === "union") {
-      const arms = host.unionsById.get(t.unionId)?.arms ?? [];
-      if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;
       const boxed = B.tmp();
       B.line(`${boxed} = call ptr @${host.liveDynUnionRefAdapter(t)}(ptr ${expr})`);
       return boxed;

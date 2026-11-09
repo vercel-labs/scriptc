@@ -132,6 +132,7 @@ import {
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
+import { sharedDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -17145,7 +17146,7 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
+        return sharedDynConversion(this, expr, expected, expr.loc);
       }
       return expr;
     }
@@ -17915,7 +17916,23 @@ export class Lowerer {
     }
   }
 
+  /** coerceIntoTyped, with the one exception to a typed slot keeping one
+   * object with the dynamic value it takes (sharedDynConversion): a value
+   * the program types itself and the compiler holds dynamically, such as an
+   * evolving empty array that takes another element type later, keeps the
+   * copy. Adoption would hold the source to the slot's type, a claim the
+   * program makes only for a value it left untyped. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    const out = this.coerceIntoTyped(node, expr, expected, payloadSite);
+    if (out.kind !== "dynCheck" || out.shared !== true) return out;
+    const untyped = (ts.TypeFlags.Any | ts.TypeFlags.Unknown) as number;
+    if ((this.typeOf(node).flags & untyped) !== 0) return out;
+    const copied = { ...out };
+    delete copied.shared;
+    return copied;
+  }
+
+  coerceIntoTyped(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const kind = expr.type.kind;
       if (

@@ -2480,13 +2480,43 @@ ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
   return scr_dyn_retain((ScrDyn *)entry);
 }
 
+/* Whether `d` is a live array capsule whose elements the two accessors below
+ * answer: the receiver scr_dyn_index_get answers. A class, record or bag
+ * capsule has no array hooks, and a program with event-reference hooks
+ * asks them for a member before the array's own. */
+static inline bool scr_dyn_arr_is_capsule(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF && !scr_event_ref_hooks && scr_dyn_typed_ref_array_ops(d);
+}
+
+/* scr_dyn_arr_at for a value that is no checked array, kept out of line so
+ * the checked array's read pays one tail call for it and nothing else. A
+ * live array capsule answers the element at an index below its length in
+ * the boxing the keyed read gives it (scr_dyn_typed_ref_element; an array
+ * without slot states holds a value at every such index). A hole has no
+ * element of its own: the capsule's plain view reads it, through the
+ * prototype chain. */
+static __attribute__((noinline)) ScrDyn *scr_dyn_arr_at_other(const ScrDyn *d, double i) {
+  if (!scr_dyn_arr_is_capsule(d)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrArr *arr = d->v.typed_ref.ptr;
+  if (!(i >= 0 && i < (double)arr->len)) return scr_dyn_retain(scr_dyn_undefined());
+  size_t index = (size_t)i;
+  if (!scr_arr_has_states(arr)) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
+  ScrDyn *element = scr_dyn_typed_ref_element(d, index);
+  if (element) return element;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  ScrDyn *result = view->kind == SCR_DYN_ARR ? scr_dyn_arr_at(view, (double)index)
+                                              : scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_release(view);
+  return result;
+}
+
 double scr_dyn_arr_len(const ScrDyn *d) {
-  return d->kind == SCR_DYN_ARR ? (double)d->v.arr.len : 0;
+  if (d->kind == SCR_DYN_ARR) return (double)d->v.arr.len;
+  return scr_dyn_arr_is_capsule(d) ? (double)((const ScrArr *)d->v.typed_ref.ptr)->len : 0;
 }
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
-  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)scr_dyn_arr_length(d)) {
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
+  if (d->kind != SCR_DYN_ARR) return scr_dyn_arr_at_other(d, i);
+  if (i < 0 || i >= (double)scr_dyn_arr_length(d)) return scr_dyn_retain(scr_dyn_undefined());
   if (scr_dyn_arr_has_index(d, (size_t)i)) return scr_dyn_retain(d->v.arr.items[(size_t)i]);
   char text[32];
   int length = snprintf(text, sizeof text, "%zu", (size_t)i);
@@ -5205,7 +5235,10 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
 
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry) {
   ScrStr *key = scr_str_new(entry->key, entry->key_len);
-  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+  /* An ordinary write of `__proto__` is Object.prototype's setter, which
+   * stores no property: the copy of an own one is a definition. */
+  bool proto = entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0;
+  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable && !proto) {
     scr_dyn_key_set(target, key, entry->value);
   } else {
     /* Properties defined through a view keep their attributes. */
@@ -22239,6 +22272,52 @@ static inline bool scr_weak_black(void *obj) {
   return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
 }
 
+/* The emitted types that are traced only for scr_weak_judge (the compiler's
+ * computeCyclic: a weak-collection key type, or a type that reaches one,
+ * that is on no cycle of counted references). The collector can free
+ * nothing through them, so their descriptors name scr_cyc_no_children and
+ * their objects are SCR_CYC_ACYCLIC: no release nominates one and no pass
+ * walks into one. The analysis must still follow what they hold, so the
+ * program object lists each such descriptor with its trace function and
+ * defines scr_weak_traces, overriding this weak, empty default (as it
+ * overrides scr_stdout_buffering, scr_console.c). The table's layout is in
+ * scr_json.h. */
+__attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
+/* scr_weak_traces by registry id, filled as one run of the analysis meets
+ * the ids (NULL: not looked up yet) and freed at its end, so a thread that
+ * exits leaves none. */
+static SCR_TL ScrTraceFn *scr_weak_trace_of;
+static SCR_TL uint32_t scr_weak_trace_ids;
+
+/* The trace the analysis follows for `type` (the registry's entry of an
+ * object's header): the one scr_weak_traces lists for it, or its own. A
+ * descriptor gets its id on its first allocation and keeps it, so the
+ * answer for an id never changes within a run. Every type is asked, not
+ * only the ones whose own trace is scr_cyc_no_children: naming that
+ * function here would move it in the symbol table of every executable. */
+static ScrTraceFn scr_weak_trace_lookup(const ScrCycType *type) {
+  uint32_t id = type->id;
+  if (id >= scr_weak_trace_ids) {
+    uint32_t ids = id + 64 - id % 64;
+    ScrTraceFn *grown = realloc(scr_weak_trace_of, ids * sizeof *grown);
+    if (!grown) scr_json_oom();
+    memset(grown + scr_weak_trace_ids, 0, (ids - scr_weak_trace_ids) * sizeof *grown);
+    scr_weak_trace_of = grown;
+    scr_weak_trace_ids = ids;
+  }
+  ScrTraceFn trace = scr_weak_trace_of[id];
+  if (trace) return trace;
+  trace = type->trace;
+  for (uint64_t i = 0; i < scr_weak_traces.count; i++) {
+    const ScrWeakTraceEntry *entry = &scr_weak_traces.entries[i];
+    if (__atomic_load_n(&entry->type->id, __ATOMIC_ACQUIRE) == id) {
+      trace = entry->trace;
+      break;
+    }
+  }
+  return scr_weak_trace_of[id] = trace;
+}
+
 /* The references the walk follows out of `obj`: the ones the collector
  * traces, and the promise of a boxed promise. The collector leaves that
  * edge alone (scr_dyn_trace_v: the box releases its promise itself), but a
@@ -22248,7 +22327,9 @@ static inline bool scr_weak_black(void *obj) {
  * The box holds one count of its promise for as long as it is a box, so
  * every walk of the analysis sees the same edge. */
 static inline void scr_weak_trace(void *obj, const ScrCycType *type, ScrTraceVisit visit) {
-  type->trace(obj, visit, NULL);
+  /* A type traced only for this analysis has its trace in scr_weak_traces. */
+  ScrTraceFn trace = scr_weak_traces.count ? scr_weak_trace_lookup(type) : type->trace;
+  trace(obj, visit, NULL);
   if (type->kind == SCR_CYC_KIND_DYN && ((ScrDyn *)obj)->kind == SCR_DYN_PROMISE)
     visit(((ScrDyn *)obj)->v.promise, NULL);
 }
@@ -22499,6 +22580,9 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   }
   scr_weak_vec_free(&scr_weak_grayed);
   scr_weak_vec_free(&scr_weak_work);
+  free(scr_weak_trace_of);
+  scr_weak_trace_of = NULL;
+  scr_weak_trace_ids = 0;
   /* Unlink before release: releasing a value can dispose another key, and
    * with it entries of this list. */
   for (size_t i = 0; i < dead.n; i++) {

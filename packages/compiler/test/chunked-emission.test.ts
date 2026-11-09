@@ -9,7 +9,8 @@ import { inlineRcOption } from "../src/backend/llvm/shapes.js";
 
 // Programs whose function bodies request module-level helpers and tables
 // that the chunk journal (emit-journal.ts) carries: checked-dynamic
-// conversions (with their discriminant tables), inspection, publication
+// conversions (with their discriminant tables, and with the per-class test
+// of an ancestor's capsule, which the journal does not carry), inspection, publication
 // walkers, live record views, stream adapters, regex instances, colliding
 // literal digests, interned C strings, speculative loop sites, typed message
 // listeners and readers, and static number tables whose elements JSON cannot
@@ -24,6 +25,7 @@ const PROGRAMS = [
   "5612-readable-from-iterables.cjs",
   "5702-publish-candidate-buffers.ts",
   "6305-json-discriminant-dispatch.ts",
+  "6316-class-capsule-ancestor-levels.ts",
   "7321-speculative-loop-bail-sites.ts",
   "7360-worker-typed-records.ts",
   "7110-als-completion-callbacks.ts",

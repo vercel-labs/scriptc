@@ -940,6 +940,8 @@ export function emitJsIcCall(
       return emitKeyed(host, e, callee);
     case "keyedSet":
       return emitKeyedSet(host, e, callee);
+    case "namedSet":
+      return emitNamedSet(host, e, callee, site.write);
   }
 }
 
@@ -1589,6 +1591,44 @@ function emitKeyedSet(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValu
     B.line(`store ptr ${keyCell}, ptr ${keySlot}`);
   }
   helperCall(host, e, callee, [receiver, { name: keyCell, type: DYN }, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
+}
+
+/** A write under a run-time name (`receiver[name] = value`, the name a
+ * string): an ordinary object takes the helper's generic write here, with
+ * the site's borrowed operands, and every other receiver (a class
+ * instance, a class object, an array, a proxy, a primitive) calls the
+ * helper. The write is the runtime entry the helper's own tail calls, the
+ * sloppy-mode one for a sloppy helper, so it defines the same assignment:
+ * the runtime answers a record's members through its layout (scr_json.c
+ * scr_dyn_plain_record_assign) and everything else as before. */
+function emitNamedSet(
+  host: Host,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  write: IrExpr & { kind: "libCall" },
+): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const key = emitBorrowedInput(host, e.args[1]!);
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const object = B.newLabel("ins.obj");
+  const slow = B.newLabel("ins.slow");
+  const join = B.newLabel("ins.j");
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, slow);
+  B.startBlock(object);
+  const sloppy = host.sloppyDynWrites.has(
+    `${write.loc.file}\0${write.loc.start}\0${write.loc.end}`,
+  );
+  const entry = sloppy ? "scr_dyn_key_set_sloppy" : "scr_dyn_key_set";
+  host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
+  B.line(`call void @${entry}(ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name})`);
+  host.emitPendingCheck();
+  B.br(join);
+  B.startBlock(slow);
+  helperCall(host, e, callee, [receiver, key, value]);
   B.br(join);
   B.startBlock(join);
   return { name: "", type: e.type };

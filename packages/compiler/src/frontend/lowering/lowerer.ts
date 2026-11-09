@@ -20251,10 +20251,17 @@ export class Lowerer {
    * the error and checked at the member's type. An error class has no field
    * copy (objToRecordPlan declines the members the runtime holds), so the
    * pair had no conversion and was refused. Asked only where every other
-   * conversion declined, so a pair that converted keeps its route. */
+   * conversion declined, so a pair that converted keeps its route.
+   *
+   * A record that names `stack` keeps the refusal: the view of a program
+   * subclass's instance does not answer `stack` to the record's member read
+   * (it would read as absent), and a slot typed by a builtin error class can
+   * hold such an instance. */
   private errorIntoRecord(expr: IrExpr, expected: IrType): IrExpr | null {
     if (expr.type.kind !== "object" || expected.kind !== "record") return null;
     if (!this.isErrorRootedClass(expr.type.className) || !this.dynConvertible(expr.type))
+      return null;
+    if (this.shapes.get(expected.shapeId)?.fields.some((field) => field.name === "stack"))
       return null;
     if (
       !canDynCheckTo(

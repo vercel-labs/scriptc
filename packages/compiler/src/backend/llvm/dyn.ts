@@ -60,6 +60,11 @@ import {
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
+import {
+  collectionKeyAccess,
+  decodeCollectionKeyIn,
+  encodeCollectionKeyIn,
+} from "./string-union-keys.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
 import {
@@ -68,7 +73,6 @@ import {
   llFieldType,
   loadStructField,
   mapFlagsOffset,
-  mapKeyAccess,
   mapKeyParamType,
   releaseSym,
   traceAdapter,
@@ -1015,7 +1019,14 @@ export class LlDyn {
       // records/arrays inside unions, rather than a detached dyn snapshot.
       const B = new BlockBuilder();
       B.line(`%value = ${unpack}`);
-      if (
+      // A string-key union's collection stores key strings for its unit
+      // arms (string-union-keys.ts): the slot is decoded before it is boxed
+      // and encoded after it is unboxed.
+      const storesKeyStrings = role === "key" && this.host.nullableUnions.stringKey(type) !== null;
+      if (storesKeyStrings) {
+        const decoded = decodeCollectionKeyIn(B, this.host, type, "%value");
+        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} ${decoded})`);
+      } else if (
         type.kind === "union" &&
         this.host.unionsById.get(type.unionId)?.arms.some(streamTypedRefEligible)
       ) {
@@ -1038,6 +1049,22 @@ export class LlDyn {
         B.render(),
         `}`,
         "",
+      );
+      if (storesKeyStrings) {
+        const U = new BlockBuilder();
+        U.line(`%value = call ptr @${unbox}(ptr %d, ptr null)`);
+        const stored = encodeCollectionKeyIn(U, this.host, type, "%value");
+        U.line(`%result = ptrtoint ptr ${stored} to i64`);
+        U.terminate("ret i64 %result");
+        this.defs.push(
+          `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
+          U.render(),
+          `}`,
+          "",
+        );
+        return;
+      }
+      this.defs.push(
         `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
         `  %value = call ${ty === "i1" ? "zeroext i1" : ty} @${unbox}(ptr %d, ptr null)`,
         `  %result = ${pack}`,
@@ -1742,7 +1769,7 @@ export class LlDyn {
     const valueKeeps = valueType !== null && this.entryKeepsReferences(valueType);
     const valueCheck =
       valueType === null ? null : this.dynCheckHelper(valueType, valueKeeps, valueKeeps);
-    const kAcc = mapKeyAccess(keyType);
+    const kAcc = collectionKeyAccess(host, keyType);
     const vAcc = valueType === null ? "f64" : elemAccess(valueType);
     const kTy = mapKeyParamType(kAcc);
     const vTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
@@ -1840,7 +1867,10 @@ export class LlDyn {
       }
       // The key is borrowed (the storage retains what it keeps); the value
       // moves in.
-      B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${k}, ${vTy} ${v})`);
+      const storedKey = encodeCollectionKeyIn(B, host, keyType, k);
+      B.line(
+        `call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${storedKey}, ${vTy} ${v})`,
+      );
       drop(keyType, k);
     });
     // The collection must still be, entry for entry, what was checked: a

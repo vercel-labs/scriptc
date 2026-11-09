@@ -9,6 +9,7 @@ import {
   arrOps,
   elemAccess,
   FN_ATTRS,
+  arrNewCall,
   mapKeyAccess,
   type MapKeyAccess,
   mapKeyKindNum,
@@ -73,6 +74,12 @@ import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
 import { INT32_RANGE } from "../../ir/integer-ranges.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
+import {
+  collectionKeyAccess,
+  decodeCollectionKey,
+  emitIndexLoop,
+  encodeCollectionKey,
+} from "./string-union-keys.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -1324,7 +1331,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     ? vAdapters(host.shapeHost, value)
     : { retain: "null", release: "null" };
   const keyRc =
-    mapKeyAccess(key) === "ref"
+    collectionKeyAccess(host, key) === "ref"
       ? { ...vAdapters(host.shapeHost, key), trace: traceArg(host.shapeHost, key) }
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
@@ -1360,8 +1367,14 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function collectionNewCall(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
-  // pointer (boxedUnionIds).
-  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
+  // pointer (boxedUnionIds). SCR_MAP_KEY_STR (1): a string-key union's keys
+  // are strings (string-union-keys.ts).
+  const kind =
+    host.nullableUnions.stringKey(key) !== null
+      ? 1
+      : host.nullableUnions.of(key) !== null
+        ? 2
+        : mapKeyKindNum(key, arms);
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
   const valKind = compactMapValues(host, key, value) ? 3 : mapValKindNum(value);
@@ -1381,6 +1394,99 @@ export function checkedCollectionNewCall(
   return collectionNewCall(host, key, value);
 }
 
+/** `[...set]` of a Set of a string-key union: a fresh +1 array of the
+ * live elements in insertion order, each stored key decoded. The runtime's
+ * copy would hand the key strings of the unit arms to the program. */
+function emitStringKeySetToArray(
+  host: LlvmEmitterContext,
+  set: string,
+  elem: IrType,
+  type: IrType,
+): LlValue {
+  const B = host.B;
+  const out = B.tmp();
+  B.line(`${out} = ${arrNewCall(host.shapeHost, elem, "0")}`);
+  const result = host.own({ name: out, type });
+  host.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
+  host.declare(`declare ptr @scr_map_iter_key_str(ptr, double)`);
+  host.declare(`declare double @scr_arr_push_ref(ptr, ptr)`);
+  emitIndexLoop(host, emitMapIterCount(host, set), (index) => {
+    const live = B.tmp();
+    B.line(`${live} = call zeroext i1 @scr_map_iter_live(ptr ${set}, double ${index})`);
+    const hit = B.newLabel("ukey.live"),
+      next = B.newLabel("ukey.next");
+    B.condBr(live, hit, next);
+    B.startBlock(hit);
+    const stored = B.tmp();
+    // The key comes back +1 and moves into the array.
+    B.line(`${stored} = call ptr @scr_map_iter_key_str(ptr ${set}, double ${index})`);
+    const value = decodeCollectionKey(host, elem, stored);
+    B.line(`call double @scr_arr_push_ref(ptr ${out}, ptr ${value})`);
+    B.br(next);
+    B.startBlock(next);
+  });
+  return result;
+}
+
+/** Adds the union value `value` (+1, released here) to a Set of a
+ * string-key union: the runtime retains the key it stores. */
+function emitStringKeySetAdd(
+  host: LlvmEmitterContext,
+  set: string,
+  elem: IrType,
+  value: string,
+): void {
+  host.mapSet(set, "str", "f64", encodeCollectionKey(host, elem, value), f64Lit(0));
+  host.releaseFrame(value, elem);
+}
+
+/** `new Set(values)` of a string-key union: each element of the borrowed
+ * seed array is added in order. The runtime's bulk add would hash the unit
+ * arms' pointers as strings. */
+function emitStringKeySetSeed(
+  host: LlvmEmitterContext,
+  set: string,
+  elem: IrType,
+  values: string,
+): void {
+  const B = host.B;
+  host.declare(`declare double @scr_arr_len(ptr)`);
+  host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
+  const count = B.tmp();
+  B.line(`${count} = call double @scr_arr_len(ptr ${values})`);
+  emitIndexLoop(host, count, (index) => {
+    const value = B.tmp();
+    B.line(`${value} = call ptr @scr_arr_get_ref(ptr ${values}, double ${index})`);
+    emitStringKeySetAdd(host, set, elem, value);
+  });
+}
+
+/** The values of a Map added to a Set of a string-key union, in the Map's
+ * insertion order. */
+function emitStringKeyValuesInto(
+  host: LlvmEmitterContext,
+  set: string,
+  elem: IrType,
+  map: string,
+): void {
+  const B = host.B;
+  host.declare(`declare zeroext i1 @scr_map_iter_live(ptr, double)`);
+  host.declare(`declare ptr @scr_map_iter_val_ref(ptr, double)`);
+  emitIndexLoop(host, emitMapIterCount(host, map), (index) => {
+    const live = B.tmp();
+    B.line(`${live} = call zeroext i1 @scr_map_iter_live(ptr ${map}, double ${index})`);
+    const hit = B.newLabel("ukey.live"),
+      next = B.newLabel("ukey.next");
+    B.condBr(live, hit, next);
+    B.startBlock(hit);
+    const value = B.tmp();
+    B.line(`${value} = call ptr @scr_map_iter_val_ref(ptr ${map}, double ${index})`);
+    emitStringKeySetAdd(host, set, elem, value);
+    B.br(next);
+    B.startBlock(next);
+  });
+}
+
 /** Construct matching key/value storage once for Maps and Sets. */
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
@@ -1393,7 +1499,7 @@ export function emitMapNew(host: LlvmEmitterContext, e: IrExpr & { kind: "mapNew
   if (e.type.kind !== "map")
     throw new InternalCompilerError("llvm emitter bug: mapNew of non-map type");
   const value = e.type.value;
-  const kAcc = mapKeyAccess(e.type.key);
+  const kAcc = collectionKeyAccess(host, e.type.key);
   const m = newCollection(host, e.type.key, value);
   const out = host.own({ name: m, type: e.type });
   // Seeded construction: set() each pair in source order — a repeated
@@ -1403,7 +1509,7 @@ export function emitMapNew(host: LlvmEmitterContext, e: IrExpr & { kind: "mapNew
     const k = emitBorrowedInput(host, pair.key);
     const v = host.emitExpr(pair.value);
     if (vAcc === "ref") host.toHeap(v); // the value MOVES in
-    host.mapSet(m, kAcc, vAcc, k.name, v.name);
+    host.mapSet(m, kAcc, vAcc, encodeCollectionKey(host, e.type.key, k.name), v.name);
   }
   return out;
 }
@@ -1445,8 +1551,11 @@ export function emitMapLikeIntrinsic(
     throw new InternalCompilerError("unreachable");
   }
   const key = receiverType.kind === "map" ? receiverType.key : receiverType.elem;
-  const kAcc = mapKeyAccess(key);
+  const kAcc = collectionKeyAccess(host, key);
   const kTy = mapKeyParamType(kAcc);
+  // The key the collection stores for an evaluated key operand (a
+  // string-key union's unit arms are key strings).
+  const stored = (operand: LlValue): string => encodeCollectionKey(host, key, operand.name);
   // The map keeps compact values in 16-byte entries (SCR_MAP_VAL_CREF).
   const compact = receiverType.kind === "map" && compactMapValues(host, key, receiverType.value);
   const layout = mapEntryLayout(key, compact);
@@ -1478,6 +1587,10 @@ export function emitMapLikeIntrinsic(
       throw new InternalCompilerError("llvm emitter bug: values from non-map");
     const result = newCollection(host, receiverType.value, { kind: "f64" });
     const out = host.own({ name: result, type: e.type });
+    if (host.nullableUnions.stringKey(receiverType.value) !== null) {
+      emitStringKeyValuesInto(host, result, receiverType.value, r.name);
+      return out;
+    }
     host.declare(`declare void @scr_map_values_into(ptr, ptr, i1 zeroext)`);
     B.line(
       `call void @scr_map_values_into(ptr ${result}, ptr ${r.name}, i1 ${receiverType.value.kind === "dyn"})`,
@@ -1714,11 +1827,12 @@ export function emitMapLikeIntrinsic(
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
-      const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
+      const kName = stored(k);
+      const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, kName, v.name);
       if (
         (kAcc === "str" || kAcc === "f64") &&
         vAcc !== "ref" &&
-        emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+        emitFusedMapSet(host, e, r.name, kName, { name: v.name, access: vAcc }, ordinary)
       ) {
         // Written through the read's entry, or inserted.
       } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
@@ -1742,7 +1856,7 @@ export function emitMapLikeIntrinsic(
         emitNumberMapSetScalar(host, r.name, k.name, null, () =>
           host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0)),
         );
-      else host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0));
+      else host.mapSet(r.name, kAcc, "f64", stored(k), f64Lit(0));
       return { name: "", type: e.type };
     }
     case "has": {
@@ -1752,7 +1866,7 @@ export function emitMapLikeIntrinsic(
         return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
       }
       if (kAcc === "str")
-        return { name: emitStringMapHas(host, r.name, k.name, compact), type: e.type };
+        return { name: emitStringMapHas(host, r.name, stored(k), compact), type: e.type };
       host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);
       const t = B.tmp();
       B.line(`${t} = call zeroext i1 @scr_map_has_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
@@ -1762,7 +1876,7 @@ export function emitMapLikeIntrinsic(
       const k = emitBorrowedInput(host, e.args[0]!);
       host.declare(`declare zeroext i1 @scr_map_delete_${kAcc}(ptr, ${kTy})`);
       const t = B.tmp();
-      B.line(`${t} = call zeroext i1 @scr_map_delete_${kAcc}(ptr ${r.name}, ${kTy} ${k.name})`);
+      B.line(`${t} = call zeroext i1 @scr_map_delete_${kAcc}(ptr ${r.name}, ${kTy} ${stored(k)})`);
       return { name: t, type: e.type };
     }
     case "size":
@@ -1798,7 +1912,8 @@ export function emitMapLikeIntrinsic(
           { decl: `declare ${retTy} @${symbol}(ptr, double)`, symbol },
           layout,
         );
-        return host.own({ name: t, type: e.type });
+        // A string-key union's stored key becomes the union's value again.
+        return host.own({ name: decodeCollectionKey(host, key, t), type: e.type });
       }
       const retTy = "ptr";
       host.declare(`declare ${retTy} @scr_map_iter_key_${kAcc}(ptr, double)`);
@@ -1839,6 +1954,8 @@ export function emitMapLikeIntrinsic(
       if (receiverType.kind !== "set") throw new InternalCompilerError("unreachable");
       // Fresh +1 elem[] of the live entries in insertion order; a REF result
       // takes its element type's array descriptor.
+      if (host.nullableUnions.stringKey(receiverType.elem) !== null)
+        return emitStringKeySetToArray(host, r.name, receiverType.elem, e.type);
       const t = B.tmp();
       if (kAcc === "ref") {
         host.declare(`declare ptr @scr_set_to_arr_ref(ptr, ptr)`);
@@ -1869,6 +1986,10 @@ export function emitSetNew(host: LlvmEmitterContext, e: IrExpr & { kind: "setNew
     // Seeded construction (`new Set(values)`): one borrowed T[] whose
     // elements add() in order (duplicates keep first insertion position).
     const arr = host.emitExpr(e.seed);
+    if (host.nullableUnions.stringKey(e.type.elem) !== null) {
+      emitStringKeySetSeed(host, s, e.type.elem, arr.name);
+      return out;
+    }
     host.declare(`declare void @scr_set_add_all(ptr, ptr)`);
     B.line(`call void @scr_set_add_all(ptr ${s}, ptr ${arr.name})`);
   }

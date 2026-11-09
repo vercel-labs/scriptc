@@ -24,7 +24,8 @@ import {
 } from "./map-number-lookup.js";
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { mapKeyAccess, mapKeyParamType } from "./shapes.js";
+import { mapKeyParamType } from "./shapes.js";
+import { collectionKeyAccess, encodeCollectionKey } from "./string-union-keys.js";
 import { rememberMapEntry } from "./map-entry-fusion.js";
 
 function hasTypedCollectionReceiver(
@@ -394,10 +395,12 @@ export function emitMapLookupKey(
       args: `ptr ${span.bytes}, ${host.sizeType} ${span.length}`,
     };
   const value = borrow ? host.emitReadReceiver(key) : host.emitExpr(key);
-  const access = mapKeyAccess(key.type);
+  const access = collectionKeyAccess(host, key.type);
   const type = mapKeyParamType(access);
   if (access === "f64") noteNumberMapKey(host, value, key);
-  return { access, types: type, args: `${type} ${value.name}`, value: value.name };
+  // A string-key union's value becomes the key its collection stores.
+  const name = encodeCollectionKey(host, key.type, value.name);
+  return { access, types: type, args: `${type} ${name}`, value: name };
 }
 
 /** The key's double operand when the lookup can take the inline number path. */

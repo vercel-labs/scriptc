@@ -246,3 +246,30 @@ class Tagged<T, B extends boolean> {
 }
 console.log(new Tagged(1, true).describe(), new Tagged("x", false).describe());
 console.log(new Tagged(2, false).label(), new Tagged(2, true).label());
+
+// A conditional over a parameter whose DEFAULT names another (`K = T`): a
+// reference that leaves `K` out, `Slot<T>`, hands `T` on to the conditional,
+// so the class is keyed by that argument's literal: directly, behind another
+// alias, and through an interface with such a default.
+type Slot<T, K = T> = K extends "wide" ? number : string;
+type MaybeSlot<T> = Slot<T> | undefined;
+interface Carrier<T, K = T> {
+  value: K extends "wide" ? number : string;
+}
+class Shelf<T> {
+  held: Slot<T>;
+  spare: MaybeSlot<T>;
+  carrier: Carrier<T>;
+  constructor(v: Slot<T>, c: Carrier<T>) {
+    this.held = v;
+    this.spare = v;
+    this.carrier = c;
+  }
+  get(): Slot<T> {
+    return this.held;
+  }
+}
+const wideShelf = new Shelf<"wide">(41, { value: 8 });
+const thinShelf = new Shelf<"thin">("reed", { value: "eight" });
+console.log(typeof wideShelf.get(), wideShelf.get() + 1, typeof wideShelf.spare, wideShelf.carrier.value);
+console.log(typeof thinShelf.get(), thinShelf.get().length, typeof thinShelf.spare, thinShelf.carrier.value);

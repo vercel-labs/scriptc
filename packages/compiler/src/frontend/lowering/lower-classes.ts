@@ -5723,8 +5723,9 @@ export function genericClassInstanceType(
  * argument that a type alias or interface the class refers to hands on to
  * a conditional type of its own (`get(): Value<T, K>` with `type Value<T,
  * K> = K extends "required" ? T : T | undefined`, also when the alias wraps
- * the conditional in a union or another alias). Their arguments pick the
- * conditional's branch.
+ * the conditional in a union or another alias, and also when the alias
+ * reaches the conditional through a parameter's default, `Value<T, K = T>`
+ * referred to as `Value<T>`). Their arguments pick the conditional's branch.
  *
  * A reference counts by position, not as a whole: `items: Array<T>` names
  * `T` where `interface Array<T>` has no conditional over it (the one in
@@ -5772,6 +5773,17 @@ function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Se
         const named = new Set<ts.Symbol>();
         if (ts.isTypeAliasDeclaration(d)) scan(d.type, own, named);
         else for (const member of d.members.nodes) scan(member, own, named);
+        // A reference that leaves an argument out takes the parameter's
+        // default: what the default of a parameter a conditional depends on
+        // names picks the branch too (`type Slot<T, K = T> = K extends "wide"
+        // ? number : string`, referred to as `Slot<T>`), and so does what a
+        // conditional inside any default names. The positions are the
+        // declaration's, whether or not a reference writes the argument out.
+        d.typeParameters?.nodes.forEach((parameter, i) => {
+          if (!parameter.defaultType) return;
+          if (positions.has(i)) collect(parameter.defaultType, own, named);
+          else scan(parameter.defaultType, own, named);
+        });
         for (const parameterSymbol of named) positions.add(own.get(parameterSymbol)!);
       }
     }

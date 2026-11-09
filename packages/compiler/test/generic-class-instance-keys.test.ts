@@ -85,3 +85,23 @@ console.log(new Tagged(1, true).describe(), new Tagged("x", false).describe(), n
 `);
   expect(stdout).toBe("1:on x:off off\n");
 });
+
+test("a class is keyed by a literal argument that reaches a conditional through a parameter's default", async () => {
+  // `Slot<T>` leaves `K` out, so `K` is `T`: the argument picks the
+  // conditional's branch, and `Shelf<"wide">` and `Shelf<"thin">` are two
+  // classes although both arguments have the layout of a string.
+  const stdout = await run(`
+type Slot<T, K = T> = K extends "wide" ? number : string;
+type MaybeSlot<T> = Slot<T> | undefined;
+class Shelf<T> {
+  held: Slot<T>;
+  spare: MaybeSlot<T>;
+  constructor(v: Slot<T>) { this.held = v; this.spare = v; }
+  get(): Slot<T> { return this.held; }
+}
+const wide = new Shelf<"wide">(41);
+const thin = new Shelf<"thin">("reed");
+console.log(typeof wide.get(), wide.get() + 1, typeof thin.get(), thin.get().length, typeof thin.spare);
+`);
+  expect(stdout).toBe("number 42 string 4 string\n");
+});

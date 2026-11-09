@@ -1,4 +1,5 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { isTerminalStreamMethodRead } from "../builtins/process.js";
 import { memberCallHolder, withMemberCallReceiver } from "../member-call-receivers.js";
 import { shadowedHandleMember } from "../handle-properties.js";
 import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
@@ -161,6 +162,8 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Method) || symbol.flags & ts.SymbolFlags.Optional)
     return false;
   if (!lowerer.isStdlibSymbol(symbol)) return false;
+  // A process stream has its terminal methods only on a terminal.
+  if (isTerminalStreamMethodRead(lowerer, node)) return false;
   const nullable =
     ts.TypeFlags.Any |
     ts.TypeFlags.Unknown |
@@ -334,7 +337,9 @@ export function lowerOptionalChain(
     dotNode === expr &&
     ts.isCallExpression(expr) &&
     !alwaysPresentStdlibMethod(lowerer, recvNode) &&
-    neverNullishCallee(lowerer, recvNode) &&
+    // A process stream's terminal method is optional and has no value form
+    // either: its call tests the stream itself.
+    (neverNullishCallee(lowerer, recvNode) || isTerminalStreamMethodRead(lowerer, recvNode)) &&
     tryLowerExpression(lowerer, recvNode) === null
   ) {
     lowerer.chainHandled.add(dotNode);

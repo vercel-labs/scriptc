@@ -10,6 +10,7 @@ import {
   type IrFunction,
   type IrModule,
   type IrLibFn,
+  type IrStmt,
 } from "./ir.js";
 import {
   JS_OBJECT_MODEL_LIB_FNS,
@@ -879,6 +880,48 @@ describe("runtime feature snapshots", () => {
       },
     });
     expect(moduleRuntimeFeatures(untyped).streamPipeEvents).toBe(true);
+  });
+
+  test("gates the terminal color methods on a held process stream and one of their names", () => {
+    const invoke = (method: string): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "dynInvoke",
+        recv: { kind: "unitLit", unit: "undefined", type: DYN, loc },
+        method,
+        calleeName: `out.${method}`,
+        args: [],
+        type: DYN,
+        loc,
+      },
+    });
+    // A program that holds the stream object and names neither method keeps
+    // the default events unit.
+    const holder = module();
+    holder.functions[0]!.body.push(call("process.stdio"), invoke("getWindowSize"));
+    expect(moduleRuntimeFeatures(holder)).toMatchObject({ stdioObject: true, ttyColors: false });
+
+    // The name alone, without a stream object to read it from, selects
+    // nothing.
+    const named = module();
+    named.functions[0]!.body.push(invoke("hasColors"));
+    expect(moduleRuntimeFeatures(named).ttyColors).toBe(false);
+
+    for (const method of ["getColorDepth", "hasColors"]) {
+      const calling = module();
+      calling.functions[0]!.body.push(call("process.stdio"), invoke(method));
+      expect(moduleRuntimeFeatures(calling).ttyColors, method).toBe(true);
+
+      // A member read by name, or a computed key that is a literal.
+      const reading = module();
+      reading.functions[0]!.body.push(call("process.stdioSlot"), {
+        kind: "exprStmt",
+        loc,
+        expr: { kind: "strLit", value: method, type: { kind: "string" }, loc },
+      });
+      expect(moduleRuntimeFeatures(reading).ttyColors, method).toBe(true);
+    }
   });
 
   test("gates the process.features object on reading it as a value", () => {

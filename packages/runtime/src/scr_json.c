@@ -5235,7 +5235,10 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
 
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry) {
   ScrStr *key = scr_str_new(entry->key, entry->key_len);
-  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+  /* An ordinary write of `__proto__` is Object.prototype's setter, which
+   * stores no property: the copy of an own one is a definition. */
+  bool proto = entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0;
+  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable && !proto) {
     scr_dyn_key_set(target, key, entry->value);
   } else {
     /* Properties defined through a view keep their attributes. */

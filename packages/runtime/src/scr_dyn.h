@@ -1001,7 +1001,8 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
- * plain data properties by an ordinary write, others by their descriptor. */
+ * plain data properties by an ordinary write; the others, and an own
+ * `__proto__`, which an ordinary write would not store, by their descriptor. */
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */
@@ -1079,8 +1080,8 @@ static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *k
 static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
   if (source->v.obj.layout) {
     ScrDynProp prop = scr_dyn_obj_prop_at(source, i);
-    ScrDynEntry entry = {(char *)prop.key, prop.key_len, prop.value, NULL, NULL,
-                         false, false, false, true, true, true};
+    ScrDynEntry entry = {.key = (char *)prop.key, .key_len = prop.key_len, .value = prop.value,
+                         .writable = true, .enumerable = true, .configurable = true};
     scr_dyn_copy_entry(target, source, &entry);
     return;
   }

@@ -1304,17 +1304,24 @@ static TestStreamAnswer test_stream_ask(ScrDyn *(*view)(void *), const char *nam
 static void stream_ref_member_questions(void) {
   /* Before the stream unit's first stream nothing answers but the view. */
   assert(!scr_stream_ref_hooks.view && !scr_stream_ref_hooks.member);
+  assert(!scr_stream_ref_hooks.get && !scr_stream_ref_hooks.has);
   TestStreamAnswer answer = test_stream_ask(test_stream_view, "flush");
   assert(!answer.read && !answer.in && !answer.has && answer.asked == 0);
   assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
-  /* A capsule with no adapter matches the empty record and is turned away. */
+  /* A capsule with no adapter is no stream while the record is empty: no
+   * question reaches the record's functions, which are not there yet. */
   TestStream *stream;
   ScrDyn *capsule = test_stream_capsule(&stream, NULL);
   ScrStr *key = scr_str_new("flush", 5);
   assert(!scr_dyn_typed_ref_key_get(capsule, key) && stream->asked == 0);
+  /* Nor while another thread is filling the record in: the questions are
+   * set and `view`, which goes in last, is not. */
+  scr_stream_ref_hooks.member = test_stream_member;
+  scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
+  scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && stream->asked == 0);
   scr_dyn_release(capsule);
 
-  scr_stream_ref_hooks.member = test_stream_member;
   scr_stream_ref_hooks.view = test_stream_view;
 
   /* A name the view holds nowhere: answered, and no view is built. */
@@ -1362,6 +1369,8 @@ static void stream_ref_member_questions(void) {
   scr_dyn_release(capsule);
 
   scr_stream_ref_hooks.view = NULL;
+  scr_stream_ref_hooks.get = NULL;
+  scr_stream_ref_hooks.has = NULL;
   scr_stream_ref_hooks.member = NULL;
   assert(!scr_exc_pending());
 }

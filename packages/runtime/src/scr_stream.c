@@ -2782,6 +2782,8 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
    * address a capsule is known by goes in last. */
   if (!scr_stream_ref_hooks.view) {
     scr_stream_ref_hooks.member = scr_stream_ref_member;
+    scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
+    scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
     scr_stream_ref_hooks.view = scr_stream_ref_view;
   }
   s->rc = 1;

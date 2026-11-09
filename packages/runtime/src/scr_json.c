@@ -5871,15 +5871,20 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
-ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL };
+ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL };
 
-/* Whether capsule `d` may hold a native stream that answers member
- * questions without its view: its snapshot adapter is the stream unit's.
- * This is all a capsule of another kind pays, so the questions themselves
- * stay out of line. Before the unit's first stream a capsule with no
- * adapter passes too; scr_typed_ref_stream_member turns it away. */
+/* Whether capsule `d` holds a native stream that answers member questions
+ * without its view: its snapshot adapter is the stream unit's. This is all
+ * a capsule of another kind pays, and all a program without a stream
+ * carries: the questions are the record's. Before the unit's first stream
+ * the record is empty and a capsule with no adapter is no stream; `view` is
+ * read once, so the test holds while another thread fills the record in.
+ * The comparison comes first: it alone turns a capsule of another kind
+ * away, and only a match goes on to ask whether there is a record. */
 static inline bool scr_typed_ref_stream(const ScrDyn *d) {
-  return d->v.typed_ref.materialize == scr_stream_ref_hooks.view;
+  ScrDyn *(*view)(void *) = scr_stream_ref_hooks.view;
+  if (__builtin_expect(d->v.typed_ref.materialize != view, 1)) return false;
+  return view != NULL;
 }
 
 /* What the view of live stream capsule `d` holds under `key`, which is no
@@ -5900,8 +5905,11 @@ static inline int scr_typed_ref_stream_member(const ScrDyn *d, const ScrStr *key
 }
 
 /* scr_typed_ref_unowned_get of a stream capsule, for a `key` that is no
- * name of Object.prototype. */
-static SCR_COLD ScrDyn *scr_typed_ref_stream_get(const ScrDyn *d, const ScrStr *key) {
+ * name of Object.prototype. Only the stream unit names this function and
+ * the next one (it puts them in scr_stream_ref_hooks), so the linker keeps
+ * them for a program with a stream and for no other. Both are built for
+ * size: what a question costs is the name lookup in the stream unit. */
+SCR_COLD ScrDyn *scr_typed_ref_stream_get(const ScrDyn *d, const ScrStr *key) {
   ScrDyn *value = NULL;
   int member = scr_typed_ref_stream_member(d, key, &value);
   if (member == 0) return scr_dyn_retain(scr_dyn_undefined());
@@ -5911,7 +5919,7 @@ static SCR_COLD ScrDyn *scr_typed_ref_stream_get(const ScrDyn *d, const ScrStr *
 /* Whether the view of live stream capsule `d` holds `key`, as its own data
  * property or as a method it inherits: 1 or 0, or -1 when the view must
  * answer. */
-static SCR_COLD int scr_typed_ref_stream_has(const ScrDyn *d, const ScrStr *key) {
+SCR_COLD int scr_typed_ref_stream_has(const ScrDyn *d, const ScrStr *key) {
   if (scr_dyn_object_proto_name(key)) return -1;
   int member = scr_typed_ref_stream_member(d, key, NULL);
   return member < 0 ? -1 : member != 0;
@@ -5926,7 +5934,7 @@ static ScrDyn *scr_typed_ref_unowned_get(const ScrDyn *d, const ScrStr *key) {
     return scr_typed_ref_plain_record(d) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
   /* Of the capsules that reach this line, only a stream's has an answer. */
   if (!scr_typed_ref_plain_array(d) || key->len == 0)
-    return scr_typed_ref_stream(d) ? scr_typed_ref_stream_get(d, key) : NULL;
+    return scr_typed_ref_stream(d) ? scr_stream_ref_hooks.get(d, key) : NULL;
   /* An identifier: indexes and numeric names have their own answers. */
   unsigned char first = (unsigned char)key->data[0];
   if (first != '$' && first != '_' && !((first | 0x20) >= 'a' && (first | 0x20) <= 'z')) return NULL;
@@ -14101,7 +14109,7 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
     }
     /* A stream's view holds its data properties and inherits its methods. */
     if (scr_typed_ref_stream(v)) {
-      int has = scr_typed_ref_stream_has(v, key);
+      int has = scr_stream_ref_hooks.has(v, key);
       if (has >= 0) return has != 0;
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
@@ -14234,7 +14242,7 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     }
     /* A stream's view holds its data properties and inherits its methods. */
     if (scr_typed_ref_stream(v)) {
-      int has = scr_typed_ref_stream_has(v, key);
+      int has = scr_stream_ref_hooks.has(v, key);
       if (has >= 0) return has != 0;
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);

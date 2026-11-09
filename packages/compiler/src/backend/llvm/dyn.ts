@@ -2170,8 +2170,10 @@ export class LlDyn {
     }
     for (const type of types) {
       // The run answers for its classes; every other key is compared by
-      // its own address.
-      if (run !== null && this.host.classKeyRun!([(type as { className: string }).className]))
+      // its own address. The class is read through the narrowed type: the
+      // compiler refuses to build a read through an asserted record of a
+      // value with several arms (SC1090), and it builds itself.
+      if (run !== null && type.kind === "object" && this.host.classKeyRun!([type.className]))
         continue;
       const hit = B.tmp();
       B.line(`${hit} = icmp eq ptr ${keyPtr}, ${this.host.cstr(typeKey(type))}`);

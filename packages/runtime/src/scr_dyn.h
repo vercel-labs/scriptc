@@ -1080,8 +1080,8 @@ static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *k
 static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
   if (source->v.obj.layout) {
     ScrDynProp prop = scr_dyn_obj_prop_at(source, i);
-    ScrDynEntry entry = {(char *)prop.key, prop.key_len, prop.value, NULL, NULL,
-                         false, false, false, true, true, true};
+    ScrDynEntry entry = {.key = (char *)prop.key, .key_len = prop.key_len, .value = prop.value,
+                         .writable = true, .enumerable = true, .configurable = true};
     scr_dyn_copy_entry(target, source, &entry);
     return;
   }

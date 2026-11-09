@@ -26,6 +26,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
   DYN,
@@ -2489,6 +2490,32 @@ function islandChainDot(
   }
 }
 
+/** Whether the nearest `?.` no chain lowering has consumed sits below
+ * `expr` in its access spine on a receiver that is not an island value:
+ * `expr` is then a tail of that native chain, and a nullish receiver
+ * short-circuits the island reads in it as well. */
+function nativeGuardBelow(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let cur: ts.Expression = expr;
+  for (;;) {
+    if (lowerer.chainRecvByNode.has(cur)) return false;
+    if (ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
+    if (
+      ts.isCallExpression(cur) ||
+      ts.isPropertyAccessExpression(cur) ||
+      ts.isElementAccessExpression(cur)
+    ) {
+      if (cur.questionDotToken && !handledDots.has(cur) && !lowerer.chainHandled.has(cur))
+        return cur !== expr && !isForeignExpr(lowerer, cur.expression);
+      cur = cur.expression;
+      continue;
+    }
+    return false;
+  }
+}
+
 /** An optional chain guarded by an island receiver: the receiver
  * evaluates once; nullish answers undefined, anything else runs the
  * whole chain with the receiver read back from the guard. */
@@ -2602,6 +2629,11 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   ) {
     const chain = islandChainDot(lowerer, expr);
     if (chain !== null) return lowerIslandChain(lowerer, expr, chain, loc);
+    // `holder?.config.flag` with a native `holder` and an island `config`:
+    // the native receiver's `?.` guards the island reads above it too, so
+    // the chain's own lowering runs them inside its guard.
+    if (nativeGuardBelow(lowerer, expr) && isOptionalChainTail(lowerer, expr))
+      return lowerer.lowerOptionalChain(expr);
   }
   if (ts.isArrayLiteralExpression(expr)) {
     if (

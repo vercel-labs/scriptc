@@ -147,6 +147,27 @@ interface RuntimeUnit {
 }
 
 const unit = (when: RuntimeUnit["when"], ...sources: string[]): RuntimeUnit => ({ when, sources });
+
+/** Whether the program links scr_async_dyn.c, the checked-dynamic promise
+ * unit. It is the one unit that makes a promise adapter, so the same answer
+ * selects the scr_map.c build that keys a boxed promise by the identity its
+ * adapters share (SCR_DYN_PROMISE_KEYS). */
+function linksDynPromiseUnit(opts: CcOptions): boolean {
+  return (
+    opts.dynAsync === true ||
+    opts.dynInvoke === true ||
+    opts.workers === true ||
+    opts.dc === true ||
+    opts.fileHandle === true ||
+    // Fetch settles its promises through the unit.
+    opts.fetch === true ||
+    // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
+    opts.nodeIsland === true ||
+    // t.waitFor polls a dyn condition and returns a dyn promise
+    // (scr_test.c's waitFor entry).
+    opts.nodeTest === true
+  );
+}
 const unitArgs = (args: (u: RuntimeUnitContext) => readonly string[]): RuntimeUnit => ({
   when: () => true,
   sources: [],
@@ -269,21 +290,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
   unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
-  unit(
-    (u) =>
-      u.opts.dynAsync ||
-      u.opts.dynInvoke ||
-      u.opts.workers ||
-      u.opts.dc ||
-      u.opts.fileHandle ||
-      u.nativeFetch ||
-      // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true ||
-      // t.waitFor polls a dyn condition and returns a dyn promise
-      // (scr_test.c's waitFor entry).
-      u.opts.nodeTest,
-    "scr_async_dyn.c",
-  ),
+  unit((u) => linksDynPromiseUnit(u.opts), "scr_async_dyn.c"),
   // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
   // the specification's algorithms over the checked-dynamic tier. Their
   // values adopt through scr_async_dyn.c's thenable path, so the call
@@ -570,6 +577,9 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
   { define: "SCR_HTTP_SERVER_META", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_map.c's checked-dynamic key of a boxed promise: the identity cell
+  // its adapters share, in the programs that link the unit that makes them.
+  { define: "SCR_DYN_PROMISE_KEYS", when: linksDynPromiseUnit },
   // scr_json.c's function-property write/define/delete paths and
   // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must
   // name the builds runtime-pack-matrix.mjs selects.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9996-buffer-fill-untyped-arguments/main.ts"
+ ],
+ "diags": []
+}

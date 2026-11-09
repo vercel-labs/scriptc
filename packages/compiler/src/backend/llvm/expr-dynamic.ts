@@ -1211,12 +1211,17 @@ export function emitDynamicExpr(
           }
           default: {
             // Ref arms: pointer identity, exactly JS object equality.
-            // Function arms compare identity roots (adapters included).
+            // Function arms compare identity roots (adapters included),
+            // and promise arms the identity a promise shares with every
+            // conversion of it, as `===` of two promises does.
             const a = host.unionPeek(l.name, def.id);
             const b = host.unionPeek(r.name, def.id);
             const t = B.tmp();
             if (arm.kind === "func") B.line(`${t} = ${closureIdentityEqual(host, a, b)}`);
-            else B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
+            else if (arm.kind === "promise") {
+              host.declare(`declare zeroext i1 @scr_promise_identity_equal(ptr, ptr)`);
+              B.line(`${t} = call zeroext i1 @scr_promise_identity_equal(ptr ${a}, ptr ${b})`);
+            } else B.line(`${t} = icmp eq ptr ${a}, ${b} ; ${arm.kind}`);
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
           }

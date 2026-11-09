@@ -439,10 +439,24 @@ export class SemanticProject {
     return this.snapshot.transport.binary(method, this.encode(method, query));
   }
 
-  /** A type a TypeScript 7.1 reply holds. */
+  /** A type a TypeScript 7.1 reply holds.
+   *
+   * An empty tuple cloned as an array literal (the `[]` of
+   * `const [first = 7] = [];`, of `s.match(re) || []`) keeps its target's
+   * tuple flag and has no tuple data of its own. A 7.0 server and tsc-ts
+   * panic serializing it, and every reader of such a reply treats that
+   * panic as an unanswered query. tsgo 7.1 serializes it instead, flagged
+   * as a tuple without a length. Such a type reads as the same panic, so a
+   * program compiles the same way with either server. */
   type71(data: Ts71TypeData): SemanticType {
     const references = this.snapshot.references;
     if (references === undefined) throw new Error("TypeScript 7.1 type from a 7.0 server");
+    if (
+      (data.flags & TypeFlags.Object) !== 0 &&
+      ((data.objectFlags ?? 0) & ObjectFlags.Tuple) !== 0 &&
+      data.fixedLength === undefined
+    )
+      throw new Error("panic: a type has the tuple flag and no tuple data");
     this.tupleTypes.set(data.id, data.isTupleType === true);
     return this.type(references.typeData(data, this.id));
   }

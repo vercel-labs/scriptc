@@ -178,6 +178,10 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   primitiveWrapper: boolean;
   iteratorProto: boolean;
   nativeFetch: boolean;
+  /** The program links scr_async_dyn.c, the one unit that makes a promise
+   * adapter: it selects the scr_map.c build whose checked-dynamic key of a
+   * boxed promise is the identity cell the adapters share. */
+  dynPromiseKeys: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -441,6 +445,15 @@ export function effectiveRuntimeFeatures(
     primitiveWrapper: features.primitiveWrapper === true,
     iteratorProto: features.iteratorProto === true,
     nativeFetch,
+    // The predicate of scr_async_dyn.c in runtime-pack-matrix.mjs.
+    dynPromiseKeys:
+      features.dynAsync ||
+      features.dynInvoke ||
+      features.dc ||
+      features.fileHandle ||
+      nativeFetch ||
+      features.nodeIsland === true ||
+      features.nodeTest,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
     abortSignalOnly: abortSignal && !nativeFetch,

@@ -116,6 +116,7 @@ import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-stati
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
@@ -4540,6 +4541,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
@@ -5274,6 +5278,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
@@ -6094,6 +6104,8 @@ export class Lowerer {
     "computedGlobalReads",
     "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
     "nodeObjectValueReads",
     "namesWebStreamClass",
@@ -18403,10 +18415,10 @@ export class Lowerer {
   lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
-      // An adapting promise changes identity, while the Error boundary
-      // snapshots mutable fields. Neither is a live collection reference.
+      // The Error boundary snapshots mutable fields, so its copy is no live
+      // collection reference. A promise's adapter is one: it shares the
+      // promise's identity, which the collection hashes and compares.
       const copiesReference = (type: IrType): boolean =>
-        (type.kind === "promise" && type.inner.kind !== "dyn") ||
         (type.kind === "object" &&
           (RUNTIME_ERROR_CLASSES.has(type.className) ||
             this.isSubclassOf(type.className, "%Error"))) ||
@@ -18414,7 +18426,7 @@ export class Lowerer {
           (this.unions.get(type.unionId)?.arms.some(copiesReference) ?? false));
       if (value.kind === "dynFrom" && copiesReference(value.value.type)) {
         this.noLowering(
-          "collection slot conversion requiring an Error snapshot or promise adapter",
+          "collection slot conversion requiring an Error snapshot",
           node,
           "use a collection with the original reference type; checked collection slots require identity-preserving conversions",
         );

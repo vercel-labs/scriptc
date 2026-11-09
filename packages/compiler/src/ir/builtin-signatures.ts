@@ -5705,6 +5705,14 @@ function buildLibFnSignatures() {
      * (inspect, Object.keys/values/entries) then answer through its live
      * checked view. The receiver is any such record type. Never throws. */
     "record.sourceHas": { argTypes: [null], result: BOOL },
+    /* Whether a closed declared-field record answers reflection from its
+     * declared fields alone (scr_record_reflects_static): it kept no source,
+     * is no copy linked to a wider source, and no live checked view of it
+     * holds a prototype, a member or a symbol-keyed property of its own. The
+     * second argument is a boolLit: whether the program narrows any record
+     * into this type, the only way to a linked copy. The fast answers of
+     * own-key-lists.ts hold exactly then. Never throws. */
+    "record.reflectsStatic": { argTypes: [null, BOOL], result: BOOL },
     /** `record.sourceGet(record, name)`: the value the record's kept source
      * holds under `name`, or the undefined value when it keeps none or its
      * source lacks the key (+1). The name is a strLit. A kept accessor runs

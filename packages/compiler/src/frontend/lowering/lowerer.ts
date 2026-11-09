@@ -5270,6 +5270,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
@@ -6087,6 +6093,8 @@ export class Lowerer {
     "computedGlobalReads",
     "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
     "nodeObjectValueReads",
     "namesWebStreamClass",

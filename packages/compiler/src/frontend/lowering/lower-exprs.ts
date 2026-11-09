@@ -2792,6 +2792,11 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     // Namespace members are bindings, not fields of a runtime namespace
     // object. Their ordinary read already preserves optional storage.
     if (!expr.questionDotToken && nsMemberIdentOf(lowerer, expr)) return null;
+    // The tail of an optional chain (`a?.b.c`) is absent when the chain
+    // short-circuits: the chain's own lowering answers that undefined and
+    // reads the field, with its absence, off a present receiver. A field
+    // target here would read `.c` off the short-circuited `a?.b`.
+    if (!expr.questionDotToken && hasOptionalChainGuard(expr.expression, lowerer)) return null;
     const target = lowerer.fieldTarget(expr);
     if (
       target?.container === "class" &&

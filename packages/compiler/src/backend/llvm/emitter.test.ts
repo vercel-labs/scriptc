@@ -11,7 +11,12 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
-import { emitLlvmModule, emitLlvmModuleSource, LlEmitter } from "./emitter.js";
+import {
+  emitLlvmModule,
+  emitLlvmModuleSource,
+  LlEmitter,
+  UNWIND_CHAIN_MIN_VALUES,
+} from "./emitter.js";
 import { INLINE_STR_RELEASES_PER_FUNCTION } from "./shapes.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
@@ -191,6 +196,65 @@ test("throwing-call count does not multiply identical scope cleanup", () => {
     expect(small.match(release)?.length).toBeGreaterThan(0);
     expect(large.match(release)?.length).toBe(small.match(release)?.length);
   }
+});
+
+/** `work` assigns the concatenation of `terms` calls of a function that can
+ * throw and returns a string: each call is a throw site, and each result
+ * stays alive until the statement ends. */
+function concatenationModule(terms: number): IrModule {
+  const made = (): IrExpr => ({ kind: "call", callee: "made", args: [], type: STRING, loc });
+  let sum = made();
+  for (let i = 1; i < terms; i++)
+    sum = { kind: "strConcat", left: sum, right: made(), type: STRING, loc };
+  const module = moduleFor([{ kind: "assign", localId: "later", value: sum, loc }]);
+  return {
+    ...module,
+    functions: [
+      ...module.functions,
+      {
+        name: "made",
+        params: [],
+        returnType: STRING,
+        locals: [],
+        body: [{ kind: "throw", value: literal("oops"), loc }],
+        loc,
+      },
+    ],
+  };
+}
+function workBody(llvm: string): string {
+  const start = llvm.split("\n").findIndex((line) => /^define .*\{ ; work$/.test(line));
+  const lines = llvm.split("\n").slice(start);
+  return lines.slice(0, lines.indexOf("}") + 1).join("\n");
+}
+const stringReleases = (body: string): number =>
+  body.match(/call void @scr_str_release\(ptr/g)?.length ?? 0;
+
+test("a statement's throw sites share the releases of the values it holds", () => {
+  // Under the limit every throw site releases its values in its own block.
+  const few = workBody(emitLlvmModule(concatenationModule(UNWIND_CHAIN_MIN_VALUES / 2)));
+  expect(few).not.toMatch(/^exc\.release\d+:$/m);
+  // Past it, a site that holds one more value adds one block that releases
+  // that value and continues with the blocks of the values before it.
+  const sizes = [2, 4, 8].map((factor) => factor * UNWIND_CHAIN_MIN_VALUES);
+  const [small, medium, large] = sizes.map((terms) =>
+    workBody(emitLlvmModule(concatenationModule(terms))),
+  );
+  const blocks = [...large!.matchAll(/^exc\.release\d+:\n((?:  [^\n]*\n)+)/gm)];
+  expect(blocks.length).toBeGreaterThan(sizes[2]! - UNWIND_CHAIN_MIN_VALUES - 2);
+  for (const block of blocks) {
+    const lines = block[1]!.trimEnd().split("\n");
+    expect(stringReleases(block[1]!)).toBe(1);
+    // LLVM must not merge the call with the ordinary path's releases.
+    expect(block[1]!).toMatch(/call void @scr_str_release\(ptr %t\d+\)(?: nounwind)? nomerge\n/);
+    expect(lines.at(-1)).toMatch(/^  br label %exc\.(?:release|cleanup)\d+$/);
+  }
+  // The releases grow with the values held, not with their square: twice
+  // the values add about twice the releases (written out at every site,
+  // they added four times as many, thousands here).
+  const growth = stringReleases(large!) - stringReleases(medium!);
+  expect(growth).toBeGreaterThan(0);
+  expect(growth).toBeLessThan(3 * (stringReleases(medium!) - stringReleases(small!)));
 });
 
 test("detached exit defines the runtime opt-in symbol only when requested", () => {

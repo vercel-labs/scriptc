@@ -124,6 +124,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.frames = [];
   emitter.scopes = [];
   emitter.unwindCleanups.clear();
+  emitter.unwindReleases.length = 0;
+  emitter.unwindReleaseLabels.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
   emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
@@ -743,6 +745,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Shared blocks have multiple source locations. Keep the location on
   // each incoming exception check instead of assigning one to the cleanup.
   B.debugLocation = null;
+  // A throw site's shared release blocks (emitUnwind) release its values
+  // newest first; the statement's ordinary end releases them oldest first,
+  // and a function that ends there reaches the same return. LLVM would sink
+  // the two paths' release calls into shared blocks one call at a time,
+  // choosing each operand with a phi per value still to release: n values
+  // become n²/2 phi nodes, which cost it minutes at a few hundred values.
+  // Calls marked `nomerge` stay in their blocks.
+  B.unmergedCalls = true;
+  for (const release of emitter.unwindReleases) {
+    B.startBlock(release.label);
+    emitter.releaseTemps([release.value]);
+    B.br(release.next);
+  }
+  B.unmergedCalls = false;
   for (const cleanup of emitter.unwindCleanups.values()) {
     B.startBlock(cleanup.label);
     emitter.releaseScope(cleanup.entries);

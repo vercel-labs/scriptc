@@ -52,6 +52,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `unicode-lexer` | cpu | a hand-written lexer over a 2.7M-unit bundled module whose comments and strings are in several languages: `charCodeAt` scans, line starts |
 | `union-node-sets` | cpu | syntax-tree passes over a discriminated union of object literals: a `Set` of visited nodes, a `Map` from node to value, conversions to a sub-union of leaves |
+| `untyped-record-probes` | cpu | typed records and arrays printed by a walker that takes `unknown`: `typeof`, `Array.isArray`, reads of members no record has (a hook, a flag, `then`), `in`, a for-in guarded by `hasOwnProperty`, and keyed reads of the fields it prints |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `value-records` | cpu | records that hold strings, spread state updates and destructured tuples: token helpers, an immutable reducer, tuple returns |

@@ -518,8 +518,7 @@ function quietElement(type: IrType): boolean {
  *   unlisted. */
 function quietOperation(node: Node, fn: IrFunction | null): boolean {
   if (node.kind === "recordOvfKeys") return true;
-  if (node.kind === "recordKeyGet")
-    return node.overflowOnly === true && node.type.kind !== "dyn";
+  if (node.kind === "recordKeyGet") return node.overflowOnly === true && node.type.kind !== "dyn";
   if (node.kind === "arrIntrinsic" && node.method === "join") {
     const receiver = node.receiver;
     return (

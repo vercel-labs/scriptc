@@ -1327,31 +1327,69 @@ static void scr_typed_ref_forget(ScrDyn *value) {
  * on every crossing. Instead, the capsules that last died with nothing but
  * their referent and adapters stay interned in this ring, still holding
  * their referent. A conversion of the same referent with the same adapters
- * revives the capsule (scr_dyn_typed_ref_new), so it keeps its identity,
- * and a revived capsule keeps its slot. A slot is reused in turn: a parked
- * capsule (rc 0) that loses its slot is disposed, a live one only leaves
- * the ring. The ring is also flushed before every collector pass
- * (scr_cyc_pass_hook) and at the context's exit, and a capsule disposed
- * any other way leaves it first (scr_typed_ref_unpark). */
+ * finds the capsule interned and retains it (scr_dyn_typed_ref_new), so it
+ * keeps its identity.
+ *
+ * The ring owns one reference to each capsule in it: a capsule that dies
+ * parkable is given that reference instead of being disposed. While it is
+ * in the ring its count therefore never reaches zero, however often it is
+ * retained and released again, so it is never parked twice and never
+ * disposed behind the ring's back, and neither path has to search the
+ * ring. A slot is reused in turn: the capsule that loses its slot loses the
+ * ring's reference, and is disposed when that was its last. The ring's
+ * reference is one the collector cannot trace, so the ring is flushed
+ * before every collector pass (scr_cyc_pass_hook), and at the context's
+ * exit. */
 #ifndef SCR_RC_AUDIT
 #define SCR_TYPED_REF_PARKED 16
 static SCR_TL ScrDyn *scr_typed_ref_parked[SCR_TYPED_REF_PARKED];
 static SCR_TL unsigned scr_typed_ref_park_next;
 static SCR_TL bool scr_typed_ref_unparking;
 static void scr_dyn_dispose(ScrDyn *d, bool collected);
+static void scr_dyn_destroy(void *ptr);
 
-/* Disposes every parked capsule and empties the ring. */
+/* A capsule with nothing but its referent and adapters. */
+static inline bool scr_typed_ref_bare(const ScrDyn *d) {
+  return !d->prototype && !d->symbol_properties && !d->symbol_keys &&
+         !d->v.typed_ref.materialized && !d->v.typed_ref.casts;
+}
+
+/* Gives up the ring's reference to a capsule that has just left its slot.
+ * A capsule something else still holds has lost a reference like any other
+ * (it may have become a cycle's root); one that nothing holds is disposed,
+ * and may not park again on the way. A capsule made immortal while it was
+ * in the ring has no count to give up. */
+static void scr_typed_ref_drop_parked(ScrDyn *d) {
+  if (d->rc == SIZE_MAX) return;
+  if (--d->rc != 0) {
+    scr_dyn_release_survivor(d);
+    return;
+  }
+  scr_cyc_dead(d);
+  bool unparking = scr_typed_ref_unparking;
+  scr_typed_ref_unparking = true;
+  /* A capsule that gained a snapshot or casts while it was held again
+   * tears those down within the depth budget. */
+  if (scr_typed_ref_bare(d)) scr_dyn_dispose(d, false);
+  else scr_rc_destroy(d, scr_dyn_destroy);
+  scr_typed_ref_unparking = unparking;
+}
+
+/* Gives up the ring's reference to every capsule and empties the ring. */
 static void scr_typed_ref_flush_parked(void) {
+  bool unparking = scr_typed_ref_unparking;
   scr_typed_ref_unparking = true;
   for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++) {
     ScrDyn *parked = scr_typed_ref_parked[i];
     scr_typed_ref_parked[i] = NULL;
-    if (parked && parked->rc == 0) scr_dyn_dispose(parked, false);
+    if (parked) scr_typed_ref_drop_parked(parked);
   }
-  scr_typed_ref_unparking = false;
+  scr_typed_ref_unparking = unparking;
 }
 
-/* Drops a capsule from the ring before it is disposed. */
+/* Takes a capsule out of the ring: for the collector, which frees an
+ * object whatever its count says when a whole context is torn down. No
+ * release reaches this: a capsule in the ring is never released to zero. */
 static void scr_typed_ref_unpark(const ScrDyn *d) {
   for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
     if (scr_typed_ref_parked[i] == d) {
@@ -1362,25 +1400,20 @@ static void scr_typed_ref_unpark(const ScrDyn *d) {
 
 /* A dying capsule with nothing but its referent and adapters. */
 static inline bool scr_typed_ref_parkable(const ScrDyn *d) {
-  return d->kind == SCR_DYN_TYPED_REF && !d->prototype && !d->symbol_properties &&
-         !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
+  return d->kind == SCR_DYN_TYPED_REF && scr_typed_ref_bare(d) &&
          !scr_typed_ref_unparking && !scr_typed_ref_exited && scr_typed_ref_capacity;
 }
 
-/* Parks a dying capsule in its own slot, or in the next one in turn. */
+/* Parks a capsule whose count has just reached zero (so it is not in the
+ * ring) in the next slot in turn, with the ring's reference. */
 static void scr_typed_ref_park(ScrDyn *d) {
-  for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
-    if (scr_typed_ref_parked[i] == d) return;
   if (!scr_cyc_pass_hook) scr_cyc_pass_hook = scr_typed_ref_flush_parked;
   unsigned slot = scr_typed_ref_park_next;
   scr_typed_ref_park_next = (slot + 1) % SCR_TYPED_REF_PARKED;
   ScrDyn *evicted = scr_typed_ref_parked[slot];
   scr_typed_ref_parked[slot] = d;
-  if (evicted && evicted->rc == 0) {
-    scr_typed_ref_unparking = true;
-    scr_dyn_dispose(evicted, false);
-    scr_typed_ref_unparking = false;
-  }
+  d->rc = 1;
+  if (evicted) scr_typed_ref_drop_parked(evicted);
 }
 
 #else
@@ -1553,15 +1586,18 @@ static inline void scr_dyn_release_child(ScrDyn *child) {
 
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
+  /* A capsule stays interned until it is disposed, so a conversion can
+   * retain one whose disposal still waits in scr_rc_destroy's queue: its
+   * count says it is alive again, and it is left alone. */
+  if (!collected && d->kind == SCR_DYN_TYPED_REF && d->rc != 0) return;
   /* A capsule with nothing but its referent and adapters: the common end
    * of a value that crossed into a dyn slot for one call. */
   if (!collected && scr_typed_ref_parkable(d)) {
     scr_typed_ref_park(d);
     return;
   }
-  if (d->kind == SCR_DYN_TYPED_REF) scr_typed_ref_unpark(d);
-  if (d->kind == SCR_DYN_TYPED_REF && !collected && !d->prototype && !d->symbol_properties &&
-      !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
+  if (collected && d->kind == SCR_DYN_TYPED_REF) scr_typed_ref_unpark(d);
+  if (d->kind == SCR_DYN_TYPED_REF && !collected && scr_typed_ref_bare(d) &&
       scr_dyn_free_count < SCR_DYN_FREE_MAX) {
     scr_typed_ref_forget(d);
     d->v.typed_ref.release(d->v.typed_ref.ptr);

@@ -548,6 +548,71 @@ static void test_item_release(void *ptr) {
   free(item);
 }
 
+static ScrDyn *test_item_box(TestItem *item) {
+  static const char key[] = "class:TestItem";
+  return scr_dyn_new_typed_ref(item, test_item_retain, test_item_release, key, sizeof key - 1, NULL,
+                               NULL);
+}
+
+/* The ring of parked capsules owns one reference to each capsule in it
+ * (scr_typed_ref_park): a parked capsule keeps its identity and its
+ * referent, is never parked twice however often it is held again, and lets
+ * its referent go when it loses its slot or a collector pass flushes the
+ * ring. The RC audit parks nothing. */
+static void parked_capsules(void) {
+  enum { MANY = 40, RING = 16 };
+  long live = test_items_live;
+  TestItem *one = test_item_new(), *others[MANY];
+  ScrDyn *first = test_item_box(one);
+  assert(first->rc == 1 && one->rc == 2);
+  scr_dyn_release(first);
+#ifndef SCR_RC_AUDIT
+  assert(one->rc == 2);
+  ScrDyn *again = test_item_box(one);
+  assert(again == first);
+  for (int i = 0; i < MANY; i++) scr_dyn_release(scr_dyn_retain(again));
+  scr_dyn_release(again);
+  for (int i = 0; i < MANY; i++) {
+    ScrDyn *boxed = test_item_box(one);
+    assert(boxed == first && one->rc == 2);
+    scr_dyn_release(boxed);
+  }
+#else
+  assert(one->rc == 1);
+#endif
+  /* More capsules than the ring has slots: the oldest ones are disposed. */
+  for (int i = 0; i < MANY; i++) {
+    others[i] = test_item_new();
+    scr_dyn_release(test_item_box(others[i]));
+  }
+  assert(one->rc == 1);
+#ifndef SCR_RC_AUDIT
+  int parked = 0;
+  for (int i = 0; i < MANY; i++) parked += others[i]->rc == 2;
+  assert(parked == RING);
+  /* A capsule held again when its slot's turn comes only leaves the ring,
+   * and parks again when it dies. */
+  ScrDyn *kept = test_item_box(others[MANY - 1]);
+  for (int i = 0; i < RING + 4; i++) {
+    TestItem *brief = test_item_new();
+    scr_dyn_release(test_item_box(brief));
+    test_item_release(brief);
+  }
+  assert(kept->rc == 1 && others[MANY - 1]->rc == 2);
+  assert(test_item_box(others[MANY - 1]) == kept);
+  scr_dyn_release(kept);
+  scr_dyn_release(kept);
+  assert(others[MANY - 1]->rc == 2);
+#endif
+  scr_collect_cycles();
+  for (int i = 0; i < MANY; i++) {
+    assert(others[i]->rc == 1);
+    test_item_release(others[i]);
+  }
+  test_item_release(one);
+  assert(test_items_live == live);
+}
+
 static ScrArr *test_tags_new(size_t cap) { return scr_arr_new(SCR_ELEM_STR, cap); }
 static ScrArr *test_list_new(size_t cap) {
   static ScrArrOps item_ops = { test_item_retain, test_item_release, NULL };
@@ -1007,6 +1072,7 @@ int main(void) {
   checked_number_storage();
   buffered_leaf_release();
   json_intact_regions();
+  parked_capsules();
   json_schema_parse();
   json_schema_special_names();
   json_schema_union_members();

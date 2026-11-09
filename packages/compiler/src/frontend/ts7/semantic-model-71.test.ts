@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { SemanticChecker } from "./semantic-checker.js";
-import { SemanticSnapshot } from "./semantic-model.js";
+import { SemanticSnapshot, Ts71SymbolTable } from "./semantic-model.js";
 import { SyntaxKind, TypeFlags } from "./enums.js";
 
 /** A snapshot on a fake TypeScript 7.1 server: `answer` gets each request's
@@ -77,6 +77,30 @@ test("TypeScript 7.1 symbol references round-trip through local ids", () => {
   expect(checker.isTupleType(declared)).toBe(true);
   expect(checker.isTupleType(type)).toBe(false);
   expect(requests.map((request) => request.method)).not.toContain("isTupleType");
+});
+
+test("TypeScript 7.1 references to one file's symbols share the file's descriptor", () => {
+  const table = new Ts71SymbolTable();
+  const first = table.fromReference({ kind: 0, file: { ...file }, id: 1 });
+  const second = table.fromReference({ kind: 0, file: { ...file }, id: 2 });
+  expect(table.reference(second)).toEqual({ kind: 0, file, id: 2 });
+  expect(table.reference(second).file).toBe(table.reference(first).file);
+  // A symbol is its owner and its id: the same id under another owner is another symbol.
+  expect(table.fromCompact({ id: 1, file: "77" }, "project")).toBe(first);
+  expect(table.fromCompact({ id: 2, file: "77" }, "project")).toBe(second);
+  const others = [
+    table.fromCompact({ id: 1 }, "project"),
+    table.fromCompact({ id: 1 }, "other"),
+    table.fromCompact({ id: 1, file: "78" }, "project"),
+    table.fromReference({ kind: 1, snapshot: 1, project: "77", id: 1 }),
+  ];
+  expect(new Set([first, second, ...others]).size).toBe(6);
+  expect(table.fromReference({ kind: 1, snapshot: 1, project: "project", id: 1 })).toBe(others[0]);
+  // A descriptor that says something else for the node ID is kept as it was sent.
+  const changed = { ...file, contentHash: "1" };
+  const third = table.fromReference({ kind: 0, file: changed, id: 3 });
+  expect(table.reference(third).file).toBe(changed);
+  expect(table.reference(first).file).toEqual(file);
 });
 
 test("TypeScript 7.1 requests name types and signatures as 7.1 does", () => {

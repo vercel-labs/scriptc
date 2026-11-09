@@ -1763,6 +1763,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, BYTES_U8, STRING, F64, STRING],
       result: VOID,
     },
+    /** The same two option writes over a data argument whose static type is
+     * not a string or a u8 view (a typed array of another element, a
+     * DataView alias, a checked-dynamic value): the runtime validates the
+     * data (Node's "string or an instance of Buffer, TypedArray, or
+     * DataView"), then encodes a string or writes a view's bytes. */
+    "fs.writeFileDataOptionsSync": {
+      argTypes: [STRING, DYN, STRING, F64, STRING],
+      result: VOID,
+    },
+    "fs.appendFileDataOptionsSync": {
+      argTypes: [STRING, DYN, STRING, F64, STRING],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
@@ -3912,10 +3925,18 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** writeFileSync/appendFileSync(path, data) over a data argument whose
+     * static type is a view of another element, a DataView alias, or a
+     * checked-dynamic value. The runtime validates the argument and writes a
+     * string as text and a view as the bytes it covers. */
+    "fs.writeFileSyncData": { argTypes: [STRING, DYN], result: VOID },
+    "fs.appendFileSyncData": { argTypes: [STRING, DYN], result: VOID },
     /** writeFileSync(path, bytes, { mode, flag }) and its fs/promises
      * twins: the byte-data spellings of the option write (scr_fs_flags.c's
      * open(2) with the disposition flag, creation mode at creation only). */
     "fs.writeFileSyncBytesFlags": { argTypes: [STRING, BYTES_U8, F64, F64], result: VOID },
+    /** The { mode, flag } write over the checked data argument. */
+    "fs.writeFileSyncDataFlags": { argTypes: [STRING, DYN, F64, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -4064,6 +4085,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
+    /** fs.promises.writeFile/appendFile over the checked data argument. */
+    "fsp.writeFileData": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileData": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileDataFlags": {
+      argTypes: [STRING, DYN, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
@@ -4159,6 +4193,10 @@ function buildLibFnSignatures() {
     },
     "fileHandle.writeFileBytes": {
       argTypes: [FILEHANDLE_T, BYTES_U8, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFileData": {
+      argTypes: [FILEHANDLE_T, DYN, STRING],
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
@@ -4845,6 +4883,11 @@ function buildLibFnSignatures() {
      * plain data, or that the value holds twice, keeps its separate copy.
      * Never throws: the conversion already succeeded. */
     "dyn.adoptShared": { argTypes: [DYN, DYN], result: VOID },
+    /** Whether adoption has anything to do for `source`: it is a plain
+     * object or array. A capsule of a native value, a primitive and every
+     * other value are left alone, so a cast asks this before it boxes its
+     * result for the adoption call. */
+    "dyn.adoptable": { argTypes: [DYN], result: BOOL },
     "dyn.cloneMissing": { argTypes: [], result: DYN },
     /** structuredClone with a NON-EMPTY transfer array of static values:
      * nothing static is transferable, so the call always throws Node's
@@ -6228,6 +6271,8 @@ function buildLibFnSignatures() {
      * open (closeSync owns it). Errors carry the fd operation's errno
      * shape ("EBADF: bad file descriptor, write"). */
     "fs.writeFileSyncFd": { argTypes: [F64, STRING], result: VOID },
+    /** writeFileSync(fd, data) over the checked data argument. */
+    "fs.writeFileSyncFdData": { argTypes: [F64, DYN], result: VOID },
     "fs.readFdSyncBytes": { argTypes: [F64], result: BYTES_U8 },
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */

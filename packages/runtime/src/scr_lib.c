@@ -4926,8 +4926,13 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
 #endif
 }
 
-static double scr_fs_write_bytes(double fd, const void *data, size_t length,
-                                 double position) {
+/* One write(2) of `length` bytes at `position` (-1: the descriptor's
+ * current offset), validated and reported like the rest of the fd writes.
+ * The typed-array and Buffer forms go through scr_fs_write_sync; the
+ * writeFileSync(fd, data) form shares this entry for the byte windows it
+ * writes whole (scr_fs_bytes_write.c). */
+double scr_fs_write_mem(double fd, const void *data, size_t length,
+                        double position) {
   if (!scr_fs_write_fd_valid(fd)) return 0;
   /* fs.writeSync(1|2, ...) and writes to a duplicated stdout descriptor go
    * between the program's other output: publish buffered stdout first so
@@ -5010,7 +5015,7 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  return scr_fs_write_bytes(fd, buf->data + off, (size_t)length, position);
+  return scr_fs_write_mem(fd, buf->data + off, (size_t)length, position);
 }
 
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
@@ -5018,7 +5023,7 @@ double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
   (void)encoding; /* frontend proves utf8; the argument still evaluates */
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
-  double wrote = scr_fs_write_bytes(fd, bytes, data->len, position);
+  double wrote = scr_fs_write_mem(fd, bytes, data->len, position);
   scr_str_utf8_end(owned);
   return wrote;
 }
@@ -5033,7 +5038,7 @@ void scr_fs_write_file_fd(double fd, ScrStr *data) {
   const char *bytes = scr_str_utf8(data, &owned);
   size_t at = 0;
   while (at < data->len) {
-    double wrote = scr_fs_write_bytes(fd, bytes + at, data->len - at, -1);
+    double wrote = scr_fs_write_mem(fd, bytes + at, data->len - at, -1);
     /* A throw leaves 0 (or the short count a partial write reported);
      * a zero-length write on a nonempty slice would spin, so stop. */
     if (wrote <= 0) break;

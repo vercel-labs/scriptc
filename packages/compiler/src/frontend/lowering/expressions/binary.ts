@@ -116,6 +116,7 @@ import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 import { builtinConstructorText } from "../held-constructors.js";
+import { lowerArgumentsObjectInstanceOf } from "../arguments-object.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -2241,7 +2242,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     const result = lowerer.lowerExpr(expr.right);
     return { kind: "seqExpr", stmts: [effect], result, type: result.type, loc };
   }
-  if (op === ts.SyntaxKind.InstanceOfKeyword) return lowerer.lowerInstanceOf(expr, loc);
+  if (op === ts.SyntaxKind.InstanceOfKeyword) {
+    // The arguments object is an Object and not an Array (arguments-object.ts).
+    const argumentsAnswer = lowerArgumentsObjectInstanceOf(lowerer, expr, loc);
+    if (argumentsAnswer !== null) return argumentsAnswer;
+    return lowerer.lowerInstanceOf(expr, loc);
+  }
   if (op === ts.SyntaxKind.InKeyword) {
     return lowerInExpression(lowerer, expr, loc);
   }

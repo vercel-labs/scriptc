@@ -1145,7 +1145,7 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
      * capsule answers them without rebuilding its snapshot. */
     ScrDyn *fast = NULL;
     if (target->kind == SCR_DYN_TYPED_REF) {
-      fast = scr_dyn_typed_ref_key_get(target, pk->v.str);
+      fast = scr_dyn_typed_ref_own_get(target, pk->v.str);
     } else if (pk->v.str->len == 6 && memcmp(pk->v.str->data, "length", 6) == 0) {
       fast = scr_dyn_new_num((double)target->v.arr.len);
     }

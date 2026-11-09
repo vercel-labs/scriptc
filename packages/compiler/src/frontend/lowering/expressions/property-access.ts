@@ -13,6 +13,7 @@ import {
   hostGlobalNameOfMember,
   hostGlobalNameOfRead,
   hostGlobalPrototypeOf,
+  isGlobalObjectRead,
 } from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { fenceConsoleMemberValue } from "../coercions/console-records.js";
@@ -111,13 +112,13 @@ import { lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
 } from "../cjs-inline-require.js";
 import {
   type FieldTarget,
-  cjsAccessorCall,
   constInitializerOf,
   exactUnionWidening,
   hasClassPayload,
@@ -219,7 +220,12 @@ import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "..
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
 import { iteratorResultValueRead } from "../lower-generators.js";
-import { lowerGlobalValue } from "../lower-global-value.js";
+import { lowerGlobalObjectValue, lowerGlobalValue } from "../lower-global-value.js";
+import {
+  globalObjectInheritedValue,
+  globalObjectInherits,
+  globalObjectMember,
+} from "../global-object-names.js";
 import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
@@ -822,16 +828,51 @@ export function lowerPropertyAccessExpr(
         lowerer.hostGlobalFence(prototypeOf, expr);
     }
   }
+  // A name the global object inherits from Object.prototype
+  // (`globalThis.toString`, `host.hasOwnProperty`) is a read of
+  // Object.prototype's member: the same read `Object.prototype.toString`
+  // is, so the two compare equal. Without this the name would count as one
+  // Node does not define and read as undefined. The read stays on the
+  // global object in two cases: the program writes the name on the global
+  // object (its own property answers), and a member Object.prototype has no
+  // value for yet (it reads undefined there, as before). A call keeps its
+  // own lowering.
+  if (
+    !expr.questionDotToken &&
+    globalObjectInherits(expr.name.text) &&
+    !isCalleeOf(expr) &&
+    isGlobalObjectRead(lowerer, expr.expression)
+  ) {
+    const globalType = lowerer.typeOf(staticallySelected(lowerer, expr.expression));
+    const own =
+      globalThisWrittenNames(lowerer, globalType).has(expr.name.text) ||
+      lowerer.globalThisComputedWrite;
+    const holder: IrExpr =
+      own || !globalObjectInheritedValue(expr.name.text)
+        ? lowerGlobalObjectValue(lowerer, expr.expression, locOf(expr.expression))
+        : { kind: "libCall", fn: "dyn.objectPrototype", args: [], type: DYN, loc };
+    return {
+      kind: "dynKeyGet",
+      value: holder,
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   // Missing host globals (Bun/Deno capability probes) have no binding
   // in a native program. Declared globals retain their own lowering;
   // arbitrary global-object mutation remains fenced. Preserve a dyn
-  // undefined value so stored probes compose with optional calls.
+  // undefined value so stored probes compose with optional calls. A
+  // spelling whose static type names no members (`const host: any =
+  // globalThis`) is the same object: the global object's own type says
+  // whether the name is missing.
   if (
     stdlibGlobalNameOf(lowerer, expr.expression) === "globalThis" &&
     !lowerer.checker.getPropertyOfType(
       lowerer.typeOf(staticallySelected(lowerer, expr.expression)),
       expr.name.text,
-    )
+    ) &&
+    !globalObjectMember(lowerer, expr)
   ) {
     // A name the program stores on the global object
     // (`(_a = globalThis).__config ?? (_a.__config = {})`) reads back from
@@ -849,10 +890,10 @@ export function lowerPropertyAccessExpr(
         loc,
       };
     }
-    // Node's navigator, which JavaScript reads as a free name when no
-    // declaration types it (isNavigatorGlobal).
-    if (expr.name.text === "navigator" && isJsSourceFile(ts.getSourceFileOfNode(expr)))
-      return navigatorValue(loc);
+    // Node's navigator, which no bundled declaration types: JavaScript reads
+    // it as a free name (isNavigatorGlobal), and TypeScript reaches it here
+    // through a spelling of the global object typed `any`.
+    if (expr.name.text === "navigator") return navigatorValue(loc);
     return dynUndefinedExpr(loc);
   }
   // `Uint8Array.prototype.toBase64` and its siblings, the base64/hex
@@ -1079,6 +1120,13 @@ export function lowerPropertyAccessExpr(
       }
     }
   }
+  // Replacing `module.exports` leaves `exports` on its original object.
+  // Check before export-global lookup: the checker may give this read the
+  // replacement's member symbol, despite the objects being different.
+  {
+    const ex = lowerReplacedExportsRead(lowerer, expr);
+    if (ex) return ex;
+  }
   // `module.exports.Sub` / `exports.Sub` READ in the same module: an
   // EXPRESSION-valued member rides its pre-registered export global —
   // exactly what requirers see through `require('./x').Sub`, and the
@@ -1119,18 +1167,6 @@ export function lowerPropertyAccessExpr(
       const t = ambientUndefReadType(lowerer, expr);
       if (t) return nsUndefRead(lowerer, ambientRoot.text, expr, t);
     }
-  }
-  // `exports.<name>` READS in a module whose export object was
-  // REPLACED (`module.exports = ...`): `exports` still references the
-  // ORIGINAL object — Node's aliasing rule — so when nothing ever
-  // attached this name to it (`exports.<name> =` nowhere in the
-  // file), the honest answer is undefined. tsc types the read off the
-  // REPLACEMENT (its CJS model is identity-blind), which is exactly
-  // the undiagnosed divergence this lowering closes. Reads in modules with
-  // real `exports.<name> =` attachments keep their fences.
-  {
-    const ex = lowerReplacedExportsRead(lowerer, expr);
-    if (ex) return ex;
   }
   // `this.<name>` inside a CJS export-table getter: Node binds the
   // receiver to module.exports — the read is the sibling getter's
@@ -3757,8 +3793,8 @@ function runtimeOptionalClassField(
  * file: the read observes the ORIGINAL (empty-here) exports object, so
  * the honest value is undefined (Node's object identity exactly; tsc's
  * CJS model types the read off the replacement — identity-blind). Null
- * everywhere else: no replacement, a real attachment of this name, a
- * shadowing binding named `exports`, or write position. */
+ * everywhere else: no replacement, a rebinding of `exports`, a real
+ * attachment of this name, a shadowing binding, or write position. */
 function lowerReplacedExportsRead(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -3781,7 +3817,11 @@ function lowerReplacedExportsRead(
   for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (!cjs) continue;
-    if (cjs.kind === "table" && cjsExportDiscardReason(stmt) === null) replaced = true;
+    if (cjs.kind === "table" && cjsExportDiscardReason(stmt) === null) {
+      // `exports = module.exports = value` updates both bindings.
+      if (cjs.rebindsExports) return null;
+      replaced = true;
+    }
     if (cjs.kind === "member" && ts.isIdentifier(cjs.name) && cjs.name.text === expr.name.text) {
       return null; // a real attachment of this name exists somewhere
     }
@@ -3793,38 +3833,45 @@ function lowerReplacedExportsRead(
 /** `this.<name>` INSIDE a CJS export-table accessor (test/common's
  * `get localhostIPv4() { if (this.inFreeBSDJail) ... }`): Node binds the
  * getter's receiver to module.exports, so the read is the SIBLING table
- * property — a sibling GETTER's lifted call (per-read evaluation, like
- * any accessor read). Only arrows inherit the binding (a nested function
- * expression's `this` is its own). Null everywhere else — non-getter
- * siblings and absent names keep their per-site fences (none of the
- * probed suite shapes read them). */
+ * member — a sibling getter's lifted call (per-read evaluation, like any
+ * accessor read) or a data member's export value. Only arrows inherit the
+ * binding (a nested function expression's `this` is its own). Members
+ * without a static value are refused. */
 function lowerCjsExportTableThisMember(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.expression.kind !== ts.SyntaxKind.ThisKeyword || expr.questionDotToken) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
-  // The enclosing accessor, crossing only arrow boundaries (arrows
-  // inherit `this`; any other function form rebinds it).
-  let n: ts.Node | undefined = expr.parent;
+  const n = cjsExportTableAccessorOf(expr.expression);
+  if (n === null) return null;
+  const value = cjsExportValueByName(lowerer, ts.getSourceFileOfNode(n), expr.name.text, expr);
+  if (value === null) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `reading 'this.${expr.name.text}' in a CommonJS export-table accessor (the member has no static value)`,
+    );
+  }
+  return value;
+}
+
+/** The CommonJS export-table accessor whose `this` a `this` expression
+ * reads, crossing only arrow boundaries (arrows inherit `this`; any other
+ * function form rebinds it). */
+export function cjsExportTableAccessorOf(
+  thisExpr: ts.Node,
+): ts.GetAccessorDeclaration | ts.SetAccessorDeclaration | null {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(thisExpr))) return null;
+  let n: ts.Node | undefined = thisExpr.parent;
   while (n !== undefined && !ts.isGetAccessorDeclaration(n) && !ts.isSetAccessorDeclaration(n)) {
-    if (ts.isFunctionLike(n) && !ts.isArrowFunction(n)) return null;
-    if (ts.isSourceFile(n)) return null;
+    if ((ts.isFunctionLike(n) && !ts.isArrowFunction(n)) || ts.isSourceFile(n)) return null;
     n = n.parent;
   }
-  if (
-    n === undefined ||
-    !ts.isObjectLiteralExpression(n.parent) ||
-    !isCjsExportTableLiteral(n.parent)
-  ) {
-    return null;
-  }
-  const sibling = n.parent.properties.nodes.find(
-    (p): p is ts.GetAccessorDeclaration =>
-      ts.isGetAccessorDeclaration(p) && ts.isIdentifier(p.name) && p.name.text === expr.name.text,
-  );
-  if (!sibling) return null;
-  return cjsAccessorCall(lowerer, sibling, locOf(expr));
+  return n !== undefined &&
+    ts.isObjectLiteralExpression(n.parent) &&
+    isCjsExportTableLiteral(n.parent)
+    ? n
+    : null;
 }
 
 /** RegExp.prototype's flag getters and the flag each one reads. */

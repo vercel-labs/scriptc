@@ -390,7 +390,11 @@ function usesVolatileHostState(inputs: string[]): boolean {
 async function runNode(file: string, track?: Track): Promise<RunResult> {
   let cachePath: string | null = null;
   if (oracleDir !== null && !usesVolatileHostState(programInputs(file))) {
-    const h = createHash("sha256").update(await oracleKeyBase());
+    // A directory can hold several entries over the same inputs.
+    const h = createHash("sha256")
+      .update(await oracleKeyBase())
+      .update(file.slice(repoRoot.length))
+      .update("\0");
     for (const f of programInputs(file)) {
       h.update(f.slice(repoRoot.length)).update("\0").update(readFileSync(f)).update("\0");
     }
@@ -452,7 +456,8 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
   const defines = programDefines(directiveHead(file));
-  const hash = createHash("sha256");
+  // The entry joins the key: a directory can hold several entries.
+  const hash = createHash("sha256").update(file).update("\0");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")

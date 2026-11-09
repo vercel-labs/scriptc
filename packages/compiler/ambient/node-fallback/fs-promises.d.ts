@@ -98,8 +98,8 @@ declare module "fs/promises" {
     ): Promise<FileWriteResult<string>>;
     readFile(options?: null): Promise<Buffer>;
     readFile(encoding: "utf8" | "utf-8"): Promise<string>;
-    writeFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    appendFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    writeFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    appendFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
@@ -148,7 +148,7 @@ declare module "fs/promises" {
   export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";
@@ -158,7 +158,7 @@ declare module "fs/promises" {
   ): Promise<void>;
   export function writeFile(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     encoding: "utf8" | "utf-8",
   ): Promise<void>;
   export function mkdir(
@@ -210,7 +210,7 @@ declare module "fs/promises" {
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
-  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
   export function rmdir(path: string | URL): Promise<void>;

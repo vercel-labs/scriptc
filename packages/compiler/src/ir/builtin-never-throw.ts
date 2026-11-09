@@ -14,6 +14,8 @@ import type { IrLibFn } from "./builtin-signatures.js";
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
+  // scr_dyn_adoptable compares the value's kind.
+  "dyn.adoptable",
   // scr_closure_adopt_identity writes two fields of the adapter.
   "closure.shareIdentity",
   // scr_ni_intrinsic_register stores the value in a table.

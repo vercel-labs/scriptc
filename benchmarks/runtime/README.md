@@ -37,6 +37,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
 | `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |
 | `record-boundaries` | cpu | records built from unchecked array reads passed to and returned from annotated functions |
+| `untyped-handoff` | cpu | typed records stored as `unknown` beside the function that declared their type and handed back to it: annotated, `satisfies`, a parameter typed by the reader's own parameter, and a bare literal read with `as` |
 | `records-sort` | cpu | comparator sorts, group-by, `reduce`/`filter` |
 | `regex-logs` | cpu | regex `exec` with groups, `test`, global `replace` |
 | `regex-replacers` | cpu | regex `replace`/`replaceAll` with inline callbacks whose parameters have no annotations: dictionary placeholders, snake_case to camelCase, date reordering, optional captures, capitalization, and a string search that reads the offset |
@@ -51,6 +52,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `typed-array-scan`, `typed-array-scan-workers` | cpu | element-by-element scan loops over `Uint8Array`, `Uint16Array`, `Int32Array` and `Float64Array`; the second entry is a worker-enabled executable (it can start a worker), so each access also checks for shared storage |
 | `unicode-lexer` | cpu | a hand-written lexer over a 2.7M-unit bundled module whose comments and strings are in several languages: `charCodeAt` scans, line starts |
 | `union-node-sets` | cpu | syntax-tree passes over a discriminated union of object literals: a `Set` of visited nodes, a `Map` from node to value, conversions to a sub-union of leaves |
+| `untyped-record-probes` | cpu | typed records and arrays printed by a walker that takes `unknown`: `typeof`, `Array.isArray`, reads of members no record has (a hook, a flag, `then`), `in`, a for-in guarded by `hasOwnProperty`, and keyed reads of the fields it prints |
 | `validate-errors` | cpu | throw/catch on a fraction of inputs, small call chains |
 | `value-objects` | cpu | small immutable records and class instances: vector helpers, method chains, particle updates |
 | `value-records` | cpu | records that hold strings, spread state updates and destructured tuples: token helpers, an immutable reducer, tuple returns |

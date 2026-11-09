@@ -224,6 +224,9 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--no-copy-warning</code></dt>
   <dd>Build and coverage. Leave out <code>SC6001</code>, the warning at conversions that copy a value the program can tell from the original. Not allowed with <code>--fail-on=divergences</code>. See <a href="/docs/coverage#node-divergences">Node divergences</a>.</dd>
 
+  <dt><code>--no-key-order-warning</code></dt>
+  <dd>Build and coverage. Leave out <code>SC6014</code>, the warning for a record type whose objects create their keys in orders scriptc doesn't follow per object. Not allowed with <code>--fail-on=divergences</code>. See <a href="/docs/coverage#node-divergences">Node divergences</a>.</dd>
+
   <dt><code>--wasm &lt;file.wasm&gt;</code></dt>
   <dd>Coverage only. Report a WebAssembly module the program loads from a path its sources do not spell out. The report already lists modules whose paths the compiler resolves, modules inlined as base64 literals, and <code>.wasm</code> files shipped by packages that use WebAssembly; a <code>scriptc.wasm</code> array in <code>package.json</code> adds files the same way as this flag. Each module is listed with its size, whether it validates, and the WebAssembly proposals it uses. Builds translate the modules they find to native code; a build reads the <code>scriptc.wasm</code> array but not this flag. Repeatable.</dd>
 

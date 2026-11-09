@@ -131,9 +131,10 @@ for (const form of forms) {
   console.log("ascii " + build(form, asciiPieces, 700));
   console.log("mixed " + build(form, mixedPieces, 700));
 }
-// One long text of short pieces: crosses every capacity step up to 300,000 characters.
+// One long text of short pieces. 10,000 characters show a quadratic append as well as a longer
+// text does; one form goes on to 200,000 characters and crosses every capacity step up to there.
 for (const form of forms) {
-  console.log("long " + build(form, ["0123456789abcdefghij", "k"], 30000));
+  console.log("long " + build(form, ["0123456789abcdefghij", "k"], form === "member" ? 19000 : 1000));
 }
 
 // An alias keeps the text it saw.

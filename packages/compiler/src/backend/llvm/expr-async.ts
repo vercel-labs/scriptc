@@ -454,8 +454,11 @@ export function emitSerializationExpr(
       }
       const ty = host.llType(e.type);
       let t: string;
+      // Which path of a record's conversion answered, for the adoption.
+      const paths: { helper: string | null } | undefined =
+        e.shared === true ? { helper: null } : undefined;
       if (e.type.kind === "record") {
-        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs);
+        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs, paths);
       } else {
         t = B.tmp();
         B.line(
@@ -466,8 +469,10 @@ export function emitSerializationExpr(
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck(undefined, false, undefined, note);
       // A typed slot's conversion keeps one object (dynCheck.shared): the
-      // check succeeded, so the source adopts the value built from it.
-      if (e.shared === true) host.dyn.adoptSharedSource(B, e.type, dynV.name, t, sourceBorrowed);
+      // check succeeded, so the source adopts the value built from it. A
+      // record's own capsule handed its object out: nothing was built.
+      if (paths !== undefined)
+        host.dyn.adoptSharedSource(B, e.type, dynV.name, t, sourceBorrowed, paths.helper);
       return out;
     }
     default: {

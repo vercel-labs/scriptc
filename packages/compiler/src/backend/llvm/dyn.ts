@@ -3097,13 +3097,19 @@ export class LlDyn {
    * them and hands out the same object, with no call. Every other value,
    * and a capsule boxed with another copy of the key constant (a second
    * object file of one program), takes the helper, whose first test compares
-   * the key by content and whose remaining paths view, convert or throw. */
+   * the key by content and whose remaining paths view, convert or throw.
+   *
+   * A caller that passes `paths` is told which path answered: `helper` is
+   * an i1 that is false where the capsule's own object was handed out (null
+   * where every value takes the helper). An adoption reads it, so the path
+   * without a call stays without one. */
   checkedRecordConversion(
     B: BlockBuilder,
     t: IrType & { kind: "record" },
     d: string,
     path: string,
     preserveRefs = false,
+    paths?: { helper: string | null },
   ): string {
     const helper = this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
@@ -3147,6 +3153,10 @@ export class LlDyn {
     B.startBlock(lDone);
     const converted = B.tmp();
     B.line(`${converted} = phi ptr [ ${held}, %${lOwn} ], [ ${checked}, %${lOther} ]`);
+    if (paths !== undefined) {
+      paths.helper = B.tmp();
+      B.line(`${paths.helper} = phi i1 [ false, %${lOwn} ], [ true, %${lOther} ]`);
+    }
     return converted;
   }
 
@@ -6646,14 +6656,18 @@ export class LlDyn {
    * adopts a node only when something else holds it. Only a plain object
    * or array has nodes to adopt (scr_dyn_adoptable, as adoptingCast asks):
    * a source that already is a native value's capsule skips the boxing and
-   * the walk. Nothing is emitted where the program does not link the
-   * adoption unit (a library) or the type has no live capsule. */
+   * the walk. `viaHelper`, where the conversion has it
+   * (checkedRecordConversion), is false where the capsule's own object was
+   * handed out: that path asks nothing. Nothing is emitted where the
+   * program does not link the adoption unit (a library) or the type has no
+   * live capsule. */
   adoptSharedSource(
     B: BlockBuilder,
     t: IrType,
     source: string,
     built: string,
     borrowed: boolean,
+    viaHelper: string | null = null,
   ): void {
     const host = this.host;
     if (host.declAdopt?.() !== true) return;
@@ -6669,6 +6683,11 @@ export class LlDyn {
     const adoptable = B.tmp();
     const adoptLabel = B.newLabel("adopt");
     const doneLabel = B.newLabel("adopt.done");
+    if (viaHelper !== null) {
+      const askLabel = B.newLabel("adopt.ask");
+      B.condBr(viaHelper, askLabel, doneLabel);
+      B.startBlock(askLabel);
+    }
     B.line(`${adoptable} = call zeroext i1 @scr_dyn_adoptable(ptr ${source})`);
     B.condBr(adoptable, adoptLabel, doneLabel);
     B.startBlock(adoptLabel);

@@ -116,6 +116,7 @@ import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-stati
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
@@ -263,6 +264,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import type { Defines } from "../defines.js";
+import { programImportsNodeApi } from "../node-api-import.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -4539,6 +4541,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
@@ -4676,8 +4681,8 @@ export class Lowerer {
    * (memberCallReceivers), computed on first use. */
   memberReceivers: MemberCallReceivers | undefined = undefined;
   /** Whether the program imports @scriptc/node (programImportsNodeApi), so
-   * a checked-dynamic value may be a Node island value; computed on first
-   * use. */
+   * a checked-dynamic value may be a Node island value and code the build
+   * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
@@ -4795,6 +4800,10 @@ export class Lowerer {
   /** Whether the program contains the built-in undici package
    * (fetch-dispatcher.ts), found on first use. */
   undiciPackageInProgram: boolean | null = null;
+  /** Whether the program writes or deletes an environment variable through
+   * a name that is not a literal (constant-conditions.ts), found on first
+   * use. */
+  computedEnvironmentWrite: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -5261,6 +5270,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
@@ -6002,6 +6017,9 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // Asked only where no unit is recorded: a build that reuses units leaves
+    // the conditions `--define` decides to the run (constant-conditions.ts).
+    "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -6075,6 +6093,8 @@ export class Lowerer {
     "computedGlobalReads",
     "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
     "nodeObjectValueReads",
     "namesWebStreamClass",
@@ -15284,6 +15304,15 @@ export class Lowerer {
   hasNodeIslands(): boolean {
     const islands = this.nodeIslands;
     return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
+  }
+
+  /** Whether code of the program can run in Node.js: the build has an
+   * island set, or a source file imports @scriptc/node. Known before any
+   * unit lowers, which usesNodeIsland is not. */
+  mayRunInNode(): boolean {
+    return (
+      this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
+    );
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when

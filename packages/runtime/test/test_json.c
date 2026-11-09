@@ -562,6 +562,103 @@ static void json_callback_tests(void) {
   scr_dyn_release(callback);
 }
 
+/* scr_record_reflects_static: a native record answers reflection from its
+ * declared fields alone until it keeps a source, is a copy linked to a
+ * wider source, or a live capsule of it holds something of its own. The
+ * fact follows the tables: it is true again once the capsule is gone, and
+ * a record's entries leave with the record (the dispose hook). */
+static LiveRecord *reflecting_record(double x) {
+  LiveRecord *rec = calloc(1, sizeof *rec);
+  rec->rc = 1;
+  rec->x = x;
+  return rec;
+}
+static void reflecting_record_free(LiveRecord *rec) {
+  if (scr_weak_dispose_hook) scr_weak_dispose_hook(rec);
+  live_record_release(rec);
+}
+/* A stand-in symbol: the dyn runtime keys a symbol by its address and asks
+ * the symbol unit, which this test does not link, only for its text. */
+static char reflecting_mark;
+static void reflecting_mark_release(ScrSym *symbol) { (void)symbol; }
+static ScrStr *reflecting_mark_text(ScrSym *symbol) {
+  (void)symbol;
+  return scr_str_new("mark", 4);
+}
+static void record_reflects_static_tests(void) {
+  LiveRecord *plain = reflecting_record(1);
+  check(scr_record_reflects_static(plain, true), "a record no table holds reflects statically");
+
+  /* A live capsule with nothing of its own leaves the answer alone. */
+  ScrDyn *capsule = scr_dyn_new_typed_ref(plain, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  check(scr_record_reflects_static(plain, true), "a plain live capsule changes nothing");
+  /* A prototype given through the capsule lives in the capsule's view. */
+  ScrDyn *proto = scr_dyn_new_obj();
+  ScrDyn *same = scr_dyn_set_prototype(capsule, proto);
+  check(same == capsule && !scr_exc_pending(), "a capsule takes a prototype");
+  check(!scr_record_reflects_static(plain, true), "a live capsule with a prototype answers for its record");
+  LiveRecord *other = reflecting_record(2);
+  check(scr_record_reflects_static(other, true), "another record is not that capsule's");
+  scr_dyn_release(same);
+  scr_dyn_release(proto);
+  scr_dyn_release(capsule);
+  check(scr_record_reflects_static(plain, true), "the prototype goes with the capsule");
+
+  /* A member named by a symbol and written through a capsule lives in that
+   * capsule's view: no declared field holds it, and Reflect.ownKeys lists
+   * it after the fields. */
+  ScrDyn *holder = scr_dyn_new_typed_ref(plain, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  ScrDyn *mark = scr_dyn_symbol_ref((ScrSym *)&reflecting_mark, reflecting_mark_release,
+      reflecting_mark_text, reflecting_mark_text);
+  ScrDyn *marked = scr_dyn_new_num(1);
+  check(scr_record_reflects_static(plain, true), "a second plain capsule changes nothing");
+  scr_dyn_symbol_key_set(holder, mark, marked);
+  check(!scr_exc_pending(), "a capsule takes a symbol-keyed member");
+  check(!scr_record_reflects_static(plain, true),
+      "a live capsule with a symbol-keyed member answers for its record");
+  check(scr_record_reflects_static(other, true), "a symbol-keyed member is one record's");
+  scr_dyn_release(marked);
+  scr_dyn_release(mark);
+  scr_dyn_release(holder);
+  check(scr_record_reflects_static(plain, true), "the symbol-keyed member goes with the capsule");
+
+  /* A kept source: the object the record was converted from had a key the
+   * record's type does not declare. */
+  ScrDyn *source = scr_dyn_new_obj();
+  scr_dyn_obj_set(source, "x", 1, scr_dyn_new_num(1));
+  scr_dyn_obj_set(source, "extra", 5, scr_dyn_new_num(2));
+  const char *const names[] = { "x" };
+  const size_t lens[] = { 1 };
+  scr_record_source_note(plain, source, names, lens, 1);
+  check(scr_record_source_has(plain) && !scr_record_reflects_static(plain, true),
+      "a record that kept a source does not reflect statically");
+  check(scr_record_reflects_static(other, true), "a kept source is one record's");
+  /* A source with the declared keys only is not kept. */
+  ScrDyn *exact = scr_dyn_new_obj();
+  scr_dyn_obj_set(exact, "x", 1, scr_dyn_new_num(1));
+  scr_record_source_note(other, exact, names, lens, 1);
+  check(!scr_record_source_has(other) && scr_record_reflects_static(other, true),
+      "a source with the declared keys alone is not kept");
+  scr_dyn_release(exact);
+  scr_dyn_release(source);
+
+  /* A copy linked to the wider record it was narrowed from. */
+  LiveRecord *wide = reflecting_record(3);
+  scr_record_link(other, wide, live_record_release, 7);
+  check(scr_record_link_pair(other) == 7 && !scr_record_reflects_static(other, true),
+      "a linked copy does not reflect statically");
+  check(scr_record_reflects_static(other, false),
+      "the link is not looked for where the program's types rule it out");
+  LiveRecord *fresh = reflecting_record(4);
+  check(scr_record_reflects_static(fresh, true), "the tables in use answer for their records only");
+
+  reflecting_record_free(fresh);
+  reflecting_record_free(other);
+  reflecting_record_free(plain);
+}
+
 static void test_class_values(void) {
   ScrStr *name = S("Stored");
   ScrClassObj template = { .rc = SIZE_MAX, .name = name, .length = 2 };
@@ -1032,6 +1129,7 @@ int main(void) {
   typed_view_failure_tests();
   live_array_ref_tests();
   live_record_ref_tests();
+  record_reflects_static_tests();
 
   printf("%d/%d checks passed\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;

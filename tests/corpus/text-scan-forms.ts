@@ -4,10 +4,8 @@
 // head, declared before the `for` (with `continue`, with an early exit, with
 // a second read past the counter), `while`, `for…of`, `s[i]`, `charAt`,
 // `codePointAt`, a field, a module constant, a hoisted length; reads at an
-// index out of range or not an integer. Then `replace` and `replaceAll`
-// with a one-character search value: no match, matches at both ends,
-// removal, `$` patterns, non-ASCII text and search values, a chain of
-// five, an empty search value and one longer than the text.
+// index out of range or not an integer. (`replace` and `replaceAll` are in
+// text-replace-forms.ts.)
 
 const TEXTS: string[] = [
   "",
@@ -192,34 +190,6 @@ function moduleConstant(): number {
   return n + i;
 }
 
-function escapeChain(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#x27;");
-}
-
-function escapeSteps(s: string): string {
-  let t = s.replaceAll("&", "&amp;");
-  t = t.replaceAll("<", "&lt;");
-  t = t.replaceAll(">", "&gt;");
-  return t;
-}
-
-function replaceCells(s: string, search: string): void {
-  const texts = ["-", "", "<<>>", "[$&]", "[$$]", "[$1]", "[$`|$']", "é", "\ude00"];
-  for (const text of texts) {
-    console.log(
-      JSON.stringify(search),
-      JSON.stringify(text),
-      JSON.stringify(s.replace(search, text)),
-      JSON.stringify(s.replaceAll(search, text)),
-    );
-  }
-}
-
 for (const s of TEXTS) {
   console.log(JSON.stringify(s));
   console.log(
@@ -250,8 +220,6 @@ for (const s of TEXTS) {
   );
   const h = new Holder(s);
   console.log(" field", h.scan(), h.shrink(), h.scan(), JSON.stringify(h.text));
-  console.log(" chain", JSON.stringify(escapeChain(s)), JSON.stringify(escapeSteps(s)));
-  console.log(" same", s.replaceAll("\u0001", "x") === s, s.replace("\u0001", "x") === s);
 }
 console.log("module", moduleConstant(), s0());
 
@@ -269,14 +237,3 @@ function s0(): string {
     String(s.codePointAt(3)),
   ].join(" ");
 }
-
-replaceCells('a.b.c..d "." e', ".");
-replaceCells("....", ".");
-replaceCells("", ".");
-replaceCells("café.ü.\u{1F600}", ".");
-replaceCells("café.ü.\u{1F600}", "é");
-replaceCells("hi \ud83d. \ud83d", ".");
-replaceCells("aaaa", "aa");
-replaceCells("abc", "");
-replaceCells("ab", "abc");
-replaceCells("a$b$$c", "$");

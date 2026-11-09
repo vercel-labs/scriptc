@@ -92,6 +92,20 @@ attempt("own undefined force", () => process.stdout.getColorDepth({ FORCE_COLOR:
 attempt("numbers", () => process.stdout.getColorDepth({ TERM: 5, FORCE_COLOR: 1 }));
 attempt("tmux zero", () => process.stdout.getColorDepth({ TMUX: 0, TERM: "xterm" }));
 attempt("teamcity number", () => process.stdout.getColorDepth({ TEAMCITY_VERSION: 10.5 }));
+// A value that carries its own toString or valueOf is converted with it, once
+// for each regular expression that reads it, and what it throws leaves the call.
+let conversions = 0;
+attempt("own text", () => process.stdout.getColorDepth({ TERM: { toString() { conversions++; return "xterm-256color"; } } }));
+lines.push(`conversions ${conversions}`);
+attempt("own text has", () => process.stdout.hasColors(256, { TERM: { toString() { return "xterm-256color"; } } }));
+attempt("own text plain", () => process.stdout.getColorDepth({ TERM: { toString() { conversions++; return "plain"; } } }));
+lines.push(`conversions ${conversions}`);
+attempt("own text throws", () => process.stdout.getColorDepth({ TERM: { toString() { throw new RangeError("no text here"); } } }));
+attempt("own text throws has", () => process.stdout.hasColors(16, { TERM: { toString() { throw new RangeError("no text here"); } } }));
+attempt("own value", () => process.stdout.getColorDepth({ TERM: { toString: undefined, valueOf() { return "xterm-truecolor"; } } }));
+attempt("own version", () => process.stdout.getColorDepth({ TEAMCITY_VERSION: { toString() { return "10.5"; } } }));
+attempt("own program version", () => process.stdout.getColorDepth({ TERM_PROGRAM: "iTerm.app", TERM_PROGRAM_VERSION: { toString() { return "2.9"; } } }));
+attempt("no text at all", () => process.stdout.getColorDepth({ TERM: { toString: undefined, valueOf: undefined } }));
 let reads = 0;
 attempt("accessor", () => process.stdout.getColorDepth({ get TERM(): string { reads++; return "xterm"; } }));
 lines.push(`reads ${reads}`);

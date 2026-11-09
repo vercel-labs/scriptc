@@ -120,7 +120,9 @@ static bool scr_tty_env_has(ScrTtyEnv *e, const char *name, bool own) {
 }
 
 /* The string a regular expression or toLowerCase sees for `env.NAME`
- * (+1), or NULL after a throw. */
+ * (+1), or NULL after a throw. The conversion is ToString with the object
+ * protocol: a value's own toString or valueOf is called, once for each
+ * use, and what it throws leaves the color method. */
 static ScrStr *scr_tty_env_text(ScrTtyEnv *e, const char *name) {
   ScrDyn *value = scr_tty_env_read(e, name);
   ScrStr *text = NULL;
@@ -129,8 +131,8 @@ static ScrStr *scr_tty_env_text(ScrTtyEnv *e, const char *name) {
   else if (value->kind == SCR_DYN_UNDEF) text = scr_str_new("undefined", 9);
   else if (value->kind == SCR_DYN_NULL) text = scr_str_new("null", 4);
   else {
-    text = scr_dyn_to_string(value, NULL);
-    if (scr_exc_pending()) {
+    text = scr_dyn_string_coerce_js(value);
+    if (!text || scr_exc_pending()) {
       scr_str_release(text);
       text = NULL;
       e->failed = true;

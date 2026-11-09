@@ -44,6 +44,10 @@ function chainForms(s: string): string[] {
     // A later step replaces a character an earlier step wrote.
     s.replaceAll("<", "&lt;").replaceAll("&", "&amp;"),
     s.replaceAll("a", "b").replaceAll("b", "a"),
+    // A step writes the search value of the step after it and of the one
+    // before it.
+    s.replaceAll("a", "<b>").replaceAll("<", "[a]").replaceAll("b", "<"),
+    s.replace(/&/g, "<").replace(/</g, ">").replace(/>/g, "&"),
     // The same character twice, `$` patterns, a first-occurrence step.
     s.replaceAll("&", "<").replaceAll("&", ">"),
     s.replaceAll("&", "[$&]").replaceAll("<", "[$$]"),

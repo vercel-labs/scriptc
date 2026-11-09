@@ -7073,6 +7073,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (scr_immediates_head == scr_nimmediates) {
         scr_immediates_head = 0;
         scr_nimmediates = 0;
+      } else if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
+        /* Not drained: a callback queued the next immediate, as a chain of
+         * them does at every turn, so the queue is never empty here and the
+         * reset above never runs: the array would grow by a slot for every
+         * immediate the program ever queues. Once the fired part is at least
+         * as long as the pending tail, the tail moves to the front (a slot
+         * moves at most once per slot fired). The slots it leaves are
+         * cleared: a phase that still holds an end index skips a cleared
+         * slot as it skips a fired one. */
+        size_t pending = scr_nimmediates - scr_immediates_head;
+        memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
+        memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
+        scr_nimmediates = pending;
+        scr_immediates_head = 0;
       }
       check_ran = true;
     }

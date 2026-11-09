@@ -715,6 +715,121 @@ static void test_join(void) {
 #endif
 }
 
+/* The dense string join against a plain append of the same pieces. The
+ * piece lengths sit on both sides of the bounds of its one-move and
+ * two-move copies, each length takes a turn as the first piece (whose move
+ * may write the result's header) and the separators are empty, one byte,
+ * and on both sides of the same bounds. Every fifth slot of the second
+ * round is NULL: a null or undefined element. */
+static void test_join_dense_strings(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+#endif
+  static const size_t lens[] = {0, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 64, 200};
+  static const size_t seps[] = {0, 1, 2, 16, 17, 40};
+  enum { LENS = sizeof lens / sizeof *lens, SEPS = sizeof seps / sizeof *seps };
+  static const size_t counts[] = {1, 2, LENS, 3 * LENS};
+  static char text[256], sep_text[64], expect[16384];
+  size_t wrong = 0, cases = 0;
+  for (size_t k = 0; k < sizeof sep_text; k++) sep_text[k] = (char)('0' + k % 10);
+  for (size_t si = 0; si < SEPS; si++) {
+    ScrStr *sep = scr_str_new(sep_text, seps[si]);
+    for (size_t first = 0; first < LENS; first++) {
+      for (size_t ci = 0; ci < sizeof counts / sizeof *counts; ci++) {
+        for (int nulls = 0; nulls < 2; nulls++) {
+          ScrArr *a = scr_arr_new(SCR_ELEM_STR, 0);
+          size_t at = 0;
+          for (size_t j = 0; j < counts[ci]; j++) {
+            if (j > 0) {
+              memcpy(expect + at, sep_text, seps[si]);
+              at += seps[si];
+            }
+            if (nulls && j % 5 == 4) {
+              scr_arr_push_ref(a, NULL);
+              continue;
+            }
+            size_t len = lens[(first + j) % LENS];
+            for (size_t k = 0; k < len; k++) text[k] = (char)('a' + (j * 7 + k) % 26);
+            scr_arr_push_ref(a, scr_str_new(text, len));
+            memcpy(expect + at, text, len);
+            at += len;
+          }
+          ScrStr *out = scr_arr_join(a, sep);
+          cases++;
+          if (out->len != at || memcmp(out->data, expect, at) != 0 || out->data[at] != '\0' ||
+              out->rc != 1 || out->cap < at || !scr_str_known_ascii(out))
+            wrong++;
+          scr_str_release(out);
+          scr_arr_release(a);
+        }
+      }
+    }
+    scr_str_release(sep);
+  }
+  check(cases == SEPS * LENS * 8 && wrong == 0,
+        "dense string join equals the plain append for every piece and separator length");
+
+  /* The proven-ASCII mark: every piece, and a separator that is used. */
+  ScrStr *wide = scr_str_new("\xC3\xA9", 2);
+  ScrStr *plain = scr_str_new("plain", 5);
+  ScrStr *comma = scr_str_new(",", 1);
+  ScrArr *one = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_push_ref(one, scr_str_retain(plain));
+  ScrStr *out = scr_arr_join(one, wide);
+  check(out->len == 5 && scr_str_known_ascii(out),
+        "join of one ASCII piece is proven ASCII whatever the separator");
+  scr_str_release(out);
+  scr_arr_push_ref(one, scr_str_retain(plain));
+  out = scr_arr_join(one, wide);
+  check(out->len == 12 && memcmp(out->data, "plain\xC3\xA9plain", 12) == 0 &&
+            !scr_str_known_ascii(out),
+        "join with a used separator that is not ASCII is not proven ASCII");
+  scr_str_release(out);
+  scr_arr_push_ref(one, scr_str_retain(wide));
+  out = scr_arr_join(one, comma);
+  check(out->len == 14 && memcmp(out->data, "plain,plain,\xC3\xA9", 14) == 0 &&
+            !scr_str_known_ascii(out),
+        "join with a piece that is not ASCII is not proven ASCII");
+  scr_str_release(out);
+  scr_arr_release(one);
+
+  /* A lone high surrogate and a lone low one that meet at a seam become
+   * the pair's four bytes; apart they stay as they are. */
+  scr_wtf8_note();
+  ScrStr *high = scr_str_new("a\xED\xA0\xBD", 4);
+  ScrStr *low = scr_str_new("\xED\xB8\x80z", 4);
+  ScrStr *none = scr_str_new("", 0);
+  ScrArr *pair = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_push_ref(pair, scr_str_retain(high));
+  scr_arr_push_ref(pair, scr_str_retain(low));
+  out = scr_arr_join(pair, none);
+  check(out->len == 6 && memcmp(out->data, "a\xF0\x9F\x98\x80z", 6) == 0 &&
+            out->data[6] == '\0',
+        "join fuses a surrogate pair that meets at a seam");
+  scr_str_release(out);
+  out = scr_arr_join(pair, comma);
+  check(out->len == 9 && memcmp(out->data, "a\xED\xA0\xBD,\xED\xB8\x80z", 9) == 0,
+        "join keeps lone surrogates that a separator keeps apart");
+  scr_str_release(out);
+  ScrStr *low_sep = scr_str_new("\xED\xB8\x80", 3);
+  scr_arr_set_ref(pair, 1, scr_str_retain(plain));
+  out = scr_arr_join(pair, low_sep);
+  check(out->len == 10 && memcmp(out->data, "a\xF0\x9F\x98\x80plain", 10) == 0,
+        "join fuses a piece's lone high surrogate with a separator's lone low one");
+  scr_str_release(out);
+  scr_arr_release(pair);
+  scr_str_release(low_sep);
+  scr_str_release(none);
+  scr_str_release(low);
+  scr_str_release(high);
+  scr_str_release(comma);
+  scr_str_release(plain);
+  scr_str_release(wide);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0, "dense string join: no strings leaked");
+#endif
+}
+
 static void test_sparse_holes(void) {
 #ifdef SCR_RC_AUDIT
   long strings0 = scr_str_live_count();
@@ -2642,6 +2757,7 @@ int main(int argc, char **argv) {
   test_ref_truncate_cycle();
   test_ref_trace_storage_boundaries();
   test_join();
+  test_join_dense_strings();
   test_sparse_holes();
   test_large_storage();
   test_bulk_reference_ownership();

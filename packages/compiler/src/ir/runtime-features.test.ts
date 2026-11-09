@@ -10,6 +10,7 @@ import {
   type IrFunction,
   type IrModule,
   type IrLibFn,
+  type IrType,
   type IrStmt,
 } from "./ir.js";
 import {
@@ -1015,5 +1016,39 @@ describe("runtime feature snapshots", () => {
       childProcess: true,
       childErrorEvent: false,
     });
+  });
+
+  test("links the adoption unit for a typed slot's flagged conversion, not for a boxed function", () => {
+    const names = arrayOf(STRING);
+    const takesNames: IrType = { kind: "func", params: [names], ret: VOID };
+    const links = (flagged: boolean): boolean => {
+      const mod = module();
+      mod.functions[0]!.locals.push(
+        { id: "fn", name: "fn", mutable: false, type: takesNames },
+        { id: "source", name: "source", mutable: false, type: DYN },
+      );
+      // A function boxed for untyped code: its thunk converts the caller's
+      // array and keeps the copy, so it does not ask for the unit.
+      const boxed: IrExpr = {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "fn", type: takesNames, loc },
+      };
+      const check: IrExpr & { kind: "dynCheck" } = {
+        kind: "dynCheck",
+        type: names,
+        loc,
+        value: { kind: "varRef", localId: "source", type: DYN, loc },
+      };
+      if (flagged) check.shared = true;
+      mod.functions[0]!.body.push(
+        { kind: "exprStmt", loc, expr: boxed },
+        { kind: "exprStmt", loc, expr: check },
+      );
+      return moduleRuntimeFeatures(mod).declAdopt;
+    };
+    expect(links(true)).toBe(true);
+    expect(links(false)).toBe(false);
   });
 });

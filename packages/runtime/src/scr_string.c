@@ -537,29 +537,45 @@ static __attribute__((noinline, cold)) ScrStr *scr_str_concat_joined(ScrStr *a, 
   return s;
 }
 
-ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
-  if (a->len == 0) return scr_str_retain(b);
-  if (b->len == 0) return scr_str_retain(a);
-  if (a->len > SIZE_MAX - b->len - sizeof(ScrStr) - 1) scr_oom();
-  /* Only two strings that are not proven ASCII can complete a pair. */
-  if (__builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
-      scr_wtf8_joins(a->data, a->len, b->data, b->len))
-    return scr_str_concat_joined(a, b);
-  size_t newlen = a->len + b->len;
-  /* In-place append: a is uniquely owned by the caller's borrow (rc == 1 —
-   * never an interned literal, those are SIZE_MAX) and has room. Fires on
-   * concat chains (`a + b + c`, template literals), where each intermediate
-   * result reaches the next concat as a sole-reference temp. Any string
-   * with rc > 1 might be aliased and is copied, never mutated. */
-  bool ascii = a->ascii && b->ascii;
-  if (a->rc == 1 && a != b && a->cap >= newlen) {
-    size_t oldlen = a->len;
-    scr_short_forget(a);
-    scr_str_hash_forget(a);
-    scr_copy_bytes(a->data + a->len, b->data, b->len);
-    a->len = newlen;
-    a->data[newlen] = '\0';
-    a->ascii = ascii;
+/* scr_copy_bytes for an appended piece: up to 64 bytes move as two
+ * overlapping fixed-size halves, so the usual short piece of an append loop
+ * (a word, a tag, a number's text) costs no libc call. */
+static inline void scr_copy_piece(char *dst, const char *src, size_t n) {
+  if (n <= 16) {
+    scr_copy_bytes(dst, src, n);
+  } else if (n <= 32) {
+    uint64_t head[2], tail[2];
+    memcpy(head, src, 16);
+    memcpy(tail, src + n - 16, 16);
+    memcpy(dst, head, 16);
+    memcpy(dst + n - 16, tail, 16);
+  } else if (n <= 64) {
+    uint64_t head[4], tail[4];
+    memcpy(head, src, 32);
+    memcpy(tail, src + n - 32, 32);
+    memcpy(dst, head, 32);
+    memcpy(dst + n - 32, tail, 32);
+  } else {
+    memcpy(dst, src, n);
+  }
+}
+
+/* Append b's bytes to a, which the caller proved uniquely owned (rc == 1 —
+ * never an interned literal, those are SIZE_MAX), distinct from b, and with
+ * room for them. `ascii` is "both are proven ASCII": a's proven-ASCII fact
+ * then stays, and otherwise is dropped with the cached hash. */
+static inline void scr_str_append_in_place(ScrStr *a, const ScrStr *b, bool ascii) {
+  size_t oldlen = a->len, newlen = oldlen + b->len;
+  if (oldlen - 2 <= 2) scr_short_forget(a); /* only 2..4 bytes are ever cached */
+#if SCR_STR_HASH_CACHE
+  a->hash = 0;
+#endif
+  scr_copy_piece(a->data + oldlen, b->data, b->len);
+  a->len = newlen;
+  a->data[newlen] = '\0';
+  if (ascii) return;
+  a->ascii = 0;
+  {
     /* A cached UTF-16 length for a is stale now; checkpoints and the exact
      * old prefix remain valid. Its old terminal point is no longer an END
      * fact (u16len is invalidated below), but remains an excellent ordinary
@@ -569,18 +585,43 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
      * mapper answers it by identity before consulting an entry, and the
      * append that first adds non-ASCII bytes invalidates against its own
      * old length, which bounds every older fact as well. */
-    if (!ascii) scr_sidx_concat_append(a, oldlen);
+    scr_sidx_concat_append(a, oldlen);
+  }
+}
+
+ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
+  size_t alen = a->len, blen = b->len;
+  bool ascii = a->ascii && b->ascii;
+  /* In-place append, tested first because it is every step of an append
+   * loop: a is uniquely owned by the caller's borrow and has room for a
+   * non-empty b. Fires on concat chains (`a + b + c`, template literals),
+   * where each intermediate result reaches the next concat as a
+   * sole-reference temp, and on the self-assignment handoff. Any string
+   * with rc > 1 might be aliased and is copied, never mutated. Only two
+   * strings that are not proven ASCII can complete a surrogate pair; those
+   * take the general path below. */
+  size_t newlen = alen + blen; /* wraps only for sizes the general path rejects */
+  if (a->rc == 1 && a != b && newlen > alen && newlen <= a->cap &&
+      (ascii || !scr_wtf8_joins(a->data, alen, b->data, blen))) {
+    scr_str_append_in_place(a, b, ascii);
     a->rc = 2; /* +1 for the returned reference, beside the caller's borrow */
     return a;
   }
+  if (alen == 0) return scr_str_retain(b);
+  if (blen == 0) return scr_str_retain(a);
+  if (alen > SIZE_MAX - blen - sizeof(ScrStr) - 1) scr_oom();
+  if (__builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
+      scr_wtf8_joins(a->data, alen, b->data, blen))
+    return scr_str_concat_joined(a, b);
   /* Copy path. Geometric slack keeps uniquely-owned concat chains and the
-   * optimized self-assignment handoff amortized when they outgrow capacity.
-   * Aliases and `s = s + s` deliberately arrive with rc > 1 and stay on this
-   * path, preserving string immutability; their sizable replacement results
-   * can still benefit from the spare-block cache above. */
+   * optimized self-assignment handoff amortized when they outgrow capacity:
+   * the capacity doubles, so a text built by n appends is copied less than
+   * twice over. Aliases and `s = s + s` deliberately arrive with rc > 1 and
+   * stay on this path, preserving string immutability; their sizable
+   * replacement results can still benefit from the spare-block cache above. */
   size_t newcap = newlen;
   if (a->rc == 1) {
-    size_t grown = (size_t)a->cap + (a->cap >> 1) + 16;
+    size_t grown = (size_t)a->cap <= SCR_STR_MAX_CAP / 2 ? 2 * (size_t)a->cap + 16 : SCR_STR_MAX_CAP;
     if (grown > newcap) newcap = grown;
   } else if (newlen >= 512 && newlen <= (SIZE_MAX - sizeof(ScrStr) - 1) / 2) {
     newcap = newlen + (newlen >> 1);
@@ -786,7 +827,33 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
   return scr_str_concat_mixed_bytes(head, parts, nums, count);
 }
 
+/* Room for `more` further bytes in a string the caller owns alone and is
+ * consuming: the block itself grows (in place where the allocator can
+ * extend it, by moving its pages when it is large), to twice its capacity,
+ * instead of a copy into a second block. The bytes do not change, so a
+ * proven-ASCII fact survives the regrow's reset. */
+static __attribute__((noinline)) ScrStr *scr_str_grow_owned(ScrStr *a, size_t more) {
+  if (more > SCR_STR_MAX_CAP - a->len) scr_oom();
+  size_t need = a->len + more;
+  size_t grown = (size_t)a->cap <= (SCR_STR_MAX_CAP - 16) / 2 ? 2 * (size_t)a->cap + 16 : SCR_STR_MAX_CAP;
+  bool ascii = a->ascii;
+  a = scr_str_regrow(a, grown > need ? grown : need);
+  if (ascii) a->ascii = 1;
+  return a;
+}
+
 ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
+  /* The moved reference is the only one (rc == 1): the append happens in
+   * a's own block, which grows when it is full, and the reference moves
+   * through to the result with no count change. */
+  if (a->rc == 1 && a != b && b->len != 0 && a->len <= a->cap) {
+    bool ascii = a->ascii && b->ascii;
+    if (ascii || !scr_wtf8_joins(a->data, a->len, b->data, b->len)) {
+      if ((size_t)a->cap - a->len < b->len) a = scr_str_grow_owned(a, b->len);
+      scr_str_append_in_place(a, b, ascii);
+      return a;
+    }
+  }
   ScrStr *r = scr_str_concat(a, b);
   scr_str_release(a);
   return r;

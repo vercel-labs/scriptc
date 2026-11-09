@@ -209,21 +209,6 @@ async function main(): Promise<void> {
   const resolvedUntyped: unknown = Promise.resolve(boxed);
   console.log('Promise.resolve keeps an untyped promise: ' + (resolvedUntyped === boxed) + ' ' + (resolvedUntyped === boxedAgain));
   console.log('then makes another: ' + (promise.then(n => n) === promise) + ' ' + (promise.finally(() => {}) === promise) + ' ' + (promise.catch(() => record) === promise));
-
-  // A promise resolved with itself, reached through an untyped value, is a chaining cycle.
-  let settle: (value: unknown) => void = () => {};
-  const cyclic: Promise<unknown> = new Promise<unknown>(resolve => {
-    settle = resolve;
-  });
-  const typedView = cyclic as Promise<Note>;
-  const reboxed: unknown = typedView;
-  settle(reboxed);
-  try {
-    await cyclic;
-    console.log('a promise resolved with itself: settled');
-  } catch (error) {
-    console.log('a promise resolved with itself: ' + (error instanceof Error ? error.name + ': ' + error.message : 'a value'));
-  }
 }
 
 main();

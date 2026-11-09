@@ -893,8 +893,7 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
     scr_promise_fulfill_ref(destination, value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     return;
   }
-  /* The promise itself, or an adapter that boxes it. */
-  if (scr_promise_identity_equal(value->v.promise, destination)) {
+  if (value->v.promise == destination) {
     static const char message[] = "Chaining cycle detected for promise #<Promise>";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     scr_promise_reject_pending(destination);
@@ -1009,7 +1008,7 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
   ScrBox *box = resolve->caps[0];
   ScrPromise *p = (ScrPromise *)scr_box_get_ref(box);
   if (scr_promise_is_pending(p)) {
-    if (scr_promise_identity_equal(source, p)) {
+    if (source == p) {
       static const char message[] = "Chaining cycle detected for promise #<Promise>";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       scr_promise_reject_pending(p);

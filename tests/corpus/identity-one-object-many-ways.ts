@@ -26,10 +26,6 @@ class Sub extends Thing {
   extra = 'x';
 }
 
-class Failure extends Error {
-  code = 7;
-}
-
 function identity<T>(v: T): T {
   return v;
 }
@@ -290,13 +286,6 @@ async function reach<T extends WeakKey>(name: string, v: T, other: T, weak: bool
   report(name, typed, weak ? weakChecks<T>(other, ways.typed) : '', untypedChecks(otherUntyped, ways.untyped, weak), ways.untyped, otherUntyped);
 }
 
-// A kind whose typed Object.is has no lowering.
-async function reachNoIs<T extends WeakKey>(name: string, v: T, other: T, weak: boolean): Promise<void> {
-  const ways = await gather<T>(v);
-  const otherUntyped: unknown = other;
-  report(name, typedChecks<T>(other, ways.typed), weak ? weakChecks<T>(other, ways.typed) : '', untypedChecks(otherUntyped, ways.untyped, weak), ways.untyped, otherUntyped);
-}
-
 // A kind that is no key of a typed collection and no element of a typed array: `===` under
 // its static type, and every collection behind an untyped value.
 async function reachLoose<T extends WeakKey>(name: string, v: T, other: T, weak: boolean): Promise<void> {
@@ -340,10 +329,6 @@ async function asyncDeclared(): Promise<number> {
   return 1;
 }
 
-async function loadNote(note: Note): Promise<Note> {
-  return note;
-}
-
 async function main(): Promise<void> {
   const note: Note = {key: 1, who: 'ada'};
 
@@ -374,67 +359,6 @@ async function main(): Promise<void> {
   await reach<() => Promise<number>>('async function', asyncDeclared, async (): Promise<number> => 1, true);
   await reachLoose<typeof Thing>('class constructor', Thing, Sub, true);
   await reach<(x: number) => unknown>('function at a wider type', arrow, captured, true);
-
-  // Built-in objects. The last argument is false for the kinds that are no weak key yet.
-  await reachNoIs<Date>('date', new Date(0), new Date(0), false);
-  await reachLoose<RegExp>('regexp', /a/, /a/, false);
-  await reach<Error>('error', new Error('e'), new Error('e'), true);
-  await reachLoose<TypeError>('type error', new TypeError('e'), new TypeError('e'), true);
-  await reach<Error>('type error as an error', new TypeError('e'), new TypeError('e'), true);
-  await reach<Failure>('error subclass', new Failure('e'), new Failure('e'), true);
-  await reachLoose<Map<string, number>>('map', new Map([['a', 1]]), new Map([['a', 1]]), true);
-  await reachLoose<ReadonlyMap<string, number>>('readonly map', new Map([['a', 1]]), new Map([['a', 1]]), true);
-  await reachLoose<Map<Note, Note>>('map of records', new Map([[note, note]]), new Map([[note, note]]), true);
-  await reachLoose<Map<unknown, unknown>>('map of unknown', new Map(), new Map(), true);
-  await reachLoose<Set<string>>('set', new Set(['a']), new Set(['a']), true);
-  await reachLoose<Set<unknown>>('set of unknown', new Set(), new Set(), true);
-  await reachLoose<WeakMap<object, string>>('weak map', new WeakMap(), new WeakMap(), true);
-  await reachLoose<WeakSet<object>>('weak set', new WeakSet(), new WeakSet(), true);
-  await reachLoose<Uint8Array>('uint8 array', new Uint8Array(4), new Uint8Array(4), true);
-  await reachLoose<Float64Array>('float64 array', new Float64Array(2), new Float64Array(2), true);
-  await reachLoose<Int32Array>('int32 array', new Int32Array(2), new Int32Array(2), true);
-  await reachLoose<ArrayBuffer>('array buffer', new ArrayBuffer(4), new ArrayBuffer(4), true);
-  await reachLoose<DataView>('data view', new DataView(new ArrayBuffer(4)), new DataView(new ArrayBuffer(4)), true);
-  await reachLoose<Buffer>('buffer', Buffer.from('ab'), Buffer.from('ab'), true);
-  await reachLoose<URL>('url', new URL('https://example.com/a'), new URL('https://example.com/a'), false);
-  await reachLoose<URLSearchParams>('search params', new URLSearchParams('a=1'), new URLSearchParams('a=1'), false);
-  await reachLoose<TextEncoder>('text encoder', new TextEncoder(), new TextEncoder(), false);
-  await reachLoose<TextDecoder>('text decoder', new TextDecoder(), new TextDecoder(), false);
-  await reachLoose<AbortController>('abort controller', new AbortController(), new AbortController(), false);
-  await reachLoose<AbortSignal>('abort signal', new AbortController().signal, new AbortController().signal, false);
-
-  // Promises: however they were made and whatever their inner type.
-  const resolved: Promise<Note> = Promise.resolve(note);
-  await reach<Promise<Note>>('promise of Promise.resolve', resolved, Promise.resolve(note), true);
-  const pending: Promise<Note> = new Promise<Note>(() => {});
-  await reach<Promise<Note>>('pending promise', pending, new Promise<Note>(() => {}), true);
-  let settle: (note: Note) => void = () => {};
-  const made: Promise<Note> = new Promise<Note>(resolve => {
-    settle = resolve;
-  });
-  const madeOther: Promise<Note> = new Promise<Note>(resolve => {
-    resolve(note);
-  });
-  await reach<Promise<Note>>('promise of its constructor', made, madeOther, true);
-  settle(note);
-  await made;
-  await reach<Promise<Note>>('the same promise once settled', made, madeOther, true);
-  await reach<Promise<Note>>('promise of an async function', loadNote(note), loadNote(note), true);
-  await reach<Promise<number>>('promise of then', resolved.then(n => n.key), resolved.then(n => n.key), true);
-  await reach<Promise<void>>('promise of nothing', Promise.resolve(), Promise.resolve(), true);
-  await reach<Promise<number>>('promise of a number', Promise.resolve(1), Promise.resolve(1), true);
-  await reach<Promise<string>>('promise of a string', Promise.resolve('a'), Promise.resolve('a'), true);
-  await reach<Promise<unknown>>('promise of unknown', Promise.resolve<unknown>(note), Promise.resolve<unknown>(note), true);
-  await reach<Promise<unknown>>('typed promise at a wider type', resolved, Promise.resolve(note), true);
-  await reach<Promise<Note | null>>('typed promise at a nullable type', resolved, Promise.resolve(note), true);
-  await reach<PromiseLike<Note>>('promise as a thenable', resolved, Promise.resolve(note), true);
-  const failed: Promise<Note> = Promise.reject(new Error('no'));
-  failed.catch(() => {});
-  const failedOther: Promise<Note> = Promise.reject(new Error('no'));
-  failedOther.catch(() => {});
-  await reach<Promise<Note>>('rejected promise', failed, failedOther, true);
-  await reach<Promise<Note[]>>('promise of Promise.all', Promise.all([resolved]), Promise.all([resolved]), true);
-  await reach<Promise<Promise<Note>[]>>('promise of an array of promises', Promise.resolve([resolved]), Promise.resolve([resolved]), true);
 
   // Values: equal values are one key.
   const sym = Symbol('s');

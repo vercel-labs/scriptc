@@ -510,6 +510,18 @@ export function variantsFor(source) {
       });
     }
   }
+  // A checked-dynamic Map or Set keys a boxed promise by the identity cell
+  // its adapters share (scr_map.c's scr_map_hash_dyn). Only the
+  // checked-dynamic promise unit makes an adapter, so the programs that link
+  // scr_async_dyn.c (dynPromiseKeys: that unit's predicate above) select this
+  // build; every other program keeps the default object, byte for byte.
+  if (source === "scr_map.c") {
+    variants.push({
+      id: "dyn-promise-keys",
+      when: { dynPromiseKeys: true },
+      defines: ["SCR_DYN_PROMISE_KEYS"],
+    });
+  }
   // copyFileSync's mode argument reuses scr_fs_cp.c's reflink walk, so the
   // entry lives in a build of this unit rather than a unit of its own.
   if (source === "scr_fs_cp.c") {

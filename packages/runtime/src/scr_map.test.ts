@@ -22,6 +22,9 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
       // not codegen, so -O0 keeps every assertion and sanitizer check and
       // builds in about 15s.
       "-O0",
+      // The build a program with promise adapters links: a boxed promise is
+      // keyed by the identity cell its adapters share.
+      "-DSCR_DYN_PROMISE_KEYS",
       "-Wall",
       "-Wextra",
       "-fsanitize=address,undefined",

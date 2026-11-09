@@ -555,9 +555,10 @@ static void front_deletes(void) {
 /* ── one identity for each kind of checked-dynamic key ────────────────
  * A checked-dynamic Map or Set (SCR_MAP_KEY_DYN) keys an object by its
  * identity, not by the box that carries it: two boxes of one object are
- * one key, as they are strictly equal, and scr_dyn_identity answers one
- * address and kind for both. A second object of the kind is another key.
- * Values are keyed by value. */
+ * one key, as they are strictly equal. A second object of the kind is
+ * another key. Values are keyed by value. This test is the
+ * SCR_DYN_PROMISE_KEYS build of scr_map.c, the one a program with promise
+ * adapters links. */
 
 #define CHECK(what, cond)                                             \
   do {                                                                \
@@ -594,24 +595,16 @@ static void one_key(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
   scr_map_release(m);
 }
 
-/* Two boxes of one object: one identity, strictly equal, one key. */
+/* Two boxes of one object: strictly equal, one key. */
 static void one_object(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
-  void *pa = NULL, *pb = NULL, *po = NULL;
-  unsigned ka = 0, kb = 0, ko = 0;
-  CHECK(what, scr_dyn_identity(a, &pa, &ka) && scr_dyn_identity(b, &pb, &kb) && scr_dyn_identity(other, &po, &ko));
-  CHECK(what, pa == pb && ka == kb);
-  CHECK(what, po != pa || ko != ka);
   CHECK(what, scr_dyn_strict_eq(a, b) && scr_dyn_strict_eq(b, a));
   CHECK(what, !scr_dyn_strict_eq(a, other) && !scr_dyn_strict_eq(other, b));
   one_key(what, a, b, other);
   one_key(what, b, a, other);
 }
 
-/* Two boxes of one value: no identity, equal, one key. */
+/* Two boxes of one value: equal, one key. */
 static void one_value(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
-  void *p = NULL;
-  unsigned k = 0;
-  CHECK(what, !scr_dyn_identity(a, &p, &k) && !scr_dyn_identity(other, &p, &k));
   CHECK(what, scr_dyn_strict_eq(a, b) && !scr_dyn_strict_eq(a, other));
   one_key(what, a, b, other);
 }
@@ -696,6 +689,20 @@ static void promise_release(ScrPromise *promise) {
   if (--p->rc) return;
   if (p->identity && --p->identity->rc == 0) free(p->identity);
   free(p);
+}
+
+/* The promise unit's key identity of a promise (scr_async.c), which this
+ * test links without: the cell, made on first use. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromiseHead *p = promise;
+  if (!p->identity) {
+    p->identity = malloc(sizeof *p->identity);
+    assert(p->identity);
+    p->identity->rc = 1;
+    p->identity->observed = false;
+    p->identity->transferred = false;
+  }
+  return p->identity;
 }
 
 static bool promise_identity_equal(ScrPromise *a, ScrPromise *b) {

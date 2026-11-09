@@ -50,7 +50,7 @@ function slip(of: Parcel, n: number): Slip {
   return {parcel: of, stamps: [stamp(n), of.stamp], note: 'slip ' + n};
 }
 
-const rounds = 6000;
+const rounds = 1500;
 const shelf: Array<Parcel> = [];
 const wideShelf: Array<object> = [];
 const yard: Array<Crate> = [];

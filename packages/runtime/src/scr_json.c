@@ -21774,22 +21774,6 @@ static SCR_TL ScrWeakEntry **scr_weak_index;
 static SCR_TL size_t scr_weak_index_mask, scr_weak_index_used;
 typedef struct { void *key; ScrWeakEntry *head; } ScrWeakKeySlot;
 static SCR_TL ScrWeakKeySlot *scr_weak_keys;
-/* The emitted types that are traced only for scr_weak_judge (the compiler's
- * computeWeakOnly: a weak-collection key type, or a type that reaches one,
- * that is on no cycle of counted references). The collector can free
- * nothing through them, so their descriptors name scr_cyc_no_children and
- * their objects are SCR_CYC_ACYCLIC: no release nominates one and no pass
- * walks into one. The analysis must still follow what they hold, so the
- * program object lists each such descriptor with its trace function and
- * defines scr_weak_traces, overriding this weak, empty default (as it
- * overrides scr_stdout_buffering, scr_console.c). */
-typedef struct { ScrCycType *type; ScrTraceFn trace; } ScrWeakTraceEntry;
-typedef struct { uint64_t count; const ScrWeakTraceEntry *entries; } ScrWeakTraces;
-__attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
-/* scr_weak_traces by registry id, filled as the analysis meets the ids
- * (NULL: not looked up yet). Per thread, and freed with scr_weak_index. */
-static SCR_TL ScrTraceFn *scr_weak_trace_of;
-static SCR_TL uint32_t scr_weak_trace_ids;
 static SCR_TL size_t scr_weak_keys_mask, scr_weak_keys_used;
 
 /* Mixed in 64 bits on every target: uintptr_t is 32 bits on wasm32, where
@@ -21838,9 +21822,6 @@ static void scr_weak_index_delete(ScrWeakEntry *entry) {
     /* Empty: give the table back, so a thread that exits leaves none. */
     free(scr_weak_index);
     scr_weak_index = NULL;
-    free(scr_weak_trace_of);
-    scr_weak_trace_of = NULL;
-    scr_weak_trace_ids = 0;
     return;
   }
   for (size_t k = i;;) {
@@ -22258,11 +22239,30 @@ static inline bool scr_weak_black(void *obj) {
   return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
 }
 
+/* The emitted types that are traced only for scr_weak_judge (the compiler's
+ * computeCyclic: a weak-collection key type, or a type that reaches one,
+ * that is on no cycle of counted references). The collector can free
+ * nothing through them, so their descriptors name scr_cyc_no_children and
+ * their objects are SCR_CYC_ACYCLIC: no release nominates one and no pass
+ * walks into one. The analysis must still follow what they hold, so the
+ * program object lists each such descriptor with its trace function and
+ * defines scr_weak_traces, overriding this weak, empty default (as it
+ * overrides scr_stdout_buffering, scr_console.c). */
+typedef struct { ScrCycType *type; ScrTraceFn trace; } ScrWeakTraceEntry;
+typedef struct { uint64_t count; const ScrWeakTraceEntry *entries; } ScrWeakTraces;
+__attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
+/* scr_weak_traces by registry id, filled as one run of the analysis meets
+ * the ids (NULL: not looked up yet) and freed at its end, so a thread that
+ * exits leaves none. */
+static SCR_TL ScrTraceFn *scr_weak_trace_of;
+static SCR_TL uint32_t scr_weak_trace_ids;
+
 /* The trace scr_weak_traces lists for the type with registry id `id`, a
  * type whose descriptor names scr_cyc_no_children; that function when the
  * table does not list it (a type without cycle-capable children). A
  * descriptor gets its id on its first allocation and keeps it, and `id`
- * comes from an object's header, so the answer for an id never changes. */
+ * comes from an object's header, so the answer for an id never changes
+ * within a run. */
 static ScrTraceFn scr_weak_trace_lookup(uint32_t id) {
   if (id >= scr_weak_trace_ids) {
     uint32_t ids = id + 64 - id % 64;
@@ -22548,6 +22548,9 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   }
   scr_weak_vec_free(&scr_weak_grayed);
   scr_weak_vec_free(&scr_weak_work);
+  free(scr_weak_trace_of);
+  scr_weak_trace_of = NULL;
+  scr_weak_trace_ids = 0;
   /* Unlink before release: releasing a value can dispose another key, and
    * with it entries of this list. */
   for (size_t i = 0; i < dead.n; i++) {

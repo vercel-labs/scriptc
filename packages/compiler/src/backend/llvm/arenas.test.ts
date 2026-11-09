@@ -461,3 +461,60 @@ console.log(work(5));
 `);
   expect(arenaBodies(llvm, "work")).toEqual([]);
 });
+
+const TIE = `${PARTS}
+class Link {
+  items: Part[] | null = null;
+  next: Link | null = null;
+}
+function tie(xs: Part[], cb: (x: Part[]) => Link): Link {
+  return cb(xs);
+}
+`;
+
+test("a group whose members a callback can tie into a cycle takes no arena", async () => {
+  // `tie` allocates nothing itself: the ring is made by the callback it
+  // calls, and the collector frees it some time after `work` returned.
+  const llvm = await llvmFor(`${TIE}
+function work(n: number): string {
+  const xs = parts(n);
+  const r = tie(xs, (x) => {
+    const a = new Link();
+    a.next = a;
+    a.items = x;
+    return a;
+  });
+  return r.items![1]!.label + String(xs.length);
+}
+console.log(work(5));
+`);
+  expect(arenaBodies(llvm, "work")).toEqual([]);
+});
+
+test("a call region that reaches a callback's cycle on the heap takes no arena", async () => {
+  // The call of `tie` runs with the arena suspended, so the ring is a heap
+  // object that holds the region's list.
+  const llvm = await llvmFor(`${TIE}
+function count(n: number): number {
+  const xs = parts(n);
+  let s = xs.length;
+  for (let i = 0; i < 2; i++) {
+    s += tie(xs, (x) => {
+      const a = new Link();
+      a.next = a;
+      a.items = x;
+      return a;
+    }).items!.length;
+  }
+  return s;
+}
+function work(rounds: number): number {
+  let s = 0;
+  for (let r = 0; r < rounds; r++) s += count(5 + r);
+  return s;
+}
+console.log(work(5));
+`);
+  expect(arenaBodies(llvm, "work")).toEqual([]);
+  expect(arenaBodies(llvm, "count")).toEqual([]);
+});

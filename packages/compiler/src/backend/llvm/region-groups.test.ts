@@ -191,6 +191,58 @@ console.log(sum(3), seen.length);
   expect(groups.leakFree.has("sum")).toBe(true);
 });
 
+test("a function that keeps a virtual call's result past its frame is not leak-free", async () => {
+  const mod = await moduleFor(`
+class Item {
+  label: string;
+  constructor(label: string) {
+    this.label = label;
+  }
+}
+class Maker {
+  list(n: number): Item[] {
+    const out: Item[] = [];
+    for (let i = 0; i < n; i++) out.push(new Item("a" + i));
+    return out;
+  }
+}
+class OtherMaker extends Maker {
+  override list(n: number): Item[] {
+    const out: Item[] = [];
+    for (let i = 0; i < n; i++) out.push(new Item("b" + i));
+    return out;
+  }
+}
+class Holder {
+  items: Item[] = [];
+}
+function keepsElement(m: Maker, h: Holder, n: number): number {
+  const all = m.list(n);
+  for (const it of all) if (it.label.endsWith("3")) h.items.push(it);
+  return all.length;
+}
+function borrows(m: Maker, n: number): number {
+  const all = m.list(n);
+  let s = 0;
+  for (const it of all) s += it.label.length;
+  return s;
+}
+const makers: Maker[] = [new Maker(), new OtherMaker()];
+const holder = new Holder();
+let total = 0;
+for (const m of makers) total += keepsElement(m, holder, 14) + borrows(m, 14);
+console.log(total, holder.items.length);
+`);
+  const groups = analyzeRegionGroups(mod);
+  // The list is one of the group's objects wherever a target is fresh, so
+  // the function that receives it answers for where its elements go.
+  expect(groups.leakFree.has("keepsElement")).toBe(false);
+  expect(callsOf(mod, "keepsElement").some((c) => groups.calls.has(c))).toBe(false);
+  // Borrowing the result keeps the call region.
+  expect(groups.leakFree.has("borrows")).toBe(true);
+  expect(callsOf(mod, "borrows").every((c) => groups.calls.has(c))).toBe(true);
+});
+
 test("a leak-free call that returns no reference is a call region", async () => {
   const mod = await moduleFor(`
 interface V { x: number; y: number }

@@ -38,6 +38,7 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
 import {
+  assignmentChainValueOf,
   canonicalBuiltinModule,
   cjsChainedExportValueOf,
   cjsExportAssignmentOf,
@@ -2650,8 +2651,15 @@ export function collectGlobals(
       const names = boundIdentifiersOf(decl.name);
       // `var x = module.exports = <value>`: x and module.exports take the
       // SAME value at this statement, so the declaration's storage is
-      // classified from the export value the chain assigns.
-      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
+      // classified from the export value the chain assigns. In a JavaScript
+      // file the same holds for every chain of plain assignments (`var list
+      // = Holder.list = []`, the spelling a module whose exports are one of
+      // its functions is normalized to): the binding holds the chain's value.
+      const declValue =
+        cjsChainedExportValueOf(decl) ??
+        (decl.initializer !== undefined && isJsSourceFile(sf)
+          ? assignmentChainValueOf(decl.initializer)
+          : decl.initializer);
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
@@ -3762,9 +3770,10 @@ export function lowerFileInit(
     if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
       header.push(...sharedModuleRegistrations(lowerer));
     // A module that reads builtin globals through the global object, by
-    // computed names or through a sloppy-mode function's `this`, installs
-    // the program's lookup before its body runs.
-    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0, sf));
+    // computed names or through a sloppy-mode function's `this`, or that
+    // stores the global object as a value, installs the program's lookup
+    // before its body runs.
+    if (installsGlobalValues(lowerer, sf)) header.push(...globalValuesInstall(lowerer, loc0, sf));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

@@ -374,7 +374,16 @@ export function prepareExecutableModule(
       if (checked.contracts) lowered.module.contracts = checked.contracts;
       contractWarnings = checked.warnings;
     }
-    if (retryFences) {
+    // The sure rule reads every compiling build, a fence retry's included
+    // (`retryFences` only stops the report rule from running twice): a
+    // package can meet a fence that surely fires only once a package it
+    // requires is an island, and that island may itself be the growth of
+    // this rule. A retry that did not look would compile that throw into a
+    // program that stops when it starts, while a build that held the same
+    // island from its first round (a mark, a replayed decision) islands
+    // the importer: the decision must be the same set either way. Every
+    // step adds a package, so the retries end.
+    {
       const growth = growthOf();
       fenceGrown =
         growth === null

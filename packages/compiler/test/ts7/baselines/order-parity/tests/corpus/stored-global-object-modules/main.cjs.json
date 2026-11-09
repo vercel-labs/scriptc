@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stored-global-object-modules/root.cjs",
+  "<repo>/tests/corpus/stored-global-object-modules/reader.cjs",
+  "<repo>/tests/corpus/stored-global-object-modules/main.cjs"
+ ],
+ "diags": []
+}

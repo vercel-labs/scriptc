@@ -9273,6 +9273,25 @@ export function cjsChainedExportValueOf(decl: ts.VariableDeclaration): ts.Expres
   return chained && value !== undefined ? value : null;
 }
 
+/** The value a chain of plain assignments evaluates to: `a.b = c = <value>`
+ * is `<value>`, since JavaScript's `=` answers its right-hand side unchanged
+ * whatever the target is (a member of a function, of an object, another
+ * binding). The expression itself when it is not such a chain. A declaration
+ * initialized by a chain (`var list = holder.list = []`) therefore holds
+ * exactly that value, and its storage is classified from it. */
+export function assignmentChainValueOf(e: ts.Expression): ts.Expression {
+  let value: ts.Expression = e;
+  let chained = false;
+  for (;;) {
+    let inner: ts.Expression = value;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (!ts.isBinaryExpression(inner) || inner.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return chained ? inner : e;
+    chained = true;
+    value = inner.right;
+  }
+}
+
 /** The tsc VOID-INIT PREAMBLE (`exports.a = exports.b = void 0;` with the
  * real `exports.a = a;` further down; every tsc-emitted dist file opens its
  * exports this way): when every name in the chain has a later real

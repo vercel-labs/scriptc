@@ -10872,12 +10872,20 @@ function lowerObjectStaticCall(
     // A typed handle in a program that adds properties to handles reads its
     // own property table through the checked-dynamic walk.
     const isHandle = probed ? boxedHandleReceiver(lowerer, probed) : null;
+    // An error of a runtime class (a value typed Error, or a view of one)
+    // walks its checked-dynamic node's own keys, as the same error in an
+    // `unknown` slot does.
+    const isRuntimeError =
+      probed?.type.kind === "object" &&
+      lowerer.classes.get(probed.type.className)?.builtinError !== undefined &&
+      lowerer.dynConvertible(probed.type);
     if (
       isDyn ||
       isPrimitive ||
       isFunction ||
       isJsUnion ||
       isArray ||
+      isRuntimeError ||
       isHandle !== null ||
       (probed && isDynTypedRefType(probed.type))
     ) {

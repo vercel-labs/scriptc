@@ -4090,6 +4090,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     }
     return classView;
   }
+  // An interface that extends the lib's Error interface: the Error class,
+  // as the intersection `Error & { ... }` above.
+  {
+    const errorView = mapErrorInterfaceView(widened, ctx);
+    if (errorView) return errorView;
+  }
   // Class instances name a program class. The same symbol with construct
   // signatures names its static side, mapped to classval below.
   const widenedSym = widened.getSymbol();
@@ -9564,42 +9570,66 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
     )
       return null;
     for (const property of ctx.checker.getPropertiesOfType(part)) {
-      const expected =
-        ts.symbolName(property) === "errno"
-          ? "f64"
-          : ["code", "syscall", "path", "dest"].includes(ts.symbolName(property))
-            ? "string"
-            : null;
-      if (!expected) {
-        extra.push(property);
-        continue;
-      }
-      const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
-      const arms =
-        field?.kind === "union" ? ctx.unions.get(field.unionId)?.arms : field ? [field] : [];
-      if (!arms?.length || !arms.every((arm) => arm.kind === expected || arm.kind === "undefinedT"))
-        return null;
-      // A required member must still admit the absent value the slot reads.
-      if (
-        !(property.flags & ts.SymbolFlags.Optional) &&
-        !arms.some((arm) => arm.kind === "undefinedT")
-      )
-        return null;
+      const metadata = errorViewMetadataAdmits(property, ctx);
+      if (metadata === false) return null;
+      if (metadata === null) extra.push(property);
     }
   }
   if (!error) return null;
-  // Members beyond Error's own and the system-error metadata (`Error & {
-  // status: number }`, Object.assign's result) are own properties of the
-  // error's checked-dynamic node: each must map to a type a checked read
-  // can produce. Error's own string members keep their slots.
+  return errorViewExtrasAdmit(extra, false, ctx) ? error : null;
+}
+
+/** Whether the system-error metadata an Error view restates (`code`,
+ * `errno`, `syscall`, `path`, `dest`) has the type its slot reads. */
+function errorViewMetadataAdmits(property: ts.Symbol, ctx: TypeMapperCtx): boolean | null {
+  const expected =
+    ts.symbolName(property) === "errno"
+      ? "f64"
+      : ["code", "syscall", "path", "dest"].includes(ts.symbolName(property))
+        ? "string"
+        : null;
+  if (!expected) return null;
+  const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
+  const arms = field?.kind === "union" ? ctx.unions.get(field.unionId)?.arms : field ? [field] : [];
+  if (!arms?.length || !arms.every((arm) => arm.kind === expected || arm.kind === "undefinedT"))
+    return false;
+  // A required member must still admit the absent value the slot reads.
+  return (
+    (property.flags & ts.SymbolFlags.Optional) !== 0 || arms.some((arm) => arm.kind === "undefinedT")
+  );
+}
+
+/** Members an Error view names beyond Error's own and the system-error
+ * metadata (`Error & { status: number }`, Object.assign's result, an
+ * interface that extends Error) are own properties of the error's
+ * checked-dynamic node: each must map to a type a checked read can produce.
+ * Error's own string members keep their slots. An interface restates `stack`
+ * and `cause` with the lib's own types (`slotRestatements`); the intersection
+ * that names them keeps the representation it had. */
+function errorViewExtrasAdmit(
+  extra: readonly ts.Symbol[],
+  slotRestatements: boolean,
+  ctx: TypeMapperCtx,
+): boolean {
   for (const property of extra) {
     const field = mapType(ctx.checker.getTypeOfSymbol(property), ctx);
-    if (!field || field.kind === "void") return null;
-    if (ts.symbolName(property) === "message" || ts.symbolName(property) === "name") {
-      if (field.kind !== "string") return null;
+    if (!field || field.kind === "void") return false;
+    const name = ts.symbolName(property);
+    if (name === "message" || name === "name") {
+      if (field.kind !== "string") return false;
       continue;
     }
-    if (ts.symbolName(property) === "stack" || ts.symbolName(property) === "cause") return null;
+    if (name === "stack" || name === "cause") {
+      if (!slotRestatements) return false;
+      if (name === "cause") {
+        if (field.kind !== "dyn") return false;
+        continue;
+      }
+      const arms = field.kind === "union" ? ctx.unions.get(field.unionId)?.arms : [field];
+      if (!arms?.length || !arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT"))
+        return false;
+      continue;
+    }
     if (
       !canDynCheckTo(
         field,
@@ -9607,9 +9637,98 @@ function mapErrorMetadataIntersection(type: ts.Type, ctx: TypeMapperCtx): IrType
         (id) => ctx.unions.get(id),
       )
     )
-      return null;
+      return false;
   }
-  return error;
+  return true;
+}
+
+/** Whether a checker type is the lib's own `Error` interface. */
+function isLibErrorInterface(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  const symbol = type.getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "Error" &&
+    symbol.declarations.some((decl) => ctx.isStdlibFile(ts.getSourceFileOfNode(decl)))
+  );
+}
+
+/** Whether a checker type is an interface the program declares, with no type
+ * parameters: the only declarations an Error interface view is read from. */
+function isProgramInterface(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (type.isTypeReference() || !type.isClassOrInterface()) return false;
+  const symbol = type.getSymbol();
+  const declarations = symbol ? symbol.declarations : [];
+  return (
+    declarations.length > 0 &&
+    declarations.every(
+      (decl) => ts.isInterfaceDeclaration(decl) && !ctx.isStdlibFile(ts.getSourceFileOfNode(decl)),
+    )
+  );
+}
+
+/** Whether an interface reaches the lib's `Error` interface through its
+ * `extends` clauses. Asked of the checker alone, so a type that is no Error
+ * view maps nothing speculatively. */
+function extendsLibError(type: ts.Type, ctx: TypeMapperCtx, depth = 0): boolean {
+  if (isLibErrorInterface(type, ctx)) return true;
+  if (depth >= MAP_TYPE_MAX_DEPTH || !isProgramInterface(type, ctx)) return false;
+  return ctx.checker.getBaseTypes(type).some((base) => extendsLibError(base, ctx, depth + 1));
+}
+
+/** The interfaces whose Error view is being decided, and whether a member
+ * asked for the same interface again (`next?: Chain`). Such an interface
+ * keeps the mapping it had: the member's type is decided before the
+ * interface's own, and the two must be one representation. */
+const ERROR_INTERFACE_VIEWS_IN_PROGRESS = new Map<ts.Type, { reentered: boolean }>();
+
+/** An interface that extends the lib's `Error` interface is the error
+ * itself seen with more members, exactly as the intersection `Error & {
+ * ... }` is (mapErrorMetadataIntersection): the value keeps its identity,
+ * its class and its prototype, and the members the interface adds are own
+ * properties of the error's checked-dynamic node. Mapped to a record, an
+ * assertion to the interface made a COPY of the error, which was no longer
+ * an instance of its class and listed the record's fields. A form the Error
+ * class cannot answer (a type parameter, a signature, a member no checked
+ * read produces, a base that is neither) keeps the mapping it had. */
+function mapErrorInterfaceView(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  if (!isProgramInterface(type, ctx)) return null;
+  const pending = ERROR_INTERFACE_VIEWS_IN_PROGRESS.get(type);
+  if (pending) {
+    pending.reentered = true;
+    return null;
+  }
+  const bases = ctx.checker.getBaseTypes(type);
+  if (!bases.some((base) => extendsLibError(base, ctx))) return null;
+  if (
+    ctx.checker.getCallSignatures(type).length ||
+    ctx.checker.getConstructSignatures(type).length ||
+    ctx.checker.getIndexInfosOfType(type).length
+  )
+    return null;
+  const state = { reentered: false };
+  ERROR_INTERFACE_VIEWS_IN_PROGRESS.set(type, state);
+  try {
+    for (const base of bases) {
+      const mapped = mapType(base, ctx);
+      if (mapped?.kind === "object" && mapped.className === "%Error") continue;
+      // A base that only names data members adds them to the view; they are
+      // judged below with the interface's own.
+      if (mapped?.kind !== "record") return null;
+    }
+    const extra: ts.Symbol[] = [];
+    for (const property of ctx.checker.getPropertiesOfType(type)) {
+      // Error's own members, as the lib declares them, keep their slots.
+      if (property.declarations.every((decl) => ctx.isStdlibFile(ts.getSourceFileOfNode(decl))))
+        continue;
+      const metadata = errorViewMetadataAdmits(property, ctx);
+      if (metadata === false) return null;
+      if (metadata === null) extra.push(property);
+    }
+    if (!errorViewExtrasAdmit(extra, true, ctx) || state.reentered) return null;
+    return { kind: "object", className: "%Error" };
+  } finally {
+    ERROR_INTERFACE_VIEWS_IN_PROGRESS.delete(type);
+  }
 }
 
 /** A conventional primitive brand has one runtime-carrying primitive part

@@ -113,6 +113,7 @@ import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { lowerEnvironmentIdentity } from "../builtins/environment.js";
+import { builtinConstructorText } from "../held-constructors.js";
 import { lowerArgumentsObjectInstanceOf } from "../arguments-object.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
@@ -1277,6 +1278,15 @@ export function ensureString(
   node: ts.Node,
   hint: StringConversionHint = "string",
 ): IrExpr {
+  // A primitive constructor held as a value converts to the constructor's
+  // text in whichever tier holds it (programs that hold none skip it).
+  if (
+    lowerer.constructorFunctionTypes &&
+    (e.type.kind === "func" || e.type.kind === "dyn" || e.type.kind === "array")
+  ) {
+    const text = builtinConstructorText(lowerer, node, e);
+    if (text) return text;
+  }
   // A primitive deferred-init field converts its slot, so an unassigned one
   // reads "undefined" as in Node instead of failing the checked read.
   if (e.type.kind === "string" || e.type.kind === "f64" || e.type.kind === "bool") {
@@ -2366,6 +2376,13 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   let right = strictEquality
     ? (lowerAbsenceProbe(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right))
     : lowerer.lowerExpr(expr.right);
+  // A primitive constructor held as a value adds as its text, which the
+  // checker's type names and the untyped addition does not (programs that
+  // hold none skip it).
+  if (expr.operatorToken.kind === ts.SyntaxKind.PlusToken && lowerer.constructorFunctionTypes) {
+    left = builtinConstructorText(lowerer, expr.left, left) ?? left;
+    right = builtinConstructorText(lowerer, expr.right, right) ?? right;
+  }
   if (strictEquality) {
     // A process stream compared with a value of the stream class it is an
     // instance of: the process stream answers its one stream, so the

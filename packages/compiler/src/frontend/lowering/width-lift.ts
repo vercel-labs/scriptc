@@ -48,6 +48,14 @@ export type WidthLift =
   | { how: "unionArr" }
   | { how: "arr" }
   | { how: "tupleArr" }
+  /** An array claimed as a fixed tuple (`table as [Handler]` where the
+   * table is typed as an array): the tuple's positions read the array's
+   * elements, each converted, after a length check that throws the
+   * catchable TypeError for an array of any other length. A copy, like
+   * every width lift, and a checked one: asked for BY NAME by the
+   * assertion that would otherwise trap (lowerer.checkedWidthLift), never
+   * an answer of widthLiftPlan. */
+  | { how: "arrTuple" }
   | { how: "objWidth" }
   | { how: "clsWidth" }
   | { how: "narrow" }

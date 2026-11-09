@@ -962,8 +962,12 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
         ...(sig.generator ? { generator: sig.generator } : {}),
       });
       if (fence) return fence;
+      return null;
     }
-    return null;
+    // A TypeScript function: localized failure's commit point
+    // (Lowerer.lowerFunction) degrades a failing declaration slot and
+    // lowers the function again, or skips it.
+    throw e;
   } finally {
     lowerer.fnStack.pop();
   }

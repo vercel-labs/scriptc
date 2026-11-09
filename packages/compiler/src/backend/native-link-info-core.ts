@@ -82,6 +82,10 @@ export interface NativeLinkFeatures {
    * scr_node_island.c, which join the island's process.stdout.write and
    * process.stderr.write to the program's write slots. */
   stdioObject?: boolean;
+  /** The program holds a process stream as a value and names getColorDepth
+   * or hasColors: links scr_tty_colors.c and the SCR_TTY_COLORS build of
+   * the events unit, whose stream object has the two methods. */
+  ttyColors?: boolean;
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;

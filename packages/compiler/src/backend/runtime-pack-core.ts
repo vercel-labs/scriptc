@@ -163,6 +163,10 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
    * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
    * scr_node_island.c. */
   stdioObject: boolean;
+  /** The program names a terminal color method of a process stream it
+   * holds: scr_tty_colors.c and the SCR_TTY_COLORS build of the events
+   * unit. */
+  ttyColors: boolean;
   /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
   streamPipeEvents: boolean;
   /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
@@ -430,6 +434,7 @@ export function effectiveRuntimeFeatures(
     bigintBytes: features.bigintBytes === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
+    ttyColors: features.ttyColors === true,
     streamPipeEvents: features.streamPipeEvents === true,
     fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,

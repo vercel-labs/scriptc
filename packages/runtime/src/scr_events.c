@@ -1792,6 +1792,13 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     if (i >= STDIO_PAUSE && stream->fd != 0) return scr_stdio_refusal(scr_stdio_names[i]);
     return scr_dyn_retain(scr_stdio_methods[i]);
   }
+#ifdef SCR_TTY_COLORS
+  /* tty.WriteStream's getColorDepth and hasColors (scr_tty_colors.c), in the
+   * build a program that names them selects: like getWindowSize, a stream
+   * that is no terminal is a net.Socket or a file stream in Node and has
+   * neither. */
+  if (stream->fd != 0 && scr_process_is_tty(stream->fd)) return scr_tty_colors_method(key, length);
+#endif
   return NULL;
 }
 
@@ -1869,6 +1876,9 @@ static bool scr_stdio_intercept(int fd, const void *data, size_t length, int fla
 
 static void scr_stdio_cleanup(void) {
   scr_stdio_write_hook = NULL;
+#ifdef SCR_TTY_COLORS
+  scr_tty_colors_cleanup();
+#endif
   for (int i = 0; i < 3; i++) {
     ScrStdio *stream = &scr_stdio_streams[i];
     scr_weak_dispose_inline(stream);

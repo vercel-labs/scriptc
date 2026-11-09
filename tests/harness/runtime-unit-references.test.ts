@@ -87,6 +87,19 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
+  // The checked-data writes with a mode, a flag or an options record
+  // (scr_fs_write_file_flags_data, scr_fs_write_file_data_options,
+  // scr_fs_append_file_data_options) call the string and byte writers of
+  // scr_fs_flags.c: every call that reaches them (fs.writeFileSyncDataFlags,
+  // fsp.writeFileDataFlags, fs.writeFileDataOptionsSync,
+  // fs.appendFileDataOptionsSync) selects fsFlags as well as fsBytesWrites.
+  "scr_fs_bytes_write.c -> scr_fs_flags.c": [
+    "scr_fs_append_file_bytes_options",
+    "scr_fs_append_file_options",
+    "scr_fs_write_file_bytes_options",
+    "scr_fs_write_file_flags",
+    "scr_fs_write_file_options",
+  ],
   "scr_http2.c -> scr_tls.c": [
     "scr_https_create_server",
     "scr_tls_h2_client_wrap",

@@ -894,6 +894,7 @@ async function compileExecutableNative(
     ...(features.processExtras ? { processExtras: true } : {}),
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioObject ? { stdioObject: true } : {}),
+    ...(features.ttyColors ? { ttyColors: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.fsStreamSignal ? { fsStreamSignal: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),

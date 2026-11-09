@@ -1234,6 +1234,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "nodeIsland.processReport": "scr_ni_process_report",
   "nodeIsland.defer": "scr_node_island_defer",
   "nodeIsland.import": "scr_ni_import",
+  "nodeIsland.intrinsic": "scr_ni_intrinsic_register",
   "nodeIsland.get": "scr_node_island_get",
   "nodeIsland.getKey": "scr_node_island_get_key",
   "nodeIsland.set": "scr_node_island_set",

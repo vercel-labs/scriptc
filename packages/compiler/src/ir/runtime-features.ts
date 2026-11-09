@@ -997,6 +997,36 @@ function ed25519NameScan(): RuleScan {
   };
 }
 
+/** tty.WriteStream's color methods, which the process stream object has
+ * only in the build a program that names them selects. */
+const TERMINAL_COLOR_METHODS: ReadonlySet<string> = new Set(["getColorDepth", "hasColors"]);
+
+/** Whether the module holds a process stream as a value (a stream-typed
+ * expression, or the stream object itself) and names one of the terminal
+ * color methods: as the method of a dynamic call, as a string (a member
+ * read by name, a computed key, a call relayed by name), or as the key of an
+ * `in` test. A key computed at run time is not seen: the stream object then
+ * answers what it answers for every name it does not know. */
+function terminalColorMethodScan(): RuleScan {
+  let stream = false;
+  let named = false;
+  return {
+    expr: (node) => {
+      if (!stream)
+        stream =
+          node.type.kind === "procStream" ||
+          (node.kind === "libCall" &&
+            (node.fn === "process.stdio" || node.fn === "process.stdioSlot"));
+      if (!named)
+        named =
+          (node.kind === "strLit" && TERMINAL_COLOR_METHODS.has(node.value)) ||
+          (node.kind === "dynInvoke" && TERMINAL_COLOR_METHODS.has(node.method)) ||
+          (node.kind === "dynHasKey" && TERMINAL_COLOR_METHODS.has(node.key));
+    },
+    result: () => stream && named,
+  };
+}
+
 /** moduleUsesWebCryptoAsymmetric's condition as a runtime-feature scan. */
 function webCryptoAsymmetricScan(): RuleScan {
   let webcrypto = false;
@@ -2139,6 +2169,13 @@ const RUNTIME_FEATURE_RULES = {
    * island's two output streams read and write the program's write slots;
    * every other program with islands keeps its island units unchanged. */
   stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+  /** The program holds a process stream as a value and names getColorDepth
+   * or hasColors: links scr_tty_colors.c (Node's color rules over an
+   * environment object) and the SCR_TTY_COLORS build of scr_events.c, whose
+   * stream object has the two methods on a terminal. Every other program
+   * keeps the default events unit, byte for byte, and its stream object
+   * answers undefined for the two names. */
+  ttyColors: rule({ scan: terminalColorMethodScan }),
 
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
@@ -2476,6 +2513,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     urlIdna: false,
     stdioObject: false,
+    ttyColors: false,
     streamWriteErrors: false,
     streamPipeEvents: false,
     fsStreamSignal: false,

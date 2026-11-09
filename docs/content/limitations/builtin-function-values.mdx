@@ -8,6 +8,21 @@ Some builtins can be stored and passed as functions:
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
 
+`String`, `Number`, `Boolean`, and `BigInt` are function values wherever they are stored, in TypeScript and JavaScript: an option table can hold them as type tags (`{ "--port": Number, "--tag": [String] }`), beside strings and arrays.
+A held constructor is the same function everywhere in the program, so `type === Boolean` holds across modules, through `unknown`, and as a `Map` key or `Set` member.
+Called through the value, it converts whatever arguments it is given, as the builtin does.
+A call through a held constructor converts its arguments to untyped values first; a direct call such as `Number(x)`, and a constructor written as the callback of an array method (`xs.map(Number)`), keep their typed conversion.
+A held constructor converts to a function type that has a first parameter (`(value: string, name: string) => unknown`), whoever calls it.
+Under a function type with no parameters it is called with no argument, and the store is refused when the program hands a function of that type to a caller that passes arguments, as for any function that reads its argument list.
+Through a function type whose first parameter is optional or accepts `undefined`, a call that passes `undefined` there, or omits the argument, throws a `TypeError`: a constructor answers a missing argument differently from `undefined` (`String()` is `""`), and the function type does not say which one the call passed.
+The `prototype` of a held constructor and a `Map` or `Set` keyed by a union of several constructor types are refused.
+`new` through a held constructor builds with warning `SC6015`, which names the statement, and the statement throws `SC1090` when it runs.
+In TypeScript, `util.format("%o", f)` of a function value and `Object.getPrototypeOf` of a held constructor build with the same warning and throw when they run.
+A constructor passed into a Node island is the island's own constructor there, and the island's comes back as the program's.
+Converted to a string (`String(c)`, a template, `+`, `c.toString()`, `%s`), a held constructor is Node's `function String() { [native code] }`.
+A program that hands a held constructor, or a table of them, to something the typed form has no lowering for (printing, `JSON.stringify`, `in`, key listing, an `any` slot, `bind`, an assertion) holds its constructors as untyped values instead, in the whole program, and builds as it did before constructors had a typed form.
+`JSON.stringify` and `%j` write a `Map` or `Set` held by an object, an array, or a tuple as `{}`, as Node.js does, whatever it holds.
+
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.
 In JavaScript, `atob`, `btoa`, and `structuredClone` are function values the same way, and calls through them run what the direct calls run.

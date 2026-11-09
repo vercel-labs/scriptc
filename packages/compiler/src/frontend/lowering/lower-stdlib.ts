@@ -39,6 +39,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import {
+  type ScrDiagnostic,
   unsupportedNativeApiDiag,
   unsupportedPackageImportDiag,
   unsupportedPackageValueDiag,
@@ -2313,6 +2314,65 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   const folded = staticString(lowerer, arg);
   if (folded !== null) return lowerResolvedImport(lowerer, call, folded, true);
   return lowerBoundedDynamicImport(lowerer, call, arg);
+}
+
+/** The package an `import()` names when the program does not compile that
+ * package (the selection never judged it: nothing imports it statically),
+ * or null: the refusal lowerResolvedImport reports for the call. */
+function uncompiledImportPackage(lowerer: Lowerer, call: ts.CallExpression): string | null {
+  if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
+  if (call.arguments.nodes.length !== 1) return null;
+  const arg = call.arguments.nodes[0]!;
+  const literal = ts.isStringLiteralLike(arg);
+  const specifier = literal ? arg.text : staticString(lowerer, arg);
+  if (specifier === null) return null;
+  const file = ts.getSourceFileOfNode(call).fileName;
+  if (lowerer.dynImports.get(dynImportKey(file, specifier, !literal)) !== undefined) return null;
+  return resolveNpmImport(file, specifier)?.packageName ?? null;
+}
+
+/** The package a refusal names as outside the compiled module graph
+ * (unsupportedPackageImportDiag, unsupportedPackageValueDiag). */
+const OUTSIDE_GRAPH_PACKAGE =
+  /npm package '([^']+)' statically: its implementation is not part of the compiled module graph/;
+
+/** `statement` was abandoned with `refusals`. Where one of them names a
+ * package the program does not compile, the build answers it with a Node
+ * island and lowers the program again, and the statement then lowers as far
+ * as its next such package: `Promise.all([import("a"), import("b"),
+ * import("c")])` took one build round per package, each a reload of the
+ * program and a lowering. Every `import()` inside the statement that names
+ * such a package is refused the same way once the statement lowers that
+ * far, so those refusals are reported here, with the first: one round
+ * decides every package of the statement.
+ *
+ * Functions and classes DECLARED inside the statement lower on their own
+ * and report for themselves; function expressions lower with the statement
+ * and count. */
+export function reportUncompiledImportsOf(
+  lowerer: Lowerer,
+  statement: ts.Node,
+  refusals: readonly ScrDiagnostic[],
+): void {
+  const named = new Set<string>();
+  for (const d of refusals) {
+    const pkg = d.code === "SC2013" ? OUTSIDE_GRAPH_PACKAGE.exec(d.message) : null;
+    if (pkg !== null) named.add(pkg[1]!);
+  }
+  if (named.size === 0) return;
+  const walk = (node: ts.Node): void => {
+    if (node !== statement && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)))
+      return;
+    if (ts.isCallExpression(node)) {
+      const pkg = uncompiledImportPackage(lowerer, node);
+      if (pkg !== null && !named.has(pkg)) {
+        named.add(pkg);
+        lowerer.pushDiag(unsupportedPackageImportDiag(pkg, locOf(node)));
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(statement);
 }
 
 /** The single module a build-time specifier names, lowered the way the site

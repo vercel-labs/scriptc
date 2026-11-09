@@ -469,8 +469,8 @@ static ScrStr *unknown_text(const char *bytes, size_t n) {
   } while (0)
 
 /* The in-place append at its copy and growth boundaries against a
- * reference buffer, in the moved form (a consumed text regrows its own
- * block) and in the handoff form; a shared text is never mutated; and the
+ * reference buffer, in the moved form (a consumed text is appended to in
+ * its own block) and in the handoff form; a shared text is never mutated; and the
  * proven-ASCII fact through appends and through the lazy proof. */
 static void in_place_append_asserts(void) {
   static const size_t sizes[] = {1, 4, 5, 15, 16, 17, 31, 32, 33, 63, 64, 65, 200};
@@ -569,19 +569,33 @@ static void in_place_append_asserts(void) {
   scr_str_release(sur);
   scr_str_release(seed);
 
-  /* The lazy proof: a builder's result is unknown; its first length or
-   * index read proves an all-ASCII one (the text of an escape such as
-   * \ud83d is ASCII) and leaves any other unknown, with the right answers. */
+  /* The lazy proof: a builder's result is unknown; its first length read
+   * proves an all-ASCII one (the text of an escape such as \ud83d is ASCII)
+   * and leaves any other unknown, with the right answers. The JSON unit
+   * installs the proof; a string that owns an index entry is not marked
+   * beside it, and a program without the proof gets the same answers. */
   char doc[300];
   for (size_t i = 0; i < sizeof doc; i++) doc[i] = (char)('A' + i % 26);
   memcpy(doc + 100, "\\ud83d\\u0001", 12);
   ScrStr *d1 = unknown_text(doc, 300), *d2 = unknown_text(doc, 300), *d3 = unknown_text(doc, 20);
+  APPEND_CHECK(scr_str_lazy_ascii == scr_str_prove_ascii, "the JSON unit installs the lazy proof");
   APPEND_CHECK(!scr_str_known_ascii(d1), "a builder does not scan its result");
   APPEND_CHECK(scr_str_utf16_len(d1) == 300.0 && scr_str_known_ascii(d1), "length proves 300 bytes");
   APPEND_CHECK(scr_str_char_code_at(d2, 299) == (double)(unsigned char)doc[299] &&
-                   scr_str_known_ascii(d2) && scr_str_utf16_len(d2) == 300.0,
-               "an index read proves 300 bytes");
-  APPEND_CHECK(scr_str_utf16_len(d3) == 20.0 && scr_str_known_ascii(d3), "length proves 20 bytes");
+                   !scr_str_prove_ascii(d2) && !scr_str_known_ascii(d2),
+               "a text that owns an index entry is not marked beside it");
+  APPEND_CHECK(scr_str_utf16_len(d2) == 300.0 && scr_str_char_code_at(d2, 0) == (double)'A',
+               "length after an index read");
+  APPEND_CHECK(scr_str_utf16_len(d3) == 20.0 && scr_str_char_code_at(d3, 19) == (double)'T',
+               "a short text is counted directly");
+  ScrStr *d0 = unknown_text(doc, 300);
+  bool (*installed)(ScrStr *) = scr_str_lazy_ascii;
+  scr_str_lazy_ascii = NULL;
+  APPEND_CHECK(scr_str_utf16_len(d0) == 300.0 && scr_str_utf16_len(d0) == 300.0 &&
+                   scr_str_char_code_at(d0, 105) == (double)'d',
+               "length without the lazy proof");
+  scr_str_release(d0);
+  scr_str_lazy_ascii = installed;
   memcpy(doc + 250, "\xc3\xa9", 2);
   ScrStr *d4 = unknown_text(doc, 300), *d5 = unknown_text(doc, 300), *d6 = unknown_text(doc + 240, 20);
   APPEND_CHECK(scr_str_utf16_len(d4) == 299.0 && scr_str_utf16_len(d4) == 299.0 &&

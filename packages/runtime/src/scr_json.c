@@ -588,7 +588,19 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   s->data[b->len] = '\0';
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
-  if (s->cap > scr_jb_hint) scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
+  if (s->cap > scr_jb_hint) {
+    scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
+    /* A finished document is handed over unscanned, so the builder pays
+     * nothing for a text that is only written out. Whether its bytes are
+     * all ASCII is proven by the first .length read of it instead, by the
+     * proof installed here: only a program that finishes a document links
+     * it. This branch is the place because it is off the steady path and
+     * still runs before any document that could be asked: the hint starts
+     * at 64 bytes and only grows, so a thread's first document of more than
+     * 64 bytes comes through here, and a shorter text is counted directly
+     * and never asks (scr_str_utf16_len). */
+    __atomic_store_n(&scr_str_lazy_ascii, scr_str_prove_ascii, __ATOMIC_RELAXED);
+  }
   scr_jb_init(b);
   return s;
 }

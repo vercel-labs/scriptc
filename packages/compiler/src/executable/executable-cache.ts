@@ -86,6 +86,9 @@ export interface EarlyExecutableNativeFeatures {
   /** A process output stream held as a value: with Node islands,
    * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */
   stdioObject?: boolean;
+  /** The process stream object's color methods: SCR_TTY_COLORS and
+   * scr_tty_colors.c. */
+  ttyColors?: boolean;
   /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
   streamPipeEvents?: boolean;
   /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */

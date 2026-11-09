@@ -1309,6 +1309,100 @@ console.log(lib.read());
     },
   );
 
+  // The factory shapes of a published library: the function `this` is
+  // passed on to is a member of a namespace import, or the result of a
+  // second factory that is reached through a namespace, takes a rest
+  // parameter, picks one of two functions and returns it through
+  // Object.defineProperty; the outer factory is called with fewer
+  // arguments than it has parameters.
+  const factoryModules = (plusOne: string, add: string): Record<string, string> => ({
+    "inner.mjs": `export const add = ${add};
+const sized = (length, fn) => Object.defineProperty(fn, "length", { value: length });
+export const wrap = (body, ...extras) => {
+  const fn =
+    extras.length === 0
+      ? function () {
+          return body.apply(this, arguments);
+        }
+      : function () {
+          return extras[0](body.apply(this, arguments));
+        };
+  return sized(body.length, fn);
+};
+`,
+    "mid.mjs": 'import * as inner from "./inner.mjs";\nexport const wrap = inner.wrap;\n',
+    "lib.mjs": `import * as inner from "./inner.mjs";
+import * as mid from "./mid.mjs";
+function dual(arity, body) {
+  return function () {
+    if (arguments.length >= arity) return body.apply(this, arguments);
+    const args = arguments;
+    return (self) => body(self, ...args);
+  };
+}
+function flow(ab, bc, cd) {
+  switch (arguments.length) {
+    case 1:
+      return ab;
+    case 2:
+      return function () {
+        return bc(ab.apply(this, arguments));
+      };
+  }
+  return function () {
+    return cd(bc(ab.apply(this, arguments)));
+  };
+}
+const plusOne = mid.wrap(${plusOne});
+export const add = dual(2, inner.add);
+export const next = flow(plusOne, (n) => n * 2);
+`,
+  });
+  const factoryMain = `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.add(1, 2), lib.add(2)(1), lib.next(3));
+`;
+
+  test("factory-made exports are proven to ignore the receiver through namespaces and nested factories", async () => {
+    const r = await compileAndRun(
+      "module-binding-factory-proof",
+      factoryMain,
+      "mjs",
+      factoryModules("function (n) { return n + 1; }", "(a, b) => a + b"),
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("before\n3 3 8\n");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test.for([
+    [
+      "a nested factory's body",
+      "function (n) { return this === undefined ? n + 1 : n; }",
+      "(a, b) => a + b",
+    ],
+    [
+      "a namespace member",
+      "function (n) { return n + 1; }",
+      "function (a, b) { return this === undefined ? a + b : a; }",
+    ],
+  ])(
+    "factory-made exports keep the module-binding receiver fence: 'this' read in %s",
+    async ([, plusOne, add]) => {
+      const r = await compileAndRun(
+        "module-binding-factory-this",
+        factoryMain,
+        "mjs",
+        factoryModules(plusOne!, add!),
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: calling a module export that may read 'this' through its module binding.*\[SC1090 at .*module-binding-factory-this\.mjs:3\]\n$/,
+      );
+    },
+  );
+
   test.for(
     Object.entries({
       "function expression": "exports.read = function () { return this.n; };",

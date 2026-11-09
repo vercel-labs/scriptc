@@ -1151,6 +1151,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.writeFileSyncFdData",
   "fs.appendFileSyncBytes",
   "fs.appendFileSyncData",
+  // The promise forms over the checked data run the synchronous write, which
+  // raises for a data argument that is no string or view and for a failed
+  // write, before the error is moved into the promise (as fsp.lchmodChk).
+  "fsp.writeFileData",
+  "fsp.appendFileData",
+  "fsp.writeFileDataFlags",
+  "fileHandle.writeFileData",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",

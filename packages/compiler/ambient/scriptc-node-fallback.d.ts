@@ -37,6 +37,10 @@ interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLi
   readonly byteOffset: number;
 }
 declare namespace NodeJS {
+  /* The type of process.stdout and process.stderr, under the name
+   * @types/node gives it. */
+  type TtyWriteStream = import("tty").WriteStream;
+  interface WriteStream extends TtyWriteStream {}
   interface ProcessVersions {
     readonly node: string;
     readonly openssl?: string;
@@ -383,8 +387,8 @@ declare var process: {
    * preserved. The boolean is Node's backpressure signal — these synchronous
    * writes always return true. Static BufferEncoding arguments and the
    * completion callback overloads match Node's WritableStream surface. */
-  stdout: import("tty").WriteStream;
-  stderr: import("tty").WriteStream;
+  stdout: NodeJS.WriteStream;
+  stderr: NodeJS.WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
    * data/end/error/readable events and readline's 'keypress' (on and once
    * — a 'data' or 'readable' listener keeps the event loop alive until
@@ -2062,7 +2066,7 @@ declare module "node:readline/promises" {
 /* node:tty — the fd probe (the same isatty(3) behind process.*.isTTY)
  * and the supported structural view of a process output stream. */
 declare module "tty" {
-  export interface WriteStream extends NodeJS.WritableStream {
+  export interface WriteStream extends NodeJS.WritableStream, __scriptcTerminalStream.Methods {
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,
@@ -2092,6 +2096,33 @@ declare module "tty" {
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;
+}
+
+/* The color methods process.stdout and process.stderr have only while the
+ * descriptor is a terminal: a piped or redirected stream is a socket or a
+ * file stream, which has neither, so `out.getColorDepth?.(env)` answers
+ * undefined there and a plain call throws. @types/node declares them as
+ * required, and so does `Declared`, which is what a program's own type check
+ * sees. The lowering program's overrides add `lowering` to `World`, and the
+ * stream then has `Present`: the same methods, optional, so the type of an
+ * optional call admits the undefined a pipe answers. */
+declare namespace __scriptcTerminalStream {
+  interface World {}
+  interface Declared {
+    /* The color depth Node derives from an environment object
+     * (process.env by default): 1, 4, 8 or 24 bits. */
+    getColorDepth(env?: object): number;
+    hasColors(count?: number): boolean;
+    hasColors(env?: object): boolean;
+    hasColors(count: number, env?: object): boolean;
+  }
+  interface Present {
+    getColorDepth?(env?: object): number;
+    hasColors?(count?: number): boolean;
+    hasColors?(env?: object): boolean;
+    hasColors?(count: number, env?: object): boolean;
+  }
+  type Methods = World extends { lowering: true } ? Present : Declared;
 }
 declare module "node:tty" {
   export * from "tty";

@@ -78,6 +78,11 @@ ScrDyn *scr_process_stdio(double fd);
  * the chunk is invalid. */
 bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
+/* scr_tty_colors.c, called by the SCR_TTY_COLORS build of scr_events.c: the
+ * stream object's getColorDepth or hasColors function for that member name
+ * (+1), NULL for any other name; and the release of both at exit. */
+ScrDyn *scr_tty_colors_method(const char *key, size_t length);
+void scr_tty_colors_cleanup(void);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops);

@@ -1908,6 +1908,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_tty_colors.c",
+  "function": "scr_tty_refusal",
+  "message": "Native process stream %s has no lowering [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_url.c",
   "function": "url_apply_component",
   "message": "Native URL setter has no lowering",

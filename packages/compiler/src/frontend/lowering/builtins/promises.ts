@@ -435,6 +435,50 @@ function tupleFulfilledValues(
   return out;
 }
 
+/** The result type of the tuple form where the checker's `Promise<[A, B,
+ * C]>` has no mapping as a whole because a position's type has none of its
+ * own, while its entry lowered to a checked-dynamic value or to a promise
+ * of one: a value whose static type has no mapping is held that way (a
+ * function that returns an object of a package nothing has named yet).
+ * Promise.all fulfils each position with what its entry settles to, so
+ * such a position is checked-dynamic; every position whose type maps keeps
+ * the checker's. Refusing the call instead would keep the code the entry
+ * reaches from lowering, and with it the `import()` that names the package.
+ * Null when the result is not a fixed tuple of the entries, or when a
+ * position without a mapping settles with a typed value (the namespace of
+ * a builtin module's `import()`, a union, a promise of nothing). */
+function settledTupleType(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  entries: readonly TupleEntry[],
+): IrType | null {
+  const { checker } = lowerer;
+  const promise = lowerer.typeOf(call);
+  if (ts.symbolNameOf(promise.getSymbol()) !== "Promise") return null;
+  const result = checker.getTypeArguments(promise as ts.TypeReference)[0];
+  if (result === undefined || !checker.isTupleType(result)) return null;
+  const positions = checker.getTypeArguments(result as ts.TypeReference);
+  if (positions.length !== entries.length) return null;
+  const fields: { name: string; type: IrType }[] = [];
+  for (let i = 0; i < positions.length; i++) {
+    const position = positions[i]!;
+    let type = (position.flags & ts.TypeFlags.Any) !== 0 ? DYN : lowerer.mapTypeOf(position);
+    if (type === null) {
+      const entry = entries[i]!.value.type;
+      const settled = entry.kind === "promise" ? entry.inner : entry;
+      if (settled.kind !== "dyn") return null;
+      type = DYN;
+    }
+    if (type.kind === "void") return null;
+    fields.push({ name: String(i), type });
+  }
+  fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return {
+    kind: "promise",
+    inner: { kind: "record", shapeId: lowerer.shapes.intern(fields, true) },
+  };
+}
+
 /** `Promise.all([p, q, r])` over different entry types: the checker's
  * tuple overload, `Promise<[A, B, C]>`. Each entry becomes a promise in
  * input order (tupleEntryPromises), widened to Promise<void>, a type-only
@@ -451,7 +495,8 @@ function lowerTuplePromiseAll(
   tupleEntries: readonly TupleEntry[],
   before: readonly IrStmt[] = [],
 ): IrExpr | null {
-  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const resultT =
+    lowerer.mapTypeOf(lowerer.typeOf(call)) ?? settledTupleType(lowerer, call, tupleEntries);
   if (resultT?.kind !== "promise" || resultT.inner.kind !== "record") return null;
   const tuple = resultT.inner;
   const tupleShape = lowerer.shapes.get(tuple.shapeId);

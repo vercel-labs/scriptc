@@ -77,6 +77,7 @@ import {
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
+import { constantCondition } from "./constant-conditions.js";
 import {
   builtinPolyfillGuard,
   isBuiltinPolyfillEarlyExit,
@@ -2183,8 +2184,10 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
         : { kind: "boolLit", value: polyfill.value, type: BOOL, loc: locOf(test) };
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
-    // hoisted binding.
-    const decided = polyfill?.value ?? staticCondition(lowerer, test);
+    // hoisted binding. Nor does the untaken arm of a constant condition
+    // (constant-conditions.ts), whose test still runs.
+    const decided =
+      polyfill?.value ?? staticCondition(lowerer, test) ?? constantCondition(lowerer, test);
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;

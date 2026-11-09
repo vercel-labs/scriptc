@@ -6004,6 +6004,9 @@ export class Lowerer {
     // caches made when first needed
     "programSourceFiles",
     "classHierarchyCache",
+    // A pure function of an alias's or interface's declarations: the same
+    // answer whichever unit asks first.
+    "conditionalTypeParamPositions",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
@@ -20292,6 +20295,9 @@ export class Lowerer {
    * instance table. Filled by collectClassShapeInner's family mode;
    * consulted by mapType's genericClassInstance hook. */
   readonly genericClassByDecl = new Map<ts.ClassLikeDeclaration, GenericClassInfo>();
+  /** A type alias or interface → the positions of its own type parameters
+   * that a conditional type in it depends on (literalSensitiveTypeParams). */
+  readonly conditionalTypeParamPositions = new Map<ts.Symbol, ReadonlySet<number>>();
   /** Forward generic references may demand a family before its declaration turn. */
   readonly collectingClassDeclarations = new Set<ts.ClassDeclaration>();
   /** Instantiations in demand order — the member-lowering worklist run()'s

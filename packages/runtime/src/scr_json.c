@@ -22288,6 +22288,52 @@ static inline bool scr_weak_black(void *obj) {
   return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
 }
 
+/* The emitted types that are traced only for scr_weak_judge (the compiler's
+ * computeCyclic: a weak-collection key type, or a type that reaches one,
+ * that is on no cycle of counted references). The collector can free
+ * nothing through them, so their descriptors name scr_cyc_no_children and
+ * their objects are SCR_CYC_ACYCLIC: no release nominates one and no pass
+ * walks into one. The analysis must still follow what they hold, so the
+ * program object lists each such descriptor with its trace function and
+ * defines scr_weak_traces, overriding this weak, empty default (as it
+ * overrides scr_stdout_buffering, scr_console.c). The table's layout is in
+ * scr_json.h. */
+__attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
+/* scr_weak_traces by registry id, filled as one run of the analysis meets
+ * the ids (NULL: not looked up yet) and freed at its end, so a thread that
+ * exits leaves none. */
+static SCR_TL ScrTraceFn *scr_weak_trace_of;
+static SCR_TL uint32_t scr_weak_trace_ids;
+
+/* The trace the analysis follows for `type` (the registry's entry of an
+ * object's header): the one scr_weak_traces lists for it, or its own. A
+ * descriptor gets its id on its first allocation and keeps it, so the
+ * answer for an id never changes within a run. Every type is asked, not
+ * only the ones whose own trace is scr_cyc_no_children: naming that
+ * function here would move it in the symbol table of every executable. */
+static ScrTraceFn scr_weak_trace_lookup(const ScrCycType *type) {
+  uint32_t id = type->id;
+  if (id >= scr_weak_trace_ids) {
+    uint32_t ids = id + 64 - id % 64;
+    ScrTraceFn *grown = realloc(scr_weak_trace_of, ids * sizeof *grown);
+    if (!grown) scr_json_oom();
+    memset(grown + scr_weak_trace_ids, 0, (ids - scr_weak_trace_ids) * sizeof *grown);
+    scr_weak_trace_of = grown;
+    scr_weak_trace_ids = ids;
+  }
+  ScrTraceFn trace = scr_weak_trace_of[id];
+  if (trace) return trace;
+  trace = type->trace;
+  for (uint64_t i = 0; i < scr_weak_traces.count; i++) {
+    const ScrWeakTraceEntry *entry = &scr_weak_traces.entries[i];
+    if (__atomic_load_n(&entry->type->id, __ATOMIC_ACQUIRE) == id) {
+      trace = entry->trace;
+      break;
+    }
+  }
+  return scr_weak_trace_of[id] = trace;
+}
+
 /* The references the walk follows out of `obj`: the ones the collector
  * traces, and the promise of a boxed promise. The collector leaves that
  * edge alone (scr_dyn_trace_v: the box releases its promise itself), but a
@@ -22297,7 +22343,9 @@ static inline bool scr_weak_black(void *obj) {
  * The box holds one count of its promise for as long as it is a box, so
  * every walk of the analysis sees the same edge. */
 static inline void scr_weak_trace(void *obj, const ScrCycType *type, ScrTraceVisit visit) {
-  type->trace(obj, visit, NULL);
+  /* A type traced only for this analysis has its trace in scr_weak_traces. */
+  ScrTraceFn trace = scr_weak_traces.count ? scr_weak_trace_lookup(type) : type->trace;
+  trace(obj, visit, NULL);
   if (type->kind == SCR_CYC_KIND_DYN && ((ScrDyn *)obj)->kind == SCR_DYN_PROMISE)
     visit(((ScrDyn *)obj)->v.promise, NULL);
 }
@@ -22548,6 +22596,9 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   }
   scr_weak_vec_free(&scr_weak_grayed);
   scr_weak_vec_free(&scr_weak_work);
+  free(scr_weak_trace_of);
+  scr_weak_trace_of = NULL;
+  scr_weak_trace_ids = 0;
   /* Unlink before release: releasing a value can dispose another key, and
    * with it entries of this list. */
   for (size_t i = 0; i < dead.n; i++) {

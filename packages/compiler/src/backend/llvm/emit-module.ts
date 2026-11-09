@@ -2,6 +2,7 @@
 import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
+import { weakTraceTable } from "./alloc.js";
 import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1436,6 +1437,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
+  // The traces the weak analysis reads; overrides the runtime's weak, empty
+  // default (scr_json.c).
+  for (const line of weakTraceTable(emitter.weakTraces)) out.push(line);
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught

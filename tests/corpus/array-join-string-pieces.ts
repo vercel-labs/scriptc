@@ -187,3 +187,79 @@ try {
 } catch (e) {
   console.log("caught", e instanceof Error ? e.message : "?", order.join(","));
 }
+
+// An array typed `string[]` can hold holes and `undefined` without any
+// assertion: a length given to the constructor or assigned, a write past the
+// end, a copy of holes. The join of strings is chosen by the type, so each
+// shape is joined here under that type (a local, a parameter, a readonly
+// parameter, a field) and must join its missing elements as empty.
+function show(name: string, a: string[]): void {
+  console.log(name + ": " + a.length + "|" + a.join("") + "|" + a.join(",") + "|" + a.join("<>"));
+}
+function viaParameter(parts: string[], sep: string): string {
+  return parts.join(sep);
+}
+function viaReadonly(parts: readonly string[], sep: string): string {
+  return parts.join(sep);
+}
+class Holder {
+  readonly parts: string[];
+  constructor(parts: string[]) {
+    this.parts = parts;
+  }
+  text(sep: string): string {
+    return this.parts.join(sep);
+  }
+}
+const made = new Array<string>(3);
+show("constructed with a length", made);
+made[1] = "b";
+show("  one written", made);
+made[0] = "a";
+made[2] = "c";
+show("  all written", made);
+const grown: string[] = ["a", "b"];
+grown.length = 5;
+show("length grown", grown);
+grown[4] = "e";
+show("  last written", grown);
+grown.length = 1;
+show("  length cut", grown);
+const sparse: string[] = ["a", "b"];
+sparse[7] = "x";
+show("written past the end", sparse);
+const distant: string[] = [];
+distant[70000] = "far";
+console.log("written far past the end: " + distant.length, distant.join("").length, distant.join(",").length, distant.join(",").slice(-5));
+const fromLength = Array.from<string>({ length: 3 });
+show("Array.from of a length", fromLength);
+fromLength[1] = "m";
+show("  one written", fromLength);
+show("spread of holes", [...new Array<string>(2), "z"]);
+show("Array.from of holes", Array.from(new Array<string>(2)));
+show("concat with holes", ["a"].concat(new Array<string>(2), ["d"]));
+show("slice of holes", sparse.slice(1, 5));
+show("map over holes", new Array<string>(3).map((t) => t + "!"));
+show("filled", new Array<string>(3).fill("f"));
+const popped: string[] = ["a", "b", "c"];
+popped.pop();
+popped.length = 3;
+show("popped then grown", popped);
+const shifted: string[] = new Array<string>(3);
+shifted[2] = "s";
+shifted.shift();
+show("holes shifted", shifted);
+const reversed: string[] = ["a", "b"];
+reversed[3] = "d";
+reversed.reverse();
+show("holes reversed", reversed);
+const spliced: string[] = ["a", "b", "c"];
+spliced.length = 6;
+spliced.splice(1, 1);
+show("holes spliced", spliced);
+const unshifted: string[] = new Array<string>(2);
+unshifted.unshift("u");
+show("holes unshifted", unshifted);
+const holder = new Holder(sparse);
+console.log(viaParameter(sparse, "-"), viaReadonly(made, "-"), viaReadonly(grown, "-") + ".", holder.text("+"), holder.parts.join(""));
+console.log(String(sparse), `${made}`, grown + "");

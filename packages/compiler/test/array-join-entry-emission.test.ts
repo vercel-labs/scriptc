@@ -30,7 +30,10 @@ const TYPED = /call ptr @scr_arr_join_str\(/;
 const GENERAL = /call ptr @scr_arr_join\(/;
 
 const stringRoutes: [string, string][] = [
-  ["a local", `const parts = ["a", "b"];\nparts.push(process.argv[0] ?? "");\nconsole.log(parts.join("-"));\n`],
+  [
+    "a local",
+    `const parts = ["a", "b"];\nparts.push(process.argv[0] ?? "");\nconsole.log(parts.join("-"));\n`,
+  ],
   [
     "a field",
     `class Holder {\n  parts: string[] = [];\n  text(): string {\n    return this.parts.join("-");\n  }\n}\nconst h = new Holder();\nh.parts.push(process.argv[0] ?? "");\nconsole.log(h.text());\n`,
@@ -66,15 +69,26 @@ const stringRoutes: [string, string][] = [
   ],
 ];
 
-test.each(stringRoutes)("a string array reaching join through %s takes the typed entry", async (_route, source) => {
-  const llvm = await emit(source);
-  expect(llvm).toMatch(TYPED);
-  expect(llvm).not.toMatch(GENERAL);
-});
+test.each(stringRoutes)(
+  "a string array reaching join through %s takes the typed entry",
+  async (_route, source) => {
+    const llvm = await emit(source);
+    expect(llvm).toMatch(TYPED);
+    expect(llvm).not.toMatch(GENERAL);
+  },
+);
 
 const otherReceivers: [string, string, boolean][] = [
-  ["numbers", `const n: number[] = [];\nn.push(process.argv.length);\nconsole.log(n.join("-"));\n`, true],
-  ["booleans", `const b: boolean[] = [];\nb.push(process.argv.length > 2);\nconsole.log(b.join("-"));\n`, true],
+  [
+    "numbers",
+    `const n: number[] = [];\nn.push(process.argv.length);\nconsole.log(n.join("-"));\n`,
+    true,
+  ],
+  [
+    "booleans",
+    `const b: boolean[] = [];\nb.push(process.argv.length > 2);\nconsole.log(b.join("-"));\n`,
+    true,
+  ],
   [
     "strings or null",
     `const u: Array<string | null> = [];\nu.push(process.argv.length > 9 ? null : "s");\nconsole.log(u.join("-"));\n`,
@@ -97,12 +111,15 @@ const otherReceivers: [string, string, boolean][] = [
   ],
 ];
 
-test.each(otherReceivers)("a join of %s names nothing of the typed entry", async (_kind, source, general) => {
-  const llvm = await emit(source);
-  expect(llvm).not.toContain("scr_arr_join_str");
-  if (general) expect(llvm).toMatch(GENERAL);
-  else expect(llvm).not.toMatch(GENERAL);
-});
+test.each(otherReceivers)(
+  "a join of %s names nothing of the typed entry",
+  async (_kind, source, general) => {
+    const llvm = await emit(source);
+    expect(llvm).not.toContain("scr_arr_join_str");
+    if (general) expect(llvm).toMatch(GENERAL);
+    else expect(llvm).not.toMatch(GENERAL);
+  },
+);
 
 test("a program that joins nothing names neither entry", async () => {
   const llvm = await emit(`console.log(process.argv.length);\n`);

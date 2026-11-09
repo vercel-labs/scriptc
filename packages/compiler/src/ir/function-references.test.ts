@@ -239,6 +239,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
   "weakKeys[]": "other",
+  "classKeys[]": "other",
   "foreignElementKeys[]": "other",
   "freezableArrays[]": "other",
   "nodeIsland.libnode": "other",

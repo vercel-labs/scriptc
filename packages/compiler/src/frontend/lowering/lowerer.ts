@@ -13380,6 +13380,9 @@ export class Lowerer {
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
             ...(this.weakKeys.size > 0 ? { weakKeys: [...this.weakKeys].sort() } : {}),
+            ...(dispatch !== undefined && dispatch.classKeys().length > 0
+              ? { classKeys: [...dispatch.classKeys()] }
+              : {}),
             ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }

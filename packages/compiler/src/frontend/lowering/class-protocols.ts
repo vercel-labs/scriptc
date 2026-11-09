@@ -225,10 +225,12 @@ export class ClassProtocols {
   }
 
   /** Whether the program declares an interface that extends a builtin
-   * Error (markErrorInterfaces). */
+   * Error (markErrorInterfaces). Answered from the index the lowering
+   * built: a program whose lowering never asked it (one refused before a
+   * type was mapped) holds no value of such an interface, and the answer
+   * does not walk the program. */
   declaresErrorInterface(): boolean {
-    this.index();
-    return this.errorInterfaces.size > 0;
+    return this.implemented !== null && this.errorInterfaces.size > 0;
   }
 
   /** Whether `type` is a program interface that extends a builtin Error. */

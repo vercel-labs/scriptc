@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-duplicate-enum-values -- TypeScript aliases are part of the protocol. */
-// Generated from typescript@7.0.2 by scripts/generate-ts7-ast-schema.mjs.
+// Generated from typescript@7.1.0-beta by scripts/generate-ts7-ast-schema.mjs.
 // TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 
@@ -118,9 +118,7 @@ export enum ScriptKind {
     JSX = 2,
     TS = 3,
     TSX = 4,
-    External = 5,
-    JSON = 6,
-    Deferred = 7
+    JSON = 6
 }
 
 export enum ScriptTarget {
@@ -135,6 +133,7 @@ export enum ScriptTarget {
     ES2023 = 10,
     ES2024 = 11,
     ES2025 = 12,
+    ES2026 = 13,
     ESNext = 99,
     JSON = 100,
     Latest = 99
@@ -154,6 +153,7 @@ export function scriptTargetName(value: number): string | undefined {
     case 10: return "ES2023";
     case 11: return "ES2024";
     case 12: return "ES2025";
+    case 13: return "ES2026";
     case 99: return "Latest";
     case 100: return "JSON";
     default: return undefined;
@@ -328,191 +328,192 @@ export enum SyntaxKind {
     OverrideKeyword = 164,
     OfKeyword = 165,
     DeferKeyword = 166,
-    QualifiedName = 167,
-    ComputedPropertyName = 168,
-    TypeParameter = 169,
-    Parameter = 170,
-    Decorator = 171,
-    PropertySignature = 172,
-    PropertyDeclaration = 173,
-    MethodSignature = 174,
-    MethodDeclaration = 175,
-    ClassStaticBlockDeclaration = 176,
-    Constructor = 177,
-    GetAccessor = 178,
-    SetAccessor = 179,
-    CallSignature = 180,
-    ConstructSignature = 181,
-    IndexSignature = 182,
-    TypePredicate = 183,
-    TypeReference = 184,
-    FunctionType = 185,
-    ConstructorType = 186,
-    TypeQuery = 187,
-    TypeLiteral = 188,
-    ArrayType = 189,
-    TupleType = 190,
-    OptionalType = 191,
-    RestType = 192,
-    UnionType = 193,
-    IntersectionType = 194,
-    ConditionalType = 195,
-    InferType = 196,
-    ParenthesizedType = 197,
-    ThisType = 198,
-    TypeOperator = 199,
-    IndexedAccessType = 200,
-    MappedType = 201,
-    LiteralType = 202,
-    NamedTupleMember = 203,
-    TemplateLiteralType = 204,
-    TemplateLiteralTypeSpan = 205,
-    ImportType = 206,
-    ObjectBindingPattern = 207,
-    ArrayBindingPattern = 208,
-    BindingElement = 209,
-    ArrayLiteralExpression = 210,
-    ObjectLiteralExpression = 211,
-    PropertyAccessExpression = 212,
-    ElementAccessExpression = 213,
-    CallExpression = 214,
-    NewExpression = 215,
-    TaggedTemplateExpression = 216,
-    TypeAssertionExpression = 217,
-    ParenthesizedExpression = 218,
-    FunctionExpression = 219,
-    ArrowFunction = 220,
-    DeleteExpression = 221,
-    TypeOfExpression = 222,
-    VoidExpression = 223,
-    AwaitExpression = 224,
-    PrefixUnaryExpression = 225,
-    PostfixUnaryExpression = 226,
-    BinaryExpression = 227,
-    ConditionalExpression = 228,
-    TemplateExpression = 229,
-    YieldExpression = 230,
-    SpreadElement = 231,
-    ClassExpression = 232,
-    OmittedExpression = 233,
-    ExpressionWithTypeArguments = 234,
-    AsExpression = 235,
-    NonNullExpression = 236,
-    MetaProperty = 237,
-    SyntheticExpression = 238,
-    SatisfiesExpression = 239,
-    TemplateSpan = 240,
-    SemicolonClassElement = 241,
-    Block = 242,
-    EmptyStatement = 243,
-    VariableStatement = 244,
-    ExpressionStatement = 245,
-    IfStatement = 246,
-    DoStatement = 247,
-    WhileStatement = 248,
-    ForStatement = 249,
-    ForInStatement = 250,
-    ForOfStatement = 251,
-    ContinueStatement = 252,
-    BreakStatement = 253,
-    ReturnStatement = 254,
-    WithStatement = 255,
-    SwitchStatement = 256,
-    LabeledStatement = 257,
-    ThrowStatement = 258,
-    TryStatement = 259,
-    DebuggerStatement = 260,
-    VariableDeclaration = 261,
-    VariableDeclarationList = 262,
-    FunctionDeclaration = 263,
-    ClassDeclaration = 264,
-    InterfaceDeclaration = 265,
-    TypeAliasDeclaration = 266,
-    EnumDeclaration = 267,
-    ModuleDeclaration = 268,
-    ModuleBlock = 269,
-    CaseBlock = 270,
-    NamespaceExportDeclaration = 271,
-    ImportEqualsDeclaration = 272,
-    ImportDeclaration = 273,
-    ImportClause = 274,
-    NamespaceImport = 275,
-    NamedImports = 276,
-    ImportSpecifier = 277,
-    ExportAssignment = 278,
-    ExportDeclaration = 279,
-    NamedExports = 280,
-    NamespaceExport = 281,
-    ExportSpecifier = 282,
-    MissingDeclaration = 283,
-    ExternalModuleReference = 284,
-    JsxElement = 285,
-    JsxSelfClosingElement = 286,
-    JsxOpeningElement = 287,
-    JsxClosingElement = 288,
-    JsxFragment = 289,
-    JsxOpeningFragment = 290,
-    JsxClosingFragment = 291,
-    JsxAttribute = 292,
-    JsxAttributes = 293,
-    JsxSpreadAttribute = 294,
-    JsxExpression = 295,
-    JsxNamespacedName = 296,
-    CaseClause = 297,
-    DefaultClause = 298,
-    HeritageClause = 299,
-    CatchClause = 300,
-    ImportAttributes = 301,
-    ImportAttribute = 302,
-    PropertyAssignment = 303,
-    ShorthandPropertyAssignment = 304,
-    SpreadAssignment = 305,
-    EnumMember = 306,
-    SourceFile = 307,
-    JSDocTypeExpression = 308,
-    JSDocNameReference = 309,
-    JSDocAllType = 310,
-    JSDocNullableType = 311,
-    JSDocNonNullableType = 312,
-    JSDocOptionalType = 313,
-    JSDocVariadicType = 314,
-    JSDoc = 315,
-    JSDocText = 316,
-    JSDocTypeLiteral = 317,
-    JSDocSignature = 318,
-    JSDocLink = 319,
-    JSDocLinkCode = 320,
-    JSDocLinkPlain = 321,
-    JSDocUnknownTag = 322,
-    JSDocAugmentsTag = 323,
-    JSDocImplementsTag = 324,
-    JSDocDeprecatedTag = 325,
-    JSDocPublicTag = 326,
-    JSDocPrivateTag = 327,
-    JSDocProtectedTag = 328,
-    JSDocReadonlyTag = 329,
-    JSDocOverrideTag = 330,
-    JSDocCallbackTag = 331,
-    JSDocOverloadTag = 332,
-    JSDocParameterTag = 333,
-    JSDocReturnTag = 334,
-    JSDocThisTag = 335,
-    JSDocTypeTag = 336,
-    JSDocTemplateTag = 337,
-    JSDocTypedefTag = 338,
-    JSDocSeeTag = 339,
-    JSDocPropertyTag = 340,
-    JSDocThrowsTag = 341,
-    JSDocSatisfiesTag = 342,
-    JSDocImportTag = 343,
-    SyntaxList = 344,
-    JSTypeAliasDeclaration = 345,
-    JSImportDeclaration = 346,
-    NotEmittedStatement = 347,
-    PartiallyEmittedExpression = 348,
-    SyntheticReferenceExpression = 349,
-    NotEmittedTypeElement = 350,
-    Count = 351,
+    SourceKeyword = 167,
+    QualifiedName = 168,
+    ComputedPropertyName = 169,
+    TypeParameter = 170,
+    Parameter = 171,
+    Decorator = 172,
+    PropertySignature = 173,
+    PropertyDeclaration = 174,
+    MethodSignature = 175,
+    MethodDeclaration = 176,
+    ClassStaticBlockDeclaration = 177,
+    Constructor = 178,
+    GetAccessor = 179,
+    SetAccessor = 180,
+    CallSignature = 181,
+    ConstructSignature = 182,
+    IndexSignature = 183,
+    TypePredicate = 184,
+    TypeReference = 185,
+    FunctionType = 186,
+    ConstructorType = 187,
+    TypeQuery = 188,
+    TypeLiteral = 189,
+    ArrayType = 190,
+    TupleType = 191,
+    OptionalType = 192,
+    RestType = 193,
+    UnionType = 194,
+    IntersectionType = 195,
+    ConditionalType = 196,
+    InferType = 197,
+    ParenthesizedType = 198,
+    ThisType = 199,
+    TypeOperator = 200,
+    IndexedAccessType = 201,
+    MappedType = 202,
+    LiteralType = 203,
+    NamedTupleMember = 204,
+    TemplateLiteralType = 205,
+    TemplateLiteralTypeSpan = 206,
+    ImportType = 207,
+    ObjectBindingPattern = 208,
+    ArrayBindingPattern = 209,
+    BindingElement = 210,
+    ArrayLiteralExpression = 211,
+    ObjectLiteralExpression = 212,
+    PropertyAccessExpression = 213,
+    ElementAccessExpression = 214,
+    CallExpression = 215,
+    NewExpression = 216,
+    TaggedTemplateExpression = 217,
+    TypeAssertionExpression = 218,
+    ParenthesizedExpression = 219,
+    FunctionExpression = 220,
+    ArrowFunction = 221,
+    DeleteExpression = 222,
+    TypeOfExpression = 223,
+    VoidExpression = 224,
+    AwaitExpression = 225,
+    PrefixUnaryExpression = 226,
+    PostfixUnaryExpression = 227,
+    BinaryExpression = 228,
+    ConditionalExpression = 229,
+    TemplateExpression = 230,
+    YieldExpression = 231,
+    SpreadElement = 232,
+    ClassExpression = 233,
+    OmittedExpression = 234,
+    ExpressionWithTypeArguments = 235,
+    AsExpression = 236,
+    NonNullExpression = 237,
+    MetaProperty = 238,
+    SyntheticExpression = 239,
+    SatisfiesExpression = 240,
+    TemplateSpan = 241,
+    SemicolonClassElement = 242,
+    Block = 243,
+    EmptyStatement = 244,
+    VariableStatement = 245,
+    ExpressionStatement = 246,
+    IfStatement = 247,
+    DoStatement = 248,
+    WhileStatement = 249,
+    ForStatement = 250,
+    ForInStatement = 251,
+    ForOfStatement = 252,
+    ContinueStatement = 253,
+    BreakStatement = 254,
+    ReturnStatement = 255,
+    WithStatement = 256,
+    SwitchStatement = 257,
+    LabeledStatement = 258,
+    ThrowStatement = 259,
+    TryStatement = 260,
+    DebuggerStatement = 261,
+    VariableDeclaration = 262,
+    VariableDeclarationList = 263,
+    FunctionDeclaration = 264,
+    ClassDeclaration = 265,
+    InterfaceDeclaration = 266,
+    TypeAliasDeclaration = 267,
+    EnumDeclaration = 268,
+    ModuleDeclaration = 269,
+    ModuleBlock = 270,
+    CaseBlock = 271,
+    NamespaceExportDeclaration = 272,
+    ImportEqualsDeclaration = 273,
+    ImportDeclaration = 274,
+    ImportClause = 275,
+    NamespaceImport = 276,
+    NamedImports = 277,
+    ImportSpecifier = 278,
+    ExportAssignment = 279,
+    ExportDeclaration = 280,
+    NamedExports = 281,
+    NamespaceExport = 282,
+    ExportSpecifier = 283,
+    MissingDeclaration = 284,
+    ExternalModuleReference = 285,
+    JsxElement = 286,
+    JsxSelfClosingElement = 287,
+    JsxOpeningElement = 288,
+    JsxClosingElement = 289,
+    JsxFragment = 290,
+    JsxOpeningFragment = 291,
+    JsxClosingFragment = 292,
+    JsxAttribute = 293,
+    JsxAttributes = 294,
+    JsxSpreadAttribute = 295,
+    JsxExpression = 296,
+    JsxNamespacedName = 297,
+    CaseClause = 298,
+    DefaultClause = 299,
+    HeritageClause = 300,
+    CatchClause = 301,
+    ImportAttributes = 302,
+    ImportAttribute = 303,
+    PropertyAssignment = 304,
+    ShorthandPropertyAssignment = 305,
+    SpreadAssignment = 306,
+    EnumMember = 307,
+    SourceFile = 308,
+    JSDocTypeExpression = 309,
+    JSDocNameReference = 310,
+    JSDocAllType = 311,
+    JSDocNullableType = 312,
+    JSDocNonNullableType = 313,
+    JSDocOptionalType = 314,
+    JSDocVariadicType = 315,
+    JSDoc = 316,
+    JSDocText = 317,
+    JSDocTypeLiteral = 318,
+    JSDocSignature = 319,
+    JSDocLink = 320,
+    JSDocLinkCode = 321,
+    JSDocLinkPlain = 322,
+    JSDocUnknownTag = 323,
+    JSDocAugmentsTag = 324,
+    JSDocImplementsTag = 325,
+    JSDocDeprecatedTag = 326,
+    JSDocPublicTag = 327,
+    JSDocPrivateTag = 328,
+    JSDocProtectedTag = 329,
+    JSDocReadonlyTag = 330,
+    JSDocOverrideTag = 331,
+    JSDocCallbackTag = 332,
+    JSDocOverloadTag = 333,
+    JSDocParameterTag = 334,
+    JSDocReturnTag = 335,
+    JSDocThisTag = 336,
+    JSDocTypeTag = 337,
+    JSDocTemplateTag = 338,
+    JSDocTypedefTag = 339,
+    JSDocSeeTag = 340,
+    JSDocPropertyTag = 341,
+    JSDocThrowsTag = 342,
+    JSDocSatisfiesTag = 343,
+    JSDocImportTag = 344,
+    SyntaxList = 345,
+    JSTypeAliasDeclaration = 346,
+    JSImportDeclaration = 347,
+    NotEmittedStatement = 348,
+    PartiallyEmittedExpression = 349,
+    SyntheticReferenceExpression = 350,
+    NotEmittedTypeElement = 351,
+    Count = 352,
     FirstAssignment = 63,
     LastAssignment = 78,
     FirstCompoundAssignment = 64,
@@ -520,30 +521,30 @@ export enum SyntaxKind {
     FirstReservedWord = 82,
     LastReservedWord = 117,
     FirstKeyword = 82,
-    LastKeyword = 166,
+    LastKeyword = 167,
     FirstFutureReservedWord = 118,
     LastFutureReservedWord = 126,
-    FirstTypeNode = 183,
-    LastTypeNode = 206,
+    FirstTypeNode = 184,
+    LastTypeNode = 207,
     FirstPunctuation = 18,
     LastPunctuation = 78,
     FirstToken = 0,
-    LastToken = 166,
+    LastToken = 167,
     FirstLiteralToken = 8,
     LastLiteralToken = 14,
     FirstTemplateToken = 14,
     LastTemplateToken = 17,
     FirstBinaryOperator = 29,
     LastBinaryOperator = 78,
-    FirstStatement = 244,
-    LastStatement = 260,
-    FirstNode = 167,
-    FirstJSDocNode = 308,
-    LastJSDocNode = 343,
-    FirstJSDocTagNode = 322,
-    LastJSDocTagNode = 343,
+    FirstStatement = 245,
+    LastStatement = 261,
+    FirstNode = 168,
+    FirstJSDocNode = 309,
+    LastJSDocNode = 344,
+    FirstJSDocTagNode = 323,
+    LastJSDocTagNode = 344,
     FirstContextualKeyword = 127,
-    LastContextualKeyword = 166,
+    LastContextualKeyword = 167,
     LastUnaryOperator = 54,
     FirstTriviaToken = 2,
     LastTriviaToken = 6
@@ -718,192 +719,193 @@ export function syntaxKindName(value: number): string | undefined {
     case 163: return "BigIntKeyword";
     case 164: return "OverrideKeyword";
     case 165: return "OfKeyword";
-    case 166: return "LastContextualKeyword";
-    case 167: return "FirstNode";
-    case 168: return "ComputedPropertyName";
-    case 169: return "TypeParameter";
-    case 170: return "Parameter";
-    case 171: return "Decorator";
-    case 172: return "PropertySignature";
-    case 173: return "PropertyDeclaration";
-    case 174: return "MethodSignature";
-    case 175: return "MethodDeclaration";
-    case 176: return "ClassStaticBlockDeclaration";
-    case 177: return "Constructor";
-    case 178: return "GetAccessor";
-    case 179: return "SetAccessor";
-    case 180: return "CallSignature";
-    case 181: return "ConstructSignature";
-    case 182: return "IndexSignature";
-    case 183: return "FirstTypeNode";
-    case 184: return "TypeReference";
-    case 185: return "FunctionType";
-    case 186: return "ConstructorType";
-    case 187: return "TypeQuery";
-    case 188: return "TypeLiteral";
-    case 189: return "ArrayType";
-    case 190: return "TupleType";
-    case 191: return "OptionalType";
-    case 192: return "RestType";
-    case 193: return "UnionType";
-    case 194: return "IntersectionType";
-    case 195: return "ConditionalType";
-    case 196: return "InferType";
-    case 197: return "ParenthesizedType";
-    case 198: return "ThisType";
-    case 199: return "TypeOperator";
-    case 200: return "IndexedAccessType";
-    case 201: return "MappedType";
-    case 202: return "LiteralType";
-    case 203: return "NamedTupleMember";
-    case 204: return "TemplateLiteralType";
-    case 205: return "TemplateLiteralTypeSpan";
-    case 206: return "LastTypeNode";
-    case 207: return "ObjectBindingPattern";
-    case 208: return "ArrayBindingPattern";
-    case 209: return "BindingElement";
-    case 210: return "ArrayLiteralExpression";
-    case 211: return "ObjectLiteralExpression";
-    case 212: return "PropertyAccessExpression";
-    case 213: return "ElementAccessExpression";
-    case 214: return "CallExpression";
-    case 215: return "NewExpression";
-    case 216: return "TaggedTemplateExpression";
-    case 217: return "TypeAssertionExpression";
-    case 218: return "ParenthesizedExpression";
-    case 219: return "FunctionExpression";
-    case 220: return "ArrowFunction";
-    case 221: return "DeleteExpression";
-    case 222: return "TypeOfExpression";
-    case 223: return "VoidExpression";
-    case 224: return "AwaitExpression";
-    case 225: return "PrefixUnaryExpression";
-    case 226: return "PostfixUnaryExpression";
-    case 227: return "BinaryExpression";
-    case 228: return "ConditionalExpression";
-    case 229: return "TemplateExpression";
-    case 230: return "YieldExpression";
-    case 231: return "SpreadElement";
-    case 232: return "ClassExpression";
-    case 233: return "OmittedExpression";
-    case 234: return "ExpressionWithTypeArguments";
-    case 235: return "AsExpression";
-    case 236: return "NonNullExpression";
-    case 237: return "MetaProperty";
-    case 238: return "SyntheticExpression";
-    case 239: return "SatisfiesExpression";
-    case 240: return "TemplateSpan";
-    case 241: return "SemicolonClassElement";
-    case 242: return "Block";
-    case 243: return "EmptyStatement";
-    case 244: return "FirstStatement";
-    case 245: return "ExpressionStatement";
-    case 246: return "IfStatement";
-    case 247: return "DoStatement";
-    case 248: return "WhileStatement";
-    case 249: return "ForStatement";
-    case 250: return "ForInStatement";
-    case 251: return "ForOfStatement";
-    case 252: return "ContinueStatement";
-    case 253: return "BreakStatement";
-    case 254: return "ReturnStatement";
-    case 255: return "WithStatement";
-    case 256: return "SwitchStatement";
-    case 257: return "LabeledStatement";
-    case 258: return "ThrowStatement";
-    case 259: return "TryStatement";
-    case 260: return "LastStatement";
-    case 261: return "VariableDeclaration";
-    case 262: return "VariableDeclarationList";
-    case 263: return "FunctionDeclaration";
-    case 264: return "ClassDeclaration";
-    case 265: return "InterfaceDeclaration";
-    case 266: return "TypeAliasDeclaration";
-    case 267: return "EnumDeclaration";
-    case 268: return "ModuleDeclaration";
-    case 269: return "ModuleBlock";
-    case 270: return "CaseBlock";
-    case 271: return "NamespaceExportDeclaration";
-    case 272: return "ImportEqualsDeclaration";
-    case 273: return "ImportDeclaration";
-    case 274: return "ImportClause";
-    case 275: return "NamespaceImport";
-    case 276: return "NamedImports";
-    case 277: return "ImportSpecifier";
-    case 278: return "ExportAssignment";
-    case 279: return "ExportDeclaration";
-    case 280: return "NamedExports";
-    case 281: return "NamespaceExport";
-    case 282: return "ExportSpecifier";
-    case 283: return "MissingDeclaration";
-    case 284: return "ExternalModuleReference";
-    case 285: return "JsxElement";
-    case 286: return "JsxSelfClosingElement";
-    case 287: return "JsxOpeningElement";
-    case 288: return "JsxClosingElement";
-    case 289: return "JsxFragment";
-    case 290: return "JsxOpeningFragment";
-    case 291: return "JsxClosingFragment";
-    case 292: return "JsxAttribute";
-    case 293: return "JsxAttributes";
-    case 294: return "JsxSpreadAttribute";
-    case 295: return "JsxExpression";
-    case 296: return "JsxNamespacedName";
-    case 297: return "CaseClause";
-    case 298: return "DefaultClause";
-    case 299: return "HeritageClause";
-    case 300: return "CatchClause";
-    case 301: return "ImportAttributes";
-    case 302: return "ImportAttribute";
-    case 303: return "PropertyAssignment";
-    case 304: return "ShorthandPropertyAssignment";
-    case 305: return "SpreadAssignment";
-    case 306: return "EnumMember";
-    case 307: return "SourceFile";
-    case 308: return "FirstJSDocNode";
-    case 309: return "JSDocNameReference";
-    case 310: return "JSDocAllType";
-    case 311: return "JSDocNullableType";
-    case 312: return "JSDocNonNullableType";
-    case 313: return "JSDocOptionalType";
-    case 314: return "JSDocVariadicType";
-    case 315: return "JSDoc";
-    case 316: return "JSDocText";
-    case 317: return "JSDocTypeLiteral";
-    case 318: return "JSDocSignature";
-    case 319: return "JSDocLink";
-    case 320: return "JSDocLinkCode";
-    case 321: return "JSDocLinkPlain";
-    case 322: return "FirstJSDocTagNode";
-    case 323: return "JSDocAugmentsTag";
-    case 324: return "JSDocImplementsTag";
-    case 325: return "JSDocDeprecatedTag";
-    case 326: return "JSDocPublicTag";
-    case 327: return "JSDocPrivateTag";
-    case 328: return "JSDocProtectedTag";
-    case 329: return "JSDocReadonlyTag";
-    case 330: return "JSDocOverrideTag";
-    case 331: return "JSDocCallbackTag";
-    case 332: return "JSDocOverloadTag";
-    case 333: return "JSDocParameterTag";
-    case 334: return "JSDocReturnTag";
-    case 335: return "JSDocThisTag";
-    case 336: return "JSDocTypeTag";
-    case 337: return "JSDocTemplateTag";
-    case 338: return "JSDocTypedefTag";
-    case 339: return "JSDocSeeTag";
-    case 340: return "JSDocPropertyTag";
-    case 341: return "JSDocThrowsTag";
-    case 342: return "JSDocSatisfiesTag";
-    case 343: return "LastJSDocTagNode";
-    case 344: return "SyntaxList";
-    case 345: return "JSTypeAliasDeclaration";
-    case 346: return "JSImportDeclaration";
-    case 347: return "NotEmittedStatement";
-    case 348: return "PartiallyEmittedExpression";
-    case 349: return "SyntheticReferenceExpression";
-    case 350: return "NotEmittedTypeElement";
-    case 351: return "Count";
+    case 166: return "DeferKeyword";
+    case 167: return "LastContextualKeyword";
+    case 168: return "FirstNode";
+    case 169: return "ComputedPropertyName";
+    case 170: return "TypeParameter";
+    case 171: return "Parameter";
+    case 172: return "Decorator";
+    case 173: return "PropertySignature";
+    case 174: return "PropertyDeclaration";
+    case 175: return "MethodSignature";
+    case 176: return "MethodDeclaration";
+    case 177: return "ClassStaticBlockDeclaration";
+    case 178: return "Constructor";
+    case 179: return "GetAccessor";
+    case 180: return "SetAccessor";
+    case 181: return "CallSignature";
+    case 182: return "ConstructSignature";
+    case 183: return "IndexSignature";
+    case 184: return "FirstTypeNode";
+    case 185: return "TypeReference";
+    case 186: return "FunctionType";
+    case 187: return "ConstructorType";
+    case 188: return "TypeQuery";
+    case 189: return "TypeLiteral";
+    case 190: return "ArrayType";
+    case 191: return "TupleType";
+    case 192: return "OptionalType";
+    case 193: return "RestType";
+    case 194: return "UnionType";
+    case 195: return "IntersectionType";
+    case 196: return "ConditionalType";
+    case 197: return "InferType";
+    case 198: return "ParenthesizedType";
+    case 199: return "ThisType";
+    case 200: return "TypeOperator";
+    case 201: return "IndexedAccessType";
+    case 202: return "MappedType";
+    case 203: return "LiteralType";
+    case 204: return "NamedTupleMember";
+    case 205: return "TemplateLiteralType";
+    case 206: return "TemplateLiteralTypeSpan";
+    case 207: return "LastTypeNode";
+    case 208: return "ObjectBindingPattern";
+    case 209: return "ArrayBindingPattern";
+    case 210: return "BindingElement";
+    case 211: return "ArrayLiteralExpression";
+    case 212: return "ObjectLiteralExpression";
+    case 213: return "PropertyAccessExpression";
+    case 214: return "ElementAccessExpression";
+    case 215: return "CallExpression";
+    case 216: return "NewExpression";
+    case 217: return "TaggedTemplateExpression";
+    case 218: return "TypeAssertionExpression";
+    case 219: return "ParenthesizedExpression";
+    case 220: return "FunctionExpression";
+    case 221: return "ArrowFunction";
+    case 222: return "DeleteExpression";
+    case 223: return "TypeOfExpression";
+    case 224: return "VoidExpression";
+    case 225: return "AwaitExpression";
+    case 226: return "PrefixUnaryExpression";
+    case 227: return "PostfixUnaryExpression";
+    case 228: return "BinaryExpression";
+    case 229: return "ConditionalExpression";
+    case 230: return "TemplateExpression";
+    case 231: return "YieldExpression";
+    case 232: return "SpreadElement";
+    case 233: return "ClassExpression";
+    case 234: return "OmittedExpression";
+    case 235: return "ExpressionWithTypeArguments";
+    case 236: return "AsExpression";
+    case 237: return "NonNullExpression";
+    case 238: return "MetaProperty";
+    case 239: return "SyntheticExpression";
+    case 240: return "SatisfiesExpression";
+    case 241: return "TemplateSpan";
+    case 242: return "SemicolonClassElement";
+    case 243: return "Block";
+    case 244: return "EmptyStatement";
+    case 245: return "FirstStatement";
+    case 246: return "ExpressionStatement";
+    case 247: return "IfStatement";
+    case 248: return "DoStatement";
+    case 249: return "WhileStatement";
+    case 250: return "ForStatement";
+    case 251: return "ForInStatement";
+    case 252: return "ForOfStatement";
+    case 253: return "ContinueStatement";
+    case 254: return "BreakStatement";
+    case 255: return "ReturnStatement";
+    case 256: return "WithStatement";
+    case 257: return "SwitchStatement";
+    case 258: return "LabeledStatement";
+    case 259: return "ThrowStatement";
+    case 260: return "TryStatement";
+    case 261: return "LastStatement";
+    case 262: return "VariableDeclaration";
+    case 263: return "VariableDeclarationList";
+    case 264: return "FunctionDeclaration";
+    case 265: return "ClassDeclaration";
+    case 266: return "InterfaceDeclaration";
+    case 267: return "TypeAliasDeclaration";
+    case 268: return "EnumDeclaration";
+    case 269: return "ModuleDeclaration";
+    case 270: return "ModuleBlock";
+    case 271: return "CaseBlock";
+    case 272: return "NamespaceExportDeclaration";
+    case 273: return "ImportEqualsDeclaration";
+    case 274: return "ImportDeclaration";
+    case 275: return "ImportClause";
+    case 276: return "NamespaceImport";
+    case 277: return "NamedImports";
+    case 278: return "ImportSpecifier";
+    case 279: return "ExportAssignment";
+    case 280: return "ExportDeclaration";
+    case 281: return "NamedExports";
+    case 282: return "NamespaceExport";
+    case 283: return "ExportSpecifier";
+    case 284: return "MissingDeclaration";
+    case 285: return "ExternalModuleReference";
+    case 286: return "JsxElement";
+    case 287: return "JsxSelfClosingElement";
+    case 288: return "JsxOpeningElement";
+    case 289: return "JsxClosingElement";
+    case 290: return "JsxFragment";
+    case 291: return "JsxOpeningFragment";
+    case 292: return "JsxClosingFragment";
+    case 293: return "JsxAttribute";
+    case 294: return "JsxAttributes";
+    case 295: return "JsxSpreadAttribute";
+    case 296: return "JsxExpression";
+    case 297: return "JsxNamespacedName";
+    case 298: return "CaseClause";
+    case 299: return "DefaultClause";
+    case 300: return "HeritageClause";
+    case 301: return "CatchClause";
+    case 302: return "ImportAttributes";
+    case 303: return "ImportAttribute";
+    case 304: return "PropertyAssignment";
+    case 305: return "ShorthandPropertyAssignment";
+    case 306: return "SpreadAssignment";
+    case 307: return "EnumMember";
+    case 308: return "SourceFile";
+    case 309: return "FirstJSDocNode";
+    case 310: return "JSDocNameReference";
+    case 311: return "JSDocAllType";
+    case 312: return "JSDocNullableType";
+    case 313: return "JSDocNonNullableType";
+    case 314: return "JSDocOptionalType";
+    case 315: return "JSDocVariadicType";
+    case 316: return "JSDoc";
+    case 317: return "JSDocText";
+    case 318: return "JSDocTypeLiteral";
+    case 319: return "JSDocSignature";
+    case 320: return "JSDocLink";
+    case 321: return "JSDocLinkCode";
+    case 322: return "JSDocLinkPlain";
+    case 323: return "FirstJSDocTagNode";
+    case 324: return "JSDocAugmentsTag";
+    case 325: return "JSDocImplementsTag";
+    case 326: return "JSDocDeprecatedTag";
+    case 327: return "JSDocPublicTag";
+    case 328: return "JSDocPrivateTag";
+    case 329: return "JSDocProtectedTag";
+    case 330: return "JSDocReadonlyTag";
+    case 331: return "JSDocOverrideTag";
+    case 332: return "JSDocCallbackTag";
+    case 333: return "JSDocOverloadTag";
+    case 334: return "JSDocParameterTag";
+    case 335: return "JSDocReturnTag";
+    case 336: return "JSDocThisTag";
+    case 337: return "JSDocTypeTag";
+    case 338: return "JSDocTemplateTag";
+    case 339: return "JSDocTypedefTag";
+    case 340: return "JSDocSeeTag";
+    case 341: return "JSDocPropertyTag";
+    case 342: return "JSDocThrowsTag";
+    case 343: return "JSDocSatisfiesTag";
+    case 344: return "LastJSDocTagNode";
+    case 345: return "SyntaxList";
+    case 346: return "JSTypeAliasDeclaration";
+    case 347: return "JSImportDeclaration";
+    case 348: return "NotEmittedStatement";
+    case 349: return "PartiallyEmittedExpression";
+    case 350: return "SyntheticReferenceExpression";
+    case 351: return "NotEmittedTypeElement";
+    case 352: return "Count";
     default: return undefined;
   }
 }
@@ -1067,8 +1069,7 @@ export enum ObjectFlags {
     IsClassInstanceClone = 67108864,
     IdenticalBaseTypeCalculated = 134217728,
     IdenticalBaseTypeExists = 268435456,
-    UnresolvedMembers = 536870912,
-    FromTypeNode = 1073741824,
+    FromTypeNode = 536870912,
     IsGenericTypeComputed = 4194304,
     IsGenericObjectType = 8388608,
     IsGenericIndexType = 16777216,
@@ -1076,6 +1077,8 @@ export enum ObjectFlags {
     ContainsIntersections = 33554432,
     IsUnknownLikeUnionComputed = 67108864,
     IsUnknownLikeUnion = 134217728,
+    IsUniformEnumComputed = 268435456,
+    IsUniformEnum = 536870912,
     IsNeverIntersectionComputed = 33554432,
     IsNeverIntersection = 67108864,
     IsConstrainedTypeVariable = 134217728
@@ -1134,7 +1137,7 @@ export enum SymbolFlags {
     ConstEnumOnlyModule = 268435456,
     ReplaceableByMethod = 536870912,
     GlobalLookup = 1073741824,
-    All = 536870912,
+    All = 1073741823,
     Enum = 384,
     Variable = 3,
     Value = 111551,
@@ -1168,7 +1171,6 @@ export enum SymbolFlags {
     ClassMember = 106500,
     ExportSupportsDefaultModifier = 112,
     ExportDoesNotSupportDefaultModifier = -113,
-    Classifiable = 2885600,
     LateBindingContainer = 6256
 }
 
@@ -1248,6 +1250,35 @@ export enum TypeFlags {
     NotPrimitiveUnion = 286523411
 }
 
+export enum TypeFormatFlags {
+    None = 0,
+    NoTruncation = 1,
+    WriteArrayAsGenericType = 2,
+    GenerateNamesForShadowedTypeParams = 4,
+    UseStructuralFallback = 8,
+    WriteTypeArgumentsOfSignature = 32,
+    UseFullyQualifiedType = 64,
+    SuppressAnyReturnType = 256,
+    MultilineObjectLiterals = 1024,
+    WriteClassExpressionAsTypeLiteral = 2048,
+    UseTypeOfFunction = 4096,
+    OmitParameterModifiers = 8192,
+    UseAliasDefinedOutsideCurrentScope = 16384,
+    UseSingleQuotesForStringLiteralType = 268435456,
+    NoTypeReduction = 536870912,
+    UseInstantiationExpressions = 1073741824,
+    OmitThisParameter = 33554432,
+    WriteCallStyleSignature = 134217728,
+    AllowUniqueESSymbolType = 1048576,
+    AddUndefined = 131072,
+    WriteArrowStyleSignature = 262144,
+    InArrayType = 524288,
+    InElementType = 2097152,
+    InFirstTypeArgument = 4194304,
+    InTypeAlias = 8388608,
+    NodeBuilderFlagsMask = 1922071919
+}
+
 export enum TypePredicateKind {
     This = 0,
     Identifier = 1,
@@ -1319,8 +1350,8 @@ export enum LanguageVariant {
 export enum JsxEmit {
     None = 0,
     Preserve = 1,
-    ReactNative = 2,
-    React = 3,
+    React = 2,
+    ReactNative = 3,
     ReactJSX = 4,
     ReactJSXDev = 5
 }
@@ -1330,8 +1361,8 @@ export function jsxEmitName(value: number): string | undefined {
   switch (value) {
     case 0: return "None";
     case 1: return "Preserve";
-    case 2: return "ReactNative";
-    case 3: return "React";
+    case 2: return "React";
+    case 3: return "ReactNative";
     case 4: return "ReactJSX";
     case 5: return "ReactJSXDev";
     default: return undefined;

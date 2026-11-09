@@ -33,8 +33,8 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
       // any backend runs (that is the suite's contract), so the default
       // lane is irrelevant by construction — and riding it proves the
       // fallback machinery never turns a diagnostic into a build.
-      // The checker-panic programs exercise tsgo's own failures (a panic, and a
-      // +Infinity it cannot send), so they compile with tsgo.
+      // A checker-panic program exercises tsgo's own failures, so it compiles
+      // with tsgo.
       const checker = process.env["SCRIPTC_CHECKER"];
       if (name.startsWith("checker-panic-")) process.env["SCRIPTC_CHECKER"] = "tsgo";
       let result: Awaited<ReturnType<typeof compile>>;

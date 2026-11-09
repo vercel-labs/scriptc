@@ -28,6 +28,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { FETCH_DISPATCHER_HOOK, isPackageShimFile } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -180,10 +181,7 @@ export function definitelyNoUndiciDispatcher(lowerer: Lowerer, value: ts.Express
     );
     if (declaration === undefined) return false;
     if (isPackageShimFile(ts.getSourceFileOfNode(declaration).fileName)) return false;
-    const heritage = (declaration as ts.ClassDeclaration).heritageClauses?.nodes.find(
-      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    );
-    const base = heritage?.types.nodes[0];
+    const base = extendsElementOf(declaration as ts.ClassDeclaration);
     if (base === undefined) return true;
     symbol = lowerer.typeOf(base.expression).getSymbol();
     // The class value's type names the class through its symbol; a

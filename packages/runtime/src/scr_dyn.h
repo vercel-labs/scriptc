@@ -10,6 +10,7 @@
 #include "scr_url.h"
 #include "scr_symbol.h"
 #include "scr_bigint.h"
+#include "scr_closure.h"
 
 /* ── JSON + dynamic values (scr_json.c) ─────────────────────────────
  * A dyn value — the compiled form of `unknown` — is a refcounted JSON dyn
@@ -92,9 +93,10 @@ typedef enum {
    * boxes its ScrPromise directly, other inner types box an ADAPTER
    * promise whose emitted settle callback converts the payload — see
    * scr_dyn_new_promise_adapting). Identity is the PROMISE, not the box
-   * (strict equality compares the pointers; Promise.resolve identity
-   * survives one crossing, a re-boxed typed promise mints a fresh
-   * adapter — SEMANTICS.md). typeof answers "object", truthiness is
+   * and not the adapter: a re-boxed typed promise mints a fresh adapter,
+   * and every adapter shares its source's identity cell, which strict
+   * equality compares and Map, Set and weak collection keys hash
+   * (scr_dyn_identity). typeof answers "object", truthiness is
    * true, String() renders "[object Promise]" (Object.prototype.toString
    * — promises have no own toString), JSON serialization writes {} (no
    * own enumerable properties, exactly Node), and util.inspect throws
@@ -2156,6 +2158,71 @@ ScrStr *scr_dyn_display(const ScrDyn *d);
 /* JS === over two dyn values: scalars by value, units by kind, everything
  * reference-shaped by node identity. Borrowed; never throws. */
 bool scr_dyn_strict_eq(const ScrDyn *a, const ScrDyn *b);
+/* ── the identity of an object ────────────────────────────────────────
+ * The address that names the JavaScript object a checked value holds,
+ * however the program reached it, and false for a value that has none
+ * (undefined, null, a boolean, a number, a string, a bigint, a symbol). A
+ * box is a representation and never the identity when the value came from
+ * typed code: a record's view names its record, a capsule its object, a
+ * function its identity root (an adapter is the function it adapts), a
+ * handle its native object, and a promise its identity cell (each boxing of
+ * a typed promise makes another adapter promise; they share the cell).
+ * `kind` tells apart identities of different representations.
+ *
+ * This is the one rule. scr_dyn_strict_eq answers true for two references
+ * exactly when their identities are equal; a Map or a Set hashes a
+ * reference key by it (scr_map.c scr_map_hash_dyn); a WeakMap, a WeakSet
+ * and a FinalizationRegistry key by it (scr_json.c scr_weak_key). It is
+ * defined here so each of them reads it without a call. Borrowed; never
+ * throws. */
+#define SCR_DYN_IDENTITY_VIEW 32u /* a native object behind a view or a capsule */
+/* Above every other kind: a handle's kind is 4 plus its tag, and a tag can
+ * be any small number. */
+#define SCR_DYN_IDENTITY_PROMISE 0x10000u
+/* A promise's identity cell, created on first use so that a key's hash does
+ * not change when an adapter of the promise appears later (scr_json.c: it
+ * reads the first two words of a promise, ScrPromiseHead, and calls nothing
+ * of the promise unit). */
+void *scr_dyn_promise_identity(ScrPromise *promise);
+static inline bool scr_dyn_identity(const ScrDyn *d, void **ptr, unsigned *kind) {
+  *kind = 0;
+  switch (d->kind) {
+  case SCR_DYN_OBJ:
+    if (d->v.obj.source_identity) {
+      *ptr = d->v.obj.source_identity;
+      *kind = SCR_DYN_IDENTITY_VIEW;
+      return true;
+    }
+    *ptr = (void *)d;
+    return true;
+  case SCR_DYN_ARR:
+  case SCR_DYN_PROXY:
+    *ptr = (void *)d;
+    return true;
+  case SCR_DYN_BYTES:
+    *ptr = d->v.bytes;
+    *kind = 1;
+    return true;
+  case SCR_DYN_FUNC:
+    *ptr = d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)scr_closure_identity(d->v.fn.clo);
+    *kind = d->v.fn.class_obj ? 3 : 2;
+    return true;
+  case SCR_DYN_HANDLE:
+    *ptr = d->v.handle.ptr;
+    *kind = 4 + (unsigned)d->v.handle.tag;
+    return true;
+  case SCR_DYN_TYPED_REF:
+    *ptr = d->v.typed_ref.ptr;
+    *kind = SCR_DYN_IDENTITY_VIEW;
+    return true;
+  case SCR_DYN_PROMISE:
+    *ptr = scr_dyn_promise_identity(d->v.promise);
+    *kind = SCR_DYN_IDENTITY_PROMISE;
+    return true;
+  default:
+    return false;
+  }
+}
 /* Prototype-method dispatch on a dyn receiver (`recv.m(...)` where `m` is
  * a name a dyn-representable prototype declares — push/slice/forEach/
  * apply/...): implemented (kind, name) pairs run JS-exact semantics; a

@@ -21995,13 +21995,13 @@ static void scr_weak_map_release(void *ptr) {
  * The sweep runs when the number of held cells has doubled since the last
  * one; it ends the entries of the dead cells and gives up the holds of cells
  * no collection keys any more. */
-/* Above every other kind: a handle's kind is 4 plus its tag, and a tag can
- * be any small number. */
-#define SCR_WEAK_PROMISE_KIND 0x10000u
+#define SCR_WEAK_PROMISE_KIND SCR_DYN_IDENTITY_PROMISE
 static SCR_TL ScrWeakMap *scr_weak_promise_cells;
 static SCR_TL size_t scr_weak_promise_held, scr_weak_promise_sweep_at;
 
-static void *scr_weak_promise_cell(ScrPromise *promise) {
+/* The promise arm of scr_dyn_identity (scr_dyn.h): a Map's or a Set's hash
+ * of a boxed promise reads the same cell as a weak collection's key. */
+void *scr_dyn_promise_identity(ScrPromise *promise) {
   ScrPromiseHead *head = (ScrPromiseHead *)promise;
   if (!head->identity) {
     head->identity = malloc(sizeof *head->identity);
@@ -22014,26 +22014,16 @@ static void *scr_weak_promise_cell(ScrPromise *promise) {
 }
 
 /* Return 1 for an observed identity, 0 for a primitive, and -1 for a
- * reference whose native lifetime has no observer contract yet. */
+ * reference whose native lifetime has no observer contract yet. The
+ * identity is scr_dyn_identity's (scr_dyn.h); the rules here are about
+ * lifetimes alone. */
 static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
-  /* A view of a native object (an empty record boxed with its identity) is
-   * keyed by that object, exactly like its typed reference: native frees
-   * notify scr_weak_dispose with the same pointer. */
-  if (key->kind == SCR_DYN_OBJ && key->v.obj.source_identity) {
-    *ptr = key->v.obj.source_identity; *kind = 32; return 1;
-  }
+  if (!scr_dyn_identity(key, ptr, kind)) return 0;
+  /* A view of a native object: native frees notify scr_weak_dispose with
+   * the same pointer. */
+  if (key->kind == SCR_DYN_OBJ && key->v.obj.source_identity) return 1;
   if (key->copied_from_native) return -1;
-  *kind = 0;
   switch (key->kind) {
-  case SCR_DYN_OBJ:
-    *ptr = (void *)key; return 1;
-  case SCR_DYN_ARR: case SCR_DYN_PROXY:
-    *ptr = (void *)key; return 1;
-  case SCR_DYN_BYTES:
-    *ptr = key->v.bytes; *kind = 1; return 1;
-  case SCR_DYN_FUNC:
-    *ptr = key->v.fn.class_obj ? (void *)key->v.fn.class_obj : (void *)scr_closure_identity(key->v.fn.clo);
-    *kind = key->v.fn.class_obj ? 3 : 2; return 1;
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
@@ -22042,14 +22032,10 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
         key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
         key->v.handle.tag != SCR_DYNH_MAP && key->v.handle.tag != SCR_DYNH_SET &&
         key->v.handle.tag != SCR_DYNH_NET_SOCKET && key->v.handle.tag != SCR_DYNH_NET_SERVER) return -1;
-    *ptr = key->v.handle.ptr; *kind = 4 + key->v.handle.tag; return 1;
+    return 1;
   case SCR_DYN_TYPED_REF:
-    if (!key->v.typed_ref.observed) return -1;
-    *ptr = key->v.typed_ref.ptr; *kind = 32; return 1;
-  case SCR_DYN_PROMISE:
-    *ptr = scr_weak_promise_cell(key->v.promise); *kind = SCR_WEAK_PROMISE_KIND; return 1;
-
-  default: return 0;
+    return key->v.typed_ref.observed ? 1 : -1;
+  default: return 1;
   }
 }
 

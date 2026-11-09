@@ -125,12 +125,20 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
   return key;
 }
 
-/* Checked-dynamic keys use the JavaScript value, not the temporary box.
- * Typed capsules preserve a native object's identity across repeated
- * crossings; numbers retain SameValueZero and strings compare by content. */
+/* Checked-dynamic keys use the JavaScript value, not the temporary box:
+ * numbers retain SameValueZero, strings and bigints compare by content, and
+ * an object is keyed by its identity, the one every observer of it reads
+ * (scr_dyn_identity): a record's view and its capsule, each box of one
+ * function, and each adapter of one promise hash alike, as they compare
+ * equal. */
 static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
+  void *identity;
+  unsigned identity_kind;
+  /* An object: one dispatch on the kind answers its identity. The kind is
+   * above every ScrDynKind, so no value key shares a reference's kind. */
+  if (scr_dyn_identity(d, &identity, &identity_kind))
+    return scr_key_word_hash(scr_map_slot_from_ptr(identity)) ^ ((uint64_t)identity_kind + 64);
   uint64_t value;
-  uint64_t kind = (uint64_t)d->kind;
   switch (d->kind) {
   case SCR_DYN_UNDEF:
   case SCR_DYN_NULL: value = 0; break;
@@ -139,22 +147,9 @@ static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
   case SCR_DYN_BIGINT: return scr_bigint_hash(d->v.bigint);
   case SCR_DYN_STR: return scr_map_hash_str(d->v.str);
   case SCR_DYN_SYMBOL: value = scr_map_slot_from_ptr(d->v.symbol.value); break;
-  case SCR_DYN_FUNC: value = scr_map_slot_from_ptr(d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)scr_closure_identity(d->v.fn.clo)); break;
-  case SCR_DYN_BYTES: value = scr_map_slot_from_ptr(d->v.bytes); break;
-  case SCR_DYN_HANDLE: value = scr_map_slot_from_ptr(d->v.handle.ptr); break;
-  case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(d->v.promise); break;
-  case SCR_DYN_OBJ: value = scr_map_slot_from_ptr(d->v.obj.source_identity ? d->v.obj.source_identity : (void *)d); break;
-  case SCR_DYN_TYPED_REF:
-    value = scr_map_slot_from_ptr(d->v.typed_ref.ptr);
-    // A materialized record and its capsule compare equal; their hashes
-    // must also agree when a key crosses the boundary in either form.
-    kind = SCR_DYN_OBJ;
-    break;
-
-
   default: value = scr_map_slot_from_ptr((void *)d); break;
   }
-  return scr_key_word_hash(value) ^ kind;
+  return scr_key_word_hash(value) ^ (uint64_t)d->kind;
 }
 
 static bool scr_map_dyn_eq(const ScrDyn *a, const ScrDyn *b) {

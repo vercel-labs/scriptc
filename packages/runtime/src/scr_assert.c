@@ -608,39 +608,14 @@ void scr_assert_ref_eq_fn(const ScrClosure *a, const ScrClosure *b, bool negated
  * back to the whole-value +/- form without context collapsing. */
 
 /* JS SameValue over two dyn values (Object.is — the strictEqual and
- * notStrictEqual comparison). Functions compare by boxed closure: the
- * ScrDyn box is a boundary artifact, the closure IS the JS identity. */
+ * notStrictEqual comparison). SameValue differs from === for numbers
+ * alone; every other value, and every object's identity (the box is a
+ * boundary artifact: a record's view, a function's closure, a handle and a
+ * promise's adapter name the object they box), is strict equality's. */
 static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
-  if (a->kind != b->kind) return false;
-  switch (a->kind) {
-    case SCR_DYN_SYMBOL:
-      return a->v.symbol.value == b->v.symbol.value;
-    case SCR_DYN_UNDEF:
-    case SCR_DYN_NULL:
-      return true;
-    case SCR_DYN_BOOL:
-      return a->v.b == b->v.b;
-    case SCR_DYN_BIGINT:
-      return scr_bigint_eq(a->v.bigint, b->v.bigint);
-    case SCR_DYN_NUM:
-      return scr_assert_same_value_f64(a->v.num, b->v.num);
-    case SCR_DYN_STR:
-      return a->v.str->len == b->v.str->len &&
-             memcmp(a->v.str->data, b->v.str->data, a->v.str->len) == 0;
-    case SCR_DYN_FUNC:
-      return scr_dyn_strict_eq(a, b);
-    case SCR_DYN_HANDLE:
-      /* Identity is the HANDLE (the strict_eq stance). */
-      return a->v.handle.tag == b->v.handle.tag && a->v.handle.ptr == b->v.handle.ptr;
-    case SCR_DYN_PROMISE:
-      /* Identity is the PROMISE (the strict_eq stance). */
-      return a->v.promise == b->v.promise;
-
-    case SCR_DYN_TYPED_REF:
-      return scr_dyn_strict_eq(a, b);
-    default:
-      return a == b; /* ARR/OBJ/BYTES: node identity */
-  }
+  if (a->kind == SCR_DYN_NUM && b->kind == SCR_DYN_NUM)
+    return scr_assert_same_value_f64(a->v.num, b->v.num);
+  return scr_dyn_strict_eq(a, b);
 }
 
 /* Node's strict deep equality over two dyn values: kind-wise — Object.is
@@ -730,8 +705,9 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_PROMISE:
       /* Node compares promises structurally (no own props → equal); the
        * honest arm here is identity — two distinct promises with equal
-       * settlements would diverge (documented with the handle stance). */
-      return a->v.promise == b->v.promise;
+       * settlements would diverge (documented with the handle stance). One
+       * promise is itself whichever adapter boxes it (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
     case SCR_DYN_BYTES: {
       /* The prototype gate, unless the Assert instance skips it. */
       if (a->buffer != b->buffer && !scr_assert_skip_prototype()) return false;
@@ -1278,7 +1254,8 @@ static bool scr_assert_loose_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_HANDLE:
       return scr_assert_loose_handle(a, b);
     default:
-      return false; /* promises: identity, checked above */
+      /* Promises: identity, whichever adapter boxes one (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
   }
 }
 
@@ -2413,7 +2390,8 @@ static bool scr_assert_partial_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_HANDLE:
       return scr_assert_partial_handle(a, b);
     default:
-      return false; /* promises: identity, checked above */
+      /* Promises: identity, whichever adapter boxes one (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
   }
 }
 

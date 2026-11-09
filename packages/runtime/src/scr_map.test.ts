@@ -63,7 +63,9 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
         UBSAN_OPTIONS: "halt_on_error=1",
       },
     });
-    expect(result.stdout).toBe("number-key maps passed\n");
+    // The same binary first checks that a checked-dynamic key is an object's
+    // identity and never its box (identity_keys in scr_map.test.c).
+    expect(result.stdout).toBe("identity keys passed\nnumber-key maps passed\n");
     expect(result.stderr).toBe("");
   } finally {
     await rm(scratch, { recursive: true, force: true });

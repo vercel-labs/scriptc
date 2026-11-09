@@ -440,11 +440,47 @@ const text = (obj: IrExpr): IrExpr => ({
   loc: receiverLoc,
 });
 
-function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
+test("class dispatch reads a capsule's slot in the class key table inline", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const slot: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classKeySlot",
+    args: [ref(dyn)],
+    type: F64,
+    loc: receiverLoc,
+  };
+  const llvm = work(slot, dyn, false, false, ["Shape", "Circle"]);
+  // A capsule this program boxed carries a slot's address: its slot is the
+  // key pointer's distance from the table, one subtract, one unsigned
+  // compare with the table's size (two slots of 64 bytes) and one divide by
+  // the slot size.
+  expect(llvm).toContain("; ->v.typed_ref.type_key");
+  expect(llvm).toMatch(/sub i64 %t\d+, ptrtoint \(ptr @sc_class_keys_\w+ to i64\)/);
+  expect(llvm).toMatch(/icmp ult i64 %t\d+, 128\n/);
+  expect(llvm).toMatch(/udiv i64 %t\d+, 64\n/);
+  // A class key that lives outside the table is looked up by its length and
+  // bytes; the table's own lookup function, no runtime call.
+  expect(llvm).toContain("; ->v.typed_ref.type_key_len");
+  expect(llvm).toMatch(/call i32 @sc_class_keys_\w+_find\(ptr %t\d+, i32 %t\d+\)/);
+  // A value that is not a capsule answers the -1 sentinel, which no case
+  // matches.
+  expect(llvm).toContain("store i32 -1, ptr");
+  expect(llvm).not.toContain("@scr_dyn_class_hash");
+  expect(llvm).not.toContain("call ptr @scr_dyn_retain_v(");
+});
+
+function work(
+  expr: IrExpr,
+  parameter: IrType,
+  boxed = false,
+  tdz = false,
+  classKeys?: string[],
+): string {
   const module: IrModule = {
     irVersion: 17,
     sourceFile: receiverLoc.file,
     entry: "main",
+    ...(classKeys === undefined ? {} : { classKeys }),
     records: [
       { id: "leaf", fields: [{ name: "text", type: STRING }] },
       { id: "root", fields: [{ name: "child", type: leaf }] },

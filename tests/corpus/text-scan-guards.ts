@@ -3,8 +3,9 @@
 // the string it scans, a `switch` on the unit with fallthrough and with its
 // default in the middle, reads at an index that is not the loop's counter,
 // two strings of different representations under one bound, strings whose
-// text is ASCII but was cut out of non-ASCII text (and the reverse), and
-// slices that start at an offset.
+// text is ASCII but was cut out of non-ASCII text (and the reverse), slices
+// that start at an offset, a loop over a counter declared before it that
+// appends to another string, and a `switch` in a function the loop calls.
 
 const TEXTS: string[] = [
   "",
@@ -197,6 +198,55 @@ function slices(s: string): string {
   return out.join(",");
 }
 
+// The counter is declared before the loop and the loop appends to another
+// string: with a start the caller chooses, and with a second read at a
+// fixed index beside the read at the counter.
+function escapedFrom(s: string, start: number): string {
+  let out = "";
+  let i = start;
+  for (; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 60) out += "&lt;";
+    else if (c === 38) out += "&amp;";
+    else if (c > 127) out += "?";
+  }
+  return `${out}:${i}`;
+}
+function firstAndEach(s: string): string {
+  let out = "";
+  let i = 1;
+  for (; i < s.length; i++) if (s.charCodeAt(i) === s.charCodeAt(0)) out += i;
+  return `${out}:${i}`;
+}
+
+// The `switch` is in a function the loop calls, one call deep and two.
+function weight(c: number): number {
+  let w = 1;
+  switch (c) {
+    case 38:
+      w = 7;
+      break;
+    case 60:
+    case 62:
+      w = 70;
+      break;
+    case 0xe9:
+      w = 700;
+      break;
+  }
+  return w;
+}
+function doubled(c: number): number {
+  return weight(c) * 2;
+}
+function weighed(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n = (n + weight(s.charCodeAt(i))) | 0;
+  let j = 0;
+  for (; j < s.length; j++) n = (n * 3 + doubled(s.charCodeAt(j))) | 0;
+  return n + j;
+}
+
 // Text that is ASCII but was made from non-ASCII text, and the reverse.
 function derived(): string[] {
   const wide = "é<&>中";
@@ -239,6 +289,13 @@ for (const s of TEXTS) {
     JSON.stringify(switchChar(s)),
   );
   console.log(" index", otherIndexes(s), steppedInBody(s), slices(s));
+  console.log(
+    " calls",
+    JSON.stringify(escapedFrom(s, 0)),
+    JSON.stringify(escapedFrom(s, 3)),
+    JSON.stringify(firstAndEach(s)),
+    weighed(s),
+  );
   console.log(
     " pairs",
     TEXTS.map((other) => twoStrings(s, other)).join(","),

@@ -140,12 +140,11 @@ console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
     const words = ll.match(
       /define internal [^\n]+ @sc_bf_words(?:\.i32)?\([^\n]*\) #0 \{[\s\S]*?\n\}/,
     )![0];
-    // Each inner loop's entry, for an `s` that is not ASCII, compares the
-    // scan receiver with `s` and calls the runtime to publish `s` only when
-    // they differ.
+    // Each inner loop's entry compares the scan receiver with `s` and calls
+    // the runtime to publish `s` only when they differ.
     const guards = [
       ...words.matchAll(
-        /^bytes\.version\.units\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)[^\n]*\n/gm,
+        /^bytes\.version\.publish\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)[^\n]*\n/gm,
       ),
     ];
     expect(guards.length).toBeGreaterThanOrEqual(2);
@@ -287,7 +286,25 @@ function tagged(s: string, tag: string): number {
   }
   return n;
 }
+function sum(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n += s.charCodeAt(i);
+  return n;
+}
+function from(s: string, start: number): number {
+  let n = 0;
+  let i = start;
+  for (; i < s.length; i++) n += s.charCodeAt(i);
+  return n + i;
+}
+function dashes(s: string, start: number): string {
+  let out = "";
+  let i = start;
+  for (; i < s.length; i++) if (s.charCodeAt(i) === 32) out += "-";
+  return out;
+}
 console.log(marks("a<b&c"), marks("中<文&é"), tagged("ab", "a"), tagged("é", "b"));
+console.log(sum("ab"), sum("é"), from("ab", 1), from("éé", 1), dashes("a b", 0), dashes("é é", 0));
 `,
     );
     const outPath = join(dir, "main.ir.json");
@@ -322,11 +339,26 @@ console.log(marks("a<b&c"), marks("中<文&é"), tagged("ab", "a"), tagged("é",
     expect(unitsSide).toMatch(toUnits);
     // A switch over a string compares strings: no units copy.
     expect(body("tagged")).not.toContain("bytes.version.fast.units");
+    // A loop without a switch takes both representations through one
+    // sequence of tests behind the joined length.
+    const sum = body("sum");
+    expect(sum).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    expect(sum).toMatch(/^bytes\.version\.length\d+:/m);
+    expect(sum).not.toMatch(/^bytes\.version\.bytes\d+:/m);
+    // A `for` without an initializer is versioned as the while loop it
+    // stands for, behind a guard that decides the representation first.
+    const from = body("from");
+    expect(from).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    expect(from).toMatch(/^bytes\.version\.bytes\d+:/m);
+    expect(from).not.toMatch(/^bytes\.version\.length\d+:/m);
+    // One that appends to a string has no units copy, and no guard either:
+    // the guard would fail for every string that is not ASCII.
+    expect(body("dashes")).not.toContain("bytes.version");
 
     const exe = join(dir, "main");
     const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
     if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
-    expect(execFileSync(exe, { encoding: "utf8" })).toBe("6 106 197 233\n");
+    expect(execFileSync(exe, { encoding: "utf8" })).toBe("6 106 197 233\n195 233 100 235 - -\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

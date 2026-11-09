@@ -850,7 +850,10 @@ test("a for loop over a counter declared before it versions its string reads", (
     ],
     loc,
   });
-  const versionOf = (loop: IrStmt & { kind: "for" }): BytesLoopVersion | null => {
+  const versionOf = (
+    loop: IrStmt & { kind: "for" | "while" },
+    units = true,
+  ): BytesLoopVersion | null => {
     const f = textKernel([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
     return matchBytesLoopVersion(loop, null, {
       locals: new Map(f.locals.map((l) => [l.id, l])),
@@ -862,6 +865,7 @@ test("a for loop over a counter declared before it versions its string reads", (
       scalarStrings: new Set(),
       workers: false,
       owned: new Set(),
+      unitSafeFunctions: units ? new Map() : null,
     });
   };
   // The update runs after every pass, after the `continue` too, so the read
@@ -871,6 +875,21 @@ test("a for loop over a counter declared before it versions its string reads", (
   expect(version.receivers.map((r) => r.string)).toEqual([true]);
   expect(version.bounded.map((c) => c.slack)).toEqual([0]);
   expect(version.counters.map((c) => c.min)).toEqual([0]);
+  // It has a copy over the string's units, behind a guard that decides the
+  // representation first. The same loop written as a while loop takes both
+  // representations through one sequence of tests.
+  expect(version.unitsReceiver).toBe(0);
+  expect(version.unitsFirst).toBe(true);
+  const { cond, body } = loopOf(null, null);
+  const written = versionOf({ kind: "while", cond: cond!, body: [...body, step], loc })!;
+  expect(written.unitsReceiver).toBe(0);
+  expect(written.unitsFirst).toBe(false);
+  // Without a units copy its guard would fail for every string that is not
+  // ASCII: the loop is not read as a while loop, and has no other check.
+  expect(versionOf(loopOf(null, step), false)).toBeNull();
+  expect(
+    versionOf({ kind: "while", cond: cond!, body: [...body, step], loc }, false),
+  ).not.toBeNull();
   // An initializer that assigns the counter runs after the guard: the
   // guard would test the old value, so the loop keeps its checked reads.
   expect(versionOf(loopOf({ kind: "assign", localId: "i", value: num(0), loc }, step))).toBeNull();

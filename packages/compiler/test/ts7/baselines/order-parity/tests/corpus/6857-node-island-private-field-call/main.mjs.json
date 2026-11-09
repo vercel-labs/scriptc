@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6857-node-island-private-field-call/shapes.mjs",
+  "<repo>/tests/corpus/6857-node-island-private-field-call/main.mjs"
+ ],
+ "diags": []
+}

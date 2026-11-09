@@ -4210,10 +4210,13 @@ export class ClassDynamicDispatch {
       // receiver. Fields added while bodies lower (the property bag and the
       // attribute words) have compiler names, which take every receiver.
       const plans = this.propertyReceivers(lowerer, true);
+      // The own properties an Error keeps in native slots: `stack`, and
+      // `cause` for a read.
+      const errorSlot = dispatch.name === "stack" || (dispatch.name === "cause" && !dispatch.write);
       const anyReceiver =
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         dispatch.name === "constructor" ||
-        dispatch.name === "stack";
+        errorSlot;
       const skips = (plan: PropertyReceiver): boolean =>
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
@@ -4223,7 +4226,7 @@ export class ClassDynamicDispatch {
           !findGenericMethodOn(lowerer, plan.info, dispatch.name) &&
           dispatch.name !== "constructor" &&
           !plan.info.fields.has(dispatch.name) &&
-          !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !(errorSlot && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
           !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
           !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
       const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
@@ -6897,6 +6900,46 @@ export class ClassDynamicDispatch {
               { kind: "libCall", fn: "error.stack", args: [error], type: STRING, loc },
               DYN,
             ),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
+    // An Error's own `cause`: the constructor's `{ cause }` option is kept
+    // by the native error, where typed reads find it; a value the program
+    // wrote by name is kept with the instance's own properties, which a
+    // read checks first. A write keeps the bag, and a class that declares
+    // `cause` answers with its field.
+    if (
+      name === "cause" &&
+      !write &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: {
+              kind: "libCall",
+              fn: "error.cause",
+              args: [lowerer.upcastTo(receiver, "%Error")],
+              type: DYN,
+              loc,
+            },
             type: DYN,
             loc,
           },

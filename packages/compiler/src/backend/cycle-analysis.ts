@@ -48,6 +48,35 @@ export function computeTraced(
   return { shapes, unions };
 }
 
+/** The shapes that can be on a cycle of counted references in a program
+ * that makes weak-collection entries: the ones the analysis traces without
+ * the weak-key marks. Each shape answers for itself here: an object holds
+ * what its own class declares, whatever its hierarchy shares a header for.
+ * null for a program without a weak collection, where nothing is asked
+ * twice.
+ *
+ * A shape with the collector header that is not among them has it ONLY
+ * because values are keys of WeakMap or WeakSet entries (or because its
+ * hierarchy or union shares a layout). It reaches no closure, checked
+ * value, promise or mutable type cycle, so none of its objects is on a
+ * cycle of counted references and nothing below one is: the collector can
+ * free nothing by nominating one or by walking into it. The only cycle it
+ * can be on runs through a weak entry (key, entry, value, key), which the
+ * collector does not see by its own rule (the collection traces the value
+ * as its own child); the weak analysis ends it (scr_json.c,
+ * scr_weak_judge) and is the one reader of these types' traces. The
+ * backend therefore gives such a shape a trace function, and everything
+ * else of a type without cycle-capable children (llvm/shapes.ts
+ * ShapeHost.weakOnly). */
+export function computeCyclic(
+  mod: IrModule,
+  stores?: DynamicFieldStores,
+  precomputed?: CycleMutability,
+): ReadonlySet<string> | null {
+  if (mod.weakKeys === undefined) return null;
+  return analyzeCycles(mod, false, stores, precomputed, false).cyclic;
+}
+
 /** Values that can reference any object. */
 export type IntrinsicKind =
   | "func"
@@ -107,8 +136,14 @@ function analyzeCycles(
   labels: boolean,
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
+  /** Whether weak-collection keys are intrinsic (computeCyclic asks for the
+   * answer without them). */
+  weakMarks = true,
 ): {
   shapes: Set<string>;
+  /** The shapes that are traced themselves, before a hierarchy shares the
+   * answer of one member. */
+  cyclic: Set<string>;
   unions: Set<string>;
   explain: (key: string) => CycleExplanation | null;
 } {
@@ -265,7 +300,7 @@ function analyzeCycles(
   }
   // A weak-collection key holds its entry's value. A key of class type can
   // be an instance of any class in the subtree.
-  const weakKeys = weakKeyUnits(mod);
+  const weakKeys = weakMarks ? weakKeyUnits(mod) : null;
   if (weakKeys !== null) {
     const mark = (n: Node | undefined): void => {
       if (n === undefined || n.intrinsic) return;
@@ -433,7 +468,12 @@ function analyzeCycles(
   // Header presence is uniform across a hierarchy: a unit is traced iff any
   // member class is.
   const tracedUnits = new Set<string>();
-  for (const s of shapeDefs) if (shapes.get(s.key)!.traced) tracedUnits.add(s.unit);
+  const cyclic = new Set<string>();
+  for (const s of shapeDefs)
+    if (shapes.get(s.key)!.traced) {
+      tracedUnits.add(s.unit);
+      cyclic.add(s.key);
+    }
   const tracedShapes = new Set(shapeDefs.filter((s) => tracedUnits.has(s.unit)).map((s) => s.key));
   const tracedUnions = new Set([...unions].filter(([, n]) => n.traced).map(([id]) => id));
 
@@ -565,5 +605,5 @@ function analyzeCycles(
     }
     return null;
   };
-  return { shapes: tracedShapes, unions: tracedUnions, explain };
+  return { shapes: tracedShapes, cyclic, unions: tracedUnions, explain };
 }

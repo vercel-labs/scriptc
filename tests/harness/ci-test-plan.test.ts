@@ -186,7 +186,9 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   expect(job.strategy.matrix.include.map((entry) => entry.file).sort()).toEqual(
     [...nativeFrontendFiles].sort(),
   );
-  expect(job.steps.at(-1)!.run).toBe("pnpm test ${{ matrix.file }}");
+  // Two cores: the sanitized build starts one clang per core, and four of them beside the
+  // compile in Node need more than the runner's 16 GB.
+  expect(job.steps.at(-1)!.run).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
   expect(jobs["test"]!.needs).toContain("native_frontend_san");
 });
 

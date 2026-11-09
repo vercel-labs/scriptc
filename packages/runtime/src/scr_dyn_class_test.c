@@ -3,13 +3,13 @@
  * the class's own.
  *
  * The walk asks a question that has an answer for every value, so this read
- * never refuses one. A program class's prototype can only be on the chain of
- * an object, an array or a function whose prototype the program chose, of a
- * record's or an array's capsule (its view's prototype), and of an island
- * object: those keep the chain scr_dyn_get_prototype reads. Every other
- * value has only builtin prototypes on its chain (a promise, typed-array
- * bytes, a native handle such as a Date, a Map, an ArrayBuffer, an iterator
- * or a URL, a generator object, a typed collection's capsule):
+ * never refuses one. It decides which values have a chain a program class's
+ * prototype can be on, and scr_dyn_get_prototype_for_identity (scr_json.c)
+ * reads it: an object, an array or a function whose prototype the program
+ * chose, a record's or an array's capsule (its view's prototype), and an
+ * island object. Every other value has only builtin prototypes on its chain
+ * (typed-array bytes, a native handle such as an ArrayBuffer, an iterator or
+ * a URL, a generator object, a typed collection's capsule):
  * Object.setPrototypeOf refuses each of them, and no program class extends
  * the builtin ones (a class extending Date makes instances of its own). A
  * class instance's capsule is answered by its key before the walk starts,
@@ -35,7 +35,7 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object) {
   case SCR_DYN_OBJ:
   case SCR_DYN_ARR:
   case SCR_DYN_FUNC:
-    return scr_dyn_get_prototype(object);
+    break;
   case SCR_DYN_PROXY: {
     ScrDyn *trap = scr_dyn_obj_read(object->v.proxy.handler, "getPrototypeOf", 14);
     bool none = !trap || trap->kind == SCR_DYN_UNDEF || trap->kind == SCR_DYN_NULL;
@@ -46,13 +46,15 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object) {
     return NULL;
   }
   case SCR_DYN_HANDLE:
-    return scr_ni_dyn_handle(object) ? scr_dyn_get_prototype(object) : scr_dyn_new_null();
+    if (!scr_ni_dyn_handle(object)) return scr_dyn_new_null();
+    break;
   case SCR_DYN_TYPED_REF: {
     const char *key = object->v.typed_ref.type_key;
-    if (!strncmp(key, "record:", 7) || !strncmp(key, "array<", 6)) return scr_dyn_get_prototype(object);
-    return scr_dyn_new_null();
+    if (strncmp(key, "record:", 7) && strncmp(key, "array<", 6)) return scr_dyn_new_null();
+    break;
   }
   default:
     return scr_dyn_new_null();
   }
+  return scr_dyn_get_prototype_for_identity(object);
 }

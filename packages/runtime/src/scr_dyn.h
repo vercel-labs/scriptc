@@ -1447,9 +1447,11 @@ ScrDyn *scr_dyn_obj_create(ScrDyn *prototype);
 ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptors);
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors);
+ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
 /* The prototype read of a class test's walk (scr_dyn_class_test.c, a gated
  * unit): answers for every value, null where no program class's prototype
- * can be on the chain. */
+ * can be on the chain, and scr_dyn_get_prototype_for_identity's answer for
+ * the values that have a chain. */
 ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);

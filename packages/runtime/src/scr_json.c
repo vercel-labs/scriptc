@@ -3144,6 +3144,26 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   return NULL;
 }
 
+/* scr_dyn_get_prototype for a walk that compares each prototype with a
+ * program class's prototype (instanceof against a class value): a native
+ * Date, RegExp, Map, Set, WeakMap or WeakSet, or a promise, has only builtin
+ * prototypes on its chain, and no program class extends these (a class
+ * extending Date makes instances of its own), so the walk ends there with
+ * null. */
+ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
+  if (object->kind == SCR_DYN_PROMISE) return scr_dyn_new_null();
+  if (object->kind == SCR_DYN_HANDLE) {
+    switch (object->v.handle.tag) {
+    case SCR_DYNH_DATE: case SCR_DYNH_REGEXP: case SCR_DYNH_MAP: case SCR_DYNH_SET:
+    case SCR_DYNH_WEAK_MAP: case SCR_DYNH_WEAK_SET:
+      return scr_dyn_new_null();
+    default:
+      break;
+    }
+  }
+  return scr_dyn_get_prototype(object);
+}
+
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   /* A primitive receiver is returned unchanged when the prototype is null or
    * any object or function; nothing is mutated, so the prototype's kind is the

@@ -733,9 +733,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // the undefined arm and validates the kind, as the plain read of a
     // standard stream does (lowerProcessStreamProperty).
     if (ts.isPropertyAccessExpression(node) && isTerminalStreamMember(lowerer, node)) {
-      const declared = lowerer.mapTypeOf(
-        lowerer.checker.getNonNullableType(lowerer.typeOf(node)),
-      );
+      const declared = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(node)));
       if (declared && (declared.kind === "bool" || declared.kind === "f64"))
         return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(declared));
     }

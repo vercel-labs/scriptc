@@ -2997,16 +2997,22 @@ export class ClassDynamicDispatch {
                 (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit"))
             ? expr
             : null;
+        // `dyn.in` is the `in` probe under a key that names a string: its
+        // helper takes the name as it is, like a write under such a key.
+        const namedProbe = expr.kind === "libCall" && expr.fn === "dyn.in";
         const computedProbe =
           expr.kind === "libCall" &&
-          ["dyn.hasKeyComputed", "dyn.hasOwnComputed", "dyn.propertyIsEnumerableComputed"].includes(
-            expr.fn,
-          )
+          (namedProbe ||
+            [
+              "dyn.hasKeyComputed",
+              "dyn.hasOwnComputed",
+              "dyn.propertyIsEnumerableComputed",
+            ].includes(expr.fn))
             ? expr
             : null;
         if (computedRead || computedWrite || computedProbe) {
           const probe = computedProbe
-            ? computedProbe.fn === "dyn.hasKeyComputed"
+            ? computedProbe.fn === "dyn.hasKeyComputed" || namedProbe
               ? "in"
               : computedProbe.fn === "dyn.hasOwnComputed"
                 ? "own"
@@ -3014,7 +3020,7 @@ export class ClassDynamicDispatch {
             : undefined;
           const dynamicKey =
             reflect ||
-            !!computedProbe ||
+            (!!computedProbe && !namedProbe) ||
             computedWrite?.fn === "dyn.keySetComputed" ||
             computedRead?.key.type.kind === "dyn";
           const sourceKey = keyValue(

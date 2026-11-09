@@ -2888,6 +2888,27 @@ export function lowerElementCompoundStatement(
   return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
 }
 
+/** The string a boxed property key names, when its type proves it names
+ * one: a string, or an element of a `string[]` read without a bounds proof
+ * (`keys[i]`, lowered as `string | undefined`). A keyed write or `in` probe
+ * takes it as a string, without boxing it and coercing it back. A missing
+ * element names the property "undefined", as ToPropertyKey spells it, and
+ * the conversion has no effects, so it may run where the key is evaluated.
+ * Null for every other key: it may hold a symbol, which is an identity and
+ * not a name. */
+export function stringPropertyKey(
+  lowerer: Lowerer,
+  boxedKey: IrExpr,
+  node: ts.Expression,
+): IrExpr | null {
+  if (boxedKey.kind !== "dynFrom") return null;
+  const key = boxedKey.value;
+  if (key.type.kind === "string") return key;
+  return lowerer.runtimeOptionalWidening(key.type, STRING) !== null
+    ? lowerer.ensureString(key, node)
+    : null;
+}
+
 /** The reference of a checked member write, evaluated ahead of the value
  * it will take: the receiver and the key are held in temporaries (key
  * coercion waits for PutValue), and `store` writes a checked-dynamic value
@@ -2905,11 +2926,11 @@ export function dynMemberReference(
     : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
   // A key that is a string before boxing is its own property key: the
   // write takes it as a string, without boxing it and coercing it back.
-  const stringKey =
-    ts.isElementAccessExpression(target) &&
-    boxedKey.kind === "dynFrom" &&
-    boxedKey.value.type.kind === "string";
-  const keyValue = stringKey ? boxedKey.value : boxedKey;
+  const namedKey = ts.isElementAccessExpression(target)
+    ? stringPropertyKey(lowerer, boxedKey, target.argumentExpression)
+    : null;
+  const stringKey = namedKey !== null;
+  const keyValue = namedKey ?? boxedKey;
   const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
   return {
     stmts: [

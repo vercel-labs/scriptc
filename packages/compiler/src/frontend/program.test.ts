@@ -6,7 +6,9 @@ import {
   checkModuleOrder,
   checkPreflight,
   cycleEarlyBindings,
+  isFallbackDtsPath,
   isNodeEsmFile,
+  isNodeTypesPath,
   loadProgram,
   makeCycleAdmission,
   moduleEarlyBindings,
@@ -670,6 +672,53 @@ test("asking for the module order first leaves the report and the order as they 
   } finally {
     single.dispose();
     ordered.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a pulled @types/node stands the fallback declarations down", () => {
+  // No tsconfig: the load plans the bundled Node declarations, but a
+  // package's /// <reference types="node" /> resolves the project's
+  // installed @types/node into the program anyway. The two worlds redeclare
+  // every global they share (hundreds of duplicate-identifier errors), so
+  // the fallback roots leave once the real types arrive.
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-node-types-pulled-"),
+  );
+  const typesNode = join(directory, "node_modules/@types/node");
+  const mypkg = join(directory, "node_modules/mypkg");
+  mkdirSync(typesNode, { recursive: true });
+  mkdirSync(mypkg, { recursive: true });
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+  writeFileSync(
+    join(typesNode, "package.json"),
+    '{ "name": "@types/node", "version": "0.0.0", "types": "index.d.ts" }\n',
+  );
+  writeFileSync(
+    join(typesNode, "index.d.ts"),
+    "declare var console: { log(...data: unknown[]): void };\n" +
+      "declare var process: { pid: number };\n",
+  );
+  writeFileSync(
+    join(mypkg, "package.json"),
+    '{ "name": "mypkg", "version": "1.0.0", "types": "index.d.ts", "main": "index.js" }\n',
+  );
+  writeFileSync(
+    join(mypkg, "index.d.ts"),
+    '/// <reference types="node" />\nexport declare function f(): number;\n',
+  );
+  writeFileSync(join(mypkg, "index.js"), "exports.f = () => 1;\n");
+  const entry = join(directory, "main.ts");
+  writeFileSync(entry, 'import { f } from "mypkg";\nconsole.log(f());\n');
+  const load = loadProgram(entry);
+  try {
+    const names = load.program.getSourceFileNames();
+    expect(names.some(isNodeTypesPath)).toBe(true);
+    expect(names.some(isFallbackDtsPath)).toBe(false);
+    expect(load.typeWorld?.nodeFallback).toBe(false);
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
     rmSync(directory, { recursive: true, force: true });
   }
 });

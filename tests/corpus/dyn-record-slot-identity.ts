@@ -85,11 +85,6 @@ const slots: { [name: string]: (src: unknown) => Row } = {
     handler(src);
     return held;
   },
-  "untyped call": (src) => {
-    const holder: { fn: unknown } = { fn: take };
-    (holder.fn as any)(src);
-    return held;
-  },
   "untyped construction": (src) => {
     const made = construct(Keep, src);
     console.log("  the instance keeps it:", made.row === src);

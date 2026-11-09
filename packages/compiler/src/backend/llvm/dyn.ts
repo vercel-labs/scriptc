@@ -251,8 +251,8 @@ export interface DynHost extends WalkerHost {
   /** The module has declaration-typed boundary casts (IrModule.declBoundary). */
   declBoundary?(): boolean;
   /** The program links the adoption unit (RuntimeFeatures declAdopt): a
-   * boxed closure's record or array argument keeps one identity with the
-   * dynamic value it was converted from. */
+   * typed slot's checked conversion keeps one identity with the dynamic
+   * value it was converted from (adoptSharedSource). */
   declAdopt?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
@@ -5965,8 +5965,9 @@ export class LlDyn {
    * becomes a live capsule of `built`, the value converted from it
    * (scr_dyn_adopt_shared; a source that is not plain data keeps the
    * copy). A `borrowed` source is held for the call: the binding it was
-   * read from is a holder its count does not show, as a caller's argument
-   * is in dynFnThunk. Nothing is emitted where the program does not link
+   * read from is a holder its count does not show, and the lenient walk
+   * adopts a node only when something else holds it. Nothing is emitted
+   * where the program does not link
    * the adoption unit (a library) or the type has no live capsule. */
   adoptSharedSource(
     B: BlockBuilder,
@@ -6163,26 +6164,13 @@ export class LlDyn {
           p,
           a,
         );
-        // A record or array argument keeps one identity with the dynamic
-        // value the caller passed, as JavaScript does: the source becomes
-        // a live capsule of the converted value. Declaration-typed
-        // boundary programs adopt strictly (scr_dyn_decl_adopt throws for
-        // a value that cannot become one); every other program adopts
-        // where it can (scr_dyn_adopt_shared).
-        const strict = this.host.declBoundary?.() === true;
-        const adopts = strict || this.host.declAdopt?.() === true;
-        const capsule = adopts ? this.liveToDyn(B, p, a) : null;
+        // Declaration-typed boundary programs: an argument package code
+        // passes keeps its identity (scr_dyn_decl_adopt).
+        const capsule = this.host.declBoundary?.() === true ? this.liveToDyn(B, p, a) : null;
         if (capsule !== null) {
-          const adopt = strict ? "scr_dyn_decl_adopt" : "scr_dyn_adopt_shared";
-          host.declare(`declare void @${adopt}(ptr, ptr)`);
+          host.declare(`declare void @scr_dyn_decl_adopt(ptr, ptr)`);
           host.declare(`declare void @scr_dyn_release(ptr)`);
-          // The thunk borrows its arguments: the caller's reference is a
-          // holder the count does not show, so the lenient walk, which
-          // adopts a node only when something else holds it, sees it held
-          // for the call.
-          const heldArg = strict ? null : this.retainDyn(B, ad);
-          B.line(`call void @${adopt}(ptr ${ad}, ptr ${capsule})`);
-          if (heldArg !== null) B.line(`call void @scr_dyn_release(ptr ${heldArg})`);
+          B.line(`call void @scr_dyn_decl_adopt(ptr ${ad}, ptr ${capsule})`);
           B.line(`call void @scr_dyn_release(ptr ${capsule})`);
           this.pendingBail(
             B,

@@ -975,42 +975,37 @@ describe("runtime feature snapshots", () => {
     });
   });
 
-  test("links the adoption unit only for a boxed function whose thunk adopts an argument", () => {
-    const boxes = (fn: IrType): boolean => {
+  test("links the adoption unit for a typed slot's flagged conversion, not for a boxed function", () => {
+    const names = arrayOf(STRING);
+    const takesNames: IrType = { kind: "func", params: [names], ret: VOID };
+    const links = (flagged: boolean): boolean => {
       const mod = module();
-      mod.functions[0]!.locals.push({ id: "fn", name: "fn", mutable: false, type: fn });
-      mod.functions[0]!.body.push({
-        kind: "exprStmt",
+      mod.functions[0]!.locals.push(
+        { id: "fn", name: "fn", mutable: false, type: takesNames },
+        { id: "source", name: "source", mutable: false, type: DYN },
+      );
+      // A function boxed for untyped code: its thunk converts the caller's
+      // array and keeps the copy, so it does not ask for the unit.
+      const boxed: IrExpr = {
+        kind: "dynFrom",
+        type: DYN,
         loc,
-        expr: {
-          kind: "dynFrom",
-          type: DYN,
-          loc,
-          value: { kind: "varRef", localId: "fn", type: fn, loc },
-        },
-      });
+        value: { kind: "varRef", localId: "fn", type: takesNames, loc },
+      };
+      const check: IrExpr & { kind: "dynCheck" } = {
+        kind: "dynCheck",
+        type: names,
+        loc,
+        value: { kind: "varRef", localId: "source", type: DYN, loc },
+      };
+      if (flagged) check.shared = true;
+      mod.functions[0]!.body.push(
+        { kind: "exprStmt", loc, expr: boxed },
+        { kind: "exprStmt", loc, expr: check },
+      );
       return moduleRuntimeFeatures(mod).declAdopt;
     };
-    const names = arrayOf(STRING);
-    // An array parameter takes the caller's array: the thunk adopts it.
-    expect(boxes({ kind: "func", params: [names], ret: VOID })).toBe(true);
-    expect(boxes({ kind: "func", params: [STRING, names], ret: VOID })).toBe(true);
-    // A typed rest parameter is packed from the caller's tail arguments: no
-    // value of the caller's stands for it, the thunk adopts nothing, and the
-    // unit stays out.
-    expect(boxes({ kind: "func", params: [names], ret: VOID, rest: true, restAbi: "typed" })).toBe(
-      false,
-    );
-    expect(
-      boxes({ kind: "func", params: [names, names], ret: VOID, rest: true, restAbi: "typed" }),
-    ).toBe(true);
-    expect(boxes({ kind: "func", params: [STRING, BOOL], ret: STRING })).toBe(false);
-    // A callback parameter is an untyped function behind a typed wrapper:
-    // typed code boxes the arguments it calls it with, and no thunk stands
-    // for it. A function that callback is called with is boxed again.
-    const callback: IrType = { kind: "func", params: [names], ret: VOID };
-    expect(boxes({ kind: "func", params: [STRING, callback], ret: VOID })).toBe(false);
-    const takesCallback: IrType = { kind: "func", params: [callback], ret: VOID };
-    expect(boxes({ kind: "func", params: [takesCallback], ret: VOID })).toBe(true);
+    expect(links(true)).toBe(true);
+    expect(links(false)).toBe(false);
   });
 });

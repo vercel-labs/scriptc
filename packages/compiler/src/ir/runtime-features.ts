@@ -1,6 +1,5 @@
 import {
   BIGINT_BYTES_NAMES,
-  boxesAsLiveCapsule,
   type IrClassDef,
   type IrExpr,
   type IrFunction,
@@ -919,99 +918,10 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
-/** adoptedParameters' directions: typed code hands the value to untyped
- * code, and untyped code hands it to typed code. */
-const BOXED = 1;
-const CHECKED = 2;
-
-/** The record and array parameter types of the functions that boxing a
- * value of type `t` hands untyped code (the value itself, or a function
- * reached through a record field, an array element, a union arm, another
- * function's parameter or result): each such function's thunk converts the
- * caller's argument, and the argument adopts the converted value
- * (dynFuncThunkHelper), which boxes that parameter type as a live capsule.
- * The list is the thunks' own: a parameter whose type has no live capsule
- * adopts nothing, and neither does a typed rest parameter, which the thunk
- * packs from the caller's tail arguments (no value of the caller's stands
- * for it). The adoption unit is linked for these parameters alone.
- *
- * `way` is the direction the value of type `t` crosses in: BOXED (typed
- * code hands it to untyped code), CHECKED (untyped code hands it to typed
- * code) or both. Only a boxed function has a thunk. A function taken from
- * untyped code is a wrapper around the untyped function: it boxes its
- * arguments and checks its result, so a callback parameter's own
- * parameters adopt nothing. A boxed record, array or union is one object
- * untyped code reads and writes: its members cross both ways, as an
- * adopted parameter's do. */
-function adoptedParameters(
-  t: IrType,
-  tables: TypeTables,
-  seen: Set<string>,
-  out: IrType[],
-  way: number = BOXED,
-): IrType[] {
-  const members = (way & BOXED) !== 0 ? BOXED | CHECKED : way;
-  switch (t.kind) {
-    case "func": {
-      const fixed =
-        t.rest === true && t.restAbi === "typed" ? t.params.length - 1 : t.params.length;
-      t.params.forEach((p, i) => {
-        let parameter = (way & CHECKED) !== 0 ? BOXED : 0;
-        if ((way & BOXED) !== 0) {
-          parameter |= CHECKED;
-          const adopted =
-            i < fixed &&
-            boxesAsLiveCapsule(
-              p,
-              (id) => tables.records.get(id),
-              (id) => tables.unions.get(id),
-            );
-          if (adopted) {
-            out.push(p);
-            parameter |= BOXED;
-          }
-        }
-        adoptedParameters(p, tables, seen, out, parameter);
-      });
-      adoptedParameters(t.ret, tables, seen, out, way);
-      break;
-    }
-    case "array":
-      adoptedParameters(t.elem, tables, seen, out, members);
-      break;
-    case "record": {
-      const key = `${members}:${t.shapeId}`;
-      if (seen.has(key)) break;
-      seen.add(key);
-      for (const field of tables.records.get(t.shapeId)?.fields ?? [])
-        adoptedParameters(field.type, tables, seen, out, members);
-      break;
-    }
-    case "union": {
-      const key = `${members}:${t.unionId}`;
-      if (seen.has(key)) break;
-      seen.add(key);
-      for (const arm of tables.unions.get(t.unionId)?.arms ?? [])
-        adoptedParameters(arm, tables, seen, out, members);
-      break;
-    }
-    default:
-      break;
-  }
-  return out;
-}
-
-/** Whether boxing a value of type `t` hands untyped code a function whose
- * record or array parameter adopts the caller's argument
- * (adoptedParameters). */
-function boxesSharingFunction(t: IrType, tables: TypeTables): boolean {
-  return adoptedParameters(t, tables, new Set(), []).length > 0;
-}
-
 /** The live capsule an adoption boxes a value of type `type` as, for the
  * rules that read what a module boxes: the backend builds it where it
- * emits the adoption (a `dynCheck` with `shared`, dynFnThunk), so no
- * `dynFrom` in the module stands for it. */
+ * emits the adoption (a `dynCheck` with `shared`), so no `dynFrom` in the
+ * module stands for it. */
 function adoptionCapsule(type: IrType, loc: IrExpr["loc"]): IrExpr {
   return {
     kind: "dynFrom",
@@ -1874,15 +1784,13 @@ const RUNTIME_FEATURE_RULES = {
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
   /** Adoption (scr_decl_adopt.c): a dynamic object or array converted to a
    * record or array becomes a live capsule of the converted value. Linked
-   * by the declaration-typed boundary's casts, by every checked conversion
-   * that shares its source, and by a function boxed for untyped code whose
-   * record or array parameter adopts the caller's argument (dynFnThunk). */
+   * by the declaration-typed boundary's casts (and its boxed closures,
+   * which adopt their arguments) and by every checked conversion at a typed
+   * slot that shares its source. */
   declAdopt: rule({
     fns: ["dyn.declAdopt", "dyn.adoptShared"],
     initial: (mod) => mod.declBoundary === true,
-    expr: (node, tables) =>
-      (node.kind === "dynCheck" && node.shared === true) ||
-      (node.kind === "dynFrom" && boxesSharingFunction(node.value.type, tables())),
+    expr: (node) => node.kind === "dynCheck" && node.shared === true,
   }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).
@@ -2667,22 +2575,12 @@ function scanRuntimeFeatures(
     }
     return keepGoing();
   };
-  // The record and union types whose functions' adopted parameters this
-  // scan has already read (adoptedParameters).
-  const adoptedSeen = new Set<string>();
   const expr = (node: IrExpr): boolean => {
     if (!visit(node)) return false;
-    // An adoption boxes the converted value as a live capsule the module
-    // holds no `dynFrom` for: the rules read it as one. A typed slot's
-    // conversion boxes its target; a function boxed outside a declaration
-    // boundary (whose thunks adopt strictly, as before) boxes each record
-    // and array parameter of the functions it hands out.
-    if (node.kind === "dynCheck") {
-      if (node.shared === true) return visit(adoptionCapsule(node.type, node.loc));
-    } else if (node.kind === "dynFrom" && features.declAdopt && mod.declBoundary !== true) {
-      for (const p of adoptedParameters(node.value.type, typeTables(), adoptedSeen, []))
-        if (!visit(adoptionCapsule(p, node.loc))) return false;
-    }
+    // A typed slot's adoption boxes the converted value as a live capsule
+    // the module holds no `dynFrom` for: the rules read it as one.
+    if (node.kind === "dynCheck" && node.shared === true)
+      return visit(adoptionCapsule(node.type, node.loc));
     return true;
   };
   const type = (node: IrType): boolean => {

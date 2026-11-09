@@ -12809,6 +12809,9 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
 }
 
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
+  /* The slots belong to errors that crossed into a checked-dynamic node;
+   * a thread that has none has nothing to update. */
+  if (scr_errdyn_slots == 0) return;
   scr_error_sync_slots(view, view, key);
 }
 
@@ -14307,7 +14310,18 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_dyn_note_assign_failure();
     return;
   }
-  scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+  /* A layout-mode receiver reaches this point only after the lookup at the
+   * top found no own property, and nothing since ran program code: the
+   * member is appended without scanning the layout a second time. A layout
+   * that cannot grow takes the general insertion. */
+  const ScrLayout *next = recv->v.obj.layout
+      ? scr_layout_add(recv->v.obj.layout, key->data, key->len) : NULL;
+  if (next) {
+    scr_dyn_region_store(recv, value);
+    scr_dyn_obj_layout_push(recv, next, scr_dyn_retain(value));
+  } else {
+    scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+  }
   if (key->len == 5 && memcmp(key->data, "stack", 5) == 0 &&
       scr_errdyn_find(recv, false) != SIZE_MAX) {
     /* An error's own `stack` exists from construction as a non-enumerable

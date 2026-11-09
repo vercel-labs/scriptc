@@ -586,12 +586,6 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   ScrStr *s = SCR_JB_STR(b);
   s->len = b->len;
   s->data[b->len] = '\0';
-  /* The block is fresh and uniquely owned, so no index entry exists for it:
-   * one 32-bytes-a-step pass proves the common all-ASCII document, and
-   * .length, indexing and slices of the result then skip the UTF-16 index
-   * (and release skips its purge). A document with any byte above 0x7f
-   * stays "not known". */
-  if (scr_bytes_all_ascii(s->data, s->len)) scr_str_note_ascii(s);
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
   if (s->cap > scr_jb_hint) scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);

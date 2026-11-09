@@ -516,6 +516,9 @@ const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
  * target). Any other helper that receives a dynamic value may store any
  * property, except literal-keyed `dyn.keySet`/`dyn.keyDelete`. */
 const DYN_READ_ONLY = new Set<IrLibFn>([
+  // enterWith keeps the store's value in a new context table and drops the
+  // table it replaces.
+  "als.enterWith",
   "arrayBuffer.new",
   "arrayBuffer.viewF16",
   "arrayBuffer.viewF32",
@@ -527,10 +530,18 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "arrayBuffer.viewU32",
   "arrayBuffer.viewU8",
   "arrayBuffer.viewU8C",
+  // A DataView over a buffer: the buffer is checked, the offset and the
+  // length are converted with dyn.toNumberCoerce's helper.
+  "arrayBuffer.viewDV",
   "date.nativeNew",
   "date.nativeNewFields",
   "date.nativeNewValue",
   "date.argumentsTime",
+  // `await` of a checked value (scr_await_dyn_value and its coroutine and
+  // WASI forms): a promise is awaited and its payload read; any other value
+  // takes one microtask turn and comes back as it is. No `then` is looked
+  // up and nothing is stored.
+  "async.awaitDyn",
   // The dynamic operators run the ToPrimitive and coercion helpers of
   // dyn.compare, dyn.numberConstructor and dyn.toStringCoerce, then build a
   // fresh number, string or bigint. dyn.increment steps dyn.toNumeric's result.
@@ -551,12 +562,24 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",
+  // A property's descriptor is a fresh object built from a lookup: of an
+  // instance's view, of a function's table, of an object's entry, or the
+  // answer of a proxy's trap.
+  "dyn.getOwnPropertyDescriptor",
   "dyn.getOwnPropertyNames",
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.hasKey",
+  // The computed forms convert the key with dyn.toStringCoerce's helpers
+  // and then run dyn.in or dyn.hasOwn; a symbol key is looked up in the
+  // value's view or asked of its island.
+  "dyn.hasKeyComputed",
   "dyn.hasOwn",
+  "dyn.hasOwnComputed",
   "dyn.in",
+  // Object.isFrozen reads the integrity flags of a value, of an instance's
+  // view or of a handle's property table.
+  "dyn.isFrozen",
   "dyn.increment",
   "dyn.negate",
   "dyn.iterator",
@@ -575,10 +598,19 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.objKeyStrings",
   "dyn.objKeys",
   "dyn.objValues",
+  // Object.values consumed as a native list: a record's or a data-only
+  // object's values are read in place, anything else through dyn.objValues.
+  "dyn.objValueList",
+  // `instanceof` a built-in error class: a lookup of the value among the
+  // error views and a comparison of two class ranges.
+  "dyn.errInstanceof",
   "dyn.objectTag",
   "dyn.ownKeys",
   "dyn.packPush",
   "dyn.packPushSpread",
+  // Object.is: a comparison of two numbers, or dyn.compare's strict
+  // equality.
+  "dyn.sameValue",
   "dyn.stringConstructor",
   "dyn.this",
   "dyn.toNumberCoerce",
@@ -654,10 +686,38 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "record.linkIs",
   "record.linkSource",
   "record.sourceShare",
+  // String replace with a replacement value: a function is called with
+  // fresh strings, numbers and a fresh groups object, and its result is
+  // converted with dyn.toStringCoerce's helpers; any other value is
+  // converted the same way and used as the template.
+  "regex.replaceCallback",
   "sharedArrayBuffer.new",
   "text.decodeStream",
+  // A weak collection's constructor reads its seed with the helpers of
+  // dyn.mapSeedEntries, dyn.mapSeedEntry and dyn.arrAt, and keeps the
+  // identity of each key in its table: it stores no property into a key or
+  // a value.
+  "weakMap.new",
+  "weakSet.new",
   "worker.new",
 ]);
+/** Runtime helpers that do nothing with their dynamic arguments but call
+ * one of them, at the argument position given, with the others: the call is
+ * a store only if the callee stores. A callee that is a function of this
+ * module is walked like every other function, so its stores are counted
+ * where they are written. */
+const DYN_CALLS_ARGUMENT = new Map<IrLibFn, number>([
+  // AsyncLocalStorage's run and exit: the store's value is kept in a
+  // context table for the duration of the call.
+  ["als.run", 2],
+  ["als.exitRun", 1],
+]);
+/** Whether a callee handed to a runtime helper is a function of this module
+ * boxed where it is written. An adapter closure holds a boxed function of
+ * unknown origin, and any other expression can hold a built-in or a
+ * function of an island. */
+const compiledCallee = (callee: IrExpr | undefined): boolean =>
+  callee?.kind === "dynFrom" && callee.value.kind === "closure" && callee.value.adapts !== true;
 /** The node kinds each walk below reads. */
 const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
 const CALL_FACT_KINDS: readonly IrNodeKind[] = [
@@ -789,6 +849,7 @@ export function dynamicFieldStores(
         if (
           e.kind === "libCall" &&
           !DYN_READ_ONLY.has(e.fn) &&
+          !compiledCallee(e.args[DYN_CALLS_ARGUMENT.get(e.fn) ?? -1]) &&
           e.args.some((a) => dynish(a.type))
         ) {
           const key = e.args[1];
@@ -827,6 +888,32 @@ export function dynamicallyStoredFamilies(
   const families = new Set<string>();
   // Without a field some store can name, no class is worth exposing.
   if (!(mod.classes ?? []).some((cls) => cls.fields.some(storable))) return families;
+  const exposed = dynamicallyExposedClasses(mod, records, unions);
+  for (const cls of mod.classes ?? []) {
+    if (!exposed.all && !exposed.classes.has(cls.name)) continue;
+    for (const field of cls.fields)
+      if (storable(field)) families.add(slots.family(cls.name, field.name)!);
+  }
+  return families;
+}
+
+/** The classes whose instances can reach checked-dynamic code, where a live
+ * dyn view (typed-ref capsule) of the instance can be stored into: the
+ * operands and results of boundary expressions, conversions into dynamic
+ * values, thrown values, and everything reachable from those through fields,
+ * subclasses, records, unions and containers. `all` when a module namespace
+ * is exposed. An instance of any other class never has a view, so no runtime
+ * store reaches its fields. */
+export interface DynamicallyExposedClasses {
+  all: boolean;
+  classes: Set<string>;
+}
+
+export function dynamicallyExposedClasses(
+  mod: IrModule,
+  records = new Map((mod.records ?? []).map((r) => [r.id, r])),
+  unions = new Map((mod.unions ?? []).map((u) => [u.id, u])),
+): DynamicallyExposedClasses {
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const children = new Map<string, string[]>();
   for (const cls of classes.values())
@@ -910,12 +997,7 @@ export function dynamicallyStoredFamilies(
         if (s.kind === "throw") expose(s.value.type);
       },
     });
-  for (const cls of classes.values()) {
-    if (!exposeAll && !exposedClasses.has(cls.name)) continue;
-    for (const field of cls.fields)
-      if (storable(field)) families.add(slots.family(cls.name, field.name)!);
-  }
-  return families;
+  return { all: exposeAll, classes: exposedClasses };
 }
 
 /** How functions can be reached besides direct calls: as values (closures,

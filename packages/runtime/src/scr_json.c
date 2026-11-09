@@ -4347,9 +4347,12 @@ static SCR_TL size_t scr_record_link_count;
 
 static void scr_dispose_observed(void *object);
 
-/* Emitted frees call the hook for every object; most have no observer, so
- * the hook itself is only the filter test and the observers are out of
- * line. */
+/* Emitted frees call the hook for every object the program frees, and
+ * nearly all of them have no observer. The one test that says so is the
+ * shared filter's (scr_rc.h), which every observer's table notes its keys
+ * in: it stays in this leaf, which keeps no register and builds no frame,
+ * and the observers are out of line. The runtime's own frees make the same
+ * test before the call (scr_weak_dispose_inline). */
 static void scr_dispose_observers(void *object) {
   if (scr_dispose_maybe_observed(object)) scr_dispose_observed(object);
 }

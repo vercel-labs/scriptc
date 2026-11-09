@@ -3428,7 +3428,64 @@ ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts) {
   return out;
 }
 
+/* replace / replaceAll of one byte by plain text. A one-byte needle is an
+ * ASCII character, and `hit` is its first match. The matches are counted
+ * first, so the result is allocated once at its exact size. Declines
+ * (NULL) a replacement that expands `$` or that could complete a surrogate
+ * pair at a seam (an empty one, or one with a lone surrogate at either
+ * end): scr_str_replace_bytes keeps those. */
+static ScrStr *scr_str_replace_byte(ScrStr *s, const char *hit, char c, ScrStr *rep, bool all) {
+  size_t rl = rep->len;
+  if (rl == 0 || (unsigned char)rep->data[0] == 0xED ||
+      (rl >= 3 && (unsigned char)rep->data[rl - 3] == 0xED) || memchr(rep->data, '$', rl) != NULL)
+    return NULL;
+  const char *end = s->data + s->len;
+  size_t count = 1;
+  if (all)
+    for (const char *p = hit + 1; (p = memchr(p, c, (size_t)(end - p))) != NULL; p++) count++;
+  if (count > (SCR_STR_MAX_CAP - s->len) / rl) scr_oom();
+  size_t len = s->len - count + count * rl;
+  ScrStr *out = scr_str_alloc_raw(len, len);
+  char *to = out->data;
+  const char *from = s->data;
+  for (size_t k = 0;;) {
+    size_t gap = (size_t)(hit - from);
+    scr_copy_bytes(to, from, gap);
+    to += gap;
+    scr_copy_bytes(to, rep->data, rl);
+    to += rl;
+    from = hit + 1;
+    if (++k == count) break;
+    hit = memchr(from, c, (size_t)(end - from));
+  }
+  scr_copy_bytes(to, from, (size_t)(end - from));
+  out->len = len;
+  /* A spare block may be far larger than the result (as in
+   * scr_str_replace_bytes). */
+  if (out->cap - len > len / 4 + 64) out = scr_str_regrow(out, len);
+  out->data[len] = '\0';
+  scr_str_hash_forget(out);
+  if (s->ascii && rep->ascii) scr_str_note_ascii(out);
+  return out;
+}
+
+static __attribute__((noinline)) ScrStr *scr_str_replace_literal_long(ScrStr *s, ScrStr *search,
+                                                                      ScrStr *rep, bool all);
+
+/* A one-character search value takes one memchr; a subject without it is
+ * returned as it is, with no allocation. */
 ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all) {
+  if (search->len == 1) {
+    const char *hit = memchr(s->data, search->data[0], s->len);
+    if (!hit) return scr_str_retain(s);
+    ScrStr *out = scr_str_replace_byte(s, hit, search->data[0], rep, all);
+    if (out) return out;
+  }
+  return scr_str_replace_literal_long(s, search, rep, all);
+}
+
+static __attribute__((noinline)) ScrStr *scr_str_replace_literal_long(ScrStr *s, ScrStr *search,
+                                                                      ScrStr *rep, bool all) {
   if (search->len) return scr_str_replace_bytes(s, search->data, search->len, rep, all);
   ScrJsonBuf b;
   scr_jb_init(&b);

@@ -107,6 +107,7 @@ const features = {
   webcrypto: false,
   perfLoop: false,
   nativeFetch: false,
+  dynPromiseKeys: false,
   abortSignalOnly: false,
   netEffective: false,
   httpEffective: false,

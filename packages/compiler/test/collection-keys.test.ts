@@ -34,7 +34,10 @@ const references: IrType[] = [
 ];
 const union: IrType = { kind: "union", unionId: "keys" };
 
-test("checked collection slots refuse snapshot and adapting reference conversions", () => {
+test("checked collection slots refuse snapshot conversions and take a promise", () => {
+  // An Error crosses as a snapshot of its fields, which is no live
+  // reference. A promise crosses as an adapter that shares its identity,
+  // which a checked collection hashes and compares (scr_dyn_identity).
   const dir = mkdtempSync(join(tmpdir(), "scriptc-collection-conversion-"));
   try {
     const entry = join(dir, "main.ts");
@@ -56,10 +59,10 @@ test("checked collection slots refuse snapshot and adapting reference conversion
     );
     const { coverage } = analyze(entry, {});
     expect(coverage.preflightFailed).toBe(false);
-    expect(coverage.diagnostics).toHaveLength(6);
+    expect(coverage.diagnostics).toHaveLength(3);
     for (const diagnostic of coverage.diagnostics) {
       expect(diagnostic.message).toContain(
-        "collection slot conversion requiring an Error snapshot or promise adapter",
+        "collection slot conversion requiring an Error snapshot",
       );
     }
   } finally {

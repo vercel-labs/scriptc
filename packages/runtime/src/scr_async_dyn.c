@@ -829,8 +829,50 @@ static void scr_dyn_finally_drop(void *ctx) {
 static const ScrPromiseReaction scr_dyn_finally_reaction = { scr_dyn_finally_react,
                                                              scr_dyn_finally_drop };
 
+void (*scr_dyn_reaction_spawn)(void (*entry)(ScrFiber *, void *), void *argpack) = NULL;
+
+static void scr_dyn_then_steps(ScrDynThenPack *a, ScrPromise *src);
+static void scr_dyn_then_drop(void *ctx);
+
+/* The steps on a fiber of their own (scr_dyn_reaction_spawn): the fiber
+ * holds the source and a context of its own, because the reaction's
+ * context goes with the reaction when its job returns, and the handler may
+ * still be waiting then. */
+typedef struct {
+  ScrDynThenPack *pack; /* owned */
+  ScrPromise *src;      /* owned */
+} ScrDynThenFiber;
+
+static void scr_dyn_then_fiber_entry(ScrFiber *self, void *argpack) {
+  (void)self;
+  ScrDynThenFiber *job = argpack;
+  scr_dyn_then_steps(job->pack, job->src);
+  scr_dyn_then_drop(job->pack);
+  scr_promise_release(job->src);
+  free(job);
+}
+
 static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
   ScrDynThenPack *a = ctx;
+  if (scr_dyn_reaction_spawn != NULL) {
+    ScrDynThenFiber *job = malloc(sizeof *job);
+    ScrDynThenPack *own = malloc(sizeof *own);
+    if (!job || !own) scr_ad_oom();
+    own->dst = scr_promise_retain(a->dst);
+    own->onf = a->onf ? scr_dyn_retain(a->onf) : NULL;
+    own->onr = a->onr ? scr_dyn_retain(a->onr) : NULL;
+    own->onfin = a->onfin ? scr_dyn_retain(a->onfin) : NULL;
+    own->als = a->als ? scr_als_ctx_retain(a->als) : NULL;
+    SCR_DYN_PENDING_LINK(own);
+    job->pack = own;
+    job->src = scr_promise_retain(src);
+    scr_dyn_reaction_spawn(scr_dyn_then_fiber_entry, job);
+    return;
+  }
+  scr_dyn_then_steps(a, src);
+}
+
+static void scr_dyn_then_steps(ScrDynThenPack *a, ScrPromise *src) {
   scr_promise_settled_now(src); /* observes; a rejection re-throws */
   bool rejected = scr_exc_pending();
   ScrCaught *c = rejected ? scr_exc_take() : NULL;

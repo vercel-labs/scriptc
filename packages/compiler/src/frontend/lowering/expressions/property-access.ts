@@ -127,6 +127,7 @@ import {
   matchAllRegexOf,
   namedCaptureGroupsOfPattern,
   primitiveCtorClosure,
+  primitiveCtorValue,
   recordKeyResultOk,
   representedClassFieldTarget,
   staticRegexPatternOf,
@@ -237,7 +238,7 @@ import {
 import {
   createRequireResolveFenceValue,
   createRequireResolveValue,
-  fenceHeldLoaderMember,
+  heldLoaderMemberThrow,
 } from "../builtins/module-resolution.js";
 import {
   builtinMethodValue,
@@ -270,6 +271,7 @@ import { keyedFieldRead } from "./keyed-field-targets.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
+import { builtinConstructorNames } from "../held-constructors.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -460,6 +462,15 @@ function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessEx
   );
 }
 
+/** Whether `node` is an identifier that names a declaration of the standard
+ * library (the global `String`), not a binding of the program. */
+function namesStdlibGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const raw = lowerer.checker.getSymbolAtLocation(node);
+  const sym = raw && raw.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(raw) : raw;
+  return sym !== undefined && lowerer.isStdlibSymbol(sym);
+}
+
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -470,7 +481,21 @@ export function lowerPropertyAccessExpr(
   // decides: the receiver may be a checked-dynamic value.
   if (MUTABLE_BUFFER_MEMBERS.has(expr.name.text) && isJsSourceFile(ts.getSourceFileOfNode(expr)))
     lowerer.buffersMutable = true;
-  fenceHeldLoaderMember(lowerer, expr);
+  // The prototype of a held primitive constructor stays refused by name in
+  // the pass that holds constructors untyped, as it is in the typed form (a
+  // TypeScript source; JavaScript reads it from the untyped value). The
+  // constructor's own name (`String.prototype`) is not a held value: a
+  // binding that holds one (`const held = pick(String)`) is.
+  if (
+    lowerer.untypedConstructors &&
+    expr.name.text === "prototype" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !namesStdlibGlobal(lowerer, expr.expression) &&
+    builtinConstructorNames(lowerer, expr.expression) !== null
+  )
+    lowerer.noLowering("the prototype of a held built-in constructor", expr);
+  const heldLoaderMember = heldLoaderMemberThrow(lowerer, expr);
+  if (heldLoaderMember !== null) return heldLoaderMember;
   const arrayClassConstructor = lowerArrayClassConstructorRead(lowerer, expr, loc);
   if (arrayClassConstructor !== null) return arrayClassConstructor;
   // `x.constructor`, `x.constructor.name` and a static read through
@@ -1549,7 +1574,12 @@ export function lowerPropertyAccessExpr(
       expr.name.text === "length" ||
       expr.name.text === "constructor")
   ) {
-    const probed = tryLowerExpression(lowerer, expr.expression);
+    const probed = presentFunctionEntry(
+      lowerer,
+      tryLowerExpression(lowerer, expr.expression),
+      expr.name.text,
+      locOf(expr),
+    );
     // A builtin function value's own name and length are fixed when the
     // adapter is built: answer them without boxing the closure. Node's
     // wrapper names (`process.cwd` is `wrappedCwd`) and lengths that
@@ -1618,6 +1648,10 @@ export function lowerPropertyAccessExpr(
       // keeps its length when that is not its adapter's parameter count
       // (`Math.max.length` is 2).
       const builtinName = builtinValueNameOf(expr.expression, lowerer);
+      // The static name is the one the source proves (jsFuncNameOf): a
+      // member or a parameter holds whatever function was stored in it
+      // (`column.parse.name` is "String"), and the box then takes the
+      // function's own name.
       const fnName = builtinName ?? jsFuncNameOf(expr.expression, lowerer);
       const identity = lowerer.builtinFunctionIdentity(probed);
       const fnLength = identity.fnLength;
@@ -2217,6 +2251,59 @@ export function lowerPropertyAccessExpr(
   );
 }
 
+/** The receiver of a `name` or `length` read that is a record entry read in
+ * place (`columns[key].name`, `columns.id.length` over a record whose
+ * values are functions): the read answers the entry or undefined, so its
+ * type is the function beside an undefined arm. The member read is of the
+ * entry: a present one is that function, and a missing one throws Node's
+ * TypeError for a property read of undefined. Any other receiver is
+ * answered as it is. */
+function presentFunctionEntry(
+  lowerer: Lowerer,
+  receiver: IrExpr | null,
+  member: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (receiver === null || receiver.type.kind !== "union") return receiver;
+  if (member !== "name" && member !== "length") return receiver;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  const functionTag = arms.findIndex((arm) => arm.kind === "func");
+  const undefinedTag = arms.findIndex((arm) => arm.kind === "undefinedT");
+  if (arms.length !== 2 || functionTag < 0 || undefinedTag < 0) return receiver;
+  const entry = arms[functionTag]!;
+  const held = lowerer.declareHiddenLocal("%entry", receiver.type);
+  const value: IrExpr = { kind: "varRef", localId: held.id, type: receiver.type, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: held.id, init: receiver, loc }],
+    result: {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId,
+        tag: undefinedTag,
+        negated: false,
+        value,
+        type: BOOL,
+        loc,
+      },
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot read properties of undefined (reading '${member}')`,
+        entry,
+        loc,
+      ),
+      else_: { kind: "unionNarrow", unionId, tag: functionTag, value, type: entry, loc },
+      type: entry,
+      loc,
+    },
+    type: entry,
+    loc,
+  };
+}
+
 /** `result` after evaluating `receiver` for its effects (none to keep when
  * the read is safe to discard). */
 function afterReceiver(receiver: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
@@ -2628,12 +2715,7 @@ export function lowerIntrinsicProperty(
     | "BigInt"
   )[]) {
     if (!lowerer.chainBlocked(expr) && lowerer.isStdlibGlobal(expr, name)) {
-      return primitiveCtorClosure(
-        lowerer,
-        name,
-        locOf(expr),
-        isJsSourceFile(ts.getSourceFileOfNode(expr)),
-      );
+      return primitiveCtorValue(lowerer, name, locOf(expr));
     }
   }
   // A Reflect member read as a value (a callback table's `Reflect.has`): the
@@ -6708,7 +6790,7 @@ export function primitiveConstructorOr(
       cond: { kind: "dynTest", test, value, type: BOOL, loc },
       then: {
         kind: "dynFrom",
-        value: primitiveCtorClosure(lowerer, name, loc, true),
+        value: primitiveCtorClosure(lowerer, name, loc),
         type: DYN,
         loc,
       },
@@ -6994,7 +7076,7 @@ function jsPrimitivePrototypeValue(
         {
           kind: "libCall",
           fn: "wrapper.booleanPrototype",
-          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN)],
+          args: [lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc), DYN)],
           type: DYN,
           loc,
         }
@@ -7006,7 +7088,7 @@ function jsPrimitivePrototypeValue(
             // The compiled constructor value the prototype belongs to: the
             // unit answers it as the constructor's `prototype` member, so
             // `Object(1).constructor.prototype === Number.prototype`.
-            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc, true), DYN),
+            lowerer.coerceToExpected(primitiveCtorClosure(lowerer, kind, loc), DYN),
           ],
           type: DYN,
           loc,

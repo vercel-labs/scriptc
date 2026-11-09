@@ -132,6 +132,30 @@ interface PromiseConstructor {
   };
 }
 
+/* process.stdout and process.stderr have the color methods only while the
+ * descriptor is a terminal: a piped or redirected stream is a socket or a
+ * file stream without them, so `out.getColorDepth?.(env)` is undefined
+ * there. The declarations call the methods required; here they are what
+ * they are, optional, so the optional call's type admits undefined. A plain
+ * call still resolves; the project's own type world decides whether it is
+ * an error. The first block is for the fallback declarations
+ * (__scriptcTerminalStream there), the second for @types/node, whose
+ * process streams are NodeJS.WriteStream. getWindowSize stays as declared:
+ * an optional pair has no compiled form yet. */
+declare namespace __scriptcTerminalStream {
+  interface World {
+    lowering: true;
+  }
+}
+declare namespace NodeJS {
+  interface WriteStream {
+    getColorDepth?(env?: object): number;
+    hasColors?(count?: number): boolean;
+    hasColors?(env?: object): boolean;
+    hasColors?(count: number, env?: object): boolean;
+  }
+}
+
 /* Carriers of the types the lowerer gives untyped JavaScript collections
  * whose uses prove them (js-collection-types.ts). Nothing reads them at run
  * time. */

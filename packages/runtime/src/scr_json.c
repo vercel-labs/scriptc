@@ -21576,6 +21576,10 @@ typedef struct ScrWeakMap ScrWeakMap;
 typedef struct ScrWeakEntry {
   void *key; /* borrowed native identity, never retained */
   unsigned kind;
+  /* SCR_WEAK_* bits (see "entries whose value keeps their key alive"); in a
+   * hold of scr_weak_promise_cells, a count that analysis keeps instead. On
+   * 64-bit targets the word fills what was padding. */
+  uint32_t mark;
   ScrDyn *value;
   ScrWeakMap *owner;
   /* The owner's entries, and every collection's entries for the same key
@@ -21583,6 +21587,8 @@ typedef struct ScrWeakEntry {
    * either list in constant time. */
   struct ScrWeakEntry *next, *prev, *key_next, *key_prev;
 } ScrWeakEntry;
+_Static_assert(sizeof(void *) != 8 || (sizeof(ScrWeakEntry) == 64 && offsetof(ScrWeakEntry, value) == 16),
+               "on 64-bit targets the mark fills the padding after the kind");
 
 struct ScrWeakMap {
   size_t rc; ScrWeakEntry *entries; bool is_set;
@@ -21592,8 +21598,23 @@ struct ScrWeakMap {
    * scr_node_island_gc.c, reached through ScrNiDynOps. */
   ScrDyn *island;
 };
-/* Weak observers borrow key identities. Values are traced strong edges;
- * value-to-key cycles require explicit deletion or container disposal.
+/* The analysis can tell whether the entry's key is alive: the key pointer is
+ * an object the collector walks. */
+#define SCR_WEAK_JUDGED UINT32_C(0x40000000)
+/* ...and was a native referent (kind 32) when the entry was made. An entry
+ * can change its key afterwards: scr_dyn_decl_rekey moves the entries of a
+ * checked-dynamic node to the native value built from it, which need not
+ * have a header. Such an entry has kind 32 without this bit, and counts as
+ * unjudged from then on. */
+#define SCR_WEAK_NATIVE UINT32_C(0x10000000)
+/* The analysis in flight took the count of the entry's value: the value is
+ * not its collection's child until the analysis ends. */
+#define SCR_WEAK_HELD UINT32_C(0x80000000)
+/* ...and has not decided yet that the entry is alive. */
+#define SCR_WEAK_PENDING UINT32_C(0x20000000)
+/* Weak observers borrow key identities. Values are traced strong edges of
+ * their collection; an entry whose value keeps its own key alive is ended by
+ * scr_weak_judge ("entries whose value keeps their key alive").
  *
  * Two open-addressing indexes per thread find entries in expected constant
  * time: scr_weak_index by (collection, key, kind), for get/set/has/delete,
@@ -21769,8 +21790,11 @@ static void scr_weak_remove(ScrWeakEntry *entry) {
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  /* A value whose count the analysis took is not this collection's child
+   * while the analysis runs: its walks must see the same children each
+   * time they trace the collection, whatever was decided in between. */
   for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
-    visit(entry->value, ctx);
+    if (!(entry->mark & SCR_WEAK_HELD)) visit(entry->value, ctx);
   if (((ScrWeakMap *)ptr)->island) visit(((ScrWeakMap *)ptr)->island, ctx);
 }
 
@@ -21947,8 +21971,339 @@ static void scr_weak_promise_hold(ScrDyn *key, ScrPromiseIdentity *identity) {
   }
 }
 
+/* ── entries whose value keeps their key alive ────────────────────────
+ * A weak collection holds a value for as long as the collection and the
+ * entry's key are both alive, and a key that only its own value reaches is
+ * not alive: `labels.set(crate, {owner: crate})` must not keep the crate.
+ * Reference counts cannot see that. The entry holds the value, the value
+ * holds the key, and the key's death is what ends the entry, so the three
+ * would last until the collection goes. The collector cannot see it either:
+ * the collection traces the value as its own child, and the collection is
+ * alive.
+ *
+ * scr_weak_judge finds those entries by trial deletion over what the values
+ * reach, and ends them the way `delete` does. It frees nothing itself:
+ *   suspend   every entry gives up its value's count, and its collection
+ *             stops tracing the value (SCR_WEAK_HELD) until the end;
+ *   gray      from each such value, every reference a reached object holds
+ *             is taken off its target's count, as the collector's markGray
+ *             does: an object left above zero is referenced from outside
+ *             what the values reach;
+ *   restore   from each object referenced from outside, the counts are
+ *             given back and the objects are black again. An entry whose
+ *             key and collection are both black (never reached, or
+ *             restored) is alive: its value gets its count back and is
+ *             restored in turn, which can make further keys and collections
+ *             black. Each object that turns black looks up the entries it
+ *             is the key or the collection of (scr_weak_reached), so the
+ *             whole step is linear in the objects and entries, whatever
+ *             order the entries depend on each other in;
+ *   end       an entry still pending has a key or a collection that nothing
+ *             outside the pending values reaches. Every count is given back,
+ *             so the heap is exactly what it was, and then those entries
+ *             are unlinked and their values released. Whatever only they
+ *             held goes by reference counting; what is left on a cycle of
+ *             its own is a candidate of the collector's next pass.
+ * A mistake here can end an entry too late, never free a live object: the
+ * only thing the analysis releases is the value of an entry it unlinked.
+ *
+ * A key is judged when its pointer is an object with a collector header: a
+ * checked-dynamic object, a function, a collection handle, a typed reference
+ * whose referent is traced (SCR_WEAK_JUDGED, decided when the entry is
+ * made). Other keys count as alive, as before. A promise key is an identity
+ * cell, which several promises share: it is alive while one of them is, and
+ * the hold of the cell counts the ones the walk reached and has not restored.
+ *
+ * It runs when an entry is made and before a collector pass
+ * (scr_cyc_pass_hook), once the collector's heap has grown a quarter since
+ * the last time (or since it was last smaller than that), or
+ * SCR_WEAK_JUDGE_FLOOR objects. The passes alone would not do: the collector
+ * finds nothing to free in such entries, so it spaces its passes out. An entry kept this way grows that heap by at least its value, so
+ * such entries cannot pile up beyond that. A run that ends less than a
+ * quarter of what the heap grew by doubles the fraction, up to the size of
+ * the heap, and a productive one narrows it again: runs that find nothing
+ * then walk what the values reach once per doubling of the heap, and
+ * entries that should have ended never outweigh the rest of the heap. */
+#define SCR_WEAK_JUDGE_FLOOR 4096
+#define SCR_WEAK_JUDGE_MAX_SHIFT 2
+typedef struct { void **v; size_t n, cap; } ScrWeakVec;
+/* The objects the walk grayed, and the walk's stack. */
+static SCR_TL ScrWeakVec scr_weak_grayed, scr_weak_work;
+static SCR_TL bool scr_weak_judging;
+static SCR_TL size_t scr_weak_judged_live;
+static SCR_TL unsigned char scr_weak_judge_shift;
+
+static void scr_weak_vec_push(ScrWeakVec *vec, void *item) {
+  if (vec->n == vec->cap) {
+    size_t cap = vec->cap ? vec->cap * 2 : 256;
+    void **grown = cap > SIZE_MAX / sizeof *grown ? NULL : realloc(vec->v, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    vec->v = grown;
+    vec->cap = cap;
+  }
+  vec->v[vec->n++] = item;
+}
+
+static void scr_weak_vec_free(ScrWeakVec *vec) {
+  free(vec->v);
+  *vec = (ScrWeakVec){0};
+}
+
+/* Whether scr_weak_judge can tell that the key of a new entry is alive. */
+static bool scr_weak_key_judged(const ScrDyn *key, void *ptr, unsigned kind) {
+  bool headered;
+  switch (kind) {
+  case 0: headered = true; break; /* the checked-dynamic node itself */
+  case 2: headered = true; break; /* a closure */
+  case 32: headered = key->kind == SCR_DYN_TYPED_REF && key->v.typed_ref.traced; break;
+  default:
+    headered = kind >= 4 && kind != SCR_WEAK_PROMISE_KIND && key->kind == SCR_DYN_HANDLE &&
+               key->v.handle.traced;
+  }
+  /* A static has no header in front of it. */
+  return headered && ptr && SCR_RC_COUNT(ptr) != SCR_RC_IMMORTAL;
+}
+
+/* The hold of the identity cell of promise `obj`, when the cell is a key. */
+static ScrWeakEntry *scr_weak_promise_hold_of(void *obj) {
+  ScrPromiseIdentity *identity = ((ScrPromiseHead *)obj)->identity;
+  if (!identity || !scr_weak_promise_cells || !scr_weak_maybe_key(identity)) return NULL;
+  return scr_weak_find(scr_weak_promise_cells, identity, SCR_WEAK_PROMISE_KIND);
+}
+
+static inline bool scr_weak_black(void *obj) {
+  return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
+}
+
+static bool scr_weak_key_alive(const ScrWeakEntry *entry) {
+  if (entry->kind == SCR_WEAK_PROMISE_KIND) {
+    ScrWeakEntry *hold = scr_weak_promise_cells
+        ? scr_weak_find(scr_weak_promise_cells, entry->key, SCR_WEAK_PROMISE_KIND) : NULL;
+    /* One count of the cell is the hold's; the others are its promises'. */
+    return !hold || ((ScrPromiseIdentity *)entry->key)->rc - 1 > hold->mark;
+  }
+  /* Judged, and still keyed by the kind of object it was judged for. */
+  bool judged = (entry->mark & SCR_WEAK_JUDGED) &&
+                (entry->kind == 32) == ((entry->mark & SCR_WEAK_NATIVE) != 0);
+  return !judged || scr_weak_black(entry->key);
+}
+
+static void scr_weak_gray_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC_COUNT(child) == SCR_RC_IMMORTAL) return;
+  SCR_RC_COUNT(child) -= 1;
+  ScrCycHdr *header = scr_cyc_hdr(child);
+  if (scr_cyc_color(header) != SCR_CYC_BLACK) return;
+  scr_cyc_set_color(header, SCR_CYC_GRAY);
+  scr_weak_vec_push(&scr_weak_grayed, child);
+  scr_weak_vec_push(&scr_weak_work, child);
+}
+
+/* A grayed object turns black; scr_weak_restore_all gives back what it
+ * holds. */
+static void scr_weak_restore(void *obj) {
+  scr_cyc_set_color(scr_cyc_hdr(obj), SCR_CYC_BLACK);
+  scr_weak_vec_push(&scr_weak_work, obj);
+}
+
+static void scr_weak_black_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC_COUNT(child) == SCR_RC_IMMORTAL) return;
+  SCR_RC_COUNT(child) += 1;
+  if (scr_cyc_color(scr_cyc_hdr(child)) == SCR_CYC_GRAY) scr_weak_restore(child);
+}
+
+/* A pending entry is alive: its value has its count again. */
+static void scr_weak_keep(ScrWeakEntry *entry) {
+  entry->mark &= ~SCR_WEAK_PENDING;
+  SCR_RC_COUNT(entry->value) += 1;
+  if (scr_cyc_color(scr_cyc_hdr(entry->value)) == SCR_CYC_GRAY) scr_weak_restore(entry->value);
+}
+
+/* The pending entries keyed by `key` whose collection is alive are alive. */
+static void scr_weak_keep_keyed(const void *key) {
+  ScrWeakKeySlot *slot = scr_weak_key_slot(key);
+  for (ScrWeakEntry *entry = slot ? slot->head : NULL; entry; entry = entry->key_next)
+    if ((entry->mark & SCR_WEAK_PENDING) && scr_weak_black(entry->owner) && scr_weak_key_alive(entry))
+      scr_weak_keep(entry);
+}
+
+/* `obj` turned black: the pending entries it is the collection or the key
+ * of may be alive now. */
+static void scr_weak_reached(void *obj, const ScrCycType *type) {
+  if (type->kind == SCR_CYC_KIND_WEAK_MAP) {
+    for (ScrWeakEntry *entry = ((ScrWeakMap *)obj)->entries; entry; entry = entry->next)
+      if ((entry->mark & SCR_WEAK_PENDING) && scr_weak_key_alive(entry)) scr_weak_keep(entry);
+  } else if (type->kind == SCR_CYC_KIND_PROMISE) {
+    ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
+    if (hold && hold->mark) {
+      hold->mark--;
+      scr_weak_keep_keyed(hold->key);
+    }
+  }
+  if (scr_weak_maybe_key(obj)) scr_weak_keep_keyed(obj);
+}
+
+/* Gives back the counts every object that turned black holds. With
+ * `judge`, the entries such an object is the key or the collection of are
+ * looked at; without, the walk only restores (the entries are decided). */
+static void scr_weak_restore_all(bool judge) {
+  while (scr_weak_work.n) {
+    void *obj = scr_weak_work.v[--scr_weak_work.n];
+    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    type->trace(obj, scr_weak_black_visit, NULL);
+    if (judge) scr_weak_reached(obj, type);
+  }
+}
+
+/* Ends the entries whose key or collection only their values keep alive;
+ * returns how many. */
+static size_t scr_weak_judge(void) {
+  if (!scr_weak_index) return 0;
+  size_t slots = scr_weak_index_mask + 1, pending = 0;
+  /* Colors are the collector's, and between its passes every object is
+   * black. Nothing runs this during a pass; should that ever change, a
+   * collection or a value in the collector's hands is a reason to leave
+   * everything alone: the dead set is freed by the pass, not by counts. */
+  for (size_t i = 0; i < slots; i++) {
+    ScrWeakEntry *entry = scr_weak_index[i];
+    if (!entry || SCR_RC_COUNT(entry->value) == SCR_RC_IMMORTAL) continue;
+    if (!scr_weak_black(entry->owner) || !scr_weak_black(entry->value)) return 0;
+  }
+  for (size_t i = 0; i < slots; i++) {
+    ScrWeakEntry *entry = scr_weak_index[i];
+    if (!entry || entry->owner == scr_weak_promise_cells ||
+        SCR_RC_COUNT(entry->value) == SCR_RC_IMMORTAL)
+      continue;
+    entry->mark |= SCR_WEAK_HELD | SCR_WEAK_PENDING;
+    SCR_RC_COUNT(entry->value) -= 1;
+    pending++;
+  }
+  if (!pending) return 0;
+  for (size_t i = 0; i < slots; i++) {
+    ScrWeakEntry *entry = scr_weak_index[i];
+    if (!entry || !(entry->mark & SCR_WEAK_PENDING) || !scr_weak_black(entry->value)) continue;
+    scr_cyc_set_color(scr_cyc_hdr(entry->value), SCR_CYC_GRAY);
+    scr_weak_vec_push(&scr_weak_grayed, entry->value);
+    scr_weak_vec_push(&scr_weak_work, entry->value);
+    while (scr_weak_work.n) {
+      void *obj = scr_weak_work.v[--scr_weak_work.n];
+      scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_weak_gray_visit, NULL);
+    }
+  }
+  if (scr_weak_promise_cells && scr_weak_promise_cells->entries)
+    for (size_t i = 0; i < scr_weak_grayed.n; i++) {
+      void *obj = scr_weak_grayed.v[i];
+      if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_PROMISE) continue;
+      ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
+      if (hold) hold->mark++;
+    }
+  for (size_t i = 0; i < scr_weak_grayed.n; i++) {
+    void *obj = scr_weak_grayed.v[i];
+    if (scr_weak_black(obj) || SCR_RC_REFS(obj) == 0) continue;
+    scr_weak_restore(obj);
+    scr_weak_restore_all(true);
+  }
+  for (size_t i = 0; i < slots; i++) {
+    ScrWeakEntry *entry = scr_weak_index[i];
+    if (!entry || !(entry->mark & SCR_WEAK_PENDING) || !scr_weak_black(entry->owner) ||
+        !scr_weak_key_alive(entry))
+      continue;
+    scr_weak_keep(entry);
+    scr_weak_restore_all(true);
+  }
+  /* The entries still pending are dead. Before anything is released, every
+   * count goes back: what the objects still gray hold, by the same traces
+   * that took it (the collections still skip the values), then the counts
+   * of the dead entries' values, and the marks. */
+  for (size_t i = 0; i < scr_weak_grayed.n; i++) {
+    void *obj = scr_weak_grayed.v[i];
+    if (scr_weak_black(obj)) continue;
+    scr_weak_restore(obj);
+    scr_weak_restore_all(false);
+  }
+  ScrWeakVec dead = {0};
+  for (size_t i = 0; i < slots; i++) {
+    ScrWeakEntry *entry = scr_weak_index[i];
+    if (!entry) continue;
+    if (entry->owner == scr_weak_promise_cells) {
+      entry->mark = 0;
+      continue;
+    }
+    if (entry->mark & SCR_WEAK_PENDING) {
+      SCR_RC_COUNT(entry->value) += 1;
+      scr_weak_vec_push(&dead, entry);
+    }
+    entry->mark &= ~(SCR_WEAK_HELD | SCR_WEAK_PENDING);
+  }
+  scr_weak_vec_free(&scr_weak_grayed);
+  scr_weak_vec_free(&scr_weak_work);
+  /* Unlink before release: releasing a value can dispose another key, and
+   * with it entries of this list. */
+  for (size_t i = 0; i < dead.n; i++) {
+    ScrWeakEntry *entry = dead.v[i];
+    dead.v[i] = entry->value;
+    scr_weak_remove_impl(entry, true);
+  }
+  for (size_t i = 0; i < dead.n; i++) scr_dyn_release(dead.v[i]);
+  size_t ended = dead.n;
+  scr_weak_vec_free(&dead);
+  return ended;
+}
+
+size_t scr_weak_collect_entries(void) {
+  if (scr_weak_judging) return 0;
+  scr_weak_judging = true;
+  size_t ended = scr_weak_judge();
+  scr_weak_judging = false;
+  return ended;
+}
+
+/* The collector's objects in use. A freed checked-dynamic node waits in
+ * its pool, still counted as allocated, and is handed out again without the
+ * count moving: entries made of such nodes would not show as growth. */
+static inline size_t scr_weak_heap(void) {
+#ifndef SCR_RC_AUDIT
+  return scr_cyc_live - scr_dyn_free_count;
+#else
+  return scr_cyc_live;
+#endif
+}
+
+/* Judges the entries when the heap has grown enough since the last time. */
+static void scr_weak_judge_due(void) {
+  if (scr_weak_judging || !scr_weak_index) return;
+  /* Growth counts from the smallest heap seen since the last run: after a
+   * large structure dies, entries must not pile up to its former size. */
+  if (scr_weak_heap() < scr_weak_judged_live) scr_weak_judged_live = scr_weak_heap();
+  size_t base = scr_weak_judged_live < SCR_WEAK_JUDGE_FLOOR ? SCR_WEAK_JUDGE_FLOOR : scr_weak_judged_live;
+  if (scr_weak_heap() <= base + ((base / 4) << scr_weak_judge_shift)) return;
+#ifndef SCR_RC_AUDIT
+  scr_typed_ref_flush_parked(); /* a parked capsule holds its referent */
+#endif
+  size_t before = scr_weak_heap(), grown = before > base ? before - base : 0;
+  size_t ended = scr_weak_collect_entries();
+  size_t reclaimed = before > scr_weak_heap() ? before - scr_weak_heap() : 0;
+  if (reclaimed < ended) reclaimed = ended;
+  unsigned want = 0;
+  while (want < SCR_WEAK_JUDGE_MAX_SHIFT && reclaimed * 4 < (grown >> want)) want++;
+  scr_weak_judge_shift = (unsigned char)(want <= scr_weak_judge_shift ? want : scr_weak_judge_shift + 1);
+  scr_weak_judged_live = scr_weak_heap();
+}
+
+/* Before every collector pass on a thread that has made a weak collection:
+ * the parked capsules go first, as they do without weak collections. */
+static void scr_weak_pass_hook(void) {
+#ifndef SCR_RC_AUDIT
+  scr_typed_ref_flush_parked();
+#endif
+  scr_weak_judge_due();
+}
+
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   if (scr_weak_island_key(key)) return scr_ni_dyn_ops->weak_set(&map->island, map->is_set, key, value);
+  /* The caller holds the key and the value, and no entry is half made. */
+  if (map != scr_weak_promise_cells) scr_weak_judge_due();
   void *ptr = NULL;
   unsigned kind = 0;
   int supported = scr_weak_key(key, &ptr, &kind);
@@ -21973,6 +22328,8 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   if (!entry) scr_json_oom();
   entry->key = ptr;
   entry->kind = kind;
+  if (scr_weak_key_judged(key, ptr, kind))
+    entry->mark = SCR_WEAK_JUDGED | (kind == 32 ? SCR_WEAK_NATIVE : 0);
   entry->value = scr_dyn_retain(value);
   entry->owner = map;
   entry->next = map->entries;
@@ -22073,6 +22430,7 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
   scr_weak_observing = true;
   scr_weak_dispose_hook = &scr_dispose_observers;
+  scr_cyc_pass_hook = &scr_weak_pass_hook;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
   static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);

@@ -227,7 +227,8 @@ function allocatesCycleCapable(node: Node, traced: (t: IrType) => boolean): bool
       ? node.captures.length > 0
       : (ALLOCATIONS.has(node.kind) || source(node) || node.kind === "libCall") &&
         node.kind !== "call" &&
-        node.kind !== "callValue")
+        node.kind !== "callValue" &&
+        node.kind !== "virtualCall")
   );
 }
 

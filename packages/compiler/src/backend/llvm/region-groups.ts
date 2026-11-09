@@ -205,7 +205,12 @@ export function source(e: Node): boolean {
   if (e.kind === "strIntrinsic") return e.method === "split";
   if (e.kind === "libCall") return e.fn === "json.parse";
   if (e.kind === "dynCheck") return e.value.kind === "libCall" && e.value.fn === "json.parse";
-  if (e.kind === "call" || e.kind === "callValue") return refType(e.type);
+  // A call's reference result may be an object the callee allocated, so
+  // the caller answers for where it goes. That holds for a virtual call
+  // too: its targets may be fresh, and what they return then lives in the
+  // caller's group.
+  if (e.kind === "call" || e.kind === "callValue" || e.kind === "virtualCall")
+    return refType(e.type);
   return false;
 }
 
@@ -360,7 +365,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         note(callers, ctor);
         note(referrers, ctor);
       } else if (node.kind === "closure") note(referrers, node.fnName);
-      if (source(node) && node.kind !== "call") directAlloc.add(fn.name);
+      // A call allocates through its targets (the edges noted above).
+      if (source(node) && node.kind !== "call" && node.kind !== "virtualCall")
+        directAlloc.add(fn.name);
     });
   }
   /** Runs `step` on the functions named, and again on the referrers of each
@@ -828,7 +835,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   /** A source whose value is a new group member (a call result only when
    * the callee is fresh). */
   const memberSource = (u: Node): boolean =>
-    source(u) && u.kind !== "callValue" && (u.kind !== "call" || fresh.has(u.callee));
+    source(u) &&
+    u.kind !== "callValue" &&
+    u.kind !== "virtualCall" &&
+    (u.kind !== "call" || fresh.has(u.callee));
   /** What analyze reads of `fn` that no summary changes: the values bound
    * to each local, the stores into locals' graphs, and the locals that are
    * not closed (see analyze). */

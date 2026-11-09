@@ -328,9 +328,40 @@ export function scanDivergences(
     const arms = (type: ts.Type): readonly ts.Type[] =>
       (type.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(type) : [type];
     const errorClass = (type: ts.Type): boolean => {
+      if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return false;
       const mapped = safely(() => lowerer.mapTypeOf(type));
       return mapped?.kind === "object" && lowerer.isErrorRootedClass(mapped.className);
     };
+    /** The type parameters a call binds to such an interface, each with
+     * the interface (`through(failure)` into a parameter `e: T` where
+     * `T extends Error`): inside the function a value of the parameter's
+     * type is one of the interface's and is judged as one. A parameter
+     * typed by the bare type parameter is followed, also from one generic
+     * function into the next. */
+    const bound = new Map<ts.Type, ts.Type>();
+    const interfaceOf = (arm: ts.Type): ts.Type | undefined =>
+      lowerer.errorInterface(arm) ? arm : bound.get(arm);
+    safely(() => checker.prefetchResolvedSignatures(calls));
+    for (let round = 0; round < 3; round++) {
+      const before = bound.size;
+      for (const call of calls)
+        safely(() => {
+          const declaration = checker.getResolvedSignature(call)?.declaration;
+          if (declaration === undefined || !ts.isFunctionLike(declaration)) return;
+          for (const [index, argument] of call.arguments.nodes.entries()) {
+            const parameter = declaration.parameters.nodes[index];
+            if (parameter?.type === undefined || ts.isSpreadElement(argument)) continue;
+            const declared = checker.getTypeFromTypeNode(parameter.type);
+            if ((declared.flags & ts.TypeFlags.TypeParameter) === 0 || bound.has(declared))
+              continue;
+            const found = arms(checker.getTypeAtLocation(argument))
+              .map(interfaceOf)
+              .find((given) => given !== undefined);
+            if (found !== undefined) bound.set(declared, found);
+          }
+        });
+      if (bound.size === before) break;
+    }
     /** A structural type the program declares, whose members and result
      * are looked into. A library type holds no such interface, and a class
      * instance converts as a whole. */
@@ -350,7 +381,7 @@ export function scanDivergences(
       holding.set(type, false);
       const part = (inner: ts.Type): boolean => holds(inner, depth + 1);
       const answer = arms(type).some((arm) => {
-        if (lowerer.errorInterface(arm)) return true;
+        if (interfaceOf(arm) !== undefined) return true;
         if (depth >= 3) return false;
         if (arm.isTypeReference()) return checker.getTypeArguments(arm).some(part);
         return (
@@ -375,10 +406,11 @@ export function scanDivergences(
       if (source === target) return null;
       const slots = arms(target);
       for (const arm of arms(source)) {
-        if (lowerer.errorInterface(arm)) {
-          if (slots.some((slot) => lowerer.errorInterface(slot))) continue;
+        const from = interfaceOf(arm);
+        if (from !== undefined) {
+          if (slots.some((slot) => slot === arm || lowerer.errorInterface(slot))) continue;
           const to = slots.find(errorClass);
-          if (to !== undefined) return [arm, to];
+          if (to !== undefined) return [from, to];
         } else if (depth < 3) {
           for (const slot of slots) {
             const inner = arm === slot ? null : within(arm, slot, depth + 1);

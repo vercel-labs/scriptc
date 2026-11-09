@@ -284,3 +284,26 @@ show(new Error("real"), new Error("other"));
   for (const warning of warnings)
     expect(warning).toContain("this 'Like' is converted to the class 'Error'");
 });
+
+test("a generic function called with an Error interface value is warned about where its body converts", () => {
+  const warnings = classConversionWarnings(`interface Like extends Error {
+  status?: number;
+}
+function label(e: Error): string {
+  return e.name + ":" + e.message;
+}
+function through<T extends Error>(e: T): string {
+  return label(e);
+}
+function again<U extends Error>(e: U): string {
+  return through(e);
+}
+function show(f: Like): void {
+  console.log(through(f), again(f), through(new TypeError("typed")));
+}
+show(new Error("real"));
+`);
+  // The one place a value of the type parameter becomes the class: line 8.
+  expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual(["8"]);
+  expect(warnings[0]).toContain("this 'Like' is converted to the class 'Error'");
+});

@@ -35,7 +35,8 @@ test.skipIf(process.platform === "win32")(
       });
       expect(result.stdout).toBe(
         "message graphs preserve identity, sparse values, byte aliases and getter order\n" +
-          "native handles cross threads through their transfer hooks\n",
+          "native handles cross threads through their transfer hooks\n" +
+          "published native operations survive the sender and the message\n",
       );
       expect(result.stderr).toBe("");
     } finally {

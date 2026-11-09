@@ -209,6 +209,7 @@ import {
   fenceEarlyNsMemberRef,
   nodeUndefinedGlobalName,
   nsMemberIdentOf,
+  nsReceiverEvaluates,
   nsUndefRead,
 } from "../lower-namespaces.js";
 import { fenceExpandoRead } from "../lower-expando.js";
@@ -1153,6 +1154,25 @@ export function lowerPropertyAccessExpr(
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr, memberSym);
       return lowerExpr(lowerer, nsMember);
+    }
+    // The same read through a receiver that evaluates
+    // (`(await import("./m")).f`): the receiver runs first, for what it
+    // does (the import evaluates the module, once), then the member reads
+    // the exporter's binding. Without it the export's storage is read while
+    // the module's body has not run.
+    if (nsReceiverEvaluates(expr.expression)) {
+      const evaluated = nsMemberIdentOf(lowerer, expr, true);
+      if (evaluated) {
+        const receiver = lowerExpr(lowerer, expr.expression);
+        const value = lowerExpr(lowerer, evaluated);
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: receiver, loc: receiver.loc }],
+          result: value,
+          type: value.type,
+          loc: value.loc,
+        };
+      }
     }
     // Expando function members (`foo.bar` after `foo.bar = 12`) read
     // through the closure's own-property table (the callable-member path

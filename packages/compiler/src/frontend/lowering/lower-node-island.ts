@@ -2090,14 +2090,13 @@ function classMethodsBuilderOf(
 }
 
 /** NI-6: the method-table builder of the class a shared module exports
- * (`ident` is its declaration's name), or null. */
+ * (`decl` is the class, `ident` the export's name), or null. */
 export function classMethodsBuilder(
   lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
   ident: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
-  const decl = ident.parent;
-  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
   return classMethodsBuilderOf(lowerer, lowerer.classNamer(decl), ident, loc);
 }
 
@@ -2108,11 +2107,9 @@ export function classMethodsBuilder(
  * parameters (the island's `new` then throws). */
 export function classConstructHelper(
   lowerer: Lowerer,
-  ident: ts.Identifier,
+  decl: ts.ClassLikeDeclaration,
   loc: SrcLoc,
 ): IrExpr | null {
-  const decl = ident.parent;
-  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
   const className = lowerer.classNamer(decl);
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;

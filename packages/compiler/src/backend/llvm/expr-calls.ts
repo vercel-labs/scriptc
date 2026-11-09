@@ -1795,7 +1795,13 @@ function emitArrayElementRead(
     B.condBr(holds.name, next, slow);
     B.startBlock(next);
   }
-  const element: IrExpr = { kind: "libCall", fn: "dyn.arrAt", args: [value, index], type: DYN, loc };
+  const element: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.arrAt",
+    args: [value, index],
+    type: DYN,
+    loc,
+  };
   host.frames.push([]);
   const fast = host.emitExpr(
     word ? { kind: "libCall", fn: "js.fromDyn", args: [element], type: e.type, loc } : element,

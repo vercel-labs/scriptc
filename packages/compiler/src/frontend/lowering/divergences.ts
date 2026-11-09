@@ -65,9 +65,8 @@ export function scanDivergences(
   /** `const v: T = e`, collected only for a program that links Node islands. */
   const annotatedDecls: ts.VariableDeclaration[] = [];
   const islands = lowerer.nodeIslands !== null;
-  /** The values a typed slot receives (an argument, the initializer of a
-   * typed binding, a returned value), collected only for a program that
-   * declares an interface extending Error. */
+  /** The program's expressions, collected only for a program that declares
+   * an interface extending Error: each is asked what slot receives it. */
   const handedOn: ts.Expression[] = [];
   const errorInterfaces = lowerer.declaresErrorInterface();
   const localeCompares: ts.CallExpression[] = [];
@@ -97,6 +96,7 @@ export function scanDivergences(
       list.push(node);
       fnsByName.set(node.name.text, list);
     }
+    if (errorInterfaces && ts.isExpression(node)) handedOn.push(node);
     if (ts.isCallExpression(node)) {
       calls.push(node);
       const callee = node.expression;
@@ -130,10 +130,6 @@ export function scanDivergences(
     } else if (ts.isVariableDeclaration(node)) {
       if (islands && node.type !== undefined && node.initializer !== undefined)
         annotatedDecls.push(node);
-      if (errorInterfaces && node.type !== undefined && node.initializer !== undefined)
-        handedOn.push(node.initializer);
-    } else if (errorInterfaces && ts.isReturnStatement(node)) {
-      if (node.expression !== undefined) handedOn.push(node.expression);
     } else if (ts.isObjectLiteralExpression(node)) {
       if (node.properties.nodes.length >= 1 && node.properties.nodes.every(isPlainProperty))
         literals.push(node);
@@ -189,6 +185,10 @@ export function scanDivergences(
       if (lit === null || reported.has(lit) || !literals.includes(lit)) continue;
       const contextual = safely(() => checker.getContextualType(lit!));
       if (contextual === undefined) continue;
+      // A literal typed by an interface that extends Error is the object it
+      // is, not a record (class-protocols.ts, markErrorInterfaces): its keys
+      // enumerate as written.
+      if (errorInterfaces && lowerer.errorInterface(contextual)) continue;
       if (namedObjectDeclaration(checker, contextual) === null) continue;
       const declared = safely(() =>
         checker.getPropertiesOfType(contextual).map((p) => ts.symbolName(p)),
@@ -316,30 +316,216 @@ export function scanDivergences(
   // ── an interface that extends Error, handed to an Error class ───────
   // A value of such an interface is an error object or a plain object that
   // has the members (`const fake: Failure = { name, message }`). Where it
-  // meets a slot typed by an Error class (an argument, a typed binding, a
-  // returned value, an assertion) the checked conversion to the class
-  // throws a TypeError for the plain object, while Node reads its members.
+  // meets a slot typed by an Error class the checked conversion to the
+  // class throws a TypeError for the plain object, while Node reads its
+  // members. The slot is whatever gives the expression its contextual type
+  // (an argument, an initializer, an assigned or returned value, a member
+  // of a literal, an assertion), so no list of constructions is kept; the
+  // pair is also found inside the two types: an argument of one generic
+  // type (`Promise<Failure>` held as `Promise<Error>`), a member or the
+  // result of a type the program declares.
   if (errorInterfaces) {
-    const toClass = (value: ts.Expression, target: ts.Type | undefined): void => {
-      if (target === undefined) return;
-      const source = checker.getTypeAtLocation(value);
-      if (!lowerer.errorInterface(source)) return;
-      const mapped = lowerer.mapTypeOf(target);
-      if (mapped?.kind !== "object" || !lowerer.isErrorRootedClass(mapped.className)) return;
+    const arms = (type: ts.Type): readonly ts.Type[] =>
+      (type.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(type) : [type];
+    const errorClass = (type: ts.Type): boolean => {
+      const mapped = safely(() => lowerer.mapTypeOf(type));
+      return mapped?.kind === "object" && lowerer.isErrorRootedClass(mapped.className);
+    };
+    /** A structural type the program declares, whose members and result
+     * are looked into. A library type holds no such interface, and a class
+     * instance converts as a whole. */
+    const opened = (type: ts.Type): boolean =>
+      !type.isTypeReference() && namedObjectDeclaration(checker, type) !== null;
+    const results = (type: ts.Type): ts.Type[] =>
+      checker
+        .getSignaturesOfType(type, ts.SignatureKind.Call)
+        .map((signature) => checker.getReturnTypeOfSignature(signature));
+    /** Whether a value of such an interface is part of `type`: the type
+     * itself, an arm of it, a type argument, a member or the result. A
+     * type that names itself ends at its first answer. */
+    const holding = new Map<ts.Type, boolean>();
+    const holds = (type: ts.Type, depth: number): boolean => {
+      const known = holding.get(type);
+      if (known !== undefined) return known;
+      holding.set(type, false);
+      const part = (inner: ts.Type): boolean => holds(inner, depth + 1);
+      const answer = arms(type).some((arm) => {
+        if (lowerer.errorInterface(arm)) return true;
+        if (depth >= 3) return false;
+        if (arm.isTypeReference()) return checker.getTypeArguments(arm).some(part);
+        return (
+          opened(arm) &&
+          (checker
+            .getPropertiesOfType(arm)
+            .some((member) => part(checker.getTypeOfSymbol(member))) ||
+            results(arm).some(part))
+        );
+      });
+      holding.set(type, answer);
+      return answer;
+    };
+    /** The interface and the class of the conversion a `source` value takes
+     * in a `target` slot, or null where it takes none. A slot that names
+     * the interface itself keeps the value as it is. */
+    const conversion = (
+      source: ts.Type,
+      target: ts.Type,
+      depth: number,
+    ): [ts.Type, ts.Type] | null => {
+      if (source === target) return null;
+      const slots = arms(target);
+      for (const arm of arms(source)) {
+        if (lowerer.errorInterface(arm)) {
+          if (slots.some((slot) => lowerer.errorInterface(slot))) continue;
+          const to = slots.find(errorClass);
+          if (to !== undefined) return [arm, to];
+        } else if (depth < 3) {
+          for (const slot of slots) {
+            const inner = arm === slot ? null : within(arm, slot, depth + 1);
+            if (inner !== null) return inner;
+          }
+        }
+      }
+      return null;
+    };
+    /** The conversion inside two types that are not the pair themselves. */
+    const within = (source: ts.Type, target: ts.Type, depth: number): [ts.Type, ts.Type] | null => {
+      if (source.isTypeReference()) {
+        if (!target.isTypeReference() || source.getTarget() !== target.getTarget()) return null;
+        const wanted = checker.getTypeArguments(target);
+        for (const [index, argument] of checker.getTypeArguments(source).entries()) {
+          const slot = wanted[index];
+          const inner = slot === undefined ? null : conversion(argument, slot, depth);
+          if (inner !== null) return inner;
+        }
+        return null;
+      }
+      if (!opened(source)) return null;
+      for (const member of checker.getPropertiesOfType(source)) {
+        const slot = checker.getPropertyOfType(target, ts.symbolName(member));
+        if (slot === undefined) continue;
+        const inner = conversion(
+          checker.getTypeOfSymbol(member),
+          checker.getTypeOfSymbol(slot),
+          depth,
+        );
+        if (inner !== null) return inner;
+      }
+      const wanted = results(target);
+      for (const [index, result] of results(source).entries()) {
+        const slot = wanted[index];
+        const inner = slot === undefined ? null : conversion(result, slot, depth);
+        if (inner !== null) return inner;
+      }
+      return null;
+    };
+    const logical = (node: ts.Node): node is ts.BinaryExpression =>
+      ts.isBinaryExpression(node) &&
+      (node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken);
+    /** A construction whose value is one of its operands, or is made of
+     * parts that each have a slot (a literal's members, a function's
+     * returns): each is judged at its own place. */
+    const passesOn = (node: ts.Expression): boolean =>
+      ts.isParenthesizedExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      ts.isConditionalExpression(node) ||
+      ts.isArrayLiteralExpression(node) ||
+      ts.isObjectLiteralExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isFunctionExpression(node) ||
+      logical(node) ||
+      (ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+          node.operatorToken.kind === ts.SyntaxKind.CommaToken));
+    /** The types the surroundings read `value` as. Where no slot gives one,
+     * an arm of a conditional and an operand of `||` or `??` become the
+     * construction's own type, an element the array literal's, and a
+     * returned value the result its function's returns make together. */
+    const slotsOf = (value: ts.Expression): readonly ts.Type[] => {
+      const contextual = checker.getContextualType(value);
+      if (contextual !== undefined) return [contextual];
+      const parent = value.parent;
+      if (parent === undefined) return [];
+      if ((ts.isConditionalExpression(parent) && parent.condition !== value) || logical(parent))
+        return [checker.getTypeAtLocation(parent)];
+      if (ts.isArrayLiteralExpression(parent)) {
+        const literal = checker.getTypeAtLocation(parent);
+        return literal.isTypeReference() ? checker.getTypeArguments(literal).slice(0, 1) : [];
+      }
+      if (ts.isReturnStatement(parent)) {
+        let fn: ts.Node | undefined = parent.parent;
+        while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+        const signature = fn === undefined ? undefined : checker.getSignatureFromDeclaration(fn);
+        if (signature === undefined) return [];
+        const result = checker.getReturnTypeOfSignature(signature);
+        const settled = checker.getAwaitedType(result);
+        return settled === undefined || settled === result ? [result] : [result, settled];
+      }
+      // A spread argument no slot types: the parameters from its place on.
+      if (ts.isSpreadElement(value) && ts.isCallExpression(parent)) {
+        const declaration = checker.getResolvedSignature(parent)?.declaration;
+        if (declaration === undefined || !ts.isFunctionLike(declaration)) return [];
+        return declaration.parameters.nodes
+          .slice(parent.arguments.nodes.indexOf(value))
+          .flatMap((parameter) =>
+            parameter.type === undefined ? [] : [checker.getTypeFromTypeNode(parameter.type)],
+          );
+      }
+      return [];
+    };
+    const candidates = handedOn.filter((value) => {
+      if (passesOn(value)) return false;
+      const parent = value.parent;
+      // A member's name is not the member's value.
+      return !(
+        parent !== undefined &&
+        (ts.isPropertyAccessExpression(parent) ||
+          (ts.isPropertyAssignment(parent) && parent.name === value))
+      );
+    });
+    safely(() => checker.prefetchTypeQueries(candidates));
+    const held = candidates.filter(
+      (value) =>
+        safely(() => {
+          const spread = ts.isSpreadElement(value) ? value.expression : value;
+          return holds(checker.getTypeAtLocation(spread), 0);
+        }) === true,
+    );
+    safely(() => checker.prefetchContextualTypes(held));
+    const warned = new Set<string>();
+    const toClass = (value: ts.Expression, source: ts.Type, target: ts.Type): void => {
+      const pair = conversion(source, target, 0);
+      if (pair === null) return;
+      const loc = locOf(value);
+      const key = `${loc.file}\0${loc.start}`;
+      if (warned.has(key)) return;
+      warned.add(key);
       out.push(
         errorInterfaceToClassDivergenceDiag(
-          checker.typeToString(source),
-          checker.typeToString(target),
-          locOf(value),
+          checker.typeToString(pair[0]),
+          checker.typeToString(pair[1]),
+          loc,
         ),
       );
     };
-    for (const call of calls)
-      for (const arg of call.arguments.nodes)
-        if (!ts.isSpreadElement(arg)) safely(() => toClass(arg, checker.getContextualType(arg)));
-    for (const value of handedOn) safely(() => toClass(value, checker.getContextualType(value)));
+    for (const value of held)
+      safely(() => {
+        // A spread hands on each element of its array or tuple.
+        const sources = ts.isSpreadElement(value)
+          ? checker.getTypeArguments(checker.getTypeAtLocation(value.expression))
+          : [checker.getTypeAtLocation(value)];
+        for (const target of slotsOf(value))
+          for (const source of sources) toClass(value, source, target);
+      });
     for (const cast of casts)
-      safely(() => toClass(cast.expression, checker.getTypeFromTypeNode(cast.type)));
+      safely(() =>
+        toClass(
+          cast.expression,
+          checker.getTypeAtLocation(cast.expression),
+          checker.getTypeFromTypeNode(cast.type),
+        ),
+      );
   }
 
   // ── SC6007: a value a Node island made, copied by a checked conversion ──

@@ -224,3 +224,63 @@ console.log(takesError(new TypeError("typed")));
 `),
   ).toEqual([]);
 });
+
+test("the conversion to an Error class is warned about at every slot that gives the value its type", () => {
+  const warnings = classConversionWarnings(`interface Like extends Error {
+  status?: number;
+}
+interface Holder {
+  error: Error;
+}
+class Keeper {
+  error: Error;
+  constructor(f: Like) {
+    this.error = f;
+  }
+}
+function label(e: Error): string {
+  return e.name + ":" + e.message;
+}
+function run(make: () => Error): string {
+  return label(make());
+}
+const back = (f: Like): Error => f;
+function show(f: Like, other: Error): void {
+  let held: Error = other;
+  held = f;
+  const holder: Holder = { error: f };
+  holder.error = f;
+  const list: Error[] = [f];
+  const inner = (e: Error = f): string => label(e);
+  const maybe: Error | undefined = f;
+  const picked = f.status === undefined ? other : f;
+  const args: [Like] = [f];
+  const later: Promise<Error> = Promise.resolve(f);
+  void later;
+  console.log(label(held), label(list[0] ?? other), inner(), run(() => f), label(...args));
+  console.log(new Keeper(f).error.message, back(f).message, maybe?.message, picked.message);
+}
+show(new Error("real"), new Error("other"));
+`);
+  // A member write in a constructor, an arrow's body, an assignment, a
+  // literal's member, a member write, an array element, a default value, a
+  // slot that also holds undefined, an arm of a conditional no slot types, a
+  // promise's result, a callback's result and a spread tuple. The values
+  // handed to a slot of the interface (lines 29 and 33) are not named.
+  expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual([
+    "10",
+    "19",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "30",
+    "32",
+    "32",
+  ]);
+  for (const warning of warnings)
+    expect(warning).toContain("this 'Like' is converted to the class 'Error'");
+});

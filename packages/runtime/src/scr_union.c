@@ -108,7 +108,10 @@ void scr_union_release(ScrUnion *u) {
      * arm contents between boxes of one union type), so this reads the
      * header rather than arm_trace. */
     scr_cyc_dead(u);
-    scr_rc_destroy(u, scr_union_destroy);
+    /* A scalar or string payload has nothing to tear down in turn, so its
+     * box cannot deepen the stack and needs no depth budget. */
+    if (!u->arm_release || u->arm_release == &scr_str_release_v) scr_union_destroy(u);
+    else scr_rc_destroy(u, scr_union_destroy);
   } else if (u->arm_trace) {
     /* Possible cycle root; may collect — u is done. A box whose trace
      * visits nothing (scalar arms, and ref arms the compiler proved

@@ -278,6 +278,12 @@ function computeExportsShape(lowerer: Lowerer, sf: ts.SourceFile): CjsExportsSha
       shown = false;
       return "stop";
     }
+    // `exports.__proto__ = value` replaces the object's prototype: a member
+    // read through `this` can then be inherited, which no write shows.
+    if (access.name.text === "__proto__") {
+      shown = false;
+      return "stop";
+    }
     const assignment = access.parent;
     if (
       ts.isBinaryExpression(assignment) &&
@@ -330,20 +336,23 @@ function exportReadsOnlyMembers(
   sf: ts.SourceFile,
   shape: CjsExportsShape,
   name: string,
-  visiting: ReadonlySet<string>,
+  visited: Set<string>,
 ): boolean {
   const values = shape.writes.get(name);
   if (values === undefined) return false;
-  const inner = new Set(visiting).add(name);
+  // One set for the whole walk: the answer for an export does not depend on
+  // the path that reached it, and the first failure ends the walk, so every
+  // export is looked at once however many siblings call it.
+  visited.add(name);
   for (const assigned of values) {
     const value = withoutParentheses(assigned);
     if (ts.isFunctionExpression(value)) {
       const reads = thisReadsOf(value);
       if (reads === null) return false;
       for (const callee of reads.called) {
-        if (inner.has(callee)) continue;
+        if (visited.has(callee)) continue;
         if (cjsExportCallIgnoresThis(lowerer, sf, callee)) continue;
-        if (!exportReadsOnlyMembers(lowerer, sf, shape, callee, inner)) return false;
+        if (!exportReadsOnlyMembers(lowerer, sf, shape, callee, visited)) return false;
       }
       continue;
     }

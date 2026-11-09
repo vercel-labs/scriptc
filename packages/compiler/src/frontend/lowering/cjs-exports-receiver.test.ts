@@ -144,6 +144,31 @@ console.log(exports.f());
   expect(membersOf(source, "f")).toEqual(["n"]);
 });
 
+test("the refusal stays when the module writes the prototype of its exports object", () => {
+  // Node reads `this.k` from the prototype; no export write shows it.
+  const source = `
+exports.__proto__ = { k: "inherited" };
+exports.f = function () { return String(this.k); };
+`;
+  expect(membersOf(source, "f")).toBeNull();
+});
+
+test("exports that reach the same siblings by many paths are each looked at once", () => {
+  // Forty levels, each calling the next two: 2^40 paths, forty exports.
+  const lines: string[] = [];
+  for (let i = 0; i < 40; i++)
+    lines.push(
+      `exports.f${i} = function () { return this.f${i + 1}() + this.f${i + 2}() + this.n; };`,
+    );
+  lines.push("exports.f40 = function () { return this.n; };");
+  lines.push("exports.f41 = function () { return this.n; };");
+  lines.push("exports.n = 1;");
+  const members = membersOf(lines.join("\n"), "f0");
+  expect(members).not.toBeNull();
+  expect(members).toContain("n");
+  expect(members).toContain("f40");
+});
+
 test("a nested function's own 'this' is not the export's", () => {
   const source = `
 exports.n = 2;

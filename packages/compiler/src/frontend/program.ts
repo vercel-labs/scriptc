@@ -190,6 +190,11 @@ import {
   type DeclProjection,
 } from "./decl-projection.js";
 import { configureTypePatches, packageSourceText } from "./type-patches/layer.js";
+import {
+  isVoidInitializerFile,
+  resetVoidInitializerCasts,
+  voidInitializerShadow,
+} from "./js-void-initializers.js";
 import { resetDeclOriginVersions } from "./lowering/decl-origin.js";
 import {
   reportShapes,
@@ -2102,14 +2107,33 @@ export function loadProgram(
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
+  resetVoidInitializerCasts();
+  // The casts of `void <literal>` initializers (js-void-initializers.ts) are
+  // written into whatever text a world serves for a JavaScript file: the
+  // other shadows' text in the lowering world, the file's own in the
+  // project world, so both type such a binding the same way.
+  const castVoid = (source: string, path: string) => services.voidInitializerCasts(source, path);
+  const voidCasts = (path: string, shadowed: string | undefined): string | undefined => {
+    if (!isVoidInitializerFile(path)) return shadowed;
+    const source = shadowed ?? packageSourceText(path);
+    if (source === null) return shadowed;
+    return voidInitializerShadow(path, source, castVoid) ?? shadowed;
+  };
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ??
-      programBuiltinAliasSource(services, path) ??
-      definedSource(services, path) ??
-      undefined,
+      voidCasts(
+        path,
+        npmShadow?.readFile(path) ??
+          programBuiltinAliasSource(services, path) ??
+          definedSource(services, path) ??
+          undefined,
+      ),
     hideFile: (path: string) =>
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+  };
+  const authoredShadow = {
+    readFile: (path: string) => voidCasts(path, undefined),
+    hideFile: () => false,
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   // The edges of a package file as a host serves it (the lowering world's
@@ -2131,7 +2155,10 @@ export function loadProgram(
   let authoredLoad: ReturnType<typeof loadProgram7> | null = null;
   const authored = (): ReturnType<typeof loadProgram7> => {
     if (!authoredLoad) {
-      authoredHost = services.createProgramHost({ cwd: dirname(entryPath) });
+      authoredHost = services.createProgramHost({
+        cwd: dirname(entryPath),
+        fsShadow: authoredShadow,
+      });
       authoredLoad = loadProgram7(
         authoredHost,
         entryPath,

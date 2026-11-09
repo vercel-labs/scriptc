@@ -102,6 +102,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import {
   PROCESS_STREAM_VALUE_MEMBERS,
@@ -8854,16 +8855,38 @@ function declaratorLeadingText(decl: ts.VariableDeclaration): string | null {
 }
 
 export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  return (
-    !!statement &&
-    ts.sourceTextRangeMatches(
-      ts.getSourceFileOfNode(decl),
-      statement.pos,
-      ts.tokenStartOfNode(decl),
-      /@type\b/,
-      ts.LEADING_SPAN,
-    )
+  const list = decl.parent;
+  const statement = list?.parent;
+  if (!statement) return false;
+  const source = ts.getSourceFileOfNode(decl);
+  // An earlier declarator's cast of `void <literal>` (the spelling the
+  // file-system shadow serves for `var v = void 0`, js-void-initializers.ts)
+  // types that initializer: its comment is not an annotation of the
+  // declarators after it.
+  let from = statement.pos;
+  if (ts.isVariableDeclarationList(list) && list.declarations.nodes[0] !== decl) {
+    for (const earlier of list.declarations.nodes) {
+      if (earlier === decl) break;
+      if (!isVoidLiteralCast(earlier.initializer)) continue;
+      if (
+        ts.sourceTextRangeMatches(
+          source,
+          from,
+          ts.tokenStartOfNode(earlier),
+          /@type\b/,
+          ts.LEADING_SPAN,
+        )
+      )
+        return true;
+      from = earlier.end;
+    }
+  }
+  return ts.sourceTextRangeMatches(
+    source,
+    from,
+    ts.tokenStartOfNode(decl),
+    /@type\b/,
+    ts.LEADING_SPAN,
   );
 }
 

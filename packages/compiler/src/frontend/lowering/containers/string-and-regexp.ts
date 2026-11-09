@@ -1081,7 +1081,8 @@ export function lowerRegexMethodCall(
   return null;
 }
 
-/** `s.replace(/&/g, "&amp;").replace(/</g, "&lt;")…`: consecutive global
+/** `s.replace(/&/g, "&amp;").replace(/</g, "&lt;")…`, or the same steps
+ * spelled `s.replaceAll("&", "&amp;")`, in any mix: consecutive global
  * replacements of one literal character by plain text (no `$`), where no
  * replacement text contains a character a later step replaces. Replacing
  * every character in one scan is then exactly the steps in turn, and the
@@ -1103,7 +1104,6 @@ function lowerReplaceCharChain(lowerer: Lowerer, call: ts.CallExpression): IrExp
     const [pattern, replacement] = node.arguments.nodes;
     if (
       !pattern ||
-      !ts.isRegularExpressionLiteral(pattern) ||
       !replacement ||
       !(ts.isStringLiteral(replacement) || ts.isNoSubstitutionTemplateLiteral(replacement)) ||
       replacement.text.includes("$") ||
@@ -1112,7 +1112,15 @@ function lowerReplaceCharChain(lowerer: Lowerer, call: ts.CallExpression): IrExp
       !lowerer.isStdlibMember(callee)
     )
       break;
-    const char = globalCharPattern(pattern.text);
+    // `replaceAll("&", …)` is the same step as `replace(/&/g, …)`: every
+    // occurrence of one character, with the same `$` patterns in the
+    // replacement. `replace("&", …)` replaces the first occurrence only.
+    const char = ts.isRegularExpressionLiteral(pattern)
+      ? globalCharPattern(pattern.text)
+      : callee.name.text === "replaceAll" &&
+          (ts.isStringLiteral(pattern) || ts.isNoSubstitutionTemplateLiteral(pattern))
+        ? literalCharPattern(pattern.text)
+        : null;
     if (char === null) break;
     steps.push({ char, text: replacement.text });
     node = callee.expression;
@@ -1136,6 +1144,15 @@ function lowerReplaceCharChain(lowerer: Lowerer, call: ts.CallExpression): IrExp
     type: STRING,
     loc,
   };
+}
+
+/** The character a one-character string pattern matches, for an ASCII
+ * character other than NUL (which separates the replacement texts); null
+ * otherwise. */
+function literalCharPattern(text: string): string | null {
+  if (text.length !== 1) return null;
+  const code = text.charCodeAt(0);
+  return code > 0 && code < 0x80 ? text : null;
 }
 
 /** The character a `/c/g` literal matches, for one printable ASCII

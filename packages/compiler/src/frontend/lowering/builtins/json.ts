@@ -176,20 +176,11 @@ export function lowerJsonMethodCall(
     // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
     // another typed array as an object keyed by index: the runtime walker
     // tells them apart by the box.
-    // An error of a runtime class (`JSON.stringify(error)` where the value is
-    // typed Error, or a view of one): the runtime walker serializes the
-    // error's checked-dynamic node, its own enumerable properties, as it
-    // does for the same error held in an `unknown` slot.
-    const runtimeError =
-      value.type.kind === "object" &&
-      lowerer.classes.get(value.type.className)?.builtinError !== undefined &&
-      lowerer.dynConvertible(value.type);
     if (
       value.type.kind === "url" ||
       value.type.kind === "dyn" ||
       value.type.kind === "bytes" ||
       toJsonClass ||
-      runtimeError ||
       isJsonStringifyDynamicType(
         value.type,
         (id) => lowerer.shapes.get(id),

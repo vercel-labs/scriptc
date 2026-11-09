@@ -5943,6 +5943,9 @@ export class Lowerer {
     // caches made when first needed
     "programSourceFiles",
     "classHierarchyCache",
+    // A pure function of an alias's or interface's declarations: the same
+    // answer whichever unit asks first.
+    "conditionalTypeParamPositions",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",

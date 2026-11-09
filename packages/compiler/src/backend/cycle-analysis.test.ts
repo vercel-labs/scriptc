@@ -16,7 +16,7 @@ import {
   type IrStmt,
   type IrType,
 } from "../ir/ir.js";
-import { computeTraced, explainCycle } from "./cycle-analysis.js";
+import { computeTraced, computeWeakOnly, explainCycle } from "./cycle-analysis.js";
 import { computeImmutableFields } from "./immutability.js";
 import { computeTraced as llvmTraced } from "./llvm/shapes.js";
 import { addRecordResultEntries } from "./llvm/record-results.js";
@@ -1014,4 +1014,40 @@ test("a checked weak key can be any value the program converts to a checked valu
   // The conversion reaches the record's fields, container elements and
   // union arms; a type no conversion names keeps its layout.
   checkExact(keyed, ["object:Boxed", "record:converted", "record:inner"], ["arm"]);
+});
+
+test("a unit traced only through weak keys is told apart from one on a cycle of its own", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Root", loc, fields: [] },
+    { name: "Leaf", loc, base: "Root", fields: [] },
+  ];
+  mod.records = [
+    shape("key", [F64]),
+    shape("holder", [ref("key")]),
+    // Reaches the key and a callback: on a cycle with or without the marks.
+    shape("listener", [ref("key"), funcOf([], VOID)]),
+    shape("holdsListener", [ref("listener")]),
+    shape("other", [F64]),
+  ];
+  const weakOnly = (m: IrModule): string[] => [...computeWeakOnly(m, computeTraced(m).shapes)].sort();
+  // No weak collection: nothing is asked and nothing is weak-only.
+  expect(weakOnly(mod)).toEqual([]);
+  const keyed = structuredClone(mod);
+  keyed.weakKeys = ["record:key", "object:Leaf"];
+  checkExact(keyed, [
+    "object:Root",
+    "object:Leaf",
+    "record:key",
+    "record:holder",
+    "record:listener",
+    "record:holdsListener",
+  ]);
+  // The whole hierarchy of a weak-key class shares the answer, as it shares
+  // the header.
+  expect(weakOnly(keyed)).toEqual(["object:Leaf", "object:Root", "record:holder", "record:key"]);
+  // A key type that is on a cycle of its own stays the collector's.
+  const cyclic = structuredClone(mod);
+  cyclic.weakKeys = ["record:listener"];
+  expect(weakOnly(cyclic)).toEqual([]);
 });

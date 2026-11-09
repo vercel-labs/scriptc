@@ -19,6 +19,7 @@ import {
   RECORD_KEPT_GATE,
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
+  type WeakTrace,
 } from "./alloc.js";
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
@@ -460,6 +461,7 @@ import {
   boxNewCall,
   boxReleaseSym,
   computeTraced,
+  computeWeakOnly,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
@@ -2057,6 +2059,9 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** The types traced only for the weak analysis whose trace visits
+   * something (ShapeHost.weakOnly): the entries of scr_weak_traces. */
+  readonly weakTraces: WeakTrace[] = [];
   /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
    * zero-initialized ScrJsIc per site (scr_js.h). */
   jsIcSiteCount = 0;
@@ -2829,6 +2834,13 @@ export class LlEmitter {
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
+    // Asked before the header rules below add shapes: a shape that only
+    // those rules give a header stays what it is. A library keeps every
+    // such type the collector's: scr_weak_traces is the executable's.
+    const weakOnly =
+      mod.lib === undefined
+        ? computeWeakOnly(mod, traced.shapes, dynamicStores, cycleMutability)
+        : new Set<string>();
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
@@ -2885,6 +2897,16 @@ export class LlEmitter {
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
+      ...(weakOnly.size > 0
+        ? {
+            weakOnly: {
+              shapes: weakOnly,
+              trace: (type: string, trace: string) => {
+                this.weakTraces.push({ type, trace });
+              },
+            },
+          }
+        : {}),
       nullableUnions: this.nullableUnions,
       inlineUnions: this.inlineUnions,
       unionNoneRef: () => this.unionNoneRef(),

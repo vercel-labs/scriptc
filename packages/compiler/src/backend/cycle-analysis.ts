@@ -48,6 +48,37 @@ export function computeTraced(
   return { shapes, unions };
 }
 
+const NO_SHAPES: ReadonlySet<string> = new Set();
+
+/** The shapes of `traced` (computeTraced's answer for `mod`) that are traced
+ * ONLY because values are keys of WeakMap or WeakSet entries: traced with
+ * the weak-key marks, untraced without them. Empty for every program
+ * without a weak collection, which costs it nothing: the analysis runs a
+ * second time only when IrModule.weakKeys is present.
+ *
+ * Such a unit reaches no closure, checked value, promise or mutable type
+ * cycle, so none of its objects is on a cycle of counted references and
+ * nothing below one is: the collector can free nothing by nominating one or
+ * by walking into it. The only cycle it can be on runs through a weak entry
+ * (key, entry, value, key), which the collector does not see by its own
+ * rule (the collection traces the value as its own child); the weak
+ * analysis ends it (scr_json.c, scr_weak_judge) and is the one reader of
+ * these types' traces. The backend therefore gives them the collector
+ * header and a trace function, and everything else of a type without
+ * cycle-capable children (llvm/shapes.ts, llvm/classes.ts). */
+export function computeWeakOnly(
+  mod: IrModule,
+  traced: ReadonlySet<string>,
+  stores?: DynamicFieldStores,
+  precomputed?: CycleMutability,
+): ReadonlySet<string> {
+  if (mod.weakKeys === undefined) return NO_SHAPES;
+  const unmarked = analyzeCycles(mod, false, stores, precomputed, false).shapes;
+  const only = new Set<string>();
+  for (const key of traced) if (!unmarked.has(key)) only.add(key);
+  return only;
+}
+
 /** Values that can reference any object. */
 export type IntrinsicKind =
   | "func"
@@ -107,6 +138,9 @@ function analyzeCycles(
   labels: boolean,
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
+  /** Whether weak-collection keys are intrinsic (computeWeakOnly asks for
+   * the answer without them). */
+  weakMarks = true,
 ): {
   shapes: Set<string>;
   unions: Set<string>;
@@ -265,7 +299,7 @@ function analyzeCycles(
   }
   // A weak-collection key holds its entry's value. A key of class type can
   // be an instance of any class in the subtree.
-  const weakKeys = weakKeyUnits(mod);
+  const weakKeys = weakMarks ? weakKeyUnits(mod) : null;
   if (weakKeys !== null) {
     const mark = (n: Node | undefined): void => {
       if (n === undefined || n.intrinsic) return;

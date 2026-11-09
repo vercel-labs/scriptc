@@ -180,9 +180,6 @@ enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 #define SCR_CB_ANY SIZE_MAX /* all_idx of an any-settlement callback */
 #endif
 #define SCR_CB_BATCH (SIZE_MAX - 1)
-/* job_at of a job envelope that subscribes its reaction when it runs
- * (scr_promise_react_next). */
-#define SCR_CB_SUBSCRIBE (SIZE_MAX - 2)
 
 typedef struct ScrFiber ScrFiber;
 
@@ -1088,6 +1085,14 @@ static void scr_fiber_track(ScrFiber *fiber) { (void)fiber; }
 #endif
 
 long scr_abandoned_fiber_count(void) { return scr_fibers_abandoned; }
+
+#ifdef SCR_RC_AUDIT
+/* Reactions of the dynamic promise unit that are subscribed and have not
+ * run (scr_async_dyn.c). Each stands where a parked fiber stood: one left
+ * at loop exhaustion counts as a fiber never resumed, so the count audit
+ * is skipped for it as it was for that fiber. */
+SCR_TL long scr_dyn_reactions_pending = 0;
+#endif
 
 #ifdef SCR_ASAN_FIBERS
 /* Deliberately abandoned fibers stay referenced for the process lifetime,
@@ -2299,19 +2304,12 @@ static void scr_promise_cb_queue(const struct ScrPromiseCbWaiter *cb, ScrPromise
   scr_ready_push(job);
 }
 
-static void scr_promise_cb_attach(ScrPromise *in, struct ScrPromiseCbWaiter cb);
-
 /* Runs and frees a reaction job envelope. */
 static void scr_promise_job_run(ScrFiber *f) {
   ScrPromise *src = f->cb_src;
   struct ScrPromiseCbWaiter cb = f->cb;
   scr_mem_free(f);
-  if (cb.job_at == SCR_CB_SUBSCRIBE) {
-    /* scr_promise_react_next's turn: the reaction subscribes now, and the
-     * waiter's references move into the subscription. */
-    cb.job_at = 0;
-    scr_promise_cb_attach(src, cb);
-  } else if (cb.job_at != SCR_CB_BATCH) {
+  if (cb.job_at != SCR_CB_BATCH) {
     scr_promise_cb_run(&cb, src);
   } else {
     if (src != NULL) scr_promise_settle_from(cb.dst, src);
@@ -2368,7 +2366,6 @@ void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, v
   struct ScrPromiseCbWaiter cb = {0};
   cb.reaction = reaction;
   cb.ctx = ctx;
-  cb.job_at = SCR_CB_SUBSCRIBE;
   scr_promise_cb_queue(&cb, p);
 }
 
@@ -7216,6 +7213,9 @@ bool scr_loop_run(ScrPromise *top_level) {
    * exiting, Node's behavior; the OS reparents the children). */
   if (scr_loop_children != NULL) scr_loop_children->teardown();
   scr_fibers_abandoned = scr_fibers_live;
+#ifdef SCR_RC_AUDIT
+  scr_fibers_abandoned += scr_dyn_reactions_pending;
+#endif
   scr_note_abandoned_fibers(scr_fibers_abandoned);
   return rejection_failed;
 }

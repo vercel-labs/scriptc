@@ -759,7 +759,14 @@ ScrPromise *scr_immediate_promise(void) {
  * runs on a cycle through its handler stays allocated, as the parked fiber
  * it replaces did. The sanitizer lane keeps the pending contexts on a list
  * rooted in a global (their first member), so the leak check sees them
- * reachable, as it saw that fiber's stack. */
+ * reachable, as it saw that fiber's stack. The count audit takes one that
+ * is left when the loop has nothing more to run as that fiber never
+ * resumed (scr_dyn_reactions_pending). */
+#ifdef SCR_RC_AUDIT
+#define SCR_DYN_PENDING_COUNT(n) (scr_dyn_reactions_pending += (n))
+#else
+#define SCR_DYN_PENDING_COUNT(n) ((void)0)
+#endif
 #ifdef SCR_DYN_REACTIONS_ROOTED
 typedef struct ScrDynPending {
   struct ScrDynPending *next, **previous;
@@ -776,12 +783,12 @@ static void scr_dyn_pending_unlink(ScrDynPending *p) {
   if (p->next) p->next->previous = p->previous;
 }
 #define SCR_DYN_PENDING ScrDynPending pending;
-#define SCR_DYN_PENDING_LINK(pack) scr_dyn_pending_link(&(pack)->pending)
-#define SCR_DYN_PENDING_UNLINK(pack) scr_dyn_pending_unlink(&(pack)->pending)
+#define SCR_DYN_PENDING_LINK(pack) (scr_dyn_pending_link(&(pack)->pending), SCR_DYN_PENDING_COUNT(1))
+#define SCR_DYN_PENDING_UNLINK(pack) (scr_dyn_pending_unlink(&(pack)->pending), SCR_DYN_PENDING_COUNT(-1))
 #else
 #define SCR_DYN_PENDING
-#define SCR_DYN_PENDING_LINK(pack) ((void)0)
-#define SCR_DYN_PENDING_UNLINK(pack) ((void)0)
+#define SCR_DYN_PENDING_LINK(pack) SCR_DYN_PENDING_COUNT(1)
+#define SCR_DYN_PENDING_UNLINK(pack) SCR_DYN_PENDING_COUNT(-1)
 #endif
 
 typedef struct {
@@ -791,10 +798,12 @@ typedef struct {
   ScrAlsCtx *als;            /* the registration's context, owned or NULL */
 } ScrDynThenPack;
 
+/* The wait of a finally callback's result. It does not own the promise it
+ * waits on: that promise owns the reaction, and a reference back would
+ * keep both alive when the promise never settles. */
 typedef struct {
   SCR_DYN_PENDING
   ScrPromise *src, *dst; /* owned */
-  ScrDyn *result;        /* owned: the promise the reaction waits on */
 } ScrDynFinallyPack;
 
 static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
@@ -812,7 +821,6 @@ static void scr_dyn_finally_react(void *ctx, ScrPromise *settled) {
 static void scr_dyn_finally_drop(void *ctx) {
   ScrDynFinallyPack *pack = ctx;
   SCR_DYN_PENDING_UNLINK(pack);
-  scr_dyn_release(pack->result);
   scr_promise_release(pack->src);
   scr_promise_release(pack->dst);
   free(pack);
@@ -853,9 +861,9 @@ static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
       if (!pack) scr_ad_oom();
       pack->src = scr_promise_retain(src);
       pack->dst = scr_promise_retain(passthrough);
-      pack->result = r;
       SCR_DYN_PENDING_LINK(pack);
       scr_promise_react_unmarked(r->v.promise, &scr_dyn_finally_reaction, pack);
+      scr_dyn_release(r);
       scr_promise_resolve_dyn(a->dst, scr_dyn_new_promise(passthrough));
       scr_promise_release(passthrough);
     } else {
@@ -916,6 +924,15 @@ static void scr_dyn_adopt_drop(void *ctx) { scr_promise_release(ctx); }
 
 static const ScrPromiseReaction scr_dyn_adopt_reaction = { scr_dyn_adopt_react, scr_dyn_adopt_drop };
 
+/* The job that calls the adopted promise's `then`: the reaction above
+ * subscribes in this turn, with a reference of its own on the destination
+ * (the job's goes with the job). */
+static void scr_dyn_adopt_subscribe(void *ctx, ScrPromise *adopted) {
+  scr_promise_react_unmarked(adopted, &scr_dyn_adopt_reaction, scr_promise_retain(ctx));
+}
+
+static const ScrPromiseReaction scr_dyn_adopt_job = { scr_dyn_adopt_subscribe, scr_dyn_adopt_drop };
+
 /* The destination is borrowed; value moves in. An async function may
  * return a native promise hidden behind any/unknown without an explicit
  * await, so its completion must use resolution rather than fulfillment.
@@ -943,7 +960,7 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
     scr_dyn_release(value);
     return;
   }
-  scr_promise_react_next(value->v.promise, &scr_dyn_adopt_reaction, scr_promise_retain(destination));
+  scr_promise_react_next(value->v.promise, &scr_dyn_adopt_job, scr_promise_retain(destination));
   scr_dyn_release(value);
 }
 

@@ -222,11 +222,17 @@ void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *
  * raises 'rejectionHandled' in the reaction's turn, never inside the call
  * that registers it. */
 void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
-/* An unmarked subscription one microtask turn later, as the job that
- * resolves a promise with another one calls its `then`
- * (NewPromiseResolveThenableJob): `p` stays alive until that turn, and
- * unhandled until the reaction's steps observe it. */
+/* Queues the reaction's job now, whatever the state of `p`: react(ctx, p)
+ * runs in the next microtask turn, and `p` stays alive until then. It is
+ * the turn of the job that resolves a promise with another one
+ * (NewPromiseResolveThenableJob): its steps subscribe to `p`
+ * (scr_promise_react_unmarked), which may still be pending. The loop needs
+ * nothing for it beyond the reaction job it already runs. */
 void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+#ifdef SCR_RC_AUDIT
+/* The dynamic promise unit's pending reactions (scr_async.c). */
+extern SCR_TL long scr_dyn_reactions_pending;
+#endif
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber

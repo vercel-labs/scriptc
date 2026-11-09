@@ -869,14 +869,11 @@ export function streamTypedRefMaterializeAdapter(
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
-  const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
-  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
+  const numbered = `sc_ldr_${host.liveDynRefAdapters.size}`;
+  const snapshot = `${numbered}_materialize`;
+  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null", numbered };
   host.liveDynRefAdapters.set(adapterKey, adapter);
-  host.journal?.allocated(
-    snapshot.replace(/_materialize$/, ""),
-    "streamTypedRefMaterializeAdapter",
-    [t],
-  );
+  host.journal?.allocated(numbered, "streamTypedRefMaterializeAdapter", [t]);
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -2261,8 +2258,13 @@ registerReplay("streamTypedDesc", (host, args) =>
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );
-registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
-  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+// The numbered name, not the snapshot: a snapshot that is a runtime function
+// (scr_stream_ref_view, scr_dyn_class_view_unavailable) is no name of this
+// module, and a range's text spells the adapter's other symbols (its commit,
+// its ops tables) from the number.
+registerReplay(
+  "streamTypedRefMaterializeAdapter",
+  (host, args) => streamTypedRefMaterializeAdapter(host, args[0] as IrType).numbered,
 );
 registerReplay("streamFromArrayAdapter", (host, args) =>
   streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),

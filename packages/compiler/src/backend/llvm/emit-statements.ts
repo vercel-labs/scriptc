@@ -2640,13 +2640,15 @@ function emitVersionedLoop(
     B.startBlock(fast);
     declareAliasScopes(emitter, scoped?.scopes ?? []);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
-    // Both fast copies read the string's length the guard took.
-    const length = guard?.length;
-    if (length != null && version.unitLengths.size > 0)
-      emitter.stringLengthReads = new Map([
-        ...originalLengthReads,
-        ...[...version.unitLengths].map((node) => [node, length] as const),
-      ]);
+    // Each fast copy reads the string's length its side of the guard took.
+    const lengthReads = (length: string | null | undefined): void => {
+      if (length != null && version.unitLengths.size > 0)
+        emitter.stringLengthReads = new Map([
+          ...originalLengthReads,
+          ...[...version.unitLengths].map((node) => [node, length] as const),
+        ]);
+    };
+    lengthReads(guard?.length);
     emitter.emitStmt(s);
     B.br(done);
     if (sharedFast !== undefined) {
@@ -2671,6 +2673,7 @@ function emitVersionedLoop(
         ...originalUnitReads,
         ...[...version.stringReads].map((node) => [node, units] as const),
       ]);
+      lengthReads(guard?.unitsLength);
       emitter.emitStmt(s);
       B.br(done);
     }

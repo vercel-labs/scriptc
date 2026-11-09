@@ -531,6 +531,11 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "date.nativeNewFields",
   "date.nativeNewValue",
   "date.argumentsTime",
+  // `await` of a checked value (scr_await_dyn_value and its coroutine and
+  // WASI forms): a promise is awaited and its payload read; any other value
+  // takes one microtask turn and comes back as it is. No `then` is looked
+  // up and nothing is stored.
+  "async.awaitDyn",
   // The dynamic operators run the ToPrimitive and coercion helpers of
   // dyn.compare, dyn.numberConstructor and dyn.toStringCoerce, then build a
   // fresh number, string or bigint. dyn.increment steps dyn.toNumeric's result.
@@ -554,7 +559,12 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.getPrototype",
   "dyn.getPrototypeForIdentity",
   "dyn.hasKey",
+  // The computed forms convert the key with dyn.toStringCoerce's helpers
+  // and then run dyn.in or dyn.hasOwn; a symbol key is looked up in the
+  // value's view or asked of its island.
+  "dyn.hasKeyComputed",
   "dyn.hasOwn",
+  "dyn.hasOwnComputed",
   "dyn.in",
   "dyn.increment",
   "dyn.negate",
@@ -578,6 +588,9 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.ownKeys",
   "dyn.packPush",
   "dyn.packPushSpread",
+  // Object.is: a comparison of two numbers, or dyn.compare's strict
+  // equality.
+  "dyn.sameValue",
   "dyn.stringConstructor",
   "dyn.this",
   "dyn.toNumberCoerce",
@@ -653,6 +666,11 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "record.linkIs",
   "record.linkSource",
   "record.sourceShare",
+  // String replace with a replacement value: a function is called with
+  // fresh strings, numbers and a fresh groups object, and its result is
+  // converted with dyn.toStringCoerce's helpers; any other value is
+  // converted the same way and used as the template.
+  "regex.replaceCallback",
   "sharedArrayBuffer.new",
   "text.decodeStream",
   // A weak collection's constructor reads its seed with the helpers of

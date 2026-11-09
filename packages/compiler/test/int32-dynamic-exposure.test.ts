@@ -168,3 +168,69 @@ test("owning a weak collection is not a dynamic store", async () => {
   )!;
   expect(analyzeFinalFields(stored).isFinal(storedItem.name, "tags")).toBe(false);
 });
+
+// Helpers that read a dynamic value and store nothing: `await` of a checked
+// value, Object.is, `in` and Object.hasOwn with a computed key, and a string
+// replace whose callback has untyped parameters. A program that uses them
+// keeps its final fields and int32 fields; one test per helper shows the
+// program really lowers to it, and a store through a dynamic value still
+// names every field.
+const readers = (store: string): string => `
+class Item {
+  kind: number;
+  tags: string[] = [];
+  constructor(kind: number) {
+    this.kind = kind;
+  }
+}
+const item = new Item(3);
+item.tags.push("a");
+const values: unknown[] = [item, "kind", 2];
+const key: any = values[1];
+const target: any = values[0];
+async function settle(value: unknown): Promise<number> {
+  const settled = await value;
+  return settled === item ? 1 : 0;
+}
+const vars: Record<string, string> = { name: "x" };
+const text = "{name}_b".replace(/\\{(\\w+)\\}/g, (_m, name) => vars[name] ?? name);
+const same = Object.is(values[0], values[2]);
+const has = key in target;
+const own = Object.hasOwn(target, key);
+${store}
+async function main(): Promise<void> {
+  const settled = await settle(values[0]);
+  console.log(settled, text, same, has, own, item.kind | 0, item.tags.length);
+}
+main();
+`;
+
+test.each([
+  "async.awaitDyn",
+  "dyn.sameValue",
+  "dyn.hasKeyComputed",
+  "dyn.hasOwnComputed",
+  "regex.replaceCallback",
+])("%s is not a dynamic store", async (fn) => {
+  const mod = await lowered(readers(""));
+  expect(JSON.stringify(mod.functions)).toContain(`"fn":"${fn}"`);
+  // No function of the program holds a call that names every field.
+  const storing = mod.functions
+    .filter((f) => dynamicFieldStores({ ...mod, functions: [f] }).all)
+    .map((f) => f.name);
+  expect(storing).toEqual([]);
+  const item = mod.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Item" || c.name.endsWith(".Item"),
+  )!;
+  expect(analyzeFinalFields(mod).isFinal(item.name, "tags")).toBe(true);
+  expect(analyzeInt32Slots(mod).isField(item.name, "kind")).toBe(true);
+});
+
+test("a store through a dynamic value still names every field beside the readers", async () => {
+  const stored = await lowered(readers("target[key] = 4;"));
+  expect(dynamicFieldStores(stored).all).toBe(true);
+  const item = stored.classes!.find(
+    (c) => (c.jsName ?? c.name) === "Item" || c.name.endsWith(".Item"),
+  )!;
+  expect(analyzeFinalFields(stored).isFinal(item.name, "tags")).toBe(false);
+});

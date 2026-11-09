@@ -168,37 +168,66 @@ const OBJECT_ID_METHODS_7_1 = new Map<string, "type" | "signature">([
  * reference gets the local id of the symbol it names, so a later response
  * with that symbol's full reference finds the same id. */
 export class Ts71SymbolTable {
-  private readonly locals = new Map<string, number>();
+  /** Local ids by owner, then by the symbol's id within it: a source file's
+   * symbols by the file's node ID, a project's by the project. */
+  private readonly fileSymbols = new Map<string, Map<number, number>>();
+  private readonly projectSymbols = new Map<string, Map<number, number>>();
   private readonly references: (Ts71SymbolReference | undefined)[] = [undefined];
+  /** One descriptor per source file, by its node ID. Every reference to a
+   * file's symbol carries the file's whole descriptor, and the references
+   * live as long as the snapshot: kept as sent, the compiler's own source
+   * holds 1.4 million copies of 889 descriptors. */
+  private readonly files = new Map<string, Ts71SourceFileDescriptor>();
 
-  private allocate(key: string): number {
-    let local = this.locals.get(key);
+  private allocate(owners: Map<string, Map<number, number>>, owner: string, id: number): number {
+    let locals = owners.get(owner);
+    if (locals === undefined) {
+      locals = new Map<number, number>();
+      owners.set(owner, locals);
+    }
+    let local = locals.get(id);
     if (local === undefined) {
       local = this.references.length;
       this.references.push(undefined);
-      this.locals.set(key, local);
+      locals.set(id, local);
     }
     return local;
   }
 
+  /** The descriptor the table keeps for `file`: the one it already holds
+   * when that says the same, field for field. */
+  private sharedFile(file: Ts71SourceFileDescriptor): Ts71SourceFileDescriptor {
+    const known = this.files.get(file.nodeId);
+    if (
+      known !== undefined &&
+      known.fileName === file.fileName &&
+      known.path === file.path &&
+      known.contentHash === file.contentHash &&
+      known.parseOptionsKey === file.parseOptionsKey &&
+      known.scriptKind === file.scriptKind
+    )
+      return known;
+    this.files.set(file.nodeId, file);
+    return file;
+  }
+
   /** The local id of `reference`, which requests then name it by. */
   fromReference(reference: Ts71SymbolReference): number {
-    const key =
+    const file = reference.file;
+    if (file !== undefined) reference.file = this.sharedFile(file);
+    const local =
       reference.kind === 0
-        ? `f${reference.file?.nodeId ?? ""}:${reference.id}`
-        : `s${reference.project ?? ""}:${reference.id}`;
-    const local = this.allocate(key);
+        ? this.allocate(this.fileSymbols, file?.nodeId ?? "", reference.id)
+        : this.allocate(this.projectSymbols, reference.project ?? "", reference.id);
     this.references[local] = reference;
     return local;
   }
 
   /** The local id of a compact reference in a response for `project`. */
   fromCompact(reference: Ts71CompactReference, project: string): number {
-    return this.allocate(
-      reference.file !== undefined
-        ? `f${reference.file}:${reference.id}`
-        : `s${project}:${reference.id}`,
-    );
+    return reference.file !== undefined
+      ? this.allocate(this.fileSymbols, reference.file, reference.id)
+      : this.allocate(this.projectSymbols, project, reference.id);
   }
 
   /** The reference of local id `local`. Throws for a symbol no response has

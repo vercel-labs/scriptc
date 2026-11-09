@@ -65,9 +65,11 @@ interface Ts71SnapshotData {
   };
 }
 
-/** TypeScript 7.1's compiler options in 7.0's values: 7.1 swaps JsxEmit's
- * React (2) and ReactNative (3). */
-function options71<T extends { jsx?: number | undefined }>(options: T): T {
+/** TypeScript 7.0's compiler options in 7.1's values: 7.0 numbers JsxEmit's
+ * React 3 and ReactNative 2, and 7.1 the other way round. The client works
+ * in the pinned SDK's numbering, so a 7.0 server's options convert on the
+ * way in. */
+function options70<T extends { jsx?: number | undefined }>(options: T): T {
   if (options.jsx === 2) options.jsx = 3;
   else if (options.jsx === 3) options.jsx = 2;
   return options;
@@ -77,7 +79,7 @@ function project71(data: Ts71ProjectData): Ts7ReportedProjectData {
   return {
     id: data.id,
     configFileName: data.configFileName ?? data.id,
-    compilerOptions: options71(data.parsedCommandLine.options),
+    compilerOptions: data.parsedCommandLine.options,
     rootFiles: data.parsedCommandLine.fileNames,
   };
 }
@@ -200,7 +202,7 @@ export class Ts7Session {
     this.initialize();
     const data = this.request<Ts7ConfigData>("parseConfigFile", { file });
     // TypeScript 7.1 also reports the raw config, errors and compileOnSave.
-    return this.ts71 ? { options: options71(data.options), fileNames: data.fileNames } : data;
+    return this.ts71 ? data : { options: options70(data.options), fileNames: data.fileNames };
   }
 
   /** Whether initialize found a TypeScript 7.1 server; false before it. */
@@ -221,6 +223,7 @@ export class Ts7Session {
       : parseSemanticJson<Ts7ReportedSnapshotData>(
           this.text("updateSnapshot", JSON.stringify(params)),
         );
+    if (!this.ts71) for (const project of data.projects) options70(project.compilerOptions);
     const snapshot = new Ts7SessionSnapshot(data, this, paths);
     const previous = this.latest;
     if (previous !== undefined) {

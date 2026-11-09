@@ -284,24 +284,13 @@ static inline bool scr_prom_observed(const ScrPromise *p) {
   return p->rejection_observed || (p->identity != NULL && p->identity->observed);
 }
 
-/* Opens the late-handling window of `p`: its rejection was delivered as
- * unhandled (or Node tracks it), and the next reaction is told to
- * scr_rjh_notify_fn (scr_prom_observe). The window belongs to the identity
- * cell when `p` has one, so a reaction on any promise of the cell closes it,
- * once; a promise without a cell keeps it in its own flag, which moves to
- * the cell when the promise gets its first view (scr_promise_share_identity). */
-static inline void scr_prom_await_late(ScrPromise *p) {
-  if (p->identity != NULL) p->identity->reported = true;
-  else p->reported_unhandled = true;
-}
-
 /* After `p` was delivered as an unhandled rejection: it is not reported
  * again, and neither is another promise of its identity cell (a second view
  * of the same promise). */
 static inline void scr_prom_reported(ScrPromise *p) {
   p->rejection_observed = true;
+  p->reported_unhandled = true;
   if (p->identity != NULL) p->identity->observed = true;
-  scr_prom_await_late(p);
 }
 
 #ifdef SCR_RC_AUDIT
@@ -393,8 +382,7 @@ static void scr_promise_free_side(ScrPromise *p) {
 bool scr_promise_tracked_by_node(ScrPromise *p) {
   bool handled = scr_prom_observed(p);
   p->rejection_observed = true;
-  p->reported_unhandled = false;
-  if (!handled) scr_prom_await_late(p);
+  p->reported_unhandled = !handled;
   return handled;
 }
 #endif
@@ -510,16 +498,10 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
     src->identity->rc = 1;
     src->identity->observed = false;
     src->identity->transferred = false;
-    src->identity->reported = false;
   }
   /* Until a view has taken the tracking over, the source's own mark is a
    * reaction's (or says that it was reported, or that Node tracks it). */
   if (!src->identity->transferred && src->rejection_observed) src->identity->observed = true;
-  /* A report's late-handling window follows the promise into the cell. */
-  if (src->reported_unhandled) {
-    src->reported_unhandled = false;
-    src->identity->reported = true;
-  }
   if (dst->identity == src->identity) return;
   if (dst->identity && --dst->identity->rc == 0) free(dst->identity);
   dst->identity = src->identity;
@@ -537,7 +519,6 @@ void *scr_promise_map_identity(void *promise) {
     p->identity->rc = 1;
     p->identity->observed = false;
     p->identity->transferred = false;
-    p->identity->reported = false;
   }
   return p->identity;
 }
@@ -564,33 +545,20 @@ bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
  * binaries keep their size class): called when a promise the checkpoint
  * report already delivered as unhandled gains a handler. */
 SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
-/* The delivery of the late handlings the hook above collected for
- * 'rejectionHandled' listeners (scr_async_dyn.c sets it while it holds
- * any): the checkpoint report calls it first, Node's moment for that event
- * (after the jobs of the tick that attached the handler, before the
- * checkpoint's own unhandled rejections). false: a listener threw. */
-SCR_TL bool (*scr_rjh_flush_fn)(void) = NULL;
 #ifdef SCR_NODE_ISLANDS
 SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
 #endif
 
 /* Every handler attach funnels here: mark the rejection observed, and
- * tell scr_rjh_notify_fn (Node's 'rejectionHandled') when the attach arrived
- * AFTER the report delivered this promise, or another promise of its
- * identity cell, to 'unhandledRejection' listeners (the model's one
- * late-handling window — earlier handling keeps the promise out of the
- * report entirely). The window closes on the first attach, so one report is
- * told at most once — Node's pairing — whichever of the promise and its
- * views was reported and whichever gains the handler. */
+ * fire Node's 'rejectionHandled' when the attach arrived AFTER the
+ * report delivered this promise to 'unhandledRejection' listeners (the
+ * model's one late-handling window — earlier handling keeps the promise
+ * out of the report entirely). The flag clears on the first attach, so
+ * one report fires at most one 'rejectionHandled' — Node's pairing. */
 static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
-  bool late = p->reported_unhandled;
-  if (p->identity != NULL) {
-    p->identity->observed = true;
-    late |= p->identity->reported;
-    p->identity->reported = false;
-  }
-  if (late) {
+  if (p->identity != NULL) p->identity->observed = true;
+  if (p->reported_unhandled) {
     p->reported_unhandled = false;
     if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
   }
@@ -7280,7 +7248,6 @@ static bool scr_unhandled_print_dyn(const ScrDyn *d) {
 bool scr_report_unhandled_rejections(void) {
   bool any = false;
   bool crashed = false;
-  if (scr_rjh_flush_fn != NULL && !scr_rjh_flush_fn() && !scr_exc_handle_uncaught(false)) crashed = true;
   size_t report_count = scr_nunhandled;
   for (size_t i = 0; i < report_count; i++) {
     ScrPromise *p = scr_maybe_unhandled[i];
@@ -7289,9 +7256,9 @@ bool scr_report_unhandled_rejections(void) {
         /* Listener dispatch (scr_async_dyn.c installed the hook at
          * registration): the event handles it, like Node — per entry,
          * no report, exit 0. A listener throw is the uncaught crash.
-         * The report opens the 'rejectionHandled' window: a handler the
-         * listener itself attaches is a late handling (scr_prom_observe),
-         * delivered at the next checkpoint. */
+         * reported_unhandled arms the 'rejectionHandled' window: a
+         * handler the listener itself attaches fires the sibling event
+         * (scr_prom_observe). */
         scr_prom_reported(p);
         if (!scr_urj_deliver_fn(p) && !scr_exc_handle_uncaught(false)) crashed = true;
       } else if (scr_uncaught_exception_hook != NULL) {

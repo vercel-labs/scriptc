@@ -325,20 +325,11 @@ static void scr_urj_teardown(void) {
   scr_nurj = scr_urj_cap = 0;
 }
 
-/* Late handlings not delivered yet (scr_rjh_dispatch): promises, retained. */
-static SCR_TL ScrPromise **scr_rjh_late = NULL;
-static SCR_TL size_t scr_nrjh_late = 0, scr_rjh_late_cap = 0;
-
 static void scr_rjh_teardown(void) {
   for (size_t i = 0; i < scr_nrjh; i++) scr_rej_release(&scr_rjh_listeners[i]);
   free(scr_rjh_listeners);
   scr_rjh_listeners = NULL;
   scr_nrjh = scr_rjh_cap = 0;
-  for (size_t i = 0; i < scr_nrjh_late; i++) scr_promise_release(scr_rjh_late[i]);
-  free(scr_rjh_late);
-  scr_rjh_late = NULL;
-  scr_nrjh_late = scr_rjh_late_cap = 0;
-  scr_rjh_flush_fn = NULL;
 }
 
 static bool scr_urj_dispatch(ScrPromise *p);
@@ -715,41 +706,15 @@ static bool scr_urj_dispatch(ScrPromise *p) {
   return ok;
 }
 
-/* 'rejectionHandled' delivery — (promise), Node's payload. Node raises the
- * event when the jobs of the tick that attached the handler have run, before
- * that checkpoint's own unhandled rejections, not at the attach: the handler
- * itself runs first. So a late handling waits here until the checkpoint
- * report asks for it (scr_rjh_flush_fn), in the order of the attaches. A
- * listener throw is an uncaught exception there, as it is for
- * 'unhandledRejection'; the handlings behind it are dropped with the
- * process. A handling a listener causes joins the same delivery. */
-static bool scr_rjh_flush(void) {
-  bool ok = true;
-  for (size_t i = 0; i < scr_nrjh_late; i++) {
-    ScrPromise *p = scr_rjh_late[i];
-    if (ok) {
-      ScrDyn *boxed = scr_dyn_new_promise(p);
-      SCR_PE_ENTER();
-      ok = scr_rej_fire(&scr_rjh_listeners, &scr_nrjh, &boxed, 1);
-      scr_dyn_release(boxed);
-      scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
-      SCR_PE_LEAVE();
-    }
-    scr_promise_release(p);
-  }
-  scr_nrjh_late = 0;
-  scr_rjh_flush_fn = NULL;
-  return ok;
-}
-
+/* 'rejectionHandled' delivery — (promise), Node's payload. A listener
+ * throw propagates as a pending exception through the attach site. */
 static void scr_rjh_dispatch(ScrPromise *p) {
-  if (scr_nrjh_late == scr_rjh_late_cap) {
-    scr_rjh_late_cap = scr_rjh_late_cap ? scr_rjh_late_cap * 2 : 4;
-    scr_rjh_late = realloc(scr_rjh_late, scr_rjh_late_cap * sizeof *scr_rjh_late);
-    if (!scr_rjh_late) scr_ad_oom();
-  }
-  scr_rjh_late[scr_nrjh_late++] = scr_promise_retain(p);
-  scr_rjh_flush_fn = scr_rjh_flush;
+  ScrDyn *boxed = scr_dyn_new_promise(p);
+  SCR_PE_ENTER();
+  (void)scr_rej_fire(&scr_rjh_listeners, &scr_nrjh, &boxed, 1);
+  scr_dyn_release(boxed);
+  scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
 }
 
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
@@ -863,9 +828,8 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
   /* A rejection HANDLER marks the source handled at attach (Node's
    * moment; the reaction fiber's await re-marks harmlessly) — this is
-   * also what makes a .catch inside an 'unhandledRejection' listener a
-   * late handling at the attach point ('rejectionHandled' follows at the
-   * next checkpoint). */
+   * also what lets a .catch inside an 'unhandledRejection' listener fire
+   * 'rejectionHandled' immediately at the attach point. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();

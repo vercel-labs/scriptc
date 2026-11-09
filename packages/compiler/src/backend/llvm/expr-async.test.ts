@@ -132,17 +132,23 @@ test("a typed slot's conversion adopts its source only while the node carries th
 
   // The adoption is out of line: the flagged site is the plain site's text
   // with another callee.
-  const callee = /call ptr @(sc_dc_\d+)\(/;
+  const callee = /call ptr @(sc_dc_\w+)\(/;
   const plain = callee.exec(copied.body)![1]!;
   const adopting = callee.exec(shared.body)![1]!;
-  expect(adopting).not.toBe(plain);
   expect(shared.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
+  // The adopting helper is named after its plain helper and takes no number
+  // of the `sc_dc_<n>` sequence: the numbered helpers of the flagged module
+  // are the unflagged module's, name for name.
+  expect(adopting).toMatch(new RegExp(`^${plain}_adopt(_held)?$`));
+  const numbered = (llvm: string): string[] =>
+    [...llvm.matchAll(/^define internal [^\n]*@(sc_dc_\d+)\(/gm)].map((m) => m[1]!);
+  expect(numbered(shared.llvm)).toEqual(numbered(copied.llvm));
 
   // The callee is never inlined into the site. A value that is not a plain
   // object or array goes on to the plain helper in a tail call; a plain one
   // is checked, and adopted only where the check left no error pending.
   const helper = helperBody(shared.llvm, adopting);
-  expect(helper).toMatch(/^define internal ptr @sc_dc_\d+\(ptr %d, ptr %path\) noinline /);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) noinline /);
   const steps = [
     /icmp eq i32 %t\d+, 4$/m,
     /icmp eq i32 %t\d+, 5$/m,
@@ -166,7 +172,7 @@ test("a record's typed slot hands the type's own capsule out as the plain site d
     "record",
   );
   const callees = (body: string): string[] =>
-    [...body.matchAll(/call ptr @(sc_dc_\d+)\(/g)].map((m) => m[1]!);
+    [...body.matchAll(/call ptr @(sc_dc_\w+)\(/g)].map((m) => m[1]!);
   // One helper call in each: the path of every value but the type's own
   // capsule, which hands its record out with no call (the address compare
   // of its key) and never reaches the adoption.
@@ -174,7 +180,7 @@ test("a record's typed slot hands the type's own capsule out as the plain site d
   const [adopting] = callees(flagged.body);
   expect(callees(copied.body)).toHaveLength(1);
   expect(callees(flagged.body)).toHaveLength(1);
-  expect(adopting).not.toBe(plain);
+  expect(adopting).toMatch(new RegExp(`^${plain}_adopt(_held)?$`));
   expect(copied.body).toContain("typed_ref.type_key");
   expect(copied.body).toMatch(
     /= phi ptr \[ %t\d+, %dc\.own\.hit\d+ \], \[ %t\d+, %dc\.own\.other\d+ \]$/m,
@@ -185,7 +191,7 @@ test("a record's typed slot hands the type's own capsule out as the plain site d
   expect(flagged.body).not.toContain("scr_dyn_adopt_shared");
   expect(flagged.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
   const helper = helperBody(flagged.llvm, adopting!);
-  expect(helper).toMatch(/^define internal ptr @sc_dc_\d+\(ptr %d, ptr %path\) noinline /);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) noinline /);
   expect(helper).toContain(`tail call ptr @${plain}(ptr %d, ptr %path)`);
   expect(helper.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
 });

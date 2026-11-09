@@ -374,6 +374,10 @@ const DISCRIMINANT_DISPATCH_VALUES = 4;
 export class LlDyn {
   private readonly dynMatchers = new Map<string, string>();
   private readonly dynBuilders = new Map<string, string>();
+  /** The adopting variants of checked conversions (dynCheckAdoptingHelper),
+   * apart from dynBuilders: its size numbers the plain helpers, and a
+   * program that adopts keeps every one of their names. */
+  private readonly dynAdopters = new Set<string>();
   private readonly toDynFns = new Map<string, string>();
   private readonly dynFuncThunks = new Map<string, string>();
   private readonly dynFuncBoxes = new Map<string, string>();
@@ -3166,7 +3170,8 @@ export class LlDyn {
    * object or array that converted becomes a live capsule of the value
    * built from it (scr_dyn_adopt_shared), so the dynamic value and the
    * typed one stay one object. The adoption lives here, out of line: a call
-   * site is the unflagged site's text with this callee.
+   * site is the unflagged site's text with this callee, `<plain>_adopt`
+   * (`<plain>_adopt_held` for a borrowed source).
    *
    * Only a plain object or array has nodes to adopt (the kinds
    * scr_dyn_adoptable names): every other value goes to the plain helper in
@@ -3187,12 +3192,13 @@ export class LlDyn {
       (id) => host.unionsById.get(id),
     );
     if (!live) return plain;
-    const key = checkedConversionKey(t);
-    const builderKey = `${borrowed ? "adopt-borrowed" : "adopt"}:${preserveRefs ? "identity:" : ""}${key}`;
-    const existing = this.dynBuilders.get(builderKey);
-    if (existing) return existing;
-    const name = `sc_dc_${this.dynBuilders.size}`;
-    this.dynBuilders.set(builderKey, name);
+    // Named after the plain helper, one name per (plain helper, borrowed):
+    // the variant takes no number of the `sc_dc_<n>` sequence, so a program
+    // that adopts differs from the same program without the flag only in
+    // its flagged sites and the helpers added for them.
+    const name = `${plain}_adopt${borrowed ? "_held" : ""}`;
+    if (this.dynAdopters.has(name)) return name;
+    this.dynAdopters.add(name);
     host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
     host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
     host.declare(`declare void @scr_dyn_release(ptr)`);

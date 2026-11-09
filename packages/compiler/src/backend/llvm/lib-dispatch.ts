@@ -322,12 +322,21 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return { name: t, type: e.type };
   }
   if (e.fn === "record.reflectsStatic") {
-    // Asks the runtime's two tables about the record's address: no capsule
-    // is made, and the record is only borrowed.
+    // Asks the runtime's tables about the record's address: no capsule is
+    // made, and the record is only borrowed. The second argument is the
+    // program's fact, a literal: whether a record of this type can be a
+    // linked copy at all. The call only reads, so two of them with nothing
+    // written between are one.
     const record = host.emitReadReceiver(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_record_reflects_static(ptr)`);
+    const linked = e.args[1]!;
+    const mayLink = linked.kind !== "boolLit" || linked.value;
+    host.declare(
+      `declare zeroext i1 @scr_record_reflects_static(ptr, i1 zeroext) nounwind willreturn memory(read)`,
+    );
     const plain = B.tmp();
-    B.line(`${plain} = call zeroext i1 @scr_record_reflects_static(ptr ${record.name})`);
+    B.line(
+      `${plain} = call zeroext i1 @scr_record_reflects_static(ptr ${record.name}, i1 zeroext ${mayLink})`,
+    );
     return { name: plain, type: e.type };
   }
   if (e.fn === "record.sourceHasKey") {

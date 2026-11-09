@@ -15,27 +15,33 @@
  *    (record.reflectsStatic), the checked view's answer otherwise;
  *  - `const keys = Object.keys(r)`, `Object.getOwnPropertyNames(r)` or
  *    `Reflect.ownKeys(r)` whose every use is `keys.length` or `keys[i]`
- *    compared with a string literal by `===` or `!==`: no array is made.
- *    The declaration computes the key count and the position of each
+ *    compared with a string literal by `===` or `!==`: the statements that
+ *    follow the declaration in its block are lowered twice, under one test
+ *    of the record. For a record that reflects statically no array is
+ *    made: the declaration computes the key count and the position of each
  *    compared name once (a snapshot, as the array was), and the uses read
- *    those numbers;
+ *    those numbers. For any other record the statements are what they were
+ *    before, with the array;
  *  - `Object.keys(r).length` and the two other lists' `.length`.
  *
  * `r` is a local or a parameter whose lowered type is a record that
  * recordMayKeepSource names: closed, with declared fields, no accessor
  * slot and no index signature. Anything else keeps its lowering.
  *
- * A record that kept a source, a linked copy, and (for Reflect.ownKeys and
- * the prototype) a record with a live checked view of its own take the
- * lowering the call had before, once per declaration: the answers are the
- * same as before in every case, only how they are computed changes. */
+ * A record that kept a source, a linked copy and a record with a live
+ * checked view of its own take the lowering the question had before: the
+ * answers are the same as before in every case, only how they are computed
+ * changes.
+ *
+ * The array is given up on proof, not on a prediction. The statements for a
+ * record that reflects statically are lowered with the array declared as
+ * before, and the declaration is dropped only when nothing in them reads
+ * it: a use that reaches a lowering path these hooks do not see reads the
+ * array, which is then built as before. */
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
-  DYN,
   F64,
-  STRING,
-  arrayOf,
   shapeHasAccessorSlots,
   shapeKeyOrders,
   type IrExpr,
@@ -48,11 +54,11 @@ import {
 import { numLit, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { declareContextLocal } from "./function-context.js";
+import { declareContextLocal, type FnCtx } from "./function-context.js";
 import { identifiersNamed } from "./identifier-uses.js";
 import { perKeyOrder } from "./key-order-witness.js";
-import { recordLinksInto, recordLinkTest, registerLinkedHelper } from "./record-links.js";
-import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import { recordLinksInto, registerLinkedHelper } from "./record-links.js";
+import { recordMayKeepSource } from "./record-sources.js";
 import { keyedHelperName } from "./stable-names.js";
 
 /** Which list a call answers: the enumerable names, every string name, or
@@ -61,19 +67,32 @@ type ListKind = "keys" | "names" | "ownKeys";
 
 type RecordType = IrType & { kind: "record" };
 
+/** The statements after a list's declaration are lowered twice, so a block
+ * with more syntax nodes than this after the declaration keeps its array. */
+const MAX_VERSIONED_NODES = 600;
+
+/** A list declared among the statements of another list's is lowered four
+ * times; a third level keeps its array. */
+const MAX_VERSIONED_DEPTH = 2;
+
 /** A key list that exists only as numbers: its length and the position of
  * each name the program compares an element with (-1 for a name the record
  * does not list). */
 interface KeyList {
+  /** The function that declared the numbers; a use lowered into any other
+   * function reads the array. */
+  ctx: FnCtx;
   count: string;
   positions: Map<string, string>;
 }
 
 interface State {
-  /** The lists of the declarations lowered so far, by the list's symbol. */
+  /** The lists whose statements are being lowered, by the list's symbol. */
   lists: Map<ts.Symbol, KeyList>;
-  /** Expressions being lowered as they were before, inside an answer. */
+  /** Syntax being lowered as it was before this module. */
   plain: Set<ts.Node>;
+  /** How many lists' statements are being lowered twice. */
+  depth: number;
 }
 
 const STATES = new WeakMap<Lowerer, State>();
@@ -81,7 +100,7 @@ const STATES = new WeakMap<Lowerer, State>();
 function stateOf(lowerer: Lowerer): State {
   let state = STATES.get(lowerer);
   if (!state) {
-    state = { lists: new Map(), plain: new Set() };
+    state = { lists: new Map(), plain: new Set(), depth: 0 };
     STATES.set(lowerer, state);
   }
   return state;
@@ -214,38 +233,6 @@ function presentCount(
   return { kind: "bin", op: "+", left: numLit(always, loc), right: sum, type: F64, loc };
 }
 
-/** `%obj.keyStatic(r)`: whether `r` lists its own keys from its shape's
- * table, which a copy linked to a wider source does not. */
-function keyStaticCall(lowerer: Lowerer, record: IrExpr, type: RecordType, loc: SrcLoc): IrExpr {
-  const helper = shapeHelper(
-    lowerer,
-    "%obj.keyStatic",
-    `obj.keyStatic:${type.shapeId}`,
-    type,
-    BOOL,
-    loc,
-    () => [{ kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc }],
-  );
-  if (helper.fn !== null) {
-    const fn = helper.fn;
-    // The links are known once every conversion into the type is
-    // (finalizeRecordLinks), after the key orders are settled.
-    registerLinkedHelper(lowerer, fn, type.shapeId, "custom");
-    lowerer.linkedHelperFinalizers.push(() => {
-      const r = varRef("r.0", type, loc);
-      const linked: IrStmt[] = recordLinksInto(lowerer, type.shapeId).map((link) => ({
-        kind: "if",
-        cond: recordLinkTest(r, link, loc),
-        then: [{ kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc }],
-        else_: null,
-        loc,
-      }));
-      fn.body = [...linked, ...fn.body];
-    });
-  }
-  return call(helper.name, record, BOOL, loc);
-}
-
 /** `%obj.keyCount(r)`: how many keys the shape's table lists for `r`. */
 function keyCountCall(lowerer: Lowerer, record: IrExpr, type: RecordType, loc: SrcLoc): IrExpr {
   lowerer.keyOrder.observe(type);
@@ -314,28 +301,37 @@ function keyPositionCall(
   return call(helper.name, record, F64, loc);
 }
 
-/** Whether `record` answers `kind` from its shape's table: it kept no
- * source and is no linked copy, and, for the list that holds symbols, no
- * live checked view of it has a member of its own. */
-function answersFromTable(
-  lowerer: Lowerer,
-  kind: ListKind,
-  record: IrExpr,
-  type: RecordType,
-  loc: SrcLoc,
-): IrExpr {
-  const unsourced: IrExpr =
-    kind === "ownKeys"
-      ? { kind: "libCall", fn: "record.reflectsStatic", args: [record], type: BOOL, loc }
-      : { kind: "unary", op: "!", operand: recordSourceTest(record, loc), type: BOOL, loc };
-  return {
-    kind: "logical",
-    op: "&&",
-    left: unsourced,
-    right: keyStaticCall(lowerer, record, type, loc),
-    type: BOOL,
+/** Whether `record` answers reflection from its shape's table and has
+ * Object.prototype: it kept no source, is no linked copy, and no live
+ * checked view of it has a member or a prototype of its own. The one fact
+ * every answer of this module rests on. */
+function reflectsStatic(lowerer: Lowerer, record: IrExpr, type: RecordType, loc: SrcLoc): IrExpr {
+  // Whether a record of the type can be a linked copy is the program's
+  // fact, known once every conversion into the type is: until then the
+  // runtime looks, and a type nothing is narrowed into skips that probe.
+  const linked: IrExpr & { kind: "boolLit" } = { kind: "boolLit", value: true, type: BOOL, loc };
+  const helper = shapeHelper(
+    lowerer,
+    "%obj.reflectsStatic",
+    `obj.reflectsStatic:${type.shapeId}`,
+    type,
+    BOOL,
     loc,
-  };
+    (_shape, r) => [
+      {
+        kind: "return",
+        value: { kind: "libCall", fn: "record.reflectsStatic", args: [r, linked], type: BOOL, loc },
+        loc,
+      },
+    ],
+  );
+  if (helper.fn !== null) {
+    registerLinkedHelper(lowerer, helper.fn, type.shapeId, "custom");
+    lowerer.linkedHelperFinalizers.push(() => {
+      linked.value = recordLinksInto(lowerer, type.shapeId).length > 0;
+    });
+  }
+  return call(helper.name, record, BOOL, loc);
 }
 
 function isStrictEquality(kind: ts.SyntaxKind): boolean {
@@ -351,12 +347,37 @@ function enclosingFunction(node: ts.Node): ts.Node | undefined {
   return current;
 }
 
+/** Whether `rest` can be lowered twice: it holds no function and no class
+ * (each would be lifted twice), and is small. */
+function lowersTwice(rest: readonly ts.Statement[]): boolean {
+  let nodes = 0;
+  let twice = true;
+  for (const stmt of rest) {
+    ts.walkPreorder(stmt, (node) => {
+      if (
+        ++nodes > MAX_VERSIONED_NODES ||
+        ts.isFunctionLike(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node)
+      ) {
+        twice = false;
+        return "stop";
+      }
+      return undefined;
+    });
+    if (!twice) return false;
+  }
+  return true;
+}
+
 /** The names the uses of list `symbol` compare its elements with, or null
- * when a use is anything but `list.length` or `list[i] === "name"`. */
+ * when a use is anything but `list.length` or `list[i] === "name"` inside
+ * `rest`, the statements that follow the declaration in its block. */
 function comparedNames(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
   symbol: ts.Symbol,
+  rest: ReadonlySet<ts.Node>,
 ): Set<string> | null {
   if (!ts.isIdentifier(decl.name)) return null;
   const owner = enclosingFunction(decl);
@@ -365,6 +386,9 @@ function comparedNames(
     if (use === decl.name) continue;
     if (lowerer.checker.getSymbolAtLocation(use) !== symbol) continue;
     if (enclosingFunction(use) !== owner) return null;
+    let inside: ts.Node | undefined = use;
+    while (inside !== undefined && inside !== owner && !rest.has(inside)) inside = inside.parent;
+    if (inside === undefined || inside === owner) return null;
     const parent = use.parent;
     if (
       ts.isPropertyAccessExpression(parent) &&
@@ -403,117 +427,175 @@ function comparedNames(
   return names;
 }
 
-/** `const keys = <list call>(r)` whose uses only count the list and compare
- * its elements with names: the statements that compute the count and each
- * name's position. Null for every other declaration. */
-export function lowerOwnKeyListDecl(
+/** `stmts[index]` as `const keys = <list call>(r)` whose uses, all in the
+ * statements after it, only count the list and compare its elements with
+ * names: the declaration and those statements, as one statement that tests
+ * the record once and runs them without the array or as they were before.
+ * Null for every other statement, which the caller lowers itself. */
+export function lowerOwnKeyListScope(
   lowerer: Lowerer,
-  decl: ts.VariableDeclaration,
-  isConst: boolean,
+  stmts: readonly ts.Statement[],
+  index: number,
 ): IrStmt[] | null {
-  if (!isConst || decl.initializer === undefined || !ts.isIdentifier(decl.name)) return null;
+  const stmt = stmts[index]!;
+  if (!ts.isVariableStatement(stmt) || index + 1 >= stmts.length) return null;
+  const declared = stmt.declarationList;
+  if ((declared.flags & ts.NodeFlags.Const) === 0 || declared.declarations.nodes.length !== 1)
+    return null;
+  const decl = declared.declarations.nodes[0]!;
+  if (decl.initializer === undefined || !ts.isIdentifier(decl.name)) return null;
   const list = listCall(lowerer, decl.initializer);
   if (list === null || enclosingFunction(decl) === undefined) return null;
+  const state = stateOf(lowerer);
+  // Inside a probe the diagnostics go elsewhere, and a function with a
+  // constant some closure captured before its declaration initializes that
+  // constant's box once: both keep the array.
+  if (
+    state.plain.has(stmt) ||
+    state.depth >= MAX_VERSIONED_DEPTH ||
+    lowerer.diagSink !== null ||
+    lowerer.ctx.tdzPredeclared.size > 0
+  )
+    return null;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   if (symbol === undefined) return null;
   const record = staticRecord(lowerer, list.record);
   if (record === null) return null;
-  const compared = comparedNames(lowerer, decl, symbol);
+  const rest = stmts.slice(index + 1);
+  if (!lowersTwice(rest)) return null;
+  const compared = comparedNames(lowerer, decl, symbol, new Set<ts.Node>(rest));
   if (compared === null) return null;
   const loc = locOf(decl);
-  // What the call answered before, for the records the table does not
-  // describe: the names as a string list, and the list's length.
-  const before = lowerPlain(lowerer, decl.initializer);
-  let names: IrExpr;
-  let length: (list: IrExpr) => IrExpr;
-  const stringList = arrayOf(STRING);
-  if (list.kind === "ownKeys") {
-    if (before.type.kind !== "dyn") return null;
-    names = {
-      kind: "dynCheck",
-      value: {
-        kind: "libCall",
-        fn: "dyn.getOwnPropertyNames",
-        args: [lowerer.lowerExprExpecting(list.record, DYN)],
-        type: DYN,
+  const ctx = lowerer.ctx;
+  const diags = lowerer.diags.length;
+  const fences = lowerer.runtimeFences.length;
+  const reported = (): boolean =>
+    lowerer.diags.length !== diags || lowerer.runtimeFences.length !== fences;
+  // The statements as they were before, with the array: what a record the
+  // table does not describe runs, and what the block is when it reports
+  // anything (a second lowering would report it again).
+  const before = lowerSeparately(lowerer, state, [stmt, ...rest], stmt, false);
+  if (reported()) return before;
+  // The same statements for a record that reflects statically. The array
+  // is declared as before, so a use these hooks do not answer reads it.
+  const locals = ctx.locals.length;
+  let withArray: IrStmt[];
+  let numbers: IrStmt[];
+  let body: IrStmt[];
+  let arrayLocals: number;
+  lowerer.scopes.push(new Map());
+  try {
+    withArray = lowerSeparately(lowerer, state, [stmt], stmt, true);
+    arrayLocals = ctx.locals.length;
+    const declare = (name: string): string =>
+      declareContextLocal(ctx, name, F64, false, undefined, undefined).id;
+    const keyList: KeyList = { ctx, count: declare("%keyCount"), positions: new Map() };
+    numbers = [
+      {
+        kind: "varDecl",
+        localId: keyList.count,
+        init: keyCountCall(lowerer, record.ref, record.type, loc),
         loc,
       },
-      type: stringList,
-      loc,
-    };
-    length = () => ({ kind: "libCall", fn: "dyn.arrLen", args: [before], type: F64, loc });
-  } else {
-    if (before.type.kind !== "array" || before.type.elem.kind !== "string") return null;
-    names = before;
-    length = (held) => ({
-      kind: "arrIntrinsic",
-      method: "length",
-      receiver: held,
-      args: [],
-      type: F64,
-      loc,
-    });
+    ];
+    for (const name of compared) {
+      const position = declare("%keyAt");
+      keyList.positions.set(name, position);
+      numbers.push({
+        kind: "varDecl",
+        localId: position,
+        init: record.shape.fields.some((field) => field.name === name)
+          ? keyPositionCall(lowerer, record.ref, record.type, name, loc)
+          : numLit(-1, loc),
+        loc,
+      });
+    }
+    state.lists.set(symbol, keyList);
+    try {
+      body = lowerSeparately(lowerer, state, rest, null, true);
+    } finally {
+      state.lists.delete(symbol);
+    }
+  } finally {
+    lowerer.scopes.pop();
   }
-  const declare = (name: string, type: IrType, mutable: boolean): string =>
-    declareContextLocal(lowerer.ctx, name, type, mutable, undefined, undefined).id;
-  const keyList: KeyList = { count: declare("%keyCount", F64, true), positions: new Map() };
-  const stmts: IrStmt[] = [{ kind: "varDecl", localId: keyList.count, init: numLit(0, loc), loc }];
-  const fast: IrStmt[] = [
+  if (reported()) {
+    // Nothing the second lowering reports may be heard: the block keeps
+    // its array.
+    lowerer.diags.length = diags;
+    lowerer.runtimeFences.length = fences;
+    ctx.locals.length = locals;
+    return before;
+  }
+  // The proof: no statement reads a local the array's declaration made.
+  const made = ctx.locals.slice(locals, arrayLocals).map((local) => local.id);
+  if (made.length > 0 && !mentionsAny([numbers, body], new Set(made))) {
+    ctx.locals.splice(locals, arrayLocals - locals);
+    withArray = [];
+  }
+  return [
     {
-      kind: "assign",
-      localId: keyList.count,
-      value: keyCountCall(lowerer, record.ref, record.type, loc),
+      kind: "if",
+      cond: reflectsStatic(lowerer, record.ref, record.type, loc),
+      then: [...withArray, ...numbers, ...body],
+      else_: before,
       loc,
     },
   ];
-  const held = declare("%keyNames", stringList, false);
-  const slow: IrStmt[] = [
-    { kind: "varDecl", localId: held, init: names, loc },
-    { kind: "assign", localId: keyList.count, value: length(varRef(held, stringList, loc)), loc },
-  ];
-  for (const name of compared) {
-    const position = declare("%keyAt", F64, true);
-    keyList.positions.set(name, position);
-    stmts.push({ kind: "varDecl", localId: position, init: numLit(-1, loc), loc });
-    if (record.shape.fields.some((field) => field.name === name))
-      fast.push({
-        kind: "assign",
-        localId: position,
-        value: keyPositionCall(lowerer, record.ref, record.type, name, loc),
-        loc,
-      });
-    // indexOf answers -1 for a name the list lacks.
-    slow.push({
-      kind: "assign",
-      localId: position,
-      value: {
-        kind: "arrIntrinsic",
-        method: "indexOf",
-        receiver: varRef(held, stringList, loc),
-        args: [{ kind: "strLit", value: name, type: STRING, loc }],
-        type: F64,
-        loc,
-      },
-      loc,
-    });
-  }
-  stmts.push({
-    kind: "if",
-    cond: answersFromTable(lowerer, list.kind, record.ref, record.type, loc),
-    then: fast,
-    else_: slow,
-    loc,
-  });
-  stateOf(lowerer).lists.set(symbol, keyList);
-  return stmts;
 }
 
-/** The list a name reads, when its declaration made one. */
+/** Lowers `stmts` as a list of their own. `plain` is the declaration this
+ * module must leave alone inside it; `again` marks a second lowering of
+ * statements that are already counted. */
+function lowerSeparately(
+  lowerer: Lowerer,
+  state: State,
+  stmts: readonly ts.Statement[],
+  plain: ts.Statement | null,
+  again: boolean,
+): IrStmt[] {
+  const counted = lowerer.suppressStats;
+  if (again) lowerer.suppressStats = true;
+  if (plain !== null) state.plain.add(plain);
+  state.depth++;
+  lowerer.runtimeOptionalLocals.beginScope();
+  try {
+    return lowerer.lowerStmts(stmts);
+  } finally {
+    lowerer.runtimeOptionalLocals.endScope();
+    state.depth--;
+    if (plain !== null) state.plain.delete(plain);
+    lowerer.suppressStats = counted;
+  }
+}
+
+/** Whether anything under `node` names one of the local ids: a read, a
+ * write, a capture, or any field a later IR form may add. Source positions
+ * and types name no local. */
+export function mentionsAny(node: unknown, ids: ReadonlySet<string>): boolean {
+  if (typeof node === "string") return ids.has(node);
+  if (node === null || typeof node !== "object") return false;
+  if (Array.isArray(node)) {
+    for (const item of node) if (mentionsAny(item, ids)) return true;
+    return false;
+  }
+  const fields = node as Record<string, unknown>;
+  for (const key in fields) {
+    if (key === "loc" || key === "type") continue;
+    if (mentionsAny(fields[key], ids)) return true;
+  }
+  return false;
+}
+
+/** The list a name reads, when its statements are being lowered for a
+ * record that reflects statically and the name is read in the function
+ * that declared the list. */
 function keyListOf(lowerer: Lowerer, node: ts.Node): KeyList | null {
   const lists = STATES.get(lowerer)?.lists;
   if (!lists || lists.size === 0 || !ts.isIdentifier(node)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
-  return symbol === undefined ? null : (lists.get(symbol) ?? null);
+  const list = symbol === undefined ? undefined : lists.get(symbol);
+  return list !== undefined && list.ctx === lowerer.ctx ? list : null;
 }
 
 /** `Object.getPrototypeOf(r)` with `r` a name. */
@@ -554,7 +636,7 @@ export function lowerOwnKeyQuestion(lowerer: Lowerer, expr: ts.Expression): IrEx
     const loc = locOf(expr);
     return {
       kind: "ternary",
-      cond: answersFromTable(lowerer, list.kind, record.ref, record.type, loc),
+      cond: reflectsStatic(lowerer, record.ref, record.type, loc),
       then: keyCountCall(lowerer, record.ref, record.type, loc),
       else_: before,
       type: F64,
@@ -607,13 +689,7 @@ export function lowerOwnKeyQuestion(lowerer: Lowerer, expr: ts.Expression): IrEx
   if (record === null) return null;
   const before = lowerPlain(lowerer, expr);
   if (before.type.kind !== "bool") return before;
-  const statically: IrExpr = {
-    kind: "libCall",
-    fn: "record.reflectsStatic",
-    args: [record.ref],
-    type: BOOL,
-    loc,
-  };
+  const statically = reflectsStatic(lowerer, record.ref, record.type, loc);
   // A record that reflects statically has Object.prototype; any other
   // answers as its checked view does.
   return negated

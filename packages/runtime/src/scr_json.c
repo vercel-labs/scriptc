@@ -5858,26 +5858,6 @@ static bool scr_typed_ref_plain(const ScrDyn *d) {
          !d->v.typed_ref.materialized && !scr_dyn_generator(d);
 }
 
-/* Whether native record `rec` answers reflection from its declared fields
- * alone: its prototype is Object.prototype and its own keys are its present
- * fields, with no symbol-keyed member. False when the record kept a source
- * (or is a record view), and when a live capsule of it holds anything of
- * its own: a view the program may have given a prototype or a member, or
- * symbol-keyed properties. Those live in the capsule and are found again
- * for as long as it lives, because boxing the record answers that capsule
- * (scr_dyn_typed_ref_new). A false answer only sends the caller to the
- * capsule's own answer. */
-bool scr_record_reflects_static(const void *rec) {
-  if (scr_record_source_count && scr_record_source_slot(rec) != NULL) return false;
-  if (!scr_typed_ref_count) return true;
-  size_t mask = scr_typed_ref_capacity - 1;
-  for (size_t slot = scr_typed_ref_bucket((void *)rec); scr_typed_ref_slots[slot]; slot = (slot + 1) & mask) {
-    const ScrDyn *capsule = scr_typed_ref_slots[slot];
-    if (capsule->v.typed_ref.ptr == rec && !scr_typed_ref_plain(capsule)) return false;
-  }
-  return true;
-}
-
 /* A record capsule whose snapshot holds its present fields and nothing
  * else, or NULL. */
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d) {
@@ -24306,4 +24286,43 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
+}
+
+/* Whether native record `rec` answers reflection from its declared fields
+ * alone: its prototype is Object.prototype and its own keys are its present
+ * fields in its shape's order, with no symbol-keyed member. False when the
+ * record kept a source (or is a record view), when it is a copy linked to a
+ * wider source, and when a live capsule of it holds anything of its own: a
+ * view the program may have given a prototype or a member, or symbol-keyed
+ * properties. Those live in the capsule and are found again for as long as
+ * it lives, because boxing the record answers that capsule
+ * (scr_dyn_typed_ref_new). A false answer only sends the caller to the
+ * answer reflection gives. Three table probes by the record's address, each
+ * skipped while its table is empty; nothing is read from the record.
+ *
+ * Only programs that ask an own-key question about a typed record reference
+ * this (own-key-lists.ts), and the linker drops it from every other
+ * program, whose bytes it must not move. The compiler lays this unit's
+ * tables out in the order its functions first name them, taking the
+ * exported functions first, in source order, and the static ones after. So
+ * the probes sit in a static function that the unit's last exported
+ * function alone calls: every table is already placed when it is compiled,
+ * and the layout of the unit is what it was without the two. */
+static bool scr_record_reflects_static_probe(const void *rec, bool may_link) {
+  if (scr_record_source_count && scr_record_source_slot(rec) != NULL) return false;
+  if (may_link && scr_record_link_count && scr_record_link_find(rec) != NULL) return false;
+  if (!scr_typed_ref_count) return true;
+  size_t mask = scr_typed_ref_capacity - 1;
+  for (size_t slot = scr_typed_ref_bucket((void *)rec); scr_typed_ref_slots[slot];
+       slot = (slot + 1) & mask) {
+    const ScrDyn *capsule = scr_typed_ref_slots[slot];
+    if (capsule->v.typed_ref.ptr == rec && !scr_typed_ref_plain(capsule)) return false;
+  }
+  return true;
+}
+
+/* `may_link` is false for a record of a type the program narrows nothing
+ * into: such a record is never a linked copy, and that probe is skipped. */
+bool scr_record_reflects_static(const void *rec, bool may_link) {
+  return scr_record_reflects_static_probe(rec, may_link);
 }

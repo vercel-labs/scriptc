@@ -252,7 +252,7 @@ import {
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import { lowerFunduleMemberDecl } from "./lower-fundule.js";
-import { lowerOwnKeyListDecl } from "./own-key-lists.js";
+import { lowerOwnKeyListScope } from "./own-key-lists.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -907,6 +907,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const stmt = stmts[i]!;
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
+      // A key list of a typed record that the statements after it only
+      // count and compare with names takes those statements with it
+      // (own-key-lists.ts).
+      if (inFunction && ts.isVariableStatement(stmt)) {
+        const ownKeyList = lowerOwnKeyListScope(lowerer, stmts, i);
+        if (ownKeyList !== null) {
+          for (const lowered of ownKeyList) out.push(lowered);
+          break;
+        }
+      }
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
       // A guard that always leaves in front of a polyfill of a built-in
       // member (`if (Array.prototype.flat) return;`).
@@ -2494,10 +2504,6 @@ function lowerVarDeclarator(
   // position (lower-fundule.ts) — no module global exists for it.
   const funduleStore = lowerFunduleMemberDecl(lowerer, decl);
   if (funduleStore !== null) return funduleStore;
-  // A key list of a typed record that is only counted and compared with
-  // names is never built (own-key-lists.ts).
-  const ownKeyList = lowerOwnKeyListDecl(lowerer, decl, isConst);
-  if (ownKeyList !== null) return ownKeyList;
   // `var m; m = require("./x")`: the declaration is alias plumbing; the
   // assignment owns the module's run-once %init (cjs-inline-require.ts).
   // A read that code before the assignment can reach keeps Node's hoisted

@@ -953,18 +953,19 @@ export function lowerNullishPair(
     }
     return { kind: "nullish", left, right: lowerer.coerceInto(expr.right, raw, type), type, loc };
   }
-  // A default that is a fresh literal built at a wider type than the
+  // A default that answers a fresh literal built at a wider type than the
   // checker gave the pair: the result holds it as built (resultHoldingBuilt).
-  // The literal lowers once, here, and converts into the result.
+  // The default lowers once, here, and converts into the result as
+  // lowerExprExpecting converts a value the destination does not direct.
   let built: IrExpr | null = null;
-  const literal = type.kind === "union" ? widerBuiltLiteral(lowerer, expr.right) : null;
-  if (literal !== null) {
-    built = lowerer.lowerExpr(literal);
+  const wider = type.kind === "union" ? widerBuiltDefault(lowerer, expr.right, type) : null;
+  if (wider !== null) {
+    built = lowerer.lowerExpr(wider);
     type = resultHoldingBuilt(lowerer, type, built.type, left.type) ?? type;
   }
   const lowerDefault = (): IrExpr =>
-    built !== null
-      ? lowerer.coerceInto(expr.right, built, type)
+    built !== null && wider !== null
+      ? lowerer.coerceExistingInto(wider, built, type)
       : lowerer.lowerExprExpecting(expr.right, type);
   if (typeEquals(type, left.type) || (rest.length === 1 && typeEquals(type, rest[0]!))) {
     const right = lowerDefault();
@@ -4112,59 +4113,109 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
  * only the operand's own type put into the checker's result (the same kind
  * of value, widening into the built type) give way to the built type.
  *
+ * The operand can itself be a pair that answers such a literal
+ * (`a && (b && { … })`): its type is then a union, and the rule holds for
+ * each record or array arm of it.
+ *
  * `survivor` is the left operand's type where its object values can be the
  * pair's answer (`||`, `??`): an arm one of them enters the result through
  * (its own type, or the arm it widens into when the result has no arm of
- * its type) stays. A result that already holds the operand,
- * or that the operand widens into, is unchanged; so is a result with no arm
- * of the operand's own (the coercion's trap or refusal is then the answer,
- * as before). */
+ * its type) stays, and where every arm of the operand's own stays, the
+ * built type joins them in a result that is a union. A result that already
+ * holds the operand, or that the operand widens into, is unchanged; so is a
+ * result with no arm of the operand's own (the coercion's trap or refusal
+ * is then the answer, as before), and a result that is one type a left
+ * value enters through (the default builds at that type, as before). */
 function resultHoldingBuilt(
   lowerer: Lowerer,
   result: IrType | null,
   built: IrType,
   survivor: IrType | null,
 ): IrType | null {
-  if (result === null || (built.kind !== "record" && built.kind !== "array")) return result;
+  if (result === null) return result;
   const armsOf = (type: IrType): readonly IrType[] =>
     type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
+  const builtArms = armsOf(built).filter((arm) => arm.kind === "record" || arm.kind === "array");
+  if (builtArms.length === 0) return result;
   const reaches = (from: IrType, to: IrType): boolean =>
     from.kind === to.kind && (typeEquals(from, to) || lowerer.widthLiftPlan(from, to) !== null);
-  const arms = armsOf(result);
-  if (arms.some((arm) => reaches(built, arm))) return result;
   const kept = survivor === null ? [] : armsOf(survivor);
-  const enters = (value: IrType, arm: IrType): boolean =>
-    typeEquals(value, arm) ||
-    (value.kind === arm.kind &&
-      !arms.some((held) => typeEquals(held, value)) &&
-      lowerer.widthLiftPlan(value, arm) !== null);
-  const own = arms.filter(
-    (arm) =>
-      arm.kind === built.kind &&
-      lowerer.widthLiftPlan(arm, built) !== null &&
-      !kept.some((value) => enters(value, arm)),
-  );
-  if (own.length === 0) return result;
-  const rest = arms.filter((arm) => !own.includes(arm));
-  if (rest.length === 0) return built;
-  return { kind: "union", unionId: lowerer.unions.intern(sortArms([...rest, built])) };
+  let arms = armsOf(result);
+  let changed = false;
+  for (const value of builtArms) {
+    const held = arms;
+    if (held.some((arm) => reaches(value, arm))) continue;
+    const enters = (left: IrType, arm: IrType): boolean =>
+      typeEquals(left, arm) ||
+      (left.kind === arm.kind &&
+        !held.some((other) => typeEquals(other, left)) &&
+        lowerer.widthLiftPlan(left, arm) !== null);
+    const own = held.filter(
+      (arm) =>
+        arm.kind === value.kind &&
+        !builtArms.some((other) => typeEquals(other, arm)) &&
+        lowerer.widthLiftPlan(arm, value) !== null,
+    );
+    if (own.length === 0) continue;
+    const leaving = own.filter((arm) => !kept.some((left) => enters(left, arm)));
+    if (leaving.length === 0 && result.kind !== "union") continue;
+    arms = [...held.filter((arm) => !leaving.includes(arm)), value];
+    changed = true;
+  }
+  if (!changed) return result;
+  if (arms.length === 1) return arms[0]!;
+  return { kind: "union", unionId: lowerer.unions.intern(sortArms([...arms])) };
 }
 
-/** The fresh object or array literal `node` is (behind parentheses) when its
- * contextual type is not the literal's own type: the case in which the
- * literal can build wider than the checker types it (resultHoldingBuilt).
- * Null for every other operand, which lowers as it did. */
-function widerBuiltLiteral(lowerer: Lowerer, node: ts.Expression): ts.Expression | null {
-  let literal = node;
-  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
-  if (!ts.isObjectLiteralExpression(literal) && !ts.isArrayLiteralExpression(literal)) return null;
-  const contextual = lowerer.checker.getContextualType(literal);
+/** Whether `node` is a pair of `&&`, `||` or `??`. */
+function isShortCircuitPair(node: ts.Expression): node is ts.BinaryExpression {
+  if (!ts.isBinaryExpression(node)) return false;
+  const op = node.operatorToken.kind;
+  return (
+    op === ts.SyntaxKind.AmpersandAmpersandToken ||
+    op === ts.SyntaxKind.BarBarToken ||
+    op === ts.SyntaxKind.QuestionQuestionToken
+  );
+}
+
+/** Whether `node` can answer a fresh object or array literal whose
+ * contextual type is not the literal's own type, the case in which the
+ * literal builds wider than the checker types it (resultHoldingBuilt): that
+ * literal itself or, behind parentheses, a pair of `&&`, `||` or `??` whose
+ * right operand answers one. */
+function answersWiderLiteral(lowerer: Lowerer, node: ts.Expression): boolean {
+  let operand = node;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (isShortCircuitPair(operand)) return answersWiderLiteral(lowerer, operand.right);
+  if (!ts.isObjectLiteralExpression(operand) && !ts.isArrayLiteralExpression(operand)) return false;
+  const contextual = lowerer.checker.getContextualType(operand);
   const context = contextual ? lowerer.mapTypeOf(contextual) : null;
-  const own = lowerer.mapTypeOf(lowerer.typeOf(literal));
-  if (context === null || own === null) return null;
-  const same =
-    context.kind === "union" ? lowerer.armTag(context.unionId, own) >= 0 : typeEquals(context, own);
-  return same ? null : literal;
+  const own = lowerer.mapTypeOf(lowerer.typeOf(operand));
+  if (context === null || own === null) return false;
+  return context.kind === "union"
+    ? lowerer.armTag(context.unionId, own) < 0
+    : !typeEquals(context, own);
+}
+
+/** The default of `a ?? b` (behind parentheses) when it can be wider than
+ * the pair's checker type `result` (answersWiderLiteral): a fresh object
+ * literal, or a pair that answers a wider literal. Null for every other
+ * default, which lowers as it did. That includes the literals the result
+ * itself directs (lowerExprExpecting), which are never wider than it: an
+ * array literal builds as the result's array arm, and an object literal
+ * builds as the arm its discriminant selects. */
+function widerBuiltDefault(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  result: IrType & { kind: "union" },
+): ts.Expression | null {
+  let operand = node;
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (!isShortCircuitPair(operand)) {
+    if (!ts.isObjectLiteralExpression(operand)) return null;
+    if (lowerer.unions.get(result.unionId)?.discriminant) return null;
+  }
+  return answersWiderLiteral(lowerer, operand) ? operand : null;
 }
 
 /** The type of `a && b` where `a` can evaluate to a read the checker

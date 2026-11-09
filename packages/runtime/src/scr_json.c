@@ -1565,9 +1565,31 @@ static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key);
  * are never the native records the kept-source table is keyed by. */
 static SCR_TL bool scr_weak_observing;
 static void scr_weak_disposed(void *key);
-/* A key's bit in the shared dispose filter (scr_rc.h) is set when the key
- * enters the weak-key table: a disposed object whose bit is clear was never
- * a key, so its disposal makes no call. */
+/* One bit per observed address, shared by every client of the dispose hook
+ * (weak keys, kept record sources, record links): a client sets the bit when
+ * an address enters its table, and the bits are cleared once every table is
+ * empty. A disposed object whose bit is clear has no observer: the hook
+ * returns on that one test (scr_dispose_observers), and this unit's own
+ * frees make the test before the call. A client that cannot name its
+ * addresses (the mutable-buffers registry) sets every bit. The filter is
+ * this unit's: a program that links no observer carries neither the table
+ * nor the test. */
+#define SCR_DISPOSE_FILTER_BITS ((size_t)1 << 16)
+static SCR_TL uint64_t scr_dispose_filter[SCR_DISPOSE_FILTER_BITS / 64];
+static inline size_t scr_dispose_filter_bit(const void *obj) {
+  return ((uintptr_t)obj >> 4) & (SCR_DISPOSE_FILTER_BITS - 1);
+}
+static inline bool scr_dispose_maybe_observed(const void *obj) {
+  size_t bit = scr_dispose_filter_bit(obj);
+  return (scr_dispose_filter[bit >> 6] >> (bit & 63)) & 1;
+}
+static inline void scr_dispose_filter_note(const void *obj) {
+  size_t bit = scr_dispose_filter_bit(obj);
+  scr_dispose_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+}
+/* A key's bit in the shared dispose filter is set when the key enters the
+ * weak-key table: a disposed object whose bit is clear was never a key, so
+ * its disposal makes no call. */
 static inline bool scr_weak_maybe_key(const void *key) {
   return scr_weak_observing && scr_dispose_maybe_observed(key);
 }
@@ -1735,7 +1757,10 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #endif
   if (d->kind == SCR_DYN_ARR) scr_mem_free(d->v.arr.items);
   else if (d->kind == SCR_DYN_OBJ) scr_dyn_obj_drop_keys(d, false);
-  scr_cyc_free_inline(d);
+  /* scr_cyc_free_inline with the filter's test before the hook's call: a
+   * node no observer holds makes none. */
+  if (scr_weak_dispose_hook && scr_dispose_maybe_observed(d)) scr_weak_dispose_hook(d);
+  scr_cyc_free_unobserved_inline(d);
 }
 
 static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
@@ -4377,12 +4402,13 @@ static SCR_TL size_t scr_record_link_count;
 
 static void scr_dispose_observed(void *object);
 
-/* Emitted frees call the hook for every object the program frees, and
- * nearly all of them have no observer. The one test that says so is the
- * shared filter's (scr_rc.h), which every observer's table notes its keys
- * in: it stays in this leaf, which keeps no register and builds no frame,
- * and the observers are out of line. The runtime's own frees make the same
- * test before the call (scr_weak_dispose_inline). */
+/* Emitted frees and the frees of the units every executable links call the
+ * hook for every object they free, and nearly all of them have no observer.
+ * The one test that says so is the shared filter's, which every observer's
+ * table notes its keys in: it stays in this leaf, which keeps no register
+ * and builds no frame, and the observers are out of line. This unit's own
+ * frees make the same test before the call (scr_dyn_dispose,
+ * scr_dyn_weak_dispose). */
 static void scr_dispose_observers(void *object) {
   if (scr_dispose_maybe_observed(object)) scr_dispose_observed(object);
 }

@@ -747,32 +747,15 @@ static inline void *scr_cyc_alloc_inline(size_t size, ScrCycType *type) {
   scr_cyc_live++;
   return h + 1;
 }
-/* One bit per observed address, shared by every client of the dispose hook
- * (weak keys, kept record sources, record links): a client sets the bit when
- * an address enters its table, and the bits are cleared once every table is
- * empty. A disposed object whose bit is clear has no observer, so its
- * disposal makes no call even while the hook is armed. A client that cannot
- * name its addresses (the mutable-buffers registry) sets every bit. */
-#define SCR_DISPOSE_FILTER_BITS ((size_t)1 << 16)
-extern SCR_TL uint64_t scr_dispose_filter[SCR_DISPOSE_FILTER_BITS / 64];
-static inline size_t scr_dispose_filter_bit(const void *obj) {
-  return ((uintptr_t)obj >> 4) & (SCR_DISPOSE_FILTER_BITS - 1);
-}
-static inline bool scr_dispose_maybe_observed(const void *obj) {
-  size_t bit = scr_dispose_filter_bit(obj);
-  return (scr_dispose_filter[bit >> 6] >> (bit & 63)) & 1;
-}
-static inline void scr_dispose_filter_note(const void *obj) {
-  size_t bit = scr_dispose_filter_bit(obj);
-  scr_dispose_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
-}
-/* scr_weak_dispose's tests inline, for the runtime's hot frees: the hook
- * stays NULL unless the program creates a weak collection or keeps a
- * checked record's source, and an armed hook is called only for an address
- * some observer may hold, so the free costs predictable branches, not a
- * call. */
+/* scr_weak_dispose's NULL test inline, for the runtime's hot frees: the
+ * hook stays NULL unless the program creates a weak collection or keeps a
+ * checked record's source, so the free costs one predictable branch, not a
+ * call. An armed hook answers for an address no observer holds with one
+ * test of its own (scr_dispose_observers, scr_json.c): the filter that says
+ * so lives with the observers, in the unit only their programs link, and
+ * not at every free of every executable. */
 static inline void scr_weak_dispose_inline(void *obj) {
-  if (scr_weak_dispose_hook && scr_dispose_maybe_observed(obj)) scr_weak_dispose_hook(obj);
+  if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
 }
 static inline void scr_cyc_free_inline(void *obj) {
   scr_weak_dispose_inline(obj);
@@ -788,7 +771,8 @@ static inline void scr_cyc_free_inline(void *obj) {
  * generator), and a union reaches dynamic code as its arm, never as its
  * box; kept record sources and record links are keyed by records, the
  * buffers registry by views and their owners. So the free does not
- * report. */
+ * report. (scr_json.c also ends the free of a checked-dynamic node with it,
+ * after the report it makes itself behind its filter.) */
 static inline void scr_cyc_free_unobserved_inline(void *obj) {
   scr_cyc_live--;
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;

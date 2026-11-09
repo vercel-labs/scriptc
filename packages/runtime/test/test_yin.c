@@ -414,32 +414,14 @@ static void check_weak_observers_see_young_deaths(void) {
   disposed = 0;
   scr_weak_dispose_hook = count_dispose;
   Obj *a = young_new(), *b = young_new(), *c = young_new();
-  /* An observer names the addresses it watches in the dispose filter
-   * (scr_rc.h): an armed hook is called for those alone. */
-  scr_dispose_filter_note(a);
-  scr_dispose_filter_note(b);
-  scr_dispose_filter_note(c);
   store(a, 0, b);
   store(b, 0, a);
   release(a);
   release(b);
   release(c); /* RC death */
   settle(live, "weak observer case");
-  check(freed == before + 3 && disposed == 3, "weak dispose hook missed a young death");
-  /* Young deaths nobody watches make no call to the armed hook. */
-  memset(scr_dispose_filter, 0, sizeof scr_dispose_filter);
-  disposed = 0;
-  a = young_new();
-  b = young_new();
-  c = young_new();
-  store(a, 0, b);
-  store(b, 0, a);
-  release(a);
-  release(b);
-  release(c);
-  settle(live, "unwatched young deaths");
   scr_weak_dispose_hook = NULL;
-  check(freed == before + 6 && disposed == 0, "weak dispose hook was called for an unwatched young death");
+  check(freed == before + 3 && disposed == 3, "weak dispose hook missed a young death");
 }
 
 int main(void) {

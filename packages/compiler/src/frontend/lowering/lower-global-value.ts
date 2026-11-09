@@ -4,12 +4,20 @@ import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { nodeUndefinedGlobalName } from "./lower-namespaces.js";
+import { globalObjectType } from "./global-object-names.js";
 
 /** A stored global object has identity and survives module/function boundaries.
  * Known globals without a value implementation refuse at runtime; absent host
  * capabilities answer undefined. The checker supplies names, never values. */
 export function lowerGlobalValue(lowerer: Lowerer, expr: ts.Expression): IrExpr {
-  return lowerGlobalValueOfType(lowerer, lowerer.typeOf(expr), locOf(expr));
+  // The names are the global object's own, not the spelling's: an alias
+  // typed `any` (`const host: any = globalThis`) would register no names,
+  // and every built-in read through it would answer undefined.
+  return lowerGlobalValueOfType(
+    lowerer,
+    globalObjectType(lowerer, expr) ?? lowerer.typeOf(expr),
+    locOf(expr),
+  );
 }
 
 /** The global object itself, whatever spelling reached it — `globalThis`, a
@@ -18,17 +26,7 @@ export function lowerGlobalValue(lowerer: Lowerer, expr: ts.Expression): IrExpr 
  * the checker knows no members of would otherwise register an empty table and
  * send every declared name to the runtime's undefined. */
 export function lowerGlobalObjectValue(lowerer: Lowerer, node: ts.Node, loc: SrcLoc): IrExpr {
-  const symbol = lowerer.checker.resolveName(
-    "globalThis",
-    ts.SymbolFlags.Value,
-    ts.getSourceFileOfNode(node),
-    false,
-  );
-  return lowerGlobalValueOfType(
-    lowerer,
-    symbol === undefined ? undefined : lowerer.checker.getTypeOfSymbol(symbol),
-    loc,
-  );
+  return lowerGlobalValueOfType(lowerer, globalObjectType(lowerer, node), loc);
 }
 
 /** The global object a sloppy-mode function receives as `this` when it is

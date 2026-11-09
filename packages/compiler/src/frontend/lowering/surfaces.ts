@@ -29,6 +29,7 @@ import {
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 import { V8_MEMBER_REASON } from "../builtin-modules.js";
+import { globalObjectMember } from "./global-object-names.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
 const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
@@ -2465,18 +2466,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
+      "fs.writeFileSyncData",
+      "fs.writeFileSyncDataFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileSyncFdData",
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
+      "fs.writeFileDataOptionsSync",
     ],
-    // The bytes-data form and the { encoding, mode, flag } option-record
-    // forms over string and bytes data.
+    // The data forms (bytes, and the checked argument whose type the call
+    // site did not pin down) and the { encoding, mode, flag } option-record
+    // forms over them.
     appendFileSync: [
       "fs.appendFileSyncBytes",
+      "fs.appendFileSyncData",
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
+      "fs.appendFileDataOptionsSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -2537,12 +2545,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fsp.writeFileFlags",
       "fsp.writeFileBytes",
       "fsp.writeFileBytesFlags",
+      "fsp.writeFileData",
+      "fsp.writeFileDataFlags",
     ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
-    // The Uint8Array/Buffer-data form.
-    appendFile: ["fsp.appendFileBytes"],
+    // The bytes-data form and the checked-data-argument form.
+    appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],
     // The options forms.
     rm: ["fsp.rmOpts", "fsp.rmRetry"],
   },
@@ -4024,9 +4034,13 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // member.
     const selected = staticallySelected(lowerer, expr.expression);
     const symbol =
-      selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
+      (selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
         ? lowerer.checker.getSymbolAtLocation(expr.name)
-        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text);
+        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text)) ??
+      // A spelling whose static type names no such member (`const host: any
+      // = globalThis; host.fetch`) is still the global object, as a cast of
+      // it is: the member is the global object's own.
+      globalObjectMember(lowerer, expr);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
     return ts.symbolName(symbol) === "global" ? "globalThis" : ts.symbolName(symbol);
   }

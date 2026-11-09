@@ -76,7 +76,9 @@
  *            to a cast to an unrelated class (SC6004), a value a Node island
  *            made converted to a native type, which is a copy, or stored
  *            untyped where the compiler no longer follows it (SC6007), an
- *            import the build keeps although tsc's output drops it (SC6008);
+ *            import the build keeps although tsc's output drops it (SC6008),
+ *            a record type whose objects create their keys in orders the
+ *            compiler does not follow per object (SC6014);
  *            SC6005 (Date strings
  *            outside the native parser's grammar) is retired — the runtime
  *            parses date strings with V8's grammar. SC61xx are performance
@@ -444,6 +446,62 @@ export function keyOrderDivergenceDiag(
       detail === "reordered"
         ? `write the properties in the declaration order of '${typeText}' (or reorder the declaration to match how objects are built)`
         : `initialize the property in the literal (for example with undefined), or declare it after the properties the literal sets`,
+  };
+}
+
+/** How a record type's values come to create their keys in an order the
+ * key-order pass cannot follow (key-order-witness.ts). */
+export type KeyOrderUntracedCause = "spread" | "copy" | "writes" | "orders" | "clone" | "assign";
+
+/** SC6014 — a record type the program observes the key order of, whose
+ * values create their keys in an order scriptc does not follow: every value
+ * of the type then enumerates in the one order named here, where Node lists
+ * each object's keys in the order that object created them. It judges the
+ * type, not the path one value takes (SC6002 names an object literal whose
+ * order differs on the path it is written on), so the objects a program
+ * builds can still agree with Node. Reported once per type, at a
+ * construction that the order depends on; the type is named by its keys. */
+export function keyOrderUntracedDiag(
+  nativeOrder: string,
+  cause: KeyOrderUntracedCause,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const observed =
+    "the program observes the key order of this type (JSON.stringify, Object.keys, for-in, console output or a value passed to untyped code)";
+  const hint =
+    "create every property in one object literal, in the order wanted (set a property that comes later to undefined), or do not rely on the key order of these objects";
+  if (cause === "assign")
+    return {
+      code: "SC6014",
+      message: `Object.assign here adds more than one optional property to its target, in the order the type stores them rather than the order its source created them in, so the target's keys ('${nativeOrder}' natively) can enumerate in another order than under Node, and ${observed}`,
+      loc,
+      hint,
+    };
+  let how: string;
+  switch (cause) {
+    case "spread":
+      how = "an object spread here copies keys from a value whose key order is not known";
+      break;
+    case "copy":
+      how = "a copy here takes its keys from a value whose key order is not known";
+      break;
+    case "writes":
+      how =
+        "assignments here (or Object.assign) add optional properties to an existing object in an order that depends on the path the program takes";
+      break;
+    case "orders":
+      how =
+        "the program creates them in more than one order (object literals, spreads, or assignments that add an optional property an object lacks)";
+      break;
+    case "clone":
+      how = "a copy here takes its keys from a value converted at run time";
+      break;
+  }
+  return {
+    code: "SC6014",
+    message: `objects of this type enumerate their keys as '${nativeOrder}' natively, but ${how}; under Node each object lists its keys in the order it created them, and ${observed}`,
+    loc,
+    hint,
   };
 }
 

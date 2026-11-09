@@ -330,6 +330,7 @@ import {
   emitArrIntrinsic,
   wrapNullable,
   emitMapNew,
+  checkedCollectionNewCall,
   mapSet,
   emitMapLikeIntrinsic,
   emitSetNew,
@@ -2913,6 +2914,7 @@ export class LlEmitter {
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       nodeIslands: () => this.nodeIslands,
       jsObjectModel: () => jsObjectModelFact(this.runtimeFeatures),
+      checkedCollectionNew: (type) => checkedCollectionNewCall(this, type),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
       // A library's archive carries a fixed runtime selection without the

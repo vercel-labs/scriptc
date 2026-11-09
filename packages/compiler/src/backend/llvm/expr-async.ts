@@ -453,10 +453,15 @@ export function emitSerializationExpr(
         path = slot;
       }
       const ty = host.llType(e.type);
-      const t = B.tmp();
-      B.line(
-        `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr ${path})`,
-      );
+      let t: string;
+      if (e.type.kind === "record") {
+        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs);
+      } else {
+        t = B.tmp();
+        B.line(
+          `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr ${path})`,
+        );
+      }
       if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck(undefined, false, undefined, note);

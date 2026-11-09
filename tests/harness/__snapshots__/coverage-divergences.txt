@@ -6,7 +6,7 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
 
   fully static — all analyzed statements compile to native code.
 
-  differs from Node   5 sites (compiles; the native program can behave differently)
+  differs from Node   6 sites (compiles; the native program can behave differently)
       ×2  SC6001  converting this '{ label: string; tag: string }' to '{ label: string }' copies it (a conversion to another layout builds a new object), while under Node both names refer to one object: the program wr…
           at tests/coverage-fixtures/divergences.ts:19:16, tests/coverage-fixtures/divergences.ts:23:23
           hint: keep the value at its own type ('{ label: string; tag: string }') where it is passed or stored, or copy it explicitly (a spread, 'structuredClone') so that Node copies it too
@@ -19,3 +19,6 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
       ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
           at tests/coverage-fixtures/divergences.ts:55:20
           hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share
+      ×1  SC6014  objects of this type enumerate their keys as 'x, y, label' natively, but the program creates them in more than one order (object literals, spreads, or assignments that add an optional property an obj…
+          at tests/coverage-fixtures/divergences.ts:36:24
+          hint: create every property in one object literal, in the order wanted (set a property that comes later to undefined), or do not rely on the key order of these objects

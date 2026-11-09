@@ -122,6 +122,11 @@ test("a typed slot's conversion adopts its source only while the node carries th
   const check = /call ptr @sc_dc_\d+\(/.exec(shared.body);
   expect(check).not.toBeNull();
   expect(shared.body.indexOf("@scr_dyn_adopt_shared")).toBeGreaterThan(check!.index);
+  // The adoption asks first whether the source has nodes to adopt: a source
+  // that already is a capsule skips the boxing and the walk.
+  const asks = shared.body.indexOf("call zeroext i1 @scr_dyn_adoptable(");
+  expect(asks).toBeGreaterThan(check!.index);
+  expect(shared.body.indexOf("@scr_dyn_adopt_shared")).toBeGreaterThan(asks);
 
   // A consumer that rebuilds the node from its other fields drops the flag
   // and gets the plain checked copy: the same check, no adoption, and the

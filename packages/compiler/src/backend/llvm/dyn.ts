@@ -6643,9 +6643,11 @@ export class LlDyn {
    * (scr_dyn_adopt_shared; a source that is not plain data keeps the
    * copy). A `borrowed` source is held for the call: the binding it was
    * read from is a holder its count does not show, and the lenient walk
-   * adopts a node only when something else holds it. Nothing is emitted
-   * where the program does not link
-   * the adoption unit (a library) or the type has no live capsule. */
+   * adopts a node only when something else holds it. Only a plain object
+   * or array has nodes to adopt (scr_dyn_adoptable, as adoptingCast asks):
+   * a source that already is a native value's capsule skips the boxing and
+   * the walk. Nothing is emitted where the program does not link the
+   * adoption unit (a library) or the type has no live capsule. */
   adoptSharedSource(
     B: BlockBuilder,
     t: IrType,
@@ -6653,15 +6655,32 @@ export class LlDyn {
     built: string,
     borrowed: boolean,
   ): void {
-    if (this.host.declAdopt?.() !== true) return;
+    const host = this.host;
+    if (host.declAdopt?.() !== true) return;
+    const live = boxesAsLiveCapsule(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+    if (!live) return;
+    host.declare(`declare zeroext i1 @scr_dyn_adoptable(ptr)`);
+    host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    const adoptable = B.tmp();
+    const adoptLabel = B.newLabel("adopt");
+    const doneLabel = B.newLabel("adopt.done");
+    B.line(`${adoptable} = call zeroext i1 @scr_dyn_adoptable(ptr ${source})`);
+    B.condBr(adoptable, adoptLabel, doneLabel);
+    B.startBlock(adoptLabel);
     const capsule = this.liveToDyn(B, t, built);
-    if (capsule === null) return;
-    this.host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
-    this.host.declare(`declare void @scr_dyn_release(ptr)`);
-    const held = borrowed ? this.retainDyn(B, source) : null;
-    B.line(`call void @scr_dyn_adopt_shared(ptr ${source}, ptr ${capsule})`);
-    if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
-    B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+    if (capsule !== null) {
+      const held = borrowed ? this.retainDyn(B, source) : null;
+      B.line(`call void @scr_dyn_adopt_shared(ptr ${source}, ptr ${capsule})`);
+      if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
+      B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+    }
+    B.br(doneLabel);
+    B.startBlock(doneLabel);
   }
 
   /** A live capsule of a record or array value (+1; the value is

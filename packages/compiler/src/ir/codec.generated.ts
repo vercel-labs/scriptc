@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "1b340ee4090c0554";
+export const IR_CODEC_LAYOUT = "7bf200620d850fd5";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -24,7 +24,7 @@ export function decodeIrFunction(r: IrReader): IrFunction {
   return decIrFunction(r);
 }
 
-const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
+const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes","globals","records","unions","entry","workers","declBoundary","inferredFactFiles","declOrigins","lifetimeRegions","foreignElementKeys","recordLinks","recordSourcesFolded","threadSlotKeys","weakKeys","bytesHeadersMutable","freezableArrays","sloppyDynWrites","untypedIntegrity","commonJsEntry","nodeIsland","ffiImports","lib","contracts","int32ArrayCandidates","wasmModules","wasmUntranslated","wasmCustomSections"];
 const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
@@ -173,7 +173,7 @@ const KEYS145: readonly string[] = ["kind","value","className","type","loc"];
 const KEYS146: readonly string[] = ["kind","value","classValue","type","loc"];
 const KEYS147: readonly string[] = ["kind","name","args","type","loc"];
 const KEYS148: readonly string[] = ["kind","value","indent","circular","type","loc"];
-const KEYS149: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis"];
+const KEYS149: readonly string[] = ["kind","fn","args","type","loc","prototypeIdentityOnly","realTimer","assertOptions","bindsThis","namedKey"];
 const KEYS150: readonly string[] = ["kind","op","left","right","type","loc"];
 const KEYS151: readonly string[] = ["kind","method","receiver","args","type","loc"];
 const KEYS152: readonly string[] = ["kind","seed","type","loc"];
@@ -319,6 +319,11 @@ function encIrModule(w: IrWriter, v: IrModule): void {
     w.byte(1);
     encT8(w, v.threadSlotKeys);
   }
+  if (v.weakKeys === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    encT8(w, v.weakKeys);
+  }
   if (v.bytesHeadersMutable === undefined) w.byte(0);
   else {
     w.byte(1);
@@ -403,20 +408,21 @@ function decIrModule(r: IrReader): IrModule {
   const f14 = r.tag(2, "IrModule.recordLinks") === 0 ? undefined : decT9(r);
   const f15 = r.tag(2, "IrModule.recordSourcesFolded") === 0 ? undefined : decT8(r);
   const f16 = r.tag(2, "IrModule.threadSlotKeys") === 0 ? undefined : decT8(r);
-  const f17 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
-  const f18 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
-  const f19 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
-  const f20 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
-  const f21 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
-  const f22 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
-  const f23 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
-  const f24 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
-  const f25 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
-  const f26 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
-  const f27 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
-  const f28 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
-  const f29 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
-  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { recordSourcesFolded: f15 } : {}), ...(f16 !== undefined ? { threadSlotKeys: f16 } : {}), ...(f17 !== undefined ? { bytesHeadersMutable: f17 } : {}), ...(f18 !== undefined ? { freezableArrays: f18 } : {}), ...(f19 !== undefined ? { sloppyDynWrites: f19 } : {}), ...(f20 !== undefined ? { untypedIntegrity: f20 } : {}), ...(f21 !== undefined ? { commonJsEntry: f21 } : {}), ...(f22 !== undefined ? { nodeIsland: f22 } : {}), ...(f23 !== undefined ? { ffiImports: f23 } : {}), ...(f24 !== undefined ? { lib: f24 } : {}), ...(f25 !== undefined ? { contracts: f25 } : {}), ...(f26 !== undefined ? { int32ArrayCandidates: f26 } : {}), ...(f27 !== undefined ? { wasmModules: f27 } : {}), ...(f28 !== undefined ? { wasmUntranslated: f28 } : {}), ...(f29 !== undefined ? { wasmCustomSections: f29 } : {}) };
+  const f17 = r.tag(2, "IrModule.weakKeys") === 0 ? undefined : decT8(r);
+  const f18 = r.tag(2, "IrModule.bytesHeadersMutable") === 0 ? undefined : (r.bool() as NonNullable<IrModule["bytesHeadersMutable"]>);
+  const f19 = r.tag(2, "IrModule.freezableArrays") === 0 ? undefined : decT8(r);
+  const f20 = r.tag(2, "IrModule.sloppyDynWrites") === 0 ? undefined : decT8(r);
+  const f21 = r.tag(2, "IrModule.untypedIntegrity") === 0 ? undefined : (r.bool() as NonNullable<IrModule["untypedIntegrity"]>);
+  const f22 = r.tag(2, "IrModule.commonJsEntry") === 0 ? undefined : r.bool();
+  const f23 = r.tag(2, "IrModule.nodeIsland") === 0 ? undefined : decT10(r);
+  const f24 = r.tag(2, "IrModule.ffiImports") === 0 ? undefined : decT11(r);
+  const f25 = r.tag(2, "IrModule.lib") === 0 ? undefined : decIrLibSection(r);
+  const f26 = r.tag(2, "IrModule.contracts") === 0 ? undefined : decIrContracts(r);
+  const f27 = r.tag(2, "IrModule.int32ArrayCandidates") === 0 ? undefined : decT8(r);
+  const f28 = r.tag(2, "IrModule.wasmModules") === 0 ? undefined : decT14(r);
+  const f29 = r.tag(2, "IrModule.wasmUntranslated") === 0 ? undefined : decT15(r);
+  const f30 = r.tag(2, "IrModule.wasmCustomSections") === 0 ? undefined : r.bool();
+  const o: IrModule = { irVersion: f0, sourceFile: f1, functions: f2, ...(f3 !== undefined ? { classes: f3 } : {}), ...(f4 !== undefined ? { globals: f4 } : {}), ...(f5 !== undefined ? { records: f5 } : {}), ...(f6 !== undefined ? { unions: f6 } : {}), entry: f7, ...(f8 !== undefined ? { workers: f8 } : {}), ...(f9 !== undefined ? { declBoundary: f9 } : {}), ...(f10 !== undefined ? { inferredFactFiles: f10 } : {}), ...(f11 !== undefined ? { declOrigins: f11 } : {}), ...(f12 !== undefined ? { lifetimeRegions: f12 } : {}), ...(f13 !== undefined ? { foreignElementKeys: f13 } : {}), ...(f14 !== undefined ? { recordLinks: f14 } : {}), ...(f15 !== undefined ? { recordSourcesFolded: f15 } : {}), ...(f16 !== undefined ? { threadSlotKeys: f16 } : {}), ...(f17 !== undefined ? { weakKeys: f17 } : {}), ...(f18 !== undefined ? { bytesHeadersMutable: f18 } : {}), ...(f19 !== undefined ? { freezableArrays: f19 } : {}), ...(f20 !== undefined ? { sloppyDynWrites: f20 } : {}), ...(f21 !== undefined ? { untypedIntegrity: f21 } : {}), ...(f22 !== undefined ? { commonJsEntry: f22 } : {}), ...(f23 !== undefined ? { nodeIsland: f23 } : {}), ...(f24 !== undefined ? { ffiImports: f24 } : {}), ...(f25 !== undefined ? { lib: f25 } : {}), ...(f26 !== undefined ? { contracts: f26 } : {}), ...(f27 !== undefined ? { int32ArrayCandidates: f27 } : {}), ...(f28 !== undefined ? { wasmModules: f28 } : {}), ...(f29 !== undefined ? { wasmUntranslated: f29 } : {}), ...(f30 !== undefined ? { wasmCustomSections: f30 } : {}) };
   return o;
 }
 
@@ -3391,6 +3397,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.bindsThis);
       }
+      if (v.namedKey === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.namedKey);
+      }
       return;
     }
     case "logical": {
@@ -4367,7 +4378,8 @@ function decIrExpr(r: IrReader): IrExpr {
       const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.realTimer") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["realTimer"]>);
       const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.assertOptions") === 0 ? undefined : decT72(r);
       const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.bindsThis") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["bindsThis"]>);
-      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}) };
+      const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<libCall>.namedKey") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "libCall" }>["namedKey"]>);
+      const o: Extract<IrExpr, { kind: "libCall" }> = { kind: "libCall", fn: f0, args: f1, type: f2, loc: f3, ...(f4 !== undefined ? { prototypeIdentityOnly: f4 } : {}), ...(f5 !== undefined ? { realTimer: f5 } : {}), ...(f6 !== undefined ? { assertOptions: f6 } : {}), ...(f7 !== undefined ? { bindsThis: f7 } : {}), ...(f8 !== undefined ? { namedKey: f8 } : {}) };
       return o;
     }
     case 47: {

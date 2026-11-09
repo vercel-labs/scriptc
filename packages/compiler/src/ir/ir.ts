@@ -1202,6 +1202,17 @@ export interface IrModule {
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */
   threadSlotKeys?: string[];
+  /** The types of the keys the program makes WeakMap and WeakSet entries
+   * for: the static type of the key argument of every `set` and `add`, as
+   * the unit the cycle analysis names it by (`object:<class>`,
+   * `record:<shape id>`). `*` stands for a key that is a checked value
+   * already (`object`, `unknown`), which can be any value the program
+   * converts to one. An entry's value can reference any object, its own
+   * key included, and the runtime ends such an entry only when it can walk
+   * from the value to the key, so the backend gives these types the
+   * collector header (backend/weak-keys.ts). Sorted; absent when the
+   * program has no such call. */
+  weakKeys?: string[];
   /** A JavaScript source may resize, grow or detach an ArrayBuffer
    * (frontend/lowering/buffers.ts `mutableBuffers`): a view's ScrBytes header
    * is no longer fixed at construction, so bytes header loads keep their
@@ -4326,6 +4337,12 @@ export type IrExpr =
        * (`emitter.onDyn`, `emitter.onDataDyn`, `emitter.onFlex`,
        * `emitter.onAny`) always bind it. */
       bindsThis?: true;
+      /** A `dyn.keySet` whose key names a string without being typed
+       * `string` (lower-exprs.ts stringPropertyKey's missing-element form).
+       * The class dispatch gives such a write a named helper, and a write
+       * under a key typed `string` the computed helper it always took
+       * (ClassDynamicDispatch). */
+      namedKey?: true;
     }
   /** `JSON.stringify(v)` — type-DIRECTED serialization: `value`'s static IR
    * type must be JSON-safe (f64/string/bool/record/array/union of those,

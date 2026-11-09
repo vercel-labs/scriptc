@@ -26,6 +26,8 @@ import {
   isUnitType,
   shapeHasAccessorSlots,
   typeEquals,
+  sortArms,
+  typeKey,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
@@ -45,6 +47,7 @@ import { isOptionalReadlineCursorRead } from "../builtins/readline.js";
 import { literalValues } from "../../literal-values.js";
 import { literalUnionArm } from "../../union-discriminants.js";
 import { checkedArmExtraction } from "../coercions/unions.js";
+import { isSafeToRepeat } from "./evaluation-safety.js";
 import {
   assertedOptionalExtension,
   hostedStorageView,
@@ -266,6 +269,33 @@ export function lowerTernary(
       }
       return lowerer.lowerExpr(e);
     };
+    // An ARRAY arm beside an array LITERAL arm under a destructuring
+    // pattern (`const [name, value] = long ? text.split("=", 2) : [text,
+    // undefined]`): the pattern's contextual type is a tuple, which the
+    // literal could be built as and the array cannot become (its length is
+    // a run-time fact, and a pattern reads a missing position as
+    // undefined). Both arms are arrays in JavaScript, so the ternary is
+    // one: the literal builds as an array whose element joins the array
+    // arm's and its own, and the pattern reads positions from it.
+    {
+      const joined = arrayBesideLiteralUnderTuple(lowerer, expr, ctxMapped, armLiteral);
+      if (joined !== null) {
+        const arm = (e: ts.Expression): IrExpr => {
+          const lit = armLiteral(e);
+          return lit
+            ? lowerer.lowerArrayLiteral(lit, joined)
+            : lowerer.coerceToExpected(lowerer.lowerExpr(e), joined);
+        };
+        const then = withRuntimeOptionalNarrowed(
+          lowerer,
+          runtimeOptionalTrueIds(lowerer, expr.condition),
+          () => arm(expr.whenTrue),
+        );
+        const else_ = arm(expr.whenFalse);
+        if (typeEquals(then.type, joined) && typeEquals(else_.type, joined))
+          return { kind: "ternary", cond, then, else_, type: joined, loc };
+      }
+    }
     // Lower the filled arm first so an empty arm can adopt its type.
     // When the checker's OWN join for the ternary maps to an ARRAY,
     // literal arms build against it directly (tsc collapses the arms'
@@ -852,6 +882,8 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     return expr;
   const narrowedTs = lowerer.typeOf(node);
   const narrowed = lowerer.mapTypeOf(narrowedTs);
+  const unnarrowed = instanceSlotUnnarrowed(lowerer, node, expr, narrowedTs, narrowed);
+  if (unnarrowed) return unnarrowed;
   // `Array.isArray(u)` on a union with one readonly array/tuple arm: the
   // lib predicate narrows to `any[]`, possibly intersected with another
   // type. That mapping may be a checked value or a synthetic record, but
@@ -999,6 +1031,172 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     type: narrowed,
     loc: expr.loc,
   };
+}
+
+/** A binding of a generic instance read where the checker narrowed nothing:
+ * the type of the read is the binding's own declared type, and the slot
+ * holds a union with that type as one arm among several value arms.
+ *
+ * The checker types a generic body against its constraints: the variable of
+ * `for (const column of columns)` over `columns: T extends
+ * ReadonlyArray<Column>` is a `Column`. The instance's slot holds what the
+ * instance binds, and a T bound to the elements of constant tables beside
+ * `Column` itself holds each table's own layout as an arm. `Column` there
+ * is the view every arm satisfies, not the arm a control-flow test chose,
+ * so extracting its arm would misread every other one. The value keeps its
+ * arms and its consumer reads it as a union (a member every arm stores, or
+ * the keyed read where they differ).
+ *
+ * A null or undefined arm the declared type does not have is still excluded
+ * as before: it throws Node's TypeError for the operation consuming the
+ * read. Null for every other read, which keeps the checker's narrowing. */
+function instanceSlotUnnarrowed(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrExpr,
+  siteTs: ts.Type,
+  site: IrType | null,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const unionId = value.type.unionId;
+  if (!instanceSlotReadAtDeclaredType(lowerer, node, unionId, siteTs, site)) return null;
+  const from = lowerer.unions.get(unionId)!;
+  const values = from.arms.filter((arm) => !isUnitType(arm));
+  if (values.length === from.arms.length) return value;
+  if (!isSafeToRepeat(value)) return null;
+  const subId = lowerer.unions.transform(from, values);
+  const units = new Set<number>();
+  from.arms.forEach((arm, tag) => {
+    if (isUnitType(arm)) units.add(tag);
+  });
+  const helper = lowerer.unionRetagHelper(unionId, subId, value.loc, units);
+  if (!helper) return null;
+  const type: IrType = { kind: "union", unionId: subId };
+  let result: IrExpr = { kind: "call", callee: helper, args: [value], type, loc: value.loc };
+  for (const tag of units) {
+    const message = staleReadMessage(node, from.arms[tag]!);
+    if (message === null) continue;
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value, type: BOOL, loc: value.loc },
+      then: nodeThrowExpr(1, "", message, type, value.loc),
+      else_: result,
+      type,
+      loc: value.loc,
+    };
+  }
+  return result;
+}
+
+/** Whether `node` reads a generic instance's binding at the binding's own
+ * declared type while the slot `unionId` holds that type, `site`, as one arm
+ * among several value arms: the reads instanceSlotUnnarrowed keeps whole.
+ * The checker narrowed nothing there, so each of the other value arms still
+ * reaches the read. */
+export function instanceSlotReadAtDeclaredType(
+  lowerer: Lowerer,
+  node: ts.Node,
+  unionId: string,
+  siteTs: ts.Type,
+  site: IrType | null,
+): boolean {
+  if (lowerer.typeParamBindings === null || site === null) return false;
+  if (site.kind === "union" || site.kind === "void" || isUnitType(site)) return false;
+  if (!ts.isIdentifier(node)) return false;
+  const from = lowerer.unions.get(unionId);
+  if (!from || lowerer.armTag(unionId, site) < 0) return false;
+  const values = from.arms.filter((arm) => !isUnitType(arm));
+  if (values.length < 2) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  if (!symbol) return false;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  // The declared type itself, or a type variable (`T[number]`) read through
+  // its constraint: the whole declared type is assignable to the read's
+  // type exactly when that type is no narrower than the constraint.
+  // A test that only excluded null or undefined (`part === null ? … :
+  // part.id`) chose no value arm either: the comparison is with the
+  // declared type's values.
+  const variable = (declared.flags & ts.TypeFlags.Instantiable) !== 0;
+  const declaredValues = variable ? declared : lowerer.checker.getNonNullableType(declared);
+  if (
+    declaredValues !== siteTs &&
+    !(
+      lowerer.checker.isTypeAssignableTo(declaredValues, siteTs) &&
+      (variable || lowerer.checker.isTypeAssignableTo(siteTs, declaredValues))
+    )
+  )
+    return false;
+  return true;
+}
+
+/** The number of value arms the slot `unionId` holds beside `site`. */
+function otherValueArms(lowerer: Lowerer, unionId: string, site: IrType): number {
+  const arms = lowerer.unions.get(unionId)?.arms ?? [];
+  return arms.filter((arm) => !isUnitType(arm) && !typeEquals(arm, site)).length;
+}
+
+/** Names (SC6015) a read of a generic instance's binding that came out as
+ * the one record its declared type names, `result`, while the slot holds
+ * further value arms the checker did not narrow away
+ * (instanceSlotReadAtDeclaredType): the extraction throws for each of
+ * them. A read that kept its arms has a union type and is not named. */
+export function noteStrandedInstanceRead(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  result: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || result.kind === "union") return;
+  const slot = lowerer.peekLocal(node)?.type;
+  if (slot === undefined || slot.kind !== "union") return;
+  const siteTs = lowerer.typeOf(node);
+  const site = lowerer.mapTypeOf(siteTs);
+  if (site === null || !typeEquals(site, result)) return;
+  if (!instanceSlotReadAtDeclaredType(lowerer, node, slot.unionId, siteTs, site)) return;
+  lowerer.noteStrandedInstanceArm(
+    node,
+    lowerer.checker.typeToString(siteTs),
+    otherValueArms(lowerer, slot.unionId, site),
+  );
+}
+
+/** The same warning for the parameter `name` of a function literal lowered
+ * at its slot's signature: the slot hands it `slot`, and the parameter binds
+ * the one record `type` the checker gives it. The checker never narrows a
+ * parameter, so each other value arm of the slot still arrives. */
+export function noteStrandedInstanceParameter(
+  lowerer: Lowerer,
+  name: ts.Node,
+  slot: IrType,
+  type: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || slot.kind !== "union" || type.kind !== "record") return;
+  if (lowerer.armTag(slot.unionId, type) < 0) return;
+  const others = otherValueArms(lowerer, slot.unionId, type);
+  if (others === 0) return;
+  lowerer.noteStrandedInstanceArm(name, lowerer.checker.typeToString(lowerer.typeOf(name)), others);
+}
+
+/** The same warning for a value that kept its arms (`value`, read at
+ * `node`) and now flows into a slot of the one record its declared type
+ * names: the conversion extracts that arm and throws for the others. */
+export function noteStrandedInstanceFlow(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrType,
+  expected: IrType,
+): void {
+  if (lowerer.typeParamBindings === null || value.kind !== "union") return;
+  let read = node;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  const siteTs = lowerer.typeOf(read);
+  const site = lowerer.mapTypeOf(siteTs);
+  if (site === null || !typeEquals(site, expected)) return;
+  if (!instanceSlotReadAtDeclaredType(lowerer, read, value.unionId, siteTs, site)) return;
+  lowerer.noteStrandedInstanceArm(
+    read,
+    lowerer.checker.typeToString(siteTs),
+    otherValueArms(lowerer, value.unionId, site),
+  );
 }
 
 /** A getter read whose runtime result can be undefined (an unchecked
@@ -1333,6 +1531,22 @@ export function runtimeOptionalReceiverRead(
   if (!def || undefTag < 0)
     throw new InternalCompilerError("runtime-optional local is missing its undefined arm");
   if (def.arms.length !== 2) {
+    // The checker narrowed nothing where a generic instance's binding reads
+    // at its declared type (instanceSlotUnnarrowed): that type is the view
+    // every stored arm satisfies, also when it is itself one of the arms.
+    // The receiver keeps its value arms, and the hidden arm throws Node's
+    // TypeError for this member read or call. An erased wrapper names a
+    // type of its own and keeps the checked extraction below.
+    if (narrowedNode === expr) {
+      const unnarrowed = instanceSlotUnnarrowed(
+        lowerer,
+        expr,
+        varRef(local.id, local.type, loc),
+        lowerer.typeOf(expr),
+        narrowed,
+      );
+      if (unnarrowed) return unnarrowed;
+    }
     // The checker may narrow a runtime-optional capture to one arm of a
     // value union (`Circle | Square | undefined` -> `Circle`). The
     // two-arm fast path below cannot extract that arm safely: a later
@@ -2575,4 +2789,52 @@ function constSourceUse(assertion: ts.Expression): boolean {
     ts.isVariableDeclarationList(list) &&
     (list.flags & ts.NodeFlags.Const) !== 0
   );
+}
+
+/** lowerTernary's array-beside-literal rule: the array type both arms
+ * build as when the ternary sits under a tuple context (a destructuring
+ * pattern), one arm maps to an array, and the other is a filled array
+ * literal without spreads. The element is the join of the array arm's
+ * element and the literal's positions; null unless every one of them is a
+ * number, string, boolean, undefined or null (joins of other kinds keep
+ * the lowerings they have). */
+function arrayBesideLiteralUnderTuple(
+  lowerer: Lowerer,
+  expr: ts.ConditionalExpression,
+  context: IrType | null,
+  armLiteral: (e: ts.Expression) => ts.ArrayLiteralExpression | null,
+): (IrType & { kind: "array" }) | null {
+  if (context?.kind !== "record" || lowerer.shapes.get(context.shapeId)?.tuple !== true)
+    return null;
+  const thenLit = armLiteral(expr.whenTrue);
+  const elseLit = armLiteral(expr.whenFalse);
+  if ((thenLit === null) === (elseLit === null)) return null;
+  const literal = (thenLit ?? elseLit)!;
+  if (literal.elements.nodes.length === 0 || literal.elements.nodes.some(ts.isSpreadElement))
+    return null;
+  const other = lowerer.mapTypeOf(lowerer.typeOf(thenLit ? expr.whenFalse : expr.whenTrue));
+  if (other?.kind !== "array") return null;
+  const arms = new Map<string, IrType>();
+  const add = (t: IrType | null): boolean => {
+    if (t === null) return false;
+    if (t.kind === "union") {
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
+    }
+    const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+    if (part.kind !== "f64" && part.kind !== "string" && part.kind !== "bool" && !isUnitType(part))
+      return false;
+    arms.set(typeKey(part), part);
+    return true;
+  };
+  if (!add(other.elem)) return null;
+  for (const element of literal.elements.nodes) {
+    if (!add(lowerer.mapTypeOf(lowerer.typeOf(element)))) return null;
+  }
+  const parts = [...arms.values()];
+  if (parts.every(isUnitType)) return null;
+  if (parts.length > 1) sortArms(parts);
+  return {
+    kind: "array",
+    elem: parts.length === 1 ? parts[0]! : { kind: "union", unionId: lowerer.unions.intern(parts) },
+  };
 }

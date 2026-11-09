@@ -321,6 +321,12 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned tupleArr lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "arrTuple": {
+      if (dst.kind !== "record" || value.type.kind !== "array")
+        throw new InternalCompilerError("lowerer bug: arrTuple lift shape");
+      const helper = arrayTupleLiftHelper(lowerer, value.type, dst, loc);
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "objWidth": {
       if (dst.kind !== "record" || value.type.kind !== "object")
         throw new InternalCompilerError("lowerer bug: objWidth lift shape");
@@ -661,6 +667,99 @@ export function tupleArrayWidthHelper(
               loc,
             ),
           ),
+          type: toT,
+          loc,
+        },
+        loc,
+      },
+    ],
+    loc,
+  });
+  return name;
+}
+
+/** Interned `%arr.tup.<n>(a)`, the `arrTuple` lift's build side: an array
+ * of exactly the tuple's length becomes the tuple, each position converted
+ * from its element; any other length throws the catchable TypeError (the
+ * assertion named a tuple the value is not). */
+function arrayTupleLiftHelper(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "array" },
+  toT: IrType & { kind: "record" },
+  loc: SrcLoc,
+): string {
+  const key = `arrtup:${typeKey(fromT.elem)}:${toT.shapeId}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const tuple = lowerer.shapes.get(toT.shapeId);
+  if (!tuple?.tuple) throw new InternalCompilerError("lowerer bug: arrTuple lift without a tuple");
+  const fields = [...tuple.fields].sort((x, y) => Number(x.name) - Number(y.name));
+  const lifts = fields.map((field) => {
+    const lift = lowerer.widthLiftPlan(fromT.elem, field.type);
+    if (!lift) throw new InternalCompilerError("lowerer bug: planned arrTuple position lift");
+    return lift;
+  });
+  const name = keyedHelperName(lowerer, "%arr.tup", key);
+  lowerer.valueHelpers.set(key, name);
+  const a: IrExpr = { kind: "varRef", localId: "a.0", type: fromT, loc };
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "a.0", name: "a", type: fromT }],
+    returnType: toT,
+    locals: [{ id: "a.0", name: "a", type: fromT, mutable: true }],
+    body: [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "!==",
+          left: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc },
+          right: { kind: "numLit", value: fields.length, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "throw",
+            value: {
+              kind: "libCall",
+              fn: "error.new",
+              args: [
+                {
+                  kind: "strLit",
+                  value: `expected ${lowerer.fmt(toT)} (the ${lowerer.fmt(fromT)} value does not have ${fields.length} element${fields.length === 1 ? "" : "s"})`,
+                  type: STRING,
+                  loc,
+                },
+              ],
+              type: { kind: "object", className: "%TypeError" },
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+      {
+        kind: "return",
+        value: {
+          kind: "recordLit",
+          fields: fields.map((field, i) => ({
+            name: field.name,
+            value: lowerer.applyWidthLift(
+              lifts[i]!,
+              {
+                kind: "arrayGet",
+                arr: a,
+                index: { kind: "numLit", value: i, type: F64, loc },
+                type: fromT.elem,
+                loc,
+              },
+              field.type,
+              loc,
+            ),
+          })),
           type: toT,
           loc,
         },

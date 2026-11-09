@@ -60,7 +60,9 @@ import {
   cjsAccessorCall,
   cjsAccessorSnapshotOf,
   cjsImportedDataSnapshotOf,
-  primitiveCtorClosure,
+  isArrayIterationCallback,
+  primitiveConversionCallback,
+  primitiveCtorValue,
   runtimeOptionalElementKey,
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
@@ -969,13 +971,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   // The primitive constructors as VALUES (`const f = String`, an
   // option table's `type: Boolean` field, `opt.type === Number`): the
-  // interned coercion closure — one synthesized module function per
-  // constructor per program, so every reference is the SAME zero-
-  // capture closure and `===` is JS identity (the type mapping in
-  // type-mapper.ts pins the one concrete signature `(value: string) =>
-  // primitive`; direct calls `String(x)` never reach here — the call
-  // lowering intercepts them with the wider static coercions).
-  const jsPrimitiveCtorSelector = isJsSourceFile(ts.getSourceFileOfNode(expr));
+  // program's one function for the constructor (primitiveCtorClosure),
+  // so every reference is the SAME zero-capture closure and `===` is JS
+  // identity. Direct calls `String(x)` never reach here: the call
+  // lowering intercepts them with the static coercions. The callback of
+  // an array iteration method (`xs.map(Number)`) is the conversion too:
+  // the method only calls it.
   const primitiveName = stdlibGlobalNameOf(lowerer, expr);
   if (
     primitiveName === "String" ||
@@ -983,7 +984,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     primitiveName === "Boolean" ||
     primitiveName === "BigInt"
   ) {
-    return primitiveCtorClosure(lowerer, primitiveName, loc, jsPrimitiveCtorSelector);
+    if (isArrayIterationCallback(lowerer, expr))
+      return primitiveConversionCallback(
+        lowerer,
+        primitiveName,
+        loc,
+        isJsSourceFile(ts.getSourceFileOfNode(expr)),
+      );
+    return primitiveCtorValue(lowerer, primitiveName, loc);
   }
   if (lowerer.isStdlibGlobal(expr, "ArrayBuffer"))
     return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };

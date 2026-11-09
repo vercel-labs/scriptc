@@ -30,11 +30,19 @@ function selected(
   return matches[0];
 }
 
-test("scr_events.c builds once per flavor, whatever the program's features", () => {
+test("scr_events.c builds once per flavor, and once more for the terminal color methods", () => {
   // The stdio extensions, the process extras, the typed write slot and the
   // island listeners all live in the one build; only workers needs its own.
+  // The second build is the one whose stream object asks scr_tty_colors.c
+  // for getColorDepth and hasColors: a hook in the one build would change
+  // the object every program with process events links.
   const unit = matrix.runtime_units.find((u: { source: string }) => u.source === "scr_events.c");
-  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual(["default", "default-workers"]);
+  expect(unit.variants.map((v: { id: string }) => v.id)).toEqual([
+    "default",
+    "default-workers",
+    "tty-colors",
+    "tty-colors-workers",
+  ]);
   const plain = { workers: false, nodeIsland: false, processExtras: false };
   expect(selected("scr_events.c", plain).defines).toEqual([]);
   // The features the other units still key on select nothing here.
@@ -415,6 +423,21 @@ test("a unit that tests SCR_NODE_ISLANDS has a build that defines it", () => {
       ),
   );
   expect(withoutBuild).toEqual([]);
+});
+
+test("the terminal color methods are a unit of their own behind one build of the events unit", () => {
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_tty_colors.c",
+  );
+  expect(unit.predicate).toEqual({ all: ["events", "ttyColors"] });
+  expect(selected("scr_events.c", { ttyColors: true, workers: false }).defines).toEqual([
+    "SCR_TTY_COLORS",
+  ]);
+  // Every other program keeps the default events object.
+  expect(selected("scr_events.c", { ttyColors: false, workers: false })).toMatchObject({
+    id: "default",
+    defines: [],
+  });
 });
 
 test("Node's pipe lifecycle is a unit of its own and the stream unit has no build for it", () => {

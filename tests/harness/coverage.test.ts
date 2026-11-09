@@ -1555,6 +1555,10 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
     // whose keys happen to arrive in the type's order. SC6002, which names
     // one object literal whose keys enumerate in another order than it
     // wrote them, stays a false positive here.
+    // SC6015 names a TypeScript statement that throws when it runs, and a
+    // corpus program that has one does not reach it (`new` through a held
+    // constructor, or a member read on a held loader, on a path the corpus
+    // does not take).
     expect
       .soft(
         (coverage.divergences ?? []).filter(
@@ -1562,7 +1566,8 @@ test(`every corpus program is 100% static (corpus and coverage agree${shardSuffi
             d.code !== "SC6001" &&
             d.code !== "SC6012" &&
             d.code !== "SC6013" &&
-            d.code !== "SC6014",
+            d.code !== "SC6014" &&
+            d.code !== "SC6015",
         ),
         file,
       )

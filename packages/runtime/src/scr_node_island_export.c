@@ -510,8 +510,98 @@ ScrDyn *scr_ni_export_value(uint32_t id) {
   return v;
 }
 
+/* ── Built-in constructors (SCR_NVF_INTRINSIC) ───────────────────────────
+ * A built-in constructor is the same function in every realm of a Node
+ * program, so one that crosses is the other side's own intrinsic: native
+ * `String` in an island is the island's `String` (island code compares it
+ * with its own, `type === Boolean`), and the island's `String` in native
+ * code is the program's. The table holds the native value of each name: the
+ * program registers its functions for the primitive constructors at start
+ * (scr_ni_intrinsic_register, emitted by the compiler), and a constructor
+ * the runtime interns joins the first time it crosses. */
+typedef struct {
+  char name[24];
+  ScrDyn *value;
+} NiIntrinsic;
+static NiIntrinsic ni_intrinsics[48];
+static size_t ni_nintrinsics = 0;
+
+static void ni_intrinsics_cleanup(void) {
+  for (size_t i = 0; i < ni_nintrinsics; i++) scr_dyn_release(ni_intrinsics[i].value);
+  ni_nintrinsics = 0;
+}
+
+static NiIntrinsic *ni_intrinsic_named(const char *name, size_t len) {
+  for (size_t i = 0; i < ni_nintrinsics; i++)
+    if (strlen(ni_intrinsics[i].name) == len && memcmp(ni_intrinsics[i].name, name, len) == 0)
+      return &ni_intrinsics[i];
+  return NULL;
+}
+
+static NiIntrinsic *ni_intrinsic_add(const char *name, size_t len, ScrDyn *value) {
+  if (len == 0 || len >= sizeof ni_intrinsics[0].name ||
+      ni_nintrinsics == sizeof ni_intrinsics / sizeof ni_intrinsics[0])
+    return NULL;
+  if (ni_nintrinsics == 0) scr_atexit(ni_intrinsics_cleanup);
+  NiIntrinsic *entry = &ni_intrinsics[ni_nintrinsics++];
+  memcpy(entry->name, name, len);
+  entry->name[len] = '\0';
+  entry->value = scr_dyn_retain(value);
+  return entry;
+}
+
+/* The program's function for the constructor `name`. */
+void scr_ni_intrinsic_register(ScrStr *name, ScrDyn *value) {
+  if (value->kind != SCR_DYN_FUNC || ni_intrinsic_named(name->data, name->len) != NULL) return;
+  ni_intrinsic_add(name->data, name->len, value);
+}
+
+/* The table entry of the built-in constructor `v` is, or NULL: one of the
+ * program's by the function behind it (an adapter of String is String), one
+ * of the runtime's by its interned signature. */
+static NiIntrinsic *ni_intrinsic_of(ScrDyn *v) {
+  if (v->kind != SCR_DYN_FUNC || v->v.fn.class_obj != NULL || v->v.fn.clo == NULL) return NULL;
+  ScrClosure *root = scr_closure_identity(v->v.fn.clo);
+  for (size_t i = 0; i < ni_nintrinsics; i++) {
+    ScrClosure *held = ni_intrinsics[i].value->v.fn.clo;
+    if (held != NULL && scr_closure_identity(held) == root) return &ni_intrinsics[i];
+  }
+  const char *sig = v->v.fn.sig;
+  if (sig == NULL || v->v.fn.name == NULL) return NULL;
+  if (strcmp(sig, "native:constructor") != 0 && strcmp(sig, "native:Array") != 0 &&
+      strcmp(sig, "native:ArrayBuffer") != 0 &&
+      (strcmp(sig, "native:function-constructor") != 0 || strcmp(v->v.fn.name, "Function") != 0))
+    return NULL;
+  size_t len = strlen(v->v.fn.name);
+  if (ni_intrinsic_named(v->v.fn.name, len) != NULL) return NULL;
+  return ni_intrinsic_add(v->v.fn.name, len, v);
+}
+
+/* The native value (+1) of the island intrinsic constructor behind `handle`
+ * (the bridge flagged it SCR_NVF_INTRINSIC), or NULL when the program holds
+ * none of that name: the handle then stays an island function. */
+ScrDyn *scr_ni_intrinsic_native(ScrDyn *handle) {
+  if (ni_nintrinsics == 0) return NULL;
+  ScrStr *key = scr_str_new("name", 4);
+  ScrDyn *name = scr_node_island_get(handle, key);
+  scr_str_release(key);
+  if (name == NULL || scr_exc_pending()) {
+    if (scr_exc_pending()) scr_exc_clear();
+    if (name != NULL) scr_dyn_release(name);
+    return NULL;
+  }
+  NiIntrinsic *entry =
+      name->kind == SCR_DYN_STR ? ni_intrinsic_named(name->v.str->data, name->v.str->len) : NULL;
+  scr_dyn_release(name);
+  return entry != NULL ? scr_dyn_retain(entry->value) : NULL;
+}
+
 /* Fills `out` with the export of `v` (borrowed). */
 void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
+  /* A built-in constructor crosses as its one registered value, whatever
+   * adapter of it arrived. */
+  NiIntrinsic *intrinsic = ni_intrinsic_of(v);
+  if (intrinsic != NULL) v = intrinsic->value;
   bool fresh;
   bool held = ni_exports_take();
   uint32_t id = ni_export_id_locked(v, &fresh);
@@ -529,6 +619,11 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
     out->u.exp.name = ni_exports[id].twin->name;
     out->u.exp.name_len = strlen(ni_exports[id].twin->name);
     out->u.exp.length = ni_exports[id].adopts;
+  }
+  if (intrinsic != NULL) {
+    out->flags |= SCR_NVF_INTRINSIC;
+    out->u.exp.name = intrinsic->name;
+    out->u.exp.name_len = strlen(intrinsic->name);
   }
   ni_exports_give(held);
   if (fresh) ni_twin_attach(id, v);

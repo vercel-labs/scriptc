@@ -40,6 +40,9 @@ An executable built with `--stdout-buffering` instead keeps stdout bytes in a 64
 A terminal keeps one write per call.
 Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is false, `writableHighWaterMark` is 65536, and `'drain'` never fires, so drain listeners register silently and `events.once(process.stdout, "drain")` stays pending, as it does in Node when no write returned false.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
+`getColorDepth` and `hasColors` exist on `process.stdout` and `process.stderr` only when the stream is a terminal, as in Node, so TypeScript refuses an assertion that the optional call answered, such as `process.stdout.getColorDepth?.() as number` or a trailing `!`, with `SC2020`; test the answer instead, as in `process.stdout.getColorDepth?.() ?? 1`.
+A call of either method with an environment that is an array, a `Map`, a `Set`, or a function builds with warning `SC6015` and throws an error that names `SC2020` when it runs on a terminal, and so does a call whose environment is an object literal with the single variable `TERM` set to `constructor` or `__proto__`.
+The build cannot see the same `TERM` value in the process's own environment or in an environment passed through a variable, so it prints no warning for it: the call throws the `SC2020` error on a terminal, where Node answers a member of `Object.prototype` instead of a color depth.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
 `process.stdout` and `process.stderr` also flow into a record type that declares only methods, such as `interface Sink { write(text: string): void }`.

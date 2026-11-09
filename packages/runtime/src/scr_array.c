@@ -5972,10 +5972,10 @@ static inline char *scr_join_put(char *end, const ScrStr *s, size_t len) {
   const char *text = (const char *)s + offsetof(ScrStr, data);
   char *start = end - len;
   if (__builtin_expect(len <= SCR_JOIN_STEP, 1)) {
-    memcpy(start + len - SCR_JOIN_STEP, text + len - SCR_JOIN_STEP, SCR_JOIN_STEP);
+    memcpy(end - SCR_JOIN_STEP, text + len - SCR_JOIN_STEP, SCR_JOIN_STEP);
   } else if (len <= 2 * SCR_JOIN_STEP) {
     memcpy(start, text, SCR_JOIN_STEP);
-    memcpy(start + len - SCR_JOIN_STEP, text + len - SCR_JOIN_STEP, SCR_JOIN_STEP);
+    memcpy(end - SCR_JOIN_STEP, text + len - SCR_JOIN_STEP, SCR_JOIN_STEP);
   } else {
     memcpy(start, text, len);
   }
@@ -6005,7 +6005,8 @@ static ScrStr *scr_arr_join_dense_str(const ScrArr *a, const ScrStr *sep) {
   for (size_t i = 0; i < n; i++) {
     const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(slots[i]);
     if (__builtin_expect(s != NULL, 1)) {
-      carries += __builtin_add_overflow(total, s->len, &total);
+      total += s->len;
+      carries += total < s->len;
       facts &= scr_join_cap_word(s);
     }
   }

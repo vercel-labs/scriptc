@@ -5756,7 +5756,7 @@ function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Se
     lowestOpenRead = Infinity;
     // Until nothing is added: a position found late (`type A<T, U> = A<U, T>
     // | (T extends string ? 1 : 2)`) makes the reference to itself name more.
-    for (let size = -1; positions.size > size; ) {
+    for (let size = -1; positions.size > size;) {
       size = positions.size;
       for (const d of target.declarations) {
         if (!ts.isTypeAliasDeclaration(d) && !ts.isInterfaceDeclaration(d)) continue;

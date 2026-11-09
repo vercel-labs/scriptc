@@ -820,10 +820,19 @@ export function emitDynamicExpr(
       // dyn vs scalar strict equality: kind test + payload compare.
       // Operands emit in SOURCE order; the dyn side is found by type.
       // Both borrowed, no allocation.
-      const inputs = emitBorrowedInputs(host, [e.left, e.right]);
+      // A symbol boxed only for this comparison stays a symbol: a symbol is
+      // its identity, so the untyped side's kind and symbol answer without
+      // a box. One side at most: the other stays the untyped value.
+      const boxedSymbol = (x: IrExpr): IrExpr | null =>
+        x.kind === "dynFrom" && x.value.type.kind === "symbol" ? x.value : null;
+      const leftSymbol = boxedSymbol(e.left);
+      const rightSymbol = leftSymbol === null ? boxedSymbol(e.right) : null;
+      const left = leftSymbol ?? e.left;
+      const right = rightSymbol ?? e.right;
+      const inputs = emitBorrowedInputs(host, [left, right]);
       const l = inputs[0]!,
         r = inputs[1]!;
-      const [d, s, st] = e.left.type.kind === "dyn" ? [l, r, e.right.type] : [r, l, e.left.type];
+      const [d, s, st] = left.type.kind === "dyn" ? [l, r, right.type] : [r, l, left.type];
       let test: string;
       if (st.kind === "dyn") {
         // dyn vs dyn: whole-dyn strict equality.
@@ -834,7 +843,13 @@ export function emitDynamicExpr(
         const kd = host.dynKind(d.name);
         const kindOk = B.tmp();
         const wantKind =
-          st.kind === "string" ? DYN_KIND.STR : st.kind === "f64" ? DYN_KIND.NUM : DYN_KIND.BOOL;
+          st.kind === "string"
+            ? DYN_KIND.STR
+            : st.kind === "f64"
+              ? DYN_KIND.NUM
+              : st.kind === "symbol"
+                ? DYN_KIND.SYMBOL
+                : DYN_KIND.BOOL;
         B.line(`${kindOk} = icmp eq i32 ${kd}, ${wantKind}`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca i1`);
@@ -856,6 +871,12 @@ export function emitDynamicExpr(
           const nv = B.tmp();
           B.line(`${nv} = load double, ptr ${pv}`);
           B.line(`${eq} = fcmp oeq double ${nv}, ${s.name}`);
+        } else if (st.kind === "symbol") {
+          // A symbol is its identity: the box holds the same symbol pointer.
+          B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.symbol.value`);
+          const held = B.tmp();
+          B.line(`${held} = load ptr, ptr ${pv}`);
+          B.line(`${eq} = icmp eq ptr ${held}, ${s.name}`);
         } else {
           B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.b`);
           const raw = B.tmp();

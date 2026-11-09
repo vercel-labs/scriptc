@@ -31,6 +31,7 @@ import {
   type RegionGroups,
 } from "./region-groups.js";
 import { CYC_BUF, CYC_HDR, CYC_TYPE } from "./alloc.js";
+import { VirtualTargets } from "./reference-effects.js";
 import { ALLOCATIONS, children, forEachNode, isExpr, type Node } from "./region-ir.js";
 import {
   guardedFunctions,
@@ -232,27 +233,61 @@ function allocatesCycleCapable(node: Node, traced: (t: IrType) => boolean): bool
   );
 }
 
+const NO_CALLEES: readonly string[] = [];
+
+/** The functions `node` itself calls, constructs or makes a closure of;
+ * null when it calls a function the call graph cannot name (a function
+ * value, a dynamic call, a virtual call with no known target).
+ *
+ * A closure's allocations are found in the function that makes it, not in
+ * the one that calls it: `tie(xs, cb) { return cb(xs) }` allocates nothing
+ * a direct edge leads to, and still hands back the ring its callback tied
+ * around `xs`. So a call of an unnamed function counts as allocating a
+ * cycle-capable object wherever these edges are followed. */
+function calleesOf(vt: VirtualTargets, node: Node): readonly string[] | null {
+  switch (node.kind) {
+    case "call":
+      return [node.callee];
+    case "new":
+      return [`%${node.className}.constructor`];
+    case "closure":
+      return [node.fnName];
+    case "virtualCall": {
+      const targets = vt.targets(node.className, node.method);
+      return targets !== null && targets.length > 0 ? targets : null;
+    }
+    case "callValue":
+    case "newValue":
+    case "dynCall":
+    case "dynInvoke":
+      return null;
+    default:
+      return NO_CALLEES;
+  }
+}
+
 /** The functions of `mod` that can allocate a cycle-capable object, by
  * themselves or through a function they call, construct or make a closure
- * of. A throw has the type of the value it stands in for and makes none. */
+ * of, or through a function they call that the call graph cannot name
+ * (calleesOf). A throw has the type of the value it stands in for and
+ * makes none. */
 function cycleCapableAllocators(mod: IrModule, traced: (t: IrType) => boolean): Set<string> {
   const out = new Set<string>();
   const callers = new Map<string, string[]>();
+  const vt = new VirtualTargets(mod.classes ?? []);
   for (const fn of mod.functions)
     forEachNode(fn.body, (node) => {
       if (isExpr(node) && !throws(node) && allocatesCycleCapable(node, traced)) out.add(fn.name);
-      const callee =
-        node.kind === "call"
-          ? node.callee
-          : node.kind === "new"
-            ? `%${node.className}.constructor`
-            : node.kind === "closure"
-              ? node.fnName
-              : null;
-      if (callee === null) return;
-      const list = callers.get(callee);
-      if (list === undefined) callers.set(callee, [fn.name]);
-      else list.push(fn.name);
+      const callees = calleesOf(vt, node);
+      if (callees === null) {
+        out.add(fn.name);
+        return;
+      }
+      for (const callee of callees) {
+        const list = callers.get(callee);
+        if (list === undefined) callers.set(callee, [fn.name]);
+        else list.push(fn.name);
+      }
     });
   const queue = [...out];
   while (queue.length > 0)
@@ -276,8 +311,10 @@ function cycleUnsafeFunctions(
   traced: (t: IrType) => boolean,
 ): Set<string> {
   const fns = new Map(mod.functions.map((f) => [f.name, f]));
+  const vt = new VirtualTargets(mod.classes ?? []);
   const allocatesTraced = (node: Node): boolean => allocatesCycleCapable(node, traced);
-  // Functions with a cycle-capable allocation, and what they call.
+  // Functions with a cycle-capable allocation (their own, or that of a
+  // function they call that the call graph cannot name), and what they call.
   const direct = new Set<string>();
   const calls = new Map<string, Set<string>>();
   const heap = new Set<string>();
@@ -291,9 +328,9 @@ function cycleUnsafeFunctions(
         direct.add(name);
         if (!takesArena(node)) heap.add(name);
       }
-      if (node.kind === "call") out.add(node.callee);
-      else if (node.kind === "new") out.add(`%${node.className}.constructor`);
-      else if (node.kind === "closure") out.add(node.fnName);
+      const callees = calleesOf(vt, node);
+      if (callees === null) direct.add(name);
+      else for (const callee of callees) out.add(callee);
     });
   }
   const tracedSomewhere = new Set(direct);

@@ -153,34 +153,64 @@ console.log(process.env.OTHER);
   );
 }, 240_000);
 
-test("--define keeps the TypeScript code it selected after a change through a computed name", async () => {
-  await withProgram(
-    {
-      "main.ts": `const name: string = ["NODE", "ENV"].join("_");
-process.env[name] = "development";
+test("TypeScript conditions follow a defined variable that a write through a computed name changes", async () => {
+  const conditions = `const DEV = process.env.NODE_ENV !== "production";
 if (process.env.NODE_ENV !== "production") {
   console.log("development branch");
 } else {
   console.log("production branch");
 }
 console.log(process.env.NODE_ENV === "production" ? "production arm" : "development arm");
+console.log(DEV ? "development constant" : "production constant");
+console.log(DEV && "development operand");
 console.log(process.env.NODE_ENV);
-`,
+`;
+  await withProgram(
+    {
+      // The build cannot read the name, so no condition the define decides is
+      // resolved: each one answers as under Node.
+      "changed.ts": `const name: string = ["NODE", "ENV"].join("_");
+process.env[name] = "development";
+${conditions}`,
+      "deleted.ts": `const name: string = ["NODE", "ENV"].join("_");
+delete process.env[name];
+${conditions}`,
+      "unchanged.ts": conditions,
     },
     async (dir, scriptc) => {
       const executable = join(dir, "program");
-      await scriptc([
-        "build",
-        "main.ts",
-        "-o",
-        executable,
-        `--define=process.env.NODE_ENV="production"`,
-      ]);
-      // The limitation the docs state: the selected code runs, whatever the
-      // variable holds by then.
-      expect((await execFileAsync(executable)).stdout).toBe(
-        "production branch\nproduction arm\ndevelopment\n",
+      const answers = async (file: string): Promise<{ node: string; native: string }> => {
+        await scriptc([
+          "build",
+          file,
+          "-o",
+          executable,
+          `--define=process.env.NODE_ENV="production"`,
+        ]);
+        const node = await execFileAsync(process.execPath, [join(dir, file)], {
+          env: { ...process.env, NODE_ENV: "production" },
+        });
+        // The executable sets the variable itself, whatever it starts with.
+        const native = await execFileAsync(executable, [], {
+          env: { ...process.env, NODE_ENV: "test" },
+        });
+        return { node: node.stdout, native: native.stdout };
+      };
+      const changed = await answers("changed.ts");
+      expect(changed.node).toBe(
+        "development branch\ndevelopment arm\ndevelopment constant\ndevelopment operand\ndevelopment\n",
       );
+      expect(changed.native).toBe(changed.node);
+      const deleted = await answers("deleted.ts");
+      expect(deleted.node).toBe(
+        "development branch\ndevelopment arm\ndevelopment constant\ndevelopment operand\nundefined\n",
+      );
+      expect(deleted.native).toBe(deleted.node);
+      const unchanged = await answers("unchanged.ts");
+      expect(unchanged.node).toBe(
+        "production branch\nproduction arm\nproduction constant\nfalse\nproduction\n",
+      );
+      expect(unchanged.native).toBe(unchanged.node);
     },
   );
 }, 240_000);

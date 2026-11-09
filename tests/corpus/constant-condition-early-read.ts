@@ -2,8 +2,9 @@
 // condition still evaluates, so each form throws Node's ReferenceError until
 // the declaration runs, and afterwards only the selected code runs. The forms
 // are the `if` statement, `!`, the right operand of `&&` and `||`, the
-// conditional expression, a `const` derived from another, and a selected arm
-// that leaves a loop or assigns a variable declared without a value.
+// conditional expression, a `const` derived from another, a selected arm
+// that leaves a loop or assigns a variable declared without a value, and a
+// `const` of a function that closures declared above it read.
 export {};
 
 function report(e: unknown): void {
@@ -80,6 +81,37 @@ function viaLoop(): string {
   return seen.join(",") + " " + last;
 }
 
+// A `const` of the function, read by closures declared above it.
+function viaLocal(): string {
+  const out: string[] = [];
+  const statement = (): string => {
+    if (LOCAL) {
+      return "then";
+    }
+    return "else";
+  };
+  const value = (): string => (!LOCAL ? "selected" : "other");
+  const operand = (): string => String(LOCAL && ran("local"));
+  try {
+    out.push(statement());
+  } catch (e) {
+    out.push((e as Error).name);
+  }
+  try {
+    out.push(value());
+  } catch (e) {
+    out.push((e as Error).name);
+  }
+  try {
+    out.push(operand());
+  } catch (e) {
+    out.push((e as Error).name);
+  }
+  const LOCAL = false;
+  out.push(statement(), value(), operand());
+  return out.join(" ");
+}
+
 const probes = [
   viaIf,
   viaNot,
@@ -89,6 +121,7 @@ const probes = [
   viaConditionalValue,
   viaDerived,
   viaLoop,
+  viaLocal,
 ];
 
 function probe(stage: string): void {

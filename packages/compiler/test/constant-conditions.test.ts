@@ -157,20 +157,138 @@ test("a conditional expression lowers only the arm a constant condition selects"
   ).toBe(false);
 });
 
-test("a constant condition still evaluates, and the taken arm runs after it", async () => {
+/** The body of the function `name`, without source positions. */
+function bodyOf(mod: IrModule, name: string): string {
+  const fn = mod.functions.find((f) => f.name === name || f.name.endsWith(`.${name}`));
+  if (!fn) throw new Error(`no function ${name}`);
+  return JSON.stringify(fn.body, (key, value: unknown) => (key === "loc" ? undefined : value));
+}
+
+test("a constant condition that can throw still evaluates, and the taken arm runs after it", async () => {
   const mod = await lowerProgram({
     "main.ts": `function early(): string {\n  if (LATE) {\n    return "then";\n  } else {\n    return LATE ? "selected" : "else";\n  }\n}\nconsole.log(early());\nconst LATE = false;\n`,
   });
-  const early = mod.functions.find((f) => f.name === "early" || f.name.endsWith(".early"));
-  if (!early) throw new Error("no function early");
-  const text = JSON.stringify(early.body);
-  // Both reads of LATE remain, and neither "then" nor "selected" was lowered.
-  expect(text.split(`"LATE"`).length - 1).toBeGreaterThanOrEqual(2);
-  expect(text).toContain(`"else"`);
-  expect(text).not.toContain(`"then"`);
-  expect(text).not.toContain(`"selected"`);
+  const text = bodyOf(mod, "early");
+  // Both reads of LATE remain with their checks. The `if` is its taken arm
+  // after its test; the conditional expression keeps both arms.
+  expect(text.split(`"module.tdzCheck"`).length - 1).toBe(2);
+  expect(text).not.toContain(`"value":"then"`);
   expect(text).not.toContain(`"kind":"if"`);
-  expect(text).not.toContain(`"kind":"ternary"`);
+  expect(text).toContain(`"kind":"ternary"`);
+  expect(text).toContain(`"value":"selected"`);
+  expect(text).toContain(`"value":"else"`);
+});
+
+test("a folded condition is the code it selects, written alone", async () => {
+  const helpers = `const DEV = false;
+function dev(n: number): string {
+  return "dev " + n;
+}
+function prod(n: number): string {
+  return "prod " + n;
+}
+`;
+  const calls = `console.log(text(1), mixed(), negated(2), statement(3), defined(4));\n`;
+  const define = { "process.env.NODE_ENV": "production" };
+  const folded = await lowerProgram(
+    {
+      "main.ts": `${helpers}
+function text(n: number): string {
+  return DEV ? dev(n) : prod(n);
+}
+function mixed(): string | number {
+  return DEV ? 1 : "else";
+}
+function negated(n: number): string {
+  const picked = !DEV ? prod(n) : dev(n);
+  return picked;
+}
+function statement(n: number): string {
+  if (DEV) {
+    return dev(n);
+  } else {
+    return prod(n);
+  }
+}
+function defined(n: number): string {
+  if (process.env.NODE_ENV !== "production") {
+    return dev(n);
+  }
+  return process.env.NODE_ENV === "production" ? prod(n) : dev(n);
+}
+${calls}`,
+    },
+    define,
+  );
+  const alone = await lowerProgram(
+    {
+      "main.ts": `${helpers}
+function text(n: number): string {
+  return prod(n);
+}
+function mixed(): string | number {
+  return "else";
+}
+function negated(n: number): string {
+  const picked = prod(n);
+  return picked;
+}
+function statement(n: number): string {
+  {
+    return prod(n);
+  }
+}
+function defined(n: number): string {
+  {
+  }
+  return prod(n);
+}
+${calls}`,
+    },
+    define,
+  );
+  for (const name of ["text", "mixed", "negated", "statement", "defined"])
+    expect(bodyOf(folded, name), name).toBe(bodyOf(alone, name));
+});
+
+test("a write through a computed name leaves the conditions --define decides to the run", async () => {
+  const define = { "process.env.NODE_ENV": "production" };
+  const name = `const name: string = ["NODE", "ENV"].join("_");`;
+  const tail = `${HELD}\nif (process.env.NODE_ENV !== "production") {\n  Object.freeze(held);\n}\nconsole.log(process.env.NODE_ENV === "production" ? "production" : Object.seal(held));`;
+  // Without such a write the conditions fold.
+  expect(
+    await paysForIntegrity(`${name}\nconsole.log(process.env[name]);\n${tail}`, {}, define),
+  ).toBe(false);
+  expect(await paysForIntegrity(`process.env["OTHER"] = "set";\n${tail}`, {}, define)).toBe(false);
+  for (const write of [
+    `process.env[name] = "development";`,
+    `delete process.env[name];`,
+    `console.log(delete process.env[name]);`,
+    `const env = process.env;\nenv[name] = "development";`,
+    `(process.env)[name] = "development";`,
+    `function change(): void {\n  process.env[name] = "development";\n}`,
+  ]) {
+    expect(await paysForIntegrity(`${name}\n${write}\n${tail}`, {}, define), write).toBe(true);
+    // A literal and a \`const\` decide as before.
+    expect(
+      await paysForIntegrity(
+        `const DEV = false;\n${name}\n${write}\n${HELD}\nif (DEV) {\n  Object.freeze(held);\n}\nconsole.log(DEV ? Object.seal(held) : "production");`,
+        {},
+        define,
+      ),
+      write,
+    ).toBe(false);
+  }
+  // A write in another module of the program counts.
+  expect(
+    await paysForIntegrity(
+      `import "./change.ts";\n${tail}`,
+      {
+        "change.ts": `${name}\nprocess.env[name] = "development";\n`,
+      },
+      define,
+    ),
+  ).toBe(true);
 });
 
 test("changing a variable --define fixes is refused in every form that names it", async () => {

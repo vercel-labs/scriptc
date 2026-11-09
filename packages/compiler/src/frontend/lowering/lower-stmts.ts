@@ -77,7 +77,7 @@ import {
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
-import { constantCondition } from "./constant-conditions.js";
+import { conditionRunsNothing, constantCondition } from "./constant-conditions.js";
 import {
   builtinPolyfillGuard,
   isBuiltinPolyfillEarlyExit,
@@ -2187,8 +2187,8 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // hoisted binding.
     const detected = polyfill?.value ?? staticCondition(lowerer, test);
     // Nor does the untaken arm of a constant condition
-    // (constant-conditions.ts): its test runs for what it reads, and then
-    // the taken arm does, whatever the test answered.
+    // (constant-conditions.ts): the statement is its taken arm, after the
+    // test when the test can throw (a `const` read before its declaration).
     const constant = detected === null ? constantCondition(lowerer, test) : null;
     const decided = detected ?? constant;
     if (decided !== null) {
@@ -2200,10 +2200,9 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
           constant !== null
             ? {
                 kind: "block",
-                body:
-                  cond.kind === "boolLit"
-                    ? arm
-                    : [{ kind: "exprStmt", expr: cond, loc: locOf(test) }, ...arm],
+                body: conditionRunsNothing(lowerer, test, cond)
+                  ? arm
+                  : [{ kind: "exprStmt", expr: cond, loc: locOf(test) }, ...arm],
                 loc: locOf(stmt),
               }
             : decided

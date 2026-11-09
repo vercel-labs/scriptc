@@ -4794,6 +4794,10 @@ export class Lowerer {
   /** Whether the program contains the built-in undici package
    * (fetch-dispatcher.ts), found on first use. */
   undiciPackageInProgram: boolean | null = null;
+  /** Whether the program writes or deletes an environment variable through
+   * a name that is not a literal (constant-conditions.ts), found on first
+   * use. */
+  computedEnvironmentWrite: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -6334,6 +6338,7 @@ export class Lowerer {
       fixed("globalObjectWrites", () => this.globalObjectWrites),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
       fixed("undiciPackageInProgram", () => this.undiciPackageInProgram),
+      fixed("computedEnvironmentWrite", () => this.computedEnvironmentWrite),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
       // State of the lowering in progress, which a unit restores.

@@ -4587,6 +4587,14 @@ export class Lowerer {
   readonly neverValued = new Set<IrExpr>();
   readonly chainNarrowedType = new Map<ts.Node, ts.Type>();
   readonly chainHandled = new Set<ts.Node>();
+  /** Member chains on an untyped binding narrowed to a class, while their
+   * two arms lower (narrowed-class-chains.ts): `active` holds the chains in
+   * hand, `dynamicArm` the bindings whose dynamic arm is being lowered, so
+   * chains on them inside it stay dynamic. */
+  readonly narrowedClassChains = {
+    active: new Set<ts.Node>(),
+    dynamicArm: new Set<ts.Symbol>(),
+  };
   /** One arm's narrowed value for a spread source while a distributed
    * union spread lowers that arm (lowerDistributedUnionSpread). */
   readonly spreadArmOverrides = new Map<ts.Node, IrExpr>();
@@ -6036,6 +6044,8 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    "narrowedClassChains.active",
+    "narrowedClassChains.dynamicArm",
     // Refused probes are held only while the expression or statement that
     // probed is being lowered, so a unit begins and ends with none; the
     // closure-name count is only compared across one probe.
@@ -6426,6 +6436,8 @@ export class Lowerer {
       this.chainRecvByNode.size +
       this.chainHandled.size +
       this.chainNarrowedType.size +
+      this.narrowedClassChains.active.size +
+      this.narrowedClassChains.dynamicArm.size +
       this.runtimeOptionalBindingTypes.size +
       this.stagedArguments.size +
       this.receiverTypeOverrides.size +

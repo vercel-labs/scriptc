@@ -7,6 +7,10 @@
  * operation: a shared helper that tries every class with that member, reads
  * the slot and boxes the answer.
  *
+ * The rule asks only what the checker says at the use, not how it got
+ * there: a type predicate, an assertion function and the loop variable of a
+ * generator (a typed binding whose storage is the dynamic one) take it too.
+ *
  * A class test does not prove a layout: an object that inherits from an
  * instance, a Proxy, a value of a Node island and whatever a user-defined
  * `Symbol.hasInstance` accepts all pass `instanceof` without being a compiled
@@ -28,35 +32,12 @@
  * Programs without such a chain lower as before. */
 import { dynUndefinedExpr, strLit } from "../../ir/build.js";
 import { BOOL, type IrExpr, typeEquals, typeKey } from "../../ir/ir.js";
+import { withoutParenthesesNonNull as skipWrappers } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
-
-interface ChainState {
-  /** Chains whose two arms are being lowered. */
-  readonly active: Set<ts.Node>;
-  /** Bindings whose dynamic arm is being lowered: chains on them inside it
-   * stay dynamic. */
-  readonly dynamicArm: Set<ts.Symbol>;
-}
-
-const states = new WeakMap<Lowerer, ChainState>();
-
-function stateOf(lowerer: Lowerer): ChainState {
-  let state = states.get(lowerer);
-  if (!state) {
-    state = { active: new Set(), dynamicArm: new Set() };
-    states.set(lowerer, state);
-  }
-  return state;
-}
-
-function skipWrappers(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
-  return node;
-}
 
 /** Whether an operand of the chain (a call argument) can be lowered once per
  * arm: it creates no function or class, does not suspend, and leaves the
@@ -214,7 +195,7 @@ export function lowerNarrowedClassChain(lowerer: Lowerer, expr: ts.Expression): 
   const stored = lowerer.peekLocal(root) ?? lowerer.globalOf(root);
   if (stored?.type.kind !== "dyn") return null;
   if (lowerer.chainRecvByNode.has(root)) return null;
-  const state = stateOf(lowerer);
+  const state = lowerer.narrowedClassChains;
   if (state.active.has(expr)) return null;
   if (!readPosition(expr) || !plainOperands(expr, root)) return null;
   if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;

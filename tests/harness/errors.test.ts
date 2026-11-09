@@ -1468,6 +1468,61 @@ export const read = quiet ? (n) => n : function (n) { return this === undefined 
 `,
         "reads",
       ],
+      "the last operand of a comma": [
+        `export const read = (0, function (n) { return this === undefined ? n : -n; });
+`,
+        "reads",
+      ],
+      "an operand of '??'": [
+        `const none = process.argv.length > 100 ? (n) => n : undefined;
+export const read = none ?? function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      "an operand of '||'": [
+        `const none = process.argv.length > 100 ? (n) => n : undefined;
+export const read = none || function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      // The forms the proof does not follow name no function, so nothing is
+      // proven about them.
+      "a member of an object": [
+        `const all = { read: function (n) { return this === undefined ? n : -n; } };
+export const read = all.read;
+`,
+        "may read",
+      ],
+      "an element of an array": [
+        `const all = [function (n) { return this === undefined ? n : -n; }];
+export const read = all[0];
+`,
+        "may read",
+      ],
+      "a static method of a class": [
+        `class All { static read(n) { return this === undefined ? n : -n; } }
+export const read = All.read;
+`,
+        "may read",
+      ],
+      "a destructured name": [
+        `const all = { read: function (n) { return this === undefined ? n : -n; } };
+export const { read } = all;
+`,
+        "may read",
+      ],
+      "a binding assigned after its declaration": [
+        `export let read;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+        "may read",
+      ],
+      "a binding assigned again": [
+        `export let read = (n) => n;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+        "may read",
+      ],
     }),
   )(
     "an export that holds a reader of 'this' as %s keeps the module-binding receiver fence",
@@ -1496,6 +1551,41 @@ export const reader = function (n) { return this === undefined ? n : -n; };
     },
   );
 
+  // A function answers `g.call(…)` with what its prototype chain defines:
+  // the native member call runs the builtin, so the prototype is refused
+  // where the text names one that defines the member.
+  test.for(
+    Object.entries({
+      "written in place": `Object.setPrototypeOf(inner, { call(self, n) { return self === undefined ? n : -n; } });`,
+      "held by a name": `const proto = { call(self, n) { return self === undefined ? n : -n; } };
+Object.setPrototypeOf(inner, proto);`,
+      "set in another function": `function arm(fn) { Object.setPrototypeOf(fn, { call(self, n) { return self === undefined ? n : -n; } }); }
+arm(inner);`,
+    }),
+  )(
+    "a function is refused a prototype that defines 'call', %s",
+    async ([, define]) => {
+      const r = await compileAndRun(
+        "function-prototype-own-call",
+        `import * as lib from "./lib.mjs";
+console.log(lib.read(1));
+`,
+        "mjs",
+        {
+          "lib.mjs": `const inner = function (n) { return n; };
+${define}
+export const read = (n) => inner.call(undefined, n);
+`,
+        },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: giving a value that can be a function a prototype that defines 'apply', 'bind' or 'call'.*\[SC1090 at .*lib\.mjs:\d\]\n$/,
+      );
+    },
+  );
+
   // A statement can give a function its own `call` after the binding that
   // holds it: the proof reads no statements, so a program that defines
   // `call` or `apply` on a function keeps no proof that passes `this` on.
@@ -1505,6 +1595,8 @@ export const reader = function (n) { return this === undefined ? n : -n; };
       "an assignment": `inner.call = function (self, n) { return self === undefined ? n : -n; };`,
       "a definition another function makes": `function arm(fn) { Object.defineProperty(fn, "call", { value(self, n) { return self === undefined ? n : -n; } }); }
 arm(inner);`,
+      "a key computed at run time, in a program that defines another member": `Object.defineProperty(inner, "bind", { value: 1 });
+Object.defineProperty(inner, ["ca", "ll"].join(""), { value(self, n) { return self === undefined ? n : -n; } });`,
     }),
   )(
     "an export that passes 'this' on is refused where the program gives a function its own 'call' by %s",
@@ -1525,7 +1617,7 @@ export const read = function (n) { return inner.call(this, n); };
           },
         ),
       ).rejects.toThrow(
-        /SC1090: calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program whose functions can hold their own 'call' or 'apply'/,
+        /SC1090: calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program that gives a function its own 'apply', 'bind' or 'call'/,
       );
     },
   );

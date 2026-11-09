@@ -34,7 +34,7 @@ import {
   builtinClassValue,
   lowerBuiltinClassCall,
 } from "./builtins/builtin-class-dyn.js";
-import { refuseModuleMemberThis } from "./module-member-this.js";
+import { refuseModuleMemberThis, refuseOwnCallPrototype } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
@@ -576,6 +576,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
 }
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  refuseOwnCallPrototype(lowerer, expr);
   // `c.toString()` of a builtin constructor value is the constructor's text,
   // whatever tier holds the value (held-constructors.ts).
   if (

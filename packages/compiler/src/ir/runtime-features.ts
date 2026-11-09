@@ -1484,7 +1484,8 @@ function functionReadsInheritedMember(fn: IrFunction): boolean {
  *
  * The receiver proofs that read `f.call(this, …)` as the builtin rest on
  * the default objects, which refuse a function its own `call` and `apply`
- * (SC2020): a program this test selects keeps none of those proofs
+ * (SC2020): a program this test selects keeps them only while its text
+ * gives no function such a member
  * (frontend/lowering/module-member-this.ts refuseForwardsToOwnCall). */
 export function moduleShadowsFunctionMember(mod: IrModule): boolean {
   return mod.functions.some((fn) => functionShadowsMember(fn) || functionReadsInheritedMember(fn));

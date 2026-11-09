@@ -10,59 +10,151 @@ import type { IrModule } from "../../ir/ir.js";
 import { moduleShadowsFunctionMember } from "../../ir/runtime-features.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { bindingNeverReassigned } from "./binding-analysis.js";
+import { bindingNeverReassigned, isWriteTarget } from "./binding-analysis.js";
 import { isRebindableFunction } from "./rebindable-functions.js";
 
-/** The value an export declaration or write assigns. */
-function exportedValue(decl: ts.Node): ts.Node | undefined {
-  let node: ts.Node | undefined = decl;
-  if (ts.isPropertyAccessExpression(node) && node.parent && ts.isBinaryExpression(node.parent))
-    node = node.parent;
-  if (ts.isBinaryExpression(node)) node = node.right;
-  else if (ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) node = node.initializer;
-  while (node !== undefined && ts.isParenthesizedExpression(node)) node = node.expression;
-  return node;
+/** The value an export declaration or write gives the binding, or undefined
+ * where the declaration does not show what the binding holds when it is
+ * called: a binding without a value of its own (`export let f;`, a
+ * destructured name), one the program assigns again, a compound write. */
+function exportedValue(lowerer: Lowerer, decl: ts.Node): ts.Node | undefined {
+  if (ts.isPropertyAccessExpression(decl) && decl.parent && ts.isBinaryExpression(decl.parent))
+    decl = decl.parent;
+  if (ts.isBinaryExpression(decl))
+    return decl.operatorToken.kind === ts.SyntaxKind.EqualsToken ? decl.right : undefined;
+  if (ts.isVariableDeclaration(decl)) {
+    if (!decl.initializer || !ts.isIdentifier(decl.name)) return undefined;
+    if (!ts.isVariableDeclarationList(decl.parent)) return undefined;
+    if ((decl.parent.flags & ts.NodeFlags.Const) !== 0) return decl.initializer;
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    const stable =
+      symbol !== undefined &&
+      bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, (ident) =>
+        lowerer.checker.getSymbolAtLocation(ident),
+      );
+    return stable ? decl.initializer : undefined;
+  }
+  if (ts.isPropertyAssignment(decl)) return decl.initializer;
+  // `{ read }`: the binding the shorthand names.
+  if (ts.isShorthandPropertyAssignment(decl)) return decl.name;
+  if (ts.isExportAssignment(decl)) return decl.expression;
+  if (
+    ts.isFunctionDeclaration(decl) ||
+    ts.isMethodDeclaration(decl) ||
+    ts.isClassLikeDeclaration(decl)
+  )
+    return decl;
+  return undefined;
 }
 
-/** Whether the function an export binding holds reads `this`, as far as the
- * binding's value names that function in a form the proof below follows: a
- * function, a name or namespace member that holds one, either arm of a
- * conditional, the argument a standard function returns
+const isUndefinedName = (node: ts.Node): boolean =>
+  ts.isIdentifier(node) && node.text === "undefined";
+
+/** Whether a value is of a form no function call reaches a `this` through:
+ * an arrow function, a class (called without `new` it throws before its
+ * body runs), or a literal that is no function at all. */
+function holdsNoReceiver(value: ts.Node): boolean {
+  return (
+    isUndefinedName(value) ||
+    ts.isArrowFunction(value) ||
+    ts.isClassLikeDeclaration(value) ||
+    ts.isObjectLiteralExpression(value) ||
+    ts.isArrayLiteralExpression(value) ||
+    ts.isStringLiteralLike(value) ||
+    ts.isNumericLiteral(value) ||
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword ||
+    value.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/** What a value does with the `this` it is called with: null when it
+ * provably ignores it, "reads" when the function it names reads it, and
+ * "may read" for everything the proof cannot follow to a function. */
+type ReceiverUse = "reads" | "may read" | null;
+
+const worseUse = (a: ReceiverUse, b: ReceiverUse): ReceiverUse =>
+  a === "reads" || b === "reads" ? "reads" : (a ?? b);
+
+/** What the function an export binding holds does with `this`. The one
+ * place that names what an export holds: a function, a name or namespace
+ * member that holds one, the operands an operator chooses between
+ * (`a ? b : c`, `a ?? b`, `a || b`, `a && b`, the last of `a, b`), the
+ * argument a standard function returns
  * (`Object.defineProperty(function () {…}, "length", …)`, whatever the call
  * defines), and the call of a program function (`makeRead()`,
- * `inner.makeRead()`), whose result the call's arguments decide: that one
- * "may read" unless the proof shows otherwise. A value of any other form
- * (a member of an object, the result of a function the program does not
- * define) names no function here and is not checked. */
-function exportReadsThis(
-  lowerer: Lowerer,
-  value: ts.Node,
-  depth: number,
-): "reads" | "may read" | null {
-  if (depth > maxDepth) return "may read";
-  while (ts.isParenthesizedExpression(value)) value = value.expression;
-  if (
-    ts.isFunctionDeclaration(value) ||
-    ts.isFunctionExpression(value) ||
-    ts.isMethodDeclaration(value)
+ * `inner.makeRead()`), whose result the call's arguments decide. A value
+ * of any other form (a member of an object, an element, a binding the
+ * program assigns again) names no function, so nothing is proven about it:
+ * it may read. The call of any other function is the exception, left
+ * unchecked (see there). */
+function exportReadsThis(lowerer: Lowerer, value: ts.Node | undefined, depth: number): ReceiverUse {
+  if (value === undefined || depth > maxDepth) return "may read";
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isSatisfiesExpression(value) ||
+    ts.isNonNullExpression(value)
   )
-    return readsOwnThis(lowerer, value) ? "reads" : null;
+    value = value.expression;
+  if (holdsNoReceiver(value)) return null;
+  if (ts.isFunctionDeclaration(value) || ts.isMethodDeclaration(value))
+    return isRebindableFunction(lowerer, value)
+      ? "may read"
+      : readsOwnThis(lowerer, value)
+        ? "reads"
+        : null;
+  if (ts.isFunctionExpression(value)) return readsOwnThis(lowerer, value) ? "reads" : null;
   if (ts.isConditionalExpression(value))
-    return (
-      exportReadsThis(lowerer, value.whenTrue, depth + 1) ??
-      exportReadsThis(lowerer, value.whenFalse, depth + 1)
+    return worseUse(
+      exportReadsThis(lowerer, value.whenTrue, depth + 1),
+      exportReadsThis(lowerer, value.whenFalse, depth + 1),
     );
+  if (ts.isBinaryExpression(value)) {
+    switch (value.operatorToken.kind) {
+      case ts.SyntaxKind.CommaToken:
+      case ts.SyntaxKind.EqualsToken:
+        return exportReadsThis(lowerer, value.right, depth + 1);
+      case ts.SyntaxKind.QuestionQuestionToken:
+      case ts.SyntaxKind.BarBarToken:
+      case ts.SyntaxKind.AmpersandAmpersandToken:
+        return worseUse(
+          exportReadsThis(lowerer, value.left, depth + 1),
+          exportReadsThis(lowerer, value.right, depth + 1),
+        );
+    }
+    return "may read";
+  }
   if (ts.isCallExpression(value)) {
     const returned = returnedArgument(lowerer, value);
     if (returned !== null) return exportReadsThis(lowerer, returned.argument, depth + 1);
-    if ((functionOfReference(lowerer, value.expression, noBindings)?.fn ?? null) === null)
-      return null;
-    return ignoresThis(lowerer, value, noBindings, 0) ? null : "may read";
+    if ((functionOfReference(lowerer, value.expression, noBindings)?.fn ?? null) !== null)
+      return ignoresThis(lowerer, value, noBindings, 0) ? null : "may read";
+    // The result of a function the proof cannot name (`all.get(1)`, and
+    // `partial(0)` where `partial` was itself made by a factory, the
+    // partial application a library is full of) is the one form left
+    // unchecked: what such a call returns depends on the arguments at run
+    // time, and nearly every such export ignores `this`. One of them is
+    // `g.bind(o)`, which does while `bind` is the builtin.
+    noteBuiltinBind(lowerer, value);
+    return null;
   }
   const held = functionOfReference(lowerer, value as ts.Expression, noBindings);
-  if (held === null) return null;
+  if (held === null) return "may read";
   if (held.fn !== null) return readsOwnThis(lowerer, held.fn) ? "reads" : null;
-  return held.bound ? exportReadsThis(lowerer, held.bound.expr, depth + 1) : null;
+  return held.bound ? exportReadsThis(lowerer, held.bound.expr, depth + 1) : "may read";
+}
+
+/** `f.bind(…)` of a function a name holds: the bound function runs with the
+ * receiver the call names, whatever it is called with later, while `bind`
+ * is the builtin. Counted with the forwards, which rest on the same
+ * (noteReceiverForwards). */
+function noteBuiltinBind(lowerer: Lowerer, call: ts.CallExpression): void {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return;
+  if (!ts.isIdentifier(callee.name) || callee.name.text !== "bind") return;
+  if ((functionOfReference(lowerer, callee.expression, noBindings)?.fn ?? null) !== null)
+    forwardsInProof++;
 }
 
 /** Whether `node` is `f.apply(this, ...)` or `f.call(this, ...)`, which
@@ -257,7 +349,8 @@ function functionOfSymbol(
       let init: ts.Expression = decl.initializer;
       while (ts.isParenthesizedExpression(init)) init = init.expression;
       if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) return { fn: init };
-      if (ts.isCallExpression(init)) return { fn: null, bound: { expr: init, bindings } };
+      if (ts.isCallExpression(init) || isUndefinedName(init))
+        return { fn: null, bound: { expr: init, bindings } };
       if (ts.isIdentifier(init)) {
         symbol = lowerer.checker.getSymbolAtLocation(init);
         continue;
@@ -462,23 +555,231 @@ export function moduleExportIgnoresThis(
  * program selects by defining, writing or deleting an inherited member of
  * a function under a name its text spells, or by reading `call` or `bind`
  * as a value (ir/runtime-features.ts, fnMemberProps): there a function
- * holds whatever `call` the program gives it, under a spelled key or a
- * computed one. Which function such a write reaches is not followed, so
- * the sites whose proof passed `this` on are kept, and all of them are
- * refused once the lowered program selects that build
- * (refuseForwardsToOwnCall). The sites are kept as text, which a unit's
- * record carries (Lowerer.journalTables). */
+ * holds the `call` the program gives it. Which function such a write
+ * reaches is not followed, so the sites whose proof passed `this` on are
+ * kept, and all of them are refused once the lowered program selects that
+ * build and its text gives a value that can be a function a `call` or an
+ * `apply` (refuseForwardsToOwnCall). The sites are kept as text, which a
+ * unit's record carries (Lowerer.journalTables). */
 function noteReceiverForwards(lowerer: Lowerer, site: ts.Node): void {
   if (forwardsInProof === 0) return;
   const loc = locOf(site);
   lowerer.receiverForwardSites.add(`${loc.start}:${loc.end}:${loc.file}`);
 }
 
-/** The diagnostics of those sites, for a program in which a function can
- * hold its own `call` or `apply`: the replacement would receive the
- * receiver the proof said nobody reads. */
+/** The members of a function the receiver proofs take for the builtins. */
+const isReceiverMember = (name: string): boolean =>
+  name === "apply" || name === "bind" || name === "call";
+
+/** The expression a `const` name was initialized with, through other such
+ * names; any other expression as it is written. */
+function writtenValue(lowerer: Lowerer, expr: ts.Expression): ts.Expression {
+  for (let step = 0; step < 8; step++) {
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!ts.isIdentifier(expr)) return expr;
+    const decls = lowerer.checker.getSymbolAtLocation(expr)?.declarations;
+    const decl = decls?.length === 1 ? decls[0]! : undefined;
+    if (
+      decl === undefined ||
+      !ts.isVariableDeclaration(decl) ||
+      !decl.initializer ||
+      !ts.isVariableDeclarationList(decl.parent) ||
+      (decl.parent.flags & ts.NodeFlags.Const) === 0
+    )
+      return expr;
+    expr = decl.initializer;
+  }
+  return expr;
+}
+
+/** The text a key expression spells: a string literal, or a `const` name
+ * initialized with one. Undefined for a key computed at run time, and the
+ * empty string for one whose type is a symbol or a number, which names no
+ * member at all. */
+function spelledKey(lowerer: Lowerer, key: ts.Expression): string | undefined {
+  const value = writtenValue(lowerer, key);
+  if (ts.isStringLiteralLike(value)) return value.text;
+  const named = ts.TypeFlags.ESSymbolLike | ts.TypeFlags.NumberLike;
+  return ts.isNumericLiteral(value) || (lowerer.typeOf(key).flags & named) !== 0 ? "" : undefined;
+}
+
+/** Whether `target` provably holds something other than a function: an
+ * object or array literal (written in place or held by a `const` name), or
+ * the `prototype` of a class, which no write replaces. Every other
+ * receiver (a parameter, a member, a function) can be one. */
+function holdsNoFunction(lowerer: Lowerer, target: ts.Expression): boolean {
+  for (let step = 0; step < 8; step++) {
+    const value = writtenValue(lowerer, target);
+    if (ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value)) return true;
+    if (ts.isCallExpression(value)) {
+      // `Object.create(…)` makes an object; `Object.setPrototypeOf({}, …)`
+      // and the like return their first argument.
+      const callee = value.expression;
+      if (
+        ts.isPropertyAccessExpression(callee) &&
+        lowerer.stdlibGlobalMember(callee, "Object") === "create"
+      )
+        return true;
+      const returned = returnedArgument(lowerer, value);
+      if (returned === null) return false;
+      target = returned.argument;
+      continue;
+    }
+    if (!ts.isPropertyAccessExpression(value) || !ts.isIdentifier(value.expression)) return false;
+    if (!ts.isIdentifier(value.name) || value.name.text !== "prototype") return false;
+    const decls = lowerer.checker.getSymbolAtLocation(value.expression)?.declarations;
+    return decls?.length === 1 && ts.isClassLikeDeclaration(decls[0]!);
+  }
+  return false;
+}
+
+/** Whether `target` provably holds a function: one written in place, or a
+ * name the proofs follow to one. */
+function holdsFunction(lowerer: Lowerer, target: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isFunctionExpression(target) || ts.isArrowFunction(target)) return true;
+  return (functionOfReference(lowerer, target, noBindings)?.fn ?? null) !== null;
+}
+
+/** Whether an access is given a value: assigned or updated, or a target
+ * inside a destructuring assignment or the head of a for-in or for-of. */
+function isWritten(access: ts.Expression): boolean {
+  if (isWriteTarget(access)) {
+    let node: ts.Node = access;
+    while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+    return !ts.isDeleteExpression(node.parent);
+  }
+  let node: ts.Node = access;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent) ||
+      ts.isSpreadElement(parent) ||
+      ts.isSpreadAssignment(parent) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === node)
+    ) {
+      node = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent))
+      return parent.left === node && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    return (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === node;
+  }
+}
+
+/** Whether a write under `key` can give `target` its own `apply`, `bind` or
+ * `call`: a key the text spells as one of them, on a receiver that can be
+ * a function; a key the text does not spell, on a receiver that provably
+ * is one. A key computed at run time on any other receiver is not
+ * counted: it is the same write on every other member of every object. */
+function writesReceiverMember(
+  lowerer: Lowerer,
+  target: ts.Expression,
+  key: string | undefined,
+): boolean {
+  return key === undefined
+    ? holdsFunction(lowerer, target)
+    : isReceiverMember(key) && !holdsNoFunction(lowerer, target);
+}
+
+/** The same for the properties an object gives `target`
+ * (`Object.assign(g, source)`, `Object.setPrototypeOf(g, source)`): an
+ * object literal names its properties, any other source none (a published
+ * library copies whole objects onto functions it wrote, and none of them
+ * holds such a member). */
+function givesReceiverMember(lowerer: Lowerer, target: ts.Expression, source: ts.Expression) {
+  const value = writtenValue(lowerer, source);
+  if (!ts.isObjectLiteralExpression(value)) return false;
+  return value.properties.nodes.some((property) => {
+    if (ts.isSpreadAssignment(property)) return false;
+    const name = property.name;
+    return writesReceiverMember(
+      lowerer,
+      target,
+      ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined,
+    );
+  });
+}
+
+/** `Object.setPrototypeOf(g, { call(…) {…} })`: a function answers a member
+ * call of `apply`, `bind` or `call` with what its prototype chain defines,
+ * and the native member call runs the builtin. The runtime gives a function
+ * the prototype (its other members are read through it), so the call is
+ * refused where its text names a prototype with such a member for a value
+ * that can be a function. */
+export function refuseOwnCallPrototype(lowerer: Lowerer, call: ts.CallExpression): void {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "setPrototypeOf") return;
+  const [target, prototype] = call.arguments.nodes;
+  if (target === undefined || prototype === undefined) return;
+  if (!ts.isObjectLiteralExpression(writtenValue(lowerer, prototype))) return;
+  if (!givesReceiverMember(lowerer, target, prototype)) return;
+  if (
+    lowerer.stdlibGlobalMember(callee, "Object") === null &&
+    lowerer.stdlibGlobalMember(callee, "Reflect") === null
+  )
+    return;
+  lowerer.unsupported(
+    "SC1090",
+    call,
+    "giving a value that can be a function a prototype that defines 'apply', 'bind' or 'call' (a member call of that name runs the builtin, where Node runs the prototype's)",
+  );
+}
+
+/** Whether the program's text gives a function its own `apply`, `bind` or
+ * `call`: an assignment to that member (`g.call = f`, `g["apply"] = f`,
+ * also as a target of a destructuring), or a definition under that key by
+ * a function of `Object` or `Reflect` (`Object.defineProperty(g, "call",
+ * …)`, `Object.assign(g, { call })`). */
+function programWritesReceiverMember(lowerer: Lowerer): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const key = ts.isPropertyAccessExpression(node)
+        ? node.name.text
+        : spelledKey(lowerer, node.argumentExpression);
+      found = isWritten(node) && writesReceiverMember(lowerer, node.expression, key);
+    } else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callee = node.expression;
+      const member =
+        lowerer.stdlibGlobalMember(callee, "Object") ??
+        lowerer.stdlibGlobalMember(callee, "Reflect");
+      const [target, second, ...rest] = node.arguments.nodes;
+      if (member !== null && target !== undefined && second !== undefined)
+        switch (member) {
+          case "defineProperty":
+          case "set":
+            found = writesReceiverMember(lowerer, target, spelledKey(lowerer, second));
+            break;
+          case "defineProperties":
+          case "assign":
+            found = [second, ...rest].some((source) =>
+              givesReceiverMember(lowerer, target, source),
+            );
+            break;
+        }
+    }
+    if (!found) ts.forEachChild(node, visit);
+  };
+  for (const file of lowerer.moduleOrder) {
+    if (found) break;
+    if (!file.isDeclarationFile) ts.forEachChild(file, visit);
+  }
+  return found;
+}
+
+/** The diagnostics of those sites, for a program in which a function holds
+ * its own `apply`, `bind` or `call`: the replacement would receive the
+ * receiver the proof said nobody reads. The lowered module says whether the
+ * runtime admits such a property at all, the program's text whether it
+ * makes one. */
 export function refuseForwardsToOwnCall(lowerer: Lowerer, mod: IrModule): ScrDiagnostic[] {
   if (lowerer.receiverForwardSites.size === 0 || !moduleShadowsFunctionMember(mod)) return [];
+  if (!programWritesReceiverMember(lowerer)) return [];
   return Array.from(lowerer.receiverForwardSites, (site) => {
     const first = site.indexOf(":");
     const second = site.indexOf(":", first + 1);
@@ -489,7 +790,7 @@ export function refuseForwardsToOwnCall(lowerer: Lowerer, mod: IrModule): ScrDia
         start: Number(site.slice(0, first)),
         end: Number(site.slice(first + 1, second)),
       },
-      "calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program whose functions can hold their own 'call' or 'apply' (it defines, writes, deletes or reads as a value an inherited member of a function; a replacement would receive the module object Node passes as 'this', which this call has no value for)",
+      "calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program that gives a function its own 'apply', 'bind' or 'call' (it writes or defines that member on a value that can be a function; the replacement would receive the module object Node passes as 'this', which this call has no value for)",
     );
   });
 }
@@ -499,14 +800,17 @@ export function refuseModuleMemberThis(
   call: ts.CallExpression,
   member: ts.Identifier,
 ): void {
-  const symbol = lowerer.resolveValueSymbol(member);
+  let symbol = lowerer.resolveValueSymbol(member);
   if (symbol === null) return;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
   for (const decl of symbol.declarations) {
-    const value = exportedValue(decl);
-    if (value === undefined) continue;
+    // A declaration file describes code this program does not compile: the
+    // call is not a direct call of a function lowered here.
+    if (ts.getSourceFileOfNode(decl).isDeclarationFile) continue;
     forwardsInProof = 0;
     // A factory's result reads `this` through the function it returns.
-    const reads = exportReadsThis(lowerer, value, 0);
+    const reads = exportReadsThis(lowerer, exportedValue(lowerer, decl), 0);
     if (reads === null) {
       noteReceiverForwards(lowerer, call);
       continue;

@@ -113,6 +113,13 @@ function icuAvailable(): boolean {
   return process.platform === "linux" && process.arch === "x64";
 }
 
+/** `// @skip-darwin` (differential.test.ts's twin): the Node oracle itself
+ * does not finish on macOS (it aborts while exiting), so there is no
+ * reference output for the LLVM-built program to match. */
+function skipsDarwin(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @skip-darwin\s*$/.test(l));
+}
+
 async function runBinary(
   cmd: string,
   args: string[],
@@ -285,6 +292,7 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      if (skipsDarwin(file) && process.platform === "darwin") skip();
       const oracleEnv = {
         ...programEnv(file),
         ...programDefines(directiveHead(file))?.env,

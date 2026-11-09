@@ -111,6 +111,13 @@ function importsBinding(sf: ts.SourceFile, name: string): boolean {
   });
 }
 
+/** The value of a condition `--define` decides, or null: the rule the
+ * resolved `if` statements above and the conditions of TypeScript sources
+ * (lowering/constant-conditions.ts) share. */
+export function definedValue(expr: ts.Expression, defines: Defines): string | boolean | null {
+  return staticValue(expr, defines);
+}
+
 /** The value of a condition operand `--define` decides, or null. */
 function staticValue(expr: ts.Expression, defines: Defines): string | boolean | null {
   const e = withoutParentheses(expr);

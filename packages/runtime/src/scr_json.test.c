@@ -836,6 +836,54 @@ static void parked_capsules(void) {
   assert(test_items_live == live);
 }
 
+/* A candidate that is buffered and then dies leaves the inline window open
+ * while the nursery buffer's capacity, not the trigger, is what bounds it
+ * (scr_cyc_window_shrink): the window is at zero once per trigger, not for
+ * every release past the capacity. The trigger counts arrivals, deaths or
+ * not, so a pass falls due at the same arrival as before, and the cycle
+ * planted here, which is garbage, is collected by exactly that pass.
+ *
+ * The trigger is this binary's SCR_CYCLE_THRESHOLD (scr_json.test.ts runs
+ * it with 1, 7 and 256), which takes precedence over
+ * scr_cyc_set_nursery_threshold. With 1 every release takes the call and
+ * runs a pass, with 7 the trigger is below the capacity and the window
+ * closes one round in seven; with 256 it stayed closed for 191 rounds of
+ * every 256 before the window kept its slack. */
+static void candidate_window_after_deaths(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  enum { ROUNDS = 20480 };
+  const char *pinned = getenv("SCR_CYCLE_THRESHOLD");
+  long trigger = pinned ? strtol(pinned, NULL, 10) : 0;
+  scr_collect_cycles(); /* arms the trigger over an empty nursery buffer */
+  long live = test_items_live;
+  TestItem *item = test_item_new();
+  ScrDyn *cycle = scr_dyn_new_obj();
+  scr_dyn_obj_set(cycle, "self", 4, scr_dyn_retain(cycle));
+  scr_dyn_obj_set(cycle, "item", 4, test_item_box(item));
+  test_item_release(item);
+  scr_dyn_release(cycle); /* the first arrival; the cycle is garbage from here */
+  int closed = 0, collected_after = test_items_live == live ? 0 : -1;
+  for (int i = 0; i < ROUNDS; i++) {
+    ScrDyn *brief = scr_dyn_new_obj();
+    scr_dyn_release(scr_dyn_retain(brief)); /* one arrival */
+    scr_dyn_release(brief);                 /* and its death */
+    if (collected_after < 0 && test_items_live == live) collected_after = i + 1;
+    closed += scr_cyc_buffers.window == 0;
+  }
+  /* The cycle went with the pass some arrival brought about. */
+  assert(collected_after >= 0);
+  if (trigger > 0) {
+    /* That pass is the one the trigger's arrival runs: the cycle's own
+     * release is arrival 1, round r's candidate is arrival r + 1. */
+    assert(collected_after == trigger - 1);
+    /* The window is at zero once per trigger (and always with a trigger of
+     * one, where no append is inline). */
+    assert(closed <= ROUNDS / trigger + 1);
+  }
+  assert(test_items_live == live);
+#endif
+}
+
 static ScrArr *test_tags_new(size_t cap) { return scr_arr_new(SCR_ELEM_STR, cap); }
 static ScrArr *test_list_new(size_t cap) {
   static ScrArrOps item_ops = { test_item_retain, test_item_release, NULL };
@@ -1296,6 +1344,7 @@ int main(void) {
   buffered_leaf_release();
   json_intact_regions();
   parked_capsules();
+  candidate_window_after_deaths();
   json_schema_parse();
   json_schema_special_names();
   json_schema_union_members();

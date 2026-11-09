@@ -4358,7 +4358,15 @@ static void scr_dispose_observers(void *object) {
 }
 
 /* Out of line, not cold: a program that keeps a source for every record it
- * checks comes here for every record it frees. */
+ * checks comes here for every record it frees.
+ *
+ * INVARIANT: the filter only saves calls. Its bits can be stale (an address
+ * that left every table keeps its bit until the filter is cleared) and two
+ * addresses can share one, so a set bit says nothing about `object`: each
+ * observer below acts only on an address its own table holds, which it
+ * finds by lookup (scr_weak_key_slot, scr_record_source_slot,
+ * scr_record_link_find, scr_js_buffer_disposed's own). A call for an
+ * address no table holds changes nothing in any state. */
 static __attribute__((noinline)) void scr_dispose_observed(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry forgets a freed view or owner (t262-dc);

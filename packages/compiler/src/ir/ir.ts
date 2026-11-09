@@ -2062,6 +2062,24 @@ export function textCodecRecordClass(
   return shape ? recordHandleCodecClass(shape) : null;
 }
 
+/** Whether a typed value of type `t` boxes as a live capsule of itself
+ * (LlDyn.liveToDyn): a record, an array, or a union with a record or array
+ * arm. A text codec record boxes as its own handle instead. An adoption is
+ * emitted only for such a type, and the rule that links the adoption unit
+ * reads the same answer, so the unit is linked only where it is called. */
+export function boxesAsLiveCapsule(
+  t: IrType,
+  getRecord: (shapeId: string) => IrRecordShape | undefined,
+  getUnion: (unionId: string) => IrUnionDef | undefined,
+): boolean {
+  if (t.kind === "union") {
+    const arms = getUnion(t.unionId)?.arms ?? [];
+    return arms.some((arm) => arm.kind === "record" || arm.kind === "array");
+  }
+  if (t.kind !== "record" && t.kind !== "array") return false;
+  return textCodecRecordClass(t, getRecord) === null;
+}
+
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)
  * live on the shape as reserved '%'-fields holding closures: `%get:x` a
  * `() => T` invoked once per property READ (side effects and all — JS's
@@ -4406,6 +4424,13 @@ export type IrExpr =
    * unshared source is simply consumed. Values must be plain data
    * (ordinary objects and arrays without accessors, prototypes, symbols
    * or frozen state), otherwise the cast throws the path TypeError. */
+  /** `shared`: the conversion where a typed slot takes a dynamic value
+   * without an assertion (sharedDynConversion). JavaScript keeps one
+   * object there: after the whole check succeeded, a source object or
+   * array that something else still references becomes a live capsule of
+   * the value built from it (scr_dyn_adopt_shared). A source that is not
+   * plain data keeps the copy; nothing throws. A consumer that rebuilds
+   * the node without the flag gets the plain copy. */
   /** `origin`: the target type comes from an npm package's declaration;
    * an index into `IrModule.declOrigins`. A failing check's TypeError then
    * names the declaration and the type patch that would admit the value
@@ -4415,6 +4440,7 @@ export type IrExpr =
       value: IrExpr;
       preserveRefs?: true;
       adopt?: true;
+      shared?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an

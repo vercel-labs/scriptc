@@ -127,6 +127,72 @@ test("a comparison --define decides is constant, and an undefined one is not", a
   ).toBe(false);
 });
 
+test("a conditional expression lowers only the arm a constant condition selects", async () => {
+  expect(
+    await paysForIntegrity(
+      `const DEV = false;\n${HELD}\nconst kept = DEV ? Object.freeze(held) : held;\nconsole.log(kept === held);`,
+    ),
+  ).toBe(false);
+  expect(
+    await paysForIntegrity(
+      `const DEV = false;\n${HELD}\nconsole.log(!DEV ? "production" : Object.seal(held));`,
+    ),
+  ).toBe(false);
+  expect(
+    await paysForIntegrity(
+      `const DEV = true;\n${HELD}\nconst kept = DEV ? Object.freeze(held) : held;\nconsole.log(kept === held);`,
+    ),
+  ).toBe(true);
+  expect(
+    await paysForIntegrity(
+      `let DEV = false;\n${HELD}\nconst kept = DEV ? Object.freeze(held) : held;\nconsole.log(kept === held);`,
+    ),
+  ).toBe(true);
+  expect(
+    await paysForIntegrity(
+      `${HELD}\nconsole.log(process.env.NODE_ENV === "production" ? "production" : Object.freeze(held));`,
+      {},
+      { "process.env.NODE_ENV": "production" },
+    ),
+  ).toBe(false);
+});
+
+test("a constant condition still evaluates, and the taken arm runs after it", async () => {
+  const mod = await lowerProgram({
+    "main.ts": `function early(): string {\n  if (LATE) {\n    return "then";\n  } else {\n    return LATE ? "selected" : "else";\n  }\n}\nconsole.log(early());\nconst LATE = false;\n`,
+  });
+  const early = mod.functions.find((f) => f.name === "early" || f.name.endsWith(".early"));
+  if (!early) throw new Error("no function early");
+  const text = JSON.stringify(early.body);
+  // Both reads of LATE remain, and neither "then" nor "selected" was lowered.
+  expect(text.split(`"LATE"`).length - 1).toBeGreaterThanOrEqual(2);
+  expect(text).toContain(`"else"`);
+  expect(text).not.toContain(`"then"`);
+  expect(text).not.toContain(`"selected"`);
+  expect(text).not.toContain(`"kind":"if"`);
+  expect(text).not.toContain(`"kind":"ternary"`);
+});
+
+test("changing a variable --define fixes is refused in every form that names it", async () => {
+  const define = { "process.env.NODE_ENV": "production" };
+  const tail = `\nif (process.env.NODE_ENV !== "production") {\n  console.log("development");\n}\n`;
+  for (const change of [
+    `process.env.NODE_ENV = "development";`,
+    `process.env["NODE_ENV"] = "development";`,
+    `delete process.env.NODE_ENV;`,
+    `console.log(delete process.env.NODE_ENV);`,
+    `console.log(delete process.env["NODE_ENV"]);`,
+    `const env = process.env;\nenv.NODE_ENV = "development";`,
+  ]) {
+    await expect(lowerProgram({ "main.ts": `${change}${tail}` }, define), change).rejects.toThrow(
+      /SC1090: changing process\.env\.NODE_ENV when --define fixes its value/,
+    );
+  }
+  // Another variable, and the same program without the define, build.
+  await lowerProgram({ "main.ts": `process.env.OTHER = "changed";${tail}` }, define);
+  await lowerProgram({ "main.ts": `process.env.NODE_ENV = "development";${tail}` });
+});
+
 test("an untaken arm that declares a hoisted binding still lowers", async () => {
   expect(
     await paysForIntegrity(

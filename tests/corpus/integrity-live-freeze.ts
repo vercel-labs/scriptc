@@ -43,7 +43,7 @@ function guard(value: unknown): unknown {
   }
   DEV && Object.freeze(value);
   PRODUCTION || Object.freeze(value);
-  return value;
+  return DEV ? Object.freeze(value) : value;
 }
 
 function guardSealed(value: unknown): unknown {

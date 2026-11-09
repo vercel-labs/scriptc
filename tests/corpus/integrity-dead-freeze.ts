@@ -1,8 +1,9 @@
 // Object.freeze, Object.seal and Object.preventExtensions of untyped values
 // in code that never runs: the untaken arm of an `if` whose condition is
-// `false`, a `const` that is false, or `!` and `&&` over those, and the right
-// operand of `&&` and `||` after a constant that decides them (a
-// development-only block of a production build). Nothing is frozen, so every
+// `false`, a `const` that is false, or `!` and `&&` over those, the right
+// operand of `&&` and `||` after a constant that decides them, and the
+// unselected arm of a conditional expression (a development-only block of a
+// production build). Nothing is frozen, so every
 // store goes through and the integrity queries answer as for a plain object.
 // The untaken arms also hold a class, closures and a labeled loop, which
 // never run, and the taken `else` arms do. integrity-live-freeze.ts is the
@@ -47,7 +48,7 @@ function guard(value: unknown): unknown {
   }
   DEV && Object.freeze(value);
   PRODUCTION || Object.seal(value);
-  return value;
+  return DEV ? Object.freeze(value) : value;
 }
 
 function guardSealed(value: unknown): unknown {

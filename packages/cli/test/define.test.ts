@@ -152,3 +152,35 @@ console.log(process.env.OTHER);
     },
   );
 }, 240_000);
+
+test("--define keeps the TypeScript code it selected after a change through a computed name", async () => {
+  await withProgram(
+    {
+      "main.ts": `const name: string = ["NODE", "ENV"].join("_");
+process.env[name] = "development";
+if (process.env.NODE_ENV !== "production") {
+  console.log("development branch");
+} else {
+  console.log("production branch");
+}
+console.log(process.env.NODE_ENV === "production" ? "production arm" : "development arm");
+console.log(process.env.NODE_ENV);
+`,
+    },
+    async (dir, scriptc) => {
+      const executable = join(dir, "program");
+      await scriptc([
+        "build",
+        "main.ts",
+        "-o",
+        executable,
+        `--define=process.env.NODE_ENV="production"`,
+      ]);
+      // The limitation the docs state: the selected code runs, whatever the
+      // variable holds by then.
+      expect((await execFileAsync(executable)).stdout).toBe(
+        "production branch\nproduction arm\ndevelopment\n",
+      );
+    },
+  );
+}, 240_000);

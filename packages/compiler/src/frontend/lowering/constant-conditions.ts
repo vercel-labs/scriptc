@@ -16,9 +16,16 @@ import type { Lowerer } from "./lowerer.js";
  * a program that freezes untyped values (frozen-records.ts
  * noteUntypedIntegrity) are the case this exists for. The condition itself
  * still lowers and runs, so a `const` read before its declaration throws as
- * under Node. The right operand of `&&` and `||` after a constant left
- * operand that decides the result is the same case (`DEV && check(x)`,
- * expressions/binary.ts).
+ * under Node, and then the taken arm runs. The right operand of `&&` and
+ * `||` after a constant left operand that decides the result is the same
+ * case (`DEV && check(x)`, expressions/binary.ts), and so is the unselected
+ * arm of a conditional expression (`DEV ? check(x) : x`,
+ * expressions/narrowing.ts lowerTernary).
+ *
+ * A `--define`d variable holds its value in every run because the
+ * executable sets it when it starts and a change that names it is a build
+ * error (refuseDefinedEnvWrite). A change made another way does not move
+ * the code the build selected, as for the JavaScript `if` statements.
  *
  * A condition is constant when it is `true` or `false`, a `const` binding
  * whose initializer is a constant condition (through imports and

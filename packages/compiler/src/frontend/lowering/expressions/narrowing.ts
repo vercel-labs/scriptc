@@ -32,6 +32,7 @@ import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
+import { constantCondition } from "../constant-conditions.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
@@ -144,6 +145,20 @@ export function lowerTernary(
     // effects, so dropping the condition read loses nothing.
     if (cond.kind === "boolLit") {
       return lowerer.lowerExprExpecting(cond.value ? expr.whenTrue : expr.whenFalse, expected);
+    }
+    // A constant condition (constant-conditions.ts) selects its arm the
+    // same way: the other arm never runs and does not lower, and the
+    // condition still runs for what it reads.
+    const constant = constantCondition(lowerer, expr.condition);
+    if (constant !== null) {
+      const taken = lowerer.lowerExprExpecting(constant ? expr.whenTrue : expr.whenFalse, expected);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: cond, loc: locOf(expr.condition) }],
+        result: taken,
+        type: taken.type,
+        loc,
+      };
     }
     if (expected) {
       // Construct fresh literals in their actual destination. Joining

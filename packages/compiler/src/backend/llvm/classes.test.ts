@@ -26,7 +26,10 @@ import {
   mangleClassRetain,
   mangleClassStruct,
   mangleClassTrace,
+  mangleRecordGcFree,
+  mangleRecordNew,
   mangleRecordRelease,
+  mangleRecordTrace,
 } from "../mangle.js";
 
 const loc = { file: "class-membership.ts", start: 0, end: 1 };
@@ -304,6 +307,79 @@ test("classes whose trace visits nothing start acyclic in a traced hierarchy", (
   // call for SCR_CYC_ACYCLIC, and a death unbuffers only below -1.
   expect(body(mangleClassRelease("Simple"))).toContain("icmp slt i32 %buf, 0");
   expect(body(mangleClassReleaseDirect("Simple"))).toContain("icmp slt i32 %dbuf, -1");
+});
+
+test("types traced only as weak-collection keys are emitted without cycle-capable children", () => {
+  const key = { kind: "record" as const, shapeId: "key" };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [{ name: "main", params: [], returnType: VOID, locals: [], body: [], loc }],
+    records: [
+      { id: "key", fields: [{ name: "n", type: F64 }] },
+      { id: "holder", fields: [{ name: "key", type: key }] },
+      // A callback can reach anything: on a cycle with or without the key.
+      {
+        id: "listener",
+        fields: [
+          { name: "key", type: key },
+          { name: "hook", type: { kind: "func", params: [], ret: VOID } },
+        ],
+      },
+    ],
+    classes: [
+      {
+        name: "Tag",
+        fields: [
+          { name: "key", type: key },
+          { name: "text", type: STRING },
+        ],
+        methods: [],
+        loc,
+      },
+    ],
+    weakKeys: ["record:key", "object:Tag"],
+  };
+  const llvm = emitLlvmModule(mod, { pointerBits: 64 });
+  const body = (name: string): string =>
+    new RegExp(`^define internal [a-z]+ @${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(llvm)?.[0] ?? "";
+  const line = (start: string): string =>
+    llvm.split("\n").find((text) => text.startsWith(start)) ?? "";
+  const record = (id: string): string => line(`@${mangleRecordTrace(id)}.cyctype = `);
+  // The collector's descriptor names no trace, the objects are never
+  // candidates, and the teardown releases the references by counting.
+  for (const id of ["key", "holder"]) {
+    expect(record(id)).toContain("{ ptr @scr_cyc_no_children, ");
+    expect(body(mangleRecordNew(id))).toContain("store i32 -1, ptr %sa.bufp");
+  }
+  expect(body(mangleRecordGcFree("holder"))).toContain(`@${mangleRecordRelease("key")}(`);
+  expect(line(`@${mangleClassTrace("Tag")}.cyctype = `)).toContain("{ ptr @scr_cyc_no_children, ");
+  expect(body(mangleClassNew("Tag"))).toContain("store i32 -1, ptr %sa.bufp");
+  // The weak analysis finds the traces that visit something in the table.
+  expect(body(mangleRecordTrace("holder"))).toContain("%visit");
+  const table = line("@sc_weak_traces = ");
+  expect(table).toContain(
+    `{ ptr @${mangleRecordTrace("holder")}.cyctype, ptr @${mangleRecordTrace("holder")} }`,
+  );
+  expect(table).toContain(
+    `{ ptr @${mangleClassTrace("Tag")}.cyctype, ptr @${mangleClassTrace("Tag")} }`,
+  );
+  expect(table).not.toContain(`@${mangleRecordTrace("key")}.cyctype`);
+  expect(table).not.toContain(`@${mangleRecordTrace("listener")}`);
+  expect(line("@scr_weak_traces = ")).toBe(
+    "@scr_weak_traces = constant { i64, ptr } { i64 2, ptr @sc_weak_traces }",
+  );
+  // A type on a cycle of its own stays the collector's.
+  expect(record("listener")).toContain(`{ ptr @${mangleRecordTrace("listener")}, `);
+  expect(body(mangleRecordNew("listener"))).toContain("store i32 0, ptr %sa.bufp");
+  expect(body(mangleRecordGcFree("listener"))).not.toContain(`@${mangleRecordRelease("key")}(`);
+  // Without a weak collection nothing is traced and no table is defined.
+  const unkeyed = structuredClone(mod);
+  delete unkeyed.weakKeys;
+  const plain = emitLlvmModule(unkeyed, { pointerBits: 64 });
+  expect(plain).not.toContain("scr_weak_traces");
+  expect(plain).not.toContain(`@${mangleRecordTrace("holder")}.cyctype`);
 });
 
 test("ProgramLifetime classes pack their fields after a 32-bit header", () => {

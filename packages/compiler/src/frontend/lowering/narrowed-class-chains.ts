@@ -29,6 +29,11 @@
  * did. The result has the type the dynamic chain gives; the typed arm
  * converts to it where the two differ.
  *
+ * One chain stays out: a chain whose first member is an accessor of the
+ * class. Object.defineProperty can put an own property in front of an
+ * accessor on one instance; the dynamic read finds it in the instance's
+ * bag, the typed accessor read does not look there.
+ *
  * Programs without such a chain lower as before. */
 import { dynUndefinedExpr, strLit } from "../../ir/build.js";
 import { BOOL, type IrExpr, typeEquals, typeKey } from "../../ir/ir.js";
@@ -186,6 +191,19 @@ function fixedLayout(info: ClassInfo): boolean {
   return true;
 }
 
+/** The link of the chain that reads a member of the binding itself. */
+function firstLink(expr: ts.Expression, root: ts.Identifier): ts.PropertyAccessExpression | null {
+  for (let node = skipWrappers(expr); node !== root;) {
+    if (ts.isCallExpression(node)) node = skipWrappers(node.expression);
+    else if (ts.isPropertyAccessExpression(node)) {
+      const receiver = skipWrappers(node.expression);
+      if (receiver === root) return node;
+      node = receiver;
+    } else return null;
+  }
+  return null;
+}
+
 /** `expr` lowered behind the capsule test when it is the outermost member
  * chain on such a binding, or null. */
 export function lowerNarrowedClassChain(lowerer: Lowerer, expr: ts.Expression): IrExpr | null {
@@ -203,6 +221,13 @@ export function lowerNarrowedClassChain(lowerer: Lowerer, expr: ts.Expression): 
   if (narrowed?.kind !== "object") return null;
   const info = lowerer.classes.get(narrowed.className);
   if (!info || !fixedLayout(info)) return null;
+  // An instance can hold an own property in front of an accessor of its
+  // class (Object.defineProperty on the instance). The property lives in
+  // the instance's bag, which only the dynamic read looks into: the typed
+  // accessor read would call the getter. A chain that starts at an accessor
+  // keeps the dynamic read, and so does every shorter chain inside it.
+  const first = firstLink(expr, root);
+  if (first === null || lowerer.findMethodOn(info, `get:${first.name.text}`) !== null) return null;
   const symbol = lowerer.resolveValueSymbol(root);
   if (!symbol || state.dynamicArm.has(symbol)) return null;
   // A longer chain around this one takes both arms itself.

@@ -7,7 +7,9 @@
  * (`%dyn.class.call.N`) that calls such a method already holds a capsule
  * of the same instance at its exact class: its receiver after
  * normalization. The helper now calls a copy of the method that returns
- * nothing and answers its own receiver, so the call boxes nothing. A
+ * nothing and answers its own receiver, so the call boxes nothing; also
+ * where its class branches are the cases of a switch on the receiver's slot
+ * in the class key table. A
  * direct call whose result nothing reads calls the copy too. Other callers
  * (vtables, method values, calls that use the result) keep the method
  * itself. */
@@ -41,7 +43,16 @@ export function returnDispatchReceivers(lowerer: Lowerer, functions: IrFunction[
     if (!helper.name.startsWith(DISPATCH_PREFIX)) continue;
     const receiver = helper.params[0]?.localId;
     if (receiver === undefined || !normalizedOnly(helper, receiver)) continue;
-    for (const stmt of helper.body) {
+    // The helper's class branches: its own statements, and the ones a switch
+    // on the receiver's slot in the class key table holds in its cases
+    // (class-dynamic-dispatch.ts classSlotDispatch moves them there
+    // unchanged).
+    const branches = helper.body.flatMap((stmt) =>
+      stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classKeySlot"
+        ? stmt.cases.flatMap((arm) => arm.body)
+        : [stmt],
+    );
+    for (const stmt of branches) {
       if (stmt.kind !== "if" || stmt.then.length !== 1) continue;
       const only = stmt.then[0]!;
       if (only.kind !== "return" || only.value === null || only.value.kind !== "call") continue;

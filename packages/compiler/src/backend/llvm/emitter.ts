@@ -1809,6 +1809,11 @@ export class LlEmitter {
   needsBadTag = false;
   needsBadKey = false;
   needsRetainBox = false;
+  /** A class table's discriminant (`dyn.classKeySlot`) calls the class key
+   * table's lookup function (emit-module.ts classKeyFind). It is written
+   * only then: a program that boxes classes and dispatches on none pays no
+   * code for it. */
+  needsClassKeyFind = false;
   /** Inline RC fast-path helpers requested by call sites (shapes.ts); null
    * when inline RC is off. */
   readonly rcHelpers: Set<string> | null;
@@ -7118,6 +7123,7 @@ export class LlEmitter {
         needsBadTag: this.needsBadTag,
         needsBadKey: this.needsBadKey,
         needsRetainBox: this.needsRetainBox,
+        needsClassKeyFind: this.needsClassKeyFind,
       },
       publishedNamesSym: this.publishedNamesSym,
       rcHelpers: this.rcHelpers === null ? [] : [...this.rcHelpers],
@@ -7157,6 +7163,7 @@ export class LlEmitter {
     this.needsBadTag ||= flags.needsBadTag;
     this.needsBadKey ||= flags.needsBadKey;
     this.needsRetainBox ||= flags.needsRetainBox;
+    this.needsClassKeyFind ||= flags.needsClassKeyFind;
     this.publishedNamesSym ??= chunk.publishedNamesSym;
     if (this.rcHelpers !== null) for (const key of chunk.rcHelpers) this.rcHelpers.add(key);
     for (const name of chunk.immortalValues) this.immortalValues.add(name);

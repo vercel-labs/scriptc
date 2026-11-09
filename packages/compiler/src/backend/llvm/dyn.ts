@@ -2137,7 +2137,17 @@ export class LlDyn {
     // program boxes, in class pre-order, in slots of one size: a class and
     // the classes below it are one run of slots, so one subtraction and
     // one unsigned compare answer for all of them, whatever their number.
-    const table = this.host.classKeyTable?.() ?? null;
+    // A test that names no class of the table reads no table: its keys are
+    // constants of their own, and the code it would add to every checked
+    // conversion of the program is paid by programs that never test a class.
+    const moduleTable = this.host.classKeyTable?.() ?? null;
+    const table =
+      moduleTable !== null &&
+      types.some(
+        (type) => type.kind === "object" && this.host.classKeyRun!([type.className]) !== null,
+      )
+        ? moduleTable
+        : null;
     const classNames = types.every((type) => type.kind === "object")
       ? types.map((type) => (type as IrType & { kind: "object" }).className)
       : null;

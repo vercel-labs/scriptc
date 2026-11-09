@@ -340,7 +340,8 @@ const PARTITION_GROUP_END = "; scriptc-group";
  * holds eight bytes or more. A switch on the key's length and last four
  * bytes selects the slots to compare, most often one, and
  * each is compared by its length and then its bytes, a word at a time:
- * what scr_dyn_typed_ref_is compares. */
+ * what scr_dyn_typed_ref_is compares. Written only for a module with a site
+ * that calls it (emitter.needsClassKeyFind). */
 function classKeyFind(emitter: LlEmitter): string[] {
   const symbol = emitter.classKeysSymbol!;
   // A little-endian word of a key's bytes, as the emitted loads read it.
@@ -2041,7 +2042,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
       "scriptc: TypeError: record has no key (typed slot — no undefined is representable)\n",
     );
   }
-  if (emitter.classKeysSymbol !== null) defs.push(...classKeyFind(emitter), ``);
+  if (emitter.classKeysSymbol !== null && emitter.needsClassKeyFind)
+    defs.push(...classKeyFind(emitter), ``);
   if (emitter.needsRetainBox) {
     // scr_box_retain is a static inline (increment-unless-immortal);
     // emitted once with internal linkage, like the record retains.

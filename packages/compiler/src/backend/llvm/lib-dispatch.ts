@@ -773,6 +773,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     // A class key that lives outside the table: the table's lookup by the
     // key's length and bytes (emit-module.ts classKeyFind).
     const found = B.tmp();
+    host.needsClassKeyFind = true;
     B.line(`${found} = call i32 @${symbol}_find(ptr ${keyPtr}, i32 ${len})`);
     B.line(`store i32 ${found}, ptr ${slot}`);
     B.br(done);

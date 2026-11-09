@@ -9976,6 +9976,29 @@ export function packageTypeIsData(
   return packageDataPart(type, ctx) === true;
 }
 
+/** True when a MEMBER is declared only by package data shapes: every
+ * declaration of `member` sits in a package declaration file, and the type
+ * that declares it there is package-declared as data (`packageDataPart`, so
+ * a value declaration merged into that type still counts against it). The
+ * checker keeps a member's symbol when the program spells a type of its own
+ * around the shape (a spread copy, an intersection, a `Pick`): the receiver
+ * then carries no package provenance and only the member does. */
+export function packageMemberIsData(
+  member: ts.Symbol,
+  checker: ts.TypeChecker,
+  ctx: Pick<TypeMapperCtx, "isStdlibFile" | "isExternalTypeFile">,
+): boolean {
+  const decls = packageDeclarations(member, ctx);
+  return (
+    decls !== null &&
+    decls.every(
+      (d) =>
+        d.parent !== undefined &&
+        packageDataPart(checker.getTypeAtLocation(d.parent), ctx) === true,
+    )
+  );
+}
+
 /** The record path's provenance fence. Declared shapes (object literals,
  * interfaces, type literals) must come from user code or an explicitly
  * mapped external type surface, never an arbitrary .d.ts — the empty

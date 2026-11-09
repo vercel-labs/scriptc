@@ -169,6 +169,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   // The kept-source read a record width copy emits (scr_record_source_get.c).
   unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
+  // The join of an array of strings (scr_arr_join_str.c).
+  unit((u) => u.opts.arrJoinStr === true, "scr_arr_join_str.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode

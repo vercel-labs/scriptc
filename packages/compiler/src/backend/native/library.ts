@@ -120,6 +120,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
     ...(opts.recordSourceGet === true ? ["scr_record_source_get.c"] : []),
+    ...(opts.arrJoinStr === true ? ["scr_arr_join_str.c"] : []),
   ];
   const cflags = [
     "-std=c11",

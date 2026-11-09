@@ -508,7 +508,9 @@ function quietElement(type: IrType): boolean {
  * - `join` on a private array (privateArrays) of strings, numbers or
  *   booleans with a string separator lowers to `scr_arr_join`
  *   (scr_array.c), which copies string bytes and formats numbers and
- *   booleans itself. Its one path into program code is the string
+ *   booleans itself, or for string elements to `scr_arr_join_str`
+ *   (scr_arr_join_str.c), which copies a hole-free string array and hands
+ *   any other to `scr_arr_join`. The one path into program code is the string
  *   conversion of a foreign element (SCR_ARR_FOREIGN), and such an element
  *   is only ever stored by `scr_arr_set_foreign`, through a dynamic view of
  *   the array or a stream bridge. A private array has neither: its only

@@ -67,6 +67,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The kept-source read a record width copy emits; a unit of its own so a
   // program that only casts records keeps scr_json.o byte-identical.
   ["scr_record_source_get.c", "recordSourceGet"],
+  // The join of an array whose elements the compiler knows are strings; a
+  // unit of its own so a program that joins none links nothing of it. It
+  // hands arrays with holes to scr_array.c's scr_arr_join.
+  ["scr_arr_join_str.c", "arrJoinStr"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile

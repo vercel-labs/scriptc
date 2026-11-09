@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6491-weak-drain-registry-and-locals.ts"
+ ],
+ "diags": []
+}

@@ -124,6 +124,42 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(probe).recordSourceGet).toBe(true);
   });
 
+  test("gates the string join unit on a join whose receiver holds strings", () => {
+    const join = (elem: IrType): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "join",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(elem), loc },
+        args: [{ kind: "strLit", value: ",", type: STRING, loc }],
+        type: STRING,
+        loc,
+      },
+    });
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Numbers and booleans join through scr_arr_join alone.
+    mod.functions[0]!.body.push(join({ kind: "f64" }), join(BOOL));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Another method of a string array is not a join.
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(STRING), loc },
+        args: [],
+        type: { kind: "f64" },
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    mod.functions[0]!.body.push(join(STRING));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(true);
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));

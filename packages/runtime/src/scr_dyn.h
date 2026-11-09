@@ -1448,6 +1448,11 @@ ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptor
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors);
 ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
+/* The prototype read of a class test's walk (scr_dyn_class_test.c, a gated
+ * unit): answers for every value, null where no program class's prototype
+ * can be on the chain, and scr_dyn_get_prototype_for_identity's answer for
+ * the values that have a chain. */
+ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
@@ -1954,6 +1959,12 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* The same write at a site whose name is known only at run time, tried
+ * first for a receiver of kind OBJ: true when the member was assigned to a
+ * plain record (layout mode, no prototype object, extensible) through its
+ * layout; false, with nothing done and nothing thrown, when the site must
+ * call scr_dyn_key_set. All three operands BORROWED. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 /* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
  * it creates or updates the own data property and never runs an inherited
  * accessor, so a `__proto__` member is an ordinary own member instead of

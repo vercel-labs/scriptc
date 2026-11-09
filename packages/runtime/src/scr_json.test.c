@@ -255,6 +255,190 @@ static void weak_entries_held_by_their_values(ScrDyn *witness) {
   scr_dyn_release(map);
 }
 
+size_t scr_cyc_pass_at(unsigned gen);
+
+/* Marks a weak collection (its handle and the collection itself) as having
+ * survived earlier passes. A candidate is listed under its generation, so
+ * each leaves its candidate list first. */
+static ScrDyn *aged(ScrDyn *collection, unsigned gen) {
+  void *both[2] = {collection, collection->v.handle.ptr};
+  for (int i = 0; i < 2; i++) {
+    scr_cyc_dead(both[i]);
+    scr_cyc_set_gen(scr_cyc_hdr(both[i]), gen);
+  }
+  return collection;
+}
+
+/* A collector object of a type of its own (so no other test's survivors
+ * decide which pass walks it) that holds itself and one value. */
+typedef struct { size_t rc; void *self; ScrDyn *held; } YoungHolder;
+static void young_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  visit(((YoungHolder *)ptr)->self, ctx);
+  visit(((YoungHolder *)ptr)->held, ctx);
+}
+static void young_free(void *ptr) { scr_cyc_free(ptr); }
+static YoungHolder *young_holder(ScrDyn *held) {
+  static ScrCycType type = { &young_trace, &young_free, 0 };
+  YoungHolder *young = scr_cyc_alloc(sizeof *young, &type);
+  assert(young);
+  young->rc = 2; /* its own edge and the caller */
+  young->self = young;
+  young->held = held;
+  return young;
+}
+
+/* Hangs `collection` (given up by the caller) off a fresh object on a cycle
+ * of its own, drops the object, and runs a pass over the nursery. An aged
+ * collection is not walked by that pass: the edge to it is recorded, and
+ * once the young cycle is freed the drain gives the edge up for real. */
+static void drop_through_young_cycle(ScrDyn *collection) {
+  YoungHolder *young = young_holder(collection);
+  young->rc--;
+  scr_cyc_on_release(young);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+}
+
+/* A weak collection older than the garbage that holds it is freed by the
+ * cross-generation drain of a restricted pass (scr_xg_release): generically,
+ * by a walk of its entries that releases each value, then its free.
+ * Releasing a value can free keys, and a freed key ends its entries in
+ * every collection, the one being walked included (scr_weak_remove's
+ * invariant). Each shape must leave every value released exactly once (the
+ * witness's count is back where it was) and no entry freed under the walk
+ * (the address sanitizer watches the entries). This runs in both flavors;
+ * the one without the count audit has the release build's parked capsules
+ * and free lists. */
+static void weak_collection_freed_by_drain(ScrDyn *witness) {
+  size_t idle = witness->rc;
+  for (unsigned gen = SCR_CYC_MATURE; gen <= SCR_CYC_OLD; gen++) {
+    /* One entry whose value holds its key: the key dies inside the visit of
+     * its own entry. */
+    ScrDyn *map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *key = scr_dyn_new_obj();
+    ScrDyn *value = holder(key, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    assert(witness->rc == idle + 1);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* Two entries, each value holding the other's key. The walk starts at
+     * the newer entry: releasing its value frees the older entry's key
+     * (an entry ends before the walk reaches it), and releasing the older
+     * value then frees the newer entry's key (an entry ends after the walk
+     * has passed it). */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    ScrDyn *second = scr_dyn_new_obj();
+    value = holder(second, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    value = holder(key, witness);
+    put(map, second, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    scr_dyn_release(second);
+    assert(witness->rc == idle + 2);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* A ring: each value holds the next entry's key, so every visit of the
+     * walk frees the key of another entry, one it has passed or one it has
+     * yet to reach. */
+    enum { RING = 40 };
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *first = scr_dyn_new_obj();
+    ScrDyn *at = scr_dyn_retain(first);
+    for (int i = 0; i < RING; i++) {
+      ScrDyn *next = i + 1 < RING ? scr_dyn_new_obj() : scr_dyn_retain(first);
+      value = holder(next, witness);
+      put(map, at, value);
+      scr_dyn_release(value);
+      scr_dyn_release(at);
+      at = next;
+    }
+    scr_dyn_release(at);
+    scr_dyn_release(first);
+    assert(witness->rc == idle + RING);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* Nested: the outer entry's value holds a second aged collection, whose
+     * entry's value holds the outer entry's key, and then the inner entry's
+     * key. The outer key dies inside the inner collection's walk, while the
+     * outer walk is on its entry. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *inner = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    second = scr_dyn_new_obj();
+    value = holder(key, witness);
+    put(inner, second, value);
+    scr_dyn_release(value);
+    value = holder(NULL, witness);
+    scr_dyn_obj_set(value, "inner", 5, inner);
+    scr_dyn_obj_set(value, "second", 6, scr_dyn_retain(second));
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    scr_dyn_release(second);
+    assert(witness->rc == idle + 2);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* A weak set's member is also a key of the collection whose value holds
+     * the set and the member: the member dies while both are being freed. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *set = aged(scr_weak_set_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    ScrDyn *added = scr_dyn_handle_ops_of(set)->invoke(set->v.handle.ptr, set, "add", &key, 1, "set.add");
+    assert(added == set);
+    scr_dyn_release(added);
+    value = holder(key, witness);
+    scr_dyn_obj_set(value, "set", 3, set);
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    assert(witness->rc == idle + 1);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* The young garbage is a key of the aged collection it holds: its free
+     * ends the entry while the collection is still alive (the drain has not
+     * reached it), and the value is released then. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    value = holder(NULL, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    YoungHolder *young = young_holder(key);
+    scr_dyn_obj_set(key, "collection", 10, map);
+    assert(witness->rc == idle + 1);
+    young->rc--;
+    scr_cyc_on_release(young);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+    assert(witness->rc == idle);
+  }
+  /* Nothing aged: the collection, its keys and its values are one dead set
+   * (a value holds the collection), and each is freed by the pass itself,
+   * the collection and its keys in whatever order the pass takes them. */
+  ScrDyn *map = scr_weak_map_new(scr_dyn_undefined());
+  ScrDyn *key = scr_dyn_new_obj();
+  ScrDyn *second = scr_dyn_new_obj();
+  ScrDyn *value = holder(second, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  value = holder(key, witness);
+  scr_dyn_obj_set(value, "collection", 10, scr_dyn_retain(map));
+  put(map, second, value);
+  scr_dyn_release(value);
+  scr_dyn_release(key);
+  scr_dyn_release(second);
+  scr_dyn_release(map);
+  scr_collect_cycles();
+  assert(witness->rc == idle);
+}
+
 static void json_string_boundaries(void) {
   /* Every escape/control at every word alignment, followed by raw UTF-8.
    * ASan also checks short tails that cannot supply a complete word. */
@@ -1243,6 +1427,130 @@ static void record_frozen_bit(void) {
   assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
 }
 
+/* A write under a run-time name as its site makes it: the record's entry
+ * for an ordinary object, and the generic write when that entry leaves the
+ * assignment alone. `record` (when given) says which of the two took it. */
+static void assign_named_by(ScrDyn *object, const char *name, ScrDyn *value, bool *record) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  bool assigned = object->kind == SCR_DYN_OBJ && scr_dyn_key_set_record(object, key, value);
+  if (!assigned) {
+    assert(!scr_exc_pending());
+    scr_dyn_key_set(object, key, value);
+  }
+  if (record) *record = assigned;
+  scr_str_release(key);
+}
+
+static void assign_named(ScrDyn *object, const char *name, ScrDyn *value) {
+  assign_named_by(object, name, value, NULL);
+}
+
+static double member_number(const ScrDyn *object, const char *name) {
+  const ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
+  assert(value && value->kind == SCR_DYN_NUM);
+  return value->v.num;
+}
+
+/* A by-name write site's assignment (scr_dyn_key_set_record, else
+ * scr_dyn_key_set) on plain records: members appended along a layout's most
+ * recent transition and along another one, members replaced in place, and
+ * the receivers and names that keep the general assignment. */
+static void named_record_assignment(void) {
+  static const char *const names[] = {"id",    "type",  "title", "body",  "href",  "count",
+                                      "items", "owner", "state", "flags", "extra", "longer-than-eight"};
+  enum { NAMES = 12, RECORDS = 64 };
+  ScrDyn *records[RECORDS];
+  ScrDyn *shared = scr_dyn_new_obj();
+  for (int r = 0; r < RECORDS; r++) {
+    records[r] = scr_dyn_new_obj();
+    for (int k = 0; k < NAMES; k++) {
+      /* Odd records leave one name out: a second transition from the
+       * prefix the two shapes share. */
+      if ((r & 1) && k == 2) continue;
+      ScrDyn *value = k == 6 ? scr_dyn_retain(shared) : scr_dyn_new_num(r * 100 + k);
+      assign_named(records[r], names[k], value);
+      scr_dyn_release(value);
+    }
+  }
+  assert(!scr_exc_pending());
+  assert(shared->rc == 1 + RECORDS);
+  for (int r = 0; r < RECORDS; r++) {
+    size_t at = 0;
+    for (int k = 0; k < NAMES; k++) {
+      if ((r & 1) && k == 2) continue;
+      size_t length;
+      const char *key = scr_dyn_obj_key_at(records[r], at++, &length);
+      assert(length == strlen(names[k]) && memcmp(key, names[k], length) == 0);
+      if (k == 6) assert(scr_dyn_obj_get(records[r], names[k], length) == shared);
+      else assert(member_number(records[r], names[k]) == r * 100 + k);
+    }
+    assert(records[r]->v.obj.len == at);
+  }
+  /* Records of one shape share one layout. */
+  assert(records[0]->v.obj.layout && records[0]->v.obj.layout == records[2]->v.obj.layout);
+  assert(records[1]->v.obj.layout == records[3]->v.obj.layout);
+  assert(records[0]->v.obj.layout != records[1]->v.obj.layout);
+
+  /* A member the record holds is replaced where it is: the old value is
+   * released, the layout and the other members stay. */
+  const ScrLayout *layout = records[0]->v.obj.layout;
+  for (int k = NAMES - 1; k >= 0; k--) {
+    ScrDyn *value = scr_dyn_new_num(-k);
+    assign_named(records[0], names[k], value);
+    scr_dyn_release(value);
+  }
+  assert(shared->rc == RECORDS && records[0]->v.obj.layout == layout);
+  assert(records[0]->v.obj.len == NAMES);
+  for (int k = 0; k < NAMES; k++) assert(member_number(records[0], names[k]) == -k);
+  /* A record written into itself. */
+  assign_named(records[0], "id", records[0]);
+  assert(scr_dyn_obj_get(records[0], "id", 2) == records[0]);
+  ScrDyn *zero = scr_dyn_new_num(0);
+  bool record = false;
+  assign_named_by(records[0], "id", zero, &record);
+  assert(record);
+
+  /* A record that takes no new members refuses one and replaces an old
+   * one, both in the general assignment. */
+  scr_dyn_release(scr_dyn_prevent_extensions(records[1]));
+  assign_named_by(records[1], "added", zero, &record);
+  assert(!record);
+  assert(scr_exc_pending());
+  scr_exc_clear();
+  assert(records[1]->v.obj.len == NAMES - 1 && !scr_dyn_obj_get(records[1], "added", 5));
+  assign_named(records[1], "id", zero);
+  assert(!scr_exc_pending() && member_number(records[1], "id") == 0);
+
+  /* A record with a prototype object gets its own member; the prototype
+   * keeps its value. */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  ScrDyn *seven = scr_dyn_new_num(7);
+  assign_named(prototype, "inherited", seven);
+  scr_dyn_release(scr_dyn_set_prototype(records[3], prototype));
+  assign_named_by(records[3], "inherited", zero, &record);
+  assert(!record);
+  assign_named(records[3], "added", zero);
+  assert(!scr_exc_pending());
+  assert(member_number(records[3], "inherited") == 0 && member_number(prototype, "inherited") == 7);
+  assert(records[3]->v.obj.len == NAMES + 1);
+
+  /* The names an Error's view syncs are ordinary members of a record. */
+  static const char *const synced[] = {"name", "message", "stack", "cause", "code"};
+  for (int k = 0; k < 5; k++) assign_named(records[5], synced[k], seven);
+  for (int k = 0; k < 5; k++) assert(member_number(records[5], synced[k]) == 7);
+  assert(records[5]->v.obj.len == NAMES - 1 + 5 && !scr_exc_pending());
+
+  scr_dyn_release(seven);
+  scr_dyn_release(zero);
+  scr_dyn_release(prototype);
+  for (int r = 0; r < RECORDS; r++) scr_dyn_release(records[r]);
+  assert(shared->rc == 1);
+  scr_dyn_release(shared);
+#ifdef SCR_RC_AUDIT
+  scr_layout_reset_idle();
+#endif
+}
+
 /* A stand-in for the stream unit (ScrStreamRefHooks): `ready` is a data
  * property of the view, `write` a member of its prototype, `native` a name
  * only the view can answer. It counts the views built and the questions
@@ -1406,6 +1714,7 @@ int main(void) {
   scr_init();
   checked_storage();
   shared_property_keys();
+  named_record_assignment();
   checked_leaf_cycles();
   checked_number_storage();
   buffered_leaf_release();
@@ -1572,6 +1881,7 @@ int main(void) {
   assert(key->rc == 1 && first->rc == 1);
   scr_dyn_release(key);
   weak_entries_held_by_their_values(first);
+  weak_collection_freed_by_drain(first);
   scr_dyn_release(first);
   assert(!scr_exc_pending());
   puts("checked storage and weak metadata lifetime checks passed");

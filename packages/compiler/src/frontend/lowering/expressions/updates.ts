@@ -1415,20 +1415,32 @@ export function lowerFieldCompoundValue(
   } else {
     compoundUnsupported(lowerer, access, op, read.type, rhs.type);
   }
-  if (storedString && rhs.type.kind === "string" && read.kind === "varRef" && appended !== null) {
+  if (
+    storedString &&
+    read.kind === "varRef" &&
+    appended !== null &&
+    appended.type.kind === "string"
+  ) {
     // The field gives up its value before the concat (no code runs in
     // between: both operands are already strings), and the concat is the
     // self-append `old = old + rhs`, which hands the local's reference to
     // the runtime: the old string is then uniquely owned unless something
     // else holds it, and is appended to in place. Repeated `this.text += s`
     // is linear rather than a copy per append.
+    //
+    // A right side that is not a string yet (a number, `string | undefined`,
+    // an object with its own toString) converts into a temporary FIRST: the
+    // conversion may run program code or throw, and it then still finds the
+    // old value in the field, as it does in JavaScript, where the field is
+    // written only after the conversion.
+    const suffix = rhs.type.kind === "string" ? appended : save(appended, "%compoundSuffix");
     const oldId = read.localId;
     const oldLoc = read.loc;
     const oldRef = (): IrExpr => varRef(oldId, STRING, oldLoc);
     const concat: IrExpr = {
       kind: "strConcat",
       left: oldRef(),
-      right: appended,
+      right: suffix,
       type: STRING,
       loc,
     };

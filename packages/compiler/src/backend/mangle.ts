@@ -87,6 +87,11 @@ export function mangleClassRetain(className: string): string {
 export function mangleClassRelease(className: string): string {
   return `sc_release_${sanitize(className)}`;
 }
+/** The test that an ancestor's capsule holds an instance of the class (the
+ * LLVM backend's dyn.ts heldInstanceTest). */
+export function mangleClassHeldTest(className: string): string {
+  return `sc_dh_${sanitize(className)}`;
+}
 export function mangleField(fieldName: string): string {
   // Property keys are arbitrary strings. Encode both dots and underscores
   // so a literal key cannot collide with either a separator or an escape.

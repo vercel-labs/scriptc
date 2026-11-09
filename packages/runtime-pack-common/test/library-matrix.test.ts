@@ -87,6 +87,20 @@ test("library flavors keep the kept-source read for a record-to-record conversio
   }
 });
 
+test("library flavors keep the typed join of an array of strings", () => {
+  // A library whose program joins a string array calls scr_arr_join_str, so
+  // its flavors must carry the same optional unit the executable flavors do.
+  for (const optimization of ["release", "dev"]) {
+    for (const mode of ["library", "library-thread"]) {
+      const unit = matrix.flavors[`${mode}-${optimization}`].runtime_units.find(
+        (entry) => entry.source === "scr_arr_join_str.c",
+      );
+      expect(unit?.predicate).toBe("arrJoinStr");
+      expect(unit?.variants.map((variant) => variant.id)).toEqual(["default"]);
+    }
+  }
+});
+
 test("the young-in nursery collector is an executable-only variant of scr_cycle.c", () => {
   const ids = (units: { source: string; variants: { id: string }[] }[]) =>
     units.find((unit) => unit.source === "scr_cycle.c")!.variants.map((variant) => variant.id);

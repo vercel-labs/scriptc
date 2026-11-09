@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-join-string-pieces.ts"
+ ],
+ "diags": []
+}

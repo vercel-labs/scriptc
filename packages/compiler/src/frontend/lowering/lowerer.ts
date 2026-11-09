@@ -7385,6 +7385,17 @@ export class Lowerer {
     return this.facts.classProtocols().islandEscapeSites();
   }
 
+  /** Whether the program declares an interface that extends a builtin Error
+   * (class-protocols.ts, markErrorInterfaces). */
+  declaresErrorInterface(): boolean {
+    return this.facts.classProtocols().declaresErrorInterface();
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    return this.facts.classProtocols().errorInterface(type);
+  }
+
   /** Whether `expr` holds a value a Node island made, by its origin
    * (class-protocols.ts, islandOrigin). */
   islandOrigin(expr: ts.Expression): boolean {

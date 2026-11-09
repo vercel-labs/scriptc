@@ -18,6 +18,7 @@ import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import { isNodeModulesPath } from "../resolve.js";
 import {
+  errorInterfaceToClassDivergenceDiag,
   islandValueCopyDivergenceDiag,
   islandValueUntrackedDivergenceDiag,
   keyOrderDivergenceDiag,
@@ -64,6 +65,11 @@ export function scanDivergences(
   /** `const v: T = e`, collected only for a program that links Node islands. */
   const annotatedDecls: ts.VariableDeclaration[] = [];
   const islands = lowerer.nodeIslands !== null;
+  /** The values a typed slot receives (an argument, the initializer of a
+   * typed binding, a returned value), collected only for a program that
+   * declares an interface extending Error. */
+  const handedOn: ts.Expression[] = [];
+  const errorInterfaces = lowerer.declaresErrorInterface();
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
   const assignedMembers = new Map<string, Set<string>>();
@@ -124,6 +130,10 @@ export function scanDivergences(
     } else if (ts.isVariableDeclaration(node)) {
       if (islands && node.type !== undefined && node.initializer !== undefined)
         annotatedDecls.push(node);
+      if (errorInterfaces && node.type !== undefined && node.initializer !== undefined)
+        handedOn.push(node.initializer);
+    } else if (errorInterfaces && ts.isReturnStatement(node)) {
+      if (node.expression !== undefined) handedOn.push(node.expression);
     } else if (ts.isObjectLiteralExpression(node)) {
       if (node.properties.nodes.length >= 1 && node.properties.nodes.every(isPlainProperty))
         literals.push(node);
@@ -301,6 +311,35 @@ export function scanDivergences(
         );
       }
     }
+  }
+
+  // ── an interface that extends Error, handed to an Error class ───────
+  // A value of such an interface is an error object or a plain object that
+  // has the members (`const fake: Failure = { name, message }`). Where it
+  // meets a slot typed by an Error class (an argument, a typed binding, a
+  // returned value, an assertion) the checked conversion to the class
+  // throws a TypeError for the plain object, while Node reads its members.
+  if (errorInterfaces) {
+    const toClass = (value: ts.Expression, target: ts.Type | undefined): void => {
+      if (target === undefined) return;
+      const source = checker.getTypeAtLocation(value);
+      if (!lowerer.errorInterface(source)) return;
+      const mapped = lowerer.mapTypeOf(target);
+      if (mapped?.kind !== "object" || !lowerer.isErrorRootedClass(mapped.className)) return;
+      out.push(
+        errorInterfaceToClassDivergenceDiag(
+          checker.typeToString(source),
+          checker.typeToString(target),
+          locOf(value),
+        ),
+      );
+    };
+    for (const call of calls)
+      for (const arg of call.arguments.nodes)
+        if (!ts.isSpreadElement(arg)) safely(() => toClass(arg, checker.getContextualType(arg)));
+    for (const value of handedOn) safely(() => toClass(value, checker.getContextualType(value)));
+    for (const cast of casts)
+      safely(() => toClass(cast.expression, checker.getTypeFromTypeNode(cast.type)));
   }
 
   // ── SC6007: a value a Node island made, copied by a checked conversion ──

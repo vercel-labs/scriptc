@@ -47,6 +47,9 @@ export class ClassProtocols {
   /** The untyped island values stored out of the analysis' sight
    * (noteIslandEscapes). */
   private readonly islandEscapes: ts.Expression[] = [];
+  /** The program interfaces that extend a builtin Error
+   * (markErrorInterfaces). */
+  private readonly errorInterfaces = new Set<ts.Symbol>();
   /** The object types markReceivedView has answered for, so a type that
    * names itself in a member (`interface Node { next?: Node }`) ends. */
   private readonly receivedTypes = new Set<ts.Type>();
@@ -213,10 +216,26 @@ export class ClassProtocols {
   ): void {
     for (const declaration of extended) {
       const symbol = attempt(() => this.checker.getSymbolAtLocation(declaration.name));
-      if (symbol === undefined || protocols.has(symbol)) continue;
+      if (symbol === undefined || this.errorInterfaces.has(symbol)) continue;
       const type = attempt(() => this.checker.getDeclaredTypeOfSymbol(symbol));
-      if (type !== undefined && this.extendsBuiltinError(type, 0)) protocols.add(symbol);
+      if (type === undefined || !this.extendsBuiltinError(type, 0)) continue;
+      protocols.add(symbol);
+      this.errorInterfaces.add(symbol);
     }
+  }
+
+  /** Whether the program declares an interface that extends a builtin
+   * Error (markErrorInterfaces). */
+  declaresErrorInterface(): boolean {
+    this.index();
+    return this.errorInterfaces.size > 0;
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    this.index();
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.errorInterfaces.has(symbol);
   }
 
   /** Whether a program interface reaches a builtin Error through its

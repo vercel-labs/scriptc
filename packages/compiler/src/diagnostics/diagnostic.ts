@@ -580,6 +580,24 @@ export function unrelatedClassCastDivergenceDiag(
   };
 }
 
+/** SC6004, second subject — a value typed by an interface that extends
+ * Error meets a slot typed by an Error class. Such a value is an error
+ * object or a plain object that has the members; the conversion to the
+ * class is checked at runtime and throws a TypeError for the plain object,
+ * while Node reads its members structurally. */
+export function errorInterfaceToClassDivergenceDiag(
+  source: string,
+  target: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC6004",
+    message: `this '${source}' is converted to the class '${target}': natively the checked conversion throws a TypeError when the value is a plain object and not an error, while Node reads the members structurally`,
+    loc,
+    hint: `type the receiving slot as '${source}', or build the value with 'new Error(...)'`,
+  };
+}
+
 /** Where a value a Node island made is converted to a native type (SC6007). */
 export type IslandValueCopySite = "assertion" | "binding" | "parameter" | "members";
 

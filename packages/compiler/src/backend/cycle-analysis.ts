@@ -12,13 +12,16 @@ import {
   VOID,
 } from "../ir/ir.js";
 import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-mutability.js";
+import { weakKeyUnits } from "./weak-keys.js";
 
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
  * and arms can hold (collections flattened into their element, key and
  * value types). Closures, checked values, class values, caught values and
  * promises are INTRINSIC: they can reach anything, so a unit holding one is
- * on a potential cycle. Strings never are.
+ * on a potential cycle. So is a unit whose values are keys of a WeakMap or
+ * WeakSet: the entry's value can reference anything (weak-keys.ts). Strings
+ * never are.
  *
  * An edge is IMMUTABLE when it can only be stored while its owner is still
  * under construction (cycle-mutability.ts derives this from the IR): such an
@@ -46,7 +49,15 @@ export function computeTraced(
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
+export type IntrinsicKind =
+  | "func"
+  | "dyn"
+  | "jsval"
+  | "classval"
+  | "promise"
+  | "caught"
+  /** The unit's values are keys of weak-collection entries (`field` is empty). */
+  | "weakKey";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -217,6 +228,29 @@ function analyzeCycles(
     for (const kid of children.get(name)!) {
       sub.edges.set(subtreeOf(kid)!, false);
       sub.labels?.set(subtreeOf(kid)!, { kind: "subclass", className: kid });
+    }
+  }
+  // A weak-collection key holds its entry's value. A key of class type can
+  // be an instance of any class in the subtree.
+  const weakKeys = weakKeyUnits(mod);
+  if (weakKeys !== null) {
+    const mark = (n: Node | undefined): void => {
+      if (n === undefined || n.intrinsic) return;
+      n.intrinsic = true;
+      if (n.labels !== null) n.intrinsicField = { field: "", holds: "weakKey" };
+    };
+    for (const unit of weakKeys) {
+      if (!unit.startsWith("object:")) {
+        mark(shapes.get(unit));
+        continue;
+      }
+      const subtree = [unit.slice("object:".length)];
+      while (subtree.length > 0) {
+        const name = subtree.pop()!;
+        if (!programLifetime(name)) mark(shapes.get(`object:${name}`));
+        const kids = children.get(name);
+        if (kids) subtree.push(...kids);
+      }
     }
   }
   // Each field/arm is an OR of intrinsic capability and referenced nodes.

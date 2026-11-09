@@ -32,6 +32,229 @@ static ScrDyn *nothing(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* A value for a weak entry: an object that holds `owner` (when given) and
+ * the witness, whose count says how many such values are alive. */
+static ScrDyn *holder(ScrDyn *owner, ScrDyn *witness) {
+  ScrDyn *value = scr_dyn_new_obj();
+  if (owner) scr_dyn_obj_set(value, "owner", 5, scr_dyn_retain(owner));
+  scr_dyn_obj_set(value, "witness", 7, scr_dyn_retain(witness));
+  return value;
+}
+
+static bool holds(ScrDyn *map, ScrDyn *key) {
+  ScrDyn *result = scr_dyn_handle_ops_of(map)->invoke(map->v.handle.ptr, map, "has", &key, 1, "map.has");
+  assert(result && result->kind == SCR_DYN_BOOL && !scr_exc_pending());
+  bool found = result->v.b;
+  scr_dyn_release(result);
+  return found;
+}
+
+/* A native value without a collector header, and its capsule's callbacks. */
+typedef struct { size_t rc; } Unheadered;
+static void *unheadered_retain(void *ptr) {
+  ((Unheadered *)ptr)->rc++;
+  return ptr;
+}
+static void unheadered_release(void *ptr) {
+  if (--((Unheadered *)ptr)->rc) return;
+  scr_weak_dispose(ptr); /* native frees notify the dispose hook */
+  free(ptr);
+}
+static ScrDyn *unheadered_view(void *ptr) {
+  (void)ptr;
+  return scr_dyn_new_obj();
+}
+void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule);
+
+/* A weak entry lasts while its key and its collection are alive without it:
+ * scr_weak_collect_entries ends the ones only their own values keep, and
+ * leaves every count of what stays as it found it. */
+static void weak_entries_held_by_their_values(ScrDyn *witness) {
+  size_t idle = witness->rc;
+  ScrDyn *map = scr_weak_map_new(scr_dyn_undefined());
+  assert(scr_weak_collect_entries() == 0);
+
+  /* The value holds its key; the key is held elsewhere, then not. */
+  ScrDyn *key = scr_dyn_new_obj();
+  ScrDyn *value = holder(key, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  assert(scr_weak_collect_entries() == 0);
+  assert(key->rc == 2 && value->rc == 1 && witness->rc == idle + 1 && holds(map, key));
+  scr_dyn_release(key);
+  assert(witness->rc == idle + 1);
+  assert(scr_weak_collect_entries() == 1);
+  assert(witness->rc == idle);
+
+  /* The key is its own value. */
+  key = scr_dyn_new_obj();
+  scr_dyn_obj_set(key, "witness", 7, scr_dyn_retain(witness));
+  put(map, key, key);
+  scr_dyn_release(key);
+  assert(witness->rc == idle + 1 && scr_weak_collect_entries() == 1 && witness->rc == idle);
+
+  /* A value that holds nothing of its key ends with the key, as before. */
+  key = scr_dyn_new_obj();
+  value = holder(NULL, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  assert(scr_weak_collect_entries() == 0 && witness->rc == idle + 1);
+  scr_dyn_release(key);
+  assert(witness->rc == idle);
+
+  /* A chain: each value holds its own key and the next key, and only the
+   * first key is held elsewhere. The entries are judged in the order that
+   * makes each depend on one judged later. */
+  enum { CHAIN = 3000 };
+  ScrDyn *head = scr_dyn_new_obj();
+  ScrDyn *at = scr_dyn_retain(head);
+  for (int i = 0; i < CHAIN; i++) {
+    ScrDyn *next = scr_dyn_new_obj();
+    value = holder(at, witness);
+    scr_dyn_obj_set(value, "next", 4, scr_dyn_retain(next));
+    put(map, at, value);
+    scr_dyn_release(value);
+    scr_dyn_release(at);
+    at = next;
+  }
+  scr_dyn_release(at);
+  assert(scr_weak_collect_entries() == 0);
+  assert(witness->rc == idle + CHAIN && head->rc == 2 && holds(map, head));
+  scr_dyn_release(head);
+  assert(scr_weak_collect_entries() == CHAIN && witness->rc == idle);
+
+  /* Two collections, each value holding the other's key. */
+  ScrDyn *other = scr_weak_map_new(scr_dyn_undefined());
+  key = scr_dyn_new_obj();
+  ScrDyn *second = scr_dyn_new_obj();
+  value = holder(second, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  value = holder(key, witness);
+  put(other, second, value);
+  scr_dyn_release(value);
+  assert(scr_weak_collect_entries() == 0 && witness->rc == idle + 2);
+  scr_dyn_release(key);
+  assert(scr_weak_collect_entries() == 0 && witness->rc == idle + 2 && holds(map, key));
+  scr_dyn_release(second);
+  assert(scr_weak_collect_entries() == 2 && witness->rc == idle);
+
+  /* A collection that only a dead entry's value reaches: its entries end
+   * although their key is alive. */
+  ScrDyn *inner = scr_weak_map_new(scr_dyn_undefined());
+  ScrDyn *kept = scr_dyn_new_obj();
+  value = holder(NULL, witness);
+  put(inner, kept, value);
+  scr_dyn_release(value);
+  key = scr_dyn_new_obj();
+  value = holder(key, witness);
+  scr_dyn_obj_set(value, "inner", 5, inner);
+  put(map, key, value);
+  scr_dyn_release(value);
+  assert(scr_weak_collect_entries() == 0 && witness->rc == idle + 2);
+  scr_dyn_release(key);
+  size_t ended = scr_weak_collect_entries();
+  assert(ended == 2);
+  assert(witness->rc == idle);
+  assert(kept->rc == 1);
+  scr_dyn_release(kept);
+
+  /* A collection that only a live entry's value reaches stays, with its
+   * entries, and every count is what it was. */
+  inner = scr_weak_map_new(scr_dyn_undefined());
+  kept = scr_dyn_new_obj();
+  ScrDyn *filed = holder(kept, witness);
+  put(inner, kept, filed);
+  scr_dyn_release(filed);
+  key = scr_dyn_new_obj();
+  value = holder(key, witness);
+  scr_dyn_obj_set(value, "inner", 5, scr_dyn_retain(inner));
+  scr_dyn_obj_set(value, "kept", 4, scr_dyn_retain(kept));
+  put(map, key, value);
+  scr_dyn_release(value);
+  scr_dyn_release(kept);
+  assert(scr_weak_collect_entries() == 0);
+  assert(inner->rc == 2 && filed->rc == 1 && value->rc == 1 && kept->rc == 2 && key->rc == 2);
+  assert(witness->rc == idle + 2 && holds(inner, kept));
+  scr_dyn_release(inner);
+  assert(scr_weak_collect_entries() == 0 && filed->rc == 1 && witness->rc == idle + 2);
+  scr_dyn_release(key);
+  assert(scr_weak_collect_entries() == 2);
+  assert(witness->rc == idle);
+
+  /* One value under two keys: a live key keeps it, and what it holds. */
+  key = scr_dyn_new_obj();
+  second = scr_dyn_new_obj();
+  value = holder(key, witness);
+  put(map, key, value);
+  put(map, second, value);
+  scr_dyn_release(value);
+  scr_dyn_release(key);
+  assert(scr_weak_collect_entries() == 0 && value->rc == 2 && witness->rc == idle + 1);
+  scr_dyn_release(second);
+  assert(scr_weak_collect_entries() == 1 && witness->rc == idle);
+
+  /* A function key that its value holds. */
+  ScrClosure *closure = scr_closure_new(NULL, 0);
+  key = scr_dyn_new_func(closure, nothing, 0, "", "key");
+  value = holder(key, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  assert(scr_weak_collect_entries() == 0);
+  scr_dyn_release(key);
+  assert(scr_weak_collect_entries() == 1 && witness->rc == idle);
+
+  /* A key that becomes, in place, a capsule of a native value (a checked
+   * cast of a shared object does that): its entry moves to the value's
+   * identity. A native value need not have a collector header, so nothing
+   * may be read in front of it and the entry stays, as before. */
+  Unheadered *native = malloc(sizeof *native);
+  assert(native);
+  native->rc = 1;
+  ScrDyn *capsule = scr_dyn_new_typed_ref(native, unheadered_retain, unheadered_release, "plain", 5,
+                                          unheadered_view, NULL);
+  key = scr_dyn_new_obj();
+  value = holder(key, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  scr_dyn_decl_become(key, capsule);
+  scr_dyn_release(capsule);
+  unheadered_release(native);
+  assert(holds(map, key));
+  scr_dyn_release(key);
+  assert(scr_weak_collect_entries() == 0 && witness->rc == idle + 1 && native->rc >= 1);
+  /* Nothing can reach that entry again; it ends with the collection. */
+  ScrDyn *moved = scr_weak_map_new(scr_dyn_undefined());
+  ScrDyn *swap = map;
+  map = moved;
+  scr_dyn_release(swap);
+  assert(witness->rc == idle);
+
+  /* A WeakSet member has no value to hold it. */
+  ScrDyn *set = scr_weak_set_new(scr_dyn_undefined());
+  key = scr_dyn_new_obj();
+  ScrDyn *added = scr_dyn_handle_ops_of(set)->invoke(set->v.handle.ptr, set, "add", &key, 1, "set.add");
+  scr_dyn_release(added);
+  assert(scr_weak_collect_entries() == 0 && holds(set, key));
+  scr_dyn_release(key);
+  scr_dyn_release(set);
+
+  /* Left to itself, the runtime keeps such entries bounded by the heap's
+   * growth since the last analysis. */
+  for (int i = 0; i < 200000; i++) {
+    key = scr_dyn_new_obj();
+    value = holder(key, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    assert(witness->rc < idle + 10000);
+  }
+  scr_weak_collect_entries();
+  assert(witness->rc == idle);
+  scr_dyn_release(other);
+  scr_dyn_release(map);
+}
+
 static void json_string_boundaries(void) {
   /* Every escape/control at every word alignment, followed by raw UTF-8.
    * ASan also checks short tails that cannot supply a complete word. */
@@ -1314,6 +1537,7 @@ int main(void) {
   scr_dyn_release(map);
   assert(key->rc == 1 && first->rc == 1);
   scr_dyn_release(key);
+  weak_entries_held_by_their_values(first);
   scr_dyn_release(first);
   assert(!scr_exc_pending());
   puts("checked storage and weak metadata lifetime checks passed");

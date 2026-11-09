@@ -335,19 +335,20 @@ describe.skipIf(skip)("island-closed module-level statements", () => {
     const modules = trace.filter(generated);
     expect(modules).toHaveLength(3);
     // The build does not print for the program: the two statements that
-    // print keep their place. The quiet one between them is deferred by the
-    // build and evaluates in place in the run, because Node is running.
+    // print keep their place. The quiet one between them evaluates in place
+    // too: Node is running by then, so the build writes no snapshot of it.
     expect(modules.filter((l) => /^\[node-islands\] eager .*process\.stdout/.test(l))).toHaveLength(
       2,
     );
-    expect(modules.filter((l) => l.startsWith("[node-islands] defer "))).toHaveLength(1);
-    const { stdout, boot } = await run(binary);
+    expect(
+      modules.filter((l) =>
+        /^\[node-islands\] eager .*an earlier load evaluates where it is imported/.test(l),
+      ),
+    ).toHaveLength(1);
+    const { stdout } = await run(binary);
     expect(stdout).toBe(
       "before\nplug-kit: registering one\nbetween\nplug-kit: registering three\n" +
         "after one=one,two=alpha,three=three\n",
-    );
-    expect(boot.filter((l) => /closed\/.* eagerly: Node is already running/.test(l))).toHaveLength(
-      1,
     );
   }, 300_000);
 

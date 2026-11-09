@@ -6,12 +6,14 @@
 // and locale wherever it ran. The default locale is now a boot guard on the
 // variables ICU takes it from; the time zone of a machine whose TZ is unset
 // has no guard, and such a load evaluates where it is imported. A load that
-// names its zone and its locale reads neither and still waits.
+// names its zone and its locale reads neither and still waits. The two
+// that wait are imported first: a load imported after one that evaluates
+// where it is imported evaluates at its import as well.
+const fixed = require("fixed-kit");
+const locale = require("locale-kit");
 const zone = require("zone-kit");
 const calendar = require("calendar-kit");
-const locale = require("locale-kit");
 const seen = require("seen-kit");
-const fixed = require("fixed-kit");
 
 console.log("zone:", zone.zone);
 console.log("local midnight:", zone.midnight, zone.legacy, calendar.made);

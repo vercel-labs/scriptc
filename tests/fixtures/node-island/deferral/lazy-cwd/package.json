@@ -1,0 +1,1 @@
+{ "name": "deferral-lazy-cwd", "private": true, "type": "module", "scriptc": { "packages": { "cwd-kit": { "run": "node", "evaluate": "lazy" }, "cwd-echo": "node" } } }

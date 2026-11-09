@@ -517,7 +517,9 @@ class ContractChecker {
                 ? "a caught exception"
                 : why.holds === "promise"
                   ? "a promise"
-                  : "a class object";
+                  : why.holds === "weakKey"
+                    ? "the value of a WeakMap or WeakSet entry it is the key of"
+                    : "a class object";
         const field =
           why.field === "%dynProperties"
             ? `${this.unitText(why.owner)} instances reach dynamic code, whose properties`
@@ -549,6 +551,8 @@ class ContractChecker {
 
   private cycleHint(why: CycleExplanation): string {
     const inner = why.kind === "hierarchy" ? why.because : why;
+    if (inner.kind === "intrinsic" && inner.holds === "weakKey")
+      return "the value of a weak entry can hold the entry's own key; key the collection by another object, or remove Acyclic";
     if (inner.kind === "intrinsic")
       return "a function, dynamic or promise field can capture the object itself; store plain data instead, or remove Acyclic";
     if (

@@ -975,6 +975,27 @@ export function emitDynamicExpr(
         } else if (e.test === "object") {
           // `typeof v === "object"`: objects, arrays, bytes, native
           // handles, promises, null, and native reference capsules.
+          // The kind alone answers for every value but a capsule, a handle
+          // and a proxy: objects, arrays, bytes, promises and null are
+          // objects and never callable, and every other kind is neither.
+          // Only those three ask the runtime (a capsule can hold a function,
+          // a handle can be an island function, a proxy answers for its
+          // target).
+          const plain = oneOf([
+            DYN_KIND.OBJ,
+            DYN_KIND.ARR,
+            DYN_KIND.BYTES,
+            DYN_KIND.PROMISE,
+            DYN_KIND.NULL,
+          ]);
+          const asks = oneOf([DYN_KIND.TYPED_REF, DYN_KIND.HANDLE, DYN_KIND.PROXY]);
+          const answer = B.slot();
+          B.entryAllocas.push(`${answer} = alloca i1`);
+          B.line(`store i1 ${plain}, ptr ${answer}`);
+          const ask = B.newLabel("dto.ask");
+          const done = B.newLabel("dto.j");
+          B.condBr(asks, ask, done);
+          B.startBlock(ask);
           const object = orNativeRef(
             oneOf([
               DYN_KIND.OBJ,
@@ -991,10 +1012,15 @@ export function emitDynamicExpr(
           host.declare("declare zeroext i1 @scr_dyn_is_callable(ptr)");
           const callable = B.tmp();
           const nonCallable = B.tmp();
-          test = B.tmp();
+          const asked = B.tmp();
           B.line(`${callable} = call zeroext i1 @scr_dyn_is_callable(ptr ${d.name})`);
           B.line(`${nonCallable} = xor i1 ${callable}, true`);
-          B.line(`${test} = and i1 ${object}, ${nonCallable}`);
+          B.line(`${asked} = and i1 ${object}, ${nonCallable}`);
+          B.line(`store i1 ${asked}, ptr ${answer}`);
+          B.br(done);
+          B.startBlock(done);
+          test = B.tmp();
+          B.line(`${test} = load i1, ptr ${answer}`);
         } else if (e.test === "array") {
           // Array.isArray accepts native arrays and typed array capsules.
           test = orNativeRef(oneOf([DYN_KIND.ARR]), "scr_dyn_ref_is_array");

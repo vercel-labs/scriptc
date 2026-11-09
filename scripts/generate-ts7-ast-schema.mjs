@@ -18,6 +18,15 @@ const protocol = require(join(packageRoot, "dist/api/node/protocol.js"));
 const { SyntaxKind } = require(join(packageRoot, "dist/enums/syntaxKind.js"));
 const { NodeFlags } = require(join(packageRoot, "dist/enums/nodeFlags.js"));
 const { ModifierFlags } = require(join(packageRoot, "dist/enums/modifierFlags.js"));
+/* Symbol, type and signature responses are the client's own shape: numeric
+ * ids and project handles, which a TypeScript 7.1 server's references
+ * (semantic-model.ts Ts71SymbolTable) are converted into. Those declarations
+ * come from the 7.0 package the protocol 5 tests use; the enumerators below
+ * are the pinned server's discriminants. */
+const canonicalRoot = dirname(require.resolve("typescript-7.0/package.json"));
+const canonicalVersion = JSON.parse(
+  readFileSync(join(canonicalRoot, "package.json"), "utf8"),
+).version;
 
 // The frontend's runtime enum surface is part of the same pinned protocol.
 // Emit real enum declarations so member types retain the TS7/TS5 fence and
@@ -39,6 +48,7 @@ const enumNames = [
   "SignatureKind",
   "SymbolFlags",
   "TypeFlags",
+  "TypeFormatFlags",
   "TypePredicateKind",
   "ModuleResolutionKind",
   "ModuleDetectionKind",
@@ -159,7 +169,7 @@ if (process.argv.includes("--check")) {
 // The semantic client consumes the same pinned numeric discriminants as
 // tsgo. Keep these independent of the SDK's runtime module graph too.
 const semanticLines = [
-  `// Generated from typescript@${version} by scripts/generate-ts7-ast-schema.mjs.`,
+  `// Generated from typescript@${version}, with response shapes from typescript@${canonicalVersion}, by scripts/generate-ts7-ast-schema.mjs.`,
   "// TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.",
   "// Regenerate when changing the TypeScript pin; do not edit by hand.",
 ];
@@ -179,7 +189,7 @@ for (const name of [
   }
   semanticLines.push("} as const;");
 }
-const protoDeclarations = readFileSync(join(packageRoot, "dist/api/proto.d.ts"), "utf8");
+const protoDeclarations = readFileSync(join(canonicalRoot, "dist/api/proto.d.ts"), "utf8");
 const semanticTypes = new Map([
   ["SymbolResponse", "SemanticSymbolData"],
   ["TypeResponse", "SemanticTypeData"],
@@ -211,8 +221,10 @@ if (process.argv.includes("--check")) {
 }
 
 // Session metadata travels as ordinary JSON records. Generate its complete
-// pinned shape too: parsing options or diagnostics must not pull SDK values
-// into a statically compiled client through their type declarations.
+// shape too: parsing options or diagnostics must not pull SDK values into a
+// statically compiled client through their type declarations. As with the
+// semantic responses, the client keeps TypeScript 7.0's shape and converts
+// a 7.1 server's snapshot replies into it.
 const sessionTypes = new Map([
   ["CompilerOptions", "Ts7CompilerOptionsData"],
   ["InitializeResponse", "Ts7InitializeData"],
@@ -227,9 +239,9 @@ const sessionTypes = new Map([
 const sessionDeclarations =
   protoDeclarations +
   "\n" +
-  readFileSync(join(packageRoot, "dist/api/compilerOptions.d.ts"), "utf8") +
+  readFileSync(join(canonicalRoot, "dist/api/compilerOptions.d.ts"), "utf8") +
   "\n" +
-  readFileSync(join(packageRoot, "dist/api/sync/types.d.ts"), "utf8");
+  readFileSync(join(canonicalRoot, "dist/api/sync/types.d.ts"), "utf8");
 const sessionLines = semanticLines.slice(0, 3);
 for (const [name] of sessionTypes) {
   const declaration = sessionDeclarations.match(

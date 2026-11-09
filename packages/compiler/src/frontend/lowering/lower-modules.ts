@@ -38,6 +38,7 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
 import {
+  assignmentChainValueOf,
   canonicalBuiltinModule,
   cjsChainedExportValueOf,
   cjsExportAssignmentOf,
@@ -2649,8 +2650,15 @@ export function collectGlobals(
       const names = boundIdentifiersOf(decl.name);
       // `var x = module.exports = <value>`: x and module.exports take the
       // SAME value at this statement, so the declaration's storage is
-      // classified from the export value the chain assigns.
-      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
+      // classified from the export value the chain assigns. In a JavaScript
+      // file the same holds for every chain of plain assignments (`var list
+      // = Holder.list = []`, the spelling a module whose exports are one of
+      // its functions is normalized to): the binding holds the chain's value.
+      const declValue =
+        cjsChainedExportValueOf(decl) ??
+        (decl.initializer !== undefined && isJsSourceFile(sf)
+          ? assignmentChainValueOf(decl.initializer)
+          : decl.initializer);
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.

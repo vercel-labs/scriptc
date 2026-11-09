@@ -17,10 +17,11 @@
  *     its import. One that had a value is recorded with it, which only
  *     `scriptc.nodeIslands.publicEnv` allows: a load that read a set
  *     variable not listed there stays eager, "lazy" included, and no value
- *     of it reaches the executable. A load that read such a value and left
- *     it in shared state (a global, a builtin, the environment) is where a
- *     later load of the same probe can pick it up and export it, so every
- *     candidate the probe reached after such a load stays eager too;
+ *     of it reaches the executable. Such a load can leave the value in
+ *     shared state (a global, a builtin, a module both use), where a later
+ *     load of the same probe can pick it up and export it, so every
+ *     candidate the probe reached after a load that stays eager stays eager
+ *     too (no run is answered from its snapshot, below);
  *   - the probe: one run of the build-time probe host
  *     (runtime src/tools/scr_node_island_probe.c) in a libnode environment
  *     from the same pack, which loads every candidate module under the
@@ -79,7 +80,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { resolveBuildCacheRoot } from "../backend/cache-root.js";
 import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
@@ -335,10 +336,6 @@ function makeEager(call: DeferCall): void {
   (call as { fn: string }).fn = "nodeIsland.require";
   call.args.length = 1;
 }
-
-/** The label the load recorder gives a load's write to an environment
- * variable (probe-recorder.ts), in its effects. */
-const ENV_WRITE = "a write of process.env.";
 
 export interface DeferralDecision {
   path: string;
@@ -623,58 +620,53 @@ export function finalizeDeferredIslands(
   const shipped = new Set(tree?.files.map((f) => join(tree.root, f.path)) ?? []);
   for (const copy of scratch?.copies.values() ?? []) shipped.add(copy);
   const reads = loadReads(probe.results, publicEnv, new Set(scratch?.copies.values() ?? []));
-  // The probe loads every candidate in one process, in the order the program
-  // evaluates them, so shared state one load writes (a global, a builtin, a
-  // prototype, the environment) is there for every load after it. A load
-  // that read a private environment value and wrote shared state can leave
-  // that value in what a later load exported, in a form the build cannot
-  // recognize; the later load's snapshot would then carry it into the
-  // executable. The writer is eager with its own reason, and so is every
-  // candidate the probe reached after it. A load's own effects that write
-  // `process.env` count: a later load reading a public key of it would record
-  // the written value.
-  // Private: read with a value at build time and not in publicEnv, by the
-  // load or by one it shares a file with (loadReads). A variable that was
-  // unset has no value to leave anywhere and is guarded as unset.
-  const privateKeys = (r: ProbeResult): string[] => reads.get(r)!.privateEnv;
-  const inherits = new Map<ProbeResult, string[]>();
-  let wrote: string[] | undefined;
-  for (const r of probe.results) {
-    if (wrote !== undefined) {
-      inherits.set(r, wrote);
-      continue;
-    }
-    const keys = privateKeys(r);
-    if (
-      keys.length > 0 &&
-      (r.mutations.length > 0 || r.effects.some((e) => e.startsWith(ENV_WRITE)))
-    )
-      wrote = keys;
-  }
-  const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
-  // What an earlier load read that no run repeats (a clock, a random number,
-  // the process id), once such a load evaluates where it is imported. Every
-  // load the probe reached after it computed from an island that held the
-  // build's reading, so its constants can hold it too (a package that
-  // exports what the earlier one left in a global). No run would be answered
-  // from such a snapshot: Node is running once the earlier load evaluates,
-  // and a run that skips the earlier load fails the snapshot's guard on the
-  // loads before it. So the snapshot is not written, and the executable
-  // holds nothing of the build's reading: two builds of one program are the
-  // same bytes.
-  let unrepeatable: string[] | undefined;
+  const deferred: { call: DeferCall; result: ProbeResult; at: number; why: string }[] = [];
+  // The build machine's directories a snapshot must not name
+  // (snapshotNames): the tree's root, and the probe's copies of the
+  // generated modules.
+  const buildDirs = [
+    ...(tree !== undefined && tree.root.length > 1 ? [tree.root] : []),
+    ...(scratch !== null ? [scratch.dir] : []),
+  ];
+  // The first probed load that evaluates where it is imported, by its place
+  // in the probe's order, and what the loads the probe reached after it are
+  // told. The probe loads every candidate in one process, so what that load
+  // left in shared state (a global, a builtin's state, a module both use),
+  // whatever it read included (an environment variable set at build time, a
+  // clock), is there for every load after it, and their constants can hold
+  // it in a form the build cannot recognize. No run is answered from such a
+  // snapshot: Node is running once the earlier load evaluates, and a run
+  // that skips the earlier load fails the snapshot's guard on the loads
+  // before it (the load never registers). So the snapshot is not written,
+  // and the executable holds nothing the build computed after that load:
+  // two builds of one program are the same bytes.
+  let earlier: { at: number; why: string } | undefined;
+  const earlierReason = (r: ProbeResult): string => {
+    const { volatile, privateEnv } = reads.get(r)!;
+    const s = privateEnv.length === 1 ? "" : "s";
+    if (volatile.length > 0)
+      return `an earlier load reads ${volatile.join(", ")} and evaluates where it is imported, so Node is running before this load, and a snapshot of it could hold the build's reading`;
+    if (privateEnv.length > 0)
+      return `an earlier load reads the environment variable${s} ${privateEnv.join(", ")}, set at build time, and evaluates where it is imported, so Node is running before this load, and a snapshot of it could hold the build-time value${s}`;
+    return "an earlier load evaluates where it is imported, so Node is running before this load, and a snapshot of it could hold what that load left in the island";
+  };
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === probed(c.path));
+    const at = result === undefined ? -1 : probe.results.indexOf(result);
     const why = (() => {
       if (result === undefined) return "the probe did not load it";
       if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
       if (result.root === undefined) return result.reason ?? "the probe did not load it";
-      if (
-        tree !== undefined &&
-        tree.root.length > 1 &&
-        snapshotNames(probe, result.root, tree.root)
-      )
+      if (snapshotNames(probe, result.root, buildDirs))
         return "its exports hold a path of the build machine";
+      // A file the probe evaluated that the shipped tree does not hold (a
+      // package another one requires by a computed name). The executable's
+      // island loads only the tree's files, so a run evaluates the module
+      // where it is imported and fails to load that file there; a snapshot
+      // would answer only where a guard on the build machine's file holds.
+      const outside = tree === undefined ? undefined : result.files.find((f) => !shipped.has(f));
+      if (outside !== undefined)
+        return `its load evaluates ${outside}, which the shipped module tree does not hold`;
       // A variable that was unset is guarded as unset: no value to record.
       // One that any load of the group read with a value keeps it eager,
       // even where another load of the group saw it unset.
@@ -683,14 +675,8 @@ export function finalizeDeferredIslands(
         return `its load reads the environment variable${privateEnv.length === 1 ? "" : "s"} ${privateEnv.join(", ")}, set at build time, whose value${privateEnv.length === 1 ? "" : "s"} its boot guards would record (scriptc.nodeIslands.publicEnv lists the ones that may be recorded)`;
       if (conflicts.length > 0)
         return `the loads that share its files read ${conflicts.join(", ")} with different values`;
-      const inherited = inherits.get(result);
-      if (inherited !== undefined)
-        return `an earlier load read the environment variable${inherited.length === 1 ? "" : "s"} ${inherited.join(", ")} and wrote shared state, so a load probed after it can export ${inherited.length === 1 ? "its build-time value" : "their build-time values"}`;
       // The load's own reasons come first; this one holds for "lazy" too.
-      const after =
-        unrepeatable === undefined
-          ? null
-          : `an earlier load reads ${unrepeatable.join(", ")} and evaluates where it is imported, so Node is running before this load, and a snapshot of it could hold the build's reading`;
+      const after = earlier !== undefined && at > earlier.at ? earlier.why : null;
       if (c.lazy) return after;
       // Its own, or those of a load it shares a file with.
       const whose = (own: string[]): string =>
@@ -713,10 +699,8 @@ export function finalizeDeferredIslands(
     })();
     if (why !== null || result === undefined) {
       decide(c.call, false, why ?? "");
-      if (unrepeatable === undefined && result !== undefined) {
-        const read = reads.get(result)!.volatile;
-        if (read.length > 0) unrepeatable = read;
-      }
+      if (earlier === undefined && result !== undefined)
+        earlier = { at, why: earlierReason(result) };
       continue;
     }
     const how = c.lazy
@@ -726,11 +710,43 @@ export function finalizeDeferredIslands(
         : c.gate === ""
           ? "static gate"
           : `recorded load is deterministic (static gate: ${c.gate})`;
-    deferred.push({ call: c.call, result, why: how });
+    deferred.push({ call: c.call, result, at, why: how });
   }
+  // The first deferred load that read something no guard covers (only
+  // "lazy" defers one), and what it read. The loads the probe reached after
+  // it computed from an island that held the build's reading, and can export
+  // it (a package that exports what the lazy one left in a global): their
+  // snapshots keep no constants either.
+  const unguarded = deferred
+    .map(({ result, at }) => {
+      const { inputs, volatile } = reads.get(result)!;
+      return { at, read: [...inputs, ...volatile] };
+    })
+    .find(({ read }) => read.length > 0);
+  // Whether a file the probe evaluated spells `key`: a snapshot without
+  // constants writes only such keys (encodeSnapshot), so the executable
+  // holds no key the shipped files do not hold already. The files are read
+  // the first time a snapshot needs them.
+  let sources: string[] | undefined;
+  const spelled = (key: string): boolean => {
+    sources ??= [
+      ...[...new Set(probe.results.flatMap((r) => r.files))].flatMap((file) => {
+        try {
+          return [readFileSync(file, "utf8")];
+        } catch {
+          return [];
+        }
+      }),
+      // The probe's copies are gone: the tree holds their text.
+      ...(tree?.files.flatMap((file) => (file.generated === undefined ? [] : [file.generated])) ??
+        []),
+    ];
+    return sources.some((text) => text.includes(key));
+  };
   for (const d of deferred) {
     const r = d.result;
     const { env, tty, volatile, inputs } = reads.get(r)!;
+    const late = unguarded !== undefined && d.at > unguarded.at;
     const guards = [
       ...packGuards,
       ...fileGuardLines(r.files.filter((f) => !shipped.has(f))),
@@ -750,7 +766,8 @@ export function finalizeDeferredIslands(
       probe,
       r.root!,
       guards,
-      volatile.length === 0 && inputs.length === 0,
+      volatile.length === 0 && inputs.length === 0 && !late,
+      spelled,
     );
     const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
@@ -761,6 +778,7 @@ export function finalizeDeferredIslands(
         : []),
       ...(volatile.length > 0 ? [`volatile ${volatile.join(",")}: no constants`] : []),
       ...(inputs.length > 0 ? [`reads ${inputs.join(",")}: no constants`] : []),
+      ...(late ? [`probed after a load that reads ${unguarded.read.join(",")}: no constants`] : []),
       ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
       "evaluated when Node starts",
     ];
@@ -871,27 +889,38 @@ function encodeValue(v: ProbeValue): string | null {
   return null;
 }
 
-/** Whether a string the snapshot holds names a path of the build machine:
- * one under `dir`, or one of the directories above it. The probe loads the
- * modules from the build machine, and the program from the module tree it
- * ships, so such a value would not be the one the program sees (a module's
- * own `__dirname`, say). The directories above come to a module as the
- * loader's lookup paths (`module.paths`, `require.resolve.paths()`:
- * `<above>/node_modules`), and from its own path arithmetic; a string that
- * only mentions a top-level directory (`/tmp/...`) is not taken for one. */
-function snapshotNames(probe: ProbeOutput, root: number, dir: string): boolean {
-  const above: string[] = [];
-  for (let d = dirname(dir); d !== dirname(d); d = dirname(d)) above.push(d);
-  const deep = above.filter((d) => d.split(/[\\/]/).filter((part) => part !== "").length >= 2);
-  const names = (s: string): boolean =>
-    s.includes(dir) ||
-    above.some((d) => s.includes(join(d, "node_modules"))) ||
-    deep.some((d) => s === d || s.startsWith(join(d, "x").slice(0, -1)));
+/** Whether a string the snapshot holds, as a value or as a member's key,
+ * names a path of the build machine: one under one of `dirs` (with or
+ * without its leading separator), or one of the directories above it. The
+ * probe loads the modules from the build machine (a generated module from
+ * a copy in a temporary directory), and the program from the module tree
+ * it ships, so such a string would not be the one the program sees (a
+ * module's own `__dirname`, say, or the file of a caller found from a
+ * stack trace). The directories above come to a
+ * module as the loader's lookup paths (`module.paths`,
+ * `require.resolve.paths()`: `<above>/node_modules`), and from its own
+ * path arithmetic; a string that only mentions a top-level directory
+ * (`/tmp/...`) is not taken for one. */
+function snapshotNames(probe: ProbeOutput, root: number, dirs: readonly string[]): boolean {
+  const tests = dirs.map((dir) => {
+    const above: string[] = [];
+    for (let d = dirname(dir); d !== dirname(d); d = dirname(d)) above.push(d);
+    const deep = above.filter((d) => d.split(/[\\/]/).filter((part) => part !== "").length >= 2);
+    // The path without its root (`path.relative("/", __dirname)`).
+    const rootless = dir.replace(/^(?:[A-Za-z]:)?[\\/]+/, "");
+    return (s: string): boolean =>
+      s.includes(dir) ||
+      (rootless.includes(sep) && s.includes(rootless)) ||
+      above.some((d) => s.includes(join(d, "node_modules"))) ||
+      deep.some((d) => s === d || s.startsWith(join(d, "x").slice(0, -1)));
+  });
+  const names = (s: string): boolean => tests.some((test) => test(s));
   const seen = new Set<number>();
   const visit = (oid: number): boolean => {
     if (seen.has(oid) || probe.objects[oid] === undefined) return false;
     seen.add(oid);
-    for (const [, v] of probe.objects[oid]!.m) {
+    for (const [key, v] of probe.objects[oid]!.m) {
+      if (names(key)) return true;
       if ("s" in v && names(v.s)) return true;
       if ("o" in v && visit(v.o)) return true;
     }
@@ -900,20 +929,28 @@ function snapshotNames(probe: ProbeOutput, root: number, dir: string): boolean {
   return visit(root);
 }
 
+/** The snapshot text of the value `root`. Without `constants` (a load that
+ * read something no guard covers), only object members are written, and
+ * only those whose key `spelled` admits: a key can come from the build's
+ * reading as a value can (`{ [os.hostname()]: {...} }`). A member left out
+ * is read from Node. */
 function encodeSnapshot(
   probe: ProbeOutput,
   root: number,
   guards: string[],
   constants: boolean,
+  spelled: (key: string) => boolean,
 ): string {
   const lines = [...guards];
   const reached: number[] = [];
   const seen = new Set<number>();
+  const members = (oid: number): [string, ProbeValue][] =>
+    constants ? probe.objects[oid]!.m : probe.objects[oid]!.m.filter(([key]) => spelled(key));
   const visit = (oid: number): void => {
     if (seen.has(oid) || probe.objects[oid] === undefined) return;
     seen.add(oid);
     reached.push(oid);
-    for (const [, v] of probe.objects[oid]!.m) if ("o" in v) visit(v.o);
+    for (const [, v] of members(oid)) if ("o" in v) visit(v.o);
   };
   visit(root);
   for (const oid of reached) {
@@ -921,7 +958,7 @@ function encodeSnapshot(
     lines.push(`O ${oid} ${o.f} ${o.p ? 1 : 0}`);
   }
   for (const oid of reached) {
-    for (const [key, v] of probe.objects[oid]!.m) {
+    for (const [key, v] of members(oid)) {
       const enc = encodeValue(v);
       if (enc !== null && (constants || "o" in v)) lines.push(`K ${oid} ${lstr(key)} ${enc}`);
     }

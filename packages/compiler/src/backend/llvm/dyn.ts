@@ -62,8 +62,9 @@ import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
   collectionKeyAccess,
-  decodeCollectionKeyIn,
+  decodeBorrowedKeyIn,
   encodeCollectionKeyIn,
+  releaseKeyTemporary,
 } from "./string-union-keys.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -1024,8 +1025,10 @@ export class LlDyn {
       // and encoded after it is unboxed.
       const storesKeyStrings = role === "key" && this.host.nullableUnions.stringKey(type) !== null;
       if (storesKeyStrings) {
-        const decoded = decodeCollectionKeyIn(B, this.host, type, "%value");
-        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} ${decoded})`);
+        const decoded = decodeBorrowedKeyIn(B, this.host, type, "%value");
+        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} ${decoded.value})`);
+        // The string of an escaped key is a temporary: the box holds its own.
+        if (decoded.temporary !== null) releaseKeyTemporary(B, this.host, decoded.temporary);
       } else if (
         type.kind === "union" &&
         this.host.unionsById.get(type.unionId)?.arms.some(streamTypedRefEligible)
@@ -1053,8 +1056,22 @@ export class LlDyn {
       if (storesKeyStrings) {
         const U = new BlockBuilder();
         U.line(`%value = call ptr @${unbox}(ptr %d, ptr null)`);
-        const stored = encodeCollectionKeyIn(U, this.host, type, "%value");
-        U.line(`%result = ptrtoint ptr ${stored} to i64`);
+        // The slot is owned: an escaped key (+1) takes the place of the
+        // unboxed string (+1), which is released.
+        const key = encodeCollectionKeyIn(U, this.host, type, "%value");
+        if (key.temporary !== null) {
+          this.host.declare(`declare void @scr_str_release(ptr)`);
+          const swapped = U.tmp();
+          U.line(`${swapped} = icmp ne ptr ${key.temporary}, null`);
+          const drop = U.newLabel("ukey.swap"),
+            done = U.newLabel("ukey.slot");
+          U.condBr(swapped, drop, done);
+          U.startBlock(drop);
+          U.line(`call void @scr_str_release(ptr %value)`);
+          U.br(done);
+          U.startBlock(done);
+        }
+        U.line(`%result = ptrtoint ptr ${key.stored} to i64`);
         U.terminate("ret i64 %result");
         this.defs.push(
           `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
@@ -1869,8 +1886,9 @@ export class LlDyn {
       // moves in.
       const storedKey = encodeCollectionKeyIn(B, host, keyType, k);
       B.line(
-        `call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${storedKey}, ${vTy} ${v})`,
+        `call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${storedKey.stored}, ${vTy} ${v})`,
       );
+      if (storedKey.temporary !== null) releaseKeyTemporary(B, host, storedKey.temporary);
       drop(keyType, k);
     });
     // The collection must still be, entry for entry, what was checked: a

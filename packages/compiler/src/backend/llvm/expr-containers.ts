@@ -79,6 +79,8 @@ import {
   decodeCollectionKey,
   emitIndexLoop,
   encodeCollectionKey,
+  encodeCollectionKeyIn,
+  releaseKeyTemporary,
 } from "./string-union-keys.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
@@ -1436,7 +1438,11 @@ function emitStringKeySetAdd(
   elem: IrType,
   value: string,
 ): void {
-  host.mapSet(set, "str", "f64", encodeCollectionKey(host, elem, value), f64Lit(0));
+  // Inside the caller's loop: an escaped key is released here, not by the
+  // frame.
+  const { stored, temporary } = encodeCollectionKeyIn(host.B, host, elem, value);
+  host.mapSet(set, "str", "f64", stored, f64Lit(0));
+  if (temporary !== null) releaseKeyTemporary(host.B, host, temporary);
   host.releaseFrame(value, elem);
 }
 

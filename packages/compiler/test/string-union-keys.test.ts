@@ -161,4 +161,36 @@ console.log(make(1, "a").name, names.size);
 `);
   const llvm = emitLlvmModule(mod);
   expect(llvm).not.toContain("@sc_key_");
+  expect(llvm).not.toContain("@sc_ukey_");
+});
+
+test("a string that starts with the byte 0xFF is escaped going in and restored coming out", async () => {
+  const mod = await lower(`${HELD}
+const seen = new Set<string | null>();
+function note(value: string | null): boolean {
+  if (seen.has(value)) return false;
+  seen.add(value);
+  return true;
+}
+function first(): string | null {
+  for (const value of seen) return value;
+  return null;
+}
+console.log(note(make(1, "a").name), note(pick(3, "b")), first());
+`);
+  const llvm = emitLlvmModule(mod);
+  // The byte an escaped key starts with, and the two cold helpers.
+  expect(llvm).toMatch(/^@sc_key_escape = internal global .* c"\\FF\\00" }/m);
+  expect(llvm).toMatch(/^define internal ptr @sc_ukey_escape\(ptr %s\) cold noinline \{/m);
+  expect(llvm).toMatch(/^define internal ptr @sc_ukey_unescape\(ptr %s\) cold noinline \{/m);
+  // Going in: the key's first byte is read, and 0xFF on the string arm
+  // (not on a unit arm's key string) takes the cold call.
+  const note = body(llvm, "sc_bf_note");
+  expect(note).toMatch(/load i8, ptr %[\w.]+\n\s+%[\w.]+ = icmp eq i8 %[\w.]+, -1/);
+  expect(note).toMatch(/xor i1 %[\w.]+, true\n\s+%[\w.]+ = and i1 %[\w.]+, %[\w.]+\n\s+br i1 /);
+  expect(note).toContain("call ptr @sc_ukey_escape(ptr ");
+  // Coming out: an escaped key gives way to its string.
+  expect(llvm).toMatch(
+    /call ptr @sc_ukey_unescape\(ptr (%[\w.]+)\)[^]*?call void @scr_str_release\(ptr \1\)/,
+  );
 });

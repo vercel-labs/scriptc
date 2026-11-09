@@ -71,7 +71,13 @@ import { hasLoneSurrogate, llvmBytes, wtf8Bytes } from "../literals.js";
 import { nodeIslandManifest } from "../../node-islands/modules.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
-import { UNIT_KEY_NULL, UNIT_KEY_UNDEFINED, unitKeyBytes } from "./string-union-keys.js";
+import {
+  UNIT_KEY_ESCAPE,
+  UNIT_KEY_NULL,
+  UNIT_KEY_UNDEFINED,
+  unitKeyBytes,
+  unitKeyHelperDefinitions,
+} from "./string-union-keys.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
 import { STRING_READ_HELPERS, stringScanDecl, stringScanInline } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
@@ -1099,6 +1105,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : []),
   );
   if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);
+  if (emitter.nullableUnions.usesUnitKeys) {
+    // What the two helpers of the key escape call (string-union-keys.ts).
+    emitter.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+    emitter.declare(`declare ptr @scr_str_new(ptr, ${emitter.sizeType})`);
+  }
   for (const d of emitter.decls) out.push(d);
   out.push(``);
   const flushedDecls = new Set(emitter.decls);
@@ -1228,9 +1239,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (emitter.nullableUnions.usesUnitKeys) {
     // The keys a Map or Set of a string-key union stores for `undefined`
     // and `null` (string-union-keys.ts): two immortal strings like the
-    // literals above, of bytes no string of the program holds.
+    // literals above, which no stored string equals; then the byte an
+    // escaped key starts with, and the two helpers of the escape.
     const S = emitter.sizeType;
-    for (const symbol of [UNIT_KEY_UNDEFINED, UNIT_KEY_NULL]) {
+    for (const symbol of [UNIT_KEY_UNDEFINED, UNIT_KEY_NULL, UNIT_KEY_ESCAPE]) {
       const bytes = unitKeyBytes(symbol);
       const capWord = S === "i64" ? literalCapWord(bytes) : literalCapWord32(bytes);
       out.push(
@@ -1238,7 +1250,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
           `{ ${S} -1, ${S} ${bytes.length}, ${S} ${capWord}, [${bytes.length + 1} x i8] c"${llvmBytes(bytes)}" } ; unit key`,
       );
     }
-    out.push(``);
+    out.push(``, ...unitKeyHelperDefinitions(S));
   }
   if (emitter.needsNullableAbsent) {
     // The ABSENT field-slot state of every nullable-pointer union: one

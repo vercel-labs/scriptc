@@ -1642,6 +1642,41 @@ ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d);
 /* Attach the bag and prototype hooks of a capsule of a bag-tracked class
  * instance (idempotent). */
 void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
+/* A native stream seen as `unknown`, filled in by the stream unit with its
+ * first stream and NULL before. A capsule whose snapshot adapter is `view`
+ * itself holds a stream whose view is exactly the object `view` builds, so
+ * a question about one member of it needs no view.
+ *   get:    scr_typed_ref_stream_get, the read of one member.
+ *   has:    scr_typed_ref_stream_has, `in` and Reflect.has.
+ *   member: what the view of `stream` holds under `key`: 0 nothing, 1 a
+ *           data property (its value +1 in *value when `value` is not
+ *           NULL), 2 a method, -1 when only the view can say.
+ * The two questions are reached through the record and named by the stream
+ * unit alone, so a program without a stream links neither: all it carries
+ * is the comparison with `view`.
+ * One record for the process, not one per thread: the functions are the
+ * same for every thread, and a capsule that is no stream then pays one
+ * comparison with `view` and no thread-local read. The fields are atomic
+ * because every thread that makes its first stream while they are still
+ * NULL stores the same addresses; `view` goes in last, so a thread that
+ * reads it set reads the others set. */
+typedef struct ScrStreamRefHooks {
+  ScrDyn *(*_Atomic view)(void *stream);
+  ScrDyn *(*_Atomic get)(const ScrDyn *capsule, const ScrStr *key);
+  int (*_Atomic has)(const ScrDyn *capsule, const ScrStr *key);
+  int (*_Atomic member)(void *stream, const char *key, size_t key_len, ScrDyn **value);
+} ScrStreamRefHooks;
+extern ScrStreamRefHooks scr_stream_ref_hooks;
+/* ScrStreamRefHooks.get: what the view of live stream capsule `capsule`
+ * answers a read of `key`, which is no name of Object.prototype: +1, or
+ * NULL when the read needs the view. */
+ScrDyn *scr_typed_ref_stream_get(const ScrDyn *capsule, const ScrStr *key);
+/* ScrStreamRefHooks.has: whether the view of live stream capsule `capsule`
+ * holds `key`, as its own data property or as a method it inherits: 1 or
+ * 0, or -1 when the view must answer. */
+int scr_typed_ref_stream_has(const ScrDyn *capsule, const ScrStr *key);
+/* scr_stream_dyn_view as a capsule's snapshot adapter. */
+ScrDyn *scr_stream_ref_view(void *stream);
 /* The method `key` that a call on a bag-tracked class instance capsule
  * reads from its view, +1, when an ordinary data property answers it: an
  * own one (a declared field's value from its native slot, or another bag

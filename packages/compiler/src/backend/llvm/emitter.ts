@@ -141,7 +141,7 @@ import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
-import { unitSafeFunctions } from "./string-unit-versions.js";
+import { unitSafeFunctions, type UnitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
   findInt32Abis,
@@ -6473,10 +6473,10 @@ export class LlEmitter {
     );
   }
 
-  private unitSafe: ReadonlySet<string> | null | undefined;
+  private unitSafe: UnitSafeFunctions | null | undefined;
   /** The functions a loop over a string's UTF-16 units may call, or null
    * where emitted reads do not use the runtime's scan receiver. */
-  private unitSafeFunctions(): ReadonlySet<string> | null {
+  private unitSafeFunctions(): UnitSafeFunctions | null {
     if (this.unitSafe === undefined)
       this.unitSafe = stringScanInline(this) ? unitSafeFunctions(this.mod) : null;
     return this.unitSafe;

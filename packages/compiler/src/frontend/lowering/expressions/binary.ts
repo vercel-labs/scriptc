@@ -69,6 +69,7 @@ import { isJsSourceFile, locOf } from "../../program.js";
 import { findStaticOn, storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
+import { constantCondition } from "../constant-conditions.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
@@ -3584,6 +3585,17 @@ function lowerLogicalPair(lowerer: Lowerer, expr: ts.BinaryExpression, left: IrE
   if (left.kind === "boolLit") {
     const takeRight = op === ts.SyntaxKind.AmpersandAmpersandToken ? left.value : !left.value;
     return takeRight ? lowerer.lowerExpr(expr.right) : left;
+  }
+  // A constant left operand that decides the result (`DEV && check(x)`,
+  // constant-conditions.ts): the right operand never runs and does not
+  // lower, and the left operand still runs.
+  if (
+    left.type.kind === "bool" &&
+    (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken)
+  ) {
+    const constant = constantCondition(lowerer, expr.left);
+    if (constant !== null && constant !== (op === ts.SyntaxKind.AmpersandAmpersandToken))
+      return left;
   }
   if (left.kind === "unitLit" && op === ts.SyntaxKind.AmpersandAmpersandToken) return left;
   if (op === ts.SyntaxKind.BarBarToken && REF_TRUTHY_KINDS.has(left.type.kind)) return left;

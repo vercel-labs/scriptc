@@ -2091,22 +2091,66 @@ export class LlDyn {
     return view;
   }
 
+  /** Whether `%d` is a capsule boxed under one of `types`. A capsule boxed
+   * by this program carries its key constant itself, so one load and a
+   * pointer test per key answer for it. Only a capsule with another key
+   * pointer (boxed by the runtime or by another compilation unit) has its
+   * name compared, and a value that is no capsule compares nothing. */
   private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
+    if (types.length === 0) return "false";
     this.host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
-    let matched = "false";
-    for (const type of types) {
-      const key = typeKey(type);
-      const next = B.tmp();
-      B.line(
-        `${next} = call zeroext i1 @scr_dyn_typed_ref_is(ptr %d, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
-      );
-      if (matched === "false") matched = next;
-      else {
-        const either = B.tmp();
-        B.line(`${either} = or i1 ${matched}, ${next}`);
-        matched = either;
-      }
-    }
+    const keys = types.map((type) => typeKey(type));
+    const either = (tests: readonly string[]): string =>
+      tests.reduce((any, test) => {
+        const or = B.tmp();
+        B.line(`${or} = or i1 ${any}, ${test}`);
+        return or;
+      });
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i1`);
+    B.line(`store i1 false, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("dc.keys.inspect");
+    const capsule = B.newLabel("dc.keys.capsule");
+    const names = B.newLabel("dc.keys.names");
+    const done = B.newLabel("dc.keys.done");
+    B.line(`${present} = icmp ne ptr %d, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const typed = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    B.condBr(typed, capsule, done);
+    B.startBlock(capsule);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    const same = either(
+      keys.map((key) => {
+        const hit = B.tmp();
+        B.line(`${hit} = icmp eq ptr ${keyPtr}, ${this.host.cstr(key)}`);
+        return hit;
+      }),
+    );
+    B.line(`store i1 true, ptr ${slot}`);
+    B.condBr(same, done, names);
+    B.startBlock(names);
+    const named = either(
+      keys.map((key) => {
+        const hit = B.tmp();
+        B.line(
+          `${hit} = call zeroext i1 @scr_dyn_typed_ref_is(ptr %d, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
+        );
+        return hit;
+      }),
+    );
+    B.line(`store i1 ${named}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const matched = B.tmp();
+    B.line(`${matched} = load i1, ptr ${slot}`);
     return matched;
   }
 

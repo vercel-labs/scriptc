@@ -572,3 +572,36 @@ console.log(total, saved.length);
   expect(groups.leakFree.has("counts")).toBe(true);
   expect(callsOf(mod, "counts").every((c) => groups.calls.has(c))).toBe(true);
 });
+
+test("a function that calls into the library where it can run program code is not leak-free", async () => {
+  const mod = await moduleFor(`import { EventEmitter } from "node:events";
+${ITEMS}
+const em = new EventEmitter();
+em.on("item", (i: number) => {
+  saved.push(new Item("em" + i));
+});
+function emits(e: EventEmitter, n: number): number {
+  const mine = own(n);
+  e.emit("item", n);
+  return mine.length;
+}
+function measures(n: number): number {
+  const mine = own(n);
+  return mine.length + Math.floor(n / 2) + String(n).length + "abc".indexOf("c");
+}
+let total = 0;
+for (let r = 0; r < 3; r++) {
+  total += emits(em, 5);
+  total += measures(5);
+}
+console.log(total, saved.length);
+`);
+  const groups = analyzeRegionGroups(mod);
+  // The listener runs inside `emit` and keeps what it allocates in a
+  // module array: the emitting function opens no arena around it.
+  expect(groups.leakFree.has("emits")).toBe(false);
+  expect(callsOf(mod, "emits").some((c) => groups.calls.has(c))).toBe(false);
+  // Library calls that cannot run program code keep the call region.
+  expect(groups.leakFree.has("measures")).toBe(true);
+  expect(callsOf(mod, "measures").every((c) => groups.calls.has(c))).toBe(true);
+});

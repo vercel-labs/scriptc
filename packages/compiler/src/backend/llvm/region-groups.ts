@@ -27,6 +27,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { boundedNode } from "../may-throw.js";
 import {
   ALLOCATIONS,
   FRESH_ARRAY_METHODS,
@@ -825,7 +826,18 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     // allocation target, and no edge the analysis follows leads there: what
     // the body keeps past the resumption would be dropped with the arena.
     if (node.kind === "genResume") return false;
-    return true;
+    // `JSON.parse(text)` and the checked cast of its value are sources the
+    // analysis follows itself, and neither runs code of the program: a
+    // reviver is a library call of its own, and a checked cast admits plain
+    // data only.
+    if (node.kind === "dynCheck" || (node.kind === "libCall" && node.fn === "json.parse"))
+      return true;
+    // Every other operation is clean only when it cannot run code of the
+    // program. An emitter's listeners, a Promise executor, a replacer, a
+    // `toJSON` or a `toString` the runtime calls run with this function's
+    // arena as the allocation target, like a generator's body, and what
+    // they keep would be dropped with it.
+    return boundedNode(node);
   };
   /** The values `e` can produce, through casts and conditionals. */
   const leaves = (e: Node, out: Node[] = []): Node[] => {

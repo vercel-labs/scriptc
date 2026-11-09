@@ -202,12 +202,16 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v);
  * through; a returned dyn promise is adopted), and settles a fresh result
  * promise, answered BOXED (+1). */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
-/* When set, that reaction's steps run on a fiber of their own, started
- * from its job. A handler may then wait on the current fiber from
- * synchronous code, as a node:test subtest started inside it does: the
- * test unit installs its spawn (scr_test.c), so the fiber machinery is
- * referenced only from a program that links that unit. */
-extern void (*scr_dyn_reaction_spawn)(void (*entry)(ScrFiber *, void *), void *argpack);
+/* When set, that reaction's job calls it in place of its steps. The test
+ * unit sets it to scr_dyn_then_spawn (scr_test.c), which runs the steps on
+ * a fiber of their own: a handler may then wait on the current fiber from
+ * synchronous code, as a node:test subtest started inside it does. Only
+ * that unit references scr_dyn_then_spawn, so a program without tests
+ * links neither it nor the fiber machinery. */
+extern SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src);
+#ifndef __wasi__
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src);
+#endif
 /* A native reaction to a promise's settlement, as PerformPromiseThen with
  * native steps: react(ctx, settled) runs as a reaction job once the promise
  * settles (from the next microtask checkpoint when it already has), in

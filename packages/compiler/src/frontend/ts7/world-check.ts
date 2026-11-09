@@ -1,6 +1,6 @@
 /* Two-world separation, enforced at build time. The 5.9.3 world (the
  * "typescript5" aliased import — parser/transpile islands only) and the
- * 7.0.2 world (this adapter, over the real "typescript" dependency) must
+ * 7.1 world (this adapter, over the real "typescript" dependency) must
  * never exchange AST or checker objects: the enums
  * renumbered between worlds, so a node that crosses carries kinds and flags
  * that MEAN something else on the other side, without any error.

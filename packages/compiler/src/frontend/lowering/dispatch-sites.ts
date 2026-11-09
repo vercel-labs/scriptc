@@ -86,6 +86,7 @@ const DISPATCH_LIB_CALLS = new Set<IrLibFn>([
   "dyn.forInKeys",
   "dyn.forInKeyStrings",
   "dyn.hasKeyComputed",
+  "dyn.in",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   "dyn.defineProperty",

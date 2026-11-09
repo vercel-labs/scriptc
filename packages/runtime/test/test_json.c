@@ -808,12 +808,58 @@ static void test_primitive_owners(void) {
   check(!scr_dyn_strict_eq(values[1], values[2]), "boolean singleton values remain distinct");
 }
 
+static ScrDyn *no_view(void *value) {
+  (void)value;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* `value instanceof C` for a class of the program walks the value's
+ * prototype chain with scr_dyn_get_prototype_for_identity. The question has
+ * an answer for every value, so the read ends the walk with null where the
+ * runtime models no chain a program class could be on, and never throws. */
+static void test_class_test_walk(void) {
+  ScrStr *source = S("native identity");
+  ScrStr *text = S("text");
+  /* A class instance whose view cannot be built, and a generator object. */
+  ScrDyn *instance = scr_dyn_new_typed_ref(source, view_retain, view_release, "object:Generic", 14,
+                                           scr_dyn_class_view_unavailable, NULL);
+  ScrDyn *generator = scr_dyn_new_typed_ref(source, view_retain, view_release, "generator<f64>", 14, no_view, NULL);
+  ScrDyn *ended[] = {instance, generator, scr_dyn_new_num(1), scr_dyn_new_str(text), scr_dyn_new_bool(true)};
+  for (size_t i = 0; i < sizeof ended / sizeof *ended; i++) {
+    ScrDyn *prototype = scr_dyn_get_prototype_for_identity(ended[i]);
+    check(prototype && prototype->kind == SCR_DYN_NULL && !scr_exc_pending(),
+          "a value without a modeled prototype chain ends a class test's walk");
+    if (scr_exc_pending()) scr_exc_clear();
+    if (prototype) scr_dyn_release(prototype);
+    scr_dyn_release(ended[i]);
+  }
+  scr_str_release(text);
+  scr_str_release(source);
+
+  /* An object keeps its chain: the prototype the program chose, then
+   * Object.prototype, then null. */
+  ScrDyn *parent = scr_dyn_new_obj();
+  ScrDyn *child = scr_dyn_obj_create(parent);
+  ScrDyn *first = scr_dyn_get_prototype_for_identity(child);
+  check(first == parent && !scr_exc_pending(), "a class test's walk follows an object's own prototype");
+  ScrDyn *second = scr_dyn_get_prototype_for_identity(first);
+  check(second && second->kind == SCR_DYN_OBJ && second != parent, "the walk reaches Object.prototype");
+  ScrDyn *third = scr_dyn_get_prototype_for_identity(second);
+  check(third && third->kind == SCR_DYN_NULL && !scr_exc_pending(), "the walk ends after Object.prototype");
+  scr_dyn_release(third);
+  scr_dyn_release(first);
+  scr_dyn_release(second);
+  scr_dyn_release(child);
+  scr_dyn_release(parent);
+}
+
 int main(void) {
   test_class_values();
   scr_init();
   test_primitive_owners();
   test_copy_property_descriptors();
   test_class_view_accessors();
+  test_class_test_walk();
 
   /* ── primitives ─────────────────────────────────────────────────── */
   ScrDyn *d = parse_ok("null", "parse null");

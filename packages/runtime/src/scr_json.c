@@ -3145,23 +3145,45 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
 }
 
 /* scr_dyn_get_prototype for a walk that compares each prototype with a
- * program class's prototype (instanceof against a class value): a native
- * Date, RegExp, Map, Set, WeakMap or WeakSet, or a promise, has only builtin
- * prototypes on its chain, and no program class extends these (a class
- * extending Date makes instances of its own), so the walk ends there with
- * null. */
+ * program class's prototype (instanceof against a class of the program).
+ * The walk asks a question that has an answer for every value, so this
+ * read never refuses one: a program class's prototype can only be on the
+ * chain of an object, an array or a function whose prototype the program
+ * chose, of a record's or an array's capsule (its view's prototype), and
+ * of an island object. Every other value has only builtin prototypes on
+ * its chain (a promise, typed-array bytes, a native handle such as a Date,
+ * a Map, an ArrayBuffer, an iterator or a URL, a generator object or a
+ * typed collection's capsule), or is a class instance's capsule, which the
+ * class test answers by its key before it walks and the compiled prototype
+ * read answers for the classes that have a prototype of their own. No
+ * program class extends the builtin ones
+ * (a class extending Date makes instances of its own), so the walk ends
+ * there with null: not an instance. A Proxy has its target's prototype
+ * unless its handler has a getPrototypeOf trap, which is refused by name
+ * like the other traps the runtime does not run. */
 ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
-  if (object->kind == SCR_DYN_PROMISE) return scr_dyn_new_null();
-  if (object->kind == SCR_DYN_HANDLE) {
-    switch (object->v.handle.tag) {
-    case SCR_DYNH_DATE: case SCR_DYNH_REGEXP: case SCR_DYNH_MAP: case SCR_DYNH_SET:
-    case SCR_DYNH_WEAK_MAP: case SCR_DYNH_WEAK_SET:
-      return scr_dyn_new_null();
-    default:
-      break;
-    }
+  switch (object->kind) {
+  case SCR_DYN_OBJ: case SCR_DYN_ARR: case SCR_DYN_FUNC:
+    return scr_dyn_get_prototype(object);
+  case SCR_DYN_PROXY: {
+    ScrDyn *trap = scr_dyn_obj_read(object->v.proxy.handler, "getPrototypeOf", 14);
+    bool none = !trap || trap->kind == SCR_DYN_UNDEF || trap->kind == SCR_DYN_NULL;
+    scr_dyn_release(trap);
+    if (scr_exc_pending()) return NULL;
+    if (none) return scr_dyn_get_prototype_for_identity(object->v.proxy.target);
+    scr_dyn_proxy_unsupported("getPrototypeOf traps");
+    return NULL;
   }
-  return scr_dyn_get_prototype(object);
+  case SCR_DYN_HANDLE:
+    return scr_ni_dyn_handle(object) ? scr_dyn_get_prototype(object) : scr_dyn_new_null();
+  case SCR_DYN_TYPED_REF: {
+    const char *key = object->v.typed_ref.type_key;
+    if (!strncmp(key, "record:", 7) || !strncmp(key, "array<", 6)) return scr_dyn_get_prototype(object);
+    return scr_dyn_new_null();
+  }
+  default:
+    return scr_dyn_new_null();
+  }
 }
 
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {

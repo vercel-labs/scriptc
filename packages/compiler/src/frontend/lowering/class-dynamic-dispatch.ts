@@ -2196,15 +2196,21 @@ export class ClassDynamicDispatch {
             ? receiver
             : { kind: "downcast", value: receiver, type: { kind: "object", className }, loc },
         );
+        // A class without prototype data of its own (a generic class below
+        // a class that has it) has a prototype made from its nearest
+        // ancestor's. Object.prototype is no answer for it: a view cannot
+        // be given Object.prototype, so building one threw, and `value
+        // instanceof Error` builds one.
         const returned: IrStmt = {
           kind: "return",
-          value: prototype ?? {
-            kind: "libCall",
-            fn: "dyn.getPrototype",
-            args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
-            type: DYN,
-            loc,
-          },
+          value: prototype ??
+            this.inheritedPrototype(lowerer, info, loc) ?? {
+              kind: "libCall",
+              fn: "dyn.getPrototype",
+              args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
           loc,
         };
         if (info === plan.capsule)
@@ -4914,6 +4920,86 @@ export class ClassDynamicDispatch {
       },
       { kind: "return", value: varRef(globalId, DYN, loc), loc },
     ];
+  }
+
+  /** The prototype of an instance of a class that has no prototype data of
+   * its own (a generic class) below a class that has it: one object per
+   * class, created from the nearest ancestor's prototype data on first use
+   * and named like the class, so a view of the instance inherits what the
+   * ancestors' prototypes hold and prints its class's name. Null when no
+   * ancestor has prototype data that can be named without a receiver. */
+  private inheritedPrototype(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrExpr | null {
+    const name = `%prototype.inherited.${info.def.name}`;
+    if (lowerer.liftedFnNamed(name) === undefined) {
+      let base: IrExpr | null = null;
+      for (let at = info.base; !base && at; at = at.base)
+        base = classPrototypeData(lowerer, at, loc);
+      if (!base) return null;
+      const globalId = `%g.${name}`;
+      const readyId = `${globalId}.ready`;
+      lowerer.shareHelper(name);
+      lowerer.globalsList.push(
+        { id: globalId, name: `${info.def.name}.prototype.inherited`, type: DYN, mutable: true },
+        {
+          id: readyId,
+          name: `${info.def.name}.prototype.inherited.ready`,
+          type: BOOL,
+          mutable: true,
+        },
+      );
+      const value = varRef(globalId, DYN, loc);
+      lowerer.liftedFns.push({
+        name,
+        params: [],
+        returnType: DYN,
+        locals: [],
+        loc,
+        speculativeDispatch: true,
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+            then: [
+              {
+                kind: "assign",
+                localId: globalId,
+                value: { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc },
+                loc,
+              },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.nameClassPrototype",
+                  args: [
+                    value,
+                    {
+                      kind: "strLit",
+                      value: info.def.jsName ?? info.def.name,
+                      type: STRING,
+                      loc,
+                    },
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "assign",
+                localId: readyId,
+                value: { kind: "boolLit", value: true, type: BOOL, loc },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          { kind: "return", value, loc },
+        ],
+      });
+    }
+    return { kind: "call", callee: name, args: [], type: DYN, loc };
   }
 
   private readPropertyBag(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {

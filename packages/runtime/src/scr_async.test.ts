@@ -61,3 +61,15 @@ test("due timers run by deadline, then by creation, before the turn's immediates
   );
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
+
+// The queue's capacity is the white-box part: a program sees it only as
+// memory that grows with every immediate it ever queued, and as a
+// clearImmediate that gets slower with them.
+test("the immediate queue reuses its slots and finds the newest immediate at its end", async () => {
+  const result = await execFileAsync(bin, ["immediates"]);
+  expect(result.stdout).toBe(
+    "the immediate queue reuses the slots of immediates that ran or were cleared\n" +
+      "clearing the newest immediate does not walk the cleared ones\n",
+  );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});

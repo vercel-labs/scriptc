@@ -1277,8 +1277,9 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets, parentheses and type syntax disappear (`!`, `as`,
- * `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
+ * keep their brackets, a private name reads as a bracketed key
+ * (`this.#f` is `this[#f]`), parentheses and type syntax disappear (`!`,
+ * `as`, `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
   // Type syntax is type-only: the running JavaScript has no trace of it.
   if (
@@ -1300,7 +1301,9 @@ export function v8CalleeText(node: ts.Node): string {
       : `${object}[${ts.getTextOfNode(key)}]`;
   }
   if (ts.isPropertyAccessExpression(node) && !node.questionDotToken)
-    return `${v8CalleeText(node.expression)}.${node.name.text}`;
+    return ts.isPrivateIdentifier(node.name)
+      ? `${v8CalleeText(node.expression)}[${node.name.text}]`
+      : `${v8CalleeText(node.expression)}.${node.name.text}`;
   return ts.getTextOfNode(node);
 }
 

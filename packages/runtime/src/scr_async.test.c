@@ -143,10 +143,52 @@ static void due_timers_run_by_deadline_before_immediates(void) {
   puts("due timers run by deadline, then by creation, before the turn's immediates");
 }
 
+#if !defined(_WIN32) && !defined(SCR_ASAN_FIBERS)
+/* `count` fibers alive at once, all finished when this returns. */
+static void burst(size_t count) {
+  ScrPromise *gate = scr_promise_new();
+  ScrPromise **jobs = malloc(count * sizeof *jobs);
+  assert(jobs != NULL);
+  for (size_t i = 0; i < count; i++) jobs[i] = scr_async_spawn(shallow_async, gate);
+  scr_promise_fulfill_void(gate);
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  scr_promise_release(gate);
+  for (size_t i = 0; i < count; i++) scr_promise_release(jobs[i]);
+  free(jobs);
+}
+
+/* The pool keeps the stacks of the largest burst, so the next burst maps
+ * none, and gives them back, down to SCR_FIBER_SPARES, once
+ * SCR_FIBER_TRIM_FREES fibers have finished without needing them. */
+static void stack_pool_grows_to_a_burst_and_decays(void) {
+  enum { BURST = 5 * SCR_FIBER_SPARES };
+  burst(BURST);
+  assert(scr_fiber_nspares == BURST);
+  void *lowest = scr_fiber_spares[0], *highest = scr_fiber_spares[BURST - 1];
+  burst(BURST);
+  assert(scr_fiber_nspares == BURST);
+  /* Stacks are taken from the top and return in the order their fibers
+   * finish, so the same mappings are back, the first one on top. */
+  assert(scr_fiber_spares[0] == highest && scr_fiber_spares[BURST - 1] == lowest);
+  for (size_t i = 0; i < 2 * SCR_FIBER_TRIM_FREES; i++) burst(1);
+  /* What stays: the spares no fiber took, and the one each of them took. */
+  assert(scr_fiber_nspares == SCR_FIBER_SPARES + 1);
+  assert(scr_fibers_live == 0);
+  puts("the stack pool grows to a burst and decays");
+}
+#endif
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "pool") == 0) {
+#if !defined(_WIN32) && !defined(SCR_ASAN_FIBERS)
+    stack_pool_grows_to_a_burst_and_decays();
+#endif
     return 0;
   }
   enum { COUNT = 128 };

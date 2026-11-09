@@ -125,6 +125,22 @@ static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
   return key;
 }
 
+/* A boxed promise's key. A promise with a typed settled value enters a
+ * checked-dynamic position as another adapter promise at every boxing, and
+ * the adapters share their source's identity cell: the cell is the key, the
+ * one a typed promise key reads through its map's ops
+ * (scr_promise_map_identity) and the one strict equality compares, so two
+ * boxes of one promise hash alike as they compare equal. Only a program
+ * that links the checked-dynamic promise unit (scr_async_dyn.c) can make
+ * such an adapter, and it links this build (SCR_DYN_PROMISE_KEYS). In every
+ * other program a boxed promise has one address, which the default build
+ * hashes without the promise runtime. */
+#ifdef SCR_DYN_PROMISE_KEYS
+#define SCR_MAP_DYN_PROMISE_KEY(promise) scr_promise_map_identity(promise)
+#else
+#define SCR_MAP_DYN_PROMISE_KEY(promise) (promise)
+#endif
+
 /* Checked-dynamic keys use the JavaScript value, not the temporary box.
  * Typed capsules preserve a native object's identity across repeated
  * crossings; numbers retain SameValueZero and strings compare by content. */
@@ -142,7 +158,7 @@ static uint64_t scr_map_hash_dyn(const ScrDyn *d) {
   case SCR_DYN_FUNC: value = scr_map_slot_from_ptr(d->v.fn.class_obj ? (void *)d->v.fn.class_obj : (void *)scr_closure_identity(d->v.fn.clo)); break;
   case SCR_DYN_BYTES: value = scr_map_slot_from_ptr(d->v.bytes); break;
   case SCR_DYN_HANDLE: value = scr_map_slot_from_ptr(d->v.handle.ptr); break;
-  case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(d->v.promise); break;
+  case SCR_DYN_PROMISE: value = scr_map_slot_from_ptr(SCR_MAP_DYN_PROMISE_KEY(d->v.promise)); break;
   case SCR_DYN_OBJ: value = scr_map_slot_from_ptr(d->v.obj.source_identity ? d->v.obj.source_identity : (void *)d); break;
   case SCR_DYN_TYPED_REF:
     value = scr_map_slot_from_ptr(d->v.typed_ref.ptr);

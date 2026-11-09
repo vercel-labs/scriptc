@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9932-node-island-var-require-rewritten/main.ts"
+ ],
+ "diags": []
+}

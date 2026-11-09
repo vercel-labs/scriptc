@@ -1594,6 +1594,11 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* Whether the record answers reflection from its declared fields alone: no
+ * kept source, no link to a wider source (looked for when `may_link`), and
+ * no live capsule with a view, a prototype or symbol-keyed members of its
+ * own (scr_json.c). */
+bool scr_record_reflects_static(const void *rec, bool may_link);
 /* A conversion of a native record into a narrower record type links the
  * copy to its source when the source has properties the copy's type does
  * not declare (scr_json.c): `source` moves in and is released with the
@@ -1949,6 +1954,12 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* The same write at a site whose name is known only at run time, tried
+ * first for a receiver of kind OBJ: true when the member was assigned to a
+ * plain record (layout mode, no prototype object, extensible) through its
+ * layout; false, with nothing done and nothing thrown, when the site must
+ * call scr_dyn_key_set. All three operands BORROWED. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 /* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
  * it creates or updates the own data property and never runs an inherited
  * accessor, so a `__proto__` member is an ordinary own member instead of

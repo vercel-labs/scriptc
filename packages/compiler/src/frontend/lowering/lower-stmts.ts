@@ -253,6 +253,7 @@ import {
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import { lowerFunduleMemberDecl } from "./lower-fundule.js";
+import { lowerOwnKeyListScope } from "./own-key-lists.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -907,6 +908,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const stmt = stmts[i]!;
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
+      // A key list of a typed record that the statements after it only
+      // count and compare with names takes those statements with it
+      // (own-key-lists.ts).
+      if (inFunction && ts.isVariableStatement(stmt)) {
+        const ownKeyList = lowerOwnKeyListScope(lowerer, stmts, i);
+        if (ownKeyList !== null) {
+          for (const lowered of ownKeyList) out.push(lowered);
+          break;
+        }
+      }
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
       // A guard that always leaves in front of a polyfill of a built-in
       // member (`if (Array.prototype.flat) return;`).

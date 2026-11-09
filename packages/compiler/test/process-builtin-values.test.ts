@@ -21,7 +21,7 @@ const worker = load("worker_threads");
 try { console.log(worker.Worker); } catch (error) { console.log(error.code, error.message.includes("worker_threads.Worker")); }
 console.log(path.posix.join("still", "works"), worker.isMainThread);
 var scope = globalThis;
-try { console.log(scope.process); } catch (error) { console.log(error.code, error.message.includes("globalThis.process")); }
+console.log(typeof scope.process, scope.process === process, typeof scope.process.pid, scope.process.pid === process.pid);
 const segmenter = new Intl.Segmenter();
 try { segmenter.resolvedOptions(); } catch (error) { console.log(error.message.includes("Intl.Segmenter locale negotiation")); }
 try { console.log(segmenter.segment); } catch (error) { console.log(error.message.includes("not supported")); }
@@ -39,7 +39,7 @@ try { console.log(segmenter.segment); } catch (error) { console.log(error.messag
       expect(child.status, child.stderr).toBe(0);
       expect(child.stderr).toBe("");
       expect(child.stdout).toBe(
-        'SC2020 true\n{"root":"/","dir":"/","base":"a","ext":"","name":"a"}\nSC2020 true\nstill/works true\nSC2020 true\ntrue\ntrue\n',
+        'SC2020 true\n{"root":"/","dir":"/","base":"a","ext":"","name":"a"}\nSC2020 true\nstill/works true\nobject true number true\ntrue\ntrue\n',
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

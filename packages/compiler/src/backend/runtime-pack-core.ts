@@ -108,11 +108,13 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
   reflectProtoTarget: boolean;
+  classTestPrototype: boolean;
   recordSourceDelete: boolean;
   recordViewFrozen: boolean;
   genBind: boolean;
   genReceiver: boolean;
   recordSourceGet: boolean;
+  arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -404,11 +406,13 @@ export function effectiveRuntimeFeatures(
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
     reflectProtoTarget: features.reflectProtoTarget === true,
+    classTestPrototype: features.classTestPrototype === true,
     recordSourceDelete: features.recordSourceDelete === true,
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
     recordSourceGet: features.recordSourceGet === true,
+    arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

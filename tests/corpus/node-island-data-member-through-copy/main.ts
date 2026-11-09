@@ -4,37 +4,37 @@
 // program's own and only the member's declaration is the package's: the
 // read is a read of data the program holds, so it is not refused as a
 // crossing into the package, and it answers what Node answers.
-import { makeLambda } from "lambda-kit";
-import type { Lambda, NodejsLambda } from "lambda-kit";
+import { makeItem } from "shelf-kit";
+import type { Item, PinnedItem } from "shelf-kit";
 
-function configOf(lambda: Lambda | NodejsLambda) {
+function summaryOf(item: Item | PinnedItem) {
   return {
-    handler: lambda.handler,
-    ...("launcherType" in lambda && lambda.launcherType === "Nodejs"
-      ? { launcherType: lambda.launcherType, shouldAddHelpers: lambda.shouldAddHelpers }
+    title: item.title,
+    ...("variant" in item && item.variant === "Pinned"
+      ? { variant: item.variant, sticky: item.sticky }
       : {}),
-    framework: lambda.framework && { ...lambda.framework },
+    label: item.label && { ...item.label },
   };
 }
 
-const config = configOf(makeLambda("index.handler", "next"));
+const summary = summaryOf(makeItem("first", "red"));
 const input = {
-  ...config,
-  framework: config.framework && { slug: config.framework.slug },
+  ...summary,
+  label: summary.label && { name: summary.label.name },
   size: 3,
 };
 console.log(JSON.stringify(input));
-console.log(config.framework?.slug, config.framework?.version, typeof config.framework?.slug);
+console.log(summary.label?.name, summary.label?.revision, typeof summary.label?.name);
 
 // The copy is the program's object: a write to it does not reach the island's.
-const lambda = makeLambda("copy.handler", "astro");
-const copied = configOf(lambda);
-if (copied.framework) {
-  copied.framework.slug = "changed";
-  console.log(copied.framework.slug, lambda.framework?.slug);
+const item = makeItem("second", "blue");
+const copied = summaryOf(item);
+if (copied.label) {
+  copied.label.name = "changed";
+  console.log(copied.label.name, item.label?.name);
 }
 
-// No framework: the member is absent on the copy's holder.
-const bare = configOf(makeLambda("other.handler"));
-console.log(JSON.stringify({ ...bare, framework: bare.framework && { slug: bare.framework.slug } }));
-console.log(bare.framework === undefined, bare.framework?.slug);
+// No label: the member is absent on the copy's holder.
+const bare = summaryOf(makeItem("third"));
+console.log(JSON.stringify({ ...bare, label: bare.label && { name: bare.label.name } }));
+console.log(bare.label === undefined, bare.label?.name);

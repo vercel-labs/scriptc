@@ -568,7 +568,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.getOwnPropertyDescriptor",
   "dyn.getOwnPropertyNames",
   "dyn.getPrototype",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classTestPrototype",
   "dyn.hasKey",
   // The computed forms convert the key with dyn.toStringCoerce's helpers
   // and then run dyn.in or dyn.hasOwn; a symbol key is looked up in the

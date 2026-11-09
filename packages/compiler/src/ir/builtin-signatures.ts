@@ -4835,8 +4835,9 @@ function buildLibFnSignatures() {
     "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getPrototype": { argTypes: [DYN], result: DYN },
     // dyn.getPrototype for walks that compare each prototype with a program
-    // class's prototype: native builtin values end the walk (null).
-    "dyn.getPrototypeForIdentity": { argTypes: [DYN], result: DYN },
+    // class's prototype: it answers for every value, and a value no program
+    // class's prototype can be on the chain of ends the walk (null).
+    "dyn.classTestPrototype": { argTypes: [DYN], result: DYN },
     "dyn.setPrototype": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getOwnPropertyNames": { argTypes: [DYN], result: DYN },
     "dyn.ownKeys": { argTypes: [DYN], result: DYN },

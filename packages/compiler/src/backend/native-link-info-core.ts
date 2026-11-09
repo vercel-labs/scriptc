@@ -175,6 +175,9 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk (`value instanceof C` of an
+   * untyped value) compiles scr_dyn_class_test.c; absent (false) otherwise. */
+  classTestPrototype?: boolean;
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;
@@ -193,6 +196,10 @@ export interface NativeLinkFeatures {
    * program, including one that only casts records, so a cast alone keeps
    * its runtime objects byte for byte. */
   recordSourceGet?: boolean;
+  /** A join of an array whose elements the compiler knows are strings:
+   * scr_arr_join_str.c. Absent (false) for every other program, a join of
+   * numbers among them, so they keep their runtime objects byte for byte. */
+  arrJoinStr?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

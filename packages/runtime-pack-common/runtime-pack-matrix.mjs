@@ -67,6 +67,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The kept-source read a record width copy emits; a unit of its own so a
   // program that only casts records keeps scr_json.o byte-identical.
   ["scr_record_source_get.c", "recordSourceGet"],
+  // The join of an array whose elements the compiler knows are strings; a
+  // unit of its own so a program that joins none links nothing of it. It
+  // hands arrays with holes to scr_array.c's scr_arr_join.
+  ["scr_arr_join_str.c", "arrJoinStr"],
   ["scr_copying.c", "copying"],
   ["scr_file_handle.c", "fileHandle"],
   // writeFile's `flag` disposition and the fs/promises twins; the copyFile
@@ -232,6 +236,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
   // scr_json.c keeps its layout for every program that never reflects.
   ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // The prototype read of a class test's walk (`value instanceof C` of an
+  // untyped value); a unit of its own so scr_json.c keeps its layout for
+  // every program without such a test.
+  ["scr_dyn_class_test.c", "classTestPrototype"],
   // `delete` of a key a record's type does not declare, removed from the
   // record's kept source; a unit of its own so scr_json.c keeps its layout
   // for every other program.

@@ -8393,17 +8393,25 @@ ScrDyn *scr_dyn_alloc_promise(void (*release_fn)(ScrPromise *p)) {
   return scr_dyn_alloc(SCR_DYN_PROMISE);
 }
 
+/* strcmp(name, "object") == 0 without the call: this runs for every `typeof`
+ * test of a capsule, usually twice (the object question, then the callable
+ * one), and "function" differs at the first character. */
+static inline bool scr_typeof_name_is_object(const char *name) {
+  return name[0] == 'o' && name[1] == 'b' && name[2] == 'j' && name[3] == 'e' &&
+         name[4] == 'c' && name[5] == 't' && name[6] == '\0';
+}
+
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name) {
   /* Only a capsule has an answer here; every other kind is the caller's. */
   if (d->kind != SCR_DYN_TYPED_REF) return false;
   /* Bound records and arrays always view as an ordinary object/array; the
    * test comes first because most capsules are one of the two. */
-  if (d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d)) return strcmp(name, "object") == 0;
-  if (scr_dyn_generator(d)) return strcmp(name, "object") == 0;
+  if (d->v.typed_ref.record || scr_dyn_typed_ref_array_ops(d)) return scr_typeof_name_is_object(name);
+  if (scr_dyn_generator(d)) return scr_typeof_name_is_object(name);
   {
     if (d->v.typed_ref.type_key_len >= 7 &&
         memcmp(d->v.typed_ref.type_key, "object:", 7) == 0)
-      return strcmp(name, "object") == 0;
+      return scr_typeof_name_is_object(name);
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
     bool out;
     {
@@ -12915,6 +12923,9 @@ static void scr_error_sync_slots(const ScrDyn *view, ScrDyn *obj, const ScrStr *
 }
 
 static void scr_error_sync_cause(ScrDyn *view, const ScrStr *key) {
+  /* The slots belong to errors that crossed into a checked-dynamic node;
+   * a thread that has none has nothing to update. */
+  if (scr_errdyn_slots == 0) return;
   scr_error_sync_slots(view, view, key);
 }
 
@@ -14413,7 +14424,18 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_dyn_note_assign_failure();
     return;
   }
-  scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+  /* A layout-mode receiver reaches this point only after the lookup at the
+   * top found no own property, and nothing since ran program code: the
+   * member is appended without scanning the layout a second time. A layout
+   * that cannot grow takes the general insertion. */
+  const ScrLayout *next = recv->v.obj.layout
+      ? scr_layout_add(recv->v.obj.layout, key->data, key->len) : NULL;
+  if (next) {
+    scr_dyn_region_store(recv, value);
+    scr_dyn_obj_layout_push(recv, next, scr_dyn_retain(value));
+  } else {
+    scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
+  }
   if (key->len == 5 && memcmp(key->data, "stack", 5) == 0 &&
       scr_errdyn_find(recv, false) != SIZE_MAX) {
     /* An error's own `stack` exists from construction as a non-enumerable
@@ -20072,6 +20094,18 @@ ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
  * non-OBJ targets have no property table. */
 static void scr_dyn_copy_property(ScrDyn *target, ScrStr *key, ScrDyn *value, bool define) {
   if (!define) { scr_dyn_key_set(target, key, value); return; }
+  /* An object in layout mode holds only plain data members (writable,
+   * enumerable, configurable), so defining one more of them on it, or giving
+   * one of them a new value, is the store itself: no descriptor object is
+   * built and read back, and the copy stays in layout mode. Every other
+   * target (a redefined, deleted, frozen or accessor member moved it to
+   * dictionary mode) takes the definition below. */
+  if (target->kind == SCR_DYN_OBJ && target->v.obj.layout && !target->non_extensible &&
+      target != scr_builtin_error_prototype) {
+    scr_dyn_obj_put(target, key->data, key->len, scr_dyn_retain(value));
+    scr_error_sync_cause(target, key);
+    return;
+  }
   ScrDyn *descriptor = scr_dyn_new_obj();
   scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
   scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));

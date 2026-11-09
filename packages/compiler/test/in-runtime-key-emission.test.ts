@@ -99,3 +99,38 @@ console.log(name in zlib);
 `);
   expect(ir).not.toContain('"%inKey');
 });
+
+test("a write under a key that names a string by conversion takes a named helper", async () => {
+  const ir = await irText(`
+class Box { a = 1; }
+function put(target: unknown, keys: string[], i: number, key: string): void {
+  (target as any)[keys[i]] = 1;
+  (target as any)[key] = 2;
+}
+const held: unknown = new Box();
+put(held, ["a"], 0, "a");
+console.log((held as Box).a);
+`);
+  // \`keys[i]\` is the marked write (the libCall's namedKey), \`key\` the
+  // write a key typed \`string\` always made. The mark chooses the helper
+  // and the helper's own write does not carry it.
+  expect(ir).toContain("%dyn.class.named.");
+  expect(ir).toContain("%dyn.class.computed.");
+  expect(ir).not.toContain('"namedKey"');
+});
+
+test("an element read by a number on an untyped value tests the index in place", async () => {
+  const llvm = await emit(`
+class Box { a = 1; }
+function first(values: unknown, j: number): unknown { return (values as any)[j]; }
+const held: unknown = new Box();
+console.log(first([1, 2], 0), first([1, 2], 1.5), first(held, 0));
+`);
+  const fn = body(llvm, /sc_b?f_first/);
+  expect(fn).toContain("@llvm.fptosi.sat.i64.f64(");
+  // The one runtime call of the fast arm is the helper's own element read.
+  expect(fn).toContain("@scr_dyn_arr_at(");
+  expect(fn).not.toContain("@scr_num_is_integer(");
+  expect(fn).not.toContain("@scr_dyn_arr_len(");
+  expect(fn).not.toContain("@scr_dyn_index_get(");
+});

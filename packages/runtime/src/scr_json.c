@@ -20094,6 +20094,18 @@ ScrArr *scr_dyn_obj_value_list(const ScrDyn *v) {
  * non-OBJ targets have no property table. */
 static void scr_dyn_copy_property(ScrDyn *target, ScrStr *key, ScrDyn *value, bool define) {
   if (!define) { scr_dyn_key_set(target, key, value); return; }
+  /* An object in layout mode holds only plain data members (writable,
+   * enumerable, configurable), so defining one more of them on it, or giving
+   * one of them a new value, is the store itself: no descriptor object is
+   * built and read back, and the copy stays in layout mode. Every other
+   * target (a redefined, deleted, frozen or accessor member moved it to
+   * dictionary mode) takes the definition below. */
+  if (target->kind == SCR_DYN_OBJ && target->v.obj.layout && !target->non_extensible &&
+      target != scr_builtin_error_prototype) {
+    scr_dyn_obj_put(target, key->data, key->len, scr_dyn_retain(value));
+    scr_error_sync_cause(target, key);
+    return;
+  }
   ScrDyn *descriptor = scr_dyn_new_obj();
   scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
   scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(true));

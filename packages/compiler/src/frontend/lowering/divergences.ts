@@ -68,6 +68,9 @@ export function scanDivergences(
   /** The program's expressions, collected only for a program that declares
    * an interface extending Error: each is asked what slot receives it. */
   const handedOn: ts.Expression[] = [];
+  /** The `new` expressions of such a program: each may bind a class's type
+   * parameter to the interface. */
+  const constructions: ts.NewExpression[] = [];
   const errorInterfaces = lowerer.declaresErrorInterface();
   const localeCompares: ts.CallExpression[] = [];
   /** binding name → member names assigned through it (`q.a = 2`). */
@@ -96,7 +99,10 @@ export function scanDivergences(
       list.push(node);
       fnsByName.set(node.name.text, list);
     }
-    if (errorInterfaces && ts.isExpression(node)) handedOn.push(node);
+    if (errorInterfaces && ts.isExpression(node)) {
+      handedOn.push(node);
+      if (ts.isNewExpression(node)) constructions.push(node);
+    }
     if (ts.isCallExpression(node)) {
       calls.push(node);
       const callee = node.expression;
@@ -335,31 +341,67 @@ export function scanDivergences(
     /** The type parameters a call binds to such an interface, each with
      * the interface (`through(failure)` into a parameter `e: T` where
      * `T extends Error`): inside the function a value of the parameter's
-     * type is one of the interface's and is judged as one. A parameter
-     * typed by the bare type parameter is followed, also from one generic
-     * function into the next. */
+     * type is one of the interface's and is judged as one. The type
+     * parameter is followed from one generic function into the next, into
+     * a class through `new` (a constructor parameter, or the type arguments
+     * of the instance made), and where the parameter's type holds it inside
+     * a union or as a type argument (`list: T[]` given `Failure[]`). */
     const bound = new Map<ts.Type, ts.Type>();
     const interfaceOf = (arm: ts.Type): ts.Type | undefined =>
       lowerer.errorInterface(arm) ? arm : bound.get(arm);
+    /** Binds each type parameter in `declared` to the interface `given`
+     * has at the same place. */
+    const bind = (declared: ts.Type, given: ts.Type, depth: number): void => {
+      for (const slot of arms(declared)) {
+        if ((slot.flags & ts.TypeFlags.TypeParameter) !== 0) {
+          if (bound.has(slot)) continue;
+          const found = arms(given)
+            .map(interfaceOf)
+            .find((held) => held !== undefined);
+          if (found !== undefined) bound.set(slot, found);
+        } else if (depth < 3 && slot.isTypeReference()) {
+          const wanted = checker.getTypeArguments(slot);
+          for (const arm of arms(given)) {
+            if (!arm.isTypeReference() || arm.getTarget() !== slot.getTarget()) continue;
+            for (const [index, argument] of checker.getTypeArguments(arm).entries()) {
+              const inner = wanted[index];
+              if (inner !== undefined) bind(inner, argument, depth + 1);
+            }
+          }
+        }
+      }
+    };
+    const bindArguments = (call: ts.CallExpression | ts.NewExpression): void => {
+      const declaration = checker.getResolvedSignature(call)?.declaration;
+      if (declaration === undefined || !ts.isFunctionLike(declaration)) return;
+      for (const [index, argument] of (call.arguments?.nodes ?? []).entries()) {
+        const parameter = declaration.parameters.nodes[index];
+        if (parameter?.type === undefined || ts.isSpreadElement(argument)) continue;
+        bind(
+          checker.getTypeFromTypeNode(parameter.type),
+          checker.getTypeAtLocation(argument),
+          0,
+        );
+      }
+    };
     safely(() => checker.prefetchResolvedSignatures(calls));
     for (let round = 0; round < 3; round++) {
       const before = bound.size;
-      for (const call of calls)
+      for (const call of calls) safely(() => bindArguments(call));
+      for (const construction of constructions) {
+        safely(() => bindArguments(construction));
+        // `new Box<Failure>()`: the class's own type parameters, which the
+        // generic declaration has as its type arguments.
         safely(() => {
-          const declaration = checker.getResolvedSignature(call)?.declaration;
-          if (declaration === undefined || !ts.isFunctionLike(declaration)) return;
-          for (const [index, argument] of call.arguments.nodes.entries()) {
-            const parameter = declaration.parameters.nodes[index];
-            if (parameter?.type === undefined || ts.isSpreadElement(argument)) continue;
-            const declared = checker.getTypeFromTypeNode(parameter.type);
-            if ((declared.flags & ts.TypeFlags.TypeParameter) === 0 || bound.has(declared))
-              continue;
-            const found = arms(checker.getTypeAtLocation(argument))
-              .map(interfaceOf)
-              .find((given) => given !== undefined);
-            if (found !== undefined) bound.set(declared, found);
+          const made = checker.getTypeAtLocation(construction);
+          if (!made.isTypeReference() || made.getTarget() === made) return;
+          const given = checker.getTypeArguments(made);
+          for (const [index, parameter] of checker.getTypeArguments(made.getTarget()).entries()) {
+            const argument = given[index];
+            if (argument !== undefined) bind(parameter, argument, 0);
           }
         });
+      }
       if (bound.size === before) break;
     }
     /** A structural type the program declares, whose members and result

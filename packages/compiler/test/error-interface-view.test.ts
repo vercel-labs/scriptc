@@ -307,3 +307,64 @@ show(new Error("real"));
   expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual(["8"]);
   expect(warnings[0]).toContain("this 'Like' is converted to the class 'Error'");
 });
+
+test("a generic class and a parameter that holds the type parameter in an array are warned about where they convert", () => {
+  const warnings = classConversionWarnings(`interface Like extends Error {
+  status?: number;
+}
+function label(e: Error): string {
+  return e.name + ":" + e.message;
+}
+function first<T extends Error>(list: T[]): string {
+  return label(list[0]!);
+}
+class Box<T extends Error> {
+  held: T;
+  constructor(held: T) {
+    this.held = held;
+  }
+  show(): string {
+    return label(this.held);
+  }
+}
+function show(f: Like): void {
+  console.log(first([f]), new Box(f).show());
+}
+show(new Error("real"));
+`);
+  // The element read in the function (line 8) and the member read in the
+  // class (line 16).
+  expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual(["16", "8"]);
+  for (const warning of warnings)
+    expect(warning).toContain("this 'Like' is converted to the class 'Error'");
+});
+
+test("a generic class made with an Error interface as its type argument is warned about where it converts", () => {
+  const warnings = classConversionWarnings(`interface Like extends Error {
+  status?: number;
+}
+function label(e: Error): string {
+  return e.name + ":" + e.message;
+}
+class Slot<T extends Error> {
+  held: T;
+  constructor(first: Error, held: T) {
+    this.held = held;
+    console.log(label(first));
+  }
+  show(): string {
+    return label(this.held);
+  }
+}
+function show(f: Like): void {
+  const slot = new Slot<Like>(new Error("first"), new Error("second"));
+  slot.held = f;
+  console.log(slot.show());
+}
+show(new Error("real"));
+`);
+  // The member read in the class: line 14. The second argument is an Error,
+  // so only the type argument says what the class holds.
+  expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual(["14"]);
+  expect(warnings[0]).toContain("this 'Like' is converted to the class 'Error'");
+});

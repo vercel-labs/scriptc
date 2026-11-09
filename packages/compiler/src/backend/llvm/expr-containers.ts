@@ -1007,9 +1007,13 @@ export function emitArrIntrinsic(
         B.line(`${t} = call ptr @scr_date_arr_join(ptr ${r.name}, ptr ${sep.name})`);
         return host.own({ name: t, type: e.type });
       }
-      host.declare(`declare ptr @scr_arr_join(ptr, ptr)`);
+      // String elements have the typed entry (scr_arr_join_str.c, linked by
+      // the arrJoinStr feature, which reads the same receiver type): it joins
+      // a hole-free string array itself and hands any other to scr_arr_join.
+      const entry = elem.kind === "string" ? "scr_arr_join_str" : "scr_arr_join";
+      host.declare(`declare ptr @${entry}(ptr, ptr)`);
       const t = B.tmp();
-      B.line(`${t} = call ptr @scr_arr_join(ptr ${r.name}, ptr ${sep.name})`);
+      B.line(`${t} = call ptr @${entry}(ptr ${r.name}, ptr ${sep.name})`);
       return host.own({ name: t, type: e.type });
     }
     case "slice": {

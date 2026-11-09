@@ -28,6 +28,10 @@ export function withLibraryRuntimeFlavors(matrix) {
     // whose program projects a record calls it, so the library flavors
     // carry the same optional unit the executable flavors compile.
     "scr_record_source_get.c",
+    // The join of an array of strings: a library whose program joins one
+    // calls scr_arr_join_str, so the library flavors carry the same optional
+    // unit the executable flavors compile.
+    "scr_arr_join_str.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(

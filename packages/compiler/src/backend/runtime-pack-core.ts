@@ -113,6 +113,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   genBind: boolean;
   genReceiver: boolean;
   recordSourceGet: boolean;
+  arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
@@ -409,6 +410,7 @@ export function effectiveRuntimeFeatures(
     genBind: features.genBind === true,
     genReceiver: features.genReceiver === true,
     recordSourceGet: features.recordSourceGet === true,
+    arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,

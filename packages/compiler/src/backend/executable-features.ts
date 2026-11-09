@@ -93,6 +93,7 @@ export function executableLinkFeatures(
     ...(features.genBind ? { genBind: true } : {}),
     ...(features.genReceiver ? { genReceiver: true } : {}),
     ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
+    ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),

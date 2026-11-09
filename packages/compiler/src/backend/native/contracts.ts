@@ -192,6 +192,8 @@ export interface CcOptions {
   /** A kept-source read of a record-to-record conversion: compiles
    * scr_record_source_get.c. */
   recordSourceGet?: boolean;
+  /** A join of an array of strings: compiles scr_arr_join_str.c. */
+  arrJoinStr?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
@@ -539,6 +541,9 @@ export interface LibArchiveOptions {
   /** See CcOptions.recordSourceGet: the kept-source read of a
    * record-to-record conversion (scr_record_source_get.c). */
   recordSourceGet?: boolean;
+  /** See CcOptions.arrJoinStr: the join of an array of strings
+   * (scr_arr_join_str.c). */
+  arrJoinStr?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;

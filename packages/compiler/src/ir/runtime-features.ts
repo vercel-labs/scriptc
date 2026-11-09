@@ -2086,6 +2086,17 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_record_source_get.c). A unit of its own so a program that only
    * casts records keeps its base runtime objects byte for byte. */
   recordSourceGet: rule({ fns: ["record.sourceGet", "record.sourceHasKey"] }),
+  /** `join` on an array whose element type is `string`: the backend calls
+   * the typed entry (scr_arr_join_str.c), which joins a hole-free string
+   * array in two passes and hands every other array to scr_arr_join. A unit
+   * of its own so a program that joins no string array links nothing of it. */
+  arrJoinStr: rule({
+    expr: (node, _tables) =>
+      node.kind === "arrIntrinsic" &&
+      node.method === "join" &&
+      node.receiver.type.kind === "array" &&
+      node.receiver.type.elem.kind === "string",
+  }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
    * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
    * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
@@ -2517,6 +2528,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     processExtras: false,
     qs: false,
     recordSourceGet: false,
+    arrJoinStr: false,
     regex: false,
     searchParams: false,
     urlIdna: false,

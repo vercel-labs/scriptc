@@ -193,6 +193,10 @@ export interface NativeLinkFeatures {
    * program, including one that only casts records, so a cast alone keeps
    * its runtime objects byte for byte. */
   recordSourceGet?: boolean;
+  /** A join of an array whose elements the compiler knows are strings:
+   * scr_arr_join_str.c. Absent (false) for every other program, a join of
+   * numbers among them, so they keep their runtime objects byte for byte. */
+  arrJoinStr?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;

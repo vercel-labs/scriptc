@@ -36,6 +36,7 @@ const features = {
   genBind: false,
   genReceiver: false,
   recordSourceGet: false,
+  arrJoinStr: false,
   eventsOnceSignal: false,
   mime: false,
   largePages: false,

@@ -1577,6 +1577,45 @@ export const reader = function (n) { return this === undefined ? n : -n; };
     },
   );
 
+  // A member of an object, array or class the text writes out is followed
+  // to the function it was written with only while nothing else can have
+  // given it another value: the export holds what the member holds then.
+  test.for(
+    Object.entries({
+      "an assignment to the property": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+all.read = function (n) { return n + 1; };
+export const read = all.read;
+`,
+      "an assignment to the element": `const all = [function (n) { return this === undefined ? n : -n; }];
+all[0] = function (n) { return n + 1; };
+export const read = all[0];
+`,
+      "a function that takes the object": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+function fix(o) { o.read = function (n) { return n + 1; }; }
+fix(all);
+export const read = all.read;
+`,
+      "another name for the object": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+const same = all;
+same.read = function (n) { return n + 1; };
+export const { read } = all;
+`,
+    }),
+  )("an export of a member that %s replaced before it is read is called", async ([, lib]) => {
+    const r = await compileAndRun(
+      "module-binding-member-replaced",
+      `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+      "mjs",
+      { "lib.mjs": lib },
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("before\n2\n");
+    expect(r.exitCode).toBe(0);
+  });
+
   // `export default name` stores the value the binding holds when the
   // statement runs: the export is that value, whatever the binding is
   // given later.

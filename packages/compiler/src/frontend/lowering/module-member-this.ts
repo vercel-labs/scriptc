@@ -207,6 +207,72 @@ function exportReadsThis(
   return follow(writtenMember(lowerer, value));
 }
 
+/** Whether the object or class a holder names still has the members its
+ * text wrote, as far as the program's text shows: a literal written in
+ * place has, and so has one a name holds while every use of that name (and
+ * of each `const` name it was initialized with) reads a member of it. */
+function membersAsWritten(lowerer: Lowerer, holder: ts.Expression): boolean {
+  for (let step = 0; step < 8; step++) {
+    while (ts.isParenthesizedExpression(holder)) holder = holder.expression;
+    if (!ts.isIdentifier(holder)) return true;
+    const decl = onlyMembersRead(lowerer, holder);
+    if (decl === null) return false;
+    if (!ts.isVariableDeclaration(decl) || !decl.initializer) return true;
+    holder = decl.initializer;
+  }
+  return false;
+}
+
+/** The declaration of the binding `holder` names, where every use of the
+ * binding in its module reads a member of it (`all.read`, `all[0]`,
+ * `const { read } = all`) and the module does not export it; null
+ * otherwise. Any other use can give a member another value by a statement
+ * this proof does not read: an assignment to the member, a call of it
+ * (the object is its receiver), a call that takes the object, another name
+ * for it. */
+function onlyMembersRead(lowerer: Lowerer, holder: ts.Identifier): ts.Node | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(holder);
+  const decl = symbol?.declarations.length === 1 ? symbol.declarations[0]! : undefined;
+  if (symbol === undefined || decl === undefined) return null;
+  const statement = ts.isVariableDeclaration(decl) ? decl.parent?.parent : decl;
+  if (
+    statement !== undefined &&
+    (ts.isVariableStatement(statement) || ts.isClassDeclaration(statement)) &&
+    ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true
+  )
+    return null;
+  const name = (decl as { name?: ts.Node }).name;
+  let only = true;
+  const visit = (node: ts.Node): void => {
+    if (!only) return;
+    if (ts.isIdentifier(node) && node !== name && node.text === holder.text) {
+      const parent = node.parent;
+      if (ts.isExportSpecifier(parent) || ts.isExportAssignment(parent)) only = false;
+      else if (valueSymbolOfName(lowerer, node) === symbol) {
+        let use: ts.Node = node;
+        while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+        const reader = use.parent;
+        if (ts.isPropertyAccessExpression(reader) || ts.isElementAccessExpression(reader)) {
+          let access: ts.Node = reader;
+          while (ts.isParenthesizedExpression(access.parent)) access = access.parent;
+          const called = ts.isCallExpression(access.parent) && access.parent.expression === access;
+          only =
+            reader.expression === use && !called && !isWriteTarget(reader) && !isWritten(reader);
+        } else {
+          only =
+            ts.isVariableDeclaration(reader) &&
+            reader.initializer === use &&
+            ts.isObjectBindingPattern(reader.name);
+        }
+      }
+      if (!only) return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(ts.getSourceFileOfNode(decl), visit);
+  return only ? decl : null;
+}
+
 /** The value a member of an object the program's text writes out holds: a
  * property of an object literal or an element of an array literal (written
  * in place or held by a `const` name), a static method of a class.
@@ -214,6 +280,7 @@ function exportReadsThis(
  * name its members one by one. */
 function writtenMember(lowerer: Lowerer, access: ts.Node): ts.Node | undefined {
   if (ts.isElementAccessExpression(access)) {
+    if (!membersAsWritten(lowerer, access.expression)) return undefined;
     const list = writtenValue(lowerer, access.expression);
     const index = access.argumentExpression;
     if (!ts.isArrayLiteralExpression(list) || !ts.isNumericLiteral(index)) return undefined;
@@ -239,6 +306,7 @@ function writtenProperty(
     member.name !== undefined &&
     (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name)) &&
     member.name.text === name;
+  if (!membersAsWritten(lowerer, holder)) return undefined;
   const object = writtenValue(lowerer, holder);
   if (ts.isObjectLiteralExpression(object)) {
     const properties = object.properties.nodes;

@@ -1,7 +1,6 @@
 /* scriptc's OWN module resolver — the bounded reimplementation of the three
- * ts.resolve* entry points the program lifecycle leans on, for the TS7 world
- * (typescript@7.0.2 ships no client-side resolution API at all). Pure
- * strings and node:fs — no AST, checker, or enum objects from either
+ * ts.resolve* entry points the program lifecycle leans on, for the TS7 world.
+ * Pure strings and node:fs — no AST, checker, or enum objects from either
  * TypeScript world cross this module, so both lanes may share it.
  *
  * The contract is PARITY with typescript@5.9.3's answers under scriptc's

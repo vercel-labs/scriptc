@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { API } from "typescript/unstable/sync";
-import type { Node as SdkNode } from "typescript/unstable/ast";
+import { API } from "typescript/sync";
+import type { Node as SdkNode } from "typescript/ast";
 import { AstNode } from "./ast-node.js";
 import { Ts7RpcClient } from "./rpc-client.js";
 import { spawnTs7Wire } from "./rpc-process.js";
@@ -85,10 +85,10 @@ for (const server of servers)
   test(`synthetic type roots and descendants match the pinned SDK without claiming SourceFile fields (${server.name})`, () => {
     const session = sessions.get(server.name)!;
     const snapshot = session.updateSnapshot({ openProjects: [config] });
-    const sdkSnapshot = oracle.updateSnapshot({ openProjects: [config] });
+    const sdkSnapshot = oracle.createSnapshot({ openProjects: [config] });
     try {
       const project = snapshot.getProject(config)!;
-      const sdk = sdkSnapshot.getProject(config)!;
+      const sdk = sdkSnapshot.getConfiguredProject(config)!;
       const root = project.program.getSourceFile(file)!;
       const expectedRoot = sdk.program.getSourceFile(file)!;
       let checked = 0;
@@ -127,10 +127,10 @@ for (const server of servers)
   test(`generic, predicate, rest and this-parameter signature fragments match the pinned SDK (${server.name})`, () => {
     const session = sessions.get(server.name)!;
     const snapshot = session.updateSnapshot({ openProjects: [config] });
-    const sdkSnapshot = oracle.updateSnapshot({ openProjects: [config] });
+    const sdkSnapshot = oracle.createSnapshot({ openProjects: [config] });
     try {
       const project = snapshot.getProject(config)!;
-      const sdk = sdkSnapshot.getProject(config)!;
+      const sdk = sdkSnapshot.getConfiguredProject(config)!;
       const root = project.program.getSourceFile(file)!;
       const expectedRoot = sdk.program.getSourceFile(file)!;
       for (let index = 7; index < 11; index++) {
@@ -169,10 +169,10 @@ for (const server of servers)
   test(`enum member constant values match the pinned SDK (${server.name})`, () => {
     const session = sessions.get(server.name)!;
     const snapshot = session.updateSnapshot({ openProjects: [config] });
-    const sdkSnapshot = oracle.updateSnapshot({ openProjects: [config] });
+    const sdkSnapshot = oracle.createSnapshot({ openProjects: [config] });
     try {
       const project = snapshot.getProject(config)!;
-      const sdk = sdkSnapshot.getProject(config)!;
+      const sdk = sdkSnapshot.getConfiguredProject(config)!;
       const statement = project.program.getSourceFile(file)!.statements.nodes[11]!;
       const expected = Reflect.get(
         sdk.program.getSourceFile(file)!.statements[11]!,

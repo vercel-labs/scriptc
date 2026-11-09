@@ -132,20 +132,90 @@ export function generateAstViews(root, packageRoot, version, check) {
 
   // Pair upstream executable bodies with their declared predicates. This
   // preserves the pinned kind/flag semantics without loading SDK JavaScript.
+  // Helpers a declaration file does not list get their heads here. The
+  // pinned SDK types a node's parent as always present; the client's
+  // AstNode reports none at a root, so a body that reads one keeps the
+  // upstream assumption through parentOf.
+  const privateGuards = new Map([
+    ["isJSDocTypeAssertion", "function isJSDocTypeAssertion(node: Node): boolean"],
+    ["isTypeNodeKind", "function isTypeNodeKind(kind: SyntaxKind): boolean"],
+    [
+      "isLeftHandSideExpressionKind",
+      "function isLeftHandSideExpressionKind(kind: SyntaxKind): boolean",
+    ],
+    ["isUnaryExpressionKind", "function isUnaryExpressionKind(kind: SyntaxKind): boolean"],
+    ["isInJSDoc", "function isInJSDoc(node: Node): boolean"],
+    ["isPartOfTypeQuery", "function isPartOfTypeQuery(node: Node): boolean"],
+    [
+      "isIdentifierInNonEmittingHeritageClause",
+      "function isIdentifierInNonEmittingHeritageClause(node: Node): boolean",
+    ],
+    [
+      "isPartOfPossiblyValidTypeOrAbstractComputedPropertyName",
+      "function isPartOfPossiblyValidTypeOrAbstractComputedPropertyName(node: Node): boolean",
+    ],
+    [
+      "isShorthandPropertyNameUseSite",
+      "function isShorthandPropertyNameUseSite(useSite: Node): boolean",
+    ],
+    [
+      "findAncestor",
+      'function findAncestor(node: Node | undefined, callback: (node: Node) => boolean | "quit"): Node | undefined',
+    ],
+    ["hasModifierFlags", "function hasModifierFlags(node: Node): boolean"],
+    ["isExpressionNode", "function isExpressionNode(node: Node): boolean"],
+    ["isImportCall", "function isImportCall(node: Node): boolean"],
+    ["isJSDocLinkLike", "function isJSDocLinkLike(node: Node): boolean"],
+    ["isInJSDocNameReference", "function isInJSDocNameReference(node: Node): boolean"],
+    ["isInExpressionContext", "function isInExpressionContext(node: Node): boolean"],
+    [
+      "isPartOfTypeExpressionWithTypeArguments",
+      "function isPartOfTypeExpressionWithTypeArguments(node: Node): boolean",
+    ],
+    [
+      "isForStatementExpression",
+      "function isForStatementExpression(node: Node, parent: Node): boolean",
+    ],
+    [
+      "isForInOrOfStatementExpression",
+      "function isForInOrOfStatementExpression(node: Node, parent: Node): boolean",
+    ],
+    ["isJSXTagName", "function isJSXTagName(node: Node): boolean"],
+    ["hasTagName", "function hasTagName(node: Node): boolean"],
+    [
+      "isOuterExpression",
+      "function isOuterExpression(node: Node, kinds: OuterExpressionKinds = OuterExpressionKinds.All): boolean",
+    ],
+    [
+      "skipOuterExpressions",
+      "function skipOuterExpressions(node: Node, kinds: OuterExpressionKinds = OuterExpressionKinds.All): Node",
+    ],
+  ]);
   const guards = [
     ...header,
     "",
-    'import { SyntaxKind, NodeFlags, ScriptKind, OuterExpressionKinds } from "./enums.js";',
+    'import { SyntaxKind, NodeFlags, ModifierFlags, ScriptKind, OuterExpressionKinds } from "./enums.js";',
     'import { getSourceFileOfNode } from "./node-functions.js";',
   ];
   for (const stem of ["is.generated", "is"]) {
     const declarations = parse(`${stem}.d.ts`);
     const signatures = new Map();
     for (const node of declarations.statements) {
-      if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly) {
+      // The handle imports name the API's async and sync node handles for
+      // the namespace overloads, which only the SDK's own module uses.
+      if (
+        ts.isImportDeclaration(node) &&
+        node.importClause?.isTypeOnly &&
+        node.moduleSpecifier.text === "./ast.ts"
+      ) {
         guards.push(node.getText(declarations).replace('"./ast.ts"', '"./ast-types.js"'));
       }
-      if (ts.isTypeAliasDeclaration(node))
+      // The handle aliases describe the API's async and sync node handle
+      // overloads, which a wire node does not have.
+      if (
+        ts.isTypeAliasDeclaration(node) &&
+        !["NodeHandleLike", "SpecializeNodeHandle"].includes(node.name.text)
+      )
         guards.push(
           node
             .getText(declarations)
@@ -169,25 +239,48 @@ export function generateAstViews(root, packageRoot, version, check) {
           );
         }
       } else {
-        if (name === "isJSDocTypeAssertion")
-          head = "function isJSDocTypeAssertion(node: Node): boolean";
-        else {
-          if (fn.parameters.length !== 1 || fn.parameters[0].name.getText(source) !== "kind")
-            throw new Error(`Unrecognized private guard ${name}`);
-          head = `function ${name}(kind: SyntaxKind): boolean`;
-        }
+        head = privateGuards.get(name);
+        if (head === undefined) throw new Error(`Unrecognized private guard ${name}`);
       }
       let body = fn.body.getText(source);
+      // The pinned SDK declares every node's parent as present; the client's
+      // AstNode reports none at a root, so the walks upstream takes through
+      // parent keep their assumption.
+      body = body.replace(/\.parent\b/g, ".parent!");
       if (name === "isJSDocTypeAssertion")
         body = body
           .replace("expression.kind !==", "expression === undefined || expression.kind !==")
           .replace("node.getSourceFile()", "getSourceFileOfNode(node)");
-      if (head.includes("node: Node") && name.startsWith("is")) {
-        head = head.replace("node: Node", "node: Node | undefined");
-        body = body.replace("{", "{\n    if (node === undefined) return false;");
+      // An outer expression always carries the expression it wraps.
+      if (name === "skipOuterExpressions")
+        body = body.replace("node = node.expression;", "node = node.expression!;");
+      // The generated module is checked with noFallthroughCasesInSwitch,
+      // where a comment does not excuse a fallthrough; the identifier case
+      // answers the literal kinds' question before it reaches them.
+      if (name === "isExpressionNode")
+        body = body.replace(
+          "        // falls through\n        case SyntaxKind.NumericLiteral:",
+          "            return isInExpressionContext(node);\n        case SyntaxKind.NumericLiteral:",
+        );
+      // The client's guards accept a missing node, which a walk over optional
+      // children produces, instead of reading through it.
+      const nodeParameter = head.match(/\((\w+): Node(?!\s*\|)/);
+      if (nodeParameter && name.startsWith("is")) {
+        head = head.replace(`${nodeParameter[1]}: Node`, `${nodeParameter[1]}: Node | undefined`);
+        body = body.replace("{", `{\n    if (${nodeParameter[1]} === undefined) return false;`);
       }
       guards.push("", head + " " + body);
     }
+  }
+  // Field predicates the pinned guards call from the SDK's utils module. The
+  // client's nodes answer them through the same field reads.
+  const utils = parse("utils.js");
+  for (const name of ["hasExpression", "hasInitializer", "hasObjectAssignmentInitializer"]) {
+    const fn = utils.statements.find(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === name,
+    );
+    if (!fn?.body) throw new Error(`Missing AST predicate ${name}`);
+    guards.push("", `function ${name}(node: Node): boolean ` + fn.body.getText(utils));
   }
   // Merge duplicate type-only imports before writing the generated module.
   const imported = new Set();

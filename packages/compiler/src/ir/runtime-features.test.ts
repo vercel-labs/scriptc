@@ -1005,5 +1005,12 @@ describe("runtime feature snapshots", () => {
       boxes({ kind: "func", params: [names, names], ret: VOID, rest: true, restAbi: "typed" }),
     ).toBe(true);
     expect(boxes({ kind: "func", params: [STRING, BOOL], ret: STRING })).toBe(false);
+    // A callback parameter is an untyped function behind a typed wrapper:
+    // typed code boxes the arguments it calls it with, and no thunk stands
+    // for it. A function that callback is called with is boxed again.
+    const callback: IrType = { kind: "func", params: [names], ret: VOID };
+    expect(boxes({ kind: "func", params: [STRING, callback], ret: VOID })).toBe(false);
+    const takesCallback: IrType = { kind: "func", params: [callback], ret: VOID };
+    expect(boxes({ kind: "func", params: [takesCallback], ret: VOID })).toBe(true);
   });
 });

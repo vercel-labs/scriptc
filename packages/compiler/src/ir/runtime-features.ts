@@ -919,6 +919,11 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** adoptedParameters' directions: typed code hands the value to untyped
+ * code, and untyped code hands it to typed code. */
+const BOXED = 1;
+const CHECKED = 2;
+
 /** The record and array parameter types of the functions that boxing a
  * value of type `t` hands untyped code (the value itself, or a function
  * reached through a record field, an array element, a union arm, another
@@ -928,47 +933,66 @@ const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
  * The list is the thunks' own: a parameter whose type has no live capsule
  * adopts nothing, and neither does a typed rest parameter, which the thunk
  * packs from the caller's tail arguments (no value of the caller's stands
- * for it). The adoption unit is linked for these parameters alone. */
+ * for it). The adoption unit is linked for these parameters alone.
+ *
+ * `way` is the direction the value of type `t` crosses in: BOXED (typed
+ * code hands it to untyped code), CHECKED (untyped code hands it to typed
+ * code) or both. Only a boxed function has a thunk. A function taken from
+ * untyped code is a wrapper around the untyped function: it boxes its
+ * arguments and checks its result, so a callback parameter's own
+ * parameters adopt nothing. A boxed record, array or union is one object
+ * untyped code reads and writes: its members cross both ways, as an
+ * adopted parameter's do. */
 function adoptedParameters(
   t: IrType,
   tables: TypeTables,
   seen: Set<string>,
   out: IrType[],
+  way: number = BOXED,
 ): IrType[] {
+  const members = (way & BOXED) !== 0 ? BOXED | CHECKED : way;
   switch (t.kind) {
     case "func": {
       const fixed =
         t.rest === true && t.restAbi === "typed" ? t.params.length - 1 : t.params.length;
       t.params.forEach((p, i) => {
-        if (
-          i < fixed &&
-          boxesAsLiveCapsule(
-            p,
-            (id) => tables.records.get(id),
-            (id) => tables.unions.get(id),
-          )
-        )
-          out.push(p);
-        adoptedParameters(p, tables, seen, out);
+        let parameter = (way & CHECKED) !== 0 ? BOXED : 0;
+        if ((way & BOXED) !== 0) {
+          parameter |= CHECKED;
+          const adopted =
+            i < fixed &&
+            boxesAsLiveCapsule(
+              p,
+              (id) => tables.records.get(id),
+              (id) => tables.unions.get(id),
+            );
+          if (adopted) {
+            out.push(p);
+            parameter |= BOXED;
+          }
+        }
+        adoptedParameters(p, tables, seen, out, parameter);
       });
-      adoptedParameters(t.ret, tables, seen, out);
+      adoptedParameters(t.ret, tables, seen, out, way);
       break;
     }
     case "array":
-      adoptedParameters(t.elem, tables, seen, out);
+      adoptedParameters(t.elem, tables, seen, out, members);
       break;
     case "record": {
-      if (seen.has(t.shapeId)) break;
-      seen.add(t.shapeId);
+      const key = `${members}:${t.shapeId}`;
+      if (seen.has(key)) break;
+      seen.add(key);
       for (const field of tables.records.get(t.shapeId)?.fields ?? [])
-        adoptedParameters(field.type, tables, seen, out);
+        adoptedParameters(field.type, tables, seen, out, members);
       break;
     }
     case "union": {
-      if (seen.has(t.unionId)) break;
-      seen.add(t.unionId);
+      const key = `${members}:${t.unionId}`;
+      if (seen.has(key)) break;
+      seen.add(key);
       for (const arm of tables.unions.get(t.unionId)?.arms ?? [])
-        adoptedParameters(arm, tables, seen, out);
+        adoptedParameters(arm, tables, seen, out, members);
       break;
     }
     default:

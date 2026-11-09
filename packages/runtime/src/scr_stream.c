@@ -857,7 +857,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s);
 static inline void scr_stream_settle_next(ScrStream *s) {
   if (s->st->r.next_waiter && !s->st->r.next_reading) scr_stream_settle_next_waiter(s);
 }
-static const ScrStreamRefHooks scr_stream_ref_hooks_impl;
+static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value);
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open);
@@ -2778,8 +2778,12 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
                                     bool emit_close, bool allow_half_open) {
   static ScrCycType cyc_type = { &scr_stream_trace, &scr_stream_gcfree, SCR_CYC_KIND_STREAM };
   ScrStream *s = scr_cyc_alloc(sizeof *s, &cyc_type);
-  /* A stream seen as `unknown` answers member questions from here on. */
-  scr_stream_ref_hooks = &scr_stream_ref_hooks_impl;
+  /* A stream seen as `unknown` answers member questions from here on: the
+   * address a capsule is known by goes in last. */
+  if (!scr_stream_ref_hooks.view) {
+    scr_stream_ref_hooks.member = scr_stream_ref_member;
+    scr_stream_ref_hooks.view = scr_stream_ref_view;
+  }
   s->rc = 1;
   s->vt = vt;
   s->reg = NULL;
@@ -8800,12 +8804,25 @@ static ScrStream *scr_stream_view_receiver(const ScrDyn *value) {
   return NULL;
 }
 
+/* A member name with its length, so that no reader measures it. */
+typedef struct ScrStreamDynName {
+  const char *name;
+  size_t len;
+} ScrStreamDynName;
+#define SCR_STREAM_DYN_NAME(name) { name, sizeof(name) - 1 }
+
 /* The members a native stream answers to checked-dynamic calls. */
-static const char *const scr_stream_dyn_methods[] = {
-  "on", "once", "addListener", "prependListener", "prependOnceListener",
-  "off", "removeListener", "removeAllListeners", "listenerCount", "eventNames", "pipe",
-  "unpipe", "read", "push", "unshift", "pause", "resume", "isPaused", "setEncoding", "write",
-  "end", "destroy", "cork", "uncork", "setDefaultEncoding",
+static const ScrStreamDynName scr_stream_dyn_methods[] = {
+  SCR_STREAM_DYN_NAME("on"), SCR_STREAM_DYN_NAME("once"), SCR_STREAM_DYN_NAME("addListener"),
+  SCR_STREAM_DYN_NAME("prependListener"), SCR_STREAM_DYN_NAME("prependOnceListener"),
+  SCR_STREAM_DYN_NAME("off"), SCR_STREAM_DYN_NAME("removeListener"),
+  SCR_STREAM_DYN_NAME("removeAllListeners"), SCR_STREAM_DYN_NAME("listenerCount"),
+  SCR_STREAM_DYN_NAME("eventNames"), SCR_STREAM_DYN_NAME("pipe"), SCR_STREAM_DYN_NAME("unpipe"),
+  SCR_STREAM_DYN_NAME("read"), SCR_STREAM_DYN_NAME("push"), SCR_STREAM_DYN_NAME("unshift"),
+  SCR_STREAM_DYN_NAME("pause"), SCR_STREAM_DYN_NAME("resume"), SCR_STREAM_DYN_NAME("isPaused"),
+  SCR_STREAM_DYN_NAME("setEncoding"), SCR_STREAM_DYN_NAME("write"), SCR_STREAM_DYN_NAME("end"),
+  SCR_STREAM_DYN_NAME("destroy"), SCR_STREAM_DYN_NAME("cork"), SCR_STREAM_DYN_NAME("uncork"),
+  SCR_STREAM_DYN_NAME("setDefaultEncoding"),
 };
 
 /* An event name argument: a string, +1; other values throw the "not
@@ -9020,7 +9037,7 @@ static bool scr_handle_stream_call(const ScrDynHandleOps *ops, void *h, ScrDyn *
                                    const char *method, ScrDyn *const *args, size_t argc,
                                    ScrDyn **result) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++) {
-    if (strcmp(method, scr_stream_dyn_methods[i]) != 0) continue;
+    if (strcmp(method, scr_stream_dyn_methods[i].name) != 0) continue;
     if (!ops->transform && !scr_handle_writable_method(method)) return false;
     ScrStream *stream = scr_handle_stream_build(ops, h);
     *result = scr_stream_dyn_call(stream, self, method, args, argc);
@@ -9031,10 +9048,13 @@ static bool scr_handle_stream_call(const ScrDynHandleOps *ops, void *h, ScrDyn *
 }
 
 /* The stream properties a checked-dynamic read answers. */
-static const char *const scr_stream_dyn_properties[] = {
-  "readable", "readableEnded", "readableLength", "readableHighWaterMark",
-  "writable", "writableEnded", "writableFinished", "writableLength", "writableHighWaterMark",
-  "writableNeedDrain", "destroyed", "closed",
+static const ScrStreamDynName scr_stream_dyn_properties[] = {
+  SCR_STREAM_DYN_NAME("readable"), SCR_STREAM_DYN_NAME("readableEnded"),
+  SCR_STREAM_DYN_NAME("readableLength"), SCR_STREAM_DYN_NAME("readableHighWaterMark"),
+  SCR_STREAM_DYN_NAME("writable"), SCR_STREAM_DYN_NAME("writableEnded"),
+  SCR_STREAM_DYN_NAME("writableFinished"), SCR_STREAM_DYN_NAME("writableLength"),
+  SCR_STREAM_DYN_NAME("writableHighWaterMark"), SCR_STREAM_DYN_NAME("writableNeedDrain"),
+  SCR_STREAM_DYN_NAME("destroyed"), SCR_STREAM_DYN_NAME("closed"),
 };
 
 static ScrDyn *scr_stream_dyn_property(ScrStream *stream, const char *name) {
@@ -9048,8 +9068,8 @@ static ScrDyn *scr_stream_dyn_property(ScrStream *stream, const char *name) {
 static ScrDyn *scr_handle_stream_get(const ScrDynHandleOps *ops, void *h, const char *key,
                                      size_t key_len) {
   for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
-    const char *name = scr_stream_dyn_properties[i];
-    if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
+    const char *name = scr_stream_dyn_properties[i].name;
+    if (scr_stream_dyn_properties[i].len != key_len || memcmp(name, key, key_len) != 0) continue;
     if (!ops->transform && !scr_handle_writable_property(name)) return NULL;
     ScrStream *stream = scr_handle_stream_build(ops, h);
     ScrDyn *value = scr_stream_dyn_property(stream, name);
@@ -9067,19 +9087,19 @@ static const ScrHandleStreamHooks scr_handle_stream_hooks_impl = {
 ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   ScrDyn *view = scr_dyn_new_obj();
   ScrDyn *prototype = scr_dyn_new_obj();
-  const char *const *methods = scr_stream_dyn_methods;
   for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++) {
+    const ScrStreamDynName *method = &scr_stream_dyn_methods[i];
     ScrClosure *cb = scr_closure_new((void *)scr_stream_view_call, 2);
     cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, scr_stream_trace);
     cb->caps[1] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
-    scr_box_set_ref(cb->caps[1], scr_str_new(methods[i], strlen(methods[i])));
-    scr_dyn_obj_set(prototype, methods[i], strlen(methods[i]),
-        scr_dyn_new_func(cb, scr_stream_view_call, 0, "native stream method", methods[i]));
+    scr_box_set_ref(cb->caps[1], scr_str_new(method->name, method->len));
+    scr_dyn_obj_set(prototype, method->name, method->len,
+        scr_dyn_new_func(cb, scr_stream_view_call, 0, "native stream method", method->name));
   }
   for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
-    const char *name = scr_stream_dyn_properties[i];
-    scr_dyn_obj_set(view, name, strlen(name), scr_stream_dyn_property(stream, name));
+    const ScrStreamDynName *property = &scr_stream_dyn_properties[i];
+    scr_dyn_obj_set(view, property->name, property->len, scr_stream_dyn_property(stream, property->name));
   }
   if (stream->st->has_r) {
     int flowing = stream->st->r.flowing;
@@ -9104,8 +9124,9 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
 
 ScrDyn *scr_stream_ref_view(void *stream) { return scr_stream_dyn_view(stream); }
 
-static bool scr_stream_ref_named(const char *name, const char *key, size_t key_len) {
-  return name[0] == key[0] && strlen(name) == key_len && memcmp(name, key, key_len) == 0;
+/* Whether `key`, which is not empty, is the member `name`. */
+static inline bool scr_stream_ref_named(const ScrStreamDynName *name, const char *key, size_t key_len) {
+  return name->len == key_len && name->name[0] == key[0] && memcmp(name->name, key, key_len) == 0;
 }
 
 /* ScrStreamRefHooks.member: what scr_stream_dyn_view's object holds under
@@ -9120,32 +9141,28 @@ static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDy
   static SCR_TL uint32_t initials;
   if (!initials) {
     for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++)
-      initials |= UINT32_C(1) << (scr_stream_dyn_methods[i][0] - 'a');
+      initials |= UINT32_C(1) << (scr_stream_dyn_methods[i].name[0] - 'a');
     for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++)
-      initials |= UINT32_C(1) << (scr_stream_dyn_properties[i][0] - 'a');
+      initials |= UINT32_C(1) << (scr_stream_dyn_properties[i].name[0] - 'a');
   }
   unsigned initial = key_len ? (unsigned)(unsigned char)key[0] - 'a' : 26;
   if (initial > 25 || !(initials >> initial & 1)) return 0;
   for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++)
-    if (scr_stream_ref_named(scr_stream_dyn_methods[i], key, key_len)) return 2;
+    if (scr_stream_ref_named(&scr_stream_dyn_methods[i], key, key_len)) return 2;
   for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
-    const char *name = scr_stream_dyn_properties[i];
-    if (!scr_stream_ref_named(name, key, key_len)) continue;
-    if (value) *value = scr_stream_dyn_property(stream, name);
+    const ScrStreamDynName *property = &scr_stream_dyn_properties[i];
+    if (!scr_stream_ref_named(property, key, key_len)) continue;
+    if (value) *value = scr_stream_dyn_property(stream, property->name);
     return 1;
   }
-  if (stream->st->has_r && scr_stream_ref_named("readableFlowing", key, key_len)) {
+  static const ScrStreamDynName flowing_name = SCR_STREAM_DYN_NAME("readableFlowing");
+  if (stream->st->has_r && scr_stream_ref_named(&flowing_name, key, key_len)) {
     int flowing = stream->st->r.flowing;
     if (value) *value = flowing < 0 ? scr_dyn_new_null() : scr_dyn_new_bool(flowing == 1);
     return 1;
   }
   return 0;
 }
-
-static const ScrStreamRefHooks scr_stream_ref_hooks_impl = {
-  scr_stream_ref_view,
-  scr_stream_ref_member,
-};
 
 /* ── node:crypto Hash and Hmac values as streams ─────────────────────
  * Node's Hash and Hmac are Transforms. A value used as a stream gets one

@@ -996,6 +996,153 @@ static void record_frozen_bit(void) {
   assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
 }
 
+/* A stand-in for the stream unit (ScrStreamRefHooks): `ready` is a data
+ * property of the view, `write` a member of its prototype, `native` a name
+ * only the view can answer. It counts the views built and the questions
+ * the hook was asked. */
+typedef struct {
+  size_t rc;
+  int views, asked;
+} TestStream;
+static void *test_stream_retain(void *ptr) {
+  ((TestStream *)ptr)->rc++;
+  return ptr;
+}
+static void test_stream_release(void *ptr) {
+  TestStream *stream = ptr;
+  if (stream && !--stream->rc) free(stream);
+}
+static ScrDyn *test_stream_view(void *ptr) {
+  ((TestStream *)ptr)->views++;
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "ready", 5, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(prototype, "write", 5, scr_dyn_new_num(7));
+  scr_dyn_release(scr_dyn_set_prototype(view, prototype));
+  scr_dyn_release(prototype);
+  return view;
+}
+static ScrDyn *test_other_view(void *ptr) {
+  ((TestStream *)ptr)->views++;
+  return scr_dyn_new_obj();
+}
+static int test_stream_member(void *ptr, const char *key, size_t key_len, ScrDyn **value) {
+  ((TestStream *)ptr)->asked++;
+  if (key_len == 5 && memcmp(key, "ready", 5) == 0) {
+    if (value) *value = scr_dyn_new_bool(true);
+    return 1;
+  }
+  if (key_len == 5 && memcmp(key, "write", 5) == 0) return 2;
+  if (key_len == 6 && memcmp(key, "native", 6) == 0) return -1;
+  return 0;
+}
+static ScrDyn *test_stream_capsule(TestStream **stream, ScrDyn *(*view)(void *)) {
+  *stream = calloc(1, sizeof **stream);
+  assert(*stream);
+  (*stream)->rc = 1;
+  ScrDyn *capsule = scr_dyn_new_typed_ref(*stream, test_stream_retain, test_stream_release,
+                                          "TestStream", 10, view, NULL);
+  test_stream_release(*stream);
+  return capsule;
+}
+
+/* One question to a fresh capsule whose adapter is `view`: the read (NULL
+ * when it needs the view), `in` and Reflect.has, with the views each built
+ * and the questions the hook was asked in all. */
+typedef struct {
+  ScrDyn *read;
+  bool in, has;
+  int read_views, in_views, has_views, asked;
+} TestStreamAnswer;
+static TestStreamAnswer test_stream_ask(ScrDyn *(*view)(void *), const char *name) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  TestStreamAnswer answer = {0};
+  TestStream *stream;
+  ScrDyn *capsule = test_stream_capsule(&stream, view);
+  answer.read = scr_dyn_typed_ref_key_get(capsule, key);
+  answer.read_views = stream->views;
+  answer.asked = stream->asked;
+  scr_dyn_release(capsule);
+  capsule = test_stream_capsule(&stream, view);
+  answer.in = scr_dyn_in(capsule, key);
+  answer.in_views = stream->views;
+  answer.asked += stream->asked;
+  scr_dyn_release(capsule);
+  capsule = test_stream_capsule(&stream, view);
+  answer.has = scr_dyn_has_key(capsule, key);
+  answer.has_views = stream->views;
+  answer.asked += stream->asked;
+  scr_dyn_release(capsule);
+  scr_str_release(key);
+  assert(!scr_exc_pending());
+  return answer;
+}
+
+static void stream_ref_member_questions(void) {
+  /* Before the stream unit's first stream nothing answers but the view. */
+  assert(!scr_stream_ref_hooks.view && !scr_stream_ref_hooks.member);
+  TestStreamAnswer answer = test_stream_ask(test_stream_view, "flush");
+  assert(!answer.read && !answer.in && !answer.has && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+  /* A capsule with no adapter matches the empty record and is turned away. */
+  TestStream *stream;
+  ScrDyn *capsule = test_stream_capsule(&stream, NULL);
+  ScrStr *key = scr_str_new("flush", 5);
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && stream->asked == 0);
+  scr_dyn_release(capsule);
+
+  scr_stream_ref_hooks.member = test_stream_member;
+  scr_stream_ref_hooks.view = test_stream_view;
+
+  /* A name the view holds nowhere: answered, and no view is built. */
+  answer = test_stream_ask(test_stream_view, "flush");
+  assert(answer.read == scr_dyn_undefined() && !answer.in && !answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+  answer = test_stream_ask(test_stream_view, "");
+  assert(answer.read == scr_dyn_undefined() && !answer.in && !answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+
+  /* A data property: its value, and no view. */
+  answer = test_stream_ask(test_stream_view, "ready");
+  assert(answer.read && answer.read->kind == SCR_DYN_BOOL && answer.read->v.b && answer.in && answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+
+  /* A method: present without a view; its value is the view's to give. */
+  answer = test_stream_ask(test_stream_view, "write");
+  assert(!answer.read && answer.in && answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+
+  /* A name only the view can answer: every question builds it. */
+  answer = test_stream_ask(test_stream_view, "native");
+  assert(!answer.read && !answer.in && !answer.has);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1 && answer.asked == 3);
+
+  /* A name of Object.prototype is never the hook's. */
+  answer = test_stream_ask(test_stream_view, "hasOwnProperty");
+  assert(!answer.read && answer.in && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+
+  /* A capsule of another kind is never asked. */
+  answer = test_stream_ask(test_other_view, "flush");
+  assert(!answer.read && !answer.in && !answer.has && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+
+  /* A capsule that has a view answers from it. */
+  capsule = test_stream_capsule(&stream, test_stream_view);
+  scr_dyn_release(scr_dyn_typed_ref_materialize(capsule));
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && !scr_dyn_in(capsule, key) && !scr_dyn_has_key(capsule, key));
+  assert(stream->asked == 0 && stream->views >= 1);
+  scr_str_release(key);
+  scr_dyn_release(capsule);
+
+  scr_stream_ref_hooks.view = NULL;
+  scr_stream_ref_hooks.member = NULL;
+  assert(!scr_exc_pending());
+}
+
 int main(void) {
   json_string_boundaries();
   record_frozen_bit();
@@ -1013,6 +1160,7 @@ int main(void) {
   record_source_class_member();
   record_source_get();
   record_source_hidden_key();
+  stream_ref_member_questions();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

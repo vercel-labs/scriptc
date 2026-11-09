@@ -485,6 +485,9 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* The same for a conversion without an assertion: all of `source` becomes
+ * one object with the value built from it, or nothing changes. */
+void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending
@@ -1823,10 +1826,13 @@ extern SCR_TL void (*scr_weak_dispose_hook)(void *);
 #endif
 void scr_weak_dispose(void *object);
 /* The for-of-over-dyn pack accessors (the emitted index loop drives them
- * over a scr_dyn_iter_pack result, which is ARR by construction).
- * scr_dyn_arr_len answers 0 for non-ARR kinds; scr_dyn_arr_at answers the
- * undefined singleton past the end (both never throw). scr_dyn_arr_at is
- * +1. */
+ * over a scr_dyn_iter_pack result, which is ARR by construction), and the
+ * element read of a computed-read helper: an integer index below the length
+ * reads the element. They answer for an ARR and for a live array capsule
+ * (the receiver scr_dyn_index_get answers; its elements come back in the
+ * keyed read's boxing, a hole through its plain view). scr_dyn_arr_len
+ * answers 0 for every other kind; scr_dyn_arr_at answers the undefined
+ * singleton for every other kind and past the end. scr_dyn_arr_at is +1. */
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);

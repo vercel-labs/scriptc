@@ -431,7 +431,25 @@ export function matchBytesLoopVersion(
       return sum + Math.max(Math.abs(r.min), Math.abs(r.max));
     }, 0);
 
-  const whileAccesses = loop.kind === "while" ? whileCounterAccesses(loop) : null;
+  // A `for` loop without an initializer steps a counter declared before it
+  // (`let i = 0; for (; i < s.length; i++)`). It is the while loop whose
+  // body ends with the update: the update runs after every pass of the
+  // body, after a `continue` too, so each access still happens between the
+  // condition and the next increment. With an initializer the counter's
+  // entry value is not the one the guard sees, and a counted or paired loop
+  // has its own iteration space.
+  const whileForm: (IrStmt & { kind: "while" }) | null =
+    loop.kind === "while"
+      ? loop
+      : loop.init === null && loop.cond !== null && counted === null && paired === null
+        ? {
+            kind: "while",
+            cond: loop.cond,
+            body: loop.update ? [...loop.body, loop.update] : loop.body,
+            loc: loop.loc,
+          }
+        : null;
+  const whileAccesses = whileForm ? whileCounterAccesses(whileForm) : null;
   function whileCounterAccesses(loop: IrStmt & { kind: "while" }) {
     return findWhileCounterAccesses(loop, {
       counterLocal: (id) => {
@@ -653,7 +671,7 @@ export function matchBytesLoopVersion(
     return result;
   };
   loop.body.every(visitStmt);
-  if (loop.kind === "while") visitExpr(loop.cond);
+  if (whileForm) visitExpr(whileForm.cond);
   // Bound the counter so every counter operand stays a safe integer.
   let bound = SAFE;
   const affineGroups = [...affineChecks.values()].filter((group) => {

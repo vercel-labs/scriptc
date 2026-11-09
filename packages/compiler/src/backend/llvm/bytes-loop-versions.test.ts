@@ -821,6 +821,65 @@ test("while loop counters below a string's length version its reads", () => {
   expect(version.fixed).toEqual([]);
 });
 
+test("a for loop over a counter declared before it versions its string reads", () => {
+  // let i = k; for (; i < text.length; i = i + 1) { if (text.charCodeAt(i) === 32) continue; }
+  const text = ref("text", STR);
+  const read = charCode(text, ref("i"));
+  const length: IrExpr = {
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: text,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const step: IrStmt = { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc };
+  const loopOf = (init: IrStmt | null, update: IrStmt | null): IrStmt & { kind: "for" } => ({
+    kind: "for",
+    init,
+    cond: { kind: "bin", op: "<", left: ref("i"), right: length, type: BOOL, loc },
+    update,
+    body: [
+      {
+        kind: "if",
+        cond: { kind: "bin", op: "===", left: read, right: num(32), type: BOOL, loc },
+        then: [{ kind: "continue", loc }],
+        else_: null,
+        loc,
+      } as IrStmt,
+    ],
+    loc,
+  });
+  const versionOf = (loop: IrStmt & { kind: "for" }): BytesLoopVersion | null => {
+    const f = textKernel([{ kind: "varDecl", localId: "i", init: ref("k"), loc }, loop]);
+    return matchBytesLoopVersion(loop, null, {
+      locals: new Map(f.locals.map((l) => [l.id, l])),
+      invariantGlobals: new Set(),
+      captured: new Set(),
+      ranges: analyzeIntegerRanges(f),
+      initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
+      proven: new Set(),
+      scalarStrings: new Set(),
+      workers: false,
+      owned: new Set(),
+    });
+  };
+  // The update runs after every pass, after the `continue` too, so the read
+  // is bounded by the counter's test against the length, as in a while loop.
+  const version = versionOf(loopOf(null, step))!;
+  expect(version.bounds.has(read)).toBe(true);
+  expect(version.receivers.map((r) => r.string)).toEqual([true]);
+  expect(version.bounded.map((c) => c.slack)).toEqual([0]);
+  expect(version.counters.map((c) => c.min)).toEqual([0]);
+  // An initializer that assigns the counter runs after the guard: the
+  // guard would test the old value, so the loop keeps its checked reads.
+  expect(versionOf(loopOf({ kind: "assign", localId: "i", value: num(0), loc }, step))).toBeNull();
+  // A body that assigns the string binding has no invariant receiver.
+  const reassigned = loopOf(null, step);
+  reassigned.body.push({ kind: "assign", localId: "text", value: ref("other", STR), loc });
+  expect(versionOf(reassigned)).toBeNull();
+});
+
 test("a two-counter loop versions the typed arrays it indexes at either counter", () => {
   // for (let i = 0, j = k; i < j; i++, j--) { const t = out[i]; out[i] = out[j]; out[j] = t; }
   const loop: IrStmt & { kind: "for" } = {

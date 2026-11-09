@@ -151,6 +151,10 @@ function unitSafe(
       case "fieldSet":
       case "bytesSet":
         break;
+      case "switch":
+        // A switch over a number compares numbers: it reads no string.
+        if (s.disc.type.kind !== "f64") return false;
+        break;
       default:
         return false;
     }

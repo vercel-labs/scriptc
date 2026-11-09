@@ -82,6 +82,7 @@ import {
 } from "./class-method-values.js";
 import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
 import { METHODS_INTACT_PREFIX, isClassCallback, methodsIntactMember } from "./class-callbacks.js";
@@ -1709,6 +1710,9 @@ export class ClassDynamicDispatch {
   private readonly instanceTests = new Map<string, Set<string>>();
   private readonly jsonPrototypes = new Set<string>();
   private serializesClasses = false;
+  /** Whether the program can delete an error's own `stack`
+   * (mayDeleteOwnStack); undefined until a class asks. */
+  private deletesOwnStack: boolean | undefined;
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
   /** Whether a read through prototypeHelper can pass it an instance. The
@@ -6686,6 +6690,40 @@ export class ClassDynamicDispatch {
     ];
   }
 
+  /** Whether the program can delete an error's own `stack`: it holds a
+   * `delete` of a member named `stack` or of a key it computes, or names
+   * `deleteProperty`. Every error is created with an own `stack`, which
+   * shadows a `stack` accessor its class declares until it is deleted
+   * (`delete this.stack` in the constructor exposes the accessor pair). The
+   * instance keeps no mark of the deletion, so a class that declares the
+   * accessor answers a read by name through it only in a program that can
+   * delete, and with the instance's stack in every other program. Asked
+   * only for such a class, and once. */
+  private mayDeleteOwnStack(lowerer: Lowerer): boolean {
+    if (this.deletesOwnStack !== undefined) return this.deletesOwnStack;
+    let deletes = false;
+    for (const sf of lowerer.program.getImplementationSourceFiles()) {
+      if (deletes) break;
+      if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "delete")) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isDeleteExpression(node)) {
+          const target = withoutParenthesesTypeWrappers(node.expression);
+          if (ts.isPropertyAccessExpression(target)) {
+            if (target.name.text === "stack") deletes = true;
+          } else if (ts.isElementAccessExpression(target)) {
+            const key = withoutParenthesesTypeWrappers(target.argumentExpression);
+            if (!ts.isStringLiteralLike(key) || key.text === "stack") deletes = true;
+          }
+        } else if (ts.isPropertyAccessExpression(node) && node.name.text === "deleteProperty") {
+          deletes = true;
+        }
+        return undefined;
+      });
+    }
+    this.deletesOwnStack = deletes;
+    return deletes;
+  }
+
   private propertyBody(
     lowerer: Lowerer,
     dispatch: PropertyDispatch,
@@ -6805,14 +6843,16 @@ export class ClassDynamicDispatch {
     }
     // An Error's own `stack`: a string is the native error's stack, which
     // typed reads share; any other value is kept with the instance's own
-    // properties, which a read checks first. A class whose chain declares
-    // a `stack` accessor answers through it (the accessor code below).
+    // properties, which a read checks first. A `stack` accessor a class in
+    // the chain declares is a prototype member the instance's own `stack`
+    // shadows, so it answers only in a program that can delete the own one
+    // (the accessor code below).
     if (
       name === "stack" &&
       !info.fields.has(name) &&
       lowerer.isSubclassOf(info.def.name, "%Error") &&
-      !findMethodOn(lowerer, info, "get:stack") &&
-      !findMethodOn(lowerer, info, "set:stack")
+      ((!findMethodOn(lowerer, info, "get:stack") && !findMethodOn(lowerer, info, "set:stack")) ||
+        !this.mayDeleteOwnStack(lowerer))
     ) {
       const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
       const error = lowerer.upcastTo(receiver, "%Error");

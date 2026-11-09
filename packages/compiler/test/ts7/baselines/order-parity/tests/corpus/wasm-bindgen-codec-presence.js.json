@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/wasm-bindgen-codec-presence.js"
+ ],
+ "diags": []
+}

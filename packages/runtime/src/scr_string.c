@@ -799,12 +799,16 @@ ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code) {
      * ASCII if it was, and a non-ASCII string's index facts below the old
      * end stay valid (scr_sidx_concat_append). */
     size_t oldlen = a->len;
+    /* scr_str_hash_forget clears the proven-ASCII fact with the hash; an
+     * ASCII byte appended to a proven-ASCII string keeps it. */
+    bool ascii = a->ascii;
     scr_short_forget(a);
     scr_str_hash_forget(a);
     a->data[oldlen] = (char)cp;
     a->len = oldlen + 1;
     a->data[oldlen + 1] = '\0';
-    if (!a->ascii) scr_sidx_concat_append(a, oldlen);
+    a->ascii = ascii;
+    if (!ascii) scr_sidx_concat_append(a, oldlen);
     return a;
   }
   ScrStr *c = scr_str_from_char_code_one(code);
@@ -3781,6 +3785,8 @@ static ScrStr *scr_encode_uri_impl(ScrStr *s, bool keep_reserved) {
   }
   out->len = out_len;
   out->data[out_len] = '\0';
+  /* Every byte written is an unescaped ASCII character, '%' or a hex digit. */
+  scr_str_note_ascii(out);
   return out;
 }
 
@@ -3961,6 +3967,8 @@ ScrStr *scr_str_encode_uri_component(ScrStr *s) {
     }
   }
   out->data[out->len] = '\0';
+  /* Every byte written is an unreserved ASCII character, '%' or a hex digit. */
+  scr_str_note_ascii(out);
   return out;
 }
 

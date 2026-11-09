@@ -8,16 +8,20 @@ abstract class Shape {
   }
 }
 class Circle extends Shape {
-  constructor(readonly r: number) {
+  r: number;
+  constructor(r: number) {
     super();
+    this.r = r;
   }
   area(): number {
     return this.r * this.r * 3;
   }
 }
 class Square extends Shape {
-  constructor(readonly side: number) {
+  side: number;
+  constructor(side: number) {
     super();
+    this.side = side;
   }
   area(): number {
     return this.side * this.side;
@@ -32,7 +36,10 @@ class Mosaic extends Tile {
   pieces = 4;
 }
 class Part {
-  constructor(readonly id: number) {}
+  id: number;
+  constructor(id: number) {
+    this.id = id;
+  }
   name(): string {
     return "part" + this.id;
   }
@@ -55,7 +62,10 @@ class Other {
 }
 class Further extends Other {}
 class Box<T> {
-  constructor(readonly held: T) {}
+  held: T;
+  constructor(held: T) {
+    this.held = held;
+  }
 }
 class NumberBox extends Box<number> {}
 const Hidden = class {

@@ -6179,7 +6179,13 @@ export class ClassDynamicDispatch {
           },
           loc,
         },
-        { kind: "if", cond: from(0), then: [{ kind: "return", value: inRun, loc }], else_: null, loc },
+        {
+          kind: "if",
+          cond: from(0),
+          then: [{ kind: "return", value: inRun, loc }],
+          else_: null,
+          loc,
+        },
         ...fn.body.slice(walk),
       ];
     }

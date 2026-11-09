@@ -7405,6 +7405,17 @@ export class Lowerer {
     return this.facts.classProtocols().islandEscapeSites();
   }
 
+  /** Whether the program declares an interface that extends a builtin Error
+   * (class-protocols.ts, markErrorInterfaces). */
+  declaresErrorInterface(): boolean {
+    return this.facts.classProtocols().declaresErrorInterface();
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    return this.facts.classProtocols().errorInterface(type);
+  }
+
   /** Whether `expr` holds a value a Node island made, by its origin
    * (class-protocols.ts, islandOrigin). */
   islandOrigin(expr: ts.Expression): boolean {
@@ -17425,6 +17436,8 @@ export class Lowerer {
         if (w) return w;
         const asserted = assertedConversion(this, expr, expected);
         if (asserted) return asserted;
+        const errorRecord = this.errorIntoRecord(expr, expected);
+        if (errorRecord) return errorRecord;
         // A UNIT (null/undefined) flowing into a plain non-nullable slot
         // the checker approved (`null!` casts, non-strict assignments):
         // the stranded-source stance (divergence 38) without a union in
@@ -20230,6 +20243,35 @@ export class Lowerer {
     };
   } | null {
     return findMethodOn(this, info, name);
+  }
+
+  /** An error handed to a record type (`advice(err)` where the parameter is
+   * `{ message?: string; tag?: string }`): the record is read off the
+   * error's checked-dynamic view, each member as JavaScript reads it from
+   * the error and checked at the member's type. An error class has no field
+   * copy (objToRecordPlan declines the members the runtime holds), so the
+   * pair had no conversion and was refused. Asked only where every other
+   * conversion declined, so a pair that converted keeps its route.
+   *
+   * A record that names `stack` keeps the refusal: the view of a program
+   * subclass's instance does not answer `stack` to the record's member read
+   * (it would read as absent), and a slot typed by a builtin error class can
+   * hold such an instance. */
+  private errorIntoRecord(expr: IrExpr, expected: IrType): IrExpr | null {
+    if (expr.type.kind !== "object" || expected.kind !== "record") return null;
+    if (!this.isErrorRootedClass(expr.type.className) || !this.dynConvertible(expr.type))
+      return null;
+    if (this.shapes.get(expected.shapeId)?.fields.some((field) => field.name === "stack"))
+      return null;
+    if (
+      !canDynCheckTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return null;
+    return this.coerceToExpected(this.coerceToExpected(expr, DYN), expected);
   }
 
   /** A class whose root is the runtime's %Error (builtin errors and their

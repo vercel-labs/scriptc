@@ -255,6 +255,190 @@ static void weak_entries_held_by_their_values(ScrDyn *witness) {
   scr_dyn_release(map);
 }
 
+size_t scr_cyc_pass_at(unsigned gen);
+
+/* Marks a weak collection (its handle and the collection itself) as having
+ * survived earlier passes. A candidate is listed under its generation, so
+ * each leaves its candidate list first. */
+static ScrDyn *aged(ScrDyn *collection, unsigned gen) {
+  void *both[2] = {collection, collection->v.handle.ptr};
+  for (int i = 0; i < 2; i++) {
+    scr_cyc_dead(both[i]);
+    scr_cyc_set_gen(scr_cyc_hdr(both[i]), gen);
+  }
+  return collection;
+}
+
+/* A collector object of a type of its own (so no other test's survivors
+ * decide which pass walks it) that holds itself and one value. */
+typedef struct { size_t rc; void *self; ScrDyn *held; } YoungHolder;
+static void young_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  visit(((YoungHolder *)ptr)->self, ctx);
+  visit(((YoungHolder *)ptr)->held, ctx);
+}
+static void young_free(void *ptr) { scr_cyc_free(ptr); }
+static YoungHolder *young_holder(ScrDyn *held) {
+  static ScrCycType type = { &young_trace, &young_free, 0 };
+  YoungHolder *young = scr_cyc_alloc(sizeof *young, &type);
+  assert(young);
+  young->rc = 2; /* its own edge and the caller */
+  young->self = young;
+  young->held = held;
+  return young;
+}
+
+/* Hangs `collection` (given up by the caller) off a fresh object on a cycle
+ * of its own, drops the object, and runs a pass over the nursery. An aged
+ * collection is not walked by that pass: the edge to it is recorded, and
+ * once the young cycle is freed the drain gives the edge up for real. */
+static void drop_through_young_cycle(ScrDyn *collection) {
+  YoungHolder *young = young_holder(collection);
+  young->rc--;
+  scr_cyc_on_release(young);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+}
+
+/* A weak collection older than the garbage that holds it is freed by the
+ * cross-generation drain of a restricted pass (scr_xg_release): generically,
+ * by a walk of its entries that releases each value, then its free.
+ * Releasing a value can free keys, and a freed key ends its entries in
+ * every collection, the one being walked included (scr_weak_remove's
+ * invariant). Each shape must leave every value released exactly once (the
+ * witness's count is back where it was) and no entry freed under the walk
+ * (the address sanitizer watches the entries). This runs in both flavors;
+ * the one without the count audit has the release build's parked capsules
+ * and free lists. */
+static void weak_collection_freed_by_drain(ScrDyn *witness) {
+  size_t idle = witness->rc;
+  for (unsigned gen = SCR_CYC_MATURE; gen <= SCR_CYC_OLD; gen++) {
+    /* One entry whose value holds its key: the key dies inside the visit of
+     * its own entry. */
+    ScrDyn *map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *key = scr_dyn_new_obj();
+    ScrDyn *value = holder(key, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    assert(witness->rc == idle + 1);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* Two entries, each value holding the other's key. The walk starts at
+     * the newer entry: releasing its value frees the older entry's key
+     * (an entry ends before the walk reaches it), and releasing the older
+     * value then frees the newer entry's key (an entry ends after the walk
+     * has passed it). */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    ScrDyn *second = scr_dyn_new_obj();
+    value = holder(second, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    value = holder(key, witness);
+    put(map, second, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    scr_dyn_release(second);
+    assert(witness->rc == idle + 2);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* A ring: each value holds the next entry's key, so every visit of the
+     * walk frees the key of another entry, one it has passed or one it has
+     * yet to reach. */
+    enum { RING = 40 };
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *first = scr_dyn_new_obj();
+    ScrDyn *at = scr_dyn_retain(first);
+    for (int i = 0; i < RING; i++) {
+      ScrDyn *next = i + 1 < RING ? scr_dyn_new_obj() : scr_dyn_retain(first);
+      value = holder(next, witness);
+      put(map, at, value);
+      scr_dyn_release(value);
+      scr_dyn_release(at);
+      at = next;
+    }
+    scr_dyn_release(at);
+    scr_dyn_release(first);
+    assert(witness->rc == idle + RING);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* Nested: the outer entry's value holds a second aged collection, whose
+     * entry's value holds the outer entry's key, and then the inner entry's
+     * key. The outer key dies inside the inner collection's walk, while the
+     * outer walk is on its entry. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *inner = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    second = scr_dyn_new_obj();
+    value = holder(key, witness);
+    put(inner, second, value);
+    scr_dyn_release(value);
+    value = holder(NULL, witness);
+    scr_dyn_obj_set(value, "inner", 5, inner);
+    scr_dyn_obj_set(value, "second", 6, scr_dyn_retain(second));
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    scr_dyn_release(second);
+    assert(witness->rc == idle + 2);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* A weak set's member is also a key of the collection whose value holds
+     * the set and the member: the member dies while both are being freed. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    ScrDyn *set = aged(scr_weak_set_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    ScrDyn *added = scr_dyn_handle_ops_of(set)->invoke(set->v.handle.ptr, set, "add", &key, 1, "set.add");
+    assert(added == set);
+    scr_dyn_release(added);
+    value = holder(key, witness);
+    scr_dyn_obj_set(value, "set", 3, set);
+    put(map, key, value);
+    scr_dyn_release(value);
+    scr_dyn_release(key);
+    assert(witness->rc == idle + 1);
+    drop_through_young_cycle(map);
+    assert(witness->rc == idle);
+
+    /* The young garbage is a key of the aged collection it holds: its free
+     * ends the entry while the collection is still alive (the drain has not
+     * reached it), and the value is released then. */
+    map = aged(scr_weak_map_new(scr_dyn_undefined()), gen);
+    key = scr_dyn_new_obj();
+    value = holder(NULL, witness);
+    put(map, key, value);
+    scr_dyn_release(value);
+    YoungHolder *young = young_holder(key);
+    scr_dyn_obj_set(key, "collection", 10, map);
+    assert(witness->rc == idle + 1);
+    young->rc--;
+    scr_cyc_on_release(young);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+    assert(witness->rc == idle);
+  }
+  /* Nothing aged: the collection, its keys and its values are one dead set
+   * (a value holds the collection), and each is freed by the pass itself,
+   * the collection and its keys in whatever order the pass takes them. */
+  ScrDyn *map = scr_weak_map_new(scr_dyn_undefined());
+  ScrDyn *key = scr_dyn_new_obj();
+  ScrDyn *second = scr_dyn_new_obj();
+  ScrDyn *value = holder(second, witness);
+  put(map, key, value);
+  scr_dyn_release(value);
+  value = holder(key, witness);
+  scr_dyn_obj_set(value, "collection", 10, scr_dyn_retain(map));
+  put(map, second, value);
+  scr_dyn_release(value);
+  scr_dyn_release(key);
+  scr_dyn_release(second);
+  scr_dyn_release(map);
+  scr_collect_cycles();
+  assert(witness->rc == idle);
+}
+
 static void json_string_boundaries(void) {
   /* Every escape/control at every word alignment, followed by raw UTF-8.
    * ASan also checks short tails that cannot supply a complete word. */
@@ -1572,6 +1756,7 @@ int main(void) {
   assert(key->rc == 1 && first->rc == 1);
   scr_dyn_release(key);
   weak_entries_held_by_their_values(first);
+  weak_collection_freed_by_drain(first);
   scr_dyn_release(first);
   assert(!scr_exc_pending());
   puts("checked storage and weak metadata lifetime checks passed");

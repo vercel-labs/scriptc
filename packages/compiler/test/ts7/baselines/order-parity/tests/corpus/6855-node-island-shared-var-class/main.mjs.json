@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6855-node-island-shared-var-class/early.mjs",
+  "<repo>/tests/corpus/6855-node-island-shared-var-class/shapes.mjs",
+  "<repo>/tests/corpus/6855-node-island-shared-var-class/main.mjs"
+ ],
+ "diags": []
+}

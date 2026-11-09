@@ -322,6 +322,7 @@ import {
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
+  nsReceiverEvaluates,
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { funduleMemberOf } from "./lower-fundule.js";
@@ -1794,6 +1795,22 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     !expr.expression.questionDotToken &&
     ts.isIdentifier(expr.expression.name)
   ) {
+    // A call through a receiver that evaluates
+    // (`(await import("./m")).f(1)`): the callee is the member's value,
+    // read after the receiver ran (the property read's own lowering), and
+    // the call goes through that value.
+    if (
+      nsReceiverEvaluates(expr.expression.expression) &&
+      nsMemberIdentOf(lowerer, expr.expression, true)
+    ) {
+      const callee = lowerer.lowerExpr(expr.expression);
+      const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+      if (checked) return checked;
+      if (callee.type.kind !== "func")
+        lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
+      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+    }
     const nsMember = nsMemberIdentOf(lowerer, expr.expression);
     if (nsMember) {
       // A builtin RE-EXPORT FACADE member (`import * as assert from

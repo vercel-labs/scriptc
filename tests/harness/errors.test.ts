@@ -3170,18 +3170,20 @@ console.log(require(name).x);
       "require\\(\\) with a computed specifier",
     ],
     [
-      "exports-call-reads-this",
-      `exports.timeouts = function (n) {
-  return this.scale * n;
+      "exports-call-passes-this-on",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+exports.size = function () {
+  return count(this);
 };
-exports.scale = 2;
 console.log("before");
-console.log(exports.timeouts(3));
+console.log(exports.size());
 `,
       {},
       "before\n",
-      6,
-      "calling 'exports\\.timeouts' through the module's exports object when the function may read 'this'",
+      8,
+      "calling 'exports\\.size' through the module's exports object when the function may read 'this'",
     ],
     [
       "require-table-as-value",

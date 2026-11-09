@@ -1154,6 +1154,13 @@ export function streamTypedRefMaterializeAdapter(
         `call void @scr_error_dyn_follow_bag(ptr ${out}, ptr ${bag}, ptr %p, i1 ${nameAfter === undefined ? "false" : "true"})`,
       );
     }
+    // The view of a declared Error subclass instance answers what the
+    // instance answers: `stack` from the instance, and a default `name` or
+    // `message` the class's prototype object has replaced the holder of.
+    if (meta.root.def.name === "%Error" && !meta.def.runtime) {
+      host.declare(`declare void @scr_error_class_view(ptr, ptr)`);
+      B.line(`call void @scr_error_class_view(ptr ${out}, ptr %p)`);
+    }
     // A frozen, sealed or non-extensible instance's view says so.
     if (withAttributes) {
       host.declare(`declare void @scr_dyn_class_view_attributes(ptr, double)`);

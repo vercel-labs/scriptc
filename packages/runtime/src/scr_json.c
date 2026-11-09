@@ -12612,6 +12612,129 @@ void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len)
   view->v.obj.index = NULL;
 }
 
+/* A declared Error subclass instance is boxed as a capsule, and what a
+ * structural read sees (a checked conversion to a record or an interface)
+ * is the capsule's view, which the class's materializer builds. The view is
+ * not the node the identity cache knows, so the shared `stack` accessor
+ * finds no error from it, and the class's prototype object replaces the
+ * holder of a default `name` and `message`. scr_error_class_view makes the
+ * view answer what the instance answers.
+ *
+ * The view's `stack` accessor names its instance by address without a
+ * reference (a reference would keep the error from ever leaving the cache).
+ * A call answers only while the cache holds that error under a capsule
+ * whose view still carries this accessor, so a view that outlives its
+ * error reads undefined and never another error. +1 or NULL. */
+static ScrError *scr_error_class_view_instance(const ScrClosure *closure, bool setter) {
+  const ScrError *e = (const ScrError *)(uintptr_t)scr_box_get_f64(closure->caps[0]);
+  size_t hit = scr_errdyn_find(e, true);
+  if (hit == SIZE_MAX || scr_errdyn_cache[hit].carried) return NULL;
+  const ScrDyn *node = scr_errdyn_cache[hit].dyn;
+  if (node->kind != SCR_DYN_TYPED_REF || node->v.typed_ref.ptr != (const void *)e) return NULL;
+  const ScrDyn *view = node->v.typed_ref.materialized;
+  if (!view || view->kind != SCR_DYN_OBJ) return NULL;
+  const ScrDynEntry *entry = scr_dyn_find_entry(view, "stack", 5);
+  const ScrDyn *fn = entry && entry->accessor ? (setter ? entry->setter : entry->getter) : NULL;
+  if (!fn || fn->kind != SCR_DYN_FUNC || fn->v.fn.clo != closure) return NULL;
+  return scr_error_retain(scr_errdyn_cache[hit].err);
+}
+
+static ScrDyn *scr_error_class_view_stack_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args; (void)argc;
+  ScrError *error = scr_error_class_view_instance(closure, false);
+  if (!error) return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *stack = scr_error_stack(error);
+  scr_error_release(error);
+  /* A name or message getter that throws leaves its exception pending. */
+  if (!stack) return NULL;
+  ScrDyn *out = scr_dyn_new_str(stack);
+  scr_str_release(stack);
+  return out;
+}
+
+static ScrDyn *scr_error_class_view_stack_set(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrDyn *self = scr_dyn_this_get();
+  ScrError *error = scr_error_class_view_instance(closure, true);
+  ScrDyn *value = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (error && value->kind == SCR_DYN_STR) {
+    scr_error_set_stack(error, value->v.str);
+  } else if (self->kind == SCR_DYN_OBJ) {
+    /* As for the shared accessor: the slot holds strings only, so the
+     * receiver's own accessor becomes a data property holding the value,
+     * which the view's commit stores. */
+    ScrDynEntry *entry = scr_dyn_find_entry(self, "stack", 5);
+    if (entry && entry->accessor && entry->setter && entry->setter->kind == SCR_DYN_FUNC &&
+        entry->setter->v.fn.clo == closure) {
+      ScrDyn *old_value = entry->value, *old_getter = entry->getter, *old_setter = entry->setter;
+      entry->value = scr_dyn_retain(value);
+      entry->getter = entry->setter = NULL;
+      entry->accessor = false;
+      entry->writable = true;
+      scr_dyn_release(old_value);
+      scr_dyn_release(old_getter);
+      scr_dyn_release(old_setter);
+    }
+  }
+  scr_error_release(error);
+  scr_dyn_release(self);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* A default `name` or `message` the view's prototype chain does not answer:
+ * the closure holds the string. */
+static ScrDyn *scr_error_class_view_default_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args; (void)argc;
+  return scr_box_get_ref(closure->caps[0]);
+}
+
+static ScrDyn *scr_error_class_view_address(const ScrError *e, ScrDynThunk thunk, uint32_t arity) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], (double)(uintptr_t)e);
+  return scr_dyn_new_func(closure, thunk, arity, "native:error.stack", NULL);
+}
+
+/* Binds the view the materializer of a declared Error subclass built to its
+ * instance `e`, once the class's prototype object and the fields are in
+ * place. The shared `stack` accessor is replaced by one that names the
+ * instance. A `name` or `message` the instance does not own and the
+ * prototype chain no longer answers becomes a class-view member holding the
+ * slot's default: a read answers it, while own-property queries, key walks
+ * and serializers treat it as the inherited member it is on the instance
+ * (scr_dyn_class_view_accessors), and the commit leaves the slot alone. */
+void scr_error_class_view(ScrDyn *view, const ScrError *e) {
+  if (!view || view->kind != SCR_DYN_OBJ || view->v.obj.layout) return;
+  if (scr_error_dyn_stack_shared(view)) {
+    ScrDynEntry *stack = scr_dyn_find_entry(view, "stack", 5);
+    ScrDyn *old_getter = stack->getter, *old_setter = stack->setter;
+    stack->getter = scr_error_class_view_address(e, scr_error_class_view_stack_get, 0);
+    stack->setter = scr_error_class_view_address(e, scr_error_class_view_stack_set, 1);
+    scr_dyn_release(old_getter);
+    scr_dyn_release(old_setter);
+  }
+  static const struct { const char *key; size_t len; } slots[] = {{"name", 4}, {"message", 7}};
+  for (size_t s = 0; s < 2; s++) {
+    if (s == 0 ? e->name_present : e->message_present) continue;
+    bool answered = false;
+    for (const ScrDyn *current = view; current && !answered; current = scr_dyn_proto_next(current)) {
+      if (current->kind != SCR_DYN_OBJ) continue;
+      answered = current->v.obj.layout ? scr_dyn_layout_slot(current, slots[s].key, slots[s].len) != NULL
+                                       : scr_dyn_find_entry(current, slots[s].key, slots[s].len) != NULL;
+    }
+    if (answered) continue;
+    ScrClosure *closure = scr_closure_new(NULL, 1);
+    closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(closure->caps[0], scr_dyn_new_str(s == 0 ? e->name : e->message));
+    ScrDyn *getter = scr_dyn_new_func(closure, scr_error_class_view_default_get, 0, "", slots[s].key);
+    scr_dyn_obj_set_accessor(view, slots[s].key, slots[s].len, getter, NULL);
+    ScrDynEntry *entry = scr_dyn_find_entry(view, slots[s].key, slots[s].len);
+    if (entry) {
+      entry->enumerable = false;
+      entry->class_view = true;
+    }
+  }
+}
+
 static size_t scr_dyn_entry_index(const ScrDyn *object, const char *key, size_t key_len) {
   for (size_t i = 0; i < object->v.obj.len; i++) {
     const ScrDynProp entry_prop = scr_dyn_obj_prop_at(object, i);

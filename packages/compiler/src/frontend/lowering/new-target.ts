@@ -12,6 +12,7 @@
  * the refusal. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { BOOL, STRING, type IrExpr, type IrType, type SrcLoc } from "../../ir/ir.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { locOf } from "../program.js";
@@ -77,9 +78,7 @@ function functionLocalSubclasses(lowerer: Lowerer): ts.ClassLikeDeclaration[] {
 }
 
 function baseExpressionOf(node: ts.ClassLikeDeclaration): ts.Expression | undefined {
-  let base = node.heritageClauses?.nodes.find(
-    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-  )?.types?.nodes[0]?.expression;
+  let base = extendsElementOf(node)?.expression;
   while (base !== undefined && ts.isParenthesizedExpression(base)) base = base.expression;
   return base;
 }

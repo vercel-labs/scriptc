@@ -1,8 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { compile, deserializeModule } from "../src/index.js";
+import { analyze, compile, deserializeModule } from "../src/index.js";
 import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 
 /** The serialized IR and the LLVM module of one source file. */
@@ -117,26 +118,109 @@ see(new Failure("denied", 403));
   expect(ir).toContain('"kind":"dynCheck"');
 });
 
-test("only the view of a declared Error subclass is bound to its instance", async () => {
-  const errorClass = await build(`
-${FAILURE}
-function see(v: unknown): void {
-  const t = v as { name: string; message: string; stack?: string };
-  console.log(t.name, t.message, typeof t.stack);
+/** The by-name property helpers of a module, as serialized IR. */
+function byNameReads(ir: string): string {
+  const module = JSON.parse(ir) as { functions: { name: string }[] };
+  return module.functions
+    .filter((f) => f.name.startsWith("%dyn.class.property."))
+    .map((f) => JSON.stringify(f))
+    .join("\n");
 }
-see(new Failure("denied", 403));
+
+test("a by-name read of cause on an Error subclass instance asks the native error", async () => {
+  const { ir } = await build(`
+class Caused extends Error {
+  constructor(message: string) {
+    super(message, { cause: "root" });
+  }
+}
+function make(): unknown {
+  return new Caused("caused");
+}
+const a: any = make();
+console.log(a.cause);
 `);
-  expect(errorClass.ll).toContain("call void @scr_error_class_view(");
-  const plainClass = await build(`
+  expect(byNameReads(ir)).toContain('"fn":"error.cause"');
+  const plain = await build(`
 class Point {
   x = 1;
-  y = 2;
 }
-function see(v: unknown): void {
-  const t = v as { x: number; y: number };
-  console.log(t.x + t.y);
+function make(): unknown {
+  return new Point();
 }
-see(new Point());
+const a: any = make();
+console.log(a.cause);
 `);
-  expect(plainClass.ll).not.toContain("scr_error_class_view");
+  expect(byNameReads(plain.ir)).not.toContain('"fn":"error.cause"');
+});
+
+const GET_STACK = `
+class GetStack extends Error {
+  get stack(): string {
+    return "custom stack";
+  }
+}
+function make(): unknown {
+  return new GetStack("gs");
+}
+const a: any = make();
+console.log(a.stack);
+`;
+
+test("a stack accessor a class declares answers by name only where the program can delete the own stack", async () => {
+  const shadowed = await build(GET_STACK);
+  expect(byNameReads(shadowed.ir)).toContain('"fn":"error.stack"');
+  const deleted = await build(`${GET_STACK}delete a.stack;\nconsole.log(a.stack);\n`);
+  expect(byNameReads(deleted.ir)).not.toContain('"fn":"error.stack"');
+});
+
+/** The SC6004 warnings of one source file, as "line: message". */
+function classConversionWarnings(source: string): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-error-view-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(entry, source);
+    const result = analyze(entry);
+    expect(result.coverage.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    return (result.coverage.divergences ?? [])
+      .filter((d) => d.code === "SC6004")
+      .map((d) => `${source.slice(0, d.loc.start).split("\n").length}: ${d.message}`)
+      .sort();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("a value of an interface that extends Error handed to an Error class is warned about by name", () => {
+  const warnings = classConversionWarnings(`interface Like extends Error {
+  status?: number;
+}
+function takesError(e: Error): string {
+  return e.name + ":" + e.message;
+}
+function takesLike(e: Like): string {
+  return e.name + ":" + e.message;
+}
+function show(f: Like): Error {
+  console.log(takesLike(f));
+  console.log(takesError(f));
+  const held: Error = f;
+  console.log((f as Error).message, held.message);
+  return f;
+}
+show(new Error("real"));
+show({ name: "Fake", message: "literal", status: 4 });
+`);
+  // The argument, the typed binding, the assertion and the returned value.
+  expect(warnings.map((w) => w.slice(0, w.indexOf(":")))).toEqual(["12", "13", "14", "15"]);
+  expect(warnings[0]).toContain(
+    "this 'Like' is converted to the class 'Error': natively the checked conversion throws a TypeError",
+  );
+  expect(
+    classConversionWarnings(`function takesError(e: Error): string {
+  return e.name + ":" + e.message;
+}
+console.log(takesError(new TypeError("typed")));
+`),
+  ).toEqual([]);
 });

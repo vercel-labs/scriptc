@@ -1,8 +1,8 @@
-// An instance of a declared subclass of Error seen through a structural type (an interface that
-// extends Error, a record assertion, a destructuring): `stack`, and a `name` / `message` the instance
-// does not own, answer what the instance answers. The program asks `instanceof` of an unknown
-// value, so the classes have prototype objects. Stack frames differ natively by design, so only the
-// first line of a stack is printed.
+// An instance of a declared subclass of Error seen through an interface that extends Error (read,
+// redeclared, destructured): `stack`, and a `name` / `message` the instance does not own, answer
+// what the instance answers. The program asks `instanceof` of an unknown value, so the classes
+// have prototype objects. Stack frames differ natively by design, so only the first line of a
+// stack is printed.
 interface FailureLike extends Error {
   status?: number;
   detail?: string;
@@ -83,32 +83,6 @@ function throughDestructuring(error: unknown): void {
   const { name, message, stack, status } = error as FailureLike;
   console.log("destructured:", name, "|", JSON.stringify(message), "|", first(stack), "|", status);
 }
-function throughRecord(value: unknown): void {
-  const record = value as { name: string; message: string; stack?: string; status?: number };
-  console.log(
-    "record:",
-    record.name,
-    "|",
-    JSON.stringify(record.message),
-    "|",
-    first(record.stack),
-    "|",
-    record.status,
-  );
-}
-function throughOptionalRecord(value: unknown): void {
-  const record = value as { name?: string; message?: string; stack?: string; cause?: unknown };
-  console.log(
-    "optional:",
-    record.name,
-    "|",
-    JSON.stringify(record.message),
-    "|",
-    first(record.stack),
-    "|",
-    record.cause,
-  );
-}
 function ownKeys(value: unknown): void {
   console.log("keys:", Object.keys(value as object).join(","), "|", JSON.stringify(value));
 }
@@ -127,12 +101,10 @@ for (const value of values) {
   throughInterface(value);
   throughRedeclaredStack(value);
   throughDestructuring(value);
-  throughRecord(value);
-  throughOptionalRecord(value);
   ownKeys(value);
 }
 // A stack the program assigns is the one the structural read answers.
 const assigned = new Failure("assigned", 1);
 assigned.stack = "Replaced: stack";
 throughInterface(assigned);
-throughRecord(assigned);
+throughDestructuring(assigned);

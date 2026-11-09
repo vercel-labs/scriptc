@@ -2112,11 +2112,6 @@ ScrStr *scr_error_dyn_stack_text(const ScrDyn *view);
  * formatted stack). Borrows the view. */
 bool scr_error_dyn_stack_shared(const ScrDyn *view);
 void scr_error_dyn_place_name(ScrDyn *view, const char *after, size_t after_len);
-/* Binds a declared Error subclass instance's materialized view to the
- * instance: its `stack` accessor answers the instance's stack, and a default
- * `name` or `message` the prototype chain does not answer reads as the
- * slot's value without becoming an own property. Borrows both. */
-void scr_error_class_view(ScrDyn *view, const ScrError *e);
 /* An Error subclass view of an instance whose class keeps a property bag:
  * `name` and `message` take their committed positions, and data values
  * from the slots (scr_json.c). `name_placed`: the class's construction sets

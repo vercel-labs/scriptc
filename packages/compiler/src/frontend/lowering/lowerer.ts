@@ -116,6 +116,7 @@ import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-stati
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
@@ -4540,6 +4541,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();

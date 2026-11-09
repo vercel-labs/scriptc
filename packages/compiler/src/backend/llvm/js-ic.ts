@@ -1600,10 +1600,12 @@ function emitKeyedSet(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValu
  * string): an ordinary object takes the helper's generic write here, with
  * the site's borrowed operands, and every other receiver (a class
  * instance, a class object, an array, a proxy, a primitive) calls the
- * helper. The write is the runtime entry the helper's own tail calls, the
- * sloppy-mode one for a sloppy helper, so it defines the same assignment:
- * the runtime answers a record's members through its layout (scr_json.c
- * scr_dyn_plain_record_assign) and everything else as before. */
+ * helper. A plain record's member is assigned through its layout by the
+ * site's own runtime entry (scr_json.c scr_dyn_key_set_record), which only
+ * these sites call, so a program without one links none of it; it throws
+ * nothing. Every other ordinary object takes the runtime entry the
+ * helper's own tail calls, the sloppy-mode one for a sloppy helper, so the
+ * assignment is the one the helper defines. */
 function emitNamedSet(
   host: Host,
   e: ExprOf<"call">,
@@ -1615,16 +1617,23 @@ function emitNamedSet(
   const key = emitBorrowedInput(host, e.args[1]!);
   const value = emitBorrowedInput(host, e.args[2]!);
   const object = B.newLabel("ins.obj");
+  const general = B.newLabel("ins.gen");
   const slow = B.newLabel("ins.slow");
   const join = B.newLabel("ins.j");
+  const operands = `ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name}`;
   kindIs(host, receiver.name, DYN_KIND.OBJ, object, slow);
   B.startBlock(object);
+  host.declare(`declare zeroext i1 @scr_dyn_key_set_record(ptr, ptr, ptr)`);
+  const assigned = B.tmp();
+  B.line(`${assigned} = call zeroext i1 @scr_dyn_key_set_record(${operands})`);
+  B.condBr(assigned, join, general);
+  B.startBlock(general);
   const sloppy = host.sloppyDynWrites.has(
     `${write.loc.file}\0${write.loc.start}\0${write.loc.end}`,
   );
   const entry = sloppy ? "scr_dyn_key_set_sloppy" : "scr_dyn_key_set";
   host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
-  B.line(`call void @${entry}(ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name})`);
+  B.line(`call void @${entry}(${operands})`);
   host.emitPendingCheck();
   B.br(join);
   B.startBlock(slow);

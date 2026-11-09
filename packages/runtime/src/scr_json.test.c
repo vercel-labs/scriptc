@@ -1243,10 +1243,22 @@ static void record_frozen_bit(void) {
   assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
 }
 
-static void assign_named(ScrDyn *object, const char *name, ScrDyn *value) {
+/* A write under a run-time name as its site makes it: the record's entry
+ * for an ordinary object, and the generic write when that entry leaves the
+ * assignment alone. `record` (when given) says which of the two took it. */
+static void assign_named_by(ScrDyn *object, const char *name, ScrDyn *value, bool *record) {
   ScrStr *key = scr_str_new(name, strlen(name));
-  scr_dyn_key_set(object, key, value);
+  bool assigned = object->kind == SCR_DYN_OBJ && scr_dyn_key_set_record(object, key, value);
+  if (!assigned) {
+    assert(!scr_exc_pending());
+    scr_dyn_key_set(object, key, value);
+  }
+  if (record) *record = assigned;
   scr_str_release(key);
+}
+
+static void assign_named(ScrDyn *object, const char *name, ScrDyn *value) {
+  assign_named_by(object, name, value, NULL);
 }
 
 static double member_number(const ScrDyn *object, const char *name) {
@@ -1255,7 +1267,8 @@ static double member_number(const ScrDyn *object, const char *name) {
   return value->v.num;
 }
 
-/* scr_dyn_key_set on plain records: members appended along a layout's most
+/* A by-name write site's assignment (scr_dyn_key_set_record, else
+ * scr_dyn_key_set) on plain records: members appended along a layout's most
  * recent transition and along another one, members replaced in place, and
  * the receivers and names that keep the general assignment. */
 static void named_record_assignment(void) {
@@ -1309,12 +1322,15 @@ static void named_record_assignment(void) {
   assign_named(records[0], "id", records[0]);
   assert(scr_dyn_obj_get(records[0], "id", 2) == records[0]);
   ScrDyn *zero = scr_dyn_new_num(0);
-  assign_named(records[0], "id", zero);
+  bool record = false;
+  assign_named_by(records[0], "id", zero, &record);
+  assert(record);
 
   /* A record that takes no new members refuses one and replaces an old
-   * one. */
+   * one, both in the general assignment. */
   scr_dyn_release(scr_dyn_prevent_extensions(records[1]));
-  assign_named(records[1], "added", zero);
+  assign_named_by(records[1], "added", zero, &record);
+  assert(!record);
   assert(scr_exc_pending());
   scr_exc_clear();
   assert(records[1]->v.obj.len == NAMES - 1 && !scr_dyn_obj_get(records[1], "added", 5));
@@ -1327,7 +1343,8 @@ static void named_record_assignment(void) {
   ScrDyn *seven = scr_dyn_new_num(7);
   assign_named(prototype, "inherited", seven);
   scr_dyn_release(scr_dyn_set_prototype(records[3], prototype));
-  assign_named(records[3], "inherited", zero);
+  assign_named_by(records[3], "inherited", zero, &record);
+  assert(!record);
   assign_named(records[3], "added", zero);
   assert(!scr_exc_pending());
   assert(member_number(records[3], "inherited") == 0 && member_number(prototype, "inherited") == 7);

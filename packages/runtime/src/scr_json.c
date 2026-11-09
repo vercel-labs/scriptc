@@ -14474,8 +14474,9 @@ void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn 
  * transition out of a layout exists only for a name the layout does not
  * hold, so following one needs no lookup of the record's own members.
  * False, with nothing done, for every other receiver and name, and for a
- * layout that cannot grow. Borrows key and value. The expectations keep the
- * record's path, and the small helpers it calls, in line. */
+ * layout that cannot grow. Nothing here throws. Borrows key and value. The
+ * expectations keep the record's path, and the small helpers it calls, in
+ * line. */
 static inline __attribute__((always_inline)) bool scr_dyn_plain_record_assign(
     ScrDyn *recv, const ScrStr *key, ScrDyn *value) {
   const ScrLayout *layout = recv->v.obj.layout;
@@ -14510,6 +14511,21 @@ static inline __attribute__((always_inline)) bool scr_dyn_plain_record_assign(
   return true;
 }
 
+/* The entry of a write site under a run-time name (the compiler's
+ * backend/llvm/js-ic.ts emitNamedSet), for a receiver the site found to be
+ * an ordinary object (SCR_DYN_OBJ). True when the member was assigned to a
+ * plain record. False, with nothing done and nothing thrown, when the
+ * assignment is scr_dyn_key_set's to decide, which the site then calls:
+ * the two fenced prototypes, and every receiver and name
+ * scr_dyn_plain_record_assign leaves. Only such a site calls it, so a
+ * program without one links none of the record's path and scr_dyn_key_set
+ * stays what every other caller had. Borrows all three operands. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  if (__builtin_expect(recv == scr_builtin_object_prototype || recv == scr_builtin_error_prototype, 0))
+    return false;
+  return scr_dyn_plain_record_assign(recv, key, value);
+}
+
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
@@ -14529,7 +14545,6 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     return;
   }
   if (recv->kind == SCR_DYN_OBJ) {
-    if (__builtin_expect(scr_dyn_plain_record_assign(recv, key, value), 1)) return;
     scr_dyn_object_key_set(recv, key, value, recv);
     return;
   }

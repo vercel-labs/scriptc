@@ -509,6 +509,35 @@ static void in_place_append_asserts(void) {
     scr_str_release(text);
   }
 
+  /* A consumed text's block grows itself once it is past 128 KiB (a small
+   * full block is copied): 384 KiB of 200-byte pieces, proven ASCII (the
+   * leaf path does not take a piece this long) and with a non-ASCII start. */
+  for (int mode = 0; mode < 2; mode++) {
+    size_t n = mode ? 2 : 0;
+    bool same = true;
+    ScrStr *big = scr_str_new(mode ? "\xc3\xa9" : "", n);
+    for (size_t j = 0; j < 200; j++) piece_bytes[j] = (char)('a' + j % 26);
+    ScrStr *piece = scr_str_new(piece_bytes, 200);
+    if (scr_str_utf16_len(piece) != 200.0) same = false;
+    while (n < ((size_t)3 << 17)) {
+      big = scr_str_concat_move(big, piece);
+      n += 200;
+      /* The first append to the empty text is the piece itself, retained. */
+      if (big->len != n || (big != piece && big->rc != 1) || big->data[n] != '\0' ||
+          (size_t)big->cap < n ||
+          memcmp(big->data + n - 200, piece_bytes, 200) != 0)
+        same = false;
+    }
+    for (size_t at = mode ? 2 : 0; at < n; at += 200)
+      if (memcmp(big->data + at, piece_bytes, 200) != 0) same = false;
+    APPEND_CHECK(same, "a text grown past 128 KiB differs from its pieces");
+    APPEND_CHECK(scr_str_utf16_len(big) == (double)(mode ? n - 1 : n) &&
+                     scr_str_known_ascii(big) == !mode,
+                 "length of a text grown past 128 KiB");
+    scr_str_release(piece);
+    scr_str_release(big);
+  }
+
   /* A shared text is copied by both forms and keeps its bytes. */
   ScrStr *seed = scr_str_new("0123456789", 10);
   APPEND_CHECK(scr_str_utf16_len(seed) == 10.0 && scr_str_known_ascii(seed), "10 ASCII bytes");

@@ -834,7 +834,8 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
 
 /* The consuming concat `text = text + piece` (scr_str_concat_move): the
  * caller hands over its reference to a, so a string nobody else holds
- * (rc == 1) is appended to in its own block, which grows when it is full.
+ * (rc == 1) is appended to in its own block, which grows itself once it is
+ * large (SCR_STR_GROW_OWNED_MIN).
  * Everything below is linked only by a program that appends this way;
  * scr_str_concat, the concat of two live strings, is not part of it. */
 
@@ -861,31 +862,18 @@ static inline void scr_copy_piece(char *dst, const char *src, size_t n) {
   }
 }
 
-/* The step of an append loop as a leaf: a proven-ASCII piece of 1 to 64
- * bytes appended to a proven-ASCII text that the caller owns alone and that
- * has room. Nothing here calls out, so scr_str_concat_move needs no frame
- * on this path; every other case (growth, a text or piece that is not
- * proven ASCII, a text of at most four bytes, whose short-string cache
- * entry must be forgotten, an empty or a long piece) is out of line. A
- * proven-ASCII text owns no index facts, so its cached key hash is the only
- * fact the append invalidates. */
-static inline __attribute__((always_inline)) bool scr_str_append_fast(ScrStr *a, const ScrStr *b) {
-  size_t alen = a->len, blen = b->len, newlen = alen + blen;
-  if (a->rc != 1 || a == b || !(a->ascii & b->ascii) || alen <= 4 || blen - 1 >= 64 ||
-      newlen > (size_t)a->cap)
-    return false;
-#if SCR_STR_HASH_CACHE
-  a->hash = 0;
-#endif
-  scr_copy_piece(a->data + alen, b->data, blen);
-  a->len = newlen;
-  a->data[newlen] = '\0';
-  return true;
-}
+/* The capacity from which a full block that the caller owns alone grows
+ * itself: grown by half it is past the size at which the allocator makes a
+ * growing block a run of pages (scr_mem_realloc_ref, 128 KiB), which grows
+ * in place up to its last chunk and by moving its pages beyond. A smaller
+ * block's regrow is a copy into a second block, as scr_str_concat's is, with
+ * a reallocation's bookkeeping on top, so a full small block stays
+ * scr_str_concat's. */
+#define SCR_STR_GROW_OWNED_MIN ((size_t)128 << 10)
 
 /* Room for `more` further bytes in a string the caller owns alone and is
  * consuming: the block itself grows (in place where the allocator can
- * extend it, by moving its pages when it is large) instead of being copied
+ * extend it, by moving its pages beyond) instead of being copied
  * into a second block, by the slack scr_str_concat gives a copy, so a text
  * holds no more memory than one built there. The bytes do not change, so a
  * proven-ASCII fact survives the regrow's reset. */
@@ -900,37 +888,77 @@ static ScrStr *scr_str_grow_owned(ScrStr *a, size_t more) {
   return a;
 }
 
-static __attribute__((noinline)) ScrStr *scr_str_concat_move_general(ScrStr *a, ScrStr *b) {
-  /* A non-empty text that only the moved reference holds, and a non-empty
-   * piece: the piece goes into a's own block, which grows when it is full,
-   * and the reference moves through to the result with no count change.
-   * Only two strings that are not proven ASCII can complete a surrogate
-   * pair at the seam; those, an empty side, a shared text and `s = s + s`
-   * are scr_str_concat's. */
-  size_t alen = a->len, blen = b->len;
-  if (a->rc == 1 && a != b && blen != 0 && alen - 1 < (size_t)a->cap) {
-    bool ascii = a->ascii && b->ascii;
-    if (ascii || !scr_wtf8_joins(a->data, alen, b->data, blen)) {
-      if ((size_t)a->cap - alen < blen) a = scr_str_grow_owned(a, blen);
-      scr_short_forget(a);
-      scr_str_hash_forget(a);
-      scr_copy_piece(a->data + alen, b->data, blen);
-      a->len = alen + blen;
-      a->data[alen + blen] = '\0';
-      a->ascii = ascii;
-      /* As in scr_str_concat's in-place append: the facts below the old end
-       * stay valid, the cached length does not. */
-      if (!ascii) scr_sidx_concat_append(a, alen);
-      return a;
-    }
-  }
+/* The concat of two live strings, then the moved reference's release: every
+ * append that is not made in place. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_release(ScrStr *a, ScrStr *b) {
   ScrStr *r = scr_str_concat(a, b);
   scr_str_release(a);
   return r;
 }
 
+/* Two strings that are not proven ASCII can complete a surrogate pair at
+ * their seam (scr_str_concat's test): that concat is not an append. */
+static inline bool scr_str_seam_joins(const ScrStr *a, const ScrStr *b) {
+  return __builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
+         scr_wtf8_joins(a->data, a->len, b->data, b->len);
+}
+
+/* The in-place append of every case the leaf below does not take: a
+ * non-empty piece into the block of a non-empty text that only the moved
+ * reference holds and that has room (the caller's tests). The reference
+ * moves through to the result with no count change. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_move_general(ScrStr *a, ScrStr *b) {
+  if (scr_str_seam_joins(a, b)) return scr_str_concat_release(a, b);
+  size_t alen = a->len, blen = b->len;
+  bool ascii = a->ascii && b->ascii;
+  scr_short_forget(a);
+  scr_str_hash_forget(a);
+  scr_copy_bytes(a->data + alen, b->data, blen);
+  a->len = alen + blen;
+  a->data[alen + blen] = '\0';
+  a->ascii = ascii;
+  /* As in scr_str_concat's in-place append: the facts below the old end
+   * stay valid, the cached length does not. */
+  if (!ascii) scr_sidx_concat_append(a, alen);
+  return a;
+}
+
+/* A full block of at least SCR_STR_GROW_OWNED_MIN that only the moved
+ * reference holds: it grows itself and takes the piece in place. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_move_full(ScrStr *a, ScrStr *b) {
+  if (a == b || a->len - 1 >= (size_t)a->cap) return scr_str_concat_release(a, b);
+  return scr_str_concat_move_general(scr_str_grow_owned(a, b->len), b);
+}
+
 ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
-  if (scr_str_append_fast(a, b)) return a; /* the reference moves through */
+  /* A shared or immortal text is never appended to, and a full block
+   * below the size that grows itself is copied with slack: both are what
+   * this function was before the in-place paths, a test or two later. */
+  if (a->rc != 1) return scr_str_concat_release(a, b);
+  size_t alen = a->len, blen = b->len, cap = (size_t)a->cap;
+  if (cap - alen < blen) {
+    if (cap >= SCR_STR_GROW_OWNED_MIN) return scr_str_concat_move_full(a, b);
+    return scr_str_concat_release(a, b);
+  }
+  if (a == b) return scr_str_concat_release(a, b); /* `s = s + s` */
+  /* The step of an append loop as a leaf: a proven-ASCII piece of 1 to 64
+   * bytes appended to a proven-ASCII text of more than four bytes (a
+   * shorter one may own a short-string cache entry, which must be
+   * forgotten; the test also refuses a symbol key, whose length is
+   * SIZE_MAX and whose capacity is 0). Nothing here calls out, so this
+   * function needs no frame on this path. A proven-ASCII text owns no index
+   * facts, so its cached key hash is the only fact the append invalidates. */
+  if ((a->ascii & b->ascii) && alen - 5 < cap && blen - 1 < 64) {
+#if SCR_STR_HASH_CACHE
+    a->hash = 0;
+#endif
+    scr_copy_piece(a->data + alen, b->data, blen);
+    a->len = alen + blen;
+    a->data[alen + blen] = '\0';
+    return a; /* the reference moves through */
+  }
+  /* An empty side is scr_str_concat's. */
+  if (blen == 0 || alen - 1 >= cap) return scr_str_concat_release(a, b);
   return scr_str_concat_move_general(a, b);
 }
 

@@ -1001,8 +1001,8 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
- * plain data properties by an ordinary write, others by their descriptor,
- * and so is `__proto__`, which an ordinary write would not store. */
+ * plain data properties by an ordinary write; the others, and an own
+ * `__proto__`, which an ordinary write would not store, by their descriptor. */
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */

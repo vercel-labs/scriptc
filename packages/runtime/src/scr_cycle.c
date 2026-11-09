@@ -1542,18 +1542,6 @@ void scr_cyc_on_release(void *obj) {
   }
 #if SCR_CYC_INLINE_BUFFERING
   if (scr_cyc_append(h, obj)) return;
-  /* The window may be below what its formula allows: it is clamped to the
-   * nursery buffer's capacity when it is derived, and every nursery death
-   * then lowers it by one (scr_cyc_window_shrink) although the death also
-   * emptied a slot. In a loop whose candidates die young the window so
-   * reaches zero within one capacity's worth of deaths, and every release
-   * until the next pass would take this call. Derive it again and retry:
-   * the append is still exactly what the code below does with a nursery
-   * candidate, and a window that is truly used up fails again. */
-  if (scr_cyc_gen(h) == SCR_CYC_NURSERY && scr_cyc_live < scr_cyc_alloc_trigger) {
-    scr_cyc_window_update();
-    if (scr_cyc_append(h, obj)) return;
-  }
 #endif
   if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_set_gen(h, scr_cyc_buffer_gen(obj, scr_cyc_type(h), scr_cyc_gen(h)));
   unsigned gen = scr_cyc_gen(h);

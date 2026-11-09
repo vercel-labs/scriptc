@@ -103,9 +103,9 @@ test("TypeScript 7.1 requests name types and signatures as 7.1 does", () => {
   expect(queries.get("getApparentType")).toMatchObject({ objectId: 1 });
   expect(queries.get("getApparentType")!["type"]).toBeUndefined();
   expect(queries.get("getReturnTypeOfSignature")).toMatchObject({ objectId: 3 });
-  // 7.1 numbers every kind from SourceKeyword up one higher.
+  // A 7.1 server takes the client's kind numbers unchanged.
   expect(queries.get("signatureToSignatureDeclaration")).toMatchObject({
-    kind: SyntaxKind.FunctionType + 1,
+    kind: SyntaxKind.FunctionType,
   });
   // A well-known symbol id names a symbol of the snapshot.
   const undefinedSymbol = checker.getSymbolAtPosition("/main.ts", 0)!;

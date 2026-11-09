@@ -3004,16 +3004,29 @@ export class ClassDynamicDispatch {
                 (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit"))
             ? expr
             : null;
+        // `dyn.in` is the `in` probe under a key that names a string: its
+        // helper takes the name as it is, like a write under such a key.
+        const namedProbe = expr.kind === "libCall" && expr.fn === "dyn.in";
         const computedProbe =
           expr.kind === "libCall" &&
-          ["dyn.hasKeyComputed", "dyn.hasOwnComputed", "dyn.propertyIsEnumerableComputed"].includes(
-            expr.fn,
-          )
+          (namedProbe ||
+            [
+              "dyn.hasKeyComputed",
+              "dyn.hasOwnComputed",
+              "dyn.propertyIsEnumerableComputed",
+            ].includes(expr.fn))
             ? expr
             : null;
+        // A write whose key names a string without being typed `string`
+        // (the libCall's namedKey). It and the `in` probe by a name are the
+        // named forms: before keys were passed by name their sites called
+        // the helpers that take a boxed key, so they get helpers of their
+        // own (`%dyn.class.named.<n>`), which keep that helper's
+        // checked-dynamic parameters (ir/jsval.ts jsvalParams).
+        const namedWrite = computedWrite?.fn === "dyn.keySet" && computedWrite.namedKey === true;
         if (computedRead || computedWrite || computedProbe) {
           const probe = computedProbe
-            ? computedProbe.fn === "dyn.hasKeyComputed"
+            ? computedProbe.fn === "dyn.hasKeyComputed" || namedProbe
               ? "in"
               : computedProbe.fn === "dyn.hasOwnComputed"
                 ? "own"
@@ -3021,7 +3034,7 @@ export class ClassDynamicDispatch {
             : undefined;
           const dynamicKey =
             reflect ||
-            !!computedProbe ||
+            (!!computedProbe && !namedProbe) ||
             computedWrite?.fn === "dyn.keySetComputed" ||
             computedRead?.key.type.kind === "dyn";
           const sourceKey = keyValue(
@@ -3057,6 +3070,7 @@ export class ClassDynamicDispatch {
             reflect,
             !!indexKey,
             ...(sloppyWrite ? ["sloppy"] : []),
+            ...(namedWrite ? ["named"] : []),
           ]);
           let dispatch = this.computed.get(key);
           if (!dispatch) {
@@ -3110,9 +3124,13 @@ export class ClassDynamicDispatch {
                   : computedRead
                     ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
                     : {
-                        ...computedWrite!,
+                        // The helper's own write is the plain one: the
+                        // site's namedKey chose this helper and stops here.
+                        kind: "libCall",
                         fn: "dyn.keySet",
                         args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                        type: computedWrite!.type,
+                        loc: computedWrite!.loc,
                       };
             const fallthroughOn = (target: IrExpr): IrStmt[] =>
               computedWrite && !reflect
@@ -3122,7 +3140,7 @@ export class ClassDynamicDispatch {
                   ]
                 : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
-              name: `%dyn.class.computed.${this.computed.size}`,
+              name: `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}.${this.computed.size}`,
               params,
               returnType:
                 (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,

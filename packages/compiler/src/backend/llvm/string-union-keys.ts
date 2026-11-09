@@ -120,9 +120,16 @@ function startsWithEscapeByte(B: BlockBuilder, host: UnionKeyHost, string: strin
  * string is a temporary the frame owns and releases. For a use inside a
  * loop this module's caller emits itself, see encodeCollectionKeyIn. */
 export function encodeCollectionKey(host: LlvmEmitterContext, key: IrType, value: string): string {
-  const { stored, temporary } = encodeCollectionKeyIn(host.B, host, key, value);
-  // NULL on the ordinary path: the union's release owns nothing then.
-  if (temporary !== null) host.own({ name: temporary, type: key });
+  const B = host.B;
+  const { stored, temporary } = encodeCollectionKeyIn(B, host, key, value);
+  if (temporary === null) return stored;
+  // NULL on the ordinary path. The frame owns the temporary through a slot
+  // it releases only when filled, so a key that is not escaped pays one
+  // test after its operation and no release call.
+  const slot = B.slot();
+  B.entryAllocas.push(`${slot} = alloca ptr`);
+  B.line(`store ptr ${temporary}, ptr ${slot}`);
+  host.ownSlot(slot, { kind: "string" }, true);
   return stored;
 }
 

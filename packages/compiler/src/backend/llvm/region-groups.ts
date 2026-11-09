@@ -820,6 +820,11 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     )
       return false;
     if (node.kind === "new") return leakFree.has(`%${node.className}.constructor`);
+    // Resuming a generator (`for...of`, `next()`, a spread, `yield*`) runs
+    // its body with the arena of the function that drives it as the
+    // allocation target, and no edge the analysis follows leads there: what
+    // the body keeps past the resumption would be dropped with the arena.
+    if (node.kind === "genResume") return false;
     return true;
   };
   /** The values `e` can produce, through casts and conditionals. */

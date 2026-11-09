@@ -511,3 +511,64 @@ console.log(pushed(), spliced(), local());
   expect(roots.length).toBeGreaterThan(0);
   for (const root of roots) expect(closed.has(root)).toBe(false);
 });
+
+const ITEMS = `
+class Item {
+  label: string;
+  constructor(label: string) {
+    this.label = label;
+  }
+}
+const saved: Item[] = [];
+function own(n: number): Item[] {
+  const mine: Item[] = [];
+  for (let i = 0; i < n; i++) mine.push(new Item("own" + i));
+  return mine;
+}
+function counts(n: number): number {
+  const mine = own(n);
+  return mine.length;
+}
+`;
+
+test("a function that resumes a generator is not leak-free", async () => {
+  const mod = await moduleFor(`${ITEMS}
+function* produce(n: number): Generator<Item, void, undefined> {
+  for (let i = 0; i < n; i++) {
+    const it = new Item("g" + i);
+    if (i % 2 === 0) saved.push(it);
+    yield it;
+  }
+}
+function drains(g: Generator<Item, void, undefined>, n: number): number {
+  const mine = own(n);
+  let c = 0;
+  for (const it of g) c += it.label.length;
+  return c + mine.length;
+}
+function steps(g: Generator<Item, void, undefined>, n: number): number {
+  const mine = own(n);
+  const first = g.next();
+  return mine.length + (first.done === true ? 0 : 1);
+}
+let total = 0;
+for (let r = 0; r < 3; r++) {
+  const g = produce(5);
+  total += drains(g, 5);
+  const h = produce(5);
+  total += steps(h, 5);
+  total += counts(5);
+}
+console.log(total, saved.length);
+`);
+  const groups = analyzeRegionGroups(mod);
+  // The generator's body runs inside the resumption and keeps what it
+  // allocates in a module array: the function that drives it opens no arena.
+  for (const name of ["drains", "steps"]) {
+    expect(groups.leakFree.has(name)).toBe(false);
+    expect(callsOf(mod, name).some((c) => groups.calls.has(c))).toBe(false);
+  }
+  // The same function without the generator keeps its call region.
+  expect(groups.leakFree.has("counts")).toBe(true);
+  expect(callsOf(mod, "counts").every((c) => groups.calls.has(c))).toBe(true);
+});

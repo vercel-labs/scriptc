@@ -2504,24 +2504,41 @@ function adoptingCast(
         },
         loc,
       },
+      // Only a plain object or array has nodes to adopt. A source that is
+      // already a native value's capsule (the record this cast just handed
+      // out, most often) is left alone without boxing the result again.
       {
-        kind: "exprStmt",
-        expr: {
+        kind: "if",
+        cond: {
           kind: "libCall",
-          fn,
-          args: [
-            varRef(source.id, DYN, loc),
-            {
-              kind: "dynFrom",
-              value: varRef(value.id, target, loc),
-              liveRef: true,
-              type: DYN,
-              loc,
-            },
-          ],
-          type: VOID,
+          fn: "dyn.adoptable",
+          args: [varRef(source.id, DYN, loc)],
+          type: BOOL,
           loc,
         },
+        then: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn,
+              args: [
+                varRef(source.id, DYN, loc),
+                {
+                  kind: "dynFrom",
+                  value: varRef(value.id, target, loc),
+                  liveRef: true,
+                  type: DYN,
+                  loc,
+                },
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        else_: null,
         loc,
       },
     ],

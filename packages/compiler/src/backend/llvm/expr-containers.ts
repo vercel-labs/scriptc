@@ -1355,20 +1355,37 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
   return host.shapeHost.mapOps(operands);
 }
 
-/** Construct matching key/value storage once for Maps and Sets. */
-function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
-  const B = host.B;
+/** The call that constructs empty storage for a Map or Set with these key
+ * and value types (a Set's value type is f64). */
+function collectionNewCall(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
   // pointer (boxedUnionIds).
   const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
-  const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
   const valKind = compactMapValues(host, key, value) ? 3 : mapValKindNum(value);
-  B.line(
-    `${m} = call ptr @scr_map_new(i32 ${kind}, i32 ${valKind}, ptr ${collectionOps(host, key, value)})`,
-  );
+  return `call ptr @scr_map_new(i32 ${kind}, i32 ${valKind}, ptr ${collectionOps(host, key, value)})`;
+}
+
+/** collectionNewCall for a typed Map or Set type whose storage a checked
+ * conversion can build from an untyped collection's entries (dyn.ts); null
+ * for one that keeps compact values, which no checked value can be. */
+export function checkedCollectionNewCall(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "map" | "set" },
+): string | null {
+  const key = t.kind === "map" ? t.key : t.elem;
+  const value: IrType = t.kind === "map" ? t.value : { kind: "f64" };
+  if (compactMapValues(host, key, value)) return null;
+  return collectionNewCall(host, key, value);
+}
+
+/** Construct matching key/value storage once for Maps and Sets. */
+function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
+  const B = host.B;
+  const m = B.tmp();
+  B.line(`${m} = ${collectionNewCall(host, key, value)}`);
   return m;
 }
 

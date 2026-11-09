@@ -2,10 +2,11 @@
 /// <reference path="./stream.d.ts" />
 
 /* The synchronous node:fs surface — the subset that compiles natively:
- * utf8 path strings, string and Buffer data, and the documented option
- * records that have a lowering. Importing "node:fs" resolves here
- * (preflight allowlists exactly the ambient-declared node: modules); every
- * function lowers to a `libCall` with a scr_fs_* runtime implementation.
+ * utf8 path strings, string, Buffer, TypedArray and DataView data, and
+ * the documented option records that have a lowering. Importing "node:fs"
+ * resolves here (preflight allowlists exactly the ambient-declared node:
+ * modules); every function lowers to a `libCall` with a scr_fs_* runtime
+ * implementation.
  * Failures throw CATCHABLE string values formatted like Node's error
  * messages ("ENOENT: no such file or directory, open 'x'"). `rmSync`
  * removes FILES only (like Node without `recursive`); empty directories go
@@ -31,7 +32,7 @@ declare module "node:fs" {
    * string data is written with, and/or the open(2) flag. */
   export function writeFileSync(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
      * Node. The flag names are Node's ("w", "wx", "a", "as+", ...). */
@@ -45,30 +46,34 @@ declare module "node:fs" {
   /* The bare-encoding spelling — the options record's encoding key alone. */
   export function writeFileSync(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     encoding: BufferEncoding,
   ): void;
-  export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function writeFileSync(path: string | URL, data: string | ScriptcBufferView): void;
   /* Buffer and TypedArray data with the mode and/or flag options; the
    * bytes are written as they are, and Node ignores an encoding key here. */
   export function writeFileSync(
     path: string | URL,
-    data: Uint8Array,
+    data: ScriptcBufferView,
     options: { mode?: number; encoding?: BufferEncoding; flag?: string; [option: string]: unknown },
   ): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
    * the write lands at the descriptor's current offset). */
-  export function writeFileSync(fd: number, data: string): void;
-  export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
+  export function writeFileSync(fd: number, data: string | ScriptcBufferView): void;
+  export function writeFileSync(
+    fd: number,
+    data: string | ScriptcBufferView,
+    encoding: "utf8" | "utf-8",
+  ): void;
   /* appendFileSync opens with the "a" flag by default; the options record
    * and the bare encoding replace the encoding and can name another flag
    * (and the creation mode). */
-  export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function appendFileSync(path: string | URL, data: string | ScriptcBufferView): void;
   /* The bare-encoding spelling is the options record's encoding key alone. */
   export function appendFileSync(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     encoding: BufferEncoding,
   ): void;
   /* The options record: `encoding` names the encoding the string data is
@@ -76,7 +81,7 @@ declare module "node:fs" {
    * writeFileSync stance). */
   export function appendFileSync(
     path: string | URL,
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView,
     options?: {
       mode?: number;
       encoding?: BufferEncoding;

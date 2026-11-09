@@ -129,28 +129,61 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
+  // What an instance holds beyond its declared fields. `fields` repeats the
+  // base chain's declared fields in every subclass; these references are not
+  // declared, so a class takes them from its whole base chain: an instance of
+  // a stream class or of a program subclass of the emitter owns listeners
+  // exactly as an emitter does, and a slot typed as that subclass must lead
+  // to them — otherwise the slot's owner goes untraced and a listener that
+  // captures it closes a cycle the collector never sees.
+  type ClassDef = (typeof classes)[number];
+  type Field = { name: string; type: IrType };
+  const classesByName = new Map(classes.map((c) => [c.name, c] as const));
+  const undeclared = new Map<string, Field[]>();
+  const undeclaredFields = (start: ClassDef): Field[] => {
+    // Resolved from the nearest answered ancestor down, without recursion
+    // (hierarchies can be thousands deep).
+    const chain: ClassDef[] = [];
+    const onChain = new Set<string>();
+    let inherited: Field[] = [];
+    let c: ClassDef | undefined = start;
+    while (c !== undefined && !onChain.has(c.name)) {
+      const known = undeclared.get(c.name);
+      if (known !== undefined) {
+        inherited = known;
+        break;
+      }
+      chain.push(c);
+      onChain.add(c.name);
+      c = c.base === undefined ? undefined : classesByName.get(c.base);
+    }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const c = chain[i]!;
+      const own: Field[] = [];
+      if (c.name === RUNTIME_EMITTER_CLASS)
+        own.push({ name: "<listeners>", type: funcOf([], VOID) });
+      // The EventTarget state owns listener values and the target's own
+      // capsule; an Event owns its target and detail.
+      if (c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS)
+        own.push({ name: "<engine>", type: DYN });
+      if (c.localCaptures !== undefined)
+        own.push({ name: "<class>", type: { kind: "classval", className: c.name } });
+      // An instance of a class that extends Array holds its elements.
+      if (c.arrayElem !== undefined)
+        own.push({ name: "<elements>", type: { kind: "array", elem: c.arrayElem } });
+      inherited =
+        own.length === 0
+          ? inherited
+          : [...own, ...inherited.filter((field) => !own.some((o) => o.name === field.name))];
+      undeclared.set(c.name, inherited);
+    }
+    return inherited;
+  };
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
       unit: unitOfClass(c.name),
-      fields: [
-        ...c.fields,
-        ...(c.name === RUNTIME_EMITTER_CLASS
-          ? [{ name: "<listeners>", type: funcOf([], VOID) }]
-          : []),
-        // The EventTarget state owns listener values and the target's own
-        // capsule; an Event owns its target and detail.
-        ...(c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS
-          ? [{ name: "<engine>", type: DYN }]
-          : []),
-        ...(c.localCaptures !== undefined
-          ? [{ name: "<class>", type: { kind: "classval" as const, className: c.name } }]
-          : []),
-        // An instance of a class that extends Array holds its elements.
-        ...(c.arrayElem !== undefined
-          ? [{ name: "<elements>", type: { kind: "array" as const, elem: c.arrayElem } }]
-          : []),
-      ],
+      fields: [...c.fields, ...undeclaredFields(c)],
     })),
     ...(mod.records ?? []).map((r) => ({
       key: `record:${r.id}`,

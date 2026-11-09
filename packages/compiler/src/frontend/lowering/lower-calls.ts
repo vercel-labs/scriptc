@@ -127,6 +127,7 @@ import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
 import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
+import { lowerArgumentsObjectCall } from "./arguments-object.js";
 import { lowerAssertInstanceCall } from "./assert-instances.js";
 import {
   erasedOverloadMemberType,
@@ -323,7 +324,11 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { funduleMemberOf } from "./lower-fundule.js";
-import { hostGlobalNameOfRead, hostGlobalPrototypeMemberOf } from "./host-globals.js";
+import {
+  hostGlobalNameOfRead,
+  hostGlobalPrototypeMemberOf,
+  isGlobalObjectRead,
+} from "./host-globals.js";
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
@@ -347,7 +352,7 @@ import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.j
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
-import { nullishValueUnitOf } from "./binding-analysis.js";
+import { isWriteTarget, nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
@@ -561,6 +566,14 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // A call that asks an arguments object what it is (arguments-object.ts).
+  return (
+    lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
+    lowerOrdinaryCall(lowerer, expr)
+  );
+}
+
+function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   // A JavaScript source calling a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The
@@ -4012,13 +4025,27 @@ function lowerObjectPrototypeCall(
   const receiverNode = call.arguments.nodes[0]!;
   const immediate = immediateObjectTagReceiver(lowerer, receiverNode);
   const receiver = immediate?.effect ?? lowerer.lowerExpr(receiverNode);
-  const tag = immediate?.tag ?? objectToStringTag(lowerer, receiver.type);
-  if (tag === null && immediate === null && call.arguments.nodes.length === 1) {
+  // A function that returns a promise or a generator can be an async or a
+  // generator function, whose tag names its kind (AsyncFunction,
+  // GeneratorFunction, AsyncGeneratorFunction), or an ordinary function that
+  // returns one: the function value tells them apart at run time. Every
+  // other function is "Function", folded.
+  const kindTagged =
+    immediate === null &&
+    receiver.type.kind === "func" &&
+    (receiver.type.ret.kind === "promise" || receiver.type.ret.kind === "generator");
+  const tag = immediate?.tag ?? (kindTagged ? null : objectToStringTag(lowerer, receiver.type));
+  if (tag === null && immediate === null && !kindTagged && call.arguments.nodes.length === 1) {
     const classTag = classObjectTag(lowerer, receiver, receiverNode);
     if (classTag) return classTag;
   }
   // A generator object answers its tag through its checked capsule.
-  if (tag === null && receiver.type.kind !== "dyn" && receiver.type.kind !== "generator") {
+  if (
+    tag === null &&
+    !kindTagged &&
+    receiver.type.kind !== "dyn" &&
+    receiver.type.kind !== "generator"
+  ) {
     lowerer.noLowering(
       "Object.prototype.toString.call over a " + lowerer.fmt(receiver.type) + " receiver",
       receiverNode,
@@ -4041,7 +4068,9 @@ function lowerObjectPrototypeCall(
       ? {
           kind: "libCall",
           fn: "dyn.objectTag",
-          args: [ref.type.kind === "generator" ? lowerer.coerceToExpected(ref, DYN) : ref],
+          args: [
+            ref.type.kind === "generator" || kindTagged ? lowerer.coerceToExpected(ref, DYN) : ref,
+          ],
           type: STRING,
           loc,
         }
@@ -10900,7 +10929,16 @@ function lowerObjectStaticCall(
           : member === "values"
             ? "dyn.objValues"
             : "dyn.objEntries";
-      let v = isHandle ?? lowerer.lowerExpr(argNode);
+      // The global object's enumerable own properties are the keys a for-in
+      // over it visits (it inherits none that enumerate): Node's enumerable
+      // globals in Node's order, then the properties the program wrote. Its
+      // own key walk would answer only what the handle models.
+      const globalKeys = member === "keys" && isGlobalObjectRead(lowerer, argNode);
+      let v: IrExpr =
+        isHandle ??
+        (globalKeys
+          ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc: locOf(call) }
+          : lowerer.lowerExpr(argNode));
       if (v.type.kind !== "dyn")
         v = {
           kind: "dynFrom",
@@ -11741,25 +11779,6 @@ export function valueListCallbackReturn(
   return lowerer.checker.isArrayType(type) && lowerer.mapTypeOf(type)?.kind === "dyn"
     ? arrayOf(DYN)
     : undefined;
-}
-
-/** Whether an access is assigned, updated or deleted. */
-function isWriteTarget(access: ts.Expression): boolean {
-  let node: ts.Node = access;
-  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  const parent = node.parent;
-  if (ts.isBinaryExpression(parent))
-    return (
-      parent.left === node &&
-      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    );
-  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
-    return (
-      parent.operator === ts.SyntaxKind.PlusPlusToken ||
-      parent.operator === ts.SyntaxKind.MinusMinusToken
-    );
-  return ts.isDeleteExpression(parent);
 }
 
 /** The array methods with native lowerings over a list of checked-dynamic

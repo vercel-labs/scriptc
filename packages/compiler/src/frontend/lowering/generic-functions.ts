@@ -93,6 +93,9 @@ export interface GenericFnInfo {
    * body names in a member pattern (`Extract<U, { kind: K }>`). The body
    * maps such a type by K's bound literals, so instances key on them too. */
   patternTps?: Set<ts.Symbol>;
+  /** Whether a type parameter is named by no parameter or return
+   * annotation (hasUnmentionedTypeParam), cached. */
+  unmentionedTp?: boolean;
   /** Instantiation key (comma-joined typeKeys of the mapped param types +
    * `=>` + return typeKey) → instance. Key identity IS signature identity:
    * two call sites whose inferred types map to the same IR types share one
@@ -249,6 +252,11 @@ export interface GenericInstance {
   implicitInferReturn?: true;
   /** An erased instance (every type parameter bound to `unknown`). */
   erased?: true;
+  /** Set when the instance's IR signature does not name its type arguments
+   * (signatureHidesTypeArguments): the type arguments it was lowered with
+   * (boundTypesKey). A later demand with the same signature and other type
+   * arguments takes an instance of its own. */
+  boundTypes?: string;
   /** Name-keyed instances: function parameter → its call site's static
    * name (null when only known at run time), folded at `.name` reads. */
   staticFnNames?: Map<ts.Symbol, string | null>;
@@ -1146,8 +1154,30 @@ function internGenericInstance(
   // literals can map to one IR signature while their bodies read
   // different fields.
   if (info.refused !== undefined) reportRefusedMemberUse(lowerer, info.refused, blame);
-  const key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
+  let key = `${params.map((s) => typeKey(s.type)).join(",")}=>${typeKey(returnType)}${opts?.extraKey ?? ""}`;
   let inst = info.instances.get(key);
+  // A signature with an untyped position stands for more than one set of
+  // type arguments: `remember<T>(box: Box<T>)` is `(dyn) => void` at every T
+  // when `Box<T>` is held as a checked-dynamic value, and the body still
+  // reads `box.get()` as a T. The first instance keeps the signature's key
+  // (and its name); a demand whose type arguments differ from the ones that
+  // instance was lowered with is keyed by them as well. An instance lowered
+  // with every type argument untyped assumes nothing about its values and
+  // serves every demand of its signature.
+  let inferred: {
+    bindings: Map<ts.Symbol, IrType>;
+    tsBindings: Map<ts.Symbol, ts.Type>;
+  } | null = null;
+  if (inst?.boundTypes !== undefined && inst.boundTypes !== untypedBoundTypesKey(info)) {
+    const tsBindings = opts?.tsBindings ?? new Map<ts.Symbol, ts.Type>();
+    const bindings = makeBindings(tsBindings);
+    const bound = boundTypesKey(info, bindings);
+    if (bound !== inst.boundTypes) {
+      key = `${key}${bound}`;
+      inst = info.instances.get(key);
+      inferred = { bindings, tsBindings };
+    }
+  }
   if (!inst) {
     const path = extendInstantiationPath(lowerer.genericInstantiationPath, info.decl);
     if (!path) {
@@ -1158,8 +1188,8 @@ function internGenericInstance(
           `${MAX_INSTANTIATION_RECURSION} recursive specializations on one demand path)`,
       );
     }
-    const tsBindings = opts?.tsBindings ?? new Map<ts.Symbol, ts.Type>();
-    const bindings = makeBindings(tsBindings);
+    const tsBindings = inferred?.tsBindings ?? opts?.tsBindings ?? new Map<ts.Symbol, ts.Type>();
+    const bindings = inferred?.bindings ?? makeBindings(tsBindings);
     const rendered = info.typeParams
       .map((tp) => {
         // A literal-bound keyof parameter renders its literal — the
@@ -1184,6 +1214,9 @@ function internGenericInstance(
       tsBindings,
       typeArgsText,
       ...(opts?.staticFnNames ? { staticFnNames: opts.staticFnNames } : {}),
+      ...(signatureHidesTypeArguments(lowerer, info, params, returnType)
+        ? { boundTypes: boundTypesKey(info, bindings) }
+        : {}),
     };
     info.instances.set(key, inst);
     if (opts?.pinned !== undefined && opts.pinned.size > 0)
@@ -1192,6 +1225,104 @@ function internGenericInstance(
   }
   lowerer.noteGenericInstanceDemand(inst);
   return inst;
+}
+
+/** The type arguments of one instantiation as an instance-key suffix
+ * (`<f64,string>`; `?` for a type parameter nothing bound). */
+function boundTypesKey(info: GenericFnInfo, bindings: ReadonlyMap<ts.Symbol, IrType>): string {
+  return `<${info.typeParams
+    .map((tp) => {
+      const bound = bindings.get(tp);
+      return bound === undefined ? "?" : typeKey(bound);
+    })
+    .join(",")}>`;
+}
+
+/** boundTypesKey of the instantiation with every type argument untyped. */
+function untypedBoundTypesKey(info: GenericFnInfo): string {
+  return `<${info.typeParams.map(() => typeKey(DYN)).join(",")}>`;
+}
+
+/** Whether one IR signature of `info` can belong to more than one set of
+ * type arguments: a type parameter the signature's annotations never
+ * mention (`parse<T>(text: string): void`), or a position that holds an
+ * untyped value, where every `Box<T>` held as a checked-dynamic value has
+ * the same IR type. Classes, records and unions name their members' types
+ * in their own identity, so only an untyped position hides a type
+ * argument. */
+function signatureHidesTypeArguments(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  params: readonly ParamShape[],
+  returnType: IrType,
+): boolean {
+  if (info.typeParams.length === 0) return false;
+  if (hasUnmentionedTypeParam(info)) return true;
+  const seen = new Set<string>();
+  const untyped = (type: IrType): boolean => {
+    switch (type.kind) {
+      case "dyn":
+      case "jsval":
+      case "caught":
+        return true;
+      case "array":
+      case "set":
+        return untyped(type.elem);
+      case "map":
+        return untyped(type.key) || untyped(type.value);
+      case "promise":
+        return untyped(type.inner);
+      case "generator":
+        return untyped(type.yieldT) || untyped(type.retT) || untyped(type.nextT);
+      case "func":
+        return type.params.some(untyped) || untyped(type.ret);
+      case "union": {
+        const key = typeKey(type);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return lowerer.unions.get(type.unionId)?.arms.some(untyped) ?? false;
+      }
+      case "record": {
+        const key = typeKey(type);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        const shape = lowerer.shapes.get(type.shapeId);
+        if (shape === undefined) return false;
+        return (
+          shape.fields.some((field) => untyped(field.type)) ||
+          (shape.indexValue !== undefined && untyped(shape.indexValue))
+        );
+      }
+      default:
+        return false;
+    }
+  };
+  return params.some((param) => untyped(param.type)) || untyped(returnType);
+}
+
+const IDENTIFIER_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.Identifier]);
+
+/** Whether a type parameter of `info` is named by no parameter or return
+ * annotation, so no signature of an instantiation shows its binding.
+ * Computed once per declaration from its syntax. */
+function hasUnmentionedTypeParam(info: GenericFnInfo): boolean {
+  if (info.unmentionedTp !== undefined) return info.unmentionedTp;
+  const mentioned = new Set<string>();
+  const note = (annotation: ts.TypeNode | undefined): void => {
+    if (annotation === undefined) return;
+    ts.walkPreorder(
+      annotation,
+      (node) => {
+        if (ts.isIdentifier(node)) mentioned.add(node.text);
+      },
+      IDENTIFIER_KINDS,
+    );
+  };
+  for (const parameter of info.decl.parameters.nodes) note(parameter.type);
+  note(info.decl.type);
+  const unmentioned = info.typeParams.some((tp) => !mentioned.has(ts.symbolName(tp)));
+  info.unmentionedTp = unmentioned;
+  return unmentioned;
 }
 
 const TYPE_LITERAL_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.TypeLiteral]);

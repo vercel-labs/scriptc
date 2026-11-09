@@ -19,6 +19,7 @@ import { InternalCompilerError } from "../../errors.js";
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -1603,6 +1604,9 @@ function jsDynHoldableInitializer(
 ): boolean {
   if (init === undefined) return true;
   if (isNativeProxyInitializer(lowerer, init)) return true;
+  // The cast the file-system shadow serves for `var v = void 0`
+  // (js-void-initializers.ts) holds undefined, as the identifier below does.
+  if (isVoidLiteralCast(init)) return true;
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (checkedGlobalReference(lowerer, e)) return true;

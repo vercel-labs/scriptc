@@ -172,6 +172,12 @@ export interface ScrDiagnostic {
    * diagnostic used. A cascade clears when every one of them would
    * degrade instead of failing. */
   cause?: readonly string[];
+  /** The spans a source shadow inserted into the lines of this diagnostic's
+   * code frame (frontend/js-void-initializers.ts), each as its offset in the
+   * text `loc` points into and its length. `loc` keeps its offsets; the
+   * renderer reports the column and shows the lines without the spans, as
+   * the file is written. */
+  inserted?: readonly (readonly [start: number, length: number])[];
 }
 
 /** Where a type failure sits (localized-failure design §3.6): a

@@ -2480,13 +2480,43 @@ ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
   return scr_dyn_retain((ScrDyn *)entry);
 }
 
+/* Whether `d` is a live array capsule whose elements the two accessors below
+ * answer: the receiver scr_dyn_index_get answers. A class, record or bag
+ * capsule has no array hooks, and a program with event-reference hooks
+ * asks them for a member before the array's own. */
+static inline bool scr_dyn_arr_is_capsule(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF && !scr_event_ref_hooks && scr_dyn_typed_ref_array_ops(d);
+}
+
+/* scr_dyn_arr_at for a value that is no checked array, kept out of line so
+ * the checked array's read pays one tail call for it and nothing else. A
+ * live array capsule answers the element at an index below its length in
+ * the boxing the keyed read gives it (scr_dyn_typed_ref_element; an array
+ * without slot states holds a value at every such index). A hole has no
+ * element of its own: the capsule's plain view reads it, through the
+ * prototype chain. */
+static __attribute__((noinline)) ScrDyn *scr_dyn_arr_at_other(const ScrDyn *d, double i) {
+  if (!scr_dyn_arr_is_capsule(d)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrArr *arr = d->v.typed_ref.ptr;
+  if (!(i >= 0 && i < (double)arr->len)) return scr_dyn_retain(scr_dyn_undefined());
+  size_t index = (size_t)i;
+  if (!scr_arr_has_states(arr)) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
+  ScrDyn *element = scr_dyn_typed_ref_element(d, index);
+  if (element) return element;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  ScrDyn *result = view->kind == SCR_DYN_ARR ? scr_dyn_arr_at(view, (double)index)
+                                              : scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_release(view);
+  return result;
+}
+
 double scr_dyn_arr_len(const ScrDyn *d) {
-  return d->kind == SCR_DYN_ARR ? (double)d->v.arr.len : 0;
+  if (d->kind == SCR_DYN_ARR) return (double)d->v.arr.len;
+  return scr_dyn_arr_is_capsule(d) ? (double)((const ScrArr *)d->v.typed_ref.ptr)->len : 0;
 }
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
-  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)scr_dyn_arr_length(d)) {
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
+  if (d->kind != SCR_DYN_ARR) return scr_dyn_arr_at_other(d, i);
+  if (i < 0 || i >= (double)scr_dyn_arr_length(d)) return scr_dyn_retain(scr_dyn_undefined());
   if (scr_dyn_arr_has_index(d, (size_t)i)) return scr_dyn_retain(d->v.arr.items[(size_t)i]);
   char text[32];
   int length = snprintf(text, sizeof text, "%zu", (size_t)i);

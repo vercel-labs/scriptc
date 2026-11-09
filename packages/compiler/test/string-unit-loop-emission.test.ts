@@ -140,11 +140,12 @@ console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
     const words = ll.match(
       /define internal [^\n]+ @sc_bf_words(?:\.i32)?\([^\n]*\) #0 \{[\s\S]*?\n\}/,
     )![0];
-    // Each inner loop's entry compares the scan receiver with `s` and calls
-    // the runtime to publish `s` only when they differ.
+    // Each inner loop's entry, for an `s` that is not ASCII, compares the
+    // scan receiver with `s` and calls the runtime to publish `s` only when
+    // they differ.
     const guards = [
       ...words.matchAll(
-        /^bytes\.version\.publish\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)[^\n]*\n/gm,
+        /^bytes\.version\.units\d+:[^\n]*\n\s+(%\S+) = load ptr, ptr @scr_str_scan\n\s+(%\S+) = icmp eq ptr \1, (%\S+)\n\s+br i1 \2, label %(bytes\.version\.publish\.load\d+), label %(bytes\.version\.publish\.units\d+)[^\n]*\n/gm,
       ),
     ];
     expect(guards.length).toBeGreaterThanOrEqual(2);
@@ -245,6 +246,87 @@ console.log(kept, breaks);
       if (text.slice(at, at + 12).includes("\n")) breaks++;
     }
     expect(execFileSync(exe, { encoding: "utf8" })).toBe(`${kept} ${breaks}\n`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a switch over the unit keeps the units copy; ASCII strings skip its tests", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-unit-switch-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(
+      entry,
+      `
+function marks(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    switch (s.charCodeAt(i)) {
+      case 38:
+        n += 2;
+        break;
+      case 60:
+        n += 4;
+        break;
+      case 0x4e2d:
+        n += 100;
+        break;
+    }
+  }
+  return n;
+}
+function tagged(s: string, tag: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += s.charCodeAt(i);
+    switch (tag) {
+      case "a":
+        n += 1;
+        break;
+    }
+  }
+  return n;
+}
+console.log(marks("a<b&c"), marks("中<文&é"), tagged("ab", "a"), tagged("é", "b"));
+`,
+    );
+    const outPath = join(dir, "main.ir.json");
+    const lowered = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!lowered.ok)
+      throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    const body = (name: string): string => {
+      const head = `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{`;
+      return ll.match(new RegExp(`${head}[\\s\\S]*?\\n\\}`))![0];
+    };
+    // A switch over a number compares numbers: the loop has a units copy.
+    const marks = body("marks");
+    expect(marks).toMatch(/^bytes\.version\.fast\.units\d+:/m);
+    // The guard branches on the representation first. The ASCII side tests
+    // the range against the byte length and never reads the scan receiver;
+    // the other side publishes the string and tests its unit count.
+    const bytesAt = marks.search(/^bytes\.version\.bytes\d+:/m);
+    const unitsAt = marks.search(/^bytes\.version\.units\d+:/m);
+    const slowAt = marks.search(/^bytes\.version\.slow\d+:/m);
+    expect(bytesAt).toBeGreaterThan(0);
+    expect(unitsAt).toBeGreaterThan(bytesAt);
+    expect(slowAt).toBeGreaterThan(unitsAt);
+    expect(marks.slice(0, bytesAt)).not.toContain("@scr_str_scan");
+    const bytesSide = marks.slice(bytesAt, unitsAt);
+    expect(bytesSide).not.toContain("@scr_str_scan");
+    expect(bytesSide).not.toContain("bytes.version.fast.units");
+    expect(bytesSide).toMatch(/label %bytes\.version\.fast\d+, label %bytes\.version\.slow\d+/);
+    const unitsSide = marks.slice(unitsAt, slowAt);
+    expect(unitsSide).toContain("@scr_str_scan_units_for");
+    const toUnits = /label %bytes\.version\.fast\.units\d+, label %bytes\.version\.slow\d+/;
+    expect(unitsSide).toMatch(toUnits);
+    // A switch over a string compares strings: no units copy.
+    expect(body("tagged")).not.toContain("bytes.version.fast.units");
+
+    const exe = join(dir, "main");
+    const built = await compile(entry, { outputKind: "exe", outDir: dir, outPath: exe });
+    if (!built.ok) throw new Error(JSON.stringify(built.diagnostics));
+    expect(execFileSync(exe, { encoding: "utf8" })).toBe("6 106 197 233\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -442,7 +442,36 @@ export function isOptionalProcessStreamProperty(
     )
       return true;
   }
-  return lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream";
+  return (
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream" ||
+    isTerminalStreamMember(lowerer, expr)
+  );
+}
+
+/** Whether the member read is declared by the standard library's terminal
+ * streams: tty.ReadStream and tty.WriteStream, which the types of
+ * process.stdin, process.stdout and process.stderr extend, or the fallback
+ * declaration of process.stdin (a type literal). A value of such a type
+ * may be a pipe or a file at run time (`const input = process.stdin`, a
+ * parameter typed `NodeJS.ReadStream`), where Node has no such property. */
+export function isTerminalStreamMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): boolean {
+  if (!OPTIONAL_PROCESS_STREAM_MEMBERS.includes(expr.name.text)) return false;
+  return isTerminalStreamSymbol(lowerer, lowerer.checker.getSymbolAtLocation(expr.name));
+}
+
+function isTerminalStreamSymbol(lowerer: Lowerer, symbol: ts.Symbol | undefined): boolean {
+  if (!symbol || symbol.declarations.length === 0 || !lowerer.isStdlibSymbol(symbol)) return false;
+  return symbol.declarations.every((declaration) => {
+    const owner = declaration.parent;
+    if (owner === undefined) return false;
+    if (ts.isTypeLiteralNode(owner)) return true;
+    if (!ts.isClassDeclaration(owner) && !ts.isInterfaceDeclaration(owner)) return false;
+    const name = owner.name?.text;
+    return name === "ReadStream" || name === "WriteStream";
+  });
 }
 
 /** The process.versions entries @types/node declares as plain strings
@@ -503,7 +532,8 @@ export const OPTIONAL_PROCESS_STREAM_MEMBERS: readonly string[] = [
 
 /** Whether an object pattern's source is a process stream: a value of the
  * process-stream type (`process.stdout`, `process.stderr`, an alias, a
- * parameter), or `process.stdin` itself, whose value is the stream object. */
+ * parameter), `process.stdin` itself, whose value is the stream object, or
+ * a dynamic value of a terminal stream type (an alias of `process.stdin`). */
 export function isProcessStreamPatternSource(
   lowerer: Lowerer,
   source: ts.Expression,
@@ -511,9 +541,14 @@ export function isProcessStreamPatternSource(
 ): boolean {
   if (sourceType?.kind === "procStream") return true;
   const e = withoutParenthesesTypeWrappers(source);
-  if (!ts.isPropertyAccessExpression(e)) return false;
-  const stream = lowerer.stdlibGlobalMember(e, "process");
-  return stream === "stdin" || stream === "stdout" || stream === "stderr";
+  if (ts.isPropertyAccessExpression(e)) {
+    const stream = lowerer.stdlibGlobalMember(e, "process");
+    if (stream === "stdin" || stream === "stdout" || stream === "stderr") return true;
+  }
+  // A value of a terminal stream type that is dynamic (`const input =
+  // process.stdin`): its terminal members are absent off a terminal too.
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(source));
+  return isTerminalStreamSymbol(lowerer, lowerer.checker.getPropertyOfType(type, "isTTY"));
 }
 
 /** The members a process stream VALUE answers as data, wherever the value
@@ -576,7 +611,7 @@ export function lowerProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (expr.questionDotToken) return null;
+  if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
   const member = expr.name.text;
   const direct = ts.isPropertyAccessExpression(expr.expression)
     ? lowerer.stdlibGlobalMember(expr.expression, "process")

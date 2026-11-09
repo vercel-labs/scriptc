@@ -103,8 +103,12 @@ await new Promise((resolve) => {
 });
 
 // The client session is destroyed while the server is still answering:
-// the server's stream aborted and reports NGHTTP2_CANCEL without an
-// 'error'; the client's request had ended its side and closes quietly.
+// the server's stream aborted and closes with one of the two teardown
+// codes. Whichever end settles the stream first decides which: the
+// session's GOAWAY closes it with NGHTTP2_NO_ERROR, the socket's close
+// cancels it with NGHTTP2_CANCEL, and the line records that it is one of
+// them rather than which. The client's request had ended its side and
+// closes quietly.
 await new Promise((resolve) => {
   const clientLines = [];
   const serverLines = [];
@@ -113,7 +117,9 @@ await new Promise((resolve) => {
     stream.on("aborted", () => serverLines.push("aborted"));
     stream.on("error", (error) => serverLines.push(`error ${error.code}`));
     stream.on("close", () => {
-      serverLines.push(`close ${stream.rstCode}`);
+      serverLines.push(
+        `close ${stream.rstCode === http2.constants.NGHTTP2_NO_ERROR || stream.rstCode === http2.constants.NGHTTP2_CANCEL}`,
+      );
       server.close(() => { report("session destroy", clientLines, serverLines); resolve(undefined); });
     });
     stream.respond({ ":status": 200 });

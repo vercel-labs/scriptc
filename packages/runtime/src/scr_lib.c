@@ -2896,6 +2896,7 @@ static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
 #include <sys/time.h>
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #endif
 /* A load-time, process-wide anchor: the constructor runs on only the
  * initial thread, while thread-instanced archives are entered from worker
@@ -2933,6 +2934,18 @@ double scr_perf_now(void) {
   return scr_uptime_now_ms() - scr_uptime_t0_ms;
 }
 
+#ifdef __APPLE__
+/* libuv's uv__hrtime reads mach_continuous_time scaled by the machine's time
+ * base. Apple's clock_gettime(CLOCK_MONOTONIC) is the wall clock minus the
+ * boot time, so it follows wall-clock adjustments and a pair of readings
+ * around one can run backwards; Node's process.hrtime never does. The time
+ * base is a machine constant, so a load-time initializer fills it once. */
+static mach_timebase_info_data_t scr_hrtime_timebase;
+__attribute__((constructor)) static void scr_hrtime_timebase_init(void) {
+  mach_timebase_info(&scr_hrtime_timebase);
+}
+#endif
+
 uint64_t scr_hrtime_ns(void) {
 #ifdef _WIN32
   LARGE_INTEGER counter, frequency;
@@ -2941,6 +2954,22 @@ uint64_t scr_hrtime_ns(void) {
   uint64_t whole = (uint64_t)(counter.QuadPart / frequency.QuadPart);
   uint64_t remainder = (uint64_t)(counter.QuadPart % frequency.QuadPart);
   return whole * UINT64_C(1000000000) + remainder * UINT64_C(1000000000) / (uint64_t)frequency.QuadPart;
+#elif defined(__APPLE__)
+  uint64_t ticks = mach_continuous_time();
+  uint32_t numer = scr_hrtime_timebase.numer;
+  uint32_t denom = scr_hrtime_timebase.denom;
+  if (denom == 0) {
+    mach_timebase_info_data_t timebase;
+    if (mach_timebase_info(&timebase) == KERN_SUCCESS) {
+      numer = timebase.numer;
+      denom = timebase.denom;
+    }
+    if (denom == 0) {
+      numer = 1;
+      denom = 1;
+    }
+  }
+  return ticks * numer / denom;
 #else
   struct timespec time;
   clock_gettime(CLOCK_MONOTONIC, &time);

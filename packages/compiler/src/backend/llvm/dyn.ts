@@ -3271,8 +3271,10 @@ export class LlDyn {
   /** dynCheckHelper for a typed slot's conversion that keeps one object
    * (dynCheck.shared): the same signature and the same result, and a plain
    * object or array that converted becomes a live capsule of the value
-   * built from it (scr_dyn_adopt_shared), so the dynamic value and the
-   * typed one stay one object. The adoption lives here, out of line: a call
+   * built from it (scr_dyn_adopt_whole), so the dynamic value and the
+   * typed one stay one object. The runtime adopts all of the value or none
+   * of it: where a node cannot be adopted, the conversion stays the copy and
+   * the source is left as it was. The adoption lives here, out of line: a call
    * site is the unflagged site's text with this callee, `<plain>_adopt`
    * (`<plain>_adopt_held` for a borrowed source).
    *
@@ -3305,7 +3307,7 @@ export class LlDyn {
     if (this.dynAdopters.has(name)) return name;
     this.dynAdopters.add(name);
     host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
-    host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
+    host.declare(`declare void @scr_dyn_adopt_whole(ptr, ptr)`);
     host.declare(`declare void @scr_dyn_release(ptr)`);
     host.declare(`declare zeroext i1 @scr_exc_pending()`);
     const B = new BlockBuilder();
@@ -3335,7 +3337,7 @@ export class LlDyn {
     const capsule = this.liveToDyn(B, t, built);
     if (capsule !== null) {
       const held = borrowed ? this.retainDyn(B, "%d") : null;
-      B.line(`call void @scr_dyn_adopt_shared(ptr %d, ptr ${capsule})`);
+      B.line(`call void @scr_dyn_adopt_whole(ptr %d, ptr ${capsule})`);
       if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
       B.line(`call void @scr_dyn_release(ptr ${capsule})`);
     }

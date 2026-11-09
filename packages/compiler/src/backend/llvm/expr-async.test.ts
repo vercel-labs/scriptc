@@ -127,7 +127,7 @@ test("a typed slot's conversion adopts its source only while the node carries th
   // adoption unit is not linked.
   const copied = conversionModule((value, type) => ({ kind: "dynCheck", value, type, loc }));
   expect(moduleRuntimeFeatures(copied.mod).declAdopt).toBe(false);
-  expect(copied.llvm).not.toContain("scr_dyn_adopt_shared");
+  expect(copied.llvm).not.toContain("scr_dyn_adopt_whole");
   expect(copied.body.match(/call ptr @sc_dc_\d+\(/g)).toHaveLength(1);
 
   // The adoption is out of line: the flagged site is the plain site's text
@@ -155,11 +155,11 @@ test("a typed slot's conversion adopts its source only while the node carries th
     new RegExp(`= tail call ptr @${plain}\\(ptr %d, ptr %path\\)`),
     new RegExp(`= call ptr @${plain}\\(ptr %d, ptr %path\\)`),
     /call zeroext i1 @scr_exc_pending\(\)/,
-    /call void @scr_dyn_adopt_shared\(ptr %d, ptr /,
+    /call void @scr_dyn_adopt_whole\(ptr %d, ptr /,
   ].map((step) => helper.search(step));
   expect(steps.every((at) => at >= 0)).toBe(true);
   expect(steps).toEqual([...steps].sort((a, b) => a - b));
-  expect(helper.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
+  expect(helper.match(/call void @scr_dyn_adopt_whole\(/g)).toHaveLength(1);
 });
 
 test("a record's typed slot hands the type's own capsule out as the plain site does", () => {
@@ -188,12 +188,12 @@ test("a record's typed slot hands the type's own capsule out as the plain site d
   // The flagged site is the plain site's text with the adopting helper as
   // the callee: the function is the same size, and whether it is inlined
   // into its callers is decided as without the flag.
-  expect(flagged.body).not.toContain("scr_dyn_adopt_shared");
+  expect(flagged.body).not.toContain("scr_dyn_adopt_whole");
   expect(flagged.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
   const helper = helperBody(flagged.llvm, adopting!);
   expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) noinline /);
   expect(helper).toContain(`tail call ptr @${plain}(ptr %d, ptr %path)`);
-  expect(helper.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
+  expect(helper.match(/call void @scr_dyn_adopt_whole\(/g)).toHaveLength(1);
 });
 
 /** The definition of one conversion helper in a module's LLVM. */

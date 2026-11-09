@@ -424,8 +424,8 @@ const PRIVATE_ARRAY_METHODS = new Set(["push", "length", "join"]);
  * Mentions are counted over the raw node records, whatever their shape, so
  * that a mention this function does not know (a capture list, a new node
  * kind) disqualifies the local instead of being missed. */
-const privateArraysOf = new WeakMap<IrFunction, ReadonlySet<string>>();
-function privateArrays(fn: IrFunction): ReadonlySet<string> {
+type PrivateArrays = Map<IrFunction, ReadonlySet<string>>;
+function privateArrays(fn: IrFunction, privateArraysOf: PrivateArrays): ReadonlySet<string> {
   const known = privateArraysOf.get(fn);
   if (known !== undefined) return known;
   // The function's own unboxed locals: a module binding (`%g.…`) is shared
@@ -516,7 +516,11 @@ function quietElement(type: IrType): boolean {
  *   (typed elements), `length` and `join`. A `string[]` that came from
  *   anywhere else may hold a foreign element, so `join` on it stays
  *   unlisted. */
-function quietOperation(node: Node, fn: IrFunction | null): boolean {
+function quietOperation(
+  node: Node,
+  fn: IrFunction | null,
+  privateArraysOf: PrivateArrays,
+): boolean {
   if (node.kind === "recordOvfKeys") return true;
   if (node.kind === "recordKeyGet") return node.overflowOnly === true && node.type.kind !== "dyn";
   if (node.kind === "arrIntrinsic" && node.method === "join") {
@@ -527,7 +531,7 @@ function quietOperation(node: Node, fn: IrFunction | null): boolean {
       receiver.type.kind === "array" &&
       quietElement(receiver.type.elem) &&
       node.args.every((a) => a.type.kind === "string") &&
-      privateArrays(fn).has(receiver.localId)
+      privateArrays(fn, privateArraysOf).has(receiver.localId)
     );
   }
   return false;
@@ -641,6 +645,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   // Callback parameters (see below), and the function being analyzed.
   const callbacks = new Map<string, Set<number>>();
   let current: IrFunction | null = null;
+  // Each function's private arrays (see privateArrays), found once per
+  // analysis: the analysis owns the cache, not a weak collection.
+  const privateArraysOf: PrivateArrays = new Map();
   // While finding roots: a value passed to the function's own callback
   // parameter leaves the frame (its callers' callbacks are unknown here).
   let framePass = false;
@@ -1076,7 +1083,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     // `toJSON` or a `toString` the runtime calls run with this function's
     // arena as the allocation target, like a generator's body, and what
     // they keep would be dropped with it.
-    return boundedNode(node) || quietOperation(node, current);
+    return boundedNode(node) || quietOperation(node, current, privateArraysOf);
   };
   /** The values `e` can produce, through casts and conditionals. */
   const leaves = (e: Node, out: Node[] = []): Node[] => {

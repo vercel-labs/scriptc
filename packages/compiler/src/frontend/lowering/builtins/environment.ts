@@ -336,16 +336,18 @@ export function lowerProcessEnvGet(
   return { kind: "libCall", fn: "process.envGet", args: [key], type: lowerer.envValueType(), loc };
 }
 
-/** Refuses a write or delete of a defined environment variable: the `if`
- * statements its value decides were resolved at build time, so they could
- * not follow the change. */
+/** Refuses a write or delete of a defined environment variable: the
+ * conditions its value decides were resolved at build time (the `if`
+ * statements of JavaScript text, define-branches.ts, and the constant
+ * conditions of TypeScript, constant-conditions.ts), so they could not
+ * follow the change. */
 export function refuseDefinedEnvWrite(lowerer: Lowerer, key: IrExpr, node: ts.Node): void {
   if (key.kind === "strLit" && definedEnvValue(lowerer.define, key.value) !== undefined) {
     lowerer.unsupported(
       "SC1090",
       node,
       `changing process.env.${key.value} when --define fixes its value`,
-      "the if statements it decides were resolved at build time, so they would not follow the change",
+      "the conditions it decides were resolved at build time, so they would not follow the change",
     );
   }
 }

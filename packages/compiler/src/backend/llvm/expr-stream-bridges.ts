@@ -869,14 +869,11 @@ export function streamTypedRefMaterializeAdapter(
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
-  const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
-  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
+  const numbered = `sc_ldr_${host.liveDynRefAdapters.size}`;
+  const snapshot = `${numbered}_materialize`;
+  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null", numbered };
   host.liveDynRefAdapters.set(adapterKey, adapter);
-  host.journal?.allocated(
-    snapshot.replace(/_materialize$/, ""),
-    "streamTypedRefMaterializeAdapter",
-    [t],
-  );
+  host.journal?.allocated(numbered, "streamTypedRefMaterializeAdapter", [t]);
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -903,6 +900,10 @@ export function streamTypedRefMaterializeAdapter(
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
+  // Published with the other symbols: see runtimeStreamViewAlone.
+  const streamView =
+    opsMeta !== undefined && runtimeStreamViewAlone(host, opsMeta) ? "scr_stream_ref_view" : null;
+  if (streamView !== null) adapter.snapshot = streamView;
 
   if (isDynTypedRefType(t)) {
     const meta = host.classMeta.get(t.className);
@@ -913,7 +914,9 @@ export function streamTypedRefMaterializeAdapter(
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (adapter.bagClassOps !== undefined) liveBagClassOps(host, snapshot, meta, t);
-    if (meta.hierarchy && meta.children.length) {
+    // Every class below a stream class whose view is the runtime's alone
+    // has that same view.
+    if (streamView === null && meta.hierarchy && meta.children.length) {
       const pre = B.tmp();
       for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
         B.line(line.trimStart());
@@ -1414,6 +1417,27 @@ export function streamTypedRefMaterializeAdapter(
     B.terminate(`ret ptr ${out}`);
   }
 
+  if (streamView !== null) {
+    // The capsule names the runtime's view function, so the body built
+    // above must be that one call: anything more is a view the runtime's
+    // member tables do not describe.
+    const body = B.render()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && line !== "entry:");
+    if (
+      body.length !== 2 ||
+      body[0] !== `%t0 = call ptr @scr_stream_dyn_view(ptr %p)` ||
+      body[1] !== `ret ptr %t0`
+    ) {
+      throw new InternalCompilerError(
+        `llvm emitter bug: the view of stream class ${key} is not the runtime's alone`,
+      );
+    }
+    host.declare(`declare ptr @${streamView}(ptr)`);
+    host.journal?.built();
+    return adapter;
+  }
   host.resolveThunkDefs.push(
     `define internal ptr @${snapshot}(ptr %p) ${FN_ATTRS} { ; materialize live stream value ${key}`,
     B.render(),
@@ -1422,6 +1446,29 @@ export function streamTypedRefMaterializeAdapter(
   );
   host.journal?.built();
   return adapter;
+}
+
+/** A runtime stream class whose instances' views are scr_stream_dyn_view's
+ * object and nothing else, for the class and every class below it: no
+ * program subclass, no property bag, no fields, no prototype of the
+ * program's. Its capsules name the runtime's scr_stream_ref_view as their
+ * snapshot adapter, which is how the runtime knows that it can answer a
+ * question about one member from the stream's tables without building the
+ * view (ScrStreamRefHooks). */
+function runtimeStreamViewAlone(host: LlvmEmitterContext, meta: LlClassMeta): boolean {
+  return (
+    !!meta.def.runtime &&
+    RUNTIME_STREAM_CLASSES.has(meta.def.name) &&
+    !host.usesDynBuiltinStream &&
+    !meta.def.instancePrototypeHelper &&
+    !meta.def.prototypeDataHelper &&
+    !meta.def.tracksOwnFields &&
+    meta.def.fields.length === 0 &&
+    (meta.def.symbolFields?.length ?? 0) === 0 &&
+    !liveClassOpsEligible(meta) &&
+    !liveBagClassOpsEligible(meta) &&
+    meta.children.every((child) => runtimeStreamViewAlone(host, child))
+  );
 }
 
 /** Per-element hooks for a live array capsule (ScrDynTypedArrayOps). The
@@ -2211,8 +2258,13 @@ registerReplay("streamTypedDesc", (host, args) =>
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );
-registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
-  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+// The numbered name, not the snapshot: a snapshot that is a runtime function
+// (scr_stream_ref_view, scr_dyn_class_view_unavailable) is no name of this
+// module, and a range's text spells the adapter's other symbols (its commit,
+// its ops tables) from the number.
+registerReplay(
+  "streamTypedRefMaterializeAdapter",
+  (host, args) => streamTypedRefMaterializeAdapter(host, args[0] as IrType).numbered,
 );
 registerReplay("streamFromArrayAdapter", (host, args) =>
   streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),

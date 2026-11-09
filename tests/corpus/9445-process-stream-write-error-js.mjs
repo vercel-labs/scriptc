@@ -1,3 +1,8 @@
+// @skip-darwin
+// macOS: closing fd 1 makes the Node reference abort while it exits (libuv's
+// uv__close asserts that the descriptor is above stderr), so there is no
+// reference output there; the program is compared on the other platforms.
+//
 // The failing write of a process stream from a JavaScript source: the
 // callback first, then the 'error' listeners from a later tick; twice,
 // because Node never destroys process.stdout.

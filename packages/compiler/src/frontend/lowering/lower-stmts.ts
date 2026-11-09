@@ -77,6 +77,7 @@ import {
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
+import { conditionRunsNothing, constantCondition } from "./constant-conditions.js";
 import {
   builtinPolyfillGuard,
   isBuiltinPolyfillEarlyExit,
@@ -2184,15 +2185,29 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = polyfill?.value ?? staticCondition(lowerer, test);
+    const detected = polyfill?.value ?? staticCondition(lowerer, test);
+    // Nor does the untaken arm of a constant condition
+    // (constant-conditions.ts): the statement is its taken arm, after the
+    // test when the test can throw (a `const` read before its declaration).
+    const constant = detected === null ? constantCondition(lowerer, test) : null;
+    const decided = detected ?? constant;
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;
       if (untaken === undefined || !declaresHoistedBinding(untaken)) {
         const arm = taken === undefined ? [] : lowerer.lowerScopedBlock(taken);
-        const folded: IrStmt = decided
-          ? { kind: "if", cond, then: arm, else_: null, loc: locOf(stmt) }
-          : { kind: "if", cond, then: [], else_: arm, loc: locOf(stmt) };
+        const folded: IrStmt =
+          constant !== null
+            ? {
+                kind: "block",
+                body: conditionRunsNothing(lowerer, test, cond)
+                  ? arm
+                  : [{ kind: "exprStmt", expr: cond, loc: locOf(test) }, ...arm],
+                loc: locOf(stmt),
+              }
+            : decided
+              ? { kind: "if", cond, then: arm, else_: null, loc: locOf(stmt) }
+              : { kind: "if", cond, then: [], else_: arm, loc: locOf(stmt) };
         return leading ? { kind: "block", body: [leading, folded], loc: locOf(stmt) } : folded;
       }
     }

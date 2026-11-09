@@ -88,3 +88,34 @@ console.log(escape('<a href="x">&</a>'), ordered("a&b"));
   // A later step that matches an earlier replacement keeps both steps.
   expect(calls(llvm, "scr_regex_replace")).toHaveLength(2);
 });
+
+test("a chain of one-character replaceAll calls is the same single pass", async () => {
+  const llvm = await emit(`
+function escape(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
+}
+function mixed(text: string): string {
+  return text.replace(/&/g, "&amp;").replaceAll("\\n", "<br>").replaceAll(\`'\`, "&#39;");
+}
+function ordered(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("a", "A");
+}
+function first(text: string): string {
+  return text.replace("&", "&amp;").replace("<", "&lt;");
+}
+function patterned(text: string): string {
+  return text.replaceAll("&", "$&$&").replaceAll("<", "[");
+}
+function long(text: string): string {
+  return text.replaceAll("ab", "x").replaceAll("<", "[");
+}
+console.log(escape('<a href="x">&</a>'), mixed("a&b\\n>"), ordered("a&b"));
+console.log(first("&&<<"), patterned("&<"), long("abab<"));
+`);
+  // The string-literal chain and the mixed chain: one call each.
+  expect(calls(llvm, "scr_str_replace_chars")).toHaveLength(2);
+  // Kept as steps: a later step that matches an earlier replacement, a
+  // first-occurrence replace, a replacement with a \`$\` pattern, and a
+  // pattern of two characters.
+  expect(calls(llvm, "scr_str_replace_literal")).toHaveLength(8);
+});

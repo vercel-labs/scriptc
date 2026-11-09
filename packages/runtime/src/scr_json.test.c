@@ -1102,6 +1102,30 @@ static void record_source_class_member(void) {
   scr_str_release(member);
 }
 
+/* scr_dyn_copy_prop_at stores a plain data property by an ordinary write
+ * whichever mode the source object is in: on an array, an index key becomes
+ * an element and a name goes to the array's own properties. */
+static void copy_prop_modes(void) {
+  for (int dictionary = 0; dictionary < 2; dictionary++) {
+    ScrDyn *source = scr_dyn_new_obj();
+    scr_dyn_obj_set(source, "0", 1, scr_dyn_new_num(7));
+    scr_dyn_obj_set(source, "tag", 3, scr_dyn_new_num(3));
+    if (dictionary) scr_dyn_to_dictionary(source);
+    assert((source->v.obj.layout == NULL) == (dictionary == 1));
+    ScrDyn *target = scr_dyn_new_arr();
+    for (size_t i = 0; i < scr_dyn_obj_count(source); i++) scr_dyn_copy_prop_at(target, source, i);
+    assert(!scr_exc_pending());
+    assert(target->v.arr.len == 1);
+    assert(target->v.arr.items[0]->kind == SCR_DYN_NUM && target->v.arr.items[0]->v.num == 7);
+    const ScrDyn *named = target->v.arr.properties;
+    assert(named && scr_dyn_obj_count(named) == 1);
+    const ScrDyn *tag = scr_dyn_obj_get(named, "tag", 3);
+    assert(tag && tag->kind == SCR_DYN_NUM && tag->v.num == 3);
+    scr_dyn_release(target);
+    scr_dyn_release(source);
+  }
+}
+
 static ScrDyn *getter_seven(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
   (void)args;
@@ -1390,6 +1414,7 @@ int main(void) {
   json_schema_special_names();
   json_schema_union_members();
   record_source_class_member();
+  copy_prop_modes();
   record_source_get();
   record_source_hidden_key();
   stream_ref_member_questions();

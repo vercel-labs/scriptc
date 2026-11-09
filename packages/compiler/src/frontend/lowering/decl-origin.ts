@@ -29,6 +29,7 @@
 
 import type { IrExpr, IrModule } from "../../ir/ir.js";
 import { everyModuleNode } from "../../ir/traverse.js";
+import { compilerOwnedFileName } from "../dts-paths.js";
 import { trackedReadFile } from "../input-tracker.js";
 import * as ts from "../ts7/adapter.js";
 
@@ -55,6 +56,11 @@ function packageFileOf(fileName: string): PackageFile | null {
   const marker = "/node_modules/";
   const at = path.lastIndexOf(marker);
   if (at < 0) return null;
+  // The package shims and declarations scriptc ships are its own files
+  // wherever scriptc is installed, and an npm install puts them under
+  // node_modules: no installed package declares them, and `scriptc types
+  // patch` cannot patch them.
+  if (compilerOwnedFileName(path) !== null) return null;
   const parts = path.slice(at + marker.length).split("/");
   const nameParts = parts[0]!.startsWith("@") ? 2 : 1;
   if (parts.length <= nameParts) return null;

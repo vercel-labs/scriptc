@@ -40,7 +40,7 @@
  * as a project-owned implementation entry here.
  */
 import { dirname, join, resolve } from "node:path";
-import { packageShimRoot, tsgoPath } from "./dts-paths.js";
+import { packageShimPrefix, packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { readProjectConfig } from "../project-config.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
@@ -393,8 +393,7 @@ export function packageShimDeclarationText(path: string): string | undefined {
  * declarations under skipLibCheck, a project's lib and @types/node choice
  * must not turn their internals into the project's type errors. */
 export function isPackageShimFile(fileName: string): boolean {
-  const root = tsgoPath(packageShimRoot());
-  return fileName.startsWith(root.endsWith("/") ? root : `${root}/`);
+  return fileName.startsWith(packageShimPrefix());
 }
 
 /** True for a name a shipped shim may declare as a bodiless runtime

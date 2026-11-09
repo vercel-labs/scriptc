@@ -1,6 +1,6 @@
 // `binding && rest` over a `let` only a closure assigns compiles: the pair
-// answers `rest` once the binding holds a value. These neighbours do not,
-// and say so at build time.
+// answers `rest` once the binding holds a value. The `||` neighbour and the
+// always-null `&&` do not, and say so at build time.
 
 let seen: { n: number } | null = null;
 function mark(): void {
@@ -14,8 +14,8 @@ function flag(): boolean | undefined {
 }
 
 mark();
-// `||` and `??` answer the binding itself once it holds a value, and the
-// checker typed the pair (and the binding below) as the right operand alone.
+// `||` and `??` answer the binding itself once it holds a value, and the checker typed the pair as the right
+// operand alone. `??` is not refused: it builds, and stops with a named TypeError when the binding holds a value.
 const either = seen || word();
 const fallback = seen ?? word();
 console.log(typeof either, typeof fallback);

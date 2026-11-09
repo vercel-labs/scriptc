@@ -110,6 +110,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.slowBuffer",
   "cp.spawnDynamic",
   "cp.checkArgs",
+  "cp.checkShellArgs",
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",

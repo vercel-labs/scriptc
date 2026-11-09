@@ -140,6 +140,19 @@ test("a Node island value converted to a native type reports as a copy", async (
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-island-copies.txt");
 });
 
+test("a dictionary that keeps identity reports its copy into another dictionary type", async () => {
+  const { coverage } = analyze(fixture("dictionary-copies.ts"));
+  expect(coverage.diagnostics).toEqual([]);
+  // Three sites copy: a value type with one more member that is written
+  // through, a wider union that is compared, and a parameter that writes.
+  // The same dictionary type spelled a second time is the same object and
+  // reports nothing.
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
+  await expect(report(fixture("dictionary-copies.ts"))).toMatchFileSnapshot(
+    "__snapshots__/coverage-dictionary-copies.txt",
+  );
+});
+
 test("a key order the compiler does not follow reports where the type is observed", () => {
   // SC6014 from the key-order pass, once per record type: a spread that
   // also sets an optional key its source lacks (in a type built in two

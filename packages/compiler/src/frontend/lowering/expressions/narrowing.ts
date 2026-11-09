@@ -30,6 +30,7 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
+import { noteDictionaryCopy } from "../width-copies.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
@@ -1043,6 +1044,15 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     }
     return expr;
   }
+  // A member a constituent of a class of record types requires sits in the
+  // class's record as an optional slot (union-classes.ts). The checker's
+  // type for the read is the constituent's declaration, not a test the
+  // program made: a value asserted or guarded past its members is found
+  // here, and throws.
+  if (classRecordMemberRead(lowerer, node, expr)) {
+    const helper = lowerer.narrowedArmHelper(expr.type.unionId, narrowed, expr.loc);
+    if (helper) return lowerer.checkedNarrowCall(helper, expr, narrowed, expr.loc);
+  }
   const checked = checkedStaleArm(lowerer, node, expr, tag, narrowed);
   if (checked) return checked;
   return {
@@ -1053,6 +1063,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     type: narrowed,
     loc: expr.loc,
   };
+}
+
+/** A read of a member that its receiver's type requires, where that type
+ * belongs to a class of record types, or has the layout of one of the
+ * class's types and so its record, and the class's record holds the member
+ * as optional. */
+function classRecordMemberRead(lowerer: Lowerer, node: ts.Node, expr: IrExpr): boolean {
+  if (expr.kind !== "recordGet" || lowerer.typeCtx.unionClassOf === undefined) return false;
+  if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return false;
+  const receiver = lowerer.checker.getNonNullableType(lowerer.typeOf(node.expression));
+  if (
+    lowerer.typeCtx.unionClassOf(receiver)?.state !== "merged" &&
+    lowerer.typeCtx.unionClassRecords?.has(expr.shapeId) !== true
+  )
+    return false;
+  const property = lowerer.checker.getPropertyOfType(receiver, expr.field);
+  return property !== undefined && (property.flags & ts.SymbolFlags.Optional) === 0;
 }
 
 /** A binding of a generic instance read where the checker narrowed nothing:
@@ -2448,6 +2475,13 @@ function checkedDynCast(
   inner: IrExpr,
   target: IrType,
 ): IrExpr {
+  // The checked conversion below, in either form, is a `dynCheck` at this
+  // place: one that copies a dictionary which keeps its object is noted.
+  noteDictionaryCopy(lowerer, expr.expression, inner, {
+    kind: "dynCheck",
+    type: target,
+    loc: locOf(expr),
+  });
   if (
     holdsReference(lowerer, target) &&
     !freshDynSource(lowerer, expr, inner) &&

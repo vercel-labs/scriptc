@@ -1868,8 +1868,9 @@ function buildLibFnSignatures() {
      * input (has_input false leaves fd 0 to the stdio mode — an absent
      * `input` option; "" pipes an empty stdin), and the shell form
      * (the complete command line through /bin/sh -c — the compiler emits
-     * it with an empty args list only, since Node warns DEP0190 for
-     * separate shell arguments), exactly Node's reading of the members.
+     * it with an empty args list only; separate shell arguments arrive
+     * joined into the line by cp.shellLine), exactly Node's reading of the
+     * members.
      * Args (cmd, argv, timeout, killSignal, inMode, outMode, errMode,
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
@@ -1877,6 +1878,12 @@ function buildLibFnSignatures() {
       argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
       result: SPAWNRES_T,
     },
+    /** The command line of a shell-enabled call that passes separate
+     * arguments (scr_child_shell.c): the file, a space, and the arguments
+     * joined with spaces — Node concatenates them unescaped — with DEP0190
+     * reported for the first non-empty list of the process. An empty list
+     * answers the file. Args (file, argv). */
+    "cp.shellLine": { argTypes: [STRING, arrayOf(STRING)], result: STRING },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
      * replace the child's environment. */
     "cp.spawnSyncExtEnv": {
@@ -3355,6 +3362,13 @@ function buildLibFnSignatures() {
       argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
       result: VOID,
     },
+    /** cp.checkArgs for a launch that may join its arguments into a shell
+     * line (cp.shellLine): the same checks, with a hole of the list read
+     * as Node reads it (scr_child_shell.c). */
+    "cp.checkShellArgs": {
+      argTypes: [F64, STRING, arrayOf(STRING), arrayOf(STRING), STRING],
+      result: VOID,
+    },
     // The callback's func type is program-dependent (zero params, or the
     // `number | null` union / the %Error class) — the libCall case checks
     // the shape; the slot here only pins arity and the child receiver.
@@ -3548,6 +3562,12 @@ function buildLibFnSignatures() {
     "stream.stdioWritable": {
       argTypes: [PROCSTREAM_T],
       result: { kind: "object", className: "%Writable" },
+    },
+    /** process.stdin as a Readable: the thread's one stream for descriptor
+     * 0 (+1), fed by the stdin unit (scr_stream_stdin.c). */
+    "stream.stdioReadable": {
+      argTypes: [],
+      result: { kind: "object", className: "%Readable" },
     },
     "child.killed": { argTypes: [CHILD_T], result: BOOL },
     /** spawnfile and spawnargs: the file the child was started from, and

@@ -383,6 +383,7 @@ import {
 } from "../../diagnostics/diagnostic.js";
 import { compilerCrashDiag, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { observesDeclaration } from "./observable-write.js";
+import { heldDictionaryCopy } from "./width-copies.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
@@ -1288,6 +1289,47 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
   "http2Stream",
 ]);
 
+/** The slot of `let x: T;`, a block-scoped declaration without an
+ * initializer: its type, and the value the declaration stores, which is
+ * the unassigned state (undefined) as that type holds it. `init` is null
+ * for a type with no such state: the checker's definite-assignment
+ * analysis covers the reads in the declaring function's own code. Null
+ * when the binding has no slot type at all (the declaration reports it). */
+function uninitializedLetSlot(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  name: ts.Identifier,
+  earlyRead = false,
+): { type: IrType; init: IrExpr | null } | null {
+  const isLet = (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Let) !== 0;
+  let type = lowerer.irTypeOf(name);
+  // A binding a nested function can read before its first store holds
+  // undefined as well (#3169); the declaration passes that in.
+  if (earlyRead) type = lowerer.runtimeOptionalBindingType(name, type);
+  // Unannotated `let x;` is an evolving `any`: the checked-dynamic binding
+  // fallback (irTypeOf → dynFallbackType) unless its writes agree on a type.
+  if (type.kind === "dyn" && isLet && decl.type === undefined) {
+    type = inferredEvolvingLetType(lowerer, decl) ?? type;
+  }
+  // `var v: void;` / `let x: undefined;`: a unit-only binding rides the
+  // unit-only union (its undefined arm is the unassigned state, which is
+  // also the only state).
+  if (type.kind === "void" && isUnitOnlyTsType(lowerer.typeOf(name), lowerer.typeParamResolver)) {
+    type = unitOnlyUnion(lowerer.unions);
+  }
+  if (type.kind === "void") return null;
+  // Undefined-armed unions (`let x: string | undefined;`) are readable
+  // immediately (the type covers the unassigned state), so they hold the
+  // interned undefined arm like an omitted optional. tsc's analysis never
+  // guards `any` reads either, so an uninitialized checked-value binding
+  // holds native undefined.
+  const init =
+    type.kind === "dyn"
+      ? dynUndefinedExpr(locOf(decl))
+      : lowerer.unassignedSlotInit(type, locOf(decl));
+  return { type, init };
+}
+
 /** The hoisted-handler shape: a function declared BEFORE a const it
  * captures, in the same (or an enclosing) statement list —
  *
@@ -1315,9 +1357,18 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     !ts.isIdentifier(decl.name)
   )
     return false;
-  if (!decl.initializer) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
+  // `let x: T;` has no initializer: its declaration stores the unassigned
+  // state (uninitializedLetSlot), and the box leaves its dead zone there.
+  // A type with no slot stays the declaration's own diagnostic.
+  const declared = lowerer.typeOf(decl.name);
+  const unassigned =
+    decl.initializer ||
+    ((declared.flags & ts.TypeFlags.Any) === 0 && lowerer.mapTypeOf(declared) === null)
+      ? null
+      : uninitializedLetSlot(lowerer, decl, decl.name);
+  if (!decl.initializer && !unassigned?.init) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
   // compile time (builtinClassAliasOf).
   if (builtinClassAliasOwnsNoSlot(lowerer, symbol)) return false;
@@ -1342,8 +1393,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // TDZ read until the initializing assign completes — JS exactly.
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
-    let type = lowerer.irTypeOf(decl.name);
+    let type = unassigned?.type ?? lowerer.irTypeOf(decl.name);
     if (
+      decl.initializer &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -1358,7 +1410,7 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // An island handle binding holds a checked-dynamic value whatever its
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
-    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    if (decl.initializer && islandHandleBinding(lowerer, decl.name)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     const name = decl.name.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
@@ -2461,6 +2513,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // (predeclareForwardFnDecl) — its declaration and assignment are in
     // the list's output.
     if (lowerer.ctx.hoistedFnDecls.has(stmt)) return null;
+    // A generic `function` declaration inside a function compiles through
+    // the function-scoped generic machinery (nestedGenericFnInfoOf): its
+    // instances are module functions and the statement itself emits
+    // nothing, exactly like a generic arrow binding's declaration.
+    if (lowerer.nestedGenericFnInfoOf(stmt)) return null;
     return lowerer.lowerNestedFunctionDecl(stmt);
   }
   // Enum declarations: constant-member enums emit nothing (member reads
@@ -3409,7 +3466,6 @@ export function lowerBindingPattern(
     return;
   }
   if (ts.isArrayBindingPattern(pattern)) {
-    lowerer.fenceStaticHeadersIteration(pattern);
     if (
       srcType.kind === "union" &&
       lowerer.unions
@@ -6315,8 +6371,14 @@ function objectRestValue(
     }
     return { kind: "call", callee: helper, args: [srcRef()], type: restT, loc };
   }
+  // A rest type with the layout of one type of a class of record types is
+  // the class's record (union-classes.ts): the members only the class's
+  // other types declare are absent in it.
+  const classRecord = lowerer.typeCtx.unionClassRecords?.has(restT.shapeId) === true;
   const fields = restShape.fields.map((f) => {
     const srcField = shape.fields.find((s) => s.name === f.name);
+    const absent = srcField || !classRecord ? null : lowerer.absentFieldValue(f, loc);
+    if (absent) return { name: f.name, value: absent };
     if (!srcField) {
       lowerer.unsupported(
         "SC1031",
@@ -7553,6 +7615,15 @@ export function lowerVarDecl(
     lowerer.ctx.tdzPredeclared.delete(declSymbol!);
     return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
   }
+  // The same box for `let x: T;`: the declaration ends the dead zone by
+  // storing the unassigned state, which the box's type holds
+  // (predeclareForwardCapture declines a type that cannot).
+  if (pre) {
+    const init = uninitializedLetSlot(lowerer, decl, decl.name)?.init;
+    if (!init) throw new InternalCompilerError("a predeclared let has no unassigned state");
+    lowerer.ctx.tdzPredeclared.delete(declSymbol!);
+    return { kind: "assign", localId: pre.id, value: init, initializes: true, loc: locOf(decl) };
+  }
 
   // `var x = e` — an ASSIGNMENT into the function-scoped hoisted slot
   // (hoistVarBinding mints it on first encounter and pushes its varDecl
@@ -7577,37 +7648,12 @@ export function lowerVarDecl(
     // function and none behind `let x!: number`: a binding such a read can
     // reach before its first store was widened to hold undefined
     // (var-hoisting.ts), and reads keep that value (noteEarlyReadVar).
-    // Unannotated `let x;` is an evolving `any` — the checked-dynamic
-    // binding fallback (irTypeOf → dynFallbackType) unless its writes agree
-    // on a type.
-    // Undefined-armed unions (`let x: string | undefined;`) are readable
-    // immediately (the type covers the unassigned state), so they
-    // initialize to the interned undefined arm like an omitted optional.
-    let type = lowerer.irTypeOf(decl.name);
     const earlyRead = declSymbol !== undefined && lowerer.earlyReadVars.has(declSymbol);
-    if (earlyRead) type = lowerer.runtimeOptionalBindingType(decl.name, type);
-    if (type.kind === "dyn" && isLet && decl.type === undefined) {
-      type = inferredEvolvingLetType(lowerer, decl) ?? type;
-    }
-    // `var v: void;` / `let x: undefined;` — a unit-only binding rides
-    // the unit-only union (its undefined arm is the unassigned state,
-    // which is also the only state).
-    if (
-      type.kind === "void" &&
-      isUnitOnlyTsType(lowerer.typeOf(decl.name), lowerer.typeParamResolver)
-    ) {
-      type = unitOnlyUnion(lowerer.unions);
-    }
-    if (type.kind === "void") lowerer.badType(decl.name, lowerer.typeOf(decl.name));
-    const local = lowerer.declareLocal(decl.name, decl.name.text, type, isLet);
+    const slot = uninitializedLetSlot(lowerer, decl, decl.name, earlyRead);
+    if (!slot) lowerer.badType(decl.name, lowerer.typeOf(decl.name));
+    const local = lowerer.declareLocal(decl.name, decl.name.text, slot.type, isLet);
     if (earlyRead) noteEarlyReadVar(lowerer, declSymbol, local);
-    // tsc's definite-assignment analysis never guards `any` reads, so
-    // uninitialized checked-value bindings must hold native undefined.
-    const init =
-      type.kind === "dyn"
-        ? dynUndefinedExpr(locOf(decl))
-        : lowerer.unassignedSlotInit(type, locOf(decl));
-    return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+    return { kind: "varDecl", localId: local.id, init: slot.init, loc: locOf(decl) };
   }
 
   if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
@@ -8403,12 +8449,33 @@ function refuseWidenedDeclaration(
   declared: IrType,
 ): void {
   const widened = widenedCopyOf(lowerer, kept, declared);
-  if (widened === null || !observesDeclaration(lowerer, decl)) return;
   const checker = lowerer.checker;
+  // A value that is untyped where it holds a dictionary that keeps its
+  // object has no field for widenedCopyOf to name: the declared field is a
+  // dictionary of another value type, built by copying that dictionary.
+  const held =
+    widened === null && lowerer.hasDictionaryViews()
+      ? heldDictionaryCopy(lowerer, checker.getTypeAtLocation(decl.initializer!), kept, declared)
+      : null;
+  if ((widened === null && held === null) || !observesDeclaration(lowerer, decl)) return;
   const sourceType = checker.getTypeAtLocation(decl.initializer!);
   const source = checker.typeToString(sourceType);
   const targetType = lowerer.typeOf(decl.name);
   const target = checker.typeToString(targetType);
+  if (held !== null) {
+    lowerer.pushDiag(
+      widthCopyRefusalDiag(
+        "declaration",
+        source,
+        target,
+        `the declared field '${held.field}' holds the dictionary '${held.to}' and the value's field holds the dictionary '${held.from}', which keeps the object it was given, so a write through the declared name would reach only the copy`,
+        `declare the field with the value's own dictionary type ('${held.from}') so both names are the same object, or copy the value explicitly (a spread, 'structuredClone') so that Node copies it too`,
+        locOf(decl.initializer!),
+      ),
+    );
+    throw new PoisonError();
+  }
+  if (widened === null) return;
   const keptField = checker.getPropertyOfType(sourceType, widened.field);
   const keptText = keptField
     ? checker.typeToString(checker.getTypeOfSymbolAtLocation(keptField, decl.initializer!))
@@ -12072,11 +12139,7 @@ export function lowerDestructuringAssignParts(
   rhs: ts.Expression,
   loc: SrcLoc,
 ): { stmts: IrStmt[]; value: IrExpr } {
-  if (ts.isArrayLiteralExpression(target)) {
-    lowerer.fenceStaticHeadersIteration(rhs);
-  } else {
-    lowerer.fenceFetchObjectAssignment(target, rhs);
-  }
+  if (!ts.isArrayLiteralExpression(target)) lowerer.fenceFetchObjectAssignment(target, rhs);
   return destructuringAssignInto(lowerer, target, lowerer.lowerExpr(rhs), rhs, rhs, loc);
 }
 
@@ -13582,7 +13645,6 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
   if (awaitArray && !lowerer.ctx.isAsync) {
     lowerer.unsupported("SC1090", stmt, "top-level 'for await' (await outside async functions)");
   }
-  lowerer.fenceStaticHeadersIteration(stmt.expression);
   // A stored numeric value iterator declared in this function keeps its
   // built-in protocol state in hidden locals (lowerVarStatement). The
   // iterator's own [Symbol.iterator]() returns itself, so for-of resumes

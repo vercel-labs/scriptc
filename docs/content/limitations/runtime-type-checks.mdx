@@ -53,6 +53,13 @@ Any other value throws a `TypeError`, such as `expected null | undefined at $, g
 Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.
 `SC6004` reports calls that pass such an instance to a function that casts it.
 
+An object whose methods are typed by a generic interface can be stored as another instantiation of that interface, such as a `Parser<"csv" | "json">` stored in a `Parser<Format>[]`.
+Each such method then checks its arguments against its own parameter types when it is called.
+An argument that holds a union member the parameter type does not include throws a `TypeError`, where Node.js passes the object through.
+When that member is an object type with only optional properties, the argument is read as the member of the parameter type that declares the properties the object has, as in Node.js.
+It throws a `TypeError` only when no single member declares all of them.
+The method receives a copy of an argument record whose type differs between the two instantiations, so a write to that argument in the method does not reach the caller's object, and `SC6001` does not report it.
+
 A Promise converted from `unknown` to a typed result validates its fulfilled value.
 A mismatch rejects with a `TypeError`.
 Rejection reasons and reference equality are preserved across conversions.

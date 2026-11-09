@@ -145,11 +145,17 @@ export interface CcOptions {
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;
+  /** process.stdin converted into a Readable (stream.stdioReadable):
+   * compiles scr_stream_stdin.c. */
+  streamStdin?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** The joined command line of a shell-enabled call with separate
+   * arguments: compiles scr_child_shell.c. */
+  childShellLine?: boolean;
   /** process.features as a value links scr_process_features.c. */
   processFeatures?: boolean;
   /** Node islands and child_process together: compiles

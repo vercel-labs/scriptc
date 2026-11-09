@@ -89,9 +89,10 @@ execSync("");
 });
 
 /** The checks a one-file program's launches carry, in the order the IR
- * holds them: `args:<form>` for cp.checkArgs, `limit` for a cp.maxBuffer
- * that only validates and `arm` for one that sets the next capture's
- * limit. */
+ * holds them: `args:<form>` for cp.checkArgs, `list:<form>` for the
+ * cp.checkShellArgs of a launch that joins its list, `line` for the
+ * cp.shellLine that joins it, `limit` for a cp.maxBuffer that only
+ * validates and `arm` for one that sets the next capture's limit. */
 async function checks(source: string): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-child-checks-"));
   try {
@@ -111,6 +112,9 @@ async function checks(source: string): Promise<string[]> {
       const record = node as { kind?: unknown; fn?: unknown; args?: { value?: unknown }[] };
       if (record.kind === "libCall" && record.fn === "cp.checkArgs")
         found.push(`args:${Number(record.args?.[0]?.value)}`);
+      if (record.kind === "libCall" && record.fn === "cp.checkShellArgs")
+        found.push(`list:${Number(record.args?.[0]?.value)}`);
+      if (record.kind === "libCall" && record.fn === "cp.shellLine") found.push("line");
       if (record.kind === "libCall" && record.fn === "cp.maxBuffer")
         found.push(record.args?.[1]?.value === true ? "arm" : "limit");
       for (const value of Object.values(node)) visit(value);
@@ -121,6 +125,24 @@ async function checks(source: string): Promise<string[]> {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("a shell launch joins its arguments after they are checked and before the environment is", async () => {
+  const name = `const name: string = process.argv[2] ?? "echo";\n`;
+  // The file and the arguments Node checks are the ones the call names,
+  // not the line built from them.
+  expect(
+    await checks(`${imports}${name}spawnSync(name, ["a"], { shell: true });
+spawnSync("echo", [name], { shell: true, cwd: name });
+`),
+  ).toEqual(["list:0", "line", "list:0", "line"]);
+  // An environment that can be refused is checked after the line: form 3
+  // checks no file and no argument.
+  expect(
+    await checks(
+      `${imports}${name}spawnSync("echo", [name], { shell: true, env: { A: name } });\n`,
+    ),
+  ).toEqual(["list:0", "line", "args:3"]);
+});
 
 const runtimeValues = `const name: string = process.argv[2] ?? "echo";
 const limit: number = Number(process.argv[3] ?? "16");

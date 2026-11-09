@@ -67,6 +67,7 @@ import {
 } from "./general-streams.js";
 import { extendAssertedRecordMembers } from "./assertion-members.js";
 import { LoweringFacts } from "./lowering-facts.js";
+import type { UnionClassState } from "../union-classes.js";
 import { type AdmittedOpinion, isJsSourceFileName } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -99,6 +100,8 @@ import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/co
 import { scanDivergences } from "./divergences.js";
 import {
   collectWidthCopies,
+  noteDictionaryCopy,
+  type DictionaryCopy,
   refuseObservedCopies,
   traceWidthCopies,
   widthCopyDivergences,
@@ -627,12 +630,13 @@ import {
   implicitMonoFile,
   collectGenericSignature,
   genericFnOf,
+  nestedGenericFnInfoOf,
   lowerGenericCall,
   lowerGenericFnValue,
   inferTypeParamBindings,
   lowerGenericInstance,
   genericLocalClassBinding,
-  checkGenericIdentityPins,
+  assignGenericIdentityRoots,
 } from "./generic-functions.js";
 import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
 import type { SpecifierBoundContext } from "../specifier-bounds.js";
@@ -757,7 +761,6 @@ import {
   fenceFetchObjectAssignment,
   fenceFetchObjectBinding,
   fenceStaticAbortControllerMemberRead,
-  fenceStaticHeadersIteration,
   fenceStaticHeadersMember,
   fenceStaticReadableStreamMember,
   fenceStaticResponseMember,
@@ -1315,6 +1318,12 @@ export interface LowerOptions {
    * program-authored signature-only ambient function with the callback
    * teaching instead of the ambient ReferenceError lowering. */
   libraryCallbacks?: boolean;
+  /** LIBRARY mode: the record types of a union that share a discriminant
+   * literal keep their own layouts instead of becoming one record
+   * (union-classes.ts). The sidecar names every occurrence of a composed
+   * union's repeated arm and tracks an integer obligation per occurrence
+   * (library/sidecar.ts), which needs a layout per occurrence. */
+  separateUnionMembers?: boolean;
   /** Coverage-only external host type surfaces. Their declarations inform
    * the checker, while every runtime value use remains an SC1010 fence. */
   externalTypes?: ReadonlyMap<string, string>;
@@ -1758,7 +1767,9 @@ function lowerToIrWithIslands(
   // in their mode flags, so every fact they derive from the program alone is
   // computed once here and shared (lowering-facts.ts); per-pass state stays
   // private to the pass.
-  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
+  const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile, {
+    ...(options.separateUnionMembers === true ? { separateUnionMembers: true } : {}),
+  });
   // The push-down pass of a stream program exists only to learn the stream
   // mode it asks for, and the general stream pass of a program that needs
   // checked-dynamic stream slots only to ask for them: the pass that
@@ -3169,6 +3180,10 @@ export class Lowerer {
   /** Arguments and const initializers whose array or record layout the
    * lowering kept instead of copying (divergences.ts reports no copy there). */
   readonly layoutKeptNodes = new Set<ts.Node>();
+  /** The slot conversions that copy a dictionary which keeps the object it
+   * was given into a native dictionary (noteDictionaryCopy; the width copy
+   * scan reports them from the lowered program). */
+  readonly dictionaryCopies: DictionaryCopy[] = [];
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -3441,32 +3456,6 @@ export class Lowerer {
    * type parameters are bound to `unknown`, so lambdaSignature admits
    * them. */
   readonly erasingLambdas = new Set<ts.Node>();
-  /** Identity comparisons of a generic declaration met while lowering
-   * (directly against the declaration, or through a dynamic value): exact
-   * only while the program holds that declaration as one function object
-   * (checkGenericIdentityPins). */
-  readonly genericIdentityPins: { info: GenericFnInfo; node: ts.Node }[] = [];
-  /** Identity comparisons whose operands are dynamic values, recorded while
-   * lowering and resolved by checkGenericIdentityPins only when some
-   * generic declaration is held at more than one signature. */
-  readonly dynIdentityComparisons: { node: ts.Node; left: ts.Node; right: ts.Node }[] = [];
-  /** The value instance each pinned binding holds (`const f: Fn = ident`),
-   * keyed by the binding's declaration: two pins of one generic
-   * declaration at different signatures are separate compiled closures, so
-   * checkGenericIdentityPins refuses to compare them. */
-  readonly pinnedValueInstances = new Map<ts.Node, { info: GenericFnInfo; instance: string }>();
-  /** Function-vs-function identity comparisons recorded while lowering,
-   * with the closure name each operand lowered to when it is a closure
-   * (an inline instantiation expression names its instance directly). */
-  readonly pinnedIdentityComparisons: {
-    node: ts.Node;
-    left: ts.Node;
-    right: ts.Node;
-    leftInstance: string | undefined;
-    rightInstance: string | undefined;
-  }[] = [];
-  /** The identity comparison check reports once, after all lowering. */
-  genericIdentityCheckDone = false;
   /** Function expressions lowered against a fixed target signature with a
    * tuple-typed `arguments` (typed-arguments.ts). */
   readonly typedArgumentsLambdas = new Set<ts.Node>();
@@ -5722,13 +5711,6 @@ export class Lowerer {
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
       checkedTable("erasingLambdas", () => this.erasingLambdas.size),
-      checkedTable("genericIdentityPins", () => this.genericIdentityPins.length),
-      checkedTable("dynIdentityComparisons", () => this.dynIdentityComparisons.length),
-      // Pinned binding instances and function-vs-function identity
-      // comparisons feed the same end-of-lowering check; a unit that records
-      // one lowers again rather than replaying a record without it.
-      checkedTable("pinnedValueInstances", () => this.pinnedValueInstances.size),
-      checkedTable("pinnedIdentityComparisons", () => this.pinnedIdentityComparisons.length),
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
@@ -5929,6 +5911,7 @@ export class Lowerer {
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
+      checkedTable("dictionaryCopies", () => this.dictionaryCopies.length),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
       checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
@@ -6343,9 +6326,6 @@ export class Lowerer {
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
-      // A latch of the end-of-lowering audit (checkGenericIdentityPins): a
-      // unit never touches it.
-      fixed("genericIdentityCheckDone", () => this.genericIdentityCheckDone),
       fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
       fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
       fixed("childAdditions", () => this.childAdditions),
@@ -7339,6 +7319,30 @@ export class Lowerer {
     if (this.moduleOrder.length === 0) this.fileTag.set(entry, "");
     const jsDynamic = this.facts.jsDynamicDeclarations();
     if (jsDynamic.size > 0) this.typeCtx.jsDynamicDeclaration = (decl) => jsDynamic.has(decl);
+    // Record types that share a discriminant literal in a declared union
+    // are one record (union-classes.ts). Each pass maps a class once, the
+    // first time one of its types is mapped.
+    const unionClasses = this.facts.unionClasses();
+    if (unionClasses.size > 0) {
+      const states = new Map<readonly ts.Type[], UnionClassState>();
+      for (const members of unionClasses.values()) {
+        if (states.has(members)) continue;
+        states.set(members, {
+          members,
+          state: "unmapped",
+          record: null,
+          owning: null,
+          reentered: false,
+          memberNames: null,
+        });
+      }
+      this.typeCtx.unionClassRecords = new Map();
+      this.typeCtx.unionClassStates = [...states.values()];
+      this.typeCtx.unionClassOf = (type) => {
+        const members = unionClasses.get(type);
+        return members === undefined ? undefined : states.get(members);
+      };
+    }
     this.registerBuiltinErrorClasses();
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
@@ -7419,11 +7423,31 @@ export class Lowerer {
     );
   }
 
+  /** A dictionary that keeps checked identity because dictionaries of its
+   * value type hold existing objects: the object itself, where a dictionary
+   * type with another value type would hold a copy. */
+  classDictionaryView(type: ts.Type): boolean {
+    return this.verifyProtocol("dictionaryView", type, (protocols) =>
+      protocols.dictionaryView(type),
+    );
+  }
+
+  /** Whether any dictionary type of the program keeps checked identity. */
+  hasDictionaryViews(): boolean {
+    return this.facts.classProtocols().hasDictionaryViews();
+  }
+
+  /** Whether a dictionary type keeps checked identity only as another
+   * spelling of a type that does (ClassProtocols.dictionaryViewBySameness). */
+  dictionaryViewBySameness(type: ts.Type): boolean {
+    return this.facts.classProtocols().dictionaryViewBySameness(type);
+  }
+
   /** The round's shared class protocol index (lowering-facts.ts): a pure
    * analysis of (checker, moduleOrder). With SCRIPTC_LOWERING_FACTS_VERIFY
    * this Lowerer builds its own index and every answer is compared. */
   private verifyProtocol(
-    query: "usesCheckedIdentity" | "collectionView",
+    query: "usesCheckedIdentity" | "collectionView" | "dictionaryView",
     type: ts.Type,
     ask: (protocols: ClassProtocols) => boolean,
   ): boolean {
@@ -13186,9 +13210,6 @@ export class Lowerer {
         if (this.alreadyFlushed.has(symbol)) continue;
         for (const d of [...diags]) this.pushDiag(d);
       }
-      // Coverage visits more bodies; more value instances can only add
-      // refusals to the identity comparison check.
-      checkGenericIdentityPins(this);
       refuseSourceFieldDeletes(this, functions);
       return {
         module: null,
@@ -13214,10 +13235,6 @@ export class Lowerer {
   ): LowerResult {
     // Whether the program uses workers is final now.
     settleLoaderShareEnv(this, functions);
-    // Every instance of every generic value is known now (the
-    // monomorphization worklists drained): an identity comparison against
-    // one is exact only if the declaration is held at a single signature.
-    checkGenericIdentityPins(this);
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
@@ -13353,6 +13370,10 @@ export class Lowerer {
     refuseX509DynValues(this, functions);
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
+    // Every instance of every generic value is known now (the
+    // monomorphization worklists drained): the declarations the program
+    // holds as more than one function object take one identity root.
+    assignGenericIdentityRoots(this, functions);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =
       this.diags.length > 0
@@ -15797,10 +15818,6 @@ export class Lowerer {
     return fenceStaticAbortControllerMemberRead(this, access);
   }
 
-  fenceStaticHeadersIteration(node: ts.Node): void {
-    return fenceStaticHeadersIteration(this, node);
-  }
-
   fenceFetchObjectAssignment(target: ts.ObjectLiteralExpression, source: ts.Expression): void {
     return fenceFetchObjectAssignment(this, target, source);
   }
@@ -16899,7 +16916,7 @@ export class Lowerer {
         return { kind: "classRef", className: info.def.name, type: expected, loc: expr.loc };
       }
     }
-    // process.stdout/stderr into a general Writable slot (general-streams.ts).
+    // A process stream into a runtime stream slot (general-streams.ts).
     const stdioStream = stdioIntoGeneralStream(this, expr, expected);
     if (stdioStream) return this.coerceToExpected(stdioStream, expected);
     // Iterator-typed slots: native iterators and differently typed
@@ -17841,8 +17858,9 @@ export class Lowerer {
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
     checked = false,
+    byPresence = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked, byPresence);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -17986,7 +18004,9 @@ export class Lowerer {
     this.slotSiteNode = node;
     this.slotSiteType = expected;
     try {
-      return this.coerceIntoOrigin(node, expr, expected, payloadSite);
+      const converted = this.coerceIntoOrigin(node, expr, expected, payloadSite);
+      if (converted !== expr) noteDictionaryCopy(this, node, expr, converted);
+      return converted;
     } finally {
       this.slotSiteNode = outerNode;
       this.slotSiteType = outerType;
@@ -18270,9 +18290,23 @@ export class Lowerer {
     // node's CHECKER type proves those arms away, they trap instead — the
     // sub-union narrowing bridge (narrowedRetagHelper).
     if (e.type.kind === "union" && expected.kind === "union" && !typeEquals(e.type, expected)) {
+      // An assertion is erased, so the value is its operand's: the arms the
+      // checker proved away at the operand (`event.type === "end" ? … :
+      // (event as Session)`) are as absent under the assertion as without it.
+      let operand: ts.Node = node;
+      while (
+        ts.isParenthesizedExpression(operand) ||
+        ts.isAsExpression(operand) ||
+        ts.isTypeAssertion(operand) ||
+        ts.isSatisfiesExpression(operand)
+      )
+        operand = operand.expression;
       const helper =
         this.narrowedRetagHelper(node, e.type.unionId, expected.unionId, e.loc) ??
-        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc);
+        uninhabitedArmRetagHelper(this, node, e.type.unionId, expected.unionId, e.loc) ??
+        (operand === node
+          ? null
+          : this.narrowedRetagHelper(operand, e.type.unionId, expected.unionId, e.loc));
       if (helper) {
         e = { kind: "call", callee: helper, args: [e], type: expected, loc: e.loc };
       }
@@ -20022,6 +20056,12 @@ export class Lowerer {
     return genericFnOf(this, ident);
   }
 
+  /** The GenericFnInfo of a nested generic `function` declaration
+   * (nestedGenericFnInfoOf), or null for every other declaration form. */
+  nestedGenericFnInfoOf(decl: ts.FunctionDeclaration): GenericFnInfo | null {
+    return nestedGenericFnInfoOf(this, decl);
+  }
+
   lowerGenericCall(expr: ts.CallExpression, info: GenericFnInfo): IrExpr {
     return lowerGenericCall(this, expr, info);
   }
@@ -21254,6 +21294,28 @@ export class Lowerer {
           "SC1030",
           node,
           `the reference to '${name}' above its 'var' declaration (a read there would be 'undefined', which the binding's type cannot hold — annotate it '| undefined' or move the declaration up)`,
+        );
+      }
+    }
+    // The `let` twin: a function created above `let x: T;` (no initializer)
+    // reads the binding. Between the declaration and the first assignment
+    // such a read is `undefined`, and this binding's type has no slot for
+    // that value (predeclareForwardCapture declined it).
+    if (symbol) {
+      const d = symbol.valueDeclaration;
+      if (
+        d &&
+        ts.isVariableDeclaration(d) &&
+        d.initializer === undefined &&
+        (ts.getCombinedNodeFlags(d) & ts.NodeFlags.Let) !== 0 &&
+        ts.isVariableStatement(d.parent?.parent) &&
+        ts.getSourceFileOfNode(d) === ts.getSourceFileOfNode(node) &&
+        d.pos > node.pos
+      ) {
+        this.unsupported(
+          "SC1030",
+          node,
+          `the reference to '${name}' from a function created above its 'let' declaration, which has no initializer (a read before the first assignment would be 'undefined', which the binding's type cannot hold — annotate it '| undefined', initialize it, or move the declaration up)`,
         );
       }
     }

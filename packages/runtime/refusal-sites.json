@@ -619,6 +619,12 @@
  },
  {
   "file": "scr_events.c",
+  "function": "scr_stdin_view_refuse_iteration",
+  "message": "for await over process.stdin is not supported in a program that also passes process.stdin as a stream.Readable (iterate the Readable) [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
   "function": "scr_stdio_refusal",
   "message": "Native process stream %s has no lowering [SC2020]",
   "code": "SC2020"
@@ -1794,6 +1800,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_stream_stdin.c",
+  "function": "scr_stream_stdin_read",
+  "message": "process.stdin piped as a stream.Readable while process.stdin has a 'readable' listener is not supported: in Node that listener keeps the stream paused (remove the listener, or read the stream in it) [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_symbol.c",
   "function": "scr_dyn_using_method",
   "message": "disposing a class instance through a Disposable- or unknown-typed value has no lowering yet (declare the variable with the class type)",
@@ -2265,6 +2277,18 @@
   "file": "scr_ecdh.c",
   "function": "se_unsupported_curve",
   "message": "' has no native implementation; the supported curves are prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
+  "function": "scr_stdin_deliver_parts",
+  "message": "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks strings (declare the listener's parameter as string) [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
+  "function": "scr_stdin_read_bytes",
+  "message": "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings (leave the encoding unset and decode the Buffer) [SC2020]",
   "code": "SC2020"
  },
  {

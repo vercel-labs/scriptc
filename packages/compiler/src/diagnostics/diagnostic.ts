@@ -321,9 +321,12 @@ export function startupFailureDiag(
  * that tells the copy from the object: under Node there is one object, so a
  * write through either name is visible through the other and `===` is true.
  * `what` names the copied object when it is a member of the converted value
- * (a field, an element) rather than the value itself. */
+ * (a field, an element) rather than the value itself. `dictionary` is the
+ * type of a dictionary that holds the object it was given, when the copy is
+ * the one its conversion into a dictionary type with another value type
+ * makes (of the dictionary, or of an entry). */
 export function widthCopyDivergenceDiag(
-  conversion: { from: string; to: string; member: boolean },
+  conversion: { from: string; to: string; member: boolean; dictionary?: string },
   observed: { how: "write" | "identity" | "untyped"; what: string; where: string },
   loc: SrcLoc,
 ): ScrDiagnostic {
@@ -336,6 +339,13 @@ export function widthCopyDivergenceDiag(
       : observed.how === "identity"
         ? `the program compares ${observed.what} by identity (${observed.where}), and the copy is never the object it was made from`
         : `${observed.what} (${observed.where}), where a write or an identity comparison tells the copy from the object it was made from`;
+  if (conversion.dictionary !== undefined)
+    return {
+      code: "SC6001",
+      message: `${subject} (a dictionary that holds the object it was given is copied entry by entry into a dictionary type with another value type), while under Node both names refer to one object: ${effect}`,
+      loc,
+      hint: `declare the parameter or binding with the value's own dictionary type ('${conversion.dictionary}'), or copy it explicitly (a spread, 'structuredClone') so that Node copies it too`,
+    };
   return {
     code: "SC6001",
     message: `${subject} (a conversion to another layout builds a new object), while under Node both names refer to one object: ${effect}`,

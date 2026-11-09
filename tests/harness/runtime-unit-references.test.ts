@@ -63,6 +63,10 @@ const available =
  * object. */
 const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
+  // The DEP0190 warning of a joined shell line: only cp.shellLine reaches
+  // it, and that call selects the dyn-async unit. cp.checkShellArgs links
+  // the unit without it.
+  "scr_child_shell.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [

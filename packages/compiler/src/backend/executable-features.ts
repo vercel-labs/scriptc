@@ -72,8 +72,10 @@ export function executableLinkFeatures(
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
+    ...(features.streamStdin ? { streamStdin: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
     ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.childShellLine ? { childShellLine: true } : {}),
     ...(features.processFeatures ? { processFeatures: true } : {}),
     // A child process an island made, in a native ChildProcess slot
     // (scr_node_island_child.c): a program with both islands and child_process.

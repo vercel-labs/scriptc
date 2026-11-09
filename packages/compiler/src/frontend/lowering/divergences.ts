@@ -32,6 +32,7 @@ import type { Lowerer } from "./lowerer.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { islandCall, islandMadeValue } from "./lower-node-island.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { heldDictionaryCopy } from "./width-copies.js";
 
 /** How an identity-sensitive binding is used after a copy could replace it. */
 interface IdentityUse {
@@ -858,7 +859,11 @@ function widthCopyBetween(
 function recordFieldsConvert(lowerer: Lowerer, source: ts.Type, target: ts.Type): boolean {
   const from = lowerer.mapTypeOf(source);
   const to = lowerer.mapTypeOf(target);
-  if (!from || !to || from.kind !== "record" || to.kind !== "record") return false;
+  if (!from || !to || to.kind !== "record") return false;
+  // A record that is untyped where it holds a dictionary that keeps its
+  // object has no layout to compare: the view copies that dictionary.
+  if (heldDictionaryCopy(lowerer, source, from, to) !== null) return true;
+  if (from.kind !== "record") return false;
   if (typeEquals(from, to)) return false;
   return lowerer.recordWidthPlan(from.shapeId, to.shapeId) !== null;
 }

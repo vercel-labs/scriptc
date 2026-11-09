@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/union-receiver-callable-members.ts"
+ ],
+ "diags": []
+}

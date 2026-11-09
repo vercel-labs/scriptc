@@ -22,13 +22,22 @@
  *
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
- * (SC6001). Programs without copy helpers skip the scan. */
+ * (SC6001). Programs without copy helpers skip the scan.
+ *
+ * One copy has no helper: a dictionary that keeps the object it was given
+ * (class-protocols.ts) is an untyped value in the lowered program, and
+ * its conversion into a native dictionary of another value type is the
+ * checked conversion every untyped value takes. Only the checker's type
+ * of the converted value tells the two apart, so the lowering notes the
+ * conversion where it makes it (noteDictionaryCopy), and the scan counts
+ * the lowered conversions that carry a note. */
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
-import { isUnitType, typeKey } from "../../ir/ir.js";
+import { DYN, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../../ir/traverse.js";
 import type { IrModule } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import {
   ARM_EXTRACTION_HELPER,
   COPY_HELPERS,
@@ -55,7 +64,11 @@ export type WidthCopyKind =
    * boundary (`dynCheck` of a `dynFrom`): a record inside it that the
    * target declares at another layout is copied unless the backend plans
    * a record view for the pair. */
-  | "checked";
+  | "checked"
+  /** A dictionary that keeps the object it was given converted into a
+   * native dictionary: the conversions the lowering noted
+   * (noteDictionaryCopy), and the entries such a conversion rebuilds. */
+  | "dict";
 
 /** The helper families that copy their argument, by helper name prefix.
  * The lowering interns them under the names of width-lift.ts. */
@@ -129,6 +142,278 @@ export interface WidthCopyFact {
   /** The first observation that tells the copy from its object, or null
    * when the program has none. */
   observed: CopyObservation | null;
+  /** `dict`: the type of the dictionary the conversion copies, as the
+   * program declares it (the lowered dictionary is an untyped value). */
+  dictionary?: string;
+}
+
+/** A conversion the lowering noted: the value converted there holds a
+ * dictionary that keeps the object it was given where the slot has a
+ * native dictionary, which the conversion builds from the entries. */
+export interface DictionaryCopy {
+  /** The lowered conversion: its place and the type it answers. */
+  file: string;
+  start: number;
+  slot: IrType;
+  /** The native dictionary the copy is, and the type of its values. */
+  to: IrType;
+  value: IrType;
+  /** The dictionary's own type, as a message names it. */
+  from: string;
+  /** The layout its entries have, or null when they have none the lowering
+   * knows. */
+  entries: IrType | null;
+  /** Whether the dictionary is the converted value or held inside it. */
+  depth: "value" | "member";
+}
+
+/** Whether a value of `type` can be, or directly hold, an untyped value:
+ * the only values noteDictionaryCopy asks the checker about. */
+function holdsUntyped(lowerer: Lowerer, type: IrType): boolean {
+  switch (type.kind) {
+    case "dyn":
+    case "jsval":
+      return true;
+    case "array":
+      return holdsUntyped(lowerer, type.elem);
+    case "record": {
+      const shape = lowerer.shapes.get(type.shapeId);
+      if (shape === undefined) return false;
+      if (shape.indexValue !== undefined && shape.indexValue.kind === "dyn") return true;
+      return shape.fields.some((field) => field.type.kind === "dyn");
+    }
+    case "union":
+      return (lowerer.unions.get(type.unionId)?.arms ?? []).some((arm) => arm.kind === "dyn");
+    case "object":
+      for (let info = lowerer.classes.get(type.className) ?? null; info; info = info.base)
+        for (const field of info.fields.values()) if (field.kind === "dyn") return true;
+      return false;
+    default:
+      return false;
+  }
+}
+
+/** The value type of a string-keyed dictionary type without declared
+ * members, or undefined for any other type. */
+function dictionaryValueType(checker: ts.TypeChecker, type: ts.Type): ts.Type | undefined {
+  if (checker.getPropertiesOfType(type).length > 0) return undefined;
+  return checker
+    .getIndexInfosOfType(type)
+    .find((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0)?.type;
+}
+
+/** How many steps below the converted value (a field, an element, an entry)
+ * copiedDictionary looks for the dictionary. */
+const COPIED_DICTIONARY_DEPTH = 3;
+
+/** What one search of copiedDictionary has established: the targets that
+ * hold a native dictionary, by steps left and type, and for each source
+ * type the targets it was compared with, by depth. */
+interface DictionarySearch {
+  native: Map<string, boolean>;
+  asked: Map<ts.Type, Set<string>>;
+}
+
+function dictionarySearch(): DictionarySearch {
+  return { native: new Map(), asked: new Map() };
+}
+
+/** The dictionary a conversion of a `source` value into `target` copies:
+ * one that keeps the object it was given, at a position where the target
+ * has a native dictionary (a dictionary type with another value type, or
+ * the two would be one type and share the storage). It is the value itself
+ * or, at `depth` above zero, a field, an element or an entry of it. */
+function copiedDictionary(
+  lowerer: Lowerer,
+  source: ts.Type,
+  target: IrType,
+  depth: number,
+  search: DictionarySearch,
+): { from: ts.Type; entries: ts.Type; to: IrType; value: IrType; depth: number } | null {
+  if (depth > COPIED_DICTIONARY_DEPTH) return null;
+  const levels = COPIED_DICTIONARY_DEPTH - depth;
+  if (!holdsNativeDictionary(lowerer, target, levels, search.native)) return null;
+  const checker = lowerer.checker;
+  const targets =
+    target.kind === "union" ? (lowerer.unions.get(target.unionId)?.arms ?? []) : [target];
+  for (const part of source.isUnionType() ? ts.constituentTypes(source) : [source]) {
+    if ((part.flags & ts.TypeFlags.Object) === 0) continue;
+    for (const arm of targets) {
+      if (!holdsNativeDictionary(lowerer, arm, levels, search.native)) continue;
+      // The search ends at its first find, so a pair it has been through
+      // at this depth held none.
+      let asked = search.asked.get(part);
+      if (asked === undefined) search.asked.set(part, (asked = new Set()));
+      const pair = `${depth}\0${typeKey(arm)}`;
+      if (asked.has(pair)) continue;
+      asked.add(pair);
+      if (arm.kind === "array") {
+        if (!checker.isArrayType(part) && !checker.isTupleType(part)) continue;
+        for (const element of checker.getTypeArguments(part as ts.TypeReference)) {
+          const inner = copiedDictionary(lowerer, element, arm.elem, depth + 1, search);
+          if (inner !== null) return inner;
+        }
+        continue;
+      }
+      if (arm.kind !== "record") continue;
+      const shape = lowerer.shapes.get(arm.shapeId);
+      if (shape === undefined) continue;
+      const value = shape.tuple ? undefined : dictionaryValueType(checker, part);
+      if (value !== undefined) {
+        if (shape.indexValue === undefined || shape.fields.length > 0) continue;
+        if (lowerer.classDictionaryView(part))
+          return { from: part, entries: value, to: arm, value: shape.indexValue, depth };
+        const inner = copiedDictionary(lowerer, value, shape.indexValue, depth + 1, search);
+        if (inner !== null) return inner;
+        continue;
+      }
+      for (const field of shape.fields) {
+        if (!holdsNativeDictionary(lowerer, field.type, levels - 1, search.native)) continue;
+        const property = checker.getPropertyOfType(part, field.name);
+        if (property === undefined) continue;
+        const inner = copiedDictionary(
+          lowerer,
+          checker.getTypeOfSymbol(property),
+          field.type,
+          depth + 1,
+          search,
+        );
+        if (inner !== null) return inner;
+      }
+    }
+  }
+  return null;
+}
+
+/** Whether a value of `target` is a native dictionary or holds one within
+ * `levels` steps. copiedDictionary finds a copy nowhere else, so it asks
+ * the checker nothing about a target without one: a union of many record
+ * types whose fields hold the union again (a syntax tree) would otherwise
+ * be compared member by member with itself at every step, and a program
+ * with one such conversion would not finish compiling. */
+function holdsNativeDictionary(
+  lowerer: Lowerer,
+  target: IrType,
+  levels: number,
+  known: Map<string, boolean>,
+): boolean {
+  if (levels < 0) return false;
+  if (target.kind !== "record" && target.kind !== "array" && target.kind !== "union") return false;
+  const key = `${levels}\0${typeKey(target)}`;
+  const answer = known.get(key);
+  if (answer !== undefined) return answer;
+  let found = false;
+  if (target.kind === "union") {
+    for (const arm of lowerer.unions.get(target.unionId)?.arms ?? [])
+      if (!found) found = holdsNativeDictionary(lowerer, arm, levels, known);
+  } else if (target.kind === "array") {
+    found = holdsNativeDictionary(lowerer, target.elem, levels - 1, known);
+  } else {
+    const shape = lowerer.shapes.get(target.shapeId);
+    if (shape !== undefined) {
+      found = shape.indexValue !== undefined && shape.fields.length === 0;
+      for (const field of shape.fields)
+        if (!found) found = holdsNativeDictionary(lowerer, field.type, levels - 1, known);
+      // A dictionary's entries are a step below it as well.
+      if (!found && shape.indexValue !== undefined)
+        found = holdsNativeDictionary(lowerer, shape.indexValue, levels - 1, known);
+    }
+  }
+  known.set(key, found);
+  return found;
+}
+
+/** A dictionary type as a message names it, by the layout of its entries. */
+function dictionaryText(lowerer: Lowerer, type: ts.Type, entries: IrType | null): string {
+  return entries === null
+    ? lowerer.checker.typeToString(type)
+    : `{ [key: string]: ${typeText(lowerer, entries)} }`;
+}
+
+/** Called where a conversion answered `converted` (a slot's, or the checked
+ * conversion an assertion makes) for the value `value` of `node`: notes the
+ * conversion when it copies a dictionary that keeps the object it was
+ * given. Such a dictionary is untyped in the lowered program, so a
+ * conversion of typed values asks nothing, and neither does a program
+ * without such a dictionary. The note is what the scan reads; it changes
+ * nothing in the lowered program. */
+export function noteDictionaryCopy(
+  lowerer: Lowerer,
+  node: ts.Node,
+  value: IrExpr,
+  converted: Pick<IrExpr, "kind" | "type" | "loc">,
+): void {
+  if (converted.kind !== "dynCheck" && converted.kind !== "call") return;
+  if (!holdsUntyped(lowerer, value.type) || !lowerer.hasDictionaryViews()) return;
+  const source = ts.isExpression(node) ? withoutParenthesesTypeWrappers(node) : node;
+  const copied = copiedDictionary(
+    lowerer,
+    lowerer.typeOf(source),
+    converted.type,
+    0,
+    dictionarySearch(),
+  );
+  if (copied === null) return;
+  const entries = lowerer.mapTypeOf(copied.entries);
+  lowerer.dictionaryCopies.push({
+    file: converted.loc.file,
+    start: converted.loc.start,
+    slot: converted.type,
+    to: copied.to,
+    value: copied.value,
+    from: dictionaryText(lowerer, copied.from, entries),
+    entries,
+    depth: copied.depth === 0 ? "value" : "member",
+  });
+}
+
+/** The field through which a conversion of the record `source` (lowered as
+ * `kept`) into the record `target` copies a dictionary that keeps the
+ * object it was given, with the two dictionary types, or null. Such a
+ * record is untyped where the dictionary is, so the rules that refuse a
+ * written-through record copy by comparing two layouts (the declaration,
+ * the argument of a callee that writes, the assertion's view) see no pair
+ * of fields there and ask here instead. Both types name the same fields,
+ * as those rules require of a copy that is no projection.
+ *
+ * Those rules compare the layouts of two record fields, and the field here
+ * had one, a native dictionary, until every spelling of a dictionary type
+ * became one type: so this answers for a field whose dictionary type keeps
+ * identity as another spelling of the type that does. A field declared
+ * with the very type an object entered never had a layout to compare; its
+ * conversion is reported (SC6001), not refused. */
+export function heldDictionaryCopy(
+  lowerer: Lowerer,
+  source: ts.Type,
+  kept: IrType,
+  target: IrType,
+): { field: string; from: string; to: string } | null {
+  if (target.kind !== "record" || (kept.kind !== "dyn" && kept.kind !== "record")) return null;
+  if (!holdsUntyped(lowerer, kept) || !lowerer.hasDictionaryViews()) return null;
+  const checker = lowerer.checker;
+  const shape = lowerer.shapes.get(target.shapeId);
+  if (shape === undefined || shape.tuple || shape.indexValue !== undefined) return null;
+  if ((source.flags & ts.TypeFlags.Object) === 0 || checker.isTupleType(source)) return null;
+  if (((source.getSymbol()?.flags ?? 0) & ts.SymbolFlags.Class) !== 0) return null;
+  if (checker.getPropertiesOfType(source).length !== shape.fields.length) return null;
+  for (const field of shape.fields) {
+    const property = checker.getPropertyOfType(source, field.name);
+    if (property === undefined) return null;
+    const copied = copiedDictionary(
+      lowerer,
+      checker.getTypeOfSymbol(property),
+      field.type,
+      1,
+      dictionarySearch(),
+    );
+    if (copied === null || !lowerer.dictionaryViewBySameness(copied.from)) continue;
+    return {
+      field: field.name,
+      from: dictionaryText(lowerer, copied.from, lowerer.mapTypeOf(copied.entries)),
+      to: typeText(lowerer, copied.to),
+    };
+  }
+  return null;
 }
 
 /** One copy a helper performs on (part of) its argument. */
@@ -176,6 +461,154 @@ function isValueType(type: IrType): boolean {
       return true;
     default:
       return isUnitType(type);
+  }
+}
+
+/** A copy a conversion makes: a copy helper's family, `checked` for a
+ * checked conversion between two typed layouts, or `other` for an object
+ * the conversion builds in place. */
+export interface ConversionCopy {
+  kind: WidthCopyKind | "other";
+  from: IrType;
+  to: IrType;
+}
+
+/** The node kinds that answer a new object. */
+const FRESH_NODES = new Set<string>(["recordLit", "arrayLit", "arrayNewLen", "recordClone", "new"]);
+
+/** The first copy the conversion `conversion` of `operand` (a node inside
+ * it) can make, or null when it keeps the value: a union tag, a class
+ * view, a box, a checked extraction, a function adapter or a routing
+ * helper none of whose arms copies. The copies are the ones this file
+ * reports: a call of a copy helper, in the conversion itself or in any
+ * helper or adapter it reaches (a routing helper that copies in one
+ * run-time arm copies; an adapter that copies an argument or a result of
+ * each call copies), and a checked conversion between two typed layouts.
+ * A value with no identity and no state converts freely. `helper` answers
+ * a lowered helper by name, `unionArms` a union's arms.
+ *
+ * For a place whose result JavaScript defines as the operand itself, such
+ * as the left side of `??`: there a copy is a second object where Node has
+ * one, whatever the program does with it later. */
+export function conversionCopy(
+  conversion: IrExpr,
+  operand: IrExpr,
+  helper: (name: string) => IrFunction | undefined,
+  unionArms: (unionId: string) => readonly IrType[] | undefined,
+): ConversionCopy | null {
+  if (isValueType(operand.type)) return null;
+  let found: ConversionCopy | null = null;
+  // Inside a helper a literal is how a copy helper builds its result, and
+  // those are found by name.
+  let depth = 0;
+  const reached = new Set<string>();
+  const reach = (name: string): void => {
+    if (reached.has(name)) return;
+    reached.add(name);
+    const fn = helper(name);
+    if (fn === undefined) {
+      // A routing helper exists to forward to copies or tags: one that
+      // cannot be read is not trusted.
+      if (hasPrefix(name, ROUTING_PREFIXES))
+        found = { kind: "other", from: operand.type, to: conversion.type };
+      return;
+    }
+    if (name.startsWith(PREDICATE_PREFIX) && buildsRecord(fn)) {
+      found = { kind: "width", from: fn.params[0]?.type ?? operand.type, to: fn.returnType };
+      return;
+    }
+    depth++;
+    for (const s of fn.body) if (!stmt(s)) break;
+    depth--;
+  };
+  const expr = (e: IrExpr): boolean => {
+    if (found !== null) return false;
+    // The left side's own evaluation is not part of its conversion.
+    if (e === operand) return true;
+    if (e.kind === "call") {
+      const kind = copyKindOf(e.callee);
+      if (kind !== null) found = { kind, from: e.args[0]?.type ?? operand.type, to: e.type };
+      else if (e.callee.charCodeAt(0) === 37 /* % */) reach(e.callee);
+    } else if (e.kind === "closure") reach(e.fnName);
+    else if (e.kind === "dynCheck") {
+      let inner = e.value;
+      while (inner.kind === "seqExpr") inner = inner.result;
+      const pairs: [IrType, IrType][] = [];
+      if (inner.kind === "dynFrom")
+        layoutPairs(inner.value.type, e.type, pairs, new Set(), unionArms);
+      const pair = pairs[0];
+      if (pair !== undefined) found = { kind: "checked", from: pair[0], to: pair[1] };
+    } else if (depth === 0 && FRESH_NODES.has(e.kind))
+      found = { kind: "other", from: operand.type, to: e.type };
+    return found === null && everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => found === null && everyStmtChild(s, expr, stmt);
+  expr(conversion);
+  return found;
+}
+
+/** The pairs of record, array or class layouts that two types declare at
+ * the same position, added to `out`: what a checked conversion of a
+ * `from`-typed value into `to` converts. A position the target leaves
+ * untyped keeps the value (boxing answers the object itself). */
+function layoutPairs(
+  from: IrType,
+  to: IrType,
+  out: [IrType, IrType][],
+  seen: Set<string>,
+  unionArms: (unionId: string) => readonly IrType[] | undefined,
+): void {
+  if (from.kind === "dyn" || to.kind === "dyn" || isValueType(from) || isValueType(to)) return;
+  const key = `${typeKey(from)}\0${typeKey(to)}`;
+  if (typeKey(from) === typeKey(to) || seen.has(key)) return;
+  seen.add(key);
+  if (from.kind === "union" || to.kind === "union") {
+    const sources = from.kind === "union" ? (unionArms(from.unionId) ?? []) : [from];
+    const targets = to.kind === "union" ? (unionArms(to.unionId) ?? []) : [to];
+    for (const source of sources)
+      for (const target of targets)
+        if (source.kind === target.kind) layoutPairs(source, target, out, seen, unionArms);
+    return;
+  }
+  if (from.kind === "promise" && to.kind === "promise") {
+    layoutPairs(from.inner, to.inner, out, seen, unionArms);
+    return;
+  }
+  if (from.kind === "func" && to.kind === "func") {
+    // A caller's argument, typed by the target, enters the source's parameter.
+    for (let i = 0; i < from.params.length && i < to.params.length; i++)
+      layoutPairs(to.params[i]!, from.params[i]!, out, seen, unionArms);
+    layoutPairs(from.ret, to.ret, out, seen, unionArms);
+    return;
+  }
+  const layout = (type: IrType): boolean =>
+    type.kind === "record" || type.kind === "array" || type.kind === "object";
+  if (!layout(from) || !layout(to)) return;
+  out.push([from, to]);
+  if (from.kind === "array" && to.kind === "array")
+    layoutPairs(from.elem, to.elem, out, seen, unionArms);
+}
+
+/** How a message names a conversion's copy: what converts, and by what. */
+export function conversionCopyText(copy: ConversionCopy, fmt: (type: IrType) => string): string {
+  switch (copy.kind) {
+    case "arr":
+      return "an array converts to another element type by copying its elements";
+    case "tupleArr":
+      return "a tuple converts to an array by copying its elements";
+    case "width":
+    case "ovf":
+      return "a record converts to another record type by copying its fields";
+    case "objWidth":
+      return "a class instance converts to a record type by copying its fields";
+    case "clsWidth":
+      return "a record converts to a class by constructing an instance";
+    case "checked":
+      return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by a copy`;
+    case "dict":
+      return "a dictionary converts to a dictionary of another value type by copying its entries";
+    case "other":
+      return `a '${fmt(copy.from)}' converts to '${fmt(copy.to)}' by building another value`;
   }
 }
 
@@ -256,9 +689,22 @@ function collectCopies(
 ): WidthCopyFact[] {
   const helpers = new Map<string, IrFunction>();
   for (const fn of functions) if (isConversionHelper(fn.name)) helpers.set(fn.name, fn);
-  // A program that interned no conversion helper converts nothing by copy.
-  if (helpers.size === 0 && !checked) return [];
-  const scan = new CopyScan(helpers, functions, checked, (id) => lowerer.unions.get(id)?.arms);
+  // A program that interned no conversion helper and noted no dictionary
+  // conversion converts nothing by copy.
+  if (helpers.size === 0 && !checked && lowerer.dictionaryCopies.length === 0) return [];
+  const noted = new Map<number, DictionaryCopy[]>();
+  for (const copy of lowerer.dictionaryCopies) {
+    const list = noted.get(copy.start);
+    if (list === undefined) noted.set(copy.start, [copy]);
+    else list.push(copy);
+  }
+  const scan = new CopyScan(
+    helpers,
+    functions,
+    checked,
+    (id) => lowerer.unions.get(id)?.arms,
+    noted,
+  );
   if (namedOnly && !scan.performsNamedCopy()) return [];
   const sites = namedOnly
     ? scan.sites().filter((site) => isNamedCopy(site.kind, site.routed))
@@ -295,6 +741,8 @@ class CopyScan {
     private readonly functions: readonly IrFunction[],
     private readonly withChecked: boolean,
     private readonly unionArms: (unionId: string) => readonly IrType[] | undefined,
+    /** The dictionary conversions the lowering noted, by source position. */
+    private readonly noted: ReadonlyMap<number, readonly DictionaryCopy[]>,
   ) {
     for (const fn of functions) if (!this.byName.has(fn.name)) this.byName.set(fn.name, fn);
   }
@@ -315,9 +763,51 @@ class CopyScan {
         fn.body,
         (call, slot) => this.site(call, slot),
         this.withChecked ? (check, slot) => this.checked(check, slot) : undefined,
+        this.noted.size > 0 ? (conversion, slot) => this.dictionary(conversion, slot) : undefined,
       );
     }
     return this.out;
+  }
+
+  /** A lowered conversion the lowering noted: the dictionary it copies, and
+   * the entries the copy rebuilds. An entry whose layout the copy's value
+   * type has stays the object it is; every other entry is converted, and
+   * one that keeps its own object is untyped as the dictionary is. */
+  private dictionary(conversion: IrExpr & { kind: "dynCheck" | "call" }, slot: string): void {
+    const operand = conversion.kind === "dynCheck" ? conversion.value : conversion.args[0];
+    const note = this.noted
+      .get(conversion.loc.start)
+      ?.find((copy) => copy.file === conversion.loc.file && typeEquals(copy.slot, conversion.type));
+    if (operand === undefined || note === undefined) return;
+    const inside = !this.deepFresh(operand);
+    const site = {
+      kind: "dict" as const,
+      loc: conversion.loc,
+      slot,
+      dictionary: note.from,
+      routed: false,
+    };
+    this.out.push({
+      ...site,
+      from: DYN,
+      to: note.to,
+      depth: note.depth,
+      aliasable: note.depth === "value" ? !this.fresh(operand) : inside,
+    });
+    const value = note.value;
+    // Read into a local first: called as `this.unionArms(…)` the function
+    // would be handed this scan as its receiver.
+    const unionArms = this.unionArms;
+    const targets = value.kind === "union" ? (unionArms(value.unionId) ?? []) : [value];
+    const entries = note.entries ?? DYN;
+    const pairs: [IrType, IrType][] = [];
+    for (const entry of entries.kind === "union" ? (unionArms(entries.unionId) ?? []) : [entries]) {
+      if (targets.some((target) => typeEquals(entry, target))) continue;
+      if (entry.kind !== "dyn") layoutPairs(entry, value, pairs, new Set(), unionArms);
+      else for (const target of targets) if (!isValueType(target)) pairs.push([DYN, target]);
+    }
+    for (const [from, to] of pairs)
+      this.out.push({ ...site, from, to, depth: "member", aliasable: inside });
   }
 
   private site(call: IrExpr & { kind: "call" }, slot: string): void {
@@ -351,7 +841,7 @@ class CopyScan {
     while (inner.kind === "seqExpr") inner = inner.result;
     if (inner.kind !== "dynFrom") return;
     const pairs: [IrType, IrType][] = [];
-    this.layoutPairs(inner.value.type, check.type, pairs, new Set());
+    layoutPairs(inner.value.type, check.type, pairs, new Set(), this.unionArms);
     if (pairs.length === 0) return;
     const aliasable = !this.deepFresh(inner.value);
     for (const [from, to] of pairs)
@@ -367,51 +857,17 @@ class CopyScan {
       });
   }
 
-  private layoutPairs(from: IrType, to: IrType, out: [IrType, IrType][], seen: Set<string>): void {
-    if (from.kind === "dyn" || to.kind === "dyn" || isValueType(from) || isValueType(to)) return;
-    const key = `${typeKey(from)}\0${typeKey(to)}`;
-    if (typeKey(from) === typeKey(to) || seen.has(key)) return;
-    seen.add(key);
-    if (from.kind === "union" || to.kind === "union") {
-      // Read into a local first: called as `this.unionArms(…)` the function
-      // is handed this scan as its receiver, which makes the class a dynamic
-      // value in the compiler's own build (LlEmitter.integerCloneHost).
-      const unionArms = this.unionArms;
-      const sources = from.kind === "union" ? (unionArms(from.unionId) ?? []) : [from];
-      const targets = to.kind === "union" ? (unionArms(to.unionId) ?? []) : [to];
-      for (const source of sources)
-        for (const target of targets)
-          if (source.kind === target.kind) this.layoutPairs(source, target, out, seen);
-      return;
-    }
-    if (from.kind === "promise" && to.kind === "promise") {
-      this.layoutPairs(from.inner, to.inner, out, seen);
-      return;
-    }
-    if (from.kind === "func" && to.kind === "func") {
-      // A caller's argument, typed by the target, enters the source's parameter.
-      for (let i = 0; i < from.params.length && i < to.params.length; i++)
-        this.layoutPairs(to.params[i]!, from.params[i]!, out, seen);
-      this.layoutPairs(from.ret, to.ret, out, seen);
-      return;
-    }
-    const layout = (type: IrType): boolean =>
-      type.kind === "record" || type.kind === "array" || type.kind === "object";
-    if (!layout(from) || !layout(to)) return;
-    out.push([from, to]);
-    if (from.kind === "array" && to.kind === "array")
-      this.layoutPairs(from.elem, to.elem, out, seen);
-  }
-
   /** Calls `visit` for every call of a conversion helper in `body`, with
    * the kind of the node the call is an operand of. */
   private walk(
     body: readonly IrStmt[],
     visit: (call: IrExpr & { kind: "call" }, slot: string) => void,
     checked?: (check: IrExpr & { kind: "dynCheck" }, slot: string) => void,
+    noted?: (conversion: IrExpr & { kind: "dynCheck" | "call" }, slot: string) => void,
   ): void {
     let slot = "";
     const expr = (e: IrExpr): boolean => {
+      if (noted !== undefined && (e.kind === "dynCheck" || e.kind === "call")) noted(e, slot);
       if (e.kind === "call" && this.helpers.has(e.callee)) visit(e, slot);
       else if (e.kind === "closure" && this.helpers.has(e.fnName)) this.valued(e);
       else if (e.kind === "dynCheck" && checked !== undefined) checked(e, slot);
@@ -698,6 +1154,7 @@ class Observations {
     // A union on either side stands for its arms (a predicate's conversion
     // takes a union of records and may answer one).
     const targets = this.arms(fact.to);
+    if (fact.kind === "dict" && fact.from.kind === "dyn") return this.ofUntyped(targets);
     const sources = this.arms(fact.from);
     for (const to of targets) {
       const copy =
@@ -713,6 +1170,37 @@ class Observations {
         const source = this.written(from, to);
         if (source !== null) return { ...source, side: "source" };
       }
+    return null;
+  }
+
+  /** What tells a copy from the untyped value it was made from (a
+   * dictionary that keeps the object it was given, or an entry that does).
+   * The copy is observed as any copy is. The original has no layout to
+   * look for: any store through an untyped value may be a write to it.
+   * The copy's own writes and comparisons are named first, then such a
+   * store; the copy came from untyped code by its own conversion, which
+   * is named only where untyped code compares by identity. */
+  private ofUntyped(targets: readonly IrType[]): CopyObservation | null {
+    for (const to of targets) {
+      const copy = this.written(to, null, true) ?? this.identity.get(typeKey(to));
+      if (copy !== undefined && copy !== null) return { ...copy, side: "copy" };
+    }
+    const store = this.stores.first;
+    if (store !== null) {
+      const keyed = store.fn === "dyn.keySet" || store.fn === "dyn.keyDelete";
+      return {
+        how: keyed ? "write" : "untyped",
+        what: keyed
+          ? "a key of an object the compiler keeps untyped, as it keeps this dictionary"
+          : `an untyped value reaches the runtime (${store.fn})`,
+        side: "source",
+        loc: store.loc,
+      };
+    }
+    for (const to of targets) {
+      const reached = this.compared(to);
+      if (reached !== null) return { ...reached, side: "copy" };
+    }
     return null;
   }
 
@@ -737,12 +1225,13 @@ class Observations {
 
   /** The first write to a value of layout `type`: to one of the fields it
    * shares with `other` (any field when `other` is null), to one of its
-   * elements, or through untyped code that holds it. */
-  private written(type: IrType, other: IrType | null): CopyObservation | null {
+   * elements, or, unless `typed` asks for the typed writes alone, through
+   * untyped code that holds it. */
+  private written(type: IrType, other: IrType | null, typed = false): CopyObservation | null {
     if (type.kind === "array") {
       const direct = this.arrayWrites.get(typeKey(type.elem));
       if (direct !== undefined) return direct;
-      return this.untypedWrite(type, null);
+      return typed ? null : this.untypedWrite(type, null);
     }
     const unit = this.unitOf(type);
     if (unit === null) return null;
@@ -760,7 +1249,7 @@ class Observations {
       const write = this.fieldWrites.get(`${unit}\0${name}`);
       if (write !== undefined) return write;
     }
-    return this.untypedWrite(type, shared ?? names);
+    return typed ? null : this.untypedWrite(type, shared ?? names);
   }
 
   private untypedWrite(type: IrType, names: readonly string[] | null): CopyObservation | null {
@@ -1304,15 +1793,26 @@ export function widthCopyDivergences(
   facts: readonly WidthCopyFact[],
 ): ScrDiagnostic[] {
   const out: ScrDiagnostic[] = [];
+  // A dictionary conversion is one warning: the entries it rebuilds are
+  // named only where the dictionary itself is not.
+  let dictionary: SrcLoc | null = null;
   for (const fact of facts) {
     const observed = fact.observed;
     if (observed === null || fact.kind === "checked") continue;
+    if (fact.kind === "dict") {
+      if (dictionary?.file === fact.loc.file && dictionary.start === fact.loc.start) continue;
+      dictionary = fact.loc;
+    }
     out.push(
       widthCopyDivergenceDiag(
         {
-          from: typeText(lowerer, fact.from),
+          from:
+            fact.from.kind === "dyn" && fact.dictionary !== undefined
+              ? fact.dictionary
+              : typeText(lowerer, fact.from),
           to: typeText(lowerer, fact.to),
           member: fact.depth === "member",
+          ...(fact.dictionary === undefined ? {} : { dictionary: fact.dictionary }),
         },
         { how: observed.how, what: observed.what, where: whereOf(lowerer, observed.loc) },
         fact.loc,

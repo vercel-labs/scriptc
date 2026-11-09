@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 /* The Windows arm: CRT signal() stands in for sigaction (msvcrt routes
  * Ctrl-C/Ctrl-Break through its own SetConsoleCtrlHandler onto a separate
@@ -500,6 +501,19 @@ static SCR_TL bool scr_stdin_readable_queued = false;
  * mode after 'end' (the listener stays registered and isPaused() keeps
  * answering true), even though this runtime releases the listener tables. */
 static SCR_TL bool scr_stdin_readable_mode = false;
+/* process.stdin handed on as a node:stream Readable (scr_stream_stdin.c;
+ * NULL in a program that never converts it). In Node the two are one
+ * object, so from the first conversion the stream holds the one flowing
+ * state: pause(), resume() and isPaused() through the process.stdin name
+ * act on the stream, and this unit reads descriptor 0 only when the
+ * stream asks for input (`pull_wanted`), whether the stream flows or is
+ * read in paused mode. The listeners registered through the process.stdin
+ * name stay in this unit's tables: a 'data' listener gets each chunk as
+ * the stream takes it, 'readable' and 'end' listeners follow the stream's
+ * events, and read() reads the stream. */
+static SCR_TL const ScrStdinView *scr_stdin_view = NULL;
+static SCR_TL bool scr_stdin_pull_wanted = false;
+static void scr_stdin_pull_serve(void);
 
 /* Appends an arrived chunk (moves) to the held input. */
 static void scr_stdin_hold(ScrBytes *chunk) {
@@ -586,6 +600,7 @@ static void scr_stdin_add_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *
   scr_stdin_data[scr_stdin_ndata].kind = kind;
   scr_stdin_data[scr_stdin_ndata].once = once;
   scr_stdin_ndata++;
+  if (scr_stdin_view != NULL) scr_stdin_view->listening(false);
 }
 
 void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
@@ -609,6 +624,7 @@ void scr_stdin_set_encoding(ScrStr *enc) {
   scr_stdin_encoding = scr_str_retain(enc);
   scr_str_release(previous);
   scr_stdin_dec_pending = 0;
+  if (scr_stdin_view != NULL) scr_stdin_view->set_encoding(enc);
 }
 
 void scr_stdin_on_end(ScrClosure *cb /*moves*/, bool once) {
@@ -631,7 +647,11 @@ static void scr_stdin_finish(bool fire_end);
 static void scr_stdin_emit_readable(void) {
   scr_stdin_readable_queued = false;
   size_t length = scr_stdin_buffered;
-  if (scr_stdin_eof || scr_stdin_destroyed || (!length && !scr_stdin_read_eof)) return;
+  /* As a stream's source the unit holds nothing itself: the event is the
+   * stream's, and the listener's read() reads the stream. */
+  if (scr_stdin_eof || scr_stdin_destroyed ||
+      (scr_stdin_view == NULL && !length && !scr_stdin_read_eof))
+    return;
   size_t n = scr_stdin_nreadable;
   ScrStdinEndL *snap = malloc((n ? n : 1) * sizeof *snap);
   if (!snap) scr_events_oom();
@@ -684,6 +704,10 @@ void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
   scr_stdin_readable[scr_stdin_nreadable].cb = cb;
   scr_stdin_readable[scr_stdin_nreadable].once = once;
   scr_stdin_nreadable++;
+  if (scr_stdin_view != NULL) {
+    scr_stdin_view->listening(true);
+    return;
+  }
   scr_stdin_readable_need = true;
   if (scr_stdin_read_demand < 65536) scr_stdin_read_demand = 65536;
   if (scr_stdin_buffered) scr_stdin_queue_readable();
@@ -694,7 +718,8 @@ void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
  * once the buffer is drained. */
 static void scr_stdin_reached_eof(void) {
   scr_stdin_read_eof = true;
-  if (scr_stdin_nreadable) scr_stdin_queue_readable();
+  if (scr_stdin_view != NULL) scr_stdin_pull_serve();
+  else if (scr_stdin_nreadable) scr_stdin_queue_readable();
   else if (!scr_stdin_buffered) scr_stdin_finish(true);
 }
 
@@ -740,6 +765,10 @@ bool scr_stdin_ended(void) { return scr_stdin_eof || scr_stdin_destroyed; }
  * exits with them registered). */
 static bool scr_stdin_watching(void) {
   if (scr_stdin_eof || scr_stdin_destroyed) return false;
+  /* A stream's source: the stream asked for input. A paused stream nobody
+   * reads asks for nothing (pause() takes back what it had asked for), so
+   * it does not hold the process, as Node's paused stdin stops reading. */
+  if (scr_stdin_view != NULL) return scr_stdin_pull_wanted;
   /* 'readable' listeners keep the stream paused, as in Node, where
    * resume() and 'data' listeners do not make it flow: it reads ahead only
    * while a read wants more than is held (the 64 KiB mark, or a larger
@@ -824,11 +853,19 @@ static void scr_stdin_finish(bool fire_end) {
  * again (`resumed` also feeds a flowing stream with no listener, as
  * Node's resume() discards it). */
 void scr_stdin_pause(void) {
+  if (scr_stdin_view != NULL) {
+    scr_stdin_view->pause();
+    return;
+  }
   scr_stdin_paused = true;
   scr_stdin_resumed = false;
 }
 
 void scr_stdin_resume(void) {
+  if (scr_stdin_view != NULL) {
+    scr_stdin_view->resume();
+    return;
+  }
   scr_stdin_paused = false;
   scr_stdin_resumed = true;
 }
@@ -838,6 +875,7 @@ void scr_stdin_resume(void) {
  * the stream out of it, and 'end' does not either — and false before
  * anything set flowing. */
 bool scr_stdin_is_paused(void) {
+  if (scr_stdin_view != NULL) return scr_stdin_view->is_paused();
   return scr_stdin_paused || scr_stdin_readable_mode || scr_stdin_nreadable > 0;
 }
 
@@ -859,11 +897,87 @@ void scr_stdin_destroy(void) {
  * from the poll wake), or of the empty done sentinel at EOF/teardown.
  * One parked promise at a time — concurrent iterations of process.stdin
  * would share deliveries (nothing real does this). */
+/* for await over process.stdin in a program that also hands process.stdin
+ * on as a Readable. In Node both read the one stream; here the iteration
+ * is this unit's and the stream is its own reader, so one of them would
+ * get nothing. The step is rejected by name (the loop's await throws it):
+ * iterate the Readable instead. */
+static void scr_stdin_view_refuse_iteration(ScrPromise *p /*borrowed*/) {
+  static const char msg[] =
+      "for await over process.stdin is not supported in a program that also passes "
+      "process.stdin as a stream.Readable (iterate the Readable) [SC2020]";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+  scr_promise_reject_pending(p);
+}
+
+/* The stream for descriptor 0 was created (the first conversion): it takes
+ * over the state process.stdin has so far, as the one Node stream would
+ * have it: an encoding; paused mode under a 'readable' listener or after
+ * pause(); flowing after resume() or under a 'data' listener; otherwise
+ * neither (readableFlowing null). */
+void scr_stdin_view_open(const ScrStdinView *view) {
+  scr_stdin_view = view;
+  if (scr_stdin_eof || scr_stdin_destroyed) return;
+  if (scr_stdin_encoding != NULL) view->set_encoding(scr_stdin_encoding);
+  if (scr_stdin_nreadable) view->listening(true);
+  else if (scr_stdin_paused) view->pause();
+  else if (scr_stdin_resumed || scr_stdin_ndata > 0) view->resume();
+  if (scr_stdin_waiter) {
+    ScrPromise *p = scr_stdin_waiter;
+    scr_stdin_waiter = NULL;
+    scr_stdin_view_refuse_iteration(p);
+    scr_promise_release(p);
+  }
+}
+
+/* Whether descriptor 0 is what Node reads as a file: a regular file, a
+ * device that is no terminal (/dev/null among them), or a closed
+ * descriptor, where Node opens /dev/null. Node's file stream does not read
+ * again at the end of the input; its pipes, sockets and terminals do. */
+bool scr_stdin_from_file(void) {
+  if (scr_stdin_fed) return false;
+#ifdef _WIN32
+  HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+  if (h == NULL || h == INVALID_HANDLE_VALUE) return true;
+  DWORD type = GetFileType(h), mode = 0;
+  return type == FILE_TYPE_DISK || (type == FILE_TYPE_CHAR && !GetConsoleMode(h, &mode));
+#else
+  struct stat st;
+  if (fstat(0, &st) != 0) return true;
+  return S_ISREG(st.st_mode) || (S_ISCHR(st.st_mode) && !isatty(0));
+#endif
+}
+
+/* The stream's _read: it wants the next input, flowing or not. */
+void scr_stdin_pull(void) { scr_stdin_pull_wanted = true; }
+
+/* The stream was paused: what it asked for is taken back (Node's stdin
+ * stops reading on 'pause'). Answers whether a pull was open, which the
+ * stream then closes on its side so that its next read asks again. */
+bool scr_stdin_pull_cancel(void) {
+  bool open = scr_stdin_pull_wanted;
+  scr_stdin_pull_wanted = false;
+  return open;
+}
+
+void scr_stdin_view_readable(void) { scr_stdin_emit_readable(); }
+
+bool scr_stdin_has_readable_listener(void) { return scr_stdin_nreadable > 0; }
+
+void scr_stdin_view_end(void) {
+  if (!scr_stdin_eof && !scr_stdin_destroyed) scr_stdin_finish(true);
+}
+
 ScrPromise *scr_stdin_next_chunk(void) {
   if (scr_stdin_eof || scr_stdin_destroyed) {
     ScrPromise *p = scr_promise_new();
     ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
     scr_promise_fulfill_ref(p, empty, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+    return p;
+  }
+  if (scr_stdin_view != NULL) {
+    ScrPromise *p = scr_promise_new();
+    scr_stdin_view_refuse_iteration(p);
     return p;
   }
   if (!scr_stdin_waiter) scr_stdin_waiter = scr_promise_new();
@@ -882,6 +996,11 @@ static void scr_stdin_deliver(ScrBytes *chunk);
 /* A chunk that arrived (moves): delivered, or buffered while paused or
  * without a consumer. */
 static void scr_stdin_arrived(ScrBytes *chunk) {
+  if (scr_stdin_view != NULL) {
+    scr_stdin_hold(chunk);
+    scr_stdin_pull_serve();
+    return;
+  }
   if (scr_stdin_paused || scr_stdin_nreadable || (!scr_stdin_ndata && !scr_stdin_resumed && !scr_stdin_waiter)) {
     if (scr_stdin_nreadable && scr_stdin_readable_need) scr_stdin_queue_readable();
     scr_stdin_hold(chunk);
@@ -891,8 +1010,30 @@ static void scr_stdin_arrived(ScrBytes *chunk) {
   scr_bytes_release(chunk);
 }
 
+/* Answers the stream's pull with what is held, or with the end of the
+ * input. The 'data' listeners registered through the process.stdin name
+ * get the chunk first, as on the one Node stream every 'data' listener
+ * sees what a read hands out. */
+static void scr_stdin_pull_serve(void) {
+  if (!scr_stdin_pull_wanted || scr_stdin_eof || scr_stdin_destroyed) return;
+  if (scr_stdin_buffered) {
+    scr_stdin_pull_wanted = false;
+    ScrBytes *chunk = scr_stdin_take(scr_stdin_buffered);
+    scr_stdin_deliver(chunk);
+    if (!scr_exc_pending() && !scr_stdin_destroyed) scr_stdin_view->chunk(chunk);
+    scr_bytes_release(chunk);
+  } else if (scr_stdin_read_eof) {
+    scr_stdin_pull_wanted = false;
+    scr_stdin_view->chunk(NULL);
+  }
+}
+
 static void scr_stdin_service(void) {
   if (!scr_stdin_watching()) return;
+  if (scr_stdin_view != NULL && (scr_stdin_buffered || scr_stdin_read_eof)) {
+    scr_stdin_pull_serve();
+    return;
+  }
   /* Buffered input goes to a consumer: 'data' listeners, a resumed
    * stream, or a parked for-await read. After the last 'readable' listener
    * it stays buffered until one arrives, as in Node. */
@@ -942,6 +1083,12 @@ static void scr_stdin_service(void) {
 #else
   struct pollfd pfd = {0 /* stdin */, POLLIN, 0};
   int rc = poll(&pfd, 1, 0);
+  if (rc > 0 && (pfd.revents & POLLNVAL)) {
+    /* Descriptor 0 is closed (a parent ran the program with `<&-`). Node
+     * opens /dev/null there at startup, so its stdin ends at once. */
+    scr_stdin_reached_eof();
+    return;
+  }
   if (rc <= 0 || !(pfd.revents & (POLLIN | POLLHUP | POLLERR))) return;
 #endif
   char buf[65536];
@@ -989,7 +1136,10 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
      * the same string, and a read holding only a partial sequence emits
      * nothing. */
     ScrStr *text = scr_strdec_stream_write(scr_stdin_encoding, chunk, &scr_stdin_dec_pending);
-    if (text->len > 0) scr_stdin_deliver_parts(chunk, text);
+    /* An empty text (the read held only part of a sequence) still goes
+     * down: the runtime's byte consumers take every raw chunk, or the
+     * bytes the decoder is holding would never reach them. */
+    scr_stdin_deliver_parts(chunk, text);
     scr_str_release(text);
     return;
   }
@@ -1006,6 +1156,14 @@ static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text) {
       scr_closure_retain(snap[i].cb);
     }
     for (size_t i = 0; i < nd; i++) {
+      /* A read that decoded to nothing is no 'data' event for a listener
+       * that takes the text (or would be refused for it): it stays
+       * registered, a once listener included. */
+      if (text != NULL && text->len == 0 &&
+          !(snap[i].kind == SCR_STDIN_DATA_BYTES && snap[i].fn != scr_stdin_data_thunk_bytes)) {
+        scr_closure_release(snap[i].cb);
+        continue;
+      }
       if (snap[i].once) {
         for (size_t j = 0; j < scr_stdin_ndata; j++) {
           if (scr_stdin_data[j].cb == snap[i].cb) {
@@ -1019,7 +1177,21 @@ static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text) {
       }
       if (!scr_exc_pending()) {
         if (snap[i].kind == SCR_STDIN_DATA_BYTES) {
-          if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
+          if (text != NULL && snap[i].fn == scr_stdin_data_thunk_bytes) {
+            /* A program listener compiled for Buffer chunks (its parameter
+             * is declared, or left to the declaration, as bytes) while an
+             * encoding is set: Node delivers the decoded string here. The
+             * listener cannot take a string, and handing it the bytes would
+             * be a value Node never delivers, so the delivery is refused by
+             * name. The runtime's own byte consumers (readline, the stdin
+             * stream) register other adapters and keep the raw chunk. */
+            static const char msg[] =
+                "process.stdin 'data' listener takes a Buffer, but setEncoding makes the chunks "
+                "strings (declare the listener's parameter as string) [SC2020]";
+            scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+          } else if (chunk != NULL) {
+            snap[i].fn(snap[i].cb, chunk);
+          }
         } else if (text != NULL) {
           snap[i].str_fn(snap[i].cb, text);
         } else if (snap[i].kind == SCR_STDIN_DATA_DYN) {
@@ -1036,6 +1208,20 @@ static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text) {
   } else if (scr_stdin_waiter && chunk != NULL) {
     ScrPromise *p = scr_stdin_waiter;
     scr_stdin_waiter = NULL;
+    if (scr_stdin_encoding != NULL) {
+      /* A chunk is about to settle the iteration's step, and with an
+       * encoding set Node's iteration yields it as a string. The compiled
+       * loop takes Buffers, so the step is rejected by name; the loop's
+       * await throws it. An iteration that ends without a chunk settles
+       * done, as in Node. */
+      static const char msg[] =
+          "for await over process.stdin takes Buffers, but setEncoding makes the chunks strings "
+          "(leave the encoding unset and decode the Buffers) [SC2020]";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
+      scr_promise_reject_pending(p);
+      scr_promise_release(p);
+      return;
+    }
     /* Node's stdin yields Buffers. */
     chunk->is_buffer = true;
     scr_promise_fulfill_ref(p, scr_bytes_retain(chunk), scr_bytes_retain_v,
@@ -1226,6 +1412,12 @@ static void scr_stdio_finish_read(void) {
  * can be taken yet — the stream then reads ahead to what the read wanted
  * (or Node's 64 KiB default) and fires 'readable' when it arrives. */
 ScrBytes *scr_stdin_read_bytes(bool all, double size) {
+  if (scr_stdin_view != NULL) {
+    /* The input is the stream's: this is the stream's read(). */
+    if (all || isnan(size) || isinf(size)) return scr_stdin_view->read(-1);
+    double n = fabs(size) >= 1e21 ? copysign(1.0, size) : trunc(size);
+    return scr_stdin_view->read(n <= 0 ? 0 : n);
+  }
   size_t available = scr_stdin_buffered;
   size_t wanted = available;
   if (!all) {
@@ -1248,6 +1440,17 @@ ScrBytes *scr_stdin_read_bytes(bool all, double size) {
       scr_stdin_read_demand = wanted > 65536 ? wanted : 65536;
       if (scr_stdin_read_eof) scr_next_tick_raw(scr_stdio_finish_read);
     }
+    return NULL;
+  }
+  if (scr_stdin_encoding != NULL) {
+    /* A chunk is about to be handed out, and with an encoding set Node's
+     * read() answers it as a string. This read answers a Buffer, so it is
+     * refused by name. A read that hands out nothing (read(0), or nothing
+     * held yet) answered null above, as in Node. */
+    static const char msg[] =
+        "process.stdin.read() answers a Buffer, but setEncoding makes the chunks strings "
+        "(leave the encoding unset and decode the Buffer) [SC2020]";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   ScrBytes *chunk = scr_stdin_take(wanted);

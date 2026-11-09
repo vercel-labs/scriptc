@@ -1,0 +1,8 @@
+method-param-union-arm-typed-apart.ts:45:34 - error SC2002: record shapes must match exactly or width-coerce: expected '{ sow: ({ bed: string; plant: { depth: number | undefined; row: string | undefined } | { depth: number; ring: string | undefined } | { depth: number | undefined; ring: string | undefined; rooted: boolean | undefined; row: string | undefined } | undefined }) => string }', got '{ sow: ({ bed: string; plant: { depth: number | undefined; row: string | undefined } | { depth: number; ring: string | undefined } | undefined }) => string }' — field 'sow': '({ bed: string; plant: { depth: number | undefined; row: string | undefined } | { depth: number; ring: string | undefined } | undefined }) => string' does not lift into '({ bed: string; plant: { depth: number | undefined; row: string | undefined } | { depth: number; ring: string | undefined } | { depth: number | undefined; ring: string | undefined; rooted: boolean | undefined; row: string | undefined } | undefined }) => string'
+
+  44 | 
+  45 | const crew: Gardener<Plant>[] = [bulbsAndSeeds];
+     |                                  ^~~~~~~~~~~~~
+  46 | const tulip: Bulb = { depth: 15, ring: "outer" };
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

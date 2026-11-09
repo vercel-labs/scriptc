@@ -198,6 +198,78 @@ test("a conversion routed through a union reports at its own site", () => {
   ]);
 });
 
+const HELD = `const source = { first: { n: 1 } };\nconst held: { [key: string]: { n: number } } = source;\n`;
+const WIDE = `{ [key: string]: { n: number } | string }`;
+
+test("a dictionary that keeps its object is copied into a dictionary type with another value type", () => {
+  // A key written through the copy.
+  const copy = facts(
+    `${HELD}held.second = { n: 2 };\nconst wide: ${WIDE} = held;\nwide.third = "x";\nconsole.log(Object.keys(source).length);`,
+  );
+  expect(copy.facts).toEqual([
+    { kind: "dict", depth: "value", aliasable: true, observed: "write" },
+  ]);
+  expect(copy.warnings).toHaveLength(1);
+  expect(copy.warnings[0]).toContain(
+    `converting this '{ [key: string]: { n: number } }' to '${WIDE}' copies it`,
+  );
+  expect(copy.warnings[0]).toContain(`the program writes a key of a '${WIDE}' (main.ts:5)`);
+  // A key written through the original, which the lowered program holds untyped.
+  const original = facts(
+    `${HELD}const wide: ${WIDE} = held;\nheld.second = { n: 2 };\nconsole.log(Object.keys(wide).length);`,
+  );
+  expect(original.facts).toEqual([
+    { kind: "dict", depth: "value", aliasable: true, observed: "write" },
+  ]);
+  expect(original.warnings[0]).toContain(
+    "the program writes a key of an object the compiler keeps untyped, as it keeps this dictionary (main.ts:4)",
+  );
+  // The same dictionary type spelled again is the same object: no conversion.
+  const again = facts(
+    `${HELD}held.second = { n: 2 };\nconst same: { [key: string]: { n: number } } = held;\nsame.third = { n: 3 };\nconsole.log(Object.keys(source).length);`,
+  );
+  expect(again.facts).toEqual([]);
+  expect(again.warnings).toEqual([]);
+});
+
+test("the entries a dictionary copy rebuilds are member facts of the one warning", () => {
+  const seen = facts(
+    `${HELD}held.second = { n: 2 };\nconst wide: { [key: string]: { n: number; m?: string } } = held;\nwide.first!.m = "x";\nconsole.log(source.first.n);`,
+  );
+  expect(seen.facts).toEqual([
+    { kind: "dict", depth: "value", aliasable: true, observed: "write" },
+    { kind: "dict", depth: "member", aliasable: true, observed: "write" },
+  ]);
+  expect(seen.warnings).toHaveLength(1);
+  // An entry whose layout the copy's value type has stays the object it is.
+  const shared = facts(
+    `${HELD}held.second = { n: 2 };\nconst wide: ${WIDE} = held;\nconsole.log(Object.keys(wide).length);`,
+  );
+  expect(shared.facts.map((f) => f.depth)).toEqual(["value"]);
+});
+
+test("a dictionary copied inside the converted value is a member fact", () => {
+  const seen = facts(
+    `${HELD}held.second = { n: 2 };\nconst list: { [key: string]: { n: number } }[] = [held];\nconst wide: (${WIDE})[] = list;\nwide[0]!.third = "x";\nconsole.log(Object.keys(source).length);`,
+  );
+  expect(seen.facts).toEqual([
+    { kind: "dict", depth: "member", aliasable: true, observed: "write" },
+    { kind: "arr", depth: "value", aliasable: true, observed: null },
+  ]);
+  expect(seen.warnings).toHaveLength(1);
+  expect(seen.warnings[0]).toContain(
+    `this conversion copies the '{ [key: string]: { n: number } }' inside the value into a '${WIDE}'`,
+  );
+});
+
+test("an assertion that keeps the dictionary's object is no copy", () => {
+  // The binding keeps the value, so the write through it reaches the object.
+  const seen = facts(
+    `${HELD}held.second = { n: 2 };\nconst viewed = held as ${WIDE};\nviewed.third = "x";\nconsole.log(Object.keys(source).length);`,
+  );
+  expect(seen.facts).toEqual([]);
+  expect(seen.warnings).toEqual([]);
+});
 test("a call that builds its union result is fresh", () => {
   // The literals are wrapped into the union the function returns: the box
   // is a value, and nothing else holds the record inside it.

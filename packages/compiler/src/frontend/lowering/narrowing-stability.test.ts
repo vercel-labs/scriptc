@@ -528,10 +528,14 @@ console.log(stale());
   expect(holdsBoolean(await lower(source("seen && fresh()")))).toBe(true);
   // A longer chain as well.
   expect(holdsBoolean(await lower(source("seen && fresh() && fresh()")))).toBe(true);
-  // `read || other` and `read ?? other` keep their refusal: the binding's
-  // checker type there is the right operand's, which the read does not fit.
+  // `read || other` keeps its refusal: the binding's checker type there is
+  // the right operand's, which the read does not fit.
   await expect(lower(source("seen || fresh()"))).rejects.toThrow(/SC2003|SC1090/);
-  await expect(lower(source("seen ?? fresh()"))).rejects.toThrow(/SC2003|SC1090/);
+  // `read ?? other` builds: the stored value is converted into the pair's
+  // type after the nullish test, and a value that type cannot hold stops
+  // the program with a TypeError that names it.
+  const nullish = await lower(source("seen ?? fresh()"));
+  expect(nullish.functions.some((f) => f.name === "stale" || f.name.endsWith(".stale"))).toBe(true);
 });
 
 test("`read && other` over a binding nothing else assigns keeps the checker's type", async () => {

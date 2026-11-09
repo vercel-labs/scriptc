@@ -19,6 +19,7 @@
     { "export": "boom", "symbol": "mt_boom", "params": ["f64"], "returns": "f64" },
     { "export": "uptime", "symbol": "mt_uptime", "params": [], "returns": "f64" },
     { "export": "perfNow", "symbol": "mt_perf_now", "params": [], "returns": "f64" },
-    { "export": "indexedUnicode", "symbol": "mt_indexed_unicode", "params": [], "returns": "f64" }
+    { "export": "indexedUnicode", "symbol": "mt_indexed_unicode", "params": [], "returns": "f64" },
+    { "export": "genericIdentity", "symbol": "mt_generic_identity", "params": [], "returns": "f64" }
   ]
 }

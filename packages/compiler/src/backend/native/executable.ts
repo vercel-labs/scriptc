@@ -406,6 +406,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // process.stdin as a Readable: a consumer of the stdin unit.
+  unit((u) => u.opts.streamStdin === true, "scr_stream_stdin.c"),
   // Node's pipe lifecycle ('unpipe' when a destination finishes, closes or
   // errors), installed into the stream unit for programs that pipe.
   unit((u) => u.opts.stream && u.opts.streamPipeEvents === true, "scr_stream_pipe_events.c"),
@@ -415,6 +417,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
   // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // The joined command line of a shell-enabled call with separate arguments.
+  unit((u) => u.opts.childShellLine === true, "scr_child_shell.c"),
   // process.features as a value: the stable flags object.
   unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.

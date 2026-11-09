@@ -59,6 +59,12 @@ import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
+import {
+  classMemberLayout,
+  classRecord,
+  memberNamesKey,
+  type UnionClassState,
+} from "./union-classes.js";
 
 import { isJsSourceFile, isNodeTypesPath, locOf } from "./program.js";
 import { isProvenanceSourceFile } from "./provenance-registry.js";
@@ -877,6 +883,11 @@ export class UnionRegistry {
    * folding one-level unfoldings in). */
   private readonly recIds = new Map<ts.Type, string>();
   private readonly pendingRec = new Set<string>();
+  /** For each in-progress union a back-reference has reached: whether its
+   * back-references read the checked-dynamic value instead of a placeholder
+   * (unionHoldsDynView, asked once per frame). A frame they did read it for
+   * answers that value or nothing. */
+  readonly dynBackReferences = new Map<ts.Type, boolean>();
 
   /** The union id a back-reference to an in-progress union resolves to:
    * reuses the type's persistent recursive id or mints a PLACEHOLDER
@@ -1526,6 +1537,17 @@ export interface TypeMapperCtx {
    * them. Absent or null: the type stays unmapped, as for every enum only
    * read through its members. */
   enumObjectEntries?: (symbol: ts.Symbol) => readonly EnumObjectEntry[] | null;
+  /** The class of record types a type belongs to (union-classes.ts): the
+   * constituents of a declared union that share a discriminant literal,
+   * which map to one record. Absent in programs without one: every mapping
+   * is unchanged. */
+  unionClassOf?: (type: ts.Type) => UnionClassState | undefined;
+  /** With unionClassOf: each class record that merges two or more layouts,
+   * with the layouts its types have on their own. */
+  unionClassRecords?: Map<string, ReadonlySet<string>>;
+  /** With unionClassOf: every class of the pass, for the types that belong
+   * to none and have the layout of one's member (classRecordOfLayout). */
+  unionClassStates?: readonly UnionClassState[];
   /** Whether the program creates primitive wrapper objects
    * (primitive-wrappers.ts): then the boxed interface types (`String`,
    * `Number`, `Boolean`) map to the checked-dynamic value instead of the
@@ -3166,6 +3188,8 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         mapped = null;
         refused = true;
       }
+      if (mapped?.kind === "record" && ctx.unionClassStates !== undefined)
+        mapped = classRecordOfLayout(type, mapped, ctx);
       // A generic alias the body spells over its own type parameters (`x as
       // Catalog<G, P>`) stays symbolic in the checker; when that form does not
       // map, the instance's concrete instantiation of the same alias does.
@@ -3418,6 +3442,118 @@ const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
   "removeListener",
 ]);
 
+/** The record of the class `type` belongs to (union-classes.ts), or null
+ * when the class's types keep their own layouts: `type` then maps as it
+ * would without the class. Decided the first time one of the class's types
+ * is mapped, from the layouts its types have on their own, and the same
+ * from then on. A class stays separate when a member is not a closed
+ * record, when two members declare one member name with different types,
+ * when a member's layout contains the class (the record would have to
+ * exist before its own fields), and when a member's layout depends on the
+ * generic bindings it is mapped under. */
+function mapUnionClassRecord(
+  type: ts.Type,
+  unionClass: UnionClassState,
+  ctx: TypeMapperCtx,
+): IrType | null {
+  if (unionClass.state === "merged") return unionClass.record;
+  if (unionClass.state === "separate") return null;
+  // While a class is mapped, a member answers its own layout to the class
+  // and the class record to everyone after it: one type, two answers in one
+  // walk, told apart by this state and not by anything the walk memo keys
+  // an entry on. So from the first read of a class in progress the walk
+  // keeps and serves no more entries.
+  if (activeWalk !== null) activeWalk.opaque = true;
+  if (unionClass.state === "mapping") {
+    if (unionClass.owning === type) unionClass.owning = null;
+    else unionClass.reentered = true;
+    return null;
+  }
+  unionClass.state = "mapping";
+  const sensitivityAtEntry = contextResolutions;
+  const layouts: IrRecordShape[] = [];
+  let closed = true;
+  for (const member of unionClass.members) {
+    unionClass.owning = member;
+    const own = mapType(member, ctx);
+    unionClass.owning = null;
+    const shape = own?.kind === "record" ? ctx.shapes.get(own.shapeId) : undefined;
+    if (!classMemberLayout(shape) || ctx.shapes.recursivePending(member)) {
+      closed = false;
+      break;
+    }
+    if (!layouts.includes(shape)) layouts.push(shape);
+  }
+  unionClass.state = "separate";
+  if (
+    !closed ||
+    unionClass.reentered ||
+    contextResolutions !== sensitivityAtEntry ||
+    ctx.erasingSignature !== undefined ||
+    ctx.lenient === true
+  )
+    return null;
+  const shapeId =
+    layouts.length === 1
+      ? layouts[0]!.id
+      : classRecord(layouts, {
+          withUndefined: (field) => withUndefinedArm(field, ctx.unions),
+          internRecord: (fields, order) => ctx.shapes.intern(fields, false, undefined, order),
+        });
+  if (shapeId === null) return null;
+  if (layouts.length > 1)
+    ctx.unionClassRecords?.set(shapeId, new Set(layouts.map((layout) => layout.id)));
+  unionClass.record = { kind: "record", shapeId };
+  unionClass.state = "merged";
+  return unionClass.record;
+}
+
+/** The record of the class one of whose types has the layout `own`, for a
+ * `type` that belongs to no class: an inferred literal type, a member's
+ * type written a second time, the type an assertion names. Where layouts
+ * decide a union's arms such a value is the arm that member is, the same
+ * object under both types, so here it is the class's record too, from the
+ * place it is built: it enters the union with no conversion.
+ *
+ * A class is decided the first time one of its types is mapped, and a type
+ * with a member's property names can be mapped before that: it decides the
+ * class then, so that it has one answer in the pass. Inside the mapping of
+ * the class itself (a member that holds such a type) no answer exists yet;
+ * the class stays separate, as for a member that holds the class. */
+function classRecordOfLayout(
+  type: ts.Type,
+  own: IrType & { kind: "record" },
+  ctx: TypeMapperCtx,
+): IrType {
+  if (ctx.unionClassOf?.(type) !== undefined) return own;
+  const shape = ctx.shapes.get(own.shapeId);
+  if (!classMemberLayout(shape)) return own;
+  let names: string | null = null;
+  for (const unionClass of ctx.unionClassStates ?? []) {
+    if (unionClass.state === "separate") continue;
+    if (unionClass.state !== "merged") {
+      names ??= memberNamesKey(shape.fields.map((field) => field.name));
+      unionClass.memberNames ??= new Set(
+        unionClass.members.map((member) =>
+          memberNamesKey(ctx.checker.getPropertiesOfType(member).map((p) => ts.symbolName(p))),
+        ),
+      );
+      if (!unionClass.memberNames.has(names)) continue;
+      if (unionClass.state === "mapping") {
+        unionClass.reentered = true;
+        continue;
+      }
+      // A signature being erased and a lenient mapping decide no class.
+      if (ctx.erasingSignature !== undefined || ctx.lenient === true) continue;
+      mapType(unionClass.members[0]!, ctx);
+    }
+    const record = unionClass.record;
+    if (record !== null && ctx.unionClassRecords?.get(record.shapeId)?.has(own.shapeId) === true)
+      return record;
+  }
+  return own;
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -3428,6 +3564,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     ts.symbolName(symbol) === "globalThis" &&
     symbol.declarations.length === 0;
   if (isIntrinsicGlobal(intrinsic)) return DYN;
+  // A constituent of a class of record types is its class's record.
+  const unionClass = ctx.unionClassOf?.(type);
+  if (unionClass !== undefined) {
+    const record = mapUnionClassRecord(type, unionClass, ctx);
+    if (record !== null) return record;
+  }
   // `typeof globalThis & { key?: T }` (the global-singleton spelling) is the
   // same global object with declared extra members.
   if (
@@ -6877,6 +7019,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (viaMapped) return viaMapped;
     const viaAlias = mapGenericUtilityAlias(widened, ctx);
     if (viaAlias) return viaAlias;
+    const viaOmit = mapBoundOmitAlias(widened, ctx);
+    if (viaOmit !== undefined) return viaOmit;
     const record = mapRecordType(widened, ctx);
     if (record) return record;
   }
@@ -6915,6 +7059,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (knownRecursive !== undefined) return { kind: "union", unionId: knownRecursive };
     if (unions.inProgress.has(widened)) {
       walkBackReference(PROGRESS_UNION, widened, false);
+      // A union that holds a dictionary which is the checked-dynamic value
+      // (one that keeps checked identity) collapses into that value (the
+      // `string | object` family below), which a placeholder would forbid.
+      // Its own back-references read the value instead, and the frame then
+      // answers it or nothing.
+      let readsDyn = unions.dynBackReferences.get(widened);
+      if (readsDyn === undefined) {
+        readsDyn = unionHoldsDynView(widened, ctx);
+        unions.dynBackReferences.set(widened, readsDyn);
+      }
+      if (readsDyn) return DYN;
       return {
         kind: "union",
         unionId: unions.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
@@ -7082,6 +7237,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
       }
       const arms = [...byKey.values()];
+      // A back-reference already holds the checked-dynamic value for this
+      // union: the collapse below is the only answer that agrees with it.
+      if (
+        unions.dynBackReferences.get(widened) === true &&
+        !(arms.some((a) => a.kind === "dyn") && arms.every((a) => dynSubsumableUnionArm(a, ctx)))
+      )
+        return null;
       if (arms.length === 0) return F64; // same unreachable placeholder as standalone never
       // `Cond<T> | undefined` whose conditional selects never for the
       // instance's binding is the plain `undefined` the concrete
@@ -7194,6 +7356,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       return { kind: "union", unionId: unions.intern(mergedArms, discriminant) };
     } finally {
       unions.inProgress.delete(widened);
+      unions.dynBackReferences.delete(widened);
       walkLeave(progress);
     }
   }
@@ -9160,6 +9323,86 @@ function mapGenericUtilityAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | 
   return { kind: "record", shapeId };
 }
 
+/** `Omit<X, K>` over a STILL-GENERIC source inside an instance body, with
+ * literal keys: X is one type parameter the instance binds to a closed
+ * record, alone or intersected with object types (the rest type of `const {
+ * a, b, ...rest } = item as T & { b?: unknown }` is `Omit<T & { b?:
+ * unknown }, "a" | "b">`). The checker resolves the alias's members
+ * through the parameter's CONSTRAINT, so the member walk would build the
+ * constraint's fields and miss every field the binding adds: a rest copy
+ * typed that way drops them, where JavaScript copies every own property the
+ * pattern did not name. The binding names the real fields, and Omit keeps
+ * the ones outside K. A result with no field left is the top type (`{}`),
+ * as the checker's own rest type of a fully consumed source is.
+ *
+ * An intersected object type that contributes a member of its own to the
+ * result has no slot in the binding's layout: the type is unmapped (null)
+ * when the member walk would also lose one of the binding's fields, and
+ * left to that walk when it names them all. Undefined (the member walk
+ * decides, as before) for a source bound to anything but a closed record
+ * and for non-literal keys. `Pick<X, K>` needs no twin: its keys are keys
+ * of the constraint, and each member is `X[K]`, which already resolves
+ * against the binding. */
+function mapBoundOmitAlias(widened: ts.Type, ctx: TypeMapperCtx): IrType | null | undefined {
+  const { checker, resolveTypeParam, shapes } = ctx;
+  if (!resolveTypeParam) return undefined;
+  const alias = widened.getAliasSymbol();
+  if (!alias || ts.symbolName(alias) !== "Omit") return undefined;
+  const aliasArgs = widened.getAliasTypeArguments();
+  const source = aliasArgs[0];
+  const keys = aliasArgs[1];
+  if (aliasArgs.length !== 2 || !source || !keys) return undefined;
+  const parts = source.isIntersectionType() ? ts.constituentTypes(source) : [source];
+  const params = parts.filter((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0);
+  const param = params[0];
+  if (params.length !== 1 || !param) return undefined;
+  // Provenance: the STANDARD LIBRARY's alias, not a user's shadowing one.
+  const isLibAlias = alias.declarations.some(
+    (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+  );
+  if (!isLibAlias) return undefined;
+  const bound = resolveTypeParam(param);
+  if (!bound || bound.kind !== "record") return undefined;
+  const shape = shapes.get(bound.shapeId);
+  // Index-signature and tuple bindings keep their own rules; reserved
+  // slots (accessors, hidden members) are not data a key filter copies.
+  if (!shape || shape.tuple || shape.indexValue !== undefined) return undefined;
+  if (shape.fields.some((f) => f.name.startsWith("%"))) return undefined;
+  const omitted = new Set<string>();
+  for (const key of keys.isUnionType() ? ts.constituentTypes(keys) : [keys]) {
+    if (key.flags & ts.TypeFlags.Never) continue;
+    if (key.isStringLiteralType()) omitted.add(key.value);
+    else if (key.isNumberLiteralType()) omitted.add(String(key.value));
+    else return undefined;
+  }
+  const fields = shape.fields.filter((f) => !omitted.has(f.name)).map((f) => ({ ...f }));
+  // An intersected object type may only restate the binding's fields or
+  // declare members the filter removes (`b` above).
+  const ownMember = parts.some(
+    (part) =>
+      part !== param &&
+      (!(part.flags & ts.TypeFlags.Object) ||
+        checker.getIndexInfosOfType(part).length > 0 ||
+        checker.getCallSignatures(part).length > 0 ||
+        checker.getConstructSignatures(part).length > 0 ||
+        checker
+          .getPropertiesOfType(part)
+          .some(
+            (property) =>
+              !omitted.has(ts.symbolName(property)) &&
+              !shape.fields.some((f) => f.name === ts.symbolName(property)),
+          )),
+  );
+  if (ownMember) {
+    const walked = new Set(checker.getPropertiesOfType(widened).map((p) => ts.symbolName(p)));
+    return fields.every((f) => walked.has(f.name)) ? undefined : null;
+  }
+  if (fields.length === 0) return DYN;
+  // Mapped types preserve property order: the binding's, filtered.
+  const order = shape.declaredOrder?.filter((name) => !omitted.has(name));
+  return { kind: "record", shapeId: shapes.intern(fields, false, undefined, order) };
+}
+
 /** The UNIT-ONLY slot type: the interned `null | undefined` union, the one
  * representation the IR already has for values that are nothing but units.
  * Bindings and fields whose CHECKER type is a bare unit (`null`,
@@ -10422,6 +10665,36 @@ interface RecordShapeParts {
   accessorOrder?: string[];
 }
 
+/** Whether mapRecordTypeInner answers the checked-dynamic value for
+ * `widened` whatever its index signature's value maps to: a type that keeps
+ * checked identity, or one with a symbol-keyed member. That value type is
+ * the only thing mapped before the answer, so it is the only way a
+ * back-reference reaches the type while it maps. */
+function recordViewIsDyn(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (ctx.classImplementedProtocol?.(widened)) return true;
+  return ctx.checker
+    .getPropertiesOfType(widened)
+    .some((property) => ts.symbolName(property).startsWith("__@"));
+}
+
+/** Whether a union has a dictionary arm that recordViewIsDyn answers for.
+ * Asked before that arm has mapped, so it names the types that reach
+ * mapRecordTypeInner with an index signature: arrays, tuples, callables and
+ * class instances have representations of their own. */
+function unionHoldsDynView(widened: ts.Type, ctx: TypeMapperCtx): boolean {
+  const { checker } = ctx;
+  return ts.constituentTypes(widened).some((part) => {
+    if ((part.flags & ts.TypeFlags.Object) === 0) return false;
+    if (checker.getIndexInfosOfType(part).length === 0) return false;
+    if (checker.isArrayLikeType(part) || checker.isTupleType(part)) return false;
+    if (checker.getCallSignatures(part).length > 0) return false;
+    if (checker.getConstructSignatures(part).length > 0) return false;
+    const symbol = part.getSymbol();
+    if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
+    return recordViewIsDyn(part, ctx);
+  });
+}
+
 function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { shapes } = ctx;
   // A type whose recursive shape already finalized answers its id straight
@@ -10438,6 +10711,14 @@ function mapRecordType(widened: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // as heap references, so the self-reference is an ordinary pointer.
   if (shapes.inProgress.has(widened)) {
     walkBackReference(PROGRESS_RECORD, widened, false);
+    // A dictionary that keeps checked identity is the checked-dynamic value
+    // whatever its index signature holds, so that is what the signature's
+    // value type holds of it. A placeholder would never be completed, and a
+    // union that reached the dictionary through it would keep an empty
+    // record as its object arm. Only an index signature's value is mapped
+    // before that answer, so no other type is asked.
+    if (ctx.checker.getIndexInfosOfType(widened).length > 0 && recordViewIsDyn(widened, ctx))
+      return DYN;
     return {
       kind: "record",
       shapeId: shapes.recursiveRef(widened, () => checkerTypeDescription(widened, ctx)),
@@ -11555,6 +11836,32 @@ function slotReason(
   return why === null ? "" : `: ${why}`;
 }
 
+/** A union's arms as mapTypeInner maps them. A union that holds a
+ * checked-dynamic dictionary maps its arms while its own back-references
+ * read the checked-dynamic value (unionHoldsDynView), so an arm that leads back
+ * to the union is described the same way: mapped alone it would fail on the
+ * union itself and hide the arm that cannot ride the collapse. The memo is
+ * bypassed, because those answers hold only inside this union. */
+function mapUnionArmsForDescription(
+  widened: ts.Type,
+  arms: readonly ts.Type[],
+  ctx: TypeMapperCtx,
+): { p: ts.Type; mapped: IrType | null }[] {
+  const { unions } = ctx;
+  if (unions.inProgress.has(widened) || !unionHoldsDynView(widened, ctx))
+    return arms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+  const bypassed = bypassTypeMemo;
+  bypassTypeMemo = true;
+  unions.inProgress.add(widened);
+  try {
+    return arms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+  } finally {
+    unions.inProgress.delete(widened);
+    unions.dynBackReferences.delete(widened);
+    bypassTypeMemo = bypassed;
+  }
+}
+
 /** When an unmapped type is a SUPPORTED container/composite whose failure
  * lives in a component, answer a message tail naming the component (the
  * SC2009 story); null when the shape itself is the blocker (the caller
@@ -11666,7 +11973,7 @@ export function describeComponentBlocker(
     // dyn-subsumable (mapTypeInner's collapse) — so when such a union
     // still failed, the story is the sibling that CANNOT ride the
     // collapse, never the dyn arm itself.
-    const mappedArms = dataArms.map((p) => ({ p, mapped: mapType(p, ctx) }));
+    const mappedArms = mapUnionArmsForDescription(widened, dataArms, ctx);
     if (mappedArms.some(({ mapped }) => mapped?.kind === "dyn")) {
       const blocker = mappedArms.find(
         ({ mapped }) => mapped !== null && !dynSubsumableUnionArm(mapped, ctx),

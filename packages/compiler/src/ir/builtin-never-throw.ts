@@ -27,6 +27,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
+  // scr_child_shell_line joins the file and the arguments into a new
+  // string; its DEP0190 warning is queued for the next tick, where a
+  // listener or process.throwDeprecation runs, not inside the call.
+  "cp.shellLine",
+  // scr_stream_stdio_readable returns the thread's stdin stream, creating
+  // it on first use; nothing is read and no listener runs until the
+  // stream flows.
+  "stream.stdioReadable",
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",

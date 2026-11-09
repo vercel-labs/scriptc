@@ -1,0 +1,6 @@
+nested-generic-function-frame.ts:7:3 - error SC1090: nested generic function declarations that use the frames of their enclosing functions (the compiled instantiations of 'show' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the function at module scope) are not supported yet (instantiating 'outer' with <string>)
+
+  6 | function outer<T>(value: T): string {
+  7 |   function show<U>(other: U): string {
+    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 |     return `${String(value)}:${String(other)}`;

@@ -127,12 +127,18 @@ export interface NativeLinkFeatures {
   /** Checked-dynamic stream slots: the scr_stream_dyn.c unit. Absent (not
    * false) for programs without them. */
   streamDyn?: boolean;
+  /** process.stdin as a Readable: the scr_stream_stdin.c unit. Absent (not
+   * false) for programs without the conversion. */
+  streamStdin?: boolean;
   /** Own properties JavaScript adds to children: scr_dyn_handle_props.c.
    * Absent (false) for programs without them. */
   handleProps?: boolean;
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** The joined command line of a shell-enabled call with separate
+   * arguments links scr_child_shell.c; absent (false) otherwise. */
+  childShellLine?: boolean;
   /** process.features read as a value links scr_process_features.c (the
    * stable flags object); absent (false) otherwise. */
   processFeatures?: boolean;

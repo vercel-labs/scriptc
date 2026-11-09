@@ -103,7 +103,20 @@ export function armedMaxBuffer(value: IrExpr | null, sync: boolean): ChildMaxBuf
  * written before `cwd` is evaluated before it, and the options before a
  * callback that follows them. It applies when the limit has an evaluation
  * of its own (anything but a number literal) or the order holds an
- * `effect`; a launch with neither keeps the order of its arguments. */
+ * `effect`; a launch with neither keeps the order of its arguments.
+ *
+ * `launched` maps the arguments Node checks to the ones the entry point
+ * takes, for a launch that builds its command from them: a shell launch
+ * with separate arguments runs the joined line (shellCommandLine). Node
+ * builds that line, and warns, after it has checked the file, the
+ * arguments and `cwd`, and before it checks the environment, so the mapped
+ * arguments are evaluated between those two checks. Such a launch reads
+ * its list through cp.checkShellArgs, which takes a hole as Node does (the
+ * join reads it as the empty string). The line is one of the launch's
+ * checked values in Node's order, so a limit that is validated after them
+ * is validated after the line is built, and one that is validated before
+ * them (execFile's) before it. An `effect` is evaluated at its step like
+ * any other value, before the first check, with or without a mapping. */
 export function withChildArgsCheck(
   lowerer: Lowerer,
   launch: Extract<IrExpr, { kind: "libCall" | "call" }>,
@@ -115,6 +128,7 @@ export function withChildArgsCheck(
   },
   loc: SrcLoc,
   sourceOrder?: readonly ChildEvalStep[],
+  launched?: (args: readonly IrExpr[]) => IrExpr[],
 ): IrExpr {
   const passes = (e: IrExpr | undefined, mayBeEmpty: boolean): boolean =>
     e === undefined ||
@@ -130,14 +144,18 @@ export function withChildArgsCheck(
       : form === 3
         ? allPass(list)
         : list.kind === "arrayLit" && list.elems[1] !== undefined && passes(list.elems[1], false);
-  const optionsPass = passes(given.cwd, true) && allPass(given.envPairs);
+  const beforeLinePass = fileAndArgsPass && passes(given.cwd, true);
+  const envPasses = allPass(given.envPairs);
+  const optionsPass = passes(given.cwd, true) && envPasses;
   // A literal limit in range cannot be refused; it is still armed.
   const limitPasses =
     given.maxBuffer === undefined ||
     (given.maxBuffer.value.kind === "numLit" && given.maxBuffer.value.value >= 0);
   const limited = given.maxBuffer !== undefined && (given.maxBuffer.arm || !limitPasses);
   const effects = sourceOrder !== undefined && sourceOrder.some((step) => typeof step === "object");
-  if (fileAndArgsPass && optionsPass && !limited && !effects) return launch;
+  if (fileAndArgsPass && optionsPass && !limited && !effects) {
+    return launched === undefined ? launch : { ...launch, args: launched(launch.args) };
+  }
   const stmts: IrStmt[] = [];
   // Literals and function literals have no evaluation to order, and a
   // function-typed local read is the callback itself.
@@ -204,19 +222,41 @@ export function withChildArgsCheck(
     values: IrExpr,
     envPairs: IrExpr | undefined,
     cwd: IrExpr | undefined,
+    fn: "cp.checkArgs" | "cp.checkShellArgs" = "cp.checkArgs",
   ): IrStmt => ({
     kind: "exprStmt",
     expr: {
       kind: "libCall",
-      fn: "cp.checkArgs",
+      fn,
       args: [numLit(checked, loc), file, values, envPairs ?? noStrings(), cwd ?? strLit("", loc)],
       type: VOID,
       loc,
     },
     loc,
   });
-  const checkAll = (): IrStmt =>
-    check(form, form === 3 ? strLit("", loc) : args[0]!, args[1]!, held.envPairs, held.cwd);
+  const file = form === 3 ? strLit("", loc) : args[0]!;
+  /** The checks of the launch's values that can be refused, in Node's
+   * order; answers the arguments the entry point takes after them. */
+  const checkAll = (): IrExpr[] => {
+    if (launched === undefined) {
+      if (!(fileAndArgsPass && optionsPass)) {
+        stmts.push(check(form, file, args[1]!, held.envPairs, held.cwd));
+      }
+      return args;
+    }
+    // The file, the arguments and `cwd`; the line; then the environment.
+    // Form 3 with no list checks neither a file nor an argument.
+    if (!beforeLinePass) {
+      stmts.push(check(form, file, args[1]!, undefined, held.cwd, "cp.checkShellArgs"));
+    }
+    // With nothing to check or arm after the line, the launch builds it.
+    if (envPasses && !limited) return launched(args);
+    const taken = launched(args).map((arg, i) =>
+      arg === args[i] || !evaluates(arg) ? arg : hold(arg),
+    );
+    if (!envPasses) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, undefined));
+    return taken;
+  };
   const maxBufferCall = (value: IrExpr, arm: boolean): IrStmt => ({
     kind: "exprStmt",
     expr: {
@@ -234,31 +274,40 @@ export function withChildArgsCheck(
   // step, before the checks, and they and the launch read the local.
   let limit = limited ? held.maxBuffer : undefined;
   if (limit !== undefined && ownLimitHeld !== undefined) limit = { ...limit, value: ownLimitHeld };
+  let taken: IrExpr[];
   if (limit === undefined) {
-    // Reached with nothing to check only for an `effect`'s order.
-    if (!(fileAndArgsPass && optionsPass)) stmts.push(checkAll());
-  } else if (fileAndArgsPass && optionsPass) {
+    // Reached with nothing to check only for an `effect`'s order or a
+    // mapping: checkAll then adds no check.
+    taken = checkAll();
+  } else if (
+    limit.sync ||
+    limitPasses ||
+    (launched === undefined && fileAndArgsPass && optionsPass)
+  ) {
+    taken = checkAll();
     stmts.push(maxBufferCall(limit.value, limit.arm));
-  } else if (limit.sync || limitPasses) {
-    stmts.push(checkAll(), maxBufferCall(limit.value, limit.arm));
   } else {
     // exec and execFile, callback or promisified, where the limit and a
     // launch value can both be refused. The limit is validated first and
     // armed after the last check.
     const value = limit.value;
-    if (form === 1) {
+    if (form === 1 && launched === undefined) {
       // exec: normalizeExecArgs checks the command, execFile the limit,
       // spawn the options. Form 3 with no list checks neither a file nor
-      // an argument, which leaves the options.
+      // an argument, which leaves the options. (exec's command is its own
+      // line: a launch that builds one from separate arguments is
+      // execFile's, below.)
       if (!fileAndArgsPass) stmts.push(check(1, args[0]!, args[1]!, undefined, undefined));
       stmts.push(maxBufferCall(value, false));
       if (!optionsPass) stmts.push(check(3, strLit("", loc), noStrings(), held.envPairs, held.cwd));
+      taken = args;
     } else {
-      stmts.push(maxBufferCall(value, false), checkAll());
+      stmts.push(maxBufferCall(value, false));
+      taken = checkAll();
     }
     if (limit.arm) stmts.push(maxBufferCall(value, true));
   }
-  return { kind: "seqExpr", stmts, result: { ...launch, args }, type: launch.type, loc };
+  return { kind: "seqExpr", stmts, result: { ...launch, args: taken }, type: launch.type, loc };
 }
 
 /** A stdio value whose TYPE is a union of supported literals — the
@@ -363,14 +412,48 @@ export function windowsOnlyOption(
 }
 
 /** True when the args slot is statically empty (omitted, `undefined`, or an
- * empty array literal): the shape the shell forms accept. Node joins the
- * arguments unescaped and warns DEP0190 whenever a non-empty list meets
- * `shell: true`, and a native build has no warning channel to match it. */
+ * empty array literal): the shape the shell forms run as they are. Node
+ * joins a non-empty list onto the command unescaped and warns DEP0190
+ * whenever one meets `shell: true`; spawnSync builds that line through
+ * shellCommandLine, and the other entry points refuse the list. */
 function staticallyEmptyArgs(node: ts.Expression | undefined): boolean {
   if (!node) return true;
   const bare = withoutParenthesesTypeWrappers(node);
   if (ts.isIdentifier(bare) && bare.text === "undefined") return true;
   return ts.isArrayLiteralExpression(bare) && bare.elements.nodes.length === 0;
+}
+
+/** The command line a shell-enabled call runs when it passes separate
+ * arguments: Node's `file + " " + args.join(" ")`, unescaped, with DEP0190
+ * reported for the first non-empty list of the process (cp.shellLine; an
+ * empty list answers the file and reports nothing). The shell entry points
+ * take that line with an empty args list. */
+function shellCommandLine(file: IrExpr, args: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "cp.shellLine", args: [file, args], type: STRING, loc };
+}
+
+/** withChildArgsCheck's `launched` mapping for a launch that runs separate
+ * arguments as one shell line: the line and an empty list take the place
+ * of the command and the arguments. `shell` is the position of the
+ * launch's run-time shell flag among its arguments, where the line is
+ * built only when the flag is on and the command and the list pass as they
+ * are when it is off; null when the shell is always on. */
+function shellLaunch(
+  shell: number | null,
+  listType: IrType,
+  loc: SrcLoc,
+): (args: readonly IrExpr[]) => IrExpr[] {
+  return (a) => {
+    const line = shellCommandLine(a[0]!, a[1]!, loc);
+    const noArgs: IrExpr = { kind: "arrayLit", elems: [], type: listType, loc };
+    if (shell === null) return [line, noArgs, ...a.slice(2)];
+    const on = a[shell]!;
+    return [
+      { kind: "ternary", cond: on, then: line, else_: a[0]!, type: STRING, loc },
+      { kind: "ternary", cond: on, then: noArgs, else_: a[1]!, type: listType, loc },
+      ...a.slice(2),
+    ];
+  };
 }
 
 /** The signal names Node's table (and the runtime's twin) resolves —
@@ -425,8 +508,8 @@ const NODE_SIGNAL_NAMES = new Set([
  * stance), `env` (a REPLACEMENT environment), `cwd` (the child's
  * directory), `input` (the string piped to its stdin, `| undefined`
  * meaning absent), `shell` (a boolean literal: the complete command line
- * runs through /bin/sh -c, with an empty args list only — Node warns
- * DEP0190 for separate shell args), and
+ * runs through /bin/sh -c; separate args join onto it unescaped, with
+ * Node's DEP0190 warning), and
  * `windowsHide` (a POSIX no-op, evaluated for side effects). Everything
  * else (maxBuffer, ...) fences by name. A TYPED options value
  * (SpawnSyncOptionsWithStringEncoding) reads its members at the call.
@@ -476,6 +559,9 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let hasInput: IrExpr = boolLit(false, loc);
   // Node's shell form: the command line runs through /bin/sh -c.
   let shell: IrExpr = boolLit(false, loc);
+  // A literal `shell: true` beside separate arguments: the call runs the
+  // joined line with an empty argument vector (shellCommandLine).
+  let shellJoinsArgs = false;
   let extOptions = false; // cwd, input, or shell present: the extended entry point
   let plain = true; // no behavior-changing option: the historical libCall
   // A union-typed `input` is read once into a hidden local that its
@@ -493,8 +579,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
-      const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, expr.arguments.nodes[1], loc);
+      const runtime = lowerSpawnSyncRuntimeOptions(lowerer, optsNode, loc);
       if (runtime) {
+        // The record carries `shell`, so the call MAY enable the shell at
+        // run time. Separate arguments then run as Node runs them: joined
+        // onto the command when the member is on (shellCommandLine, with
+        // its warning), passed as the argument vector when it is off. The
+        // check holds the command and its arguments in locals, evaluated
+        // once and before the record is read, as the call's own argument
+        // order has them; the line is built from those after the check.
+        const shellArgs = !staticallyEmptyArgs(expr.arguments.nodes[1]);
         const call = (
           fn: "cp.spawnSyncExt" | "cp.spawnSyncExtEnv",
           extra: IrExpr[],
@@ -526,6 +620,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
             0,
             (a) => ({ cwd: a[7], envPairs: a[11] }),
             loc,
+            undefined,
+            shellArgs ? shellLaunch(10, argv.type, loc) : undefined,
           );
         // An absent `env` inherits our environment; a present one replaces
         // it. The two entry points differ only in that argument, so the
@@ -708,16 +804,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "shell":
           if (m.value.kind === ts.SyntaxKind.TrueKeyword) {
             // Node joins [command, ...args] with single spaces and warns
-            // DEP0190 for a non-empty list; a native build has no warning
-            // channel, so it refuses the form instead of dropping the
-            // warning Node prints.
-            if (!staticallyEmptyArgs(expr.arguments.nodes[1])) {
-              lowerer.noLowering(
-                "spawnSync with shell enabled and separate arguments",
-                expr.arguments.nodes[1]!,
-                "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-              );
-            }
+            // DEP0190 for a non-empty list: the call below runs that line.
+            shellJoinsArgs = !staticallyEmptyArgs(expr.arguments.nodes[1]);
             shell = boolLit(true, loc);
             extOptions = true;
             plain = false;
@@ -922,6 +1010,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       : ignoreInput
         ? boolLit(false, loc)
         : hasInput;
+    // A literal `shell: true` beside separate arguments: the call runs the
+    // joined line with an empty argument vector. Node's
+    // normalizeSpawnArguments builds the line after the options are
+    // evaluated (an option expression that throws reports no warning) and
+    // after it has checked the file and the arguments it joins, so the
+    // check sees those and the launch takes the line.
     const call = withChildArgsCheck(
       lowerer,
       {
@@ -947,6 +1041,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       0,
       (a) => ({ cwd: a[7], envPairs: a[11] }),
       loc,
+      undefined,
+      shellJoinsArgs ? shellLaunch(null, argv.type, loc) : undefined,
     );
     return prelude.length === 0
       ? call
@@ -989,7 +1085,6 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 function lowerSpawnSyncRuntimeOptions(
   lowerer: Lowerer,
   optsNode: ts.Expression,
-  argsNode: ts.Expression | undefined,
   loc: SrcLoc,
 ): {
   cwd: IrExpr;
@@ -1016,17 +1111,6 @@ function lowerSpawnSyncRuntimeOptions(
       "spawnSync with a computed options argument",
       optsNode,
       "the member reads re-read the options — bind the object to a const first",
-    );
-  }
-  // The record carries `shell`, so the call MAY enable the shell at run
-  // time. Node joins a non-empty args list unescaped and warns DEP0190
-  // there; only an empty list provably never triggers that warning, so the
-  // value form accepts the command-line idiom and refuses separate args.
-  if (!staticallyEmptyArgs(argsNode)) {
-    lowerer.noLowering(
-      "spawnSync with a typed options value and separate arguments",
-      argsNode!,
-      "the options record may enable shell, where Node warns DEP0190 for unescaped arguments — put the complete command in the first argument and pass no args",
     );
   }
   const fieldType = (name: string): IrType => shape!.fields.find((f) => f.name === name)!.type;
@@ -1488,6 +1572,8 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let detached: IrExpr = boolLit(false, loc);
   let shell: IrExpr = boolLit(false, loc);
   let shellEnabled = false;
+  // `shell` is a boolean decided at run time (bound into `shell`).
+  let shellRuntime = false;
   let hasEnv: IrExpr = boolLit(false, loc);
   let envPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
   let cwd: IrExpr = emptyStr;
@@ -1689,11 +1775,23 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             plain = false;
           } else if (m.value.kind === ts.SyntaxKind.FalseKeyword) {
             shell = boolLit(false, loc);
+          } else if (
+            (lowerer.typeOf(m.value).flags &
+              (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !==
+            0
+          ) {
+            // A runtime boolean — the portable idiom `shell: process.platform
+            // === "win32"` — reaches scr_spawn_opts's shell slot as
+            // `detached` reaches its own. Separate arguments join onto the
+            // command where it is on (below).
+            shell = bind("%spawnShell", lowerer.lowerExprExpecting(m.value, BOOL));
+            shellRuntime = true;
+            plain = false;
           } else {
             lowerer.noLowering(
-              "spawn with a non-literal shell option",
+              "spawn with a shell option that is not a boolean",
               m.value,
-              "shell must be a boolean literal",
+              "shell: true, false, or a boolean expression runs the platform's shell; a shell path has no lowering",
             );
           }
           break;
@@ -1713,15 +1811,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   // Node joins [command, ...args] with single spaces for the shell form, and
   // reports DEP0190 ("passing args to a child process with shell option
   // true ... the arguments are not escaped, only concatenated") on stderr.
-  // A native build has no warning channel, so it refuses the form rather
-  // than silently skipping the warning Node prints.
-  if (shellEnabled && !staticallyEmptyArgs(argsNode)) {
-    lowerer.noLowering(
-      "spawn with shell enabled and separate arguments",
-      argsNode ?? expr,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
-    );
-  }
+  // With the shell on, or possibly on, and separate arguments, the call
+  // runs that line (shellCommandLine) with an empty argument vector.
+  const shellJoinsArgs = (shellEnabled || shellRuntime) && !staticallyEmptyArgs(argsNode);
   const argv = lowerChildArgsArg(lowerer, argsNode, loc);
   if (plain) {
     return withChildArgsCheck(
@@ -1732,6 +1824,10 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       loc,
     );
   }
+  // The join follows the launch's checks and the options' evaluation,
+  // where Node's normalizeSpawnArguments builds it. A boolean decided at
+  // run time joins only where it is on: off, the command and the list pass
+  // as they are.
   const callOf = (callCmd: IrExpr, callArgs: IrExpr): IrExpr =>
     withChildArgsCheck(
       lowerer,
@@ -1758,6 +1854,8 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
       0,
       (a) => ({ envPairs: a[10], cwd: a[11] }),
       loc,
+      undefined,
+      shellJoinsArgs ? shellLaunch(shellEnabled ? null : 8, argv.type, loc) : undefined,
     );
   if (valuePrelude.length === 0) return callOf(cmd, argv);
   // The bound member values were collected in source order; the command and
@@ -2068,8 +2166,9 @@ export function lowerExecFileCall(
   const shellForm = shell || execShell;
   const cmd: IrExpr = shellForm ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : first;
   // Node joins [file, ...args] with single spaces for the shell form and
-  // reports DEP0190 on stderr; a native build has no warning channel, so it
-  // refuses separate arguments here rather than silently skipping it.
+  // reports DEP0190 on stderr. Only spawnSync lowers that join
+  // (shellCommandLine); this entry point refuses separate arguments rather
+  // than run them without the warning.
   if (
     execShell &&
     !staticallyEmptyArgs(expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined)
@@ -2077,7 +2176,7 @@ export function lowerExecFileCall(
     lowerer.noLowering(
       `${what} with shell enabled and separate arguments`,
       expr.arguments.nodes[1]!,
-      "put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)",
+      "put the complete shell command in the first argument and pass [] (Node joins separate shell arguments unescaped and warns DEP0190; only spawnSync has that form)",
     );
   }
   let argv: IrExpr;

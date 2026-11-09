@@ -526,6 +526,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "union-classes",
+    file: `${SRC}/frontend/union-classes.ts`,
+    symbol: "collectUnionClasses",
+    source: "types",
+    scope: "type",
+    setBy:
+      "a union type written in a TypeScript source whose record constituents share a literal of the member that separates them best",
+    gates:
+      "every type of such a class maps to one record over the members of all of them, wherever the type is used: members only some declare are optional slots",
+    narrower:
+      "nothing narrower keeps one object: a value of a constituent type has to be the record the union holds, or entering the union copies it",
+    tracked: "DECISIONS, union-shared-arms",
+    lowererFields: [],
+  },
+  {
     name: "imports-node-api",
     file: `${SRC}/frontend/node-api-import.ts`,
     symbol: "programImportsNodeApi",

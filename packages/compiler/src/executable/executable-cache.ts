@@ -112,8 +112,10 @@ export interface EarlyExecutableNativeFeatures {
   dynAsync: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
+  streamStdin?: boolean;
   handleProps?: boolean;
   childLifecycle?: boolean;
+  childShellLine?: boolean;
   /** process.features as a value: scr_process_features.c. */
   processFeatures?: boolean;
   islandChild?: boolean;

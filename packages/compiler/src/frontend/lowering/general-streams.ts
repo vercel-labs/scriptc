@@ -72,6 +72,18 @@ export function needsGeneralNodeStreams(
   const pipeHandle = (part: IrType): boolean =>
     part.kind === "childStream" || part.kind === "childWriter";
   if (actual.kind === "dyn") return containsPart(lowerer, expected, pipeHandle);
+  // process.stdout or process.stderr flowing into a `Writable` slot (the
+  // child stdin handle until the program asks for the general
+  // representation) does not ask for the general representation by itself:
+  // the flow stops by name (SC1090). In Node the two names are one object
+  // with one writable state. Here the converted stream and the process
+  // stream name still answer apart, each without a diagnostic: a write
+  // through process.stdout after stream.end() or stream.destroy() is
+  // written, the stream stays ended and destroyed where Node's stdio stream
+  // is writable again, stream.setDefaultEncoding is not seen by
+  // process.stdout.write, and a reader that closed early is not an error on
+  // the stream. Until they answer as one, only a program that asks for the
+  // general representation by another member reaches the conversion.
   if (containsPart(lowerer, expected, stdio))
     return containsPart(lowerer, actual, (p) => isGeneralStream(lowerer, p));
   // A child pipe handle flowing into a runtime stream slot (a declared
@@ -82,15 +94,60 @@ export function needsGeneralNodeStreams(
   return expected.kind === "dyn" && containsPart(lowerer, actual, pipeHandle);
 }
 
-/** Under the general representation, process.stdout / process.stderr (the
- * procStream fd scalar) flowing into a runtime Writable slot: an
- * fd-backed Writable whose writes take the same synchronous path as
- * process.stdout.write. Null when the flow is not that one. */
+const READABLE: IrType = { kind: "object", className: "%Readable" };
+
+/** Whether `expr` reads process.stdin as a value (the process.stdio libCall
+ * for descriptor 0, which answers the process stream handle). */
+function readsProcessStdin(expr: IrExpr): boolean {
+  const fd = expr.kind === "libCall" && expr.fn === "process.stdio" ? expr.args[0] : undefined;
+  return fd?.kind === "numLit" && fd.value === 0;
+}
+
+/** A process stream as the runtime stream class `expected` names, where
+ * Node's process stream is an instance of that class: process.stdout and
+ * process.stderr as a Writable. The handle answers its one stream
+ * (scr_stream_stdio_writable), so every conversion is the same object.
+ * Null for any other pair.
+ *
+ * process.stdin as a Readable (stream.stdioReadable, scr_stream_stdin.c)
+ * is withheld. In Node the two names are one object with one readable
+ * state. Here the stream and the process.stdin name still answer apart
+ * for readableLength, for destroyed after process.stdin.destroy(), and
+ * for input held before the conversion, each without a diagnostic. Until
+ * they answer as one, the conversion is not made and the value stops at
+ * the Readable slot by name (TypeError: expected Readable, got
+ * ProcessStream), as it did before the conversion existed. */
+export function processStreamAs(expr: IrExpr, expected: IrType): IrExpr | null {
+  if (expected.kind !== "object") return null;
+  if (expected.className === "%Writable" && expr.type.kind === "procStream")
+    return {
+      kind: "libCall",
+      fn: "stream.stdioWritable",
+      args: [expr],
+      type: expected,
+      loc: expr.loc,
+    };
+  return null;
+}
+
+/** A process stream flowing into a runtime stream slot. process.stdin (the
+ * process stream handle) into a Readable slot is the stdin stream, once
+ * processStreamAs makes that conversion again (it answers null now). Under
+ * the general representation, process.stdout / process.stderr (the
+ * procStream fd scalar) into a runtime Writable slot is an fd-backed
+ * Writable whose writes take the same synchronous path as
+ * process.stdout.write. Null when the flow is neither. */
 export function stdioIntoGeneralStream(
   lowerer: Lowerer,
   expr: IrExpr,
   expected: IrType,
 ): IrExpr | null {
+  if (readsProcessStdin(expr)) {
+    if (expected.kind === "object") return processStreamAs(expr, expected);
+    if (expected.kind === "union" && lowerer.armTag(expected.unionId, READABLE) >= 0)
+      return processStreamAs(expr, READABLE);
+    return null;
+  }
   if (!lowerer.generalNodeStreams || expr.type.kind !== "procStream") return null;
   const writable: IrType = { kind: "object", className: "%Writable" };
   // Checked-dynamic stream slots (dyn-streams.ts) hold the Writable boxed.

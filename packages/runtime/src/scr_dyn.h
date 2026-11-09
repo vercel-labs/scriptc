@@ -485,6 +485,9 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* The same for a conversion without an assertion: all of `source` becomes
+ * one object with the value built from it, or nothing changes. */
+void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending

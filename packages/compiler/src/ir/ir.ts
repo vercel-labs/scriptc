@@ -4479,9 +4479,12 @@ export type IrExpr =
    * without an assertion (sharedDynConversion). JavaScript keeps one
    * object there: after the whole check succeeded, a source object or
    * array that something else still references becomes a live capsule of
-   * the value built from it (scr_dyn_adopt_shared). A source that is not
-   * plain data keeps the copy; nothing throws. A consumer that rebuilds
-   * the node without the flag gets the plain copy. */
+   * the value built from it (scr_dyn_adopt_whole). All of the value or
+   * none of it: a source with a node that cannot be adopted (not plain
+   * data, the same object in two places) keeps the copy as a whole, so
+   * its other names read what they read before; nothing throws. A
+   * consumer that rebuilds the node without the flag gets the plain
+   * copy. */
   /** `origin`: the target type comes from an npm package's declaration;
    * an index into `IrModule.declOrigins`. A failing check's TypeError then
    * names the declaration and the type patch that would admit the value

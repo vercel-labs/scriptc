@@ -6,7 +6,7 @@ import type {
 import { AstNode } from "./ast-node.js";
 import type { __String } from "./ast-types.js";
 import type * as enums from "./enums.generated.js";
-import { parseAstNodeHandle, syntaxKind71 } from "./ast-wire.js";
+import { parseAstNodeHandle, syntaxKind70 } from "./ast-wire.js";
 import type { SemanticChecker, SemanticJsDocTag } from "./semantic-checker.js";
 import { decodeSemanticObject, decodeSemanticObjects, parseSemanticJson } from "./semantic-json.js";
 import {
@@ -386,9 +386,6 @@ export class SemanticProject {
         query.symbol = references.reference(query.objectId);
         query.objectId = undefined;
       }
-      // signatureToSignatureDeclaration's kind is a SyntaxKind.
-      if (method === "signatureToSignatureDeclaration" && query.kind !== undefined)
-        query.kind = syntaxKind71(query.kind);
       const field = OBJECT_ID_METHODS_7_1.get(method);
       if (field === "type") {
         query.objectId = query.type;
@@ -397,6 +394,10 @@ export class SemanticProject {
         query.objectId = query.signature;
         query.signature = undefined;
       }
+    } else if (method === "signatureToSignatureDeclaration" && query.kind !== undefined) {
+      // The kind is a SyntaxKind, which a 7.0 server numbers one lower from
+      // SourceKeyword up.
+      query.kind = syntaxKind70(query.kind);
     }
     return JSON.stringify(query);
   }

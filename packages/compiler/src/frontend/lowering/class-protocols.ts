@@ -4,6 +4,7 @@ import {
   isForeignType,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { bindsIslandExport } from "./lower-node-island.js";
 
 /** Index only program classes. Ambient declarations describe APIs, not
@@ -958,9 +959,7 @@ export class ClassProtocols {
     if (known !== undefined) return known;
     this.islandSubclasses.set(declaration, false);
     let answer = false;
-    const base = declaration.heritageClauses?.nodes.find(
-      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types.nodes[0];
+    const base = extendsElementOf(declaration);
     if (
       declaration.name !== undefined &&
       ts.isSourceFile(declaration.parent) &&

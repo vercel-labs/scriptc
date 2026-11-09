@@ -29,6 +29,7 @@
  * to other code as a value (`register(this)`, `new Helper(this)`) is not
  * followed: what that code reads of it is not visible here. */
 import * as ts from "../ts7/adapter.js";
+import { extendsElementOf } from "../heritage-elements.js";
 
 /** The classes of a program by base class. */
 export interface ClassHierarchy {
@@ -45,8 +46,7 @@ export interface ClassHierarchy {
 export type BaseResolver = (heritage: ts.Expression) => ts.ClassLikeDeclaration | null | undefined;
 
 function extendsExpressionOf(decl: ts.ClassLikeDeclaration): ts.Expression | undefined {
-  return decl.heritageClauses?.nodes.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword)
-    ?.types?.nodes[0]?.expression;
+  return extendsElementOf(decl)?.expression;
 }
 
 export function classHierarchyOf(

@@ -503,26 +503,68 @@ const LOADER_TYPE_NAMES: ReadonlySet<string> = new Set([
  * (`options.load.resolve`, `held.cache`), in TypeScript source: the loader
  * value is a function over the runtime resolver and has none of the
  * properties Node's require carries, so the read would answer undefined
- * where Node answers a function or an object. It is refused by name. The
+ * where Node answers a function or an object. It is refused by name, and
+ * the refusal is the statement's, at run time: the read compiles to a throw
+ * of the refusal and the build names the statement (SC6015), so a program
+ * that never reaches the read builds and runs as it does under Node. As in
+ * Node, the holder is evaluated first, then the arguments of `call` when
+ * the member is called where it is read; the throw stands where Node would
+ * read the member's answer. Null where the access is not such a read. The
  * binding's own `load.resolve` keeps its lowering. JavaScript has no type
  * to tell a held loader by. */
-export function fenceHeldLoaderMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): void {
+export function heldLoaderMemberThrow(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  call?: ts.CallExpression,
+): IrExpr | null {
   const member = access.name.text;
-  if (!LOADER_OWN_MEMBERS.has(member)) return;
-  if (isJsSourceFile(ts.getSourceFileOfNode(access))) return;
+  if (!LOADER_OWN_MEMBERS.has(member)) return null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(access))) return null;
   const symbol = lowerer.typeOf(access.expression).getSymbol();
   if (
     symbol === undefined ||
     !LOADER_TYPE_NAMES.has(ts.symbolName(symbol)) ||
     !lowerer.isStdlibSymbol(symbol)
   )
-    return;
-  if (createRequireCalleeFileOf(lowerer, access.expression) !== null) return;
-  lowerer.noLowering(
+    return null;
+  if (createRequireCalleeFileOf(lowerer, access.expression) !== null) return null;
+  const loc = locOf(access);
+  const diag = noLoweringDiag(
     `createRequire loader member '${member}' read through a value that holds the loader`,
-    access,
+    loc,
     "a held loader is a run-time require function without the properties Node's require carries: read them through the createRequire binding itself",
   );
+  const stmts: IrStmt[] = [
+    { kind: "exprStmt", expr: lowerer.lowerExpr(access.expression), loc: locOf(access.expression) },
+  ];
+  for (const arg of call?.arguments.nodes ?? []) {
+    const value = ts.isSpreadElement(arg) ? arg.expression : arg;
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(value), loc: locOf(arg) });
+  }
+  // Recorded once the holder and the arguments have lowered: a refusal of
+  // theirs is the build's, and this read then defers nothing.
+  lowerer.runtimeFences.push(diag);
+  lowerer.noteDeferredRefusal(access, `${diag.code}: ${diag.message}`, diag.hint ?? "");
+  const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(access), loc.start).line + 1;
+  const never = lowerer.declareHiddenLocal("%never", DYN);
+  never.mutable = true;
+  stmts.push(
+    { kind: "varDecl", localId: never.id, init: null, loc },
+    {
+      kind: "runtimeFence",
+      code: diag.code,
+      message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+      loc,
+    },
+  );
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: varRef(never.id, DYN, loc),
+    diverges: true,
+    type: DYN,
+    loc,
+  };
 }
 
 /** A createRequire-made require over a RUN-TIME base as a value: unlike a

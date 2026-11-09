@@ -5,7 +5,7 @@ process-stream-pattern-members.ts:5:16 - error SC1031: rest bindings over a proc
     |                ^~~~~~~~~
   6 | const { write } = process.stderr;
 
-process-stream-pattern-members.ts:5:19 - error SC2009: values of type '{ writable: boolean; end(callback?: (() => void) | undefined): void; end(data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; end(data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: (() => void) | undefined): void; ... 12 more ...; getWindowSize(): [...]; }' cannot be compiled: the record shape is supported, but its member 'end' has type '{ (callback?: (() => void) | undefined): void; (data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; (data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: (() => void) | undefined): void; }', which does not compile
+process-stream-pattern-members.ts:5:19 - error SC2009: values of type '{ writable: boolean; end(callback?: (() => void) | undefined): void; end(data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; end(data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: (() => void) | undefined): void; ... 14 more ...; hasColors?(count?: number | undef...' cannot be compiled: the record shape is supported, but its member 'end' has type '{ (callback?: (() => void) | undefined): void; (data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; (data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: (() => void) | undefined): void; }', which does not compile
 
   4 | // stay refused, each by name.
   5 | const { isTTY, ...others } = process.stdout;

@@ -262,6 +262,13 @@ export class LlWalkers {
       case "union":
         this.emitUnionWriter(B, t.unionId);
         break;
+      case "map":
+      case "set":
+        // A Map or a Set held by a record, an array or a tuple has no own
+        // enumerable property and no toJSON: the empty object, whatever it
+        // holds (isJsonSafeAt admits it in those positions only).
+        this.puts(B, "%b", "{}");
+        break;
       default:
         throw new LlvmUnsupportedError(
           `jsonStringify:${t.kind}`,

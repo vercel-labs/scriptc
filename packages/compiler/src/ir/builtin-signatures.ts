@@ -217,6 +217,10 @@ function buildLibFnSignatures() {
     /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
     "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
     "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
+    /** The program's function for a primitive constructor (`String`), by
+     * name: a built-in constructor crosses the island boundary as the other
+     * side's own intrinsic (scr_node_island_export.c). */
+    "nodeIsland.intrinsic": { argTypes: [STRING, DYN], result: VOID },
     "nodeIsland.get": { argTypes: [DYN, STRING], result: DYN },
     "nodeIsland.getKey": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.set": { argTypes: [DYN, STRING, DYN], result: VOID },

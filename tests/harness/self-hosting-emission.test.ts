@@ -161,11 +161,9 @@ for (const backend of ["llvm"] as const) {
       // requests must not quietly return partial helper definitions.
       const invalidRequests: { request: EmissionRequest; message: string }[] = [
         {
-          request: {
-            ...emissionRequest(),
-            writers: [{ kind: "map", key: { kind: "string" }, value: { kind: "f64" } }],
-          },
-          message: "jsonStringify:map",
+          // A RegExp has no JSON writer (a Map or a Set is written as "{}").
+          request: { ...emissionRequest(), writers: [{ kind: "regex" }] },
+          message: "jsonStringify:regex",
         },
         {
           request: { ...emissionRequest(), writers: [{ kind: "record", shapeId: "Missing" }] },

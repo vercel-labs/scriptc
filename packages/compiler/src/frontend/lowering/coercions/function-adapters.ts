@@ -1,9 +1,10 @@
 import { keyedHelperName } from "../stable-names.js";
-import { dynUndefinedExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { buildFunctionAdapter } from "./builders.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
+  BOOL,
   canAdaptDynFuncTo,
   canBoxFuncIntoDyn,
   canDynCheckTo,
@@ -277,6 +278,14 @@ export function funcSlotAdaptable(
  * refused when the program hands a function of the slot's type to a caller
  * that passes more than the type names.
  *
+ * Two slots need neither condition, because the adapter is exact in them
+ * for every caller a slot can have (exactVariadicSlot): a slot of the
+ * function's own calling convention, where the caller's argument list
+ * passes through, and a slot with fixed parameters for a function that
+ * asks its argument list only whether an argument was passed at all (a
+ * primitive constructor held as a value). Their adapters carry another
+ * name prefix, so the store check does not count them.
+ *
  * Why a checked-dynamic variadic function (`(...args) => R`, the hidden
  * argument-array ABI) cannot serve a declared slot of another signature, or
  * null when it can. Such a value has no native call form: every call of it,
@@ -304,16 +313,62 @@ export function variadicBoundaryBlocker(
   const union = (id: string) => lowerer.unions.get(id);
   if (!canBoxFuncIntoDyn(fromT, shape, union) || !canAdaptDynFuncTo(toT, shape, union))
     return "domain";
-  // An all-arguments slot hands over every argument its caller passed.
-  if (toT.argumentsAll === true) return null;
+  // An all-arguments slot hands over every argument its caller passed, and
+  // an exact slot does not depend on how many the caller passes.
+  if (toT.argumentsAll === true || exactVariadicSlot(fromT, toT)) return null;
   const fixed = toT.restAbi === "typed" ? toT.params.slice(0, -1) : toT.params;
   const last = fixed.at(-1);
   return last !== undefined && omittableTrailingParam(lowerer, last) ? "count" : null;
 }
 
+/** Whether the slot `toT` is one in which the adapter of the
+ * checked-dynamic variadic function type `fromT` is exact for every caller
+ * the slot can have, whoever declared the slot and wherever its content is
+ * handed on:
+ *
+ * - A slot of the function's own calling convention (`String` into the
+ *   joined function of `typeof String | typeof Number`, whose result is
+ *   wider): the caller's argument list passes through as it is. A function
+ *   that gives the argumentsPresence guarantee is never made from one that
+ *   does not.
+ * - A slot with fixed parameters, for a function that asks its argument
+ *   list only whether an argument was passed at all (argumentsPresence: the
+ *   primitive constructors; `String` into `(value: string, name: string) =>
+ *   unknown`). The slot supplies every parameter the function declares, so
+ *   a call through the slot that passes its first argument, and a call by a
+ *   caller that passes more than the slot lists (an array method's loop
+ *   passes its callback the parameters the callback's type names, where
+ *   JavaScript passes three), both show the function what the JavaScript
+ *   call shows it. A call that omits the first argument passes nothing
+ *   (`String()` is ""), and a function type does not record which
+ *   parameters are optional: a first parameter that can hold the completed
+ *   undefined (omittableTrailingParam) holds the same value for an omitted
+ *   argument and for `undefined`. The adapter cannot tell which it was, so
+ *   it throws a TypeError for that one value and serves every other
+ *   (variadicBoundaryAdapter). A slot whose first parameter is only ever
+ *   undefined is not exact, and neither is a slot with no parameter: a
+ *   later caller that passes an argument would be answered as a call with
+ *   none, so that slot is served under THE RULE's two conditions. */
+export function exactVariadicSlot(
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (toT.rest === true)
+    return (
+      toT.restAbi === undefined &&
+      toT.argumentsAll === fromT.argumentsAll &&
+      (toT.argumentsPresence !== true || fromT.argumentsPresence === true) &&
+      toT.params.length === fromT.params.length
+    );
+  if (fromT.argumentsPresence !== true || toT.params.length < fromT.params.length) return false;
+  const first = toT.params[0];
+  return first !== undefined && !typeEquals(first, UNDEFINED_T);
+}
+
 /** Whether a checked-dynamic variadic function value converts into a slot
- * of another signature: the slot's parameters are the whole list its
- * callers pass (THE RULE above), and nothing blocks the adapter
+ * of another signature: the slot is exact for every caller
+ * (exactVariadicSlot), or its parameters are the whole list its callers
+ * pass (THE RULE above); and nothing blocks the adapter
  * (variadicBoundaryBlocker). */
 export function variadicBoundaryFits(
   lowerer: Lowerer,
@@ -321,13 +376,24 @@ export function variadicBoundaryFits(
   toT: IrType & { kind: "func" },
 ): boolean {
   if (fromT.rest !== true || fromT.restAbi !== undefined || typeEquals(fromT, toT)) return false;
-  if (!lowerer.callListDeclared()) return false;
+  if (!exactVariadicSlot(fromT, toT) && !lowerer.callListDeclared()) return false;
   return variadicBoundaryBlocker(lowerer, fromT, toT) === null;
 }
 
-/** The name prefix of every variadic adapter, by which
- * variadic-functions.ts finds the stores once lowering ends. */
+/** The name prefix of every variadic adapter whose store is exact only
+ * under THE RULE, by which variadic-functions.ts finds the stores once
+ * lowering ends. */
 export const VARIADIC_ADAPTER_PREFIX = "%fn.variadic";
+
+/** The name prefix of a variadic adapter in an exact slot
+ * (exactVariadicSlot): no caller of such a store can see a difference, so
+ * the store check does not look for it. */
+export const EXACT_VARIADIC_ADAPTER_PREFIX = "%fn.exact";
+
+/** What the adapter throws when an exact slot with fixed parameters, whose
+ * first parameter can be omitted, is called with undefined there. */
+export const OMITTED_OR_UNDEFINED_ARGUMENT_MESSAGE =
+  "a constructor held as a function whose first parameter can be omitted was called without that argument or with undefined, and the function type cannot tell the two apart";
 
 /** The adapter for variadicBoundaryFits: call the boxed function with the
  * slot's arguments as its argument list, under the receiver the slot was
@@ -342,17 +408,25 @@ export const VARIADIC_ADAPTER_PREFIX = "%fn.variadic";
  * function to a typed signature copies them instead. A rest slot's array
  * spreads into the list, so the function sees every argument the caller
  * passed. The result is dropped for a `void` slot and checked into any
- * other result type; a promise keeps its identity. */
+ * other result type; a promise keeps its identity. In an exact slot with
+ * fixed parameters whose first parameter can be omitted, a call that
+ * leaves it undefined throws: it is an omitted argument or `undefined`,
+ * which the function answers differently (exactVariadicSlot). */
 function variadicBoundaryAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
   loc: SrcLoc,
 ): string {
-  const key = `fnvariadic:${typeKey(fromT)}:${typeKey(toT)}`;
+  const exact = exactVariadicSlot(fromT, toT);
+  const key = `${exact ? "fnexact" : "fnvariadic"}:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
-  const name = keyedHelperName(lowerer, VARIADIC_ADAPTER_PREFIX, key);
+  const name = keyedHelperName(
+    lowerer,
+    exact ? EXACT_VARIADIC_ADAPTER_PREFIX : VARIADIC_ADAPTER_PREFIX,
+    key,
+  );
   lowerer.coercions.retags.set(key, name);
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((type, i) => ({
@@ -403,6 +477,40 @@ function variadicBoundaryAdapter(
         );
       body = [{ kind: "return", value: result, loc }];
     }
+    const first = toT.params[0];
+    if (
+      exact &&
+      toT.rest !== true &&
+      first !== undefined &&
+      omittableTrailingParam(lowerer, first)
+    ) {
+      const value: IrExpr = { kind: "varRef", localId: "a.0", type: first, loc };
+      const undefinedThere: IrExpr =
+        first.kind === "union"
+          ? {
+              kind: "unionIsTag",
+              unionId: first.unionId,
+              tag: lowerer.armTag(first.unionId, UNDEFINED_T),
+              negated: false,
+              value,
+              type: BOOL,
+              loc,
+            }
+          : { kind: "dynTest", test: "undefined", value, type: BOOL, loc };
+      body.unshift({
+        kind: "if",
+        cond: undefinedThere,
+        then: [
+          {
+            kind: "exprStmt",
+            expr: nodeThrowExpr(1, "", OMITTED_OR_UNDEFINED_ARGUMENT_MESSAGE, F64, loc),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+    }
   } finally {
     lowerer.fnStack.pop();
   }
@@ -416,9 +524,11 @@ function variadicBoundaryAdapter(
  * funcCoerceAdapter answered: the adapter's factory applied to the value,
  * boxed first for the variadic adapter, which calls the boxed function. */
 export function adaptedFunction(adapter: string, value: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
-  const original: IrExpr = adapter.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`)
-    ? { kind: "dynFrom", value, type: DYN, loc }
-    : value;
+  const original: IrExpr =
+    adapter.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`) ||
+    adapter.startsWith(`${EXACT_VARIADIC_ADAPTER_PREFIX}.`)
+      ? { kind: "dynFrom", value, type: DYN, loc }
+      : value;
   return { kind: "call", callee: adapter, args: [original], type, loc };
 }
 

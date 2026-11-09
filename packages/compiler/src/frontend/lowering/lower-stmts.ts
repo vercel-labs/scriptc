@@ -48,6 +48,7 @@ import {
   recordViewHosted,
 } from "./expressions/hosted-narrowing.js";
 import { assertedOnlyMemberWrite } from "./expressions/asserted-receiver.js";
+import { instanceSlotReadAtDeclaredType } from "./expressions/narrowing.js";
 import { assertionViewCopy, bindingIdentityUse, bindingWrite } from "./divergences.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
 import { lowerForAwaitDynStream, nodeStreamInterfaceSide } from "./dyn-streams.js";
@@ -120,6 +121,7 @@ import {
   type TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
 import { statementGroupKey } from "./type-failure.js";
+import { reportUncompiledImportsOf } from "./lower-stdlib.js";
 import {
   accessorExportIsExact,
   cjsExportEvaluations,
@@ -384,6 +386,7 @@ import {
   isUnitOnlyTsType,
   jsOpenObjectType,
   unitOnlyUnion,
+  holdsPrimitiveConstructors,
   isAnyArrayType,
 } from "../type-mapper.js";
 import { canonicalBuiltinModule } from "../builtin-modules.js";
@@ -912,6 +915,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const sinkMark = lowerer.diagSinkMark();
       const touched = new Set<string>();
       lowerer.failureTouches.push(touched);
+      // A refusal of this statement involves a held constructor when the
+      // statement meets one before it (held-constructors.ts).
+      const touchMark = lowerer.constructorTouchMark;
+      lowerer.constructorTouchMark = lowerer.constructorTouches;
       const pendingSlots: DynamicSlot[] = [];
       // A declarator that initializes a forward-captured TDZ box takes it
       // out of tdzPredeclared; a retry after a later declarator degrades
@@ -1044,6 +1051,18 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             if (d.typeFailure === undefined && d.rejects === undefined) d.cause ??= cause;
         }
         lowerer.noteBlockedBindings(stmt, committed);
+        // A statement abandoned over a package the program does not compile
+        // names every such package its import() calls load, so one build
+        // round decides their islands (reportUncompiledImportsOf). A
+        // JavaScript statement keeps its fence, which the island rules read.
+        if (!deferFences)
+          reportUncompiledImportsOf(
+            lowerer,
+            stmt,
+            lowerer.diagSink !== null
+              ? lowerer.diagSink.slice(sinkMark)
+              : lowerer.diags.slice(diagsBefore),
+          );
         // The runtime-fence conversion (JS sources, direct diagnostics
         // only — a capture wrapper in force means collection owns the
         // report). The statement's diagnostics move OFF the build and
@@ -1070,6 +1089,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       } finally {
         if (typedRetry !== null && typedRetry.running) lowerer.setBindingTypedRetry(false);
         lowerer.failureTouches.pop();
+        lowerer.constructorTouchMark = touchMark;
       }
     }
     // Each acquisition protects the remainder of its lexical statement
@@ -5049,6 +5069,22 @@ function narrowedUnionPatternSource(
   if (allowed.size === 0 || allowed.size === from.arms.length) return null;
   if (allowed.size === 1) {
     const tag = [...allowed][0]!;
+    // A generic instance's binding the checker did not narrow: the record
+    // is the view its constraint gives every arm, and each other arm still
+    // arrives. The extraction is the checked one, which throws the
+    // TypeError of a value the pattern's type does not name, and the build
+    // names the pattern (SC6015).
+    if (patternOverInstanceBinding(lowerer, pattern, fromId, narrowed)) {
+      const helper = lowerer.narrowedArmHelper(fromId, from.arms[tag]!, loc);
+      if (helper) {
+        lowerer.noteStrandedInstanceArm(
+          pattern,
+          lowerer.checker.typeToString(lowerer.typeOf(pattern)),
+          from.arms.filter((arm, other) => other !== tag && !isUnitType(arm)).length,
+        );
+        return lowerer.checkedNarrowCall(helper, value, from.arms[tag]!, loc);
+      }
+    }
     // The checker proved the tag; the extraction traps on a mismatch
     // instead of reading another arm.
     return { kind: "unionNarrow", unionId: fromId, tag, value, type: from.arms[tag]!, loc };
@@ -5064,6 +5100,42 @@ function narrowedUnionPatternSource(
     type: { kind: "union", unionId: subId },
     loc,
   };
+}
+
+/** Whether `pattern` destructures a generic instance's binding that the
+ * checker did not narrow, while the slot `fromId` holds the pattern's
+ * record `site` among several value arms: the variable of a declaration
+ * read at its declared type (instanceSlotReadAtDeclaredType), or the
+ * elements of a `for…of` over a binding typed by a type parameter. */
+function patternOverInstanceBinding(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  fromId: string,
+  site: IrType,
+): boolean {
+  if (lowerer.typeParamBindings === null || site.kind !== "record") return false;
+  const declaration = pattern.parent;
+  if (!declaration || !ts.isVariableDeclaration(declaration)) return false;
+  const values = lowerer.unions.get(fromId)?.arms.filter((arm) => !isUnitType(arm)) ?? [];
+  if (values.length < 2) return false;
+  let source = declaration.initializer;
+  while (source && ts.isParenthesizedExpression(source)) source = source.expression;
+  if (source)
+    return instanceSlotReadAtDeclaredType(lowerer, source, fromId, lowerer.typeOf(source), site);
+  const loop = declaration.parent?.parent;
+  if (!loop || !ts.isForOfStatement(loop)) return false;
+  let iterated = loop.expression;
+  while (ts.isParenthesizedExpression(iterated)) iterated = iterated.expression;
+  if (!ts.isIdentifier(iterated)) return false;
+  const symbol = lowerer.resolveValueSymbol(iterated);
+  if (!symbol) return false;
+  const declared = lowerer.checker.getTypeOfSymbol(symbol);
+  const isVariable = (type: ts.Type): boolean => (type.flags & ts.TypeFlags.Instantiable) !== 0;
+  return (
+    isVariable(declared) ||
+    (lowerer.checker.isArrayType(declared) &&
+      lowerer.checker.getTypeArguments(declared as ts.TypeReference).some(isVariable))
+  );
 }
 
 /** An object pattern over a union of records and class instances
@@ -7886,7 +7958,8 @@ export function lowerVarDecl(
       (!decl.type &&
         !hasJsTypeAnnotation(decl) &&
         type.rest === true &&
-        type.restAbi === undefined))
+        type.restAbi === undefined &&
+        !holdsPrimitiveConstructors(lowerer.typeOf(decl.name), lowerer.typeCtx)))
   ) {
     type = DYN;
   }

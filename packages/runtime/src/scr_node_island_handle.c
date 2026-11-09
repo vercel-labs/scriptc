@@ -1584,6 +1584,7 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     /* `v` is the bridge's until the next entry, and an adoption enters. */
     uint32_t handle = v->u.handle;
     bool twin = (v->flags & SCR_NVF_TWIN) != 0;
+    bool intrinsic = (v->flags & SCR_NVF_INTRINSIC) != 0;
     ScrNodeRef *ref = nh_ref_in(handle, v->flags);
     if ((ref->flags & (SCR_NVF_PROMISE | SCR_NVF_SYMBOL)) != 0 && !nh_on_island()) {
       /* A mirror and the native symbol paired with an island symbol are
@@ -1619,6 +1620,17 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
      * a handle. */
     if (twin && nh_on_island()) {
       ScrDyn *native = scr_ni_twin_adopt(d, handle);
+      if (native != NULL) {
+        scr_dyn_release(d);
+        return native;
+      }
+    }
+    /* One of the island's intrinsic constructors (its `String`): the
+     * program's own value of that name, when it holds one. The table of
+     * those values is the island thread's, as the export table is, so on a
+     * worker the constructor stays the island's function. */
+    if (intrinsic && nh_on_island()) {
+      ScrDyn *native = scr_ni_intrinsic_native(d);
       if (native != NULL) {
         scr_dyn_release(d);
         return native;

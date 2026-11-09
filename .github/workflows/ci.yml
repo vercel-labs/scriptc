@@ -466,12 +466,17 @@ jobs:
       - run: pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"
 
   # The sanitized self-hosting native-frontend builds alone. Each of these
-  # three files compiles the whole frontend under ASan in beforeAll, which
-  # takes 10.5 GB of clang beside a 3.8 GB compile in Node; beside a shard's
-  # corpus workers the kernel killed it intermittently at 670-740 s (SIGKILL,
-  # empty stderr, every test skipped). One file per job, one worker, no
-  # corpus. The plain suite and the macOS shards keep them in the shard side
-  # queue (scripts/ci-test-plan.mjs).
+  # three files compiles the whole frontend under ASan in beforeAll: the
+  # compile in Node holds 6.5 to 7.4 GB while clang builds the executable,
+  # one clang per core at a time, the largest of them 5.1 GB. Beside a
+  # shard's corpus workers the kernel killed it intermittently at 670-740 s
+  # (SIGKILL, empty stderr, every test skipped), so: one file per job, one
+  # worker, no corpus. On the runner's four cores the build alone has since
+  # outgrown its 16 GB (the kernel kills the compile at 560 s; a hosted runner
+  # goes down itself first, and the step ends cancelled about ten minutes in,
+  # with no test output), so the step runs on two cores: two clangs at a
+  # time, 14.5 GB at the peak. The plain suite and the macOS shards keep these
+  # files in the shard side queue (scripts/ci-test-plan.mjs).
   native_frontend_san:
     needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
@@ -509,7 +514,7 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - name: Tests (${{ matrix.file }})
-        run: pnpm test ${{ matrix.file }}
+        run: taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}
 
   # Shape inference's overlay (opt-in, SCRIPTC_SHAPE_OVERLAY=1) over the
   # suites of real packages: nightly and on manual runs only (scope

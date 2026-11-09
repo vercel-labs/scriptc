@@ -5871,7 +5871,7 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
-ScrStreamRefHooks scr_stream_ref_hooks;
+ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL };
 
 /* Whether capsule `d` may hold a native stream that answers member
  * questions without its view: its snapshot adapter is the stream unit's.

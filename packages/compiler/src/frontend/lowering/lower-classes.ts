@@ -12861,6 +12861,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           `${ts.symbolName(symbol)} construction with surplus or spread arguments`,
         );
       }
+      // The keys of the entries an iterable seeds are checked values.
+      if (args[0]) lowerer.noteWeakKey(DYN);
 
       return {
         kind: "libCall",

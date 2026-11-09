@@ -1159,7 +1159,8 @@ function literalIndex(expr: IrExpr): number | undefined {
 /** The receiver, key and value one dynamic member write takes, or three
  * undefined for any other node. A write is a `dyn.keySet`/`dyn.keySetComputed`
  * call or a call into a class-dispatch stub that carries the stored value
- * (class-dynamic-dispatch.ts `%dyn.class.computed.<n>`). */
+ * (class-dynamic-dispatch.ts `%dyn.class.computed.<n>` and
+ * `%dyn.class.named.<n>`). */
 function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined, IrExpr | undefined] {
   const none: [undefined, undefined, undefined] = [undefined, undefined, undefined];
   if (node.kind === "libCall") {
@@ -1168,7 +1169,8 @@ function writeArgs(node: IrExpr): [IrExpr | undefined, IrExpr | undefined, IrExp
   }
   if (
     node.kind === "call" &&
-    node.callee.startsWith("%dyn.class.computed.") &&
+    (node.callee.startsWith("%dyn.class.computed.") ||
+      node.callee.startsWith("%dyn.class.named.")) &&
     node.args.length >= 3
   )
     return [node.args[0], node.args[1], node.args[2]];

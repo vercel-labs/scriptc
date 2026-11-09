@@ -451,9 +451,24 @@ describe("the effects of a file that modules share", () => {
     expect(before.snapshots[0]).toContain("5:three");
   });
 
-  test("a module that shares nothing with such a load still defers", () => {
+  test("a module that shares nothing with such a load has no snapshot either", () => {
+    // The probe evaluated the second load after the first, in an island
+    // that holds what the first left there, and no run is answered from
+    // its snapshot (the first load never registers).
+    for (const record of [{ effects: ["process.stdout.write()"] }, { inputs: ["process.argv"] }]) {
+      const apart = sharing(record, false);
+      expect(apart.decisions.map((d) => d.deferred)).toEqual([false, false]);
+      expect(apart.decisions[1]!.reason).toContain(
+        "an earlier load evaluates where it is imported",
+      );
+      expect(apart.snapshots.join("")).not.toContain("three");
+    }
+    // A load the probe reached before it defers.
     for (const record of [{ effects: ["process.stdout.write()"] }, { inputs: ["process.argv"] }])
-      expect(sharing(record, false).decisions.map((d) => d.deferred)).toEqual([false, true]);
+      expect(sharing(record, false, "second").calls.map((c) => c.fn)).toEqual([
+        "nodeIsland.defer",
+        "nodeIsland.require",
+      ]);
   });
 
   test("modules that share a file whose loads read nothing and do nothing both defer", () => {
@@ -550,16 +565,34 @@ describe("the loads a snapshot was recorded after", () => {
     expect(unnoticed.record(1)).toBe(unnoticed.before("writer"));
   });
 
-  test("a load the build keeps eager still counts before the loads after it", () => {
+  test("a load probed after one the build keeps eager has no snapshot", () => {
     // The probe evaluated it, so the later load computed from what it left.
     // A run that performs it has started Node; one that skips it (a branch
-    // not taken) has not registered it, and the later snapshot stays unused.
-    const { decisions, calls, record, before } = sequence(["writer", "reader"], {
-      writer: { effects: ["process.on() (writer/index.js:1:9)"], mutations: ["globalThis.level"] },
+    // not taken) has not registered it. No run reads the later snapshot.
+    for (const writer of [
+      { effects: ["process.on() (writer/index.js:1:9)"], mutations: ["globalThis.level"] },
+      { effects: ["process.on() (writer/index.js:1:9)"] },
+    ]) {
+      const { decisions, calls } = sequence(["writer", "reader", "other"], { writer });
+      expect(decisions.map((d) => d.deferred)).toEqual([false, false, false]);
+      expect(calls.map((c) => c.fn)).toEqual([
+        "nodeIsland.require",
+        "nodeIsland.require",
+        "nodeIsland.require",
+      ]);
+      expect(decisions[1]!.reason).toContain("an earlier load evaluates where it is imported");
+    }
+    // The loads the probe reached before it keep their snapshots.
+    const later = sequence(["reader", "writer", "reader"], {
+      writer: { effects: ["process.on() (writer/index.js:1:9)"] },
     });
-    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
-    expect(record(1)).toBe(before("writer"));
+    expect(later.calls.map((c) => c.fn)).toEqual([
+      "nodeIsland.defer",
+      "nodeIsland.require",
+      "nodeIsland.defer",
+    ]);
+    expect(later.record(0)).toBe(later.before());
+    expect(later.record(2)).toBe(later.before());
   });
 
   test("a module imported twice is probed once and carries one record", () => {
@@ -581,6 +614,69 @@ describe("the loads a snapshot was recorded after", () => {
     );
     expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
     expect(record(1)).toBe(before("writer"));
+  });
+});
+
+describe('the keys of a "lazy" load that read an input', () => {
+  test("only keys the load's files spell are written", () => {
+    const root = scratch();
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "app", scriptc: { packages: { hosts: { evaluate: "lazy" } } } }),
+    );
+    const dir = join(root, "node_modules", "hosts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), '{ "name": "hosts" }');
+    const file = join(dir, "index.js");
+    writeFileSync(
+      file,
+      'exports.byHost = { [require("os").hostname()]: { up: true } };\nexports.describe = () => "hosts";\n',
+    );
+    const call = {
+      kind: "libCall",
+      fn: "nodeIsland.defer",
+      args: [
+        { kind: "strLit", value: file },
+        { kind: "strLit", value: "" },
+      ],
+    };
+    const mod = { functions: [{ body: [call] }], globals: [] } as unknown as IrModule;
+    const host = "build-host-7c21";
+    const probe: ProbeOutput = {
+      results: [
+        {
+          path: file,
+          root: 1,
+          inputs: ["os.hostname() (hosts/index.js:1:39)"],
+          volatile: [],
+          effects: [],
+          mutations: [],
+          env: [],
+          tty: [],
+          files: [file],
+        },
+      ],
+      objects: {
+        "1": {
+          f: 0,
+          p: false,
+          m: [
+            ["byHost", { o: 2 }],
+            ["describe", { o: 4 }],
+          ],
+        },
+        "2": { f: 0, p: false, m: [[host, { o: 3 }]] },
+        "3": { f: 0, p: false, m: [] },
+        "4": { f: 1, p: false, m: [] },
+      },
+    };
+    const decisions = finalizeDeferredIslands(mod, join(root, "main.ts"), root, () => probe);
+    expect(decisions.map((d) => d.deferred)).toEqual([true]);
+    const text = call.args[1]!.value;
+    expect(text).toMatch(/^K 1 6:byHost o2$/m);
+    expect(text).toMatch(/^K 1 8:describe o4$/m);
+    expect(text).not.toContain(host);
+    expect(text).not.toMatch(/^O 3 /m);
   });
 });
 
@@ -653,10 +749,33 @@ describe("state an earlier load wrote", () => {
     expect(text).not.toContain(secret);
   });
 
-  test("a later module still defers when the earlier load wrote nothing", () => {
-    const { decisions, calls } = handoff(toGlobal);
-    expect(decisions.map((d) => d.deferred)).toEqual([false, true]);
-    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.defer"]);
+  test("a later snapshot does not carry the value when the probe noticed no write", () => {
+    // The earlier load can leave the value where the probe compares nothing:
+    // a member of `console`, a builtin's private state, an object deeper
+    // than the members the probe compares.
+    const { decisions, calls, snapshots, text, secret } = handoff(toGlobal);
+    expect(decisions.map((d) => d.deferred)).toEqual([false, false]);
+    expect(decisions[1]!.reason).toContain("TOKEN");
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.require", "nodeIsland.require"]);
+    expect(snapshots.join("")).not.toContain(secret);
+    expect(text).not.toContain(secret);
+  });
+
+  test('a load probed after a "lazy" one that read an input keeps no constants', () => {
+    // `ga` is "lazy" and leaves the working directory in a global; `gb`
+    // exports the global, and its own record reads nothing.
+    const cwd = "/home/builder/project";
+    const { decisions, calls, snapshots, text } = handoff(
+      { inputs: ["process.cwd() (ga/index.js:1:17)"] },
+      {},
+      { packages: { ga: { evaluate: "lazy" } } },
+      [["cwd", { s: cwd }]],
+    );
+    expect(decisions.map((d) => d.deferred)).toEqual([true, true]);
+    expect(calls.map((c) => c.fn)).toEqual(["nodeIsland.defer", "nodeIsland.defer"]);
+    expect(decisions[1]!.reason).toContain("probed after a load that reads process.cwd()");
+    expect(snapshots[1]).toMatch(/^R 2$/m);
+    expect(text).not.toContain(cwd);
   });
 
   test("a variable the earlier load wrote does not reach a later guard", () => {
@@ -1215,7 +1334,16 @@ describe("generated island modules (closed-island-init.ts)", () => {
    * inside a function. The probe's stand-in records what it was given and
    * answers a deterministic load for every module. */
   function generatedProject(
-    options: { statement?: boolean; volatile?: string[]; effects?: string[] } = {},
+    options: {
+      statement?: boolean;
+      volatile?: string[];
+      effects?: string[];
+      /** Objects of the probe's output that replace the default ones, given
+       * the modules the probe was handed and the tree's root. */
+      objects?: (modules: string[], root: string) => ProbeOutput["objects"];
+      /** A file outside the tree that `dep`'s load evaluated. */
+      outside?: string;
+    } = {},
   ) {
     const root = scratch();
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "app" }));
@@ -1297,12 +1425,17 @@ describe("generated island modules (closed-island-init.ts)", () => {
             mutations: [],
             env: [],
             tty: [],
-            files: [path, join(root, "node_modules", "dep", "index.js")],
+            files: [
+              path,
+              join(root, "node_modules", "dep", "index.js"),
+              ...(i === 0 && options.outside !== undefined ? [join(root, options.outside)] : []),
+            ],
           })),
           objects: {
             "1": { f: 0, p: false, m: [] },
             "2": { f: 0, p: false, m: [["a", { n: "7" }]] },
             "3": { f: 0, p: false, m: [["b", { n: "8" }]] },
+            ...options.objects?.(modules, root),
           },
         };
       },
@@ -1346,6 +1479,63 @@ describe("generated island modules (closed-island-init.ts)", () => {
     );
     // A package's entry point too: nothing before the first load.
     expect(snapshot(dep)).toMatch(new RegExp(`^P 0 ${loadsHash([])}$`, "m"));
+  });
+
+  test("a constant whose value names the probe's copy of its module stays eager", () => {
+    // A package that finds its caller from a stack trace: the probe's caller
+    // is the copy in a temporary directory of the build machine.
+    const { decisions, first, seen } = generatedProject({
+      objects: (modules) => ({
+        "2": { f: 0, p: false, m: [["a", { s: `file://${modules[1]}:2:18` }]] },
+      }),
+    });
+    const decision = decisions.find((d) => d.path.endsWith("main.0000000000.0.mjs"))!;
+    expect(decision.deferred).toBe(false);
+    expect(decision.reason).toBe("its exports hold a path of the build machine");
+    expect(first.fn).toBe("nodeIsland.require");
+    expect(JSON.stringify(first)).not.toContain(seen.modules[1]!);
+  });
+
+  test("a module whose member's key names a path of the build machine stays eager", () => {
+    const { decisions, dep, root } = generatedProject({
+      objects: (_modules, root) => ({
+        "1": { f: 0, p: false, m: [[join(root, "node_modules", "dep"), { o: 4 }]] },
+        "4": { f: 0, p: false, m: [] },
+      }),
+    });
+    const decision = decisions.find((d) => d.path.endsWith(join("dep", "index.js")))!;
+    expect(decision.deferred).toBe(false);
+    expect(decision.reason).toBe("its exports hold a path of the build machine");
+    expect(dep.fn).toBe("nodeIsland.require");
+    expect(JSON.stringify(dep)).not.toContain(root);
+  });
+
+  test("a module whose value names a path of the build machine without its root stays eager", () => {
+    const { decisions, dep, root } = generatedProject({
+      objects: (_modules, root) => ({
+        "1": { f: 0, p: false, m: [["dir", { s: join(root, "node_modules", "dep").slice(1) }]] },
+      }),
+    });
+    const decision = decisions.find((d) => d.path.endsWith(join("dep", "index.js")))!;
+    expect(decision.reason).toBe("its exports hold a path of the build machine");
+    expect(dep.fn).toBe("nodeIsland.require");
+    expect(JSON.stringify(dep)).not.toContain(root.slice(1));
+  });
+
+  test("a load that evaluated a file the tree does not ship stays eager, with no guard on it", () => {
+    // A package another one requires by a computed name is not collected:
+    // the executable's island cannot load it, and a guard on the build
+    // machine's file would name its path.
+    const hidden = join("node_modules", "hidden", "index.js");
+    const { decisions, dep, first, root } = generatedProject({ outside: hidden });
+    const decision = decisions.find((d) => d.path.endsWith(join("dep", "index.js")))!;
+    expect(decision.deferred).toBe(false);
+    expect(decision.reason).toBe(
+      `its load evaluates ${join(root, hidden)}, which the shipped module tree does not hold`,
+    );
+    expect(dep.fn).toBe("nodeIsland.require");
+    // The loads the probe reached after it have no snapshot either.
+    expect(first.fn).toBe("nodeIsland.require");
   });
 
   test("a statement defers like a constant, with nothing in its snapshot but its guards", () => {

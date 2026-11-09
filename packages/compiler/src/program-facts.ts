@@ -533,11 +533,27 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     scope: "program",
     setBy: "an import of `@scriptc/node` in any source file of the program",
     gates:
-      "clearTimeout, clearInterval and clearImmediate of a checked-dynamic handle also ask the Node island unit to clear an island's timer, and take such a handle in TypeScript",
+      "clearTimeout, clearInterval and clearImmediate of a checked-dynamic handle also ask the Node island unit to clear an island's timer, and take such a handle in TypeScript; and in a build with `--define` the conditions the define decides are evaluated at run time, because code in Node.js can change the variable (constant-conditions.ts)",
     narrower:
-      "the handle, at run time: a requireModule result and everything reached from it is untyped, so no site knows whether its value came from an island",
-    tracked: "pi-decisions DECISIONS island-timers-iteration 2026-11-07",
+      "the handle, at run time: a requireModule result and everything reached from it is untyped, so no site knows whether its value came from an island; for the conditions, the environment writes of the JavaScript the island runs, which the build does not read",
+    tracked:
+      "pi-decisions DECISIONS island-timers-iteration 2026-11-07; the integrity flag's two open edges 2026-11-09",
     lowererFields: ["importsNodeApi"],
+  },
+  {
+    name: "computed-environment-write",
+    file: `${SRC}/frontend/lowering/constant-conditions.ts`,
+    symbol: "changesEnvironmentByComputedName",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a write or `delete` of a member of `process.env`, or of a value held from it, through a name that is not a string literal, in any implementation file of a program built with `--define`",
+    gates:
+      "the conditions the define decides (`if` statements of TypeScript files, conditional expressions, the right operands of `&&` and `||`) are evaluated at run time in every natively lowered file",
+    narrower:
+      "the names the computed key can hold: a key whose type is a union of string literals that names no defined variable cannot change one",
+    tracked: "pi-decisions DECISIONS.md 2026-11-09, the integrity flag rulings",
+    lowererFields: ["computedEnvironmentWrite"],
   },
 ];
 
@@ -647,6 +663,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "frontend/lowering/builtins/web-streams-dyn.ts#programUsesWebStreamOnlyMembers",
     1,
     "web-stream-only-members",
+  ),
+  decides(
+    "frontend/lowering/constant-conditions.ts#changesEnvironmentByComputedName",
+    1,
+    "computed-environment-write",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",

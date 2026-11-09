@@ -430,6 +430,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // The prototype read of a class test's walk.
+  unit((u) => u.opts.classTestPrototype === true, "scr_dyn_class_test.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
   // Record views of types whose values may also be frozen.

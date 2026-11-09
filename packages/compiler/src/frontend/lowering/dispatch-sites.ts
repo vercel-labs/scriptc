@@ -91,7 +91,7 @@ const DISPATCH_LIB_CALLS = new Set<IrLibFn>([
   "dyn.propertyIsEnumerableComputed",
   "dyn.defineProperty",
   "dyn.getPrototype",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classTestPrototype",
   "dyn.inheritsErrorPrototype",
   "dyn.reflectGet",
   "dyn.reflectSet",

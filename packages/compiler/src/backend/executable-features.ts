@@ -88,6 +88,7 @@ export function executableLinkFeatures(
     ...(features.dynCollections ? { dynCollections: true } : {}),
     ...(features.dynIntegrityQueries ? { dynIntegrityQueries: true } : {}),
     ...(features.reflectProtoTarget ? { reflectProtoTarget: true } : {}),
+    ...(features.classTestPrototype ? { classTestPrototype: true } : {}),
     ...(features.recordSourceDelete ? { recordSourceDelete: true } : {}),
     ...(features.recordViewFrozen ? { recordViewFrozen: true } : {}),
     ...(features.genBind ? { genBind: true } : {}),

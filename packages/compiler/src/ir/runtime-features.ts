@@ -1842,6 +1842,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** The prototype read of a class test's walk, `value instanceof C` of an
+   * untyped value (scr_dyn_class_test.c, a unit of its own so scr_json.c
+   * keeps its layout). */
+  classTestPrototype: rule({ fns: ["dyn.classTestPrototype"] }),
   /** `delete` of a key a record's type does not declare, removed from the
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
@@ -2559,6 +2563,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    classTestPrototype: false,
     recordSourceDelete: false,
     recordViewFrozen: false,
     dynBuffer: false,

@@ -31,6 +31,7 @@ const features = {
   dynCollections: false,
   dynIntegrityQueries: false,
   reflectProtoTarget: false,
+  classTestPrototype: false,
   recordSourceDelete: false,
   recordViewFrozen: false,
   genBind: false,

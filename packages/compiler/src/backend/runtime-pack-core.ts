@@ -108,6 +108,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   dynCollections: boolean;
   dynIntegrityQueries: boolean;
   reflectProtoTarget: boolean;
+  classTestPrototype: boolean;
   recordSourceDelete: boolean;
   recordViewFrozen: boolean;
   genBind: boolean;
@@ -405,6 +406,7 @@ export function effectiveRuntimeFeatures(
     dynCollections: features.dynCollections === true,
     dynIntegrityQueries: features.dynIntegrityQueries === true,
     reflectProtoTarget: features.reflectProtoTarget === true,
+    classTestPrototype: features.classTestPrototype === true,
     recordSourceDelete: features.recordSourceDelete === true,
     recordViewFrozen: features.recordViewFrozen === true,
     genBind: features.genBind === true,

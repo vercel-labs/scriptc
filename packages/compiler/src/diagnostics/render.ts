@@ -117,10 +117,7 @@ export function renderDiagnostic(
       windowStart === 0 && lineText.length <= FRAME_MAX_WIDTH
         ? lineText.length
         : Math.min(lineText.length, windowStart + FRAME_MAX_WIDTH);
-    const spanOnLine = Math.max(
-      1,
-      Math.min(spanLength, visibleEnd - (colNum - 1)),
-    );
+    const spanOnLine = Math.max(1, Math.min(spanLength, visibleEnd - (colNum - 1)));
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +

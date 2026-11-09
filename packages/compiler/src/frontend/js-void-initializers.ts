@@ -100,7 +100,7 @@ export function castVoidInitializers(sf: ts.SourceFile): VoidInitializerCasts | 
     let unread = from;
     for (const decl of list.declarations.nodes) {
       const annotated: boolean =
-        annotatedBefore ||/@type\b/.test(source.slice(unread, tokenStartOfNode(decl)));
+        annotatedBefore || /@type\b/.test(source.slice(unread, tokenStartOfNode(decl)));
       const init = decl.initializer;
       if (isVoidLiteralCast(init)) {
         annotatedBefore = annotated;

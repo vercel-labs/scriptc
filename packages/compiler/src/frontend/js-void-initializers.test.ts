@@ -59,10 +59,9 @@ console.log(pick(function (n) { return "value " + n; }), pick(function () { thro
 `;
   const served = expectSameOutput(source);
   expect(served).toBe(
-    source.replace("var val = void 0;", `var val = ${CAST};`).replace(
-      "let other = void 0;",
-      `let other = ${CAST};`,
-    ),
+    source
+      .replace("var val = void 0;", `var val = ${CAST};`)
+      .replace("let other = void 0;", `let other = ${CAST};`),
   );
 });
 
@@ -89,9 +88,16 @@ test("the line count never changes and the spans name what was inserted", () => 
   for (const [start, length] of [...result.inserted].reverse())
     written = written.slice(0, start) + written.slice(start + length);
   expect(written).toBe(source);
-  expect(result.inserted.map(([start, length]) => result.text.slice(start, start + length))).toEqual(
-    ["/** @type {any} */ (", ")", "/** @type {any} */ (", ")", "/** @type {any} */ (", ")"],
-  );
+  expect(
+    result.inserted.map(([start, length]) => result.text.slice(start, start + length)),
+  ).toEqual([
+    "/** @type {any} */ (",
+    ")",
+    "/** @type {any} */ (",
+    ")",
+    "/** @type {any} */ (",
+    ")",
+  ]);
 });
 
 test("the declarators that keep their text", () => {
@@ -200,6 +206,9 @@ test("a diagnostic of another text of the file keeps its offsets", () => {
   // Files without casts, and lines far from one.
   expect(withInsertedSpans([diag], new Map([["/pkg/other.js", served]]))).toEqual([diag]);
   const far = shadow(`var a = void 0;\n\n\n\nconsole.log(a.b);\n`, "/pkg/far.js")!;
-  const farDiag = { ...diag, loc: { file: "/pkg/far.js", start: far.indexOf("a.b"), end: far.length } };
+  const farDiag = {
+    ...diag,
+    loc: { file: "/pkg/far.js", start: far.indexOf("a.b"), end: far.length },
+  };
   expect(withInsertedSpans([farDiag], new Map([["/pkg/far.js", far]]))).toEqual([farDiag]);
 });

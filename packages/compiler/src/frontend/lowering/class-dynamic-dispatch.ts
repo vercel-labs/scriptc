@@ -429,6 +429,10 @@ interface PropertyDispatch {
   plain?: { tail: readonly IrStmt[]; access: IrStmt[] };
 }
 
+/** The name of the helper that answers `value instanceof C` for a class the
+ * program names, before the class's name. */
+const CLASS_INSTANCEOF_PREFIX = "%dyn.class.instanceof:";
+
 export function classInstanceOf(
   lowerer: Lowerer,
   value: IrExpr,
@@ -436,7 +440,7 @@ export function classInstanceOf(
   loc: SrcLoc,
   classValue?: IrExpr,
 ): IrExpr {
-  const name = `%dyn.class.${classValue ? "valueInstanceof" : "instanceof"}:${info.def.name}`;
+  const name = `${classValue ? "%dyn.class.valueInstanceof:" : CLASS_INSTANCEOF_PREFIX}${info.def.name}`;
   lowerer.shareHelper(name);
   const params = [
     { localId: "value", name: "value", type: DYN },
@@ -6087,11 +6091,97 @@ export class ClassDynamicDispatch {
     const slots = new Map(
       this.keyTable.map((className, slot) => [typeKey({ kind: "object", className }), slot]),
     );
+    this.answerInstanceofBySlot(lowerer, slots);
     const seen = new Set<IrFunction>();
     for (const fn of [...this.generated, ...lowerer.liftedFns]) {
       if (seen.has(fn)) continue;
       seen.add(fn);
       fn.body = indexBranchRuns(fn.body, slots);
+    }
+  }
+
+  /** `value instanceof C` on an untyped value (classInstanceOf) walks the
+   * value's prototype chain: three steps and more for a value that is no
+   * instance. A capsule of a class of the key table needs no walk: a class
+   * and the classes below it are one run of slots, so the capsule's slot
+   * answers, inside the run or outside it, whatever the number of classes.
+   * Every other value keeps the walk (its slot is -1): a dynamic object
+   * made over a class's prototype, a function, a primitive. */
+  private answerInstanceofBySlot(lowerer: Lowerer, slots: ReadonlyMap<string, number>): void {
+    if (slots.size === 0) return;
+    const classes = new Map<string, ClassInfo>();
+    for (const info of lowerer.classes.values()) classes.set(info.def.name, info);
+    for (const fn of lowerer.liftedFns) {
+      if (!fn.name.startsWith(CLASS_INSTANCEOF_PREFIX)) continue;
+      const info = classes.get(fn.name.slice(CLASS_INSTANCEOF_PREFIX.length));
+      if (info === undefined) continue;
+      if (fn.locals.some((local) => local.id === "slot")) continue;
+      const walk = fn.body.findIndex(
+        (stmt) => stmt.kind === "varDecl" && stmt.localId === "candidate",
+      );
+      if (walk < 0) continue;
+      let first = Infinity,
+        last = -1,
+        count = 0;
+      const visit = (below: ClassInfo): void => {
+        const slot = slots.get(typeKey({ kind: "object", className: below.def.name }));
+        if (slot !== undefined) {
+          count++;
+          first = Math.min(first, slot);
+          last = Math.max(last, slot);
+        }
+        for (const child of below.subclasses) visit(child);
+      };
+      visit(info);
+      // The table is in class pre-order, so the classes below one class
+      // are one run; a list with a gap keeps the walk.
+      if (count > 0 && last - first + 1 !== count) continue;
+      const loc = fn.loc;
+      const slot = varRef("slot", F64, loc);
+      const from = (least: number): IrExpr => ({
+        kind: "bin",
+        op: ">=",
+        left: slot,
+        right: numLit(least, loc),
+        type: BOOL,
+        loc,
+      });
+      const inRun: IrExpr =
+        count === 0
+          ? { kind: "boolLit", value: false, type: BOOL, loc }
+          : {
+              kind: "logical",
+              op: "&&",
+              left: from(first),
+              right: {
+                kind: "bin",
+                op: "<",
+                left: slot,
+                right: numLit(first + count, loc),
+                type: BOOL,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            };
+      fn.locals = [...fn.locals, { id: "slot", name: "slot", type: F64, mutable: false }];
+      fn.body = [
+        ...fn.body.slice(0, walk),
+        {
+          kind: "varDecl",
+          localId: "slot",
+          init: {
+            kind: "libCall",
+            fn: "dyn.classKeySlot",
+            args: [varRef("value", DYN, loc)],
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+        { kind: "if", cond: from(0), then: [{ kind: "return", value: inRun, loc }], else_: null, loc },
+        ...fn.body.slice(walk),
+      ];
     }
   }
 

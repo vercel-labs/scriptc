@@ -1024,3 +1024,80 @@ test("keeps returning and completing class branches in separate runs", () => {
     );
   }
 });
+
+test("answers an untyped instanceof of a table class from the capsule's slot", () => {
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  // Pre-order: Root 0, Left 1, Leaf 2, Right 3, Other 4.
+  const names = ["Root", "Left", "Leaf", "Right", "Other"];
+  const dispatch = boxing(made, names);
+  const info = (name: string): ClassInfo => lowerer.classes.get(name)!;
+  const extend = (name: string, base: string): void => {
+    (info(name) as { base: ClassInfo | null }).base = info(base);
+    info(base).subclasses.push(info(name));
+  };
+  extend("Left", "Root");
+  extend("Leaf", "Left");
+  extend("Right", "Root");
+  // A class the program names in a test and never boxes.
+  lowerer.classes.set("Elsewhere", {
+    def: { name: "Elsewhere", fields: [] },
+    fields: new Map(),
+    methods: new Map(),
+    subclasses: [],
+    base: null,
+  } as unknown as ClassInfo);
+  const returnsFalse: IrStmt = {
+    kind: "return",
+    value: { kind: "boolLit", value: false, type: BOOL, loc },
+    loc,
+  };
+  const helper = (name: string, walks: boolean): IrFunction => ({
+    name: `%dyn.class.instanceof:${name}`,
+    params: [{ localId: "value", name: "value", type: DYN }],
+    returnType: BOOL,
+    locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+    body: [
+      ...(walks
+        ? [{ kind: "varDecl" as const, localId: "candidate", init: variable("value"), loc }]
+        : []),
+      returnsFalse,
+    ],
+    loc,
+  });
+  const left = helper("Left", true);
+  const root = helper("Root", true);
+  const elsewhere = helper("Elsewhere", true);
+  const bare = helper("Other", false);
+  liftedFns.push(left, root, elsewhere, bare);
+  dispatch.finalize(lowerer);
+  expect(dispatch.classKeys()).toEqual(names);
+  // The run of a class and the classes below it, read off the slot test:
+  // [first, end), or null where the slot branch answers false outright.
+  const run = (helperFn: IrFunction): [number, number] | null | undefined => {
+    const [slot, test] = helperFn.body;
+    if (slot?.kind !== "varDecl" || slot.localId !== "slot") return undefined;
+    if (slot.init?.kind !== "libCall" || slot.init.fn !== "dyn.classKeySlot") return undefined;
+    if (test?.kind !== "if" || test.cond.kind !== "bin" || test.cond.op !== ">=") return undefined;
+    const answer = test.then[0];
+    if (answer?.kind !== "return" || !answer.value) return undefined;
+    if (answer.value.kind === "boolLit") return null;
+    if (answer.value.kind !== "logical") return undefined;
+    const { left: from, right: below } = answer.value;
+    if (from.kind !== "bin" || below.kind !== "bin") return undefined;
+    if (from.right.kind !== "numLit" || below.right.kind !== "numLit") return undefined;
+    return [from.right.value, below.right.value];
+  };
+  expect(run(left)).toEqual([1, 3]);
+  expect(run(root)).toEqual([0, 4]);
+  // No capsule of the table is an instance of a class nobody boxed.
+  expect(run(elsewhere)).toBeNull();
+  // The walk stays behind the slot test, for values that are no capsule.
+  expect(left.body.map((stmt) => stmt.kind)).toEqual(["varDecl", "if", "varDecl", "return"]);
+  expect(left.locals.map((local) => local.id)).toEqual(["value", "slot"]);
+  // A helper without a walk answers false for every value as before.
+  expect(bare.body).toEqual([returnsFalse]);
+  // A second pass adds nothing.
+  dispatch.finalize(lowerer);
+  expect(left.body).toHaveLength(4);
+});

@@ -326,6 +326,11 @@ function buildLibFnSignatures() {
      * pointer test, false for equal keys boxed elsewhere. Guards fast paths
      * whose fallback handles every other value. The key is a literal. */
     "dyn.typedRefKeyIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** A capsule boxed by this program from this class or from a class below
+     * it: key pointer tests only, false for equal keys boxed elsewhere and
+     * for a capsule boxed from a class above it. Its instance then has the
+     * class's layout prefix (narrowed-class-chains.ts). The key is a literal. */
+    "dyn.typedRefKeyIn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.classIs": { argTypes: [DYN, STRING], result: BOOL },
     /** A generated class table's indexed dispatch: the receiver's class key
      * folded to the case it selects, or -1 for a value that is not a capsule

@@ -68,6 +68,7 @@ const JS_BOUNDARY: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
+  "dyn.typedRefKeyIn",
   "dyn.classHash",
   "dyn.classValueHash",
   "dyn.classIs",

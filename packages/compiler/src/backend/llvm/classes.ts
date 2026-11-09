@@ -1288,7 +1288,8 @@ export function emitClassShapes(
     // A class traced only for the weak analysis (ShapeHost.weakOnly) is
     // never on a cycle either, whatever its fields hold: it is emitted the
     // same way, and the weak analysis reads its trace from scr_weak_traces.
-    const weakOnly = traced && host.weakOnly?.shapes.has(`object:${cls.name}`) === true;
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`object:${cls.name}`);
     const acyclic =
       traced &&
       runtimePrefix === null &&

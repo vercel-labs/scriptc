@@ -460,8 +460,8 @@ import {
   elemAccess,
   boxNewCall,
   boxReleaseSym,
+  computeCyclic,
   computeTraced,
-  computeWeakOnly,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
@@ -2834,13 +2834,12 @@ export class LlEmitter {
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
-    // Asked before the header rules below add shapes: a shape that only
-    // those rules give a header stays what it is. A library keeps every
-    // such type the collector's: scr_weak_traces is the executable's.
-    const weakOnly =
-      mod.lib === undefined
-        ? computeWeakOnly(mod, traced.shapes, dynamicStores, cycleMutability)
-        : new Set<string>();
+    // The shapes the collector must nominate and walk when weak-collection
+    // keys give more of them the header (ShapeHost.weakOnly). A library
+    // keeps every traced type the collector's: scr_weak_traces is the
+    // executable's.
+    const cyclic =
+      mod.lib === undefined ? computeCyclic(mod, dynamicStores, cycleMutability) : null;
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
@@ -2897,10 +2896,10 @@ export class LlEmitter {
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
-      ...(weakOnly.size > 0
+      ...(cyclic !== null
         ? {
             weakOnly: {
-              shapes: weakOnly,
+              cyclic,
               trace: (type: string, trace: string) => {
                 this.weakTraces.push({ type, trace });
               },

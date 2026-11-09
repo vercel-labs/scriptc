@@ -15,7 +15,7 @@ import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
  * type that can reach it. A type this misses is a key that is not judged:
  * its entry stays until the key dies, as before; no entry is ended early.
  * A type that has the header for this reason alone is the weak analysis's,
- * not the collector's (cycle-analysis.ts, computeWeakOnly).
+ * not the collector's (cycle-analysis.ts, computeCyclic).
  *
  * A key with a static type names its unit directly. A key that is a
  * checked value already (`*`: `object`, `unknown`) can be any value the

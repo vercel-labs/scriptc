@@ -175,17 +175,20 @@ export interface ShapeHost {
   readonly windowMap?: boolean;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
-  /** The traced shapes that are traced only for the weak analysis
-   * (cycle-analysis.ts, computeWeakOnly): no object of one is on a cycle the
+  /** Present when the program makes weak-collection entries. `cyclic` holds
+   * the shapes that can be on a cycle of counted references
+   * (cycle-analysis.ts, computeCyclic). A traced shape outside it carries
+   * the collector header only for the weak analysis, or for a union or
+   * hierarchy that shares its layout: no object of it is on a cycle the
    * collector can free. Such a type is emitted as one without cycle-capable
    * children: its descriptor names scr_cyc_no_children, its objects start
    * out SCR_CYC_ACYCLIC (no release nominates one, no pass walks into one),
    * and its gcFree releases every reference by counting. Its trace function
    * is emitted as for any traced type, and `trace` records it for
    * scr_weak_traces (alloc.ts, weakTraceTable), where the weak analysis
-   * finds it. Absent: no shape is. */
+   * finds it. */
   readonly weakOnly?: {
-    readonly shapes: ReadonlySet<string>;
+    readonly cyclic: ReadonlySet<string>;
     trace(descriptor: string, trace: string): void;
   };
   /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
@@ -270,7 +273,7 @@ export interface RegionHooks {
  * emit-module.ts functionAttributes). */
 export const FN_ATTRS = "#0";
 
-export { computeTraced, computeWeakOnly } from "../cycle-analysis.js";
+export { computeCyclic, computeTraced } from "../cycle-analysis.js";
 
 /* ── RC dispatch ──────────────────────────────────────────────────────── */
 
@@ -2636,7 +2639,8 @@ export function emitRecordShapes(
     const cycType = `@${mangleRecordTrace(shape.id)}.cyctype`;
     // Traced only for the weak analysis (ShapeHost.weakOnly): for the
     // collector, a type without cycle-capable children.
-    const weakOnly = traced && host.weakOnly?.shapes.has(`record:${shape.id}`) === true;
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`record:${shape.id}`);
     if (weakOnly) host.declare(`declare void @scr_cyc_no_children(ptr, ptr, ptr)`);
     if (traced)
       defs.push(

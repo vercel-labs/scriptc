@@ -1,4 +1,4 @@
-import { NAMED_SET_KEY, primitiveConstructorOr } from "./lower-exprs.js";
+import { primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
@@ -3018,16 +3018,12 @@ export class ClassDynamicDispatch {
             ? expr
             : null;
         // A write whose key names a string without being typed `string`
-        // (lower-exprs.ts NAMED_SET_KEY). It and the `in` probe by a name
-        // are the named forms: before keys were passed by name their sites
-        // called the helpers that take a boxed key, so they get helpers of
-        // their own (`%dyn.class.named.<n>`), which keep that helper's
+        // (the libCall's namedKey). It and the `in` probe by a name are the
+        // named forms: before keys were passed by name their sites called
+        // the helpers that take a boxed key, so they get helpers of their
+        // own (`%dyn.class.named.<n>`), which keep that helper's
         // checked-dynamic parameters (ir/jsval.ts jsvalParams).
-        const writeKey = computedWrite?.args[1];
-        const namedWrite =
-          computedWrite?.fn === "dyn.keySet" &&
-          writeKey?.kind === "varRef" &&
-          writeKey.localId.startsWith(`${NAMED_SET_KEY}.`);
+        const namedWrite = computedWrite?.fn === "dyn.keySet" && computedWrite.namedKey === true;
         if (computedRead || computedWrite || computedProbe) {
           const probe = computedProbe
             ? computedProbe.fn === "dyn.hasKeyComputed" || namedProbe
@@ -3128,9 +3124,13 @@ export class ClassDynamicDispatch {
                   : computedRead
                     ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
                     : {
-                        ...computedWrite!,
+                        // The helper's own write is the plain one: the
+                        // site's namedKey chose this helper and stops here.
+                        kind: "libCall",
                         fn: "dyn.keySet",
                         args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                        type: computedWrite!.type,
+                        loc: computedWrite!.loc,
                       };
             const fallthroughOn = (target: IrExpr): IrStmt[] =>
               computedWrite && !reflect

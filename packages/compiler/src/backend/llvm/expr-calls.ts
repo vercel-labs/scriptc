@@ -3,9 +3,7 @@ import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
-  BOOL,
   DYN,
-  F64,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -17,6 +15,7 @@ import {
   classValueConstructor,
   type IrType,
 } from "../../ir/ir.js";
+import { DYN_KIND } from "./dyn.js";
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
@@ -1748,11 +1747,14 @@ export function emitConstruction(
  * `helper(value, index)`: the helper's own first test, made at the call. An
  * integer index below a checked array's length reads the element as the
  * helper reads it (dyn.arrAt), and every other receiver and index calls the
- * helper. The call site runs nothing the helper does not run, so it links
- * no runtime function the helper does not link. The helper may answer a
- * checked value or its jsval word. Both operands must be variables or
- * literals, since each test and the slow path evaluate them again. Null
- * when the call does not have that shape. */
+ * helper. The test is made in place, without the helper's three runtime
+ * calls: the kind tag says whether the value is a checked array (dyn.arrLen
+ * answers 0 for every other kind), and the index is compared with the
+ * array's dense length as an integer. The call site calls only dyn.arrAt,
+ * which the helper calls, so it links no runtime function the helper does
+ * not link. The helper may answer a checked value or its jsval word. Both
+ * operands must be variables or literals, since the read and the slow path
+ * evaluate them again. Null when the call does not have that shape. */
 function emitArrayElementRead(
   host: LlvmEmitterContext,
   e: ExprOf<"call">,
@@ -1762,39 +1764,48 @@ function emitArrayElementRead(
 ): LlValue | null {
   if (callee.params[1]?.type.kind !== "f64" || index.type.kind !== "f64") return null;
   if (index.kind !== "varRef" && index.kind !== "numLit") return null;
+  if (value.type.kind !== "dyn") return null;
   const word = callee.returnType.kind === "jsval";
   if ((callee.returnType.kind !== "dyn" && !word) || host.int32Abis.has(e.callee)) return null;
   const B = host.B;
   const loc = e.loc;
   const slow = B.newLabel("idx.slow");
   const join = B.newLabel("idx.join");
-  const tests: IrExpr[] = [
-    { kind: "libCall", fn: "number.isInteger", args: [index], type: BOOL, loc },
-    {
-      kind: "bin",
-      op: ">=",
-      left: index,
-      right: { kind: "numLit", value: 0, type: F64, loc },
-      type: BOOL,
-      loc,
-    },
-    {
-      kind: "bin",
-      op: "<",
-      left: index,
-      right: { kind: "libCall", fn: "dyn.arrLen", args: [value], type: F64, loc },
-      type: BOOL,
-      loc,
-    },
-  ];
-  for (const test of tests) {
-    host.frames.push([]);
-    const holds = host.emitExpr(test);
-    host.releaseTemps(host.frames.pop()!);
-    const next = B.newLabel("idx.t");
-    B.condBr(holds.name, next, slow);
-    B.startBlock(next);
+  const receiver = host.emitReadReceiver(value);
+  const number = host.emitExpr(index);
+  const isArray = B.tmp();
+  B.line(`${isArray} = icmp eq i32 ${host.dynKind(receiver.name)}, ${DYN_KIND.ARR}`);
+  const array = B.newLabel("idx.arr");
+  B.condBr(isArray, array, slow);
+  B.startBlock(array);
+  // The conversion saturates: NaN converts to 0 and an infinity to an end
+  // of the range, and neither converts back to itself. -0 converts to 0,
+  // the element its property name "0" names. A negative integer compares
+  // unsigned, above every length, and so does the end of the range that
+  // 2^63 converts to.
+  host.declare(`declare i64 @llvm.fptosi.sat.i64.f64(double)`);
+  const integer = B.tmp();
+  const back = B.tmp();
+  const whole = B.tmp();
+  B.line(`${integer} = call i64 @llvm.fptosi.sat.i64.f64(double ${number.name})`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${whole} = fcmp oeq double ${back}, ${number.name}`);
+  const lengthPtr = B.tmp();
+  const length = B.tmp();
+  B.line(`${lengthPtr} = getelementptr inbounds i8, ptr ${receiver.name}, i64 16 ; ->v.arr.len`);
+  B.line(`${length} = load ${host.sizeType}, ptr ${lengthPtr}`);
+  let wideLength = length;
+  if (host.sizeType !== "i64") {
+    wideLength = B.tmp();
+    B.line(`${wideLength} = zext ${host.sizeType} ${length} to i64`);
   }
+  const below = B.tmp();
+  const holds = B.tmp();
+  B.line(`${below} = icmp ult i64 ${integer}, ${wideLength}`);
+  B.line(`${holds} = and i1 ${whole}, ${below}`);
+  const inRange = B.newLabel("idx.at");
+  B.condBr(holds, inRange, slow);
+  B.startBlock(inRange);
   const element: IrExpr = {
     kind: "libCall",
     fn: "dyn.arrAt",

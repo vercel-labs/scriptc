@@ -225,4 +225,19 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b); /* returns +1; frees the buffer */
  * Returns a new owned string, or retains compact when the gap is empty. */
 ScrStr *scr_json_indent(const ScrStr *compact, const char *gap, size_t gap_len);
 
+/* The emitted types that are traced only for the weak analysis (scr_json.c,
+ * scr_weak_judge), each descriptor with its trace function. A program that
+ * has such a type defines scr_weak_traces in its program object
+ * (llvm/alloc.ts, weakTraceTable); the runtime's own definition is weak and
+ * empty. */
+typedef struct {
+  ScrCycType *type;
+  ScrTraceFn trace;
+} ScrWeakTraceEntry;
+typedef struct {
+  uint64_t count;
+  const ScrWeakTraceEntry *entries;
+} ScrWeakTraces;
+extern const ScrWeakTraces scr_weak_traces;
+
 #endif /* SCR_JSON_H */

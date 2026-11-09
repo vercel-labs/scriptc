@@ -22247,9 +22247,8 @@ static inline bool scr_weak_black(void *obj) {
  * walks into one. The analysis must still follow what they hold, so the
  * program object lists each such descriptor with its trace function and
  * defines scr_weak_traces, overriding this weak, empty default (as it
- * overrides scr_stdout_buffering, scr_console.c). */
-typedef struct { ScrCycType *type; ScrTraceFn trace; } ScrWeakTraceEntry;
-typedef struct { uint64_t count; const ScrWeakTraceEntry *entries; } ScrWeakTraces;
+ * overrides scr_stdout_buffering, scr_console.c). The table's layout is in
+ * scr_json.h. */
 __attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
 /* scr_weak_traces by registry id, filled as one run of the analysis meets
  * the ids (NULL: not looked up yet) and freed at its end, so a thread that

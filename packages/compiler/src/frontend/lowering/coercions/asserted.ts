@@ -92,7 +92,22 @@ export function assertedConversion(
       from.arms.forEach((arm, tag) => {
         if (!isUnitType(arm) && !kept.includes(arm)) trappable.add(tag);
       });
-      const helper = unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
+      // An excluded ARRAY arm the asserted type's tuple arm takes (`type as
+      // Handler | [Handler]` over `Ctor | readonly Ctor[]`) converts through
+      // the checked lane instead of trapping.
+      const destination = lowerer.unions.get(expected.unionId);
+      const checked =
+        destination !== undefined &&
+        [...trappable].some((tag) => {
+          const arm = from.arms[tag]!;
+          return (
+            arm.kind === "array" &&
+            destination.arms.filter((to) => lowerer.checkedWidthLift(arm, to) !== null).length === 1
+          );
+        });
+      const helper = checked
+        ? unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable, undefined, true)
+        : unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
       return helper ? { kind: "call", callee: helper, args: [expr], type: expected, loc } : null;
     }
     // A record or array T holds one arm's values: extract that arm (every

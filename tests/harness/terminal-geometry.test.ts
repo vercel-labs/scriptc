@@ -102,3 +102,62 @@ test.skipIf(process.platform === "win32")(
   },
   60_000,
 );
+
+const colors = join(import.meta.dirname, "../fixtures/terminal-color-depth");
+
+/** One run of a command on terminals in exactly `env` (observe.py), with the
+ * process id of a warning report taken out. */
+async function onTerminals(
+  env: readonly string[],
+  command: readonly string[],
+): Promise<{ status: number; stdout: string; stderr: string }> {
+  const observed = await run("python3", [join(colors, "observe.py"), ...env, "--", ...command], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const result = JSON.parse(observed.stdout) as { status: number; stdout: string; stderr: string };
+  return { ...result, stderr: result.stderr.replace(/\(node:\d+\)/g, "(node:PID)") };
+}
+
+test.skipIf(process.platform === "win32")(
+  "getColorDepth and hasColors on terminal streams answer as Node does for every environment rule",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-color-depth-"));
+    try {
+      const entry = join(colors, "main.ts");
+      const result = await compile(entry, {
+        outDir: dir,
+        outPath: join(dir, "llvm"),
+        backend: "llvm",
+        sanitize: process.env["SCRIPTC_SAN"] === "1",
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      // The default environment (process.env) of each run; the table inside
+      // the program passes its environments as objects.
+      const environments: string[][] = [
+        ["TERM=xterm-256color"],
+        ["TERM=dumb", "COLORTERM=truecolor"],
+        ["FORCE_COLOR=3", "NO_COLOR=1"],
+        ["CI=true", "GITHUB_ACTIONS=true"],
+        ["TERM_PROGRAM=iTerm.app", "TERM_PROGRAM_VERSION=3.4.19"],
+        ["TERM=KONSOLE"],
+        [],
+      ];
+      for (const env of environments) {
+        const oracle = await onTerminals(env, [
+          process.execPath,
+          "--experimental-strip-types",
+          entry,
+        ]);
+        expect(oracle.status).toBe(0);
+        expect(oracle.stdout.split("\n").length).toBeGreaterThan(2000);
+        expect(oracle.stdout).toContain("default stdout: number ");
+        const native = await onTerminals(env, [result.binaryPath]);
+        expect(native).toEqual(oracle);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  240_000,
+);

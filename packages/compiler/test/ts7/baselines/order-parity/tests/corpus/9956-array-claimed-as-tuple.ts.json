@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9956-array-claimed-as-tuple.ts"
+ ],
+ "diags": []
+}

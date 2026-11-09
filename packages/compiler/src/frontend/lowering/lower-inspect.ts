@@ -46,6 +46,7 @@ import {
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
+  isJsonStringifyDynamicType,
   accessorSlotProp,
   recordTextCodecClass,
   shapeKeyOrders,
@@ -68,6 +69,8 @@ import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 import { errorConstructionOrder } from "./error-name-order.js";
+import { classFieldWithoutJsonView } from "./builtins/json.js";
+import { builtinConstructorText } from "./held-constructors.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -4629,6 +4632,12 @@ function formatSValue(
 ): IrExpr {
   const t = value.type;
   if (t.kind === "string") return value;
+  // %s of a primitive constructor held as a value is the constructor's text
+  // (programs that hold none skip it).
+  if (lowerer.constructorFunctionTypes && (t.kind === "func" || t.kind === "dyn")) {
+    const text = builtinConstructorText(lowerer, node, value, false);
+    if (text) return text;
+  }
   if (t.kind === "f64")
     return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };
@@ -4709,6 +4718,14 @@ function formatSValue(
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
   if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
+    // The runtime's %o refuses every function value when it runs: the
+    // build names the statement (SC6015).
+    if (lowerer.isFunctionValue(node, value))
+      lowerer.noteDeferredRefusal(
+        node,
+        "util.format %o of function values is not supported yet",
+        "format the function's name instead (`%s` of `f.name`)",
+      );
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
@@ -5083,6 +5100,21 @@ export function lowerFormatCall(
             type: STRING,
             loc,
           };
+        }
+        // A JSON-shaped container with untyped payloads (a record with an
+        // `unknown` member, an array of such records): the runtime walk
+        // over the value's live view, as JSON.stringify takes for the same
+        // type (builtins/json.ts), with %j's "[Circular]".
+        if (
+          isJsonStringifyDynamicType(
+            value.type,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ) &&
+          classFieldWithoutJsonView(lowerer, value.type, new Set()) === null
+        ) {
+          const boxed: IrExpr = { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
+          return { kind: "libCall", fn: "insp.jsonDyn", args: [boxed], type: STRING, loc };
         }
         if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(

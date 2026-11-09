@@ -71,15 +71,20 @@ function laterValues(lowerer: Lowerer, decl: ts.Node): ts.Expression[] {
   return values;
 }
 
-const isUndefinedName = (node: ts.Node): boolean =>
-  ts.isIdentifier(node) && node.text === "undefined";
+/** Whether `node` is the name `undefined` and reads the value: a module or
+ * a function can declare a binding of that name (`const undefined =
+ * function () {…}`), and a read of that one holds what the binding does. */
+const isUndefinedName = (lowerer: Lowerer, node: ts.Node): boolean =>
+  ts.isIdentifier(node) &&
+  node.text === "undefined" &&
+  (lowerer.typeOf(node).flags & ts.TypeFlags.Undefined) !== 0;
 
 /** Whether a value is of a form no function call reaches a `this` through:
  * an arrow function, a class (called without `new` it throws before its
  * body runs), or a literal that is no function at all. */
-function holdsNoReceiver(value: ts.Node): boolean {
+function holdsNoReceiver(lowerer: Lowerer, value: ts.Node): boolean {
   return (
-    isUndefinedName(value) ||
+    isUndefinedName(lowerer, value) ||
     ts.isArrowFunction(value) ||
     ts.isClassLikeDeclaration(value) ||
     ts.isObjectLiteralExpression(value) ||
@@ -146,7 +151,7 @@ function exportReadsThis(
     exportReadsThis(lowerer, inner, depth + 1, false);
   if (ts.isAsExpression(value) || ts.isSatisfiesExpression(value) || ts.isNonNullExpression(value))
     return follow(value.expression);
-  if (holdsNoReceiver(value)) return null;
+  if (holdsNoReceiver(lowerer, value)) return null;
   if (
     ts.isFunctionDeclaration(value) ||
     ts.isMethodDeclaration(value) ||
@@ -470,7 +475,7 @@ function functionOfSymbol(
       let init: ts.Expression = decl.initializer;
       while (ts.isParenthesizedExpression(init)) init = init.expression;
       if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) return { fn: init };
-      if (ts.isCallExpression(init) || (follow && isUndefinedName(init)))
+      if (ts.isCallExpression(init) || (follow && isUndefinedName(lowerer, init)))
         return { fn: null, bound: { expr: init, bindings } };
       if (ts.isIdentifier(init)) {
         symbol = lowerer.checker.getSymbolAtLocation(init);
@@ -906,6 +911,78 @@ export function refuseForwardsToOwnCall(lowerer: Lowerer, mod: IrModule): ScrDia
   });
 }
 
+/** The value `export default name;` stored, where `name` is a binding the
+ * program assigns: the export holds what the binding held when that
+ * statement ran, whatever it is given later. That value is known where the
+ * binding is declared at the top of the statement's module (a variable
+ * before the statement, or a function) and every write of it is a plain
+ * assignment statement at the top of that module, after the declaration:
+ * the last one before the statement, or else what the declaration gives
+ * (`{ value: undefined }` for a variable without an initializer). Null
+ * where any other write (in a function, in a branch, through a pattern)
+ * may or may not have run by then. */
+function storedDefaultValue(
+  lowerer: Lowerer,
+  stored: ts.Node,
+  binding: ts.Symbol,
+): { value: ts.Node | undefined } | null {
+  const file = ts.getSourceFileOfNode(stored);
+  const decl = binding.declarations.length === 1 ? binding.declarations[0]! : undefined;
+  if (decl === undefined) return null;
+  let value: ts.Node | undefined;
+  // Where the binding takes the declaration's value: a function declaration
+  // holds its function before any statement runs.
+  let declared = -1;
+  if (ts.isFunctionDeclaration(decl)) {
+    if (decl.parent !== file) return null;
+    value = decl;
+  } else if (
+    ts.isVariableDeclaration(decl) &&
+    ts.isVariableDeclarationList(decl.parent) &&
+    ts.isVariableStatement(decl.parent.parent) &&
+    decl.parent.parent.parent === file &&
+    decl.pos < stored.pos
+  ) {
+    value = decl.initializer;
+    declared = decl.pos;
+  } else return null;
+  const name = decl.name;
+  if (name === undefined || !ts.isIdentifier(name)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return null;
+  let known = true;
+  const visit = (node: ts.Node): void => {
+    if (!known) return;
+    if (
+      ts.isIdentifier(node) &&
+      node !== name &&
+      node.text === name.text &&
+      isWritten(node) &&
+      lowerer.checker.getSymbolAtLocation(node) === symbol
+    ) {
+      let target: ts.Node = node;
+      while (ts.isParenthesizedExpression(target.parent)) target = target.parent;
+      const write = target.parent;
+      if (
+        !ts.isBinaryExpression(write) ||
+        write.left !== target ||
+        write.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isExpressionStatement(write.parent) ||
+        write.parent.parent !== file ||
+        write.pos < declared
+      ) {
+        known = false;
+        return;
+      }
+      // Statements run in order, and the visit meets them in that order.
+      if (write.pos < stored.pos) value = write.right;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(file, visit);
+  return known ? { value } : null;
+}
+
 export function refuseModuleMemberThis(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -913,9 +990,34 @@ export function refuseModuleMemberThis(
 ): void {
   let symbol = lowerer.resolveValueSymbol(member);
   if (symbol === null) return;
-  // `export { read } from "./inner.mjs"`: the binding the export names.
+  const refuse = (reads: ReceiverUse): void => {
+    if (reads === null) {
+      noteReceiverForwards(lowerer, call);
+      return;
+    }
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `calling a module export that ${reads} 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
+    );
+  };
   const reexported = (symbol.flags & ts.SymbolFlags.Alias) !== 0;
-  if (reexported) symbol = lowerer.checker.getAliasedSymbol(symbol);
+  if (reexported) {
+    const binding = lowerer.checker.getAliasedSymbol(symbol);
+    // `export default name;` of a binding the program assigns: the export
+    // is the value stored then, not the binding. A value the text does not
+    // settle is called as before.
+    const stored = symbol.declarations.find((decl) => ts.isExportAssignment(decl));
+    if (stored !== undefined) {
+      forwardsInProof = 0;
+      readerInProof = false;
+      const held = storedDefaultValue(lowerer, stored, binding);
+      refuse(held === null ? null : exportReadsThis(lowerer, held.value, 0, false));
+      return;
+    }
+    // Any other alias: the binding the export names.
+    symbol = binding;
+  }
   for (const decl of symbol.declarations) {
     // A declaration file describes code this program does not compile: the
     // call is not a direct call of a function lowered here.
@@ -932,14 +1034,6 @@ export function refuseModuleMemberThis(
     let reads = exportReadsThis(lowerer, exportedValue(lowerer, decl), 0, direct);
     for (const value of laterValues(lowerer, decl))
       reads = worseUse(reads, exportReadsThis(lowerer, value, 0, false));
-    if (reads === null) {
-      noteReceiverForwards(lowerer, call);
-      continue;
-    }
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `calling a module export that ${reads} 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
-    );
+    refuse(reads);
   }
 }

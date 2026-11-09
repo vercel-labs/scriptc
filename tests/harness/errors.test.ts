@@ -1534,6 +1534,21 @@ read = function (n) { return this === undefined ? n : -n; };
 `,
         "reads",
       ],
+      // A binding the module declares under the name `undefined` holds
+      // what it is given, not the value of that name.
+      "a binding named 'undefined'": [
+        `const undefined = function (n) { return this === void 0 ? n : -n; };
+export const read = undefined;
+`,
+        "reads",
+      ],
+      "a binding named 'undefined' that an operator chooses": [
+        `const undefined = function (n) { return this === void 0 ? n : -n; };
+const quiet = process.argv.length > 100;
+export const read = quiet ? (n) => n : undefined;
+`,
+        "reads",
+      ],
     }),
   )(
     "an export that holds a reader of 'this' as %s keeps the module-binding receiver fence",
@@ -1559,6 +1574,71 @@ export const reader = function (n) { return this === undefined ? n : -n; };
           `^Uncaught Error: calling a module export that ${reads} 'this' through its module binding.*\\[SC1090 at .*module-binding-export-forms\\.mjs:3\\]\\n$`,
         ),
       );
+    },
+  );
+
+  // `export default name` stores the value the binding holds when the
+  // statement runs: the export is that value, whatever the binding is
+  // given later.
+  const storedDefaultMain = `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.default(1));
+`;
+
+  test.for(
+    Object.entries({
+      "the initializer": `let read = function (n) { return this === undefined ? n : -n; };
+export default read;
+read = (n) => n;
+`,
+      "the last assignment before it": `let read = (n) => n;
+read = function (n) { return this === undefined ? n : -n; };
+export default read;
+`,
+    }),
+  )(
+    "a default export that stored a reader of 'this', %s, keeps the module-binding receiver fence",
+    async ([, lib]) => {
+      const r = await compileAndRun("module-binding-stored-default", storedDefaultMain, "mjs", {
+        "lib.mjs": lib,
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: calling a module export that reads 'this' through its module binding.*\[SC1090 at .*module-binding-stored-default\.mjs:3\]\n$/,
+      );
+    },
+  );
+
+  test.for(
+    Object.entries({
+      "after the statement": `let read = function (n) { return n + 1; };
+export default read;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+      "in a function nobody has called": `let read = function (n) { return n + 1; };
+export default read;
+export function arm() { read = function (n) { return this === undefined ? n : -n; }; }
+`,
+      "before the assignment the statement stores": `let read = function (n) { return this === undefined ? n : -n; };
+read = function (n) { return n + 1; };
+export default read;
+`,
+    }),
+  )(
+    "a default export that stored a function without 'this' is called where a reader is assigned %s",
+    async ([, lib]) => {
+      const r = await compileAndRun(
+        "module-binding-stored-default-kept",
+        storedDefaultMain,
+        "mjs",
+        {
+          "lib.mjs": lib,
+        },
+      );
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toBe("before\n2\n");
+      expect(r.exitCode).toBe(0);
     },
   );
 

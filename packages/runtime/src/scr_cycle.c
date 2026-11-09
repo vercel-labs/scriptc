@@ -802,12 +802,9 @@ static size_t scr_cyc_buffered(void) {
  * paths adjust it by one (scr_cyc_window_shrink).
  *
  * The window is the smaller of two numbers: what the trigger leaves (the
- * formula) and the nursery buffer's capacity. scr_cyc_window_slack is how
- * far the formula lies above the window, which is above zero only where the
- * capacity is the smaller one. */
-#if SCR_CYC_INLINE_BUFFERING
-static size_t scr_cyc_window_slack = 0;
-#endif
+ * formula) and the nursery buffer's capacity. window_slack (it lives beside
+ * the window, in scr_cyc_buffers) is how far the formula lies above the
+ * window, which is above zero only where the capacity is the smaller one. */
 static inline void scr_cyc_window_update(void) {
 #if SCR_CYC_INLINE_BUFFERING
   size_t window = 0, slack = 0;
@@ -820,7 +817,7 @@ static inline void scr_cyc_window_update(void) {
     }
   }
   scr_cyc_buffers.window = window;
-  scr_cyc_window_slack = slack;
+  scr_cyc_buffers.window_slack = slack;
 #endif
 }
 
@@ -833,7 +830,7 @@ static inline void scr_cyc_window_update(void) {
  * more releases through the call. */
 static inline void scr_cyc_window_shrink(void) {
 #if SCR_CYC_INLINE_BUFFERING
-  if (scr_cyc_window_slack) scr_cyc_window_slack--;
+  if (scr_cyc_buffers.window_slack) scr_cyc_buffers.window_slack--;
   else if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
 #endif
 }

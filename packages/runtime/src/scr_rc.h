@@ -862,6 +862,9 @@ typedef struct ScrCycBuffers {
   ScrCycBuffer roots[SCR_CYC_NGENS];
   size_t window;
   size_t alloc_trigger;
+  /* The collector's own, after everything emitted code addresses: how far
+   * the window's formula lies above the window (scr_cyc_window_update). */
+  size_t window_slack;
 } ScrCycBuffers;
 #if !defined(SCR_WORKERS) && !(defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #define SCR_CYC_INLINE_BUFFERING 1

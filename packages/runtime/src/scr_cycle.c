@@ -160,7 +160,7 @@
 #ifndef SCR_WORKERS /* worker executables keep it in scr_thread_hot */
 SCR_TL void (*scr_weak_dispose_hook)(void *) = NULL;
 #endif
-SCR_TL uint64_t scr_dispose_filter[SCR_DISPOSE_FILTER_BITS / 64];
+SCR_TL uint64_t scr_dispose_filter[SCR_DISPOSE_FILTER_BITS / 64] = {0};
 
 void scr_weak_dispose(void *object) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(object);

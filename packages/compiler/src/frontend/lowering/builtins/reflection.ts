@@ -165,8 +165,8 @@ function reflectMemberFunction(
 /** The function value of the Reflect member `member`, or null for the three
  * whose behavior has no faithful lowering yet (setPrototypeOf answers false
  * where Object.setPrototypeOf throws, defineProperty answers false for a
- * non-configurable member, and apply checks its target before the list —
- * each would need runtime work, so they keep their call-time fence). */
+ * non-configurable member, and construct takes a new.target — each would
+ * need runtime work, so they keep their call-time fence). */
 export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   const memberLocal = (locals: IrLocal[], ident: string, label: string): IrExpr => {
     locals.push({ id: ident, name: label, type: DYN, mutable: false });
@@ -362,6 +362,138 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
               type: BOOL,
               loc,
             },
+            loc,
+          },
+        ];
+      });
+    case "apply":
+      // Node's order: the target must be callable, then the list must be an
+      // object, and only then is the list read. The runtime entry of the
+      // direct call builds the list from any array-like and calls the target
+      // with the receiver as `this`; it takes a missing list as empty, which
+      // is Function.prototype.apply's rule and not Reflect.apply's, so both
+      // checks happen here.
+      return reflectMemberFunction(lowerer, member, DYN, 3, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        const list = memberLocal(locals, "l.0", "list");
+        const is = (test: "function" | "null" | "object" | "symbol", value: IrExpr): IrExpr => ({
+          kind: "dynTest",
+          test,
+          value,
+          type: BOOL,
+          loc,
+        });
+        const throwTypeError = (message: IrExpr): IrStmt => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "error.nodeThrow",
+            args: [{ kind: "numLit", value: 1, type: F64, loc }, str("", loc), message],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        const when = (cond: IrExpr, then: IrStmt[]): IrStmt => ({
+          kind: "if",
+          cond,
+          then,
+          else_: null,
+          loc,
+        });
+        const not = (operand: IrExpr): IrExpr => ({
+          kind: "unary",
+          op: "!",
+          operand,
+          type: BOOL,
+          loc,
+        });
+        const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
+          kind: "strConcat",
+          left,
+          right,
+          type: STRING,
+          loc,
+        });
+        const called = "Function.prototype.apply was called on ";
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          { kind: "varDecl", localId: "l.0", init: actualArgument(args, 2, loc), loc },
+          when(not(is("function", target)), [
+            when(is("null", target), [
+              throwTypeError(str(`${called}null, which is null and not a function`, loc)),
+            ]),
+            // An object or a symbol: Node names it the way V8 prints a value
+            // in a message (`#<Shelf>`, `[object Array]`), which nothing
+            // here renders; the TypeError keeps the runtime's wording for a
+            // receiver of Function.prototype.apply that is not callable.
+            when(
+              {
+                kind: "logical",
+                op: "||",
+                left: is("object", target),
+                right: is("symbol", target),
+                type: BOOL,
+                loc,
+              },
+              [throwTypeError(str(`${called}a non-callable value`, loc))],
+            ),
+            throwTypeError(
+              concat(
+                concat(
+                  concat(
+                    concat(str(called, loc), {
+                      kind: "libCall",
+                      fn: "dyn.toStringCoerce",
+                      args: [target],
+                      type: STRING,
+                      loc,
+                    }),
+                    str(", which is a ", loc),
+                  ),
+                  { kind: "libCall", fn: "dyn.typeof", args: [target], type: STRING, loc },
+                ),
+                str(" and not a function", loc),
+              ),
+            ),
+          ]),
+          when(not(isObjectTarget(list, loc)), [
+            throwTypeError(str("CreateListFromArrayLike called on non-object", loc)),
+          ]),
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectApply",
+              args: [target, actualArgument(args, 1, loc), list],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
+    case "getPrototypeOf":
+      // The direct call's two steps: Reflect's TypeError for a primitive
+      // target, then the prototype edge of the checked-dynamic view.
+      return reflectMemberFunction(lowerer, member, DYN, 1, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.reflectGetPrototypeTarget",
+              args: [target],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+          {
+            kind: "return",
+            value: { kind: "libCall", fn: "dyn.getPrototype", args: [target], type: DYN, loc },
             loc,
           },
         ];

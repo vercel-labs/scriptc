@@ -33,11 +33,13 @@ import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
+import { conditionRunsNothing, constantCondition } from "../constant-conditions.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import {
   isOptionalProcessStreamProperty,
+  isTerminalStreamMember,
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
@@ -145,6 +147,15 @@ export function lowerTernary(
     // effects, so dropping the condition read loses nothing.
     if (cond.kind === "boolLit") {
       return lowerer.lowerExprExpecting(cond.value ? expr.whenTrue : expr.whenFalse, expected);
+    }
+    // A constant condition that runs nothing (constant-conditions.ts)
+    // selects its arm the same way: the expression is the selected arm, as
+    // if that arm stood alone. One that can throw (a `const` read before
+    // its declaration) keeps both arms: a sequence that ran the condition
+    // first would be a temporary the two-armed form does not have.
+    const constant = constantCondition(lowerer, expr.condition);
+    if (constant !== null && conditionRunsNothing(lowerer, expr.condition, cond)) {
+      return lowerer.lowerExprExpecting(constant ? expr.whenTrue : expr.whenFalse, expected);
     }
     if (expected) {
       // Construct fresh literals in their actual destination. Joining
@@ -756,6 +767,17 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       lowerer.isStdlibMember(node)
     )
       return expr;
+    // The same members in TypeScript, read off a stream value that is
+    // dynamic (`process.stdin?.isTTY`, `const input = process.stdin;
+    // input.isTTY`): the declared boolean or number is the value on a
+    // terminal, and off one the property does not exist. The read keeps
+    // the undefined arm and validates the kind, as the plain read of a
+    // standard stream does (lowerProcessStreamProperty).
+    if (ts.isPropertyAccessExpression(node) && isTerminalStreamMember(lowerer, node)) {
+      const declared = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(node)));
+      if (declared && (declared.kind === "bool" || declared.kind === "f64"))
+        return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(declared));
+    }
     // The live value is authoritative even when checker flow calls it
     // never. Two flows reach here: a null-initialized JS field that later
     // receives an object, and a failed type predicate whose type is

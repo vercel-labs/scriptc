@@ -5904,6 +5904,64 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
+ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL };
+
+/* Whether capsule `d`, which has a snapshot adapter, holds a native stream
+ * that answers member questions without its view: the adapter is the stream
+ * unit's. This is all a capsule of another kind pays, and all a program
+ * without a stream carries: the questions are the record's. A capsule with
+ * no adapter would match the empty record, so only a caller that goes on to
+ * call the adapter may ask this way. */
+static inline bool scr_typed_ref_adapted_stream(const ScrDyn *d) {
+  return d->v.typed_ref.materialize == scr_stream_ref_hooks.view;
+}
+
+/* The same for a capsule that may have no adapter: before the unit's first
+ * stream the record is empty and such a capsule is no stream. The record is
+ * read once, so the test holds while another thread fills it in, and the
+ * comparison comes first: it alone turns a capsule of another kind away. */
+static inline bool scr_typed_ref_stream(const ScrDyn *d) {
+  return __builtin_expect(scr_typed_ref_adapted_stream(d), 0) && d->v.typed_ref.materialize;
+}
+
+/* What the view of live stream capsule `d` holds under `key`, which is no
+ * name of Object.prototype, as ScrStreamRefHooks.member answers it, without
+ * building the view: a view holds 25 method closures and becomes the
+ * capsule's, which then builds it again for every later question. -1 when
+ * the view must answer: `d` has a view, a prototype or symbols of its own. */
+static inline int scr_typed_ref_stream_member(const ScrDyn *d, const ScrStr *key, ScrDyn **value) {
+  int (*member_of)(void *, const char *, size_t, ScrDyn **) = scr_stream_ref_hooks.member;
+  if (!member_of || !scr_typed_ref_plain(d)) return -1;
+  int member = member_of(d->v.typed_ref.ptr, key->data, key->len, value);
+  /* A name the view holds nowhere is Object.prototype's to answer once the
+   * program has made that a value and put the name on it. */
+  if (member == 0 && scr_builtin_object_prototype &&
+      scr_dyn_property_owner(scr_builtin_object_prototype, key->data, key->len))
+    return -1;
+  return member;
+}
+
+/* scr_typed_ref_unowned_get of a stream capsule, for a `key` that is no
+ * name of Object.prototype. Only the stream unit names this function and
+ * the next one (it puts them in scr_stream_ref_hooks), so the linker keeps
+ * them for a program with a stream and for no other. Both are built for
+ * size: what a question costs is the name lookup in the stream unit. */
+SCR_COLD ScrDyn *scr_typed_ref_stream_get(const ScrDyn *d, const ScrStr *key) {
+  ScrDyn *value = NULL;
+  int member = scr_typed_ref_stream_member(d, key, &value);
+  if (member == 0) return scr_dyn_retain(scr_dyn_undefined());
+  return member == 1 ? value : NULL;
+}
+
+/* Whether the view of live stream capsule `d` holds `key`, as its own data
+ * property or as a method it inherits: 1 or 0, or -1 when the view must
+ * answer. */
+SCR_COLD int scr_typed_ref_stream_has(const ScrDyn *d, const ScrStr *key) {
+  if (scr_dyn_object_proto_name(key)) return -1;
+  int member = scr_typed_ref_stream_member(d, key, NULL);
+  return member < 0 ? -1 : member != 0;
+}
+
 /* What the snapshot of live capsule `d` would answer for a read of `key`,
  * which names no present field or element of it: +1, or NULL when the read
  * needs the snapshot. */
@@ -5911,7 +5969,9 @@ static ScrDyn *scr_typed_ref_unowned_get(const ScrDyn *d, const ScrStr *key) {
   if (scr_dyn_object_proto_name(key)) return NULL;
   if (d->v.typed_ref.record)
     return scr_typed_ref_plain_record(d) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
-  if (!scr_typed_ref_plain_array(d) || key->len == 0) return NULL;
+  /* Of the capsules that reach this line, only a stream's has an answer. */
+  if (!scr_typed_ref_plain_array(d) || key->len == 0)
+    return scr_typed_ref_stream(d) ? scr_stream_ref_hooks.get(d, key) : NULL;
   /* An identifier: indexes and numeric names have their own answers. */
   unsigned char first = (unsigned char)key->data[0];
   if (first != '$' && first != '_' && !((first | 0x20) >= 'a' && (first | 0x20) <= 'z')) return NULL;
@@ -14084,6 +14144,12 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
       size_t field;
       return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
     }
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
+      int has = scr_stream_ref_hooks.has(v, key);
+      if (has >= 0) return has != 0;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     bool out = scr_dyn_has_key(materialized, key);
     scr_dyn_release(materialized);
@@ -14211,6 +14277,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (record) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
       return scr_dyn_has_key(v, key) || scr_dyn_object_proto_name(key);
+    }
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
+      int has = scr_stream_ref_hooks.has(v, key);
+      if (has >= 0) return has != 0;
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
@@ -24367,4 +24439,43 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
+}
+
+/* Whether native record `rec` answers reflection from its declared fields
+ * alone: its prototype is Object.prototype and its own keys are its present
+ * fields in its shape's order, with no symbol-keyed member. False when the
+ * record kept a source (or is a record view), when it is a copy linked to a
+ * wider source, and when a live capsule of it holds anything of its own: a
+ * view the program may have given a prototype or a member, or symbol-keyed
+ * properties. Those live in the capsule and are found again for as long as
+ * it lives, because boxing the record answers that capsule
+ * (scr_dyn_typed_ref_new). A false answer only sends the caller to the
+ * answer reflection gives. Three table probes by the record's address, each
+ * skipped while its table is empty; nothing is read from the record.
+ *
+ * Only programs that ask an own-key question about a typed record reference
+ * this (own-key-lists.ts), and the linker drops it from every other
+ * program, whose bytes it must not move. The compiler lays this unit's
+ * tables out in the order its functions first name them, taking the
+ * exported functions first, in source order, and the static ones after. So
+ * the probes sit in a static function that the unit's last exported
+ * function alone calls: every table is already placed when it is compiled,
+ * and the layout of the unit is what it was without the two. */
+static bool scr_record_reflects_static_probe(const void *rec, bool may_link) {
+  if (scr_record_source_count && scr_record_source_slot(rec) != NULL) return false;
+  if (may_link && scr_record_link_count && scr_record_link_find(rec) != NULL) return false;
+  if (!scr_typed_ref_count) return true;
+  size_t mask = scr_typed_ref_capacity - 1;
+  for (size_t slot = scr_typed_ref_bucket((void *)rec); scr_typed_ref_slots[slot];
+       slot = (slot + 1) & mask) {
+    const ScrDyn *capsule = scr_typed_ref_slots[slot];
+    if (capsule->v.typed_ref.ptr == rec && !scr_typed_ref_plain(capsule)) return false;
+  }
+  return true;
+}
+
+/* `may_link` is false for a record of a type the program narrows nothing
+ * into: such a record is never a linked copy, and that probe is skipped. */
+bool scr_record_reflects_static(const void *rec, bool may_link) {
+  return scr_record_reflects_static_probe(rec, may_link);
 }

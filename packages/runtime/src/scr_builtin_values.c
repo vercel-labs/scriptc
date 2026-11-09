@@ -670,7 +670,7 @@ static bool scr_bv_append(ScrJsonBuf *b, const ScrDyn *value) {
 static ScrDyn *scr_bv_object_member(const ScrDyn *object, const char *key, size_t key_len) {
   if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
   ScrStr *name = scr_str_new(key, key_len);
-  ScrDyn *value = scr_dyn_typed_ref_key_get(object, name);
+  ScrDyn *value = scr_dyn_typed_ref_own_get(object, name);
   if (!value) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) {

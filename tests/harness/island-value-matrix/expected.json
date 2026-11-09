@@ -992,19 +992,16 @@
  "fn-async.control.-": {
   "T.json": "refused:SC1090",
   "T.clone": "message",
-  "U.tag": "wrong",
   "U.clone": "message"
  },
  "fn-async.p": {
   "n2i/I.inspect": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
-  "n2i2n/U.tag": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
   "clo-i2n/I.taker": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong"
  },
  "fn-async.u": {
   "n2i/I.inspect": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
-  "n2i2n/U.tag": "wrong",
   "n2i2n/U.clone": "message",
   "clo-n2i/I.thunk": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong",
   "clo-i2n/I.taker": "clone=message,ctor=wrong,own=wrong,proto=wrong,tag=wrong"

@@ -1742,7 +1742,7 @@ static ScrDyn *scr_wasm_member(const ScrDyn *obj, const char *key, size_t len) {
       break;
     case SCR_DYN_TYPED_REF: {
       ScrStr *k = scr_str_new(key, len);
-      v = scr_dyn_typed_ref_key_get(obj, k);
+      v = scr_dyn_typed_ref_own_get(obj, k);
       scr_str_release(k);
       break;
     }

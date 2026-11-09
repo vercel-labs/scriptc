@@ -785,11 +785,16 @@ export function lowerFileHandleMethodCall(
         loc,
       };
     }
-    lowerer.noLowering(
-      `FileHandle.${name} of '${dataT ? lowerer.fmt(dataT) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
-      dataNode,
-      "string and Uint8Array data are supported",
-    );
+    // Data the static type does not pin down — a typed array of another
+    // element, the ArrayBufferView alias, a checked-dynamic value — takes
+    // the checked-data unit, which validates and writes a string or a view.
+    return {
+      kind: "libCall",
+      fn: "fileHandle.writeFileData",
+      args: [receiver(), lowerer.lowerExprExpecting(dataNode, DYN), encoding],
+      type: promise(VOID),
+      loc,
+    };
   }
 
   if (name === "read" || name === "write") {

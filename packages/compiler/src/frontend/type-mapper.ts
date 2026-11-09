@@ -3488,6 +3488,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // still the T it maps.
   const immutableSource = immutableSourceType(type, ctx);
   if (immutableSource !== null) return mapType(immutableSource, ctx);
+  // NoInfer<T> only keeps a position out of type-argument inference: its
+  // values are T's.
+  const noInferSource = noInferSourceType(type);
+  if (noInferSource !== null) return mapType(noInferSource, ctx);
   // Inside an erased generic signature or body, every type that mentions
   // an erased type parameter is `unknown` (`T[]`, `Map<string, T>`,
   // `[A, B]`, `T[K]`, callbacks over `T`): its values cross through the
@@ -9587,6 +9591,16 @@ function mapBrandedPrimitiveIntersection(widened: ts.Type, ctx: TypeMapperCtx): 
   return primitive && markerParts > 0 ? primitive : null;
 }
 
+/** The T of `NoInfer<T>`: the checker keeps the marker as a substitution
+ * type whose constraint is `unknown` wherever T is an object type or still
+ * mentions a type parameter. Null for every other type. */
+export function noInferSourceType(type: ts.Type): ts.Type | null {
+  if (!type.isSubstitutionType()) return null;
+  const constraint = type.getConstraint();
+  if (constraint === undefined || (constraint.flags & ts.TypeFlags.Unknown) === 0) return null;
+  return type.getBaseType() ?? null;
+}
+
 /** The declaration file of @scriptc/types (installed, pnpm-linked or the
  * workspace package). */
 const CONTRACT_TYPES_FILE = /[\\/](?:@scriptc[\\/]types|packages[\\/]types)[\\/]index\.d\.ts$/;
@@ -9941,6 +9955,8 @@ function mentionsErasedTypeParamAt(
     if (walk.own === undefined || !walk.own.has(type)) walk.contextReads++;
     return ctx.resolveTypeParam?.(type)?.kind === "dyn";
   }
+  const noInferSource = noInferSourceType(type);
+  if (noInferSource !== null) return mentionsErasedTypeParamAt(noInferSource, ctx, depth, walk);
   if (
     type.flags &
     (ts.TypeFlags.IndexedAccess | ts.TypeFlags.Conditional | ts.TypeFlags.Substitution)

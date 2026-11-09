@@ -91,7 +91,7 @@ bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name) {
   ScrDyn *value;
   if (options->kind == SCR_DYN_TYPED_REF) {
     /* A compiled record or class instance: its own fields, else its view. */
-    value = scr_dyn_typed_ref_key_get(options, name);
+    value = scr_dyn_typed_ref_own_get(options, name);
     if (!value && !scr_exc_pending()) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(options);
       if (!view) return false;

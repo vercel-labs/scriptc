@@ -1170,7 +1170,7 @@ static ScrDyn *scr_warning_field(const ScrDyn *w, const char *key, size_t key_le
   if (w->kind == SCR_DYN_TYPED_REF) {
     /* The reference's own answer, else its materialized view's. */
     ScrStr *name = scr_str_new(key, key_len);
-    ScrDyn *value = scr_dyn_typed_ref_key_get(w, name);
+    ScrDyn *value = scr_dyn_typed_ref_own_get(w, name);
     scr_str_release(name);
     if (value || scr_exc_pending()) return value;
     ScrDyn *view = scr_dyn_typed_ref_materialize(w);

@@ -555,6 +555,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   // source nodes into capsules of it; it stores no property into a capsule.
   "dyn.declAdopt",
   "dyn.adoptShared",
+  "dyn.adoptable",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",

@@ -266,6 +266,13 @@ void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
 void scr_fs_write_file_flags_bytes(ScrStr *path, const ScrBytes *data, double mode,
                                    double exclusive);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);
+/* The two-argument writes and the { mode, flag } write over a checked data
+ * argument (string or Buffer/TypedArray/DataView): the string arm keeps the
+ * plain write of its own shape, the view arm writes the bytes it covers. */
+void scr_fs_write_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_append_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
+                                  double exclusive);
 
 /* fs/promises readFile(path) [no encoding]: the same read behind an
  * already-settled promise — failure REJECTS (catchable at the await). */

@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../src/index.js";
 import type { IrModule } from "../src/ir/ir.js";
@@ -289,6 +289,97 @@ test("a write through a computed name leaves the conditions --define decides to 
       define,
     ),
   ).toBe(true);
+});
+
+/** Lowers the project `files` describes (paths below `dir`, entry
+ * `main.ts`) and answers which of `texts` the lowered functions hold. */
+async function textsKept(
+  dir: string,
+  files: Record<string, string>,
+  define: Record<string, string>,
+  texts: readonly string[],
+): Promise<string[]> {
+  await rm(dir, { recursive: true, force: true });
+  try {
+    for (const [name, source] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, name)), { recursive: true });
+      await writeFile(join(dir, name), source);
+    }
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(join(dir, "main.ts"), {
+      outDir: dir,
+      outPath,
+      outputKind: "ir",
+      define,
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const functions = JSON.stringify(deserializeModule(await readFile(outPath, "utf8")).functions);
+    return texts.filter((text) => functions.includes(JSON.stringify(text)));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("a program that runs code in Node.js leaves the conditions --define decides to the run", async () => {
+  // Island code is the same process with the same environment, and the
+  // build does not read its JavaScript: it can change the defined variable.
+  const define = { "process.env.NODE_ENV": "production" };
+  const texts = ["development branch", "development arm", "development operand", "never branch"];
+  const conditions = [
+    `if (process.env.NODE_ENV !== "production") {`,
+    `  console.log("development branch");`,
+    `}`,
+    `console.log(process.env.NODE_ENV === "production" ? "production arm" : "development arm");`,
+    `console.log(process.env.NODE_ENV === "production" || "development operand");`,
+    `const NEVER = false;`,
+    `if (NEVER) {`,
+    `  console.log("never branch");`,
+    `}`,
+    ``,
+  ].join("\n");
+  const setter = `exports.setMode = (mode) => {\n  process.env.NODE_ENV = mode;\n};\n`;
+  const followsTheRun = ["development branch", "development arm", "development operand"];
+  const scratch = await mkdtemp(join(tmpdir(), "scriptc-constant-conditions-island-"));
+  // Without code in Node.js the define decides each condition.
+  expect(await textsKept(scratch, { "main.ts": conditions }, define, texts)).toEqual([]);
+  // A package that runs in a Node island: a literal and a `const` still decide.
+  expect(
+    await textsKept(
+      scratch,
+      {
+        "package.json": JSON.stringify({
+          name: "island-define",
+          private: true,
+          type: "module",
+          scriptc: { packages: { "env-setter": "node" } },
+        }),
+        "node_modules/env-setter/package.json": JSON.stringify({
+          name: "env-setter",
+          version: "1.0.0",
+          main: "index.js",
+          types: "index.d.ts",
+        }),
+        "node_modules/env-setter/index.js": `"use strict";\n${setter}`,
+        "node_modules/env-setter/index.d.ts": `export declare function setMode(mode: string): void;\n`,
+        "main.ts": `import { setMode } from "env-setter";\nsetMode("development");\n${conditions}`,
+      },
+      define,
+      texts,
+    ),
+  ).toEqual(followsTheRun);
+  // The @scriptc/node API, which resolves from inside the repository.
+  expect(
+    await textsKept(
+      join(import.meta.dirname, "../..", "node_modules/.cache/scriptc-tests/constant-conditions"),
+      {
+        "setter.cjs": setter,
+        "main.ts": `import { callSync } from "@scriptc/node";\ncallSync("./setter.cjs", "setMode", "development");\n${conditions}`,
+      },
+      define,
+      texts,
+    ),
+  ).toEqual(followsTheRun);
 });
 
 test("changing a variable --define fixes is refused in every form that names it", async () => {

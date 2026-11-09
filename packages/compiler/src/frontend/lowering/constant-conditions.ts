@@ -5,6 +5,7 @@ import { definedValue } from "../define-branches.js";
 import { isWriteTarget } from "./binding-analysis.js";
 import { denotesEnvironment } from "./builtins/environment.js";
 import type { Lowerer } from "./lowerer.js";
+import { unitReuseEnabled } from "./unit-reuse.js";
 
 /* Conditions that have one value in every run of the program:
  *
@@ -37,7 +38,11 @@ import type { Lowerer } from "./lowerer.js";
  * read (`process.env[name] = v`) could be a change of that variable, so in
  * a program that makes one the comparisons `--define` decides are not
  * constant here (changesEnvironmentByComputedName) and follow the variable
- * as under Node.
+ * as under Node. The same holds where the build cannot read every writer
+ * at all (definedConditionsFollowTheRun): in a program that runs code in
+ * Node.js, whose JavaScript shares the process's environment and is not
+ * lowered, and in a build that reuses lowered units, whose stored units
+ * are not lowered again when another declaration gains such a write.
  *
  * A condition is constant when it is `true` or `false`, a `const` binding
  * whose initializer is a constant condition (through imports and
@@ -102,13 +107,13 @@ function constInitializer(lowerer: Lowerer, ident: ts.Identifier): ts.Expression
 }
 
 /** The value of a condition `--define` decides, when each `process` it
- * names is Node's global and the program changes no variable through a
- * name the build cannot read. Such a condition reads the environment and
- * nothing else. */
+ * names is Node's global, the build reads every writer of the environment
+ * and the program changes no variable through a name the build cannot
+ * read. Such a condition reads the environment and nothing else. */
 function definedCondition(lowerer: Lowerer, e: ts.Expression): boolean | null {
   if (lowerer.define === undefined) return null;
   const value = definedValue(e, lowerer.define);
-  if (typeof value !== "boolean") return null;
+  if (typeof value !== "boolean" || definedConditionsFollowTheRun(lowerer)) return null;
   let global = true;
   const visit = (n: ts.Node): void => {
     if (!global) return;
@@ -120,6 +125,26 @@ function definedCondition(lowerer: Lowerer, e: ts.Expression): boolean | null {
   };
   visit(e);
   return global && !changesEnvironmentByComputedName(lowerer) ? value : null;
+}
+
+/** Whether this build cannot read every writer of the environment, so that
+ * no comparison `--define` decides is constant in it:
+ *
+ * - The program runs code in Node.js (Lowerer.mayRunInNode). A Node island
+ *   is the same process with the same environment, and its JavaScript is
+ *   not lowered: neither the build error for a change that names a defined
+ *   variable nor the walk for computed names reads it.
+ *
+ *     import { configure } from "island-package"; // sets process.env.NODE_ENV
+ *     configure();
+ *     if (process.env.NODE_ENV !== "production") check();
+ *
+ * - The build reuses lowered units (unit-reuse.ts). A stored unit that
+ *   holds a folded condition spells only the names of its own text, so it
+ *   would apply unchanged after another declaration gains
+ *   `process.env[name] = v`. */
+function definedConditionsFollowTheRun(lowerer: Lowerer): boolean {
+  return unitReuseEnabled() || lowerer.mayRunInNode();
 }
 
 /** Whether the program writes or deletes an environment variable through a

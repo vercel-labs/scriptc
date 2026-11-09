@@ -23,7 +23,10 @@ import type { LlvmEmitterContext } from "./expr-context.js";
 import { NULLABLE_NULL, type NullableUnion, type NullableUnions } from "./nullable-unions.js";
 import { mapKeyAccess, type MapKeyAccess } from "./shapes.js";
 
-/** What the key encoding reads of an emitter or a helper generator. */
+/** What the key encoding reads of a helper generator's host. An emitter
+ * hands over its `shapeHost`, never itself: an emitter given where this
+ * interface is declared would become a dynamic value in the compiler's own
+ * build. */
 export interface UnionKeyHost {
   readonly nullableUnions: NullableUnions;
   readonly unionsById: ReadonlyMap<string, IrUnionDef>;
@@ -121,7 +124,7 @@ function startsWithEscapeByte(B: BlockBuilder, host: UnionKeyHost, string: strin
  * loop this module's caller emits itself, see encodeCollectionKeyIn. */
 export function encodeCollectionKey(host: LlvmEmitterContext, key: IrType, value: string): string {
   const B = host.B;
-  const { stored, temporary } = encodeCollectionKeyIn(B, host, key, value);
+  const { stored, temporary } = encodeCollectionKeyIn(B, host.shapeHost, key, value);
   if (temporary === null) return stored;
   // NULL on the ordinary path. The frame owns the temporary through a slot
   // it releases only when filled, so a key that is not escaped pays one
@@ -207,7 +210,7 @@ export function releaseKeyTemporary(B: BlockBuilder, host: UnionKeyHost, tempora
  * a +1 string stays +1 (an escaped key is released for its +1 string), and
  * the unit encodings own nothing. */
 export function decodeCollectionKey(host: LlvmEmitterContext, key: IrType, stored: string): string {
-  return decodeKeyIn(host.B, host, key, stored, true).value;
+  return decodeKeyIn(host.B, host.shapeHost, key, stored, true).value;
 }
 
 /** The union value of the BORROWED stored key `stored` in another block

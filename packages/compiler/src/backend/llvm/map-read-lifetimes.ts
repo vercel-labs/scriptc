@@ -395,7 +395,7 @@ export function emitMapLookupKey(
       args: `ptr ${span.bytes}, ${host.sizeType} ${span.length}`,
     };
   const value = borrow ? host.emitReadReceiver(key) : host.emitExpr(key);
-  const access = collectionKeyAccess(host, key.type);
+  const access = collectionKeyAccess(host.shapeHost, key.type);
   const type = mapKeyParamType(access);
   if (access === "f64") noteNumberMapKey(host, value, key);
   // A string-key union's value becomes the key its collection stores.

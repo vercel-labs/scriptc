@@ -1333,7 +1333,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
     ? vAdapters(host.shapeHost, value)
     : { retain: "null", release: "null" };
   const keyRc =
-    collectionKeyAccess(host, key) === "ref"
+    collectionKeyAccess(host.shapeHost, key) === "ref"
       ? { ...vAdapters(host.shapeHost, key), trace: traceArg(host.shapeHost, key) }
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
@@ -1440,9 +1440,9 @@ function emitStringKeySetAdd(
 ): void {
   // Inside the caller's loop: an escaped key is released here, not by the
   // frame.
-  const { stored, temporary } = encodeCollectionKeyIn(host.B, host, elem, value);
+  const { stored, temporary } = encodeCollectionKeyIn(host.B, host.shapeHost, elem, value);
   host.mapSet(set, "str", "f64", stored, f64Lit(0));
-  if (temporary !== null) releaseKeyTemporary(host.B, host, temporary);
+  if (temporary !== null) releaseKeyTemporary(host.B, host.shapeHost, temporary);
   host.releaseFrame(value, elem);
 }
 
@@ -1505,7 +1505,7 @@ export function emitMapNew(host: LlvmEmitterContext, e: IrExpr & { kind: "mapNew
   if (e.type.kind !== "map")
     throw new InternalCompilerError("llvm emitter bug: mapNew of non-map type");
   const value = e.type.value;
-  const kAcc = collectionKeyAccess(host, e.type.key);
+  const kAcc = collectionKeyAccess(host.shapeHost, e.type.key);
   const m = newCollection(host, e.type.key, value);
   const out = host.own({ name: m, type: e.type });
   // Seeded construction: set() each pair in source order — a repeated
@@ -1557,7 +1557,7 @@ export function emitMapLikeIntrinsic(
     throw new InternalCompilerError("unreachable");
   }
   const key = receiverType.kind === "map" ? receiverType.key : receiverType.elem;
-  const kAcc = collectionKeyAccess(host, key);
+  const kAcc = collectionKeyAccess(host.shapeHost, key);
   const kTy = mapKeyParamType(kAcc);
   // The key the collection stores for an evaluated key operand (a
   // string-key union's unit arms are key strings).

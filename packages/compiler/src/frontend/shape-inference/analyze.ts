@@ -23,6 +23,7 @@
  *   sites could become native records (§5.5). */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesAsSatisfiesNonNull } from "../outer-expressions.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import {
@@ -1029,9 +1030,7 @@ class Analyzer {
   /** The base class declaration of `decl`, via the checker; null at a
    * builtin base or none; undefined when unresolved. */
   baseClass(decl: Node): Node | null | undefined {
-    const heritage = list((decl as ts.ClassLikeDeclaration).heritageClauses).find(
-      (c) => c.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types?.nodes[0];
+    const heritage = extendsElementOf(decl as ts.ClassLikeDeclaration);
     if (heritage === undefined) return null;
     const e = withoutParenthesesAsSatisfiesNonNull(heritage.expression);
     if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return undefined;

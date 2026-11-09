@@ -14488,6 +14488,74 @@ void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn 
   scr_dyn_obj_set(arr->v.arr.properties, key, key_len, value);
 }
 
+/* A member assigned by name to a plain record: an ordinary object in layout
+ * mode that takes new members and has no prototype object of its own. Such
+ * an assignment needs nothing scr_dyn_object_key_set decides. Every own
+ * property of a layout is a writable data property; the receiver's chain is
+ * Object.prototype alone (or nothing), whose only member an assignment can
+ * reach is the `__proto__` accessor, since its mutation is fenced; and the
+ * five names an Error's checked view keeps in sync (scr_error_sync_slots,
+ * the `stack` attribute) are left to the general path while a thread has
+ * any such view. So the name is looked up at most once: a member the
+ * layout's most recent transition appends (every record a decoder fills
+ * with the same names in the same order after the first) is stored after
+ * one comparison of the name, a member the record already holds is
+ * replaced, and any other name follows or creates its transition. A
+ * transition out of a layout exists only for a name the layout does not
+ * hold, so following one needs no lookup of the record's own members.
+ * False, with nothing done, for every other receiver and name, and for a
+ * layout that cannot grow. Nothing here throws. Borrows key and value. The
+ * expectations keep the record's path, and the small helpers it calls, in
+ * line. */
+static inline __attribute__((always_inline)) bool scr_dyn_plain_record_assign(
+    ScrDyn *recv, const ScrStr *key, ScrDyn *value) {
+  const ScrLayout *layout = recv->v.obj.layout;
+  if (__builtin_expect(!layout || recv->prototype || recv->non_extensible, 0)) return false;
+  size_t length = key->len;
+  if (__builtin_expect(scr_errdyn_slots != 0, 0)) {
+    const char *name = key->data;
+    if ((length == 4 && (memcmp(name, "name", 4) == 0 || memcmp(name, "code", 4) == 0)) ||
+        (length == 5 && (memcmp(name, "cause", 5) == 0 || memcmp(name, "stack", 5) == 0)) ||
+        (length == 7 && memcmp(name, "message", 7) == 0))
+      return false;
+  }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (__builtin_expect(length == 9 && memcmp(key->data, "__proto__", 9) == 0, 0)) return false;
+#endif
+  const ScrLayout *next = layout->last_child;
+  if (__builtin_expect(
+          !next || !scr_layout_key_is(&next->keys[next->count - 1], key->data, length), 0)) {
+    uint32_t slot = scr_layout_find(layout, key->data, length);
+    if (slot != UINT32_MAX) {
+      scr_dyn_region_store(recv, value);
+      ScrDyn *old = recv->v.obj.slots[slot];
+      recv->v.obj.slots[slot] = scr_dyn_retain(value);
+      scr_dyn_release(old);
+      return true;
+    }
+    next = scr_layout_add(layout, key->data, length);
+    if (!next) return false;
+  }
+  scr_dyn_region_store(recv, value);
+  scr_dyn_obj_layout_push(recv, next, scr_dyn_retain(value));
+  return true;
+}
+
+/* The entry of a write site under a run-time name (the compiler's
+ * backend/llvm/js-ic.ts emitNamedSet), for a receiver the site found to be
+ * an ordinary object (SCR_DYN_OBJ). True when the member was assigned to a
+ * plain record. False, with nothing done and nothing thrown, when the
+ * assignment is scr_dyn_key_set's to decide, which the site then calls:
+ * the two fenced prototypes, and every receiver and name
+ * scr_dyn_plain_record_assign leaves. Only such a site calls it, so a
+ * program without one links none of the record's path and scr_dyn_key_set
+ * stays what every other caller had. Borrows all three operands. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  if (__builtin_expect(recv == scr_builtin_object_prototype || recv == scr_builtin_error_prototype, 0))
+    return false;
+  return scr_dyn_plain_record_assign(recv, key, value);
+}
+
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(recv) || scr_dyn_error_prototype_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }

@@ -1532,18 +1532,15 @@ static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key);
  * are never the native records the kept-source table is keyed by. */
 static SCR_TL bool scr_weak_observing;
 static void scr_weak_disposed(void *key);
-/* One bit per key address, set when a key enters the weak-key table: a
- * disposed object whose bit is clear was never a key, so its disposal makes
- * no call. Bits are cleared when the table empties. */
-#define SCR_WEAK_KEY_FILTER_BITS ((size_t)1 << 16)
-static SCR_TL uint64_t scr_weak_key_filter[SCR_WEAK_KEY_FILTER_BITS / 64];
-static inline size_t scr_weak_key_filter_bit(const void *key) {
-  return ((uintptr_t)key >> 4) & (SCR_WEAK_KEY_FILTER_BITS - 1);
-}
+/* A key's bit in the shared dispose filter (scr_rc.h) is set when the key
+ * enters the weak-key table: a disposed object whose bit is clear was never
+ * a key, so its disposal makes no call. */
 static inline bool scr_weak_maybe_key(const void *key) {
-  size_t bit = scr_weak_key_filter_bit(key);
-  return scr_weak_observing && (scr_weak_key_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)));
+  return scr_weak_observing && scr_dispose_maybe_observed(key);
 }
+/* Called by a dispose observer whose table has just emptied: clears the
+ * shared filter once no observer has an entry left. */
+static void scr_dispose_filter_emptied(void);
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
 }
@@ -4273,6 +4270,7 @@ static void scr_record_source_drop(ScrRecordSource *found) {
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
+  if (!scr_record_source_count) scr_dispose_filter_emptied();
   scr_dyn_release(view);
   if (capsule) {
     scr_record_view_forget(capsule, rec);
@@ -4292,7 +4290,16 @@ static void scr_record_source_disposed(void *rec) {
 static void scr_record_link_disposed(void *copy);
 static SCR_TL size_t scr_record_link_count;
 
+static void scr_dispose_observed(void *object);
+
+/* Emitted frees call the hook for every object; most have no observer, so
+ * the hook itself is only the filter test and the observers are out of
+ * line. */
 static void scr_dispose_observers(void *object) {
+  if (scr_dispose_maybe_observed(object)) scr_dispose_observed(object);
+}
+
+static SCR_COLD void scr_dispose_observed(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
    * a program without the fact has no table to consult. */
@@ -4306,7 +4313,11 @@ static void scr_dispose_observers(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
 /* scr_js_buffers_arm: the registry must see frees even in a program that
  * creates no weak collection, so it installs the one dispose hook. */
-void scr_js_dispose_hook_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+void scr_js_dispose_hook_install(void) {
+  /* The registry's views and owners are not noted one by one. */
+  memset(scr_dispose_filter, 0xff, sizeof scr_dispose_filter);
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
 #endif
 
 /* Keeps live entries plus deleted markers at most half the table: grows
@@ -4415,6 +4426,7 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
   scr_record_sources[slot] = *entry;
   scr_record_source_count++;
+  scr_dispose_filter_note(entry->rec);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -4627,6 +4639,7 @@ void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t
   if (scr_record_links[slot].copy == SCR_RECORD_LINK_DELETED) scr_record_link_deleted--;
   scr_record_links[slot] = (ScrRecordLink){ copy, source, release, pair };
   scr_record_link_count++;
+  scr_dispose_filter_note(copy);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -4648,6 +4661,7 @@ static void scr_record_link_disposed(void *copy) {
   *link = (ScrRecordLink){ .copy = SCR_RECORD_LINK_DELETED };
   scr_record_link_count--;
   scr_record_link_deleted++;
+  if (!scr_record_link_count) scr_dispose_filter_emptied();
   release(source);
 }
 
@@ -21813,10 +21827,17 @@ static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
     scr_weak_keys[j].key = key;
     scr_weak_keys[j].head = NULL;
     scr_weak_keys_used++;
-    size_t bit = scr_weak_key_filter_bit(key);
-    scr_weak_key_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+    scr_dispose_filter_note(key);
   }
   return &scr_weak_keys[j];
+}
+static void scr_dispose_filter_emptied(void) {
+#ifdef SCR_JS_OBJECT_MODEL
+  /* The mutable-buffers registry observes addresses it never notes. */
+  if (scr_js_buffer_ops) return;
+#endif
+  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count) return;
+  memset(scr_dispose_filter, 0, sizeof scr_dispose_filter);
 }
 static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   size_t mask = scr_weak_keys_mask;
@@ -21824,7 +21845,7 @@ static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   if (--scr_weak_keys_used == 0) {
     free(scr_weak_keys);
     scr_weak_keys = NULL;
-    memset(scr_weak_key_filter, 0, sizeof scr_weak_key_filter);
+    scr_dispose_filter_emptied();
     return;
   }
   for (size_t k = i;;) {

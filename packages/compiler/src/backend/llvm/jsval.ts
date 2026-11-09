@@ -66,15 +66,6 @@ function wordOf(host: Host, bits: string): string {
   return v;
 }
 
-/** The jsval word of a checked-dynamic cell the caller owns: js.fromDyn of a
- * cell that is already in a register. */
-export function jsWordOfCell(host: Host, cell: string): string {
-  if (!jsImmediates(host)) return cell;
-  const tagged = host.B.tmp();
-  host.B.line(`${tagged} = or i64 ${bitsOf(host, cell)}, ${JS_BITS.cellTag}`);
-  return wordOf(host, tagged);
-}
-
 /** A double as a jsval word: NaN canonicalized. */
 function boxDouble(host: Host, d: string): string {
   const B = host.B;

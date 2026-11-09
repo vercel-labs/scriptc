@@ -3,6 +3,9 @@ import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
+  BOOL,
+  DYN,
+  F64,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -71,7 +74,6 @@ import type { Writes } from "./reference-writes.js";
 import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 import { registerReplay } from "./emit-journal.js";
-import { jsWordOfCell } from "./jsval.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -1742,14 +1744,86 @@ export function emitConstruction(
   if (host.mayThrow.has(`%${e.className}.constructor`)) host.emitPendingCheck();
 }
 
-/** A call to a numeric computed-read helper (IrFunction.fastRead "index"),
- * `helper(value, String(index))` or, for the helper that takes the number,
- * `helper(value, index)`: scr_dyn_index_get answers dyn arrays and live
- * array capsules at the index without forming the key, and the helper call
- * runs only when that read has no answer. The helper may answer a checked
- * value or its jsval word; the element read is a cell either way. Both
+/** A call to the computed-read helper that takes the number,
+ * `helper(value, index)`: the helper's own first test, made at the call. An
+ * integer index below a checked array's length reads the element as the
+ * helper reads it (dyn.arrAt), and every other receiver and index calls the
+ * helper. The call site runs nothing the helper does not run, so it links
+ * no runtime function the helper does not link. The helper may answer a
+ * checked value or its jsval word. Both operands must be variables or
+ * literals, since each test and the slow path evaluate them again. Null
+ * when the call does not have that shape. */
+function emitArrayElementRead(
+  host: LlvmEmitterContext,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  value: IrExpr,
+  index: IrExpr,
+): LlValue | null {
+  if (callee.params[1]?.type.kind !== "f64" || index.type.kind !== "f64") return null;
+  if (index.kind !== "varRef" && index.kind !== "numLit") return null;
+  const word = callee.returnType.kind === "jsval";
+  if ((callee.returnType.kind !== "dyn" && !word) || host.int32Abis.has(e.callee)) return null;
+  const B = host.B;
+  const loc = e.loc;
+  const slow = B.newLabel("idx.slow");
+  const join = B.newLabel("idx.join");
+  const tests: IrExpr[] = [
+    { kind: "libCall", fn: "number.isInteger", args: [index], type: BOOL, loc },
+    {
+      kind: "bin",
+      op: ">=",
+      left: index,
+      right: { kind: "numLit", value: 0, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    {
+      kind: "bin",
+      op: "<",
+      left: index,
+      right: { kind: "libCall", fn: "dyn.arrLen", args: [value], type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+  ];
+  for (const test of tests) {
+    host.frames.push([]);
+    const holds = host.emitExpr(test);
+    host.releaseTemps(host.frames.pop()!);
+    const next = B.newLabel("idx.t");
+    B.condBr(holds.name, next, slow);
+    B.startBlock(next);
+  }
+  const element: IrExpr = { kind: "libCall", fn: "dyn.arrAt", args: [value, index], type: DYN, loc };
+  host.frames.push([]);
+  const fast = host.emitExpr(
+    word ? { kind: "libCall", fn: "js.fromDyn", args: [element], type: e.type, loc } : element,
+  );
+  host.toFrame(fast);
+  host.releaseTemps(host.frames.pop()!);
+  const fastLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(slow);
+  host.frames.push([]);
+  const read = emitCallExpr(host, e, false, false, undefined, true);
+  host.toFrame(read);
+  host.releaseTemps(host.frames.pop()!);
+  const slowLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(join);
+  const result = B.tmp();
+  B.line(`${result} = phi ptr [ ${fast.name}, %${fastLabel} ], [ ${read.name}, %${slowLabel} ]`);
+  return host.own({ name: result, type: e.type });
+}
+
+/** A call to a numeric computed-read helper (IrFunction.fastRead "index")
+ * `helper(value, String(index))`: scr_dyn_index_get answers dyn arrays and
+ * live array capsules at the index without forming the key, and the helper
+ * call (with its key string) runs only when that read has no answer. Both
  * operands must be variables or literals, since the slow path evaluates the
- * call again. Null when the call does not have that shape. */
+ * call again. The helper that takes the number is emitArrayElementRead's.
+ * Null when the call does not have that shape. */
 function emitNumericIndexRead(
   host: LlvmEmitterContext,
   e: ExprOf<"call">,
@@ -1758,22 +1832,18 @@ function emitNumericIndexRead(
   const value = e.args[0];
   const key = e.args[1];
   if (e.args.length !== 2 || !value || !key || value.kind !== "varRef") return null;
-  const number =
-    key.kind === "toString" ? key.operand : callee.params[1]?.type.kind === "f64" ? key : null;
-  if (number === null || number.type.kind !== "f64") return null;
-  if (number.kind !== "varRef" && number.kind !== "numLit") return null;
-  const word = callee.returnType.kind === "jsval";
-  if ((callee.returnType.kind !== "dyn" && !word) || host.int32Abis.has(e.callee)) return null;
+  if (key.kind !== "toString") return emitArrayElementRead(host, e, callee, value, key);
+  if (key.operand.type.kind !== "f64") return null;
+  if (key.operand.kind !== "varRef" && key.operand.kind !== "numLit") return null;
+  if (callee.returnType.kind !== "dyn" || host.int32Abis.has(e.callee)) return null;
   const B = host.B;
   const receiver = host.emitReadReceiver(value);
-  const index = host.emitExpr(number);
+  const index = host.emitExpr(key.operand);
   host.declare(`declare ptr @scr_dyn_index_get(ptr, double)`);
-  const cell = B.tmp();
-  B.line(`${cell} = call ptr @scr_dyn_index_get(ptr ${receiver.name}, double ${index.name})`);
+  const fast = B.tmp();
+  B.line(`${fast} = call ptr @scr_dyn_index_get(ptr ${receiver.name}, double ${index.name})`);
   const hit = B.tmp();
-  B.line(`${hit} = icmp ne ptr ${cell}, null`);
-  // The word of a null cell is never read: the slow path answers instead.
-  const fast = word ? jsWordOfCell(host, cell) : cell;
+  B.line(`${hit} = icmp ne ptr ${fast}, null`);
   const fastLabel = B.currentLabel();
   const slow = B.newLabel("idx.slow");
   const join = B.newLabel("idx.join");

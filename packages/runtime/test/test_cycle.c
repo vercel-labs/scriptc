@@ -1010,19 +1010,38 @@ static void observe_disposal(void *obj) {
   else observed_other++;
 }
 
+/* An observer names the addresses it watches in the dispose filter
+ * (scr_rc.h), as the weak-key table and the record tables do when a key
+ * enters: an armed hook is called for those addresses alone. */
+static uint64_t saved_filter[SCR_DISPOSE_FILTER_BITS / 64];
+
 static void check_dispose_observer_sees_doomed(void) {
   enum { RING = 8 };
   size_t before = freed;
   void (*hook)(void *) = scr_weak_dispose_hook;
+  memcpy(saved_filter, scr_dispose_filter, sizeof saved_filter);
+  memset(scr_dispose_filter, 0, sizeof saved_filter);
   scr_weak_dispose_hook = observe_disposal;
   observed_doomed = observed_other = 0;
   Node *ring = make_ring(RING);
+  Node *node = ring;
+  for (size_t i = 0; i < RING; i++, node = node->next) scr_dispose_filter_note(node);
   release_live(ring);
   scr_cyc_pass_at(SCR_CYC_NURSERY);
-  scr_weak_dispose_hook = hook;
   check(freed == before + RING, "the dead ring was not freed");
   check(observed_doomed == RING && observed_other == 0,
         "a dispose observer saw a collected object that was not DOOMED");
+  /* A ring nobody watches is freed without a call to the armed hook. */
+  memset(scr_dispose_filter, 0, sizeof saved_filter);
+  observed_doomed = observed_other = 0;
+  ring = make_ring(RING);
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  check(freed == before + 2 * RING, "the unwatched dead ring was not freed");
+  check(observed_doomed == 0 && observed_other == 0,
+        "a dispose observer was called for an object no observer named");
+  scr_weak_dispose_hook = hook;
+  memcpy(scr_dispose_filter, saved_filter, sizeof saved_filter);
 }
 
 /* A full pass whose gray list fills: the dead rings walked before it filled

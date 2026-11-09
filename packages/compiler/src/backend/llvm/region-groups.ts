@@ -198,10 +198,127 @@ export function storeTarget(target: IrExpr | undefined): string | null {
   return null;
 }
 
+/** How `source` answers for each expression kind:
+ * - "allocation": the expression allocates its value (ALLOCATIONS);
+ * - "some": some of its nodes produce a value that they or a callee
+ *   allocated, and `source` decides which;
+ * - "none": `source` does not follow it.
+ *
+ * Every kind is listed, so a new expression kind does not compile until it
+ * is classified here. "none" is no proof that a kind never yields an object
+ * of the group: it records the kinds this analysis has not followed so far.
+ * What keeps them sound is `calleesClean`, whose default is the safe one:
+ * an operation that can run code of the program (anything boundedNode in
+ * may-throw.ts does not list) ends leak-freedom, so a "none" kind in a
+ * leak-free function yields what the runtime allocated on the heap or what
+ * was reachable before. */
+export const SOURCE_KINDS: Record<IrExpr["kind"], "allocation" | "some" | "none"> = {
+  numLit: "none",
+  strLit: "none",
+  moduleNsRef: "none",
+  boolLit: "none",
+  unitLit: "none",
+  varRef: "none",
+  bin: "none",
+  unary: "none",
+  incDec: "none",
+  fieldIncDec: "none",
+  assignExpr: "none",
+  toBool: "none",
+  logical: "none",
+  strConcat: "none",
+  strEq: "none",
+  strCmp: "none",
+  toString: "none",
+  ternary: "none",
+  nullish: "none",
+  orDefault: "none",
+  optChain: "none",
+  chainRecv: "none",
+  strIntrinsic: "some",
+  regexLit: "none",
+  templateStrings: "none",
+  regexIntrinsic: "none",
+  arrayLit: "allocation",
+  arrayNewLen: "allocation",
+  arrayGet: "none",
+  arrayHas: "none",
+  arrayState: "none",
+  constCell: "none",
+  arrIntrinsic: "some",
+  bytesNew: "none",
+  bytesIntrinsic: "none",
+  mapNew: "allocation",
+  mapIntrinsic: "none",
+  setNew: "allocation",
+  setIntrinsic: "none",
+  call: "some",
+  ffiCall: "none",
+  closure: "allocation",
+  callValue: "some",
+  viewOf: "none",
+  viewSource: "none",
+  selfRef: "none",
+  yieldExpr: "none",
+  genResume: "none",
+  awaitExpr: "none",
+  awaitUnionExpr: "none",
+  newPromise: "none",
+  promiseWithResolvers: "none",
+  new: "allocation",
+  classRef: "none",
+  newValue: "none",
+  instanceOfValue: "none",
+  upcast: "none",
+  promiseVoidWiden: "none",
+  downcast: "none",
+  instanceOf: "none",
+  virtualCall: "some",
+  fieldGet: "none",
+  recordLit: "allocation",
+  recordClone: "allocation",
+  recordGet: "none",
+  recordKeyGet: "none",
+  dynFrom: "none",
+  dynCall: "none",
+  dynInvoke: "none",
+  dynArrLit: "none",
+  dynObjLit: "none",
+  dynTest: "none",
+  dynKeyGet: "none",
+  dynHasKey: "none",
+  dynScalarEq: "none",
+  seqExpr: "none",
+  dynDestrCheck: "none",
+  dynIterN: "none",
+  recordOvfKeys: "none",
+  recordOvfHas: "none",
+  recordNullProto: "none",
+  recordHas: "none",
+  fieldAbsent: "none",
+  unionWrap: "none",
+  unionRetype: "none",
+  unionFuncEq: "none",
+  caughtTest: "none",
+  caughtNarrow: "none",
+  caughtCheck: "none",
+  caughtToDyn: "none",
+  unionNarrow: "none",
+  unionDisc: "none",
+  unionKeyGet: "none",
+  unionIsTag: "none",
+  unionEq: "none",
+  intrinsic: "none",
+  libCall: "some",
+  jsonStringify: "none",
+  dynCheck: "some",
+};
+
 /** An expression that produces a value it allocates (a group member). */
 export function source(e: Node): boolean {
   if (!isExpr(e)) return false;
   if (ALLOCATIONS.has(e.kind)) return true;
+  if (SOURCE_KINDS[e.kind] === "none") return false;
   if (e.kind === "arrIntrinsic") return FRESH_ARRAY_METHODS.has(e.method);
   if (e.kind === "strIntrinsic") return e.method === "split";
   if (e.kind === "libCall") return e.fn === "json.parse";

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../../index.js";
 import type { IrExpr, IrModule, IrType } from "../../ir/ir.js";
-import { analyzeClosedGroups, analyzeRegionGroups } from "./region-groups.js";
-import { children, type Node } from "./region-ir.js";
+import { analyzeClosedGroups, analyzeRegionGroups, SOURCE_KINDS } from "./region-groups.js";
+import { ALLOCATIONS, children, type Node } from "./region-ir.js";
 
 async function moduleFor(source: string): Promise<IrModule> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-region-groups-"));
@@ -604,4 +604,11 @@ console.log(total, saved.length);
   // Library calls that cannot run program code keep the call region.
   expect(groups.leakFree.has("measures")).toBe(true);
   expect(callsOf(mod, "measures").every((c) => groups.calls.has(c))).toBe(true);
+});
+
+test("the source table names the allocation kinds", () => {
+  const allocations = Object.entries(SOURCE_KINDS)
+    .filter(([, how]) => how === "allocation")
+    .map(([kind]) => kind);
+  expect(allocations.sort()).toEqual([...ALLOCATIONS].sort());
 });

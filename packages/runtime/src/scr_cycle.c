@@ -2680,3 +2680,6 @@ void scr_cyc_context_cleanup(void) {
 #endif
   scr_cyc_window_update();
 }
+
+/* Last in this file, so that nothing before it moves (see scr_rc.h). */
+const ScrCycType *scr_cyc_type_of(const void *obj) { return &scr_cyc_types[((const ScrCycHdr *)obj - 1)->id]; }

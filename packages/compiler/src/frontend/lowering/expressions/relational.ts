@@ -56,6 +56,7 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
+import { stringPropertyKey } from "../lower-exprs.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
@@ -2425,16 +2426,19 @@ export function lowerInExpression(
         const k = lowerer.lowerExpr(expr.left); // JS order: the key evaluates first
         if (lowerer.dynConvertible(k.type)) {
           const boxed = lowerer.coerceToExpected(k, DYN);
-          const keyLocal = lowerer.declareHiddenLocal("%inKey", DYN);
+          // A key that names a string asks by that name, unboxed.
+          const named = stringPropertyKey(lowerer, boxed, expr.left);
+          const keyType = named !== null ? STRING : DYN;
+          const keyLocal = lowerer.declareHiddenLocal("%inKey", keyType);
           return {
             kind: "seqExpr",
-            stmts: [{ kind: "varDecl", localId: keyLocal.id, init: boxed, loc }],
+            stmts: [{ kind: "varDecl", localId: keyLocal.id, init: named ?? boxed, loc }],
             result: {
               kind: "libCall",
-              fn: "dyn.hasKeyComputed",
+              fn: named !== null ? "dyn.in" : "dyn.hasKeyComputed",
               args: [
                 lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN),
-                varRef(keyLocal.id, DYN, loc),
+                varRef(keyLocal.id, keyType, loc),
               ],
               type: BOOL,
               loc,

@@ -5040,6 +5040,9 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The types of the keys WeakMap and WeakSet entries are made for
+   * (IrModule.weakKeys; noteWeakKey). */
+  readonly weakKeys = new Set<string>();
   /** The narrowing conversions that link copies to their sources, by
    * `${from}:${to}` (record-links.ts). */
   readonly recordLinks = new Map<string, IrRecordLink>();
@@ -5664,6 +5667,7 @@ export class Lowerer {
       setTable("sloppyRecordWrites", this.sloppyRecordWrites),
       setTable("recordFieldDeletes", this.recordFieldDeletes),
       setTable("freezableArrays", this.freezableArrays),
+      setTable("weakKeys", this.weakKeys),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
       // The shared-module plan runs inside the first unit that lowers a
@@ -13366,6 +13370,7 @@ export class Lowerer {
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
+            ...(this.weakKeys.size > 0 ? { weakKeys: [...this.weakKeys].sort() } : {}),
             ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
@@ -17850,8 +17855,9 @@ export class Lowerer {
 
   /** Whether `node` is the key argument of `set`, `get`, `has`, `delete` or
    * `add` on a WeakMap or a WeakSet. A key with a promise type is boxed as
-   * the promise itself (weakMap.promiseKey in coerceInto). */
-  private isWeakKeyArgument(node: ts.Node): boolean {
+   * the promise itself (weakMap.promiseKey in coerceInto). With `makesEntry`,
+   * only of the two that make an entry, `set` and `add`. */
+  private isWeakKeyArgument(node: ts.Node, makesEntry = false): boolean {
     let key: ts.Node = node;
     while (
       key.parent !== undefined &&
@@ -17872,6 +17878,7 @@ export class Lowerer {
       method !== "add"
     )
       return false;
+    if (makesEntry && method !== "set" && method !== "add") return false;
     const symbol = this.checker.getNonNullableType(this.typeOf(access.expression)).getSymbol();
     const name = ts.symbolNameOf(symbol);
     return (
@@ -17881,7 +17888,38 @@ export class Lowerer {
     );
   }
 
+  /** Records the type of a key that a WeakMap or WeakSet entry is made for
+   * (IrModule.weakKeys): a record or a class by its unit, every arm of a
+   * union, and `*` for a key that is a checked value already. Functions and
+   * promises always carry the collector header, and a container carries it
+   * exactly when its elements do, so those need no record. */
+  noteWeakKey(type: IrType): void {
+    switch (type.kind) {
+      case "dyn":
+        this.weakKeys.add("*");
+        break;
+      case "record":
+        this.weakKeys.add(`record:${type.shapeId}`);
+        break;
+      case "object":
+        this.weakKeys.add(`object:${type.className}`);
+        break;
+      case "union":
+        for (const arm of this.unions.get(type.unionId)?.arms ?? [])
+          if (arm.kind !== "union") this.noteWeakKey(arm);
+        break;
+    }
+  }
+
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    if (expected.kind === "dyn") {
+      const kind = expr.type.kind;
+      if (
+        (kind === "dyn" || kind === "record" || kind === "object" || kind === "union") &&
+        this.isWeakKeyArgument(node, true)
+      )
+        this.noteWeakKey(expr.type);
+    }
     // An untyped primitive constructor enters a function-typed slot as the
     // constructor's own function (held-constructors.ts).
     if (this.untypedConstructors && expected.kind === "func" && expr.type.kind === "dyn")

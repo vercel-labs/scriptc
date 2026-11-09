@@ -19,8 +19,8 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   VOID,
+  adoptsAtTypedSlot,
   arrayOf,
-  boxesAsLiveCapsule,
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
@@ -2455,20 +2455,24 @@ function checkedDynCast(
  * for the adoption), so every consumer that reads or rebuilds a checked
  * conversion sees the node it always saw; one that rebuilds it without the
  * flag keeps the copy. The flag is set only for a target the backend has a
- * live capsule for (boxesAsLiveCapsule): the flag links the adoption unit,
- * so it stands on a conversion only where an adoption is emitted. */
+ * live capsule for and whose adoption loses nothing (adoptsAtTypedSlot):
+ * the flag links the adoption unit, so it stands on a conversion only where
+ * an adoption is emitted. A target that can hold a record without fields
+ * (the empty literal's arm of a union) keeps the copy: that record has no
+ * place for its source's properties, which the source's other names still
+ * read. */
 export function sharedDynConversion(
   lowerer: Lowerer,
   value: IrExpr,
   target: IrType,
   loc: SrcLoc,
 ): IrExpr {
-  const live = boxesAsLiveCapsule(
+  const adopts = adoptsAtTypedSlot(
     target,
     (id) => lowerer.shapes.get(id),
     (id) => lowerer.unions.get(id),
   );
-  if (!live || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
+  if (!adopts || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
   return { kind: "dynCheck", value, shared: true, type: target, loc };
 }
 

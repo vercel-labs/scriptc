@@ -42,6 +42,7 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  adoptsAtTypedSlot,
   DYN,
   DYN_HANDLE_KINDS,
   ISLAND_ADOPTED_KINDS,
@@ -3181,17 +3182,19 @@ export class LlDyn {
    * node only when something else holds it.
    *
    * The plain helper itself where the program does not link the adoption
-   * unit (a library) or the type has no live capsule. */
+   * unit (a library), the type has no live capsule, or the adoption could
+   * reach a record without fields, which would lose its source's properties
+   * (adoptsAtTypedSlot). */
   dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {
     const plain = this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
     if (host.declAdopt?.() !== true) return plain;
-    const live = boxesAsLiveCapsule(
+    const adopts = adoptsAtTypedSlot(
       t,
       (id) => host.recordsById.get(id),
       (id) => host.unionsById.get(id),
     );
-    if (!live) return plain;
+    if (!adopts) return plain;
     // Named after the plain helper, one name per (plain helper, borrowed):
     // the variant takes no number of the `sc_dc_<n>` sequence, so a program
     // that adopts differs from the same program without the flag only in

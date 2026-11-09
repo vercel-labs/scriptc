@@ -419,8 +419,16 @@ export function emitSerializationExpr(
         );
         return host.own({ name: retained, type: e.type });
       }
+      const sourceBorrowed = e.shared === true && host.canBorrowCallArgument(e.value);
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
+      // A typed slot's conversion keeps one object (dynCheck.shared): its
+      // helper also adopts the source where the check built a value from a
+      // plain object or array. The helper itself for every other conversion.
+      const adopting =
+        e.shared === true
+          ? host.dyn.dynCheckAdoptingHelper(e.type, e.preserveRefs === true, sourceBorrowed)
+          : helper;
       // A check of an analysis-proven fact (shape inference's overlay)
       // names its site, so a failure reports a compiler bug.
       const site = e.inferredSite !== undefined ? host.cstr(e.inferredSite) : null;
@@ -454,11 +462,11 @@ export function emitSerializationExpr(
       const ty = host.llType(e.type);
       let t: string;
       if (e.type.kind === "record") {
-        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs);
+        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs, adopting);
       } else {
         t = B.tmp();
         B.line(
-          `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr ${path})`,
+          `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${adopting}(ptr ${dynV.name}, ptr ${path})`,
         );
       }
       if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);

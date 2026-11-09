@@ -285,6 +285,28 @@ export function cycTypeDescriptor(name: string, trace: string, free: string, kin
   return `${name} = internal global ${CYC_TYPE} { ptr ${trace}, ptr ${free}, i32 ${kind}, i32 0 }`;
 }
 
+/** A type whose descriptor names scr_cyc_no_children for the collector and
+ * whose own trace function the weak analysis reads instead: `type` is the
+ * descriptor's symbol, `trace` the function's. */
+export interface WeakTrace {
+  type: string;
+  trace: string;
+}
+
+/** The definition of scr_weak_traces `{ count, entries }`, each entry a
+ * `{ descriptor, trace }` pair: the traces of the types that are traced
+ * only for the weak analysis (cycle-analysis.ts, computeWeakOnly). It
+ * overrides the runtime's weak, empty default (scr_json.c), so a program
+ * without such a type defines nothing. */
+export function weakTraceTable(traces: readonly WeakTrace[]): string[] {
+  if (traces.length === 0) return [];
+  const entries = traces.map((t) => `{ ptr, ptr } { ptr ${t.type}, ptr ${t.trace} }`);
+  return [
+    `@sc_weak_traces = private constant [${entries.length} x { ptr, ptr }] [${entries.join(", ")}]`,
+    `@scr_weak_traces = constant { i64, ptr } { i64 ${entries.length}, ptr @sc_weak_traces }`,
+  ];
+}
+
 /**
  * Lines that leave a zeroed object of `size` bytes (an integer constant
  * expression) in `%o`, aborting on OOM, with the RC-audit allocation note

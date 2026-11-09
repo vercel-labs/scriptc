@@ -485,6 +485,9 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* The same for a conversion without an assertion: all of `source` becomes
+ * one object with the value built from it, or nothing changes. */
+void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending
@@ -1001,7 +1004,8 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
- * plain data properties by an ordinary write, others by their descriptor. */
+ * plain data properties by an ordinary write; the others, and an own
+ * `__proto__`, which an ordinary write would not store, by their descriptor. */
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */
@@ -1079,8 +1083,8 @@ static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *k
 static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
   if (source->v.obj.layout) {
     ScrDynProp prop = scr_dyn_obj_prop_at(source, i);
-    ScrDynEntry entry = {(char *)prop.key, prop.key_len, prop.value, NULL, NULL,
-                         false, false, false, true, true, true};
+    ScrDynEntry entry = {.key = (char *)prop.key, .key_len = prop.key_len, .value = prop.value,
+                         .writable = true, .enumerable = true, .configurable = true};
     scr_dyn_copy_entry(target, source, &entry);
     return;
   }
@@ -1817,10 +1821,13 @@ extern SCR_TL void (*scr_weak_dispose_hook)(void *);
 #endif
 void scr_weak_dispose(void *object);
 /* The for-of-over-dyn pack accessors (the emitted index loop drives them
- * over a scr_dyn_iter_pack result, which is ARR by construction).
- * scr_dyn_arr_len answers 0 for non-ARR kinds; scr_dyn_arr_at answers the
- * undefined singleton past the end (both never throw). scr_dyn_arr_at is
- * +1. */
+ * over a scr_dyn_iter_pack result, which is ARR by construction), and the
+ * element read of a computed-read helper: an integer index below the length
+ * reads the element. They answer for an ARR and for a live array capsule
+ * (the receiver scr_dyn_index_get answers; its elements come back in the
+ * keyed read's boxing, a hole through its plain view). scr_dyn_arr_len
+ * answers 0 for every other kind; scr_dyn_arr_at answers the undefined
+ * singleton for every other kind and past the end. scr_dyn_arr_at is +1. */
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);

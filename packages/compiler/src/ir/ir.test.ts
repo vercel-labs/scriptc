@@ -5,10 +5,12 @@ import {
   F64,
   HANDLE_KINDS,
   BYTES_ELEMENT_NAME,
+  adoptsAtTypedSlot,
   bytesOf,
   canConvertToDyn,
   canDynCheckTo,
   type IrBytesElem,
+  holdsFieldlessRecord,
   isJsonSafeType,
   iterableArmsElem,
   isJsonStringifySafeType,
@@ -619,5 +621,67 @@ describe("arm sorting", () => {
     const one: IrType[] = [STRING];
     expect(sortArms(one)).toBe(one);
     expect(sortArmsTotal(one)).toBe(one);
+  });
+});
+
+describe("the types a typed slot's conversion adopts its source for", () => {
+  const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
+  const union = (unionId: string): IrType => ({ kind: "union", unionId });
+  const shapeList: IrRecordShape[] = [
+    { id: "cell", fields: [{ name: "x", type: F64 }] },
+    { id: "empty", fields: [] },
+    { id: "byKey", fields: [], indexValue: F64 },
+    { id: "byKeyEmpty", fields: [], indexValue: union("emptyOrNumber") },
+    { id: "box", fields: [{ name: "slot", type: union("emptyOrNumber") }] },
+    { id: "node", fields: [{ name: "next", type: union("nodeOrNumber") }] },
+    { id: "pair", tuple: true, fields: [{ name: "0", type: record("empty") }] },
+  ];
+  const unionList: IrUnionDef[] = [
+    { id: "cellOrNumber", arms: [F64, record("cell")] },
+    { id: "emptyOrNumber", arms: [F64, record("empty")] },
+    { id: "cellOrEmpty", arms: [record("cell"), record("empty")] },
+    { id: "nodeOrNumber", arms: [F64, record("node")] },
+    { id: "numberOrString", arms: [F64, STRING] },
+  ];
+  const shapes = new Map<string, IrRecordShape>();
+  for (const shape of shapeList) shapes.set(shape.id, shape);
+  const unions = new Map<string, IrUnionDef>();
+  for (const def of unionList) unions.set(def.id, def);
+  const getRecord = (id: string): IrRecordShape | undefined => shapes.get(id);
+  const getUnion = (id: string): IrUnionDef | undefined => unions.get(id);
+  const holds = (t: IrType): boolean => holdsFieldlessRecord(t, getRecord, getUnion);
+  const adopts = (t: IrType): boolean => adoptsAtTypedSlot(t, getRecord, getUnion);
+
+  test("a record, an array and a union of them adopt", () => {
+    for (const t of [record("cell"), arrayOf(F64), arrayOf(record("cell")), union("cellOrNumber")])
+      expect([holds(t), adopts(t)]).toEqual([false, true]);
+    // An index signature has a place for every key: it is not a record
+    // without fields.
+    expect([holds(record("byKey")), adopts(record("byKey"))]).toEqual([false, true]);
+    // A type that revisits itself ends, and its fields decide.
+    expect([holds(record("node")), adopts(record("node"))]).toEqual([false, true]);
+  });
+
+  test("a type that can hold a record without fields keeps the copy", () => {
+    // The empty literal's arm of a union, alone, beside a record with
+    // fields, as an element, as a field, as an index signature's value and
+    // as a tuple's position: adopted, the source would lose every property.
+    for (const t of [
+      record("empty"),
+      union("emptyOrNumber"),
+      union("cellOrEmpty"),
+      arrayOf(union("emptyOrNumber")),
+      arrayOf(arrayOf(record("empty"))),
+      record("box"),
+      arrayOf(record("box")),
+      record("byKeyEmpty"),
+      record("pair"),
+    ])
+      expect([holds(t), adopts(t)]).toEqual([true, false]);
+  });
+
+  test("a type without a live capsule does not adopt either way", () => {
+    for (const t of [F64, STRING, DYN, union("numberOrString")])
+      expect([holds(t), adopts(t)]).toEqual([false, false]);
   });
 });

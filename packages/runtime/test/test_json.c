@@ -577,6 +577,14 @@ static void reflecting_record_free(LiveRecord *rec) {
   if (scr_weak_dispose_hook) scr_weak_dispose_hook(rec);
   live_record_release(rec);
 }
+/* A stand-in symbol: the dyn runtime keys a symbol by its address and asks
+ * the symbol unit, which this test does not link, only for its text. */
+static char reflecting_mark;
+static void reflecting_mark_release(ScrSym *symbol) { (void)symbol; }
+static ScrStr *reflecting_mark_text(ScrSym *symbol) {
+  (void)symbol;
+  return scr_str_new("mark", 4);
+}
 static void record_reflects_static_tests(void) {
   LiveRecord *plain = reflecting_record(1);
   check(scr_record_reflects_static(plain, true), "a record no table holds reflects statically");
@@ -596,6 +604,25 @@ static void record_reflects_static_tests(void) {
   scr_dyn_release(proto);
   scr_dyn_release(capsule);
   check(scr_record_reflects_static(plain, true), "the prototype goes with the capsule");
+
+  /* A member named by a symbol and written through a capsule lives in that
+   * capsule's view: no declared field holds it, and Reflect.ownKeys lists
+   * it after the fields. */
+  ScrDyn *holder = scr_dyn_new_typed_ref(plain, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  ScrDyn *mark = scr_dyn_symbol_ref((ScrSym *)&reflecting_mark, reflecting_mark_release,
+      reflecting_mark_text, reflecting_mark_text);
+  ScrDyn *marked = scr_dyn_new_num(1);
+  check(scr_record_reflects_static(plain, true), "a second plain capsule changes nothing");
+  scr_dyn_symbol_key_set(holder, mark, marked);
+  check(!scr_exc_pending(), "a capsule takes a symbol-keyed member");
+  check(!scr_record_reflects_static(plain, true),
+      "a live capsule with a symbol-keyed member answers for its record");
+  check(scr_record_reflects_static(other, true), "a symbol-keyed member is one record's");
+  scr_dyn_release(marked);
+  scr_dyn_release(mark);
+  scr_dyn_release(holder);
+  check(scr_record_reflects_static(plain, true), "the symbol-keyed member goes with the capsule");
 
   /* A kept source: the object the record was converted from had a key the
    * record's type does not declare. */

@@ -527,6 +527,9 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "arrayBuffer.viewU32",
   "arrayBuffer.viewU8",
   "arrayBuffer.viewU8C",
+  // A DataView over a buffer: the buffer is checked, the offset and the
+  // length are converted with dyn.numberConstructor's helper.
+  "arrayBuffer.viewDV",
   "date.nativeNew",
   "date.nativeNewFields",
   "date.nativeNewValue",
@@ -584,6 +587,12 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.objKeyStrings",
   "dyn.objKeys",
   "dyn.objValues",
+  // Object.values consumed as a native list: a record's or a data-only
+  // object's values are read in place, anything else through dyn.objValues.
+  "dyn.objValueList",
+  // `instanceof` a built-in error class: a lookup of the value among the
+  // error views and a comparison of two class ranges.
+  "dyn.errInstanceof",
   "dyn.objectTag",
   "dyn.ownKeys",
   "dyn.packPush",

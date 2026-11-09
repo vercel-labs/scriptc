@@ -171,7 +171,9 @@ test("owning a weak collection is not a dynamic store", async () => {
 
 // Helpers that read a dynamic value and store nothing: `await` of a checked
 // value, Object.is, `in` and Object.hasOwn with a computed key, and a string
-// replace whose callback has untyped parameters. A program that uses them
+// replace whose callback has untyped parameters, a DataView over a buffer,
+// `instanceof` a built-in error class and Object.values consumed by a loop.
+// A program that uses them
 // keeps its final fields and int32 fields; one test per helper shows the
 // program really lowers to it, and a store through a dynamic value still
 // names every field.
@@ -197,10 +199,16 @@ const text = "{name}_b".replace(/\\{(\\w+)\\}/g, (_m, name) => vars[name] ?? nam
 const same = Object.is(values[0], values[2]);
 const has = key in target;
 const own = Object.hasOwn(target, key);
+const buffer: any = new ArrayBuffer(8);
+const view = new DataView(buffer, 2);
+const failed = values[0] instanceof TypeError;
+let listed = 0;
+for (const value of Object.values(target)) listed += value === undefined ? 0 : 1;
 ${store}
 async function main(): Promise<void> {
   const settled = await settle(values[0]);
   console.log(settled, text, same, has, own, item.kind | 0, item.tags.length);
+  console.log(view.byteLength, failed, listed);
 }
 main();
 `;
@@ -211,6 +219,9 @@ test.each([
   "dyn.hasKeyComputed",
   "dyn.hasOwnComputed",
   "regex.replaceCallback",
+  "arrayBuffer.viewDV",
+  "dyn.errInstanceof",
+  "dyn.objValueList",
 ])("%s is not a dynamic store", async (fn) => {
   const mod = await lowered(readers(""));
   expect(JSON.stringify(mod.functions)).toContain(`"fn":"${fn}"`);

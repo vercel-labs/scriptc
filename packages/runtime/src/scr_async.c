@@ -2327,7 +2327,7 @@ static void scr_promise_cb_queue(const struct ScrPromiseCbWaiter *cb, ScrPromise
   scr_ready_push(job);
 }
 
-static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb);
+static void scr_promise_cb_attach(ScrPromise *in, struct ScrPromiseCbWaiter cb);
 
 /* Runs and frees a reaction job envelope. */
 static void scr_promise_job_run(ScrFiber *f) {
@@ -2338,7 +2338,7 @@ static void scr_promise_job_run(ScrFiber *f) {
     /* scr_promise_react_next's turn: the reaction subscribes now, and the
      * waiter's references move into the subscription. */
     cb.job_at = 0;
-    scr_promise_cb_subscribe(src, cb);
+    scr_promise_cb_attach(src, cb);
   } else if (cb.job_at != SCR_CB_BATCH) {
     scr_promise_cb_run(&cb, src);
   } else {
@@ -2359,11 +2359,9 @@ static struct ScrPromiseCbWaiter *scr_promise_cb_push(ScrPromise *in) {
   return &in->cbs[in->ncbs++];
 }
 
-/* A combinator subscribing to an entry: Node's `then` on the entry. The
- * entry counts as handled from here on; a settled entry queues its
- * reaction job now, a pending one when it settles. */
-static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
-  scr_prom_observe(in);
+/* The subscription itself: a settled entry queues its reaction job now, a
+ * pending one when it settles. */
+static void scr_promise_cb_attach(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
   if (in->state != SCR_PROM_PENDING) {
     scr_promise_cb_queue(&cb, in);
   } else {
@@ -2373,11 +2371,25 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
+/* A combinator subscribing to an entry: Node's `then` on the entry. The
+ * entry counts as handled from here on. */
+static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
+  scr_prom_observe(in);
+  scr_promise_cb_attach(in, cb);
+}
+
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
   struct ScrPromiseCbWaiter cb = {0};
   cb.reaction = reaction;
   cb.ctx = ctx;
   scr_promise_cb_subscribe(p, cb);
+}
+
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_attach(p, cb);
 }
 
 void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {

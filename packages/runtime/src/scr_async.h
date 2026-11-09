@@ -216,9 +216,16 @@ typedef struct ScrPromiseReaction {
 /* Subscribes a native reaction to `p` (the descriptor outlives it) and
  * marks `p` handled, as a `then` does. */
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
-/* The same one microtask turn later, as the job that resolves a promise
- * with another one calls its `then` (NewPromiseResolveThenableJob): `p`
- * stays alive and unhandled until that turn. */
+/* The same without the mark: `p` counts as handled once the reaction's own
+ * steps observe it (scr_promise_settled_now), as it did when a fiber that
+ * awaited it resumed. A rejection already reported as unhandled therefore
+ * raises 'rejectionHandled' in the reaction's turn, never inside the call
+ * that registers it. */
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* An unmarked subscription one microtask turn later, as the job that
+ * resolves a promise with another one calls its `then`
+ * (NewPromiseResolveThenableJob): `p` stays alive until that turn, and
+ * unhandled until the reaction's steps observe it. */
 void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable

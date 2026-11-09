@@ -855,7 +855,7 @@ static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
       pack->dst = scr_promise_retain(passthrough);
       pack->result = r;
       SCR_DYN_PENDING_LINK(pack);
-      scr_promise_react(r->v.promise, &scr_dyn_finally_reaction, pack);
+      scr_promise_react_unmarked(r->v.promise, &scr_dyn_finally_reaction, pack);
       scr_promise_resolve_dyn(a->dst, scr_dyn_new_promise(passthrough));
       scr_promise_release(passthrough);
     } else {
@@ -885,6 +885,11 @@ static void scr_dyn_then_drop(void *ctx) {
 static const ScrPromiseReaction scr_dyn_then_reaction = { scr_dyn_then_react, scr_dyn_then_drop };
 
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
+  /* A rejection HANDLER marks the source handled at attach (Node's
+   * moment), which also lets a .catch inside an 'unhandledRejection'
+   * listener fire 'rejectionHandled' at the attach point. Without one the
+   * reaction's own steps observe the source in their turn. */
+  if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();
   a->dst = scr_promise_new();
@@ -894,10 +899,7 @@ ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *
   a->als = scr_als_capture();
   ScrDyn *boxed = scr_dyn_new_promise(a->dst);
   SCR_DYN_PENDING_LINK(a);
-  /* The subscription marks the source handled at attach (Node's moment),
-   * which also lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' at the attach point. */
-  scr_promise_react(src, &scr_dyn_then_reaction, a);
+  scr_promise_react_unmarked(src, &scr_dyn_then_reaction, a);
   return boxed;
 }
 

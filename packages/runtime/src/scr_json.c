@@ -22257,13 +22257,14 @@ __attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
 static SCR_TL ScrTraceFn *scr_weak_trace_of;
 static SCR_TL uint32_t scr_weak_trace_ids;
 
-/* The trace scr_weak_traces lists for the type with registry id `id`, a
- * type whose descriptor names scr_cyc_no_children; that function when the
- * table does not list it (a type without cycle-capable children). A
- * descriptor gets its id on its first allocation and keeps it, and `id`
- * comes from an object's header, so the answer for an id never changes
- * within a run. */
-static ScrTraceFn scr_weak_trace_lookup(uint32_t id) {
+/* The trace the analysis follows for `type` (the registry's entry of an
+ * object's header): the one scr_weak_traces lists for it, or its own. A
+ * descriptor gets its id on its first allocation and keeps it, so the
+ * answer for an id never changes within a run. Every type is asked, not
+ * only the ones whose own trace is scr_cyc_no_children: naming that
+ * function here would move it in the symbol table of every executable. */
+static ScrTraceFn scr_weak_trace_lookup(const ScrCycType *type) {
+  uint32_t id = type->id;
   if (id >= scr_weak_trace_ids) {
     uint32_t ids = id + 64 - id % 64;
     ScrTraceFn *grown = realloc(scr_weak_trace_of, ids * sizeof *grown);
@@ -22274,7 +22275,7 @@ static ScrTraceFn scr_weak_trace_lookup(uint32_t id) {
   }
   ScrTraceFn trace = scr_weak_trace_of[id];
   if (trace) return trace;
-  trace = scr_cyc_no_children;
+  trace = type->trace;
   for (uint64_t i = 0; i < scr_weak_traces.count; i++) {
     const ScrWeakTraceEntry *entry = &scr_weak_traces.entries[i];
     if (__atomic_load_n(&entry->type->id, __ATOMIC_ACQUIRE) == id) {
@@ -22294,9 +22295,8 @@ static ScrTraceFn scr_weak_trace_lookup(uint32_t id) {
  * The box holds one count of its promise for as long as it is a box, so
  * every walk of the analysis sees the same edge. */
 static inline void scr_weak_trace(void *obj, const ScrCycType *type, ScrTraceVisit visit) {
-  ScrTraceFn trace = type->trace;
-  /* A type traced only for this analysis (scr_weak_traces). */
-  if (trace == scr_cyc_no_children && scr_weak_traces.count) trace = scr_weak_trace_lookup(type->id);
+  /* A type traced only for this analysis has its trace in scr_weak_traces. */
+  ScrTraceFn trace = scr_weak_traces.count ? scr_weak_trace_lookup(type) : type->trace;
   trace(obj, visit, NULL);
   if (type->kind == SCR_CYC_KIND_DYN && ((ScrDyn *)obj)->kind == SCR_DYN_PROMISE)
     visit(((ScrDyn *)obj)->v.promise, NULL);

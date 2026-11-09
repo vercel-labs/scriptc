@@ -1571,9 +1571,28 @@ static void scr_weak_disposed(void *key);
 static inline bool scr_weak_maybe_key(const void *key) {
   return scr_weak_observing && scr_dispose_maybe_observed(key);
 }
+/* How many bits of the shared dispose filter the observers' tables have set
+ * since it was last cleared. Clearing the filter writes all of it, and a
+ * table that holds one entry at a time empties on every removal, so the
+ * clear waits for SCR_DISPOSE_FILTER_STALE bits: with fewer left behind,
+ * under one disposal in 64 takes the call for nothing, and that call finds
+ * every table empty. A key whose bit is already set counts nothing, so
+ * entries that come and go at the same few addresses never clear. */
+#define SCR_DISPOSE_FILTER_STALE (SCR_DISPOSE_FILTER_BITS / 64)
+static SCR_TL size_t scr_dispose_filter_noted;
+/* An observer's table took `obj` as a key: name it in the filter. */
+static inline void scr_dispose_note(const void *obj) {
+  if (scr_dispose_maybe_observed(obj)) return;
+  scr_dispose_filter_note(obj);
+  scr_dispose_filter_noted++;
+}
 /* Called by a dispose observer whose table has just emptied: clears the
- * shared filter once no observer has an entry left. */
-static void scr_dispose_filter_emptied(void);
+ * shared filter once no observer has an entry left and enough bits are
+ * set. */
+static SCR_COLD void scr_dispose_filter_clear(void);
+static inline void scr_dispose_filter_emptied(void) {
+  if (scr_dispose_filter_noted >= SCR_DISPOSE_FILTER_STALE) scr_dispose_filter_clear();
+}
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
 }
@@ -4335,7 +4354,9 @@ static void scr_dispose_observers(void *object) {
   if (scr_dispose_maybe_observed(object)) scr_dispose_observed(object);
 }
 
-static SCR_COLD void scr_dispose_observed(void *object) {
+/* Out of line, not cold: a program that keeps a source for every record it
+ * checks comes here for every record it frees. */
+static __attribute__((noinline)) void scr_dispose_observed(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
    * a program without the fact has no table to consult. */
@@ -4352,6 +4373,7 @@ static SCR_COLD void scr_dispose_observed(void *object) {
 void scr_js_dispose_hook_install(void) {
   /* The registry's views and owners are not noted one by one. */
   memset(scr_dispose_filter, 0xff, sizeof scr_dispose_filter);
+  scr_dispose_filter_noted = SCR_DISPOSE_FILTER_BITS;
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 #endif
@@ -4462,7 +4484,7 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
   scr_record_sources[slot] = *entry;
   scr_record_source_count++;
-  scr_dispose_filter_note(entry->rec);
+  scr_dispose_note(entry->rec);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -4675,7 +4697,7 @@ void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t
   if (scr_record_links[slot].copy == SCR_RECORD_LINK_DELETED) scr_record_link_deleted--;
   scr_record_links[slot] = (ScrRecordLink){ copy, source, release, pair };
   scr_record_link_count++;
-  scr_dispose_filter_note(copy);
+  scr_dispose_note(copy);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -21918,17 +21940,18 @@ static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
     scr_weak_keys[j].key = key;
     scr_weak_keys[j].head = NULL;
     scr_weak_keys_used++;
-    scr_dispose_filter_note(key);
+    scr_dispose_note(key);
   }
   return &scr_weak_keys[j];
 }
-static void scr_dispose_filter_emptied(void) {
+static SCR_COLD void scr_dispose_filter_clear(void) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry observes addresses it never notes. */
   if (scr_js_buffer_ops) return;
 #endif
   if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count) return;
   memset(scr_dispose_filter, 0, sizeof scr_dispose_filter);
+  scr_dispose_filter_noted = 0;
 }
 static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   size_t mask = scr_weak_keys_mask;

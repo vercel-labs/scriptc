@@ -36,6 +36,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isCjsJsFile, locOf } from "../program.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import {
   cjsExportCallIgnoresThis,
   isCjsExportsIdentifier,
@@ -63,11 +64,6 @@ export interface CjsExportsShape {
   /** The exports some function assigned to an export reads through `this`,
    * in the order of `writes`. */
   members: string[];
-}
-
-function withoutParentheses(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node)) node = node.expression;
-  return node;
 }
 
 /** Whether `access` is a target inside a destructuring assignment or the

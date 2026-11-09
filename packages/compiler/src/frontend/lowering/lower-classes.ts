@@ -5573,7 +5573,9 @@ export function genericClassInstanceType(
     .getTypeArguments(ref as ts.TypeReference)
     .slice(0, gci.typeParams.length);
   const mapped: IrType[] = [];
-  const tsArgs: ts.Type[] = [];
+  // The checker type of each argument, by the parameter's position; undefined
+  // where the `this` type's instance has no checker binding for it.
+  const tsArgs: (ts.Type | undefined)[] = [];
   if (args.length === gci.typeParams.length) {
     for (const a of args) {
       tsArgs.push(lowerer.typeParamTsResolver(a) ?? a);
@@ -5598,8 +5600,10 @@ export function genericClassInstanceType(
       const b = lowerer.typeParamBindings?.get(tp);
       if (!b) return null;
       mapped.push(b);
-      const bound = lowerer.typeParamTsBindings?.get(tp);
-      if (bound) tsArgs.push(bound);
+      // An instance binds only its literal-sensitive parameters to checker
+      // types, so the list keeps a place for every parameter: `this` in a
+      // class with one sensitive parameter of two is that same instance.
+      tsArgs.push(lowerer.typeParamTsBindings?.get(tp));
     }
   }
   // A type parameter that a conditional type in the class depends on
@@ -5611,7 +5615,7 @@ export function genericClassInstanceType(
   // the key does not carry.
   gci.literalSensitive ??= literalSensitiveTypeParams(lowerer, gci);
   const sensitive = (i: number): boolean =>
-    tsArgs.length === gci.typeParams.length && gci.literalSensitive!.has(gci.typeParams[i]!);
+    tsArgs[i] !== undefined && gci.literalSensitive!.has(gci.typeParams[i]!);
   const checkerKey = gci.typeParams
     .map((_, i) => (sensitive(i) ? `#${tsArgs[i]!.id}` : "*"))
     .join(",");
@@ -5711,60 +5715,100 @@ export function genericClassInstanceType(
   return { kind: "object", className: name };
 }
 
-/** The class's type parameters that a conditional type inside it depends
- * on: the parameters named within a type node that is a conditional type
- * or reaches one through the type aliases and interfaces it refers to
- * (`get(): Value<T, K>` with `type Value<T, K> = K extends "required" ? T
- * : T | undefined`, also when the alias wraps the conditional in a union
- * or another alias). Their arguments pick the conditional's branch. */
+/** The class's type parameters that a conditional type depends on: the
+ * parameters named within a conditional type of the class, or within an
+ * argument that a type alias or interface the class refers to hands on to
+ * a conditional type of its own (`get(): Value<T, K>` with `type Value<T,
+ * K> = K extends "required" ? T : T | undefined`, also when the alias wraps
+ * the conditional in a union or another alias). Their arguments pick the
+ * conditional's branch.
+ *
+ * A reference counts by position, not as a whole: `items: Array<T>` names
+ * `T` where `interface Array<T>` has no conditional over it (the one in
+ * `flat(): FlatArray<A, D>[]` is over the method's own parameters), so `T`
+ * picks no branch, and the class is keyed by its arguments' layouts alone.
+ * Keyed by checker types, `List<S>` written inside a generic function, a
+ * closure or another generic class would be another instantiation than the
+ * `List<number>` that `S` is bound to: the function's instance binds `S` to
+ * a layout, and the checker type there is `S` itself. */
 function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Set<ts.Symbol> {
-  const params = new Set(gci.typeParams);
-  const found = new Set<ts.Symbol>();
-  const reaches = new Map<ts.Symbol, boolean>();
-  const declarationsReach = (symbol: ts.Symbol): boolean => {
+  type Named = { has(symbol: ts.Symbol): boolean };
+  // The declarations being scanned, each with its place in the chain: a
+  // recursive alias reads its own positions while they are still growing.
+  const open = new Map<ts.Symbol, { positions: Set<number>; depth: number }>();
+  let lowestOpenRead = Infinity;
+  /** The positions of an alias's or interface's own type parameters that a
+   * conditional type in it depends on. */
+  const sensitivePositions = (symbol: ts.Symbol): ReadonlySet<number> => {
     const target =
       symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
-    const known = reaches.get(target);
-    if (known !== undefined) return known;
-    reaches.set(target, false); // a recursive alias reaches through its other parts
-    const result = target.declarations.some((d) =>
-      ts.isTypeAliasDeclaration(d)
-        ? reachesConditional(d.type)
-        : ts.isInterfaceDeclaration(d)
-          ? d.members.nodes.some(reachesConditional)
-          : false,
-    );
-    reaches.set(target, result);
-    return result;
-  };
-  const reachesConditional = (node: ts.Node): boolean => {
-    if (ts.isConditionalTypeNode(node)) return true;
-    if (ts.isTypeReferenceNode(node)) {
-      const name = ts.isIdentifier(node.typeName) ? node.typeName : node.typeName.right;
-      const symbol = lowerer.checker.getSymbolAtLocation(name);
-      if (symbol && !params.has(symbol) && declarationsReach(symbol)) return true;
+    const known = lowerer.conditionalTypeParamPositions.get(target);
+    if (known) return known;
+    const pending = open.get(target);
+    if (pending) {
+      lowestOpenRead = Math.min(lowestOpenRead, pending.depth);
+      return pending.positions;
     }
-    let found = false;
-    ts.forEachChild(node, (child) => {
-      if (!found && reachesConditional(child)) found = true;
-    });
-    return found;
+    const positions = new Set<number>();
+    const depth = open.size;
+    open.set(target, { positions, depth });
+    const outerLowestOpenRead = lowestOpenRead;
+    lowestOpenRead = Infinity;
+    // Until nothing is added: a position found late (`type A<T, U> = A<U, T>
+    // | (T extends string ? 1 : 2)`) makes the reference to itself name more.
+    for (let size = -1; positions.size > size; ) {
+      size = positions.size;
+      for (const d of target.declarations) {
+        if (!ts.isTypeAliasDeclaration(d) && !ts.isInterfaceDeclaration(d)) continue;
+        const own = new Map<ts.Symbol, number>();
+        d.typeParameters?.nodes.forEach((parameter, i) => {
+          const parameterSymbol = lowerer.checker.getSymbolAtLocation(parameter.name);
+          if (parameterSymbol) own.set(parameterSymbol, i);
+        });
+        if (own.size === 0) continue;
+        const named = new Set<ts.Symbol>();
+        if (ts.isTypeAliasDeclaration(d)) scan(d.type, own, named);
+        else for (const member of d.members.nodes) scan(member, own, named);
+        for (const parameterSymbol of named) positions.add(own.get(parameterSymbol)!);
+      }
+    }
+    open.delete(target);
+    // An answer that read a declaration still open further out is only as
+    // complete as that one was then: it is not kept.
+    const complete = lowestOpenRead >= depth;
+    if (complete) lowerer.conditionalTypeParamPositions.set(target, positions);
+    lowestOpenRead = complete ? outerLowestOpenRead : Math.min(outerLowestOpenRead, lowestOpenRead);
+    return positions;
   };
-  const collect = (node: ts.Node): void => {
+  const collect = (node: ts.Node, params: Named, into: Set<ts.Symbol>): void => {
     if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
       const symbol = lowerer.checker.getSymbolAtLocation(node.typeName);
-      if (symbol && params.has(symbol)) found.add(symbol);
+      if (symbol && params.has(symbol)) into.add(symbol);
     }
-    ts.forEachChild(node, collect);
+    ts.forEachChild(node, (child) => collect(child, params, into));
   };
-  const visit = (node: ts.Node): void => {
-    if (ts.isTypeNode(node) && reachesConditional(node)) {
-      collect(node);
+  const scan = (node: ts.Node, params: Named, into: Set<ts.Symbol>): void => {
+    if (ts.isConditionalTypeNode(node)) {
+      collect(node, params, into);
       return;
     }
-    ts.forEachChild(node, visit);
+    if (ts.isTypeReferenceNode(node) && node.typeArguments) {
+      const name = ts.isIdentifier(node.typeName) ? node.typeName : node.typeName.right;
+      const symbol = lowerer.checker.getSymbolAtLocation(name);
+      if (symbol && !params.has(symbol)) {
+        const positions = sensitivePositions(symbol);
+        node.typeArguments.nodes.forEach((argument, i) => {
+          if (positions.has(i)) collect(argument, params, into);
+          else scan(argument, params, into);
+        });
+        return;
+      }
+    }
+    ts.forEachChild(node, (child) => scan(child, params, into));
   };
-  for (const member of gci.decl.members.nodes) visit(member);
+  const found = new Set<ts.Symbol>();
+  const params = new Set(gci.typeParams);
+  for (const member of gci.decl.members.nodes) scan(member, params, found);
   return found;
 }
 

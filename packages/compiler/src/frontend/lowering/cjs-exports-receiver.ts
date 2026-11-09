@@ -56,7 +56,7 @@ interface ThisReads {
 }
 
 /** What the module's source shows of its exports object. */
-interface ExportsShape {
+export interface CjsExportsShape {
   /** The values each export is assigned, in source order of the first
    * assignment of each name. */
   writes: Map<string, ts.Expression[]>;
@@ -64,8 +64,6 @@ interface ExportsShape {
    * in the order of `writes`. */
   members: string[];
 }
-
-const shapes = new WeakMap<Lowerer, Map<ts.SourceFile, ExportsShape | null>>();
 
 function withoutParentheses(node: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(node)) node = node.expression;
@@ -244,21 +242,17 @@ function runsNothingOfTheModule(statement: ts.Statement, write: boolean, early: 
 }
 
 /** The module's exports as its source assigns them, or null when the source
- * does not show every write of the exports object. */
-function exportsShapeOf(lowerer: Lowerer, sf: ts.SourceFile): ExportsShape | null {
-  let cache = shapes.get(lowerer);
-  if (cache === undefined) {
-    cache = new Map();
-    shapes.set(lowerer, cache);
-  }
-  const cached = cache.get(sf);
+ * does not show every write of the exports object. Cached per file on the
+ * lowerer: the answer depends only on the module's source. */
+function exportsShapeOf(lowerer: Lowerer, sf: ts.SourceFile): CjsExportsShape | null {
+  const cached = lowerer.cjsExportsShapes.get(sf);
   if (cached !== undefined) return cached;
   const shape = computeExportsShape(lowerer, sf);
-  cache.set(sf, shape);
+  lowerer.cjsExportsShapes.set(sf, shape);
   return shape;
 }
 
-function computeExportsShape(lowerer: Lowerer, sf: ts.SourceFile): ExportsShape | null {
+function computeExportsShape(lowerer: Lowerer, sf: ts.SourceFile): CjsExportsShape | null {
   if (!isCjsJsFile(sf, lowerer.program)) return null;
   // Top-level `this` is the exports object too, and it is used as a value.
   if (usesCjsTopLevelThis(lowerer, sf)) return null;
@@ -338,7 +332,7 @@ function computeExportsShape(lowerer: Lowerer, sf: ts.SourceFile): ExportsShape 
 function exportReadsOnlyMembers(
   lowerer: Lowerer,
   sf: ts.SourceFile,
-  shape: ExportsShape,
+  shape: CjsExportsShape,
   name: string,
   visiting: ReadonlySet<string>,
 ): boolean {

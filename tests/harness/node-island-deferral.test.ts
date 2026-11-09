@@ -6,8 +6,9 @@
  * fixtures are in tests/fixtures/node-island/deferral. Needs a libnode pack
  * in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { libnodePack } from "./libnode.js";
@@ -40,13 +41,14 @@ const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/node-island-def
 const skip = libnodePack() === null;
 
 /** Builds a fixture (or a program of `root`) with the deferral trace on and
- * `set` in the build's environment; answers the binary and the build's
- * trace lines. */
+ * `set` in the build's environment, from `cwd` when given; answers the
+ * binary and the build's trace lines. */
 async function build(
   name: string,
   root = fixtures,
   set: Record<string, string> = {},
   entry = "main.ts",
+  cwd?: string,
 ): Promise<{ binary: string; trace: string[] }> {
   const dir = join(outDir, name);
   rmSync(dir, { recursive: true, force: true });
@@ -61,7 +63,7 @@ async function build(
   const { stderr } = await execFileAsync(
     process.execPath,
     [cli, "build", join(root, name, entry), "-o", binary],
-    { env, encoding: "utf8" },
+    { env, encoding: "utf8", cwd },
   );
   return { binary, trace: stderr.split("\n").filter((l) => l.startsWith("[node-islands] ")) };
 }
@@ -278,6 +280,57 @@ describe.skipIf(skip)("deferred Node island modules", () => {
       expect(decision).toContain("SCRIPTC_BUILD_SECRET");
     }
     expect(readFileSync(binary).includes(secret)).toBe(false);
+  }, 300_000);
+
+  test("a build-time value an earlier load left where the probe compares nothing stays out of the program", async () => {
+    const secret = "sk-build-only-41d8e2";
+    const { binary, trace } = await build("shared-console", fixtures, {
+      SCRIPTC_BUILD_SECRET: secret,
+    });
+    const reader = trace.find((l) => l.includes("token-reader"));
+    expect(reader).toMatch(/^\[node-islands\] eager .*SCRIPTC_BUILD_SECRET/);
+    const echo = trace.find((l) => l.includes("token-echo"));
+    expect(echo).toMatch(/^\[node-islands\] eager .*an earlier load reads .*SCRIPTC_BUILD_SECRET/);
+    expect(readFileSync(binary).includes(secret)).toBe(false);
+    // The run reads its own environment, as Node does.
+    const env = {
+      ...process.env,
+      XDG_CACHE_HOME: join(outDir, "cache"),
+      SCRIPTC_BUILD_SECRET: "sk-run-5c0b17",
+    };
+    const { stdout } = await execFileAsync(binary, [], { env, encoding: "utf8" });
+    expect(stdout).toBe("true sk-run-5c0b17\n");
+  }, 300_000);
+
+  test('a "lazy" load that read the working directory leaves nothing of it in the program', async () => {
+    // Built from a directory outside the project, so no check for the
+    // project's paths applies: the key of `cwd-kit`'s object and what
+    // `cwd-echo` exports are left out of the snapshots as readings.
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "scriptc-build-cwd-")));
+    try {
+      const { binary, trace } = await build("lazy-cwd", fixtures, {}, "main.ts", cwd);
+      expect(trace.find((l) => l.includes("cwd-kit/index.js: "))).toMatch(
+        /^\[node-islands\] defer .*"evaluate": "lazy"; reads process\.cwd\(\)/,
+      );
+      expect(trace.find((l) => l.includes("cwd-echo/index.js: "))).toMatch(
+        /^\[node-islands\] defer .*probed after a load that reads process\.cwd\(\)/,
+      );
+      const bytes = readFileSync(binary);
+      expect(bytes.includes(cwd)).toBe(false);
+      expect(bytes.includes(basename(cwd))).toBe(false);
+      // The run reads its own working directory, as Node does.
+      const env = { ...process.env, XDG_CACHE_HOME: join(outDir, "cache") };
+      const options = { env, cwd: outDir, encoding: "utf8" as const };
+      const node = await execFileAsync(
+        process.execPath,
+        ["--no-warnings", join(fixtures, "lazy-cwd", "main.ts")],
+        options,
+      );
+      expect(node.stdout).toBe("cwd-kit true true\n");
+      expect((await execFileAsync(binary, [], options)).stdout).toBe(node.stdout);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   }, 300_000);
 
   test("a load that changes another island module's exports defers neither", async () => {

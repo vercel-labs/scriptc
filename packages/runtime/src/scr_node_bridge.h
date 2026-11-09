@@ -18,7 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 20u
+#define SCR_NODE_BRIDGE_ABI 21u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -150,6 +150,14 @@ enum {
    * adopts it. */
   SCR_NVF_TWIN = 1024,
   SCR_NVF_ARRAYBUFFER = 2048, /* BYTES: the ArrayBuffer itself, not a view of it */
+  /* A built-in constructor (String, Number, Boolean, BigInt, Map, Date, ...).
+   * EXPORT: the native value of the one `exp.name` names; its representative
+   * is the island's own intrinsic of that name, so island code compares it
+   * equal to its `String` and the island hands the same object back.
+   * HANDLE: the function is one of the island's intrinsic constructors: the
+   * runtime answers it with the native value of that name when the program
+   * holds one. */
+  SCR_NVF_INTRINSIC = 32768,
 };
 /* A handle with this bit names a "young" view: the V8 view of a runtime
  * view that crossed for the first time since the runtime's last

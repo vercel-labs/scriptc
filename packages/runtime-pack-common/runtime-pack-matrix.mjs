@@ -166,6 +166,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // clusters) keeps its own unit and links none of this.
   ["scr_intl.c", "intl"],
   ["scr_events.c", "events"],
+  // getColorDepth and hasColors of the process stream object: a program
+  // that holds a process stream as a value and names one of them. It is
+  // called by the SCR_TTY_COLORS build of scr_events.c.
+  ["scr_tty_colors.c", all("events", "ttyColors")],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
@@ -616,6 +620,17 @@ export function variantsFor(source) {
       ],
     ])
       variants.push({ id, when, defines });
+  }
+  // A program that names getColorDepth or hasColors of a process stream it
+  // holds as a value: the stream object asks scr_tty_colors.c for the two
+  // methods on a terminal. Every other program keeps the default object,
+  // byte for byte.
+  if (source === "scr_events.c") {
+    variants.push({
+      id: "tty-colors",
+      when: { ttyColors: true },
+      defines: ["SCR_TTY_COLORS"],
+    });
   }
   // A program with islands that holds a process output stream as a value:
   // the bootstrap carries the accessor that joins the island's

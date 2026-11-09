@@ -136,6 +136,7 @@ import {
   withUnitArm,
   X509_DER_FIELD,
   X509_PUBLIC_KEY_FIELD,
+  holdsPrimitiveConstructors,
 } from "../type-mapper.js";
 import {
   canonicalBuiltinModule,
@@ -10281,6 +10282,20 @@ export function lowerStaticMethod(
   info: ClassInfo,
   name: string,
 ): IrFunction | null {
+  // A poison OUTSIDE the per-statement catches (the this/super fence, a
+  // fenced parameter default, a binding of a destructured parameter): the
+  // diagnostic is recorded. Localized failure's commit point degrades a
+  // failing declaration slot and lowers the method again; otherwise the
+  // method skips like a signature-blocked function (lowerFunction's rule)
+  // instead of killing the whole analysis.
+  return lowerer.lowerUnitDegrading(() => lowerStaticMethodAttempt(lowerer, info, name));
+}
+
+function lowerStaticMethodAttempt(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+): IrFunction | null {
   const entry = info.staticMethods?.get(name);
   if (!entry?.member.body) return null;
   const isAsync =
@@ -10338,13 +10353,6 @@ export function lowerStaticMethod(
     if (isAsync) fn.async = true;
     if (genCh !== null) fn.generator = bindsAtCall ? { ...genCh, bindAtCall: true } : genCh;
     return fn;
-  } catch (e) {
-    // A poison OUTSIDE the per-statement catches (the this/super fence,
-    // a fenced parameter default): the diagnostic is recorded — the
-    // method skips like a signature-blocked function (lowerFunction's
-    // rule) instead of killing the whole analysis.
-    if (!(e instanceof PoisonError)) throw e;
-    return null;
   } finally {
     lowerer.fnStack.pop();
   }
@@ -13384,6 +13392,46 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         lowerer.unsupported("SC1090", expr, hint);
       }
     }
+  }
+  // `new` through a HELD primitive constructor (`new column.parse(raw)` where
+  // the slot's type is `typeof String`): Node builds a wrapper object,
+  // which the constructor's function value does not. Named here, where the
+  // type says what the slot holds; `new String(x)` itself lowers above. The
+  // refusal is the statement's, at run time: a program that never reaches
+  // the statement builds and runs as it does under Node.
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    holdsPrimitiveConstructors(lowerer.typeOf(expr.expression), lowerer.typeCtx)
+  ) {
+    const diag = unsupportedDiag(
+      "SC1090",
+      locOf(expr),
+      "'new' through a held String, Number, Boolean or BigInt constructor value (it builds a wrapper object)",
+      "call the held constructor as a function for the primitive, or construct with the constructor's own name",
+    );
+    lowerer.runtimeFences.push(diag);
+    // The build names the statement (SC6015): its refusal waits for it to run.
+    lowerer.noteDeferredRefusal(expr, `${diag.code}: ${diag.message}`, diag.hint ?? "");
+    const line =
+      ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), diag.loc.start).line + 1;
+    const never = lowerer.declareHiddenLocal("%never", DYN);
+    never.mutable = true;
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: never.id, init: null, loc },
+        {
+          kind: "runtimeFence",
+          code: diag.code,
+          message: `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`,
+          loc,
+        },
+      ],
+      result: varRef(never.id, DYN, loc),
+      diverges: true,
+      type: DYN,
+      loc,
+    };
   }
   // Checked construction supports emitted classes and builtin typed arrays.
   const callee = tryLowerExpression(lowerer, expr.expression);

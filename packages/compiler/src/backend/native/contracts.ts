@@ -294,6 +294,10 @@ export interface CcOptions {
    * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
    * process.stderr.write are the program's write slots. */
   stdioObject?: boolean;
+  /** SCR_TTY_COLORS: the process stream object has getColorDepth and
+   * hasColors on a terminal; compiles scr_tty_colors.c (a program that holds
+   * a process stream as a value and names one of them). */
+  ttyColors?: boolean;
   /** The program pipes or unpipes a stream: compiles
    * scr_stream_pipe_events.c (Node's pipe lifecycle). */
   streamPipeEvents?: boolean;

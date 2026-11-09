@@ -219,6 +219,21 @@ export function fenceOrDropOptionKey(
   // Dropped: Node's own ignore, byte-exact.
 }
 
+/** Array.prototype methods whose first argument is a callback they call
+ * with the elements. */
+export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
+  "map",
+  "filter",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+]);
+
 /** http.request/http.get's documented option keys (Node v24 — the
  * `http.request(options)` and `net.socket.connect` tables); everything
  * else on a client options literal is undocumented and drops. */

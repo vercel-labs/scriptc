@@ -31,6 +31,11 @@ import { constituentTypes } from "../ts7/checker.js";
 import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
 import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  CONSTRUCTOR_FUNCTION_PREFIX,
+  holdsConstructorFunction,
+  namedConstructorBox,
+} from "./held-constructors.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { recordStringCall } from "./record-links.js";
 import { nullProtoRecordShape } from "./null-prototype.js";
@@ -64,6 +69,7 @@ import {
   funcOf,
   isUnitType,
   keyedRecordFields,
+  primitiveConstructorType,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -79,6 +85,7 @@ import {
 import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
+  ARRAY_CALLBACK_METHODS,
   type CompoundOp,
   NARROW_FIRST,
   UNSUPPORTED_EXPR,
@@ -115,7 +122,11 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import {
+  lowerTernary,
+  noteStrandedInstanceRead,
+  staleReadMessage,
+} from "./expressions/narrowing.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import {
   cjsExportTableAccessorOf,
@@ -380,6 +391,11 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // typed view there. Programs without islands skip it.
     if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")
       lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
+    // A value that holds a primitive constructor by the constructor's own
+    // function type: a refusal of the statement around it is counted
+    // (held-constructors.ts). Programs that hold no constructor skip it.
+    if (lowerer.constructorFunctionTypes && holdsConstructorFunction(lowerer, lowered.type))
+      lowerer.constructorTouches++;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))
@@ -691,7 +707,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
-  if (ts.isIdentifier(expr)) return lowerIdentifierExpr(lowerer, expr, loc);
+  if (ts.isIdentifier(expr)) {
+    const value = lowerIdentifierExpr(lowerer, expr, loc);
+    // A generic instance's binding that came out as one of its records.
+    if (lowerer.typeParamBindings !== null) noteStrandedInstanceRead(lowerer, expr, value.type);
+    return value;
+  }
   if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
     return lowerer.lowerLambda(expr);
   }
@@ -4438,18 +4459,60 @@ export function lowerFieldCompound(
   };
 }
 
-/** The primitive-constructor closure (`String`/`Number`/`Boolean` as a
- * VALUE): interns one synthesized module function per constructor/ABI and
- * returns the zero-capture closure over it. Typed sources use the mapped
- * `(value: string) => primitive` signature; a recognized JavaScript
- * concise-arrow selector (`() => String`, the picocolors fallback) takes
- * dyn so its ordinary coercion signature survives inference residue, and a
- * boxed constructor value takes dyn too (coerceToExpected). The dyn bodies
- * run what the constructors do for any argument: String() (a symbol's
- * description form included), ToNumber and ToBoolean, with object hooks.
- * Interning makes every reference under one ABI the SAME immortal closure,
- * so `opt.type === String` compares like JS function identity. */
-export function primitiveCtorClosure(
+/** Whether `expr` is written as the callback of an array iteration method
+ * (`xs.map(expr)`, `xs.filter(expr)`: the first argument, on a receiver the
+ * checker types as an array or a tuple) or as Array.from's map function.
+ * Such a method calls its callback with each element and never hands it
+ * back, so which function value it received is unobservable. */
+export function isArrayIterationCallback(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  if (
+    call === undefined ||
+    !ts.isCallExpression(call) ||
+    !ts.isPropertyAccessExpression(call.expression)
+  )
+    return false;
+  const callee = call.expression;
+  if (call.arguments.nodes[0] === node && ARRAY_CALLBACK_METHODS.has(callee.name.text)) {
+    const receiver = lowerer.typeOf(callee.expression);
+    return lowerer.checker.isArrayType(receiver) || lowerer.checker.isTupleType(receiver);
+  }
+  return (
+    call.arguments.nodes[1] === node &&
+    callee.name.text === "from" &&
+    stdlibGlobalNameOf(lowerer, callee.expression) === "Array"
+  );
+}
+
+/** The type of the conversion closure `expr` lowers to when it names a
+ * primitive constructor in an array iteration callback position
+ * (primitiveConversionCallback), or null for any other expression: the
+ * callback there is not the constructor value, so analyses of the callback
+ * ask for this type and not for the mapped type of `typeof String`. */
+export function conversionCallbackTypeOf(lowerer: Lowerer, expr: ts.Expression): IrType | null {
+  const node = withoutParentheses(expr);
+  if (!ts.isIdentifier(node) || !isArrayIterationCallback(lowerer, node)) return null;
+  const name = stdlibGlobalNameOf(lowerer, node);
+  if (name !== "String" && name !== "Number" && name !== "Boolean" && name !== "BigInt")
+    return null;
+  const ret =
+    name === "String" ? STRING : name === "Number" ? F64 : name === "BigInt" ? BIGINT_T : BOOL;
+  const dynamicInput = isJsSourceFile(ts.getSourceFileOfNode(node)) || name === "BigInt";
+  return funcOf([dynamicInput ? DYN : STRING], ret);
+}
+
+/** `String`, `Number`, `Boolean` or `BigInt` written as the callback of an
+ * array iteration method or of Array.from (`xs.map(Number)`): the method
+ * calls it with each element and cannot observe which function it
+ * received, so the argument is the constructor's CONVERSION, as a direct
+ * call `Number(x)` is, and not the constructor value: a closure over the
+ * string-input conversion in typed sources (String is the identity, Number
+ * the ECMA StringToNumber, Boolean emptiness), which the array lowerings
+ * inline into their loops, and over the any-argument conversion where the
+ * elements are untyped. */
+export function primitiveConversionCallback(
   lowerer: Lowerer,
   name: "String" | "Number" | "Boolean" | "BigInt",
   loc: SrcLoc,
@@ -4502,4 +4565,99 @@ export function primitiveCtorClosure(
     if (!dynamicInput) lowerer.heldFunctionNames.set(fnName, name);
   }
   return { kind: "closure", fnName, captures: [], type: fnT, loc };
+}
+
+/** A primitive constructor written as a value expression: the function
+ * itself (primitiveCtorClosure) while the program types its constructors by
+ * their own function types, and that function as an untyped value in the
+ * pass that holds them untyped (Lowerer.untypedConstructors), where a
+ * constructor's type is the checked-dynamic value. */
+export function primitiveCtorValue(
+  lowerer: Lowerer,
+  name: "String" | "Number" | "Boolean" | "BigInt",
+  loc: SrcLoc,
+): IrExpr {
+  const fn = primitiveCtorClosure(lowerer, name, loc);
+  // The program holds a constructor as a value from here on. The untyped
+  // tier's own uses of the function (a `constructor` answer, a wrapper's
+  // prototype) call primitiveCtorClosure and do not say so: nothing typed
+  // holds the function there.
+  lowerer.constructorFunctionTypes = true;
+  return lowerer.untypedConstructors ? namedConstructorBox(lowerer.coerceToExpected(fn, DYN)) : fn;
+}
+
+/** A primitive constructor read as a VALUE (`String`, `Number`, `Boolean`,
+ * `BigInt`): the zero-capture closure over the program's one function for
+ * that constructor, in TypeScript and JavaScript sources alike, so every
+ * reference is the same function (`type === Boolean`, across modules,
+ * through untyped slots and collections). The function reads the arguments
+ * its caller actually passed and runs what the builtin runs for them:
+ * String() (a symbol's description form included), ToNumber, ToBoolean and
+ * BigInt's conversion, with object hooks, and the constants String() and
+ * Number() answer without an argument. Direct calls (`String(x)`) never
+ * reach it: the call lowering converts statically; nor does a callback of
+ * an array iteration method (primitiveConversionCallback). */
+export function primitiveCtorClosure(
+  lowerer: Lowerer,
+  name: "String" | "Number" | "Boolean" | "BigInt",
+  loc: SrcLoc,
+): IrExpr {
+  const ret =
+    name === "String" ? STRING : name === "Number" ? F64 : name === "BigInt" ? BIGINT_T : BOOL;
+  const key = `${name}:value`;
+  let fnName = lowerer.primitiveCtorFns.get(key);
+  if (!fnName) {
+    fnName = `${CONSTRUCTOR_FUNCTION_PREFIX}${name}`;
+    lowerer.primitiveCtorFns.set(key, fnName);
+    // `value` is the declared parameter and `args` the hidden array of
+    // the arguments the caller actually passed (argumentsAll).
+    const first = varRef("value", DYN, loc);
+    const args = varRef("args", DYN, loc);
+    const converted: IrExpr =
+      name === "BigInt"
+        ? { kind: "libCall", fn: "dyn.bigintConstructor", args: [first], type: BIGINT_T, loc }
+        : name === "String"
+          ? { kind: "libCall", fn: "dyn.stringConstructor", args: [first], type: STRING, loc }
+          : name === "Number"
+            ? { kind: "libCall", fn: "dyn.numberConstructor", args: [first], type: F64, loc }
+            : { kind: "dynTest", test: "truthy", value: first, type: BOOL, loc };
+    // String() is "" and Number() is 0, where an undefined argument gives
+    // "undefined" and NaN. Boolean and BigInt answer an absent argument as
+    // they answer undefined.
+    const value: IrExpr =
+      name === "String" || name === "Number"
+        ? {
+            kind: "ternary",
+            cond: {
+              kind: "bin",
+              op: ">=",
+              left: { kind: "libCall", fn: "dyn.arrLen", args: [args], type: F64, loc },
+              right: numLit(1, loc),
+              type: BOOL,
+              loc,
+            },
+            then: converted,
+            else_: name === "String" ? strLit("", loc) : numLit(0, loc),
+            type: ret,
+            loc,
+          }
+        : converted;
+    const fn: IrFunction = {
+      name: fnName,
+      displayName: name,
+      params: [
+        { localId: "value", name: "value", type: DYN },
+        { localId: "args", name: "args", type: DYN },
+      ],
+      returnType: ret,
+      locals: [
+        { id: "value", name: "value", type: DYN, mutable: false },
+        { id: "args", name: "args", type: DYN, mutable: false },
+      ],
+      body: [{ kind: "return", value, loc }],
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+  }
+  return { kind: "closure", fnName, captures: [], type: primitiveConstructorType(ret), loc };
 }

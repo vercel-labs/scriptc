@@ -52,6 +52,7 @@ const features = {
   jsObjectModel: false,
   streamWriteErrors: false,
   stdioObject: false,
+  ttyColors: false,
   streamPipeEvents: false,
   fsStreamSignal: false,
   nodeIsland: false,

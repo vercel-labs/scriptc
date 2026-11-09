@@ -302,7 +302,15 @@ export type IrType =
    * thunk. `argumentsAll` keeps that hidden ABI but fills it with every
    * actual argument, including named positions. The backends therefore
    * still see one fixed native closure ABI;
-   * only the frontend's call completion observes variadic source arity. */
+   * only the frontend's call completion observes variadic source arity.
+   * `argumentsPresence` says of an `argumentsAll` function that it reads the
+   * hidden array only to ask whether an argument was passed at all, and reads
+   * the arguments' values through `params` alone (the primitive constructors:
+   * `String()` is "" where `String(undefined)` is "undefined"). A caller
+   * that passes its first argument is, to such a function, any caller that
+   * passes more; no other variadic function gives that guarantee, which is
+   * what lets one serve a slot with a fixed parameter list
+   * (function-adapters.ts, exactVariadicSlot). */
   | {
       kind: "func";
       params: IrType[];
@@ -310,6 +318,7 @@ export type IrType =
       rest?: true;
       restAbi?: "typed";
       argumentsAll?: true;
+      argumentsPresence?: true;
     }
   | { kind: "object"; className: string } // heap, refcounted class instance
   /** The class STATIC side as a value — `typeof C`, the type of the class
@@ -889,6 +898,23 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
   return { kind: "func", params, ret };
 }
 
+/** The type of a primitive constructor read as a value (`String`, `Number`,
+ * `Boolean`, `BigInt`): a function of one declared parameter (its `length`
+ * is 1) that also sees every argument its caller actually passed, as the
+ * builtin does (`String()` is "", `String(undefined)` is "undefined"). One
+ * type per result, so the constructors are distinct arms of a union that
+ * holds several. */
+export function primitiveConstructorType(ret: IrType): IrType & { kind: "func" } {
+  return {
+    kind: "func",
+    params: [DYN],
+    ret,
+    rest: true,
+    argumentsAll: true,
+    argumentsPresence: true,
+  };
+}
+
 /** Maps and sets use tagged union storage and retain their native identity.
  * Joined unions (inferred joins of member reads and array elements) keep
  * promises nullable-only; declared maybe-promise unions are admitted by
@@ -945,7 +971,7 @@ export function typeKey(t: IrType): string {
     case "set":
       return `set<${typeKey(t.elem)}>`;
     case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsPresence ? "presence[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -1043,6 +1069,7 @@ export function typeEquals(a: IrType, b: IrType): boolean {
         (a.rest === true) === (b.rest === true) &&
         a.restAbi === b.restAbi &&
         a.argumentsAll === b.argumentsAll &&
+        a.argumentsPresence === b.argumentsPresence &&
         a.params.every((p, i) => typeEquals(p, b.params[i]!)) &&
         typeEquals(a.ret, b.ret)
       );
@@ -4504,6 +4531,7 @@ function isJsonSafeAt(
    * bigint (a TypeError), a symbol (dropped, null in an array, undefined at
    * the root) and undefined at any position. */
   runtimeScalars = false,
+  member = false,
 ): boolean {
   if (HANDLE_KINDS.has(t.kind)) return false;
   switch (t.kind) {
@@ -4526,6 +4554,7 @@ function isJsonSafeAt(
         visiting,
         nativeFields,
         runtimeScalars,
+        true,
       );
     case "record": {
       const shape = getRecord(t.shapeId);
@@ -4551,6 +4580,7 @@ function isJsonSafeAt(
             visiting,
             nativeFields,
             runtimeScalars,
+            true,
           )
         )
           return false;
@@ -4569,6 +4599,7 @@ function isJsonSafeAt(
           visiting,
           nativeFields,
           runtimeScalars,
+          true,
         );
       }
       return true;
@@ -4576,7 +4607,7 @@ function isJsonSafeAt(
     case "union": {
       const def = getUnion(t.unionId);
       if (!def) return false;
-      const key = `${t.unionId}:${stringify}:${undefinedAllowed}`;
+      const key = `${t.unionId}:${stringify}:${undefinedAllowed}:${member}`;
       if (visiting.has(key)) return true; // the recursive knot, union-flavored
       visiting.add(key);
       for (const arm of def.arms) {
@@ -4592,14 +4623,25 @@ function isJsonSafeAt(
                 visiting,
                 nativeFields,
                 runtimeScalars,
+                member,
               ))
         )
           return false;
       }
       return true;
     }
+    // A Map or a Set held by a record, an array or a tuple stringifies as
+    // the empty object, whatever it holds: it has no own enumerable
+    // property and no toJSON, so the type-directed serializer writes "{}"
+    // without reading it. As the ROOT value it stays outside the domain
+    // (`JSON.stringify(new Map())` is the same "{}" in Node: an
+    // empty-object husk, refused instead), and so does one beside untyped
+    // payloads, which the runtime traversal would have to read.
     case "set":
-      return nativeFields && !stringify && t.elem.kind === "dyn";
+      if (stringify) return member && !nativeFields;
+      return nativeFields && t.elem.kind === "dyn";
+    case "map":
+      return stringify && member && !nativeFields;
     // Node's stringify throws a TypeError for a bigint, which the runtime
     // traversal does too.
     case "bigint":
@@ -4616,11 +4658,8 @@ function isJsonSafeAt(
       return false;
     case "func":
     // Class values stringify as "{}" husks in Node (own enumerable statics
-    // aside — not representable type-directedly); rejected like Maps.
+    // aside — not representable type-directedly); rejected.
     case "classval":
-    // Maps are not JSON (JSON.stringify(new Map()) is "{}" in Node — an
-    // empty-object husk nobody wants; stringify/dynCheck reject instead).
-    case "map":
     // URLSearchParams stringifies as the same "{}" husk — rejected; use
     // sp.toString() instead.
     case "searchParams":

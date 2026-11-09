@@ -142,7 +142,7 @@ export function lowerWrapperNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
  * `constructor` property (the interned closures `x === String` compares). */
 export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
   return (["String", "Number", "Boolean"] as const).map((name) =>
-    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc, true), DYN),
+    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc), DYN),
   );
 }
 

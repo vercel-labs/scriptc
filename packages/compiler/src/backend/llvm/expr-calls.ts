@@ -71,6 +71,7 @@ import type { Writes } from "./reference-writes.js";
 import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 import { registerReplay } from "./emit-journal.js";
+import { jsWordOfCell } from "./jsval.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -1741,10 +1742,12 @@ export function emitConstruction(
   if (host.mayThrow.has(`%${e.className}.constructor`)) host.emitPendingCheck();
 }
 
-/** A call to a numeric computed-read helper (IrFunction.fastRead "index")
- * `helper(value, String(index))`: scr_dyn_index_get answers dyn arrays and
- * live array capsules at the index without forming the key, and the helper
- * call (with its key string) runs only when that read has no answer. Both
+/** A call to a numeric computed-read helper (IrFunction.fastRead "index"),
+ * `helper(value, String(index))` or, for the helper that takes the number,
+ * `helper(value, index)`: scr_dyn_index_get answers dyn arrays and live
+ * array capsules at the index without forming the key, and the helper call
+ * runs only when that read has no answer. The helper may answer a checked
+ * value or its jsval word; the element read is a cell either way. Both
  * operands must be variables or literals, since the slow path evaluates the
  * call again. Null when the call does not have that shape. */
 function emitNumericIndexRead(
@@ -1755,17 +1758,22 @@ function emitNumericIndexRead(
   const value = e.args[0];
   const key = e.args[1];
   if (e.args.length !== 2 || !value || !key || value.kind !== "varRef") return null;
-  if (key.kind !== "toString" || key.operand.type.kind !== "f64") return null;
-  if (key.operand.kind !== "varRef" && key.operand.kind !== "numLit") return null;
-  if (callee.returnType.kind !== "dyn" || host.int32Abis.has(e.callee)) return null;
+  const number =
+    key.kind === "toString" ? key.operand : callee.params[1]?.type.kind === "f64" ? key : null;
+  if (number === null || number.type.kind !== "f64") return null;
+  if (number.kind !== "varRef" && number.kind !== "numLit") return null;
+  const word = callee.returnType.kind === "jsval";
+  if ((callee.returnType.kind !== "dyn" && !word) || host.int32Abis.has(e.callee)) return null;
   const B = host.B;
   const receiver = host.emitReadReceiver(value);
-  const index = host.emitExpr(key.operand);
+  const index = host.emitExpr(number);
   host.declare(`declare ptr @scr_dyn_index_get(ptr, double)`);
-  const fast = B.tmp();
-  B.line(`${fast} = call ptr @scr_dyn_index_get(ptr ${receiver.name}, double ${index.name})`);
+  const cell = B.tmp();
+  B.line(`${cell} = call ptr @scr_dyn_index_get(ptr ${receiver.name}, double ${index.name})`);
   const hit = B.tmp();
-  B.line(`${hit} = icmp ne ptr ${fast}, null`);
+  B.line(`${hit} = icmp ne ptr ${cell}, null`);
+  // The word of a null cell is never read: the slow path answers instead.
+  const fast = word ? jsWordOfCell(host, cell) : cell;
   const fastLabel = B.currentLabel();
   const slow = B.newLabel("idx.slow");
   const join = B.newLabel("idx.join");

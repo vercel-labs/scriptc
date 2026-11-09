@@ -116,6 +116,7 @@ import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-stati
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
@@ -4540,6 +4541,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
@@ -5266,6 +5270,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
@@ -6083,6 +6093,8 @@ export class Lowerer {
     "computedGlobalReads",
     "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
     "nodeObjectValueReads",
     "namesWebStreamClass",

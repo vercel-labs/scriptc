@@ -256,6 +256,9 @@ export class CheckerFacade {
   /** Batch methods the server answered as unknown. Lowering asks those
    * node by node from then on, without a failed request per prefetch. */
   private readonly unknownBatchMethods = new Set<string>();
+  /** Whether the server answers `getResolvedSignatures`; undefined until
+   * asked (resolvesSignatureBatches). */
+  private signatureBatches: boolean | undefined;
 
   constructor(
     /** The underlying 7.1 sync checker — exposed for methods the facade
@@ -434,6 +437,59 @@ export class CheckerFacade {
       this.unknownBatchMethods.add(method);
   }
 
+  /** Whether the server answers `getResolvedSignatures`: asked once, with an
+   * empty batch, which asks the checker nothing. */
+  private resolvesSignatureBatches(): boolean {
+    if (this.signatureBatches === undefined) {
+      try {
+        this.raw.getResolvedSignatures([]);
+        this.signatureBatches = true;
+      } catch (error) {
+        if (!unknownMethod(error, "getResolvedSignatures")) throw error;
+        this.unknownBatchMethods.add("getResolvedSignatures");
+        this.signatureBatches = false;
+      }
+    }
+    return this.signatureBatches;
+  }
+
+  /** Resolves the calls among `nodes`, in order, before a type query about
+   * `nodes`, on a server without the node batch methods (tsgo).
+   *
+   * A checker's answer about a generic call nested in another call's
+   * argument depends on which of the two it resolves first. Asked about the
+   * inner call first, it resolves the outer call for the inner one's
+   * contextual type, which resolves the inner call again while that is
+   * still being resolved; the recursive resolution skips the constraint
+   * checks and its signature is the one the checker keeps (`T = undefined`
+   * for the `T extends Shape` of `f(g(undefined))`). tsgo and tsc-ts both
+   * answer so. A type sweep asks in source order, the outer call before the
+   * inner one, and tsc-ts resolves a call when asked for its type. tsgo
+   * answers the type of a call that has one signature without type
+   * parameters from that signature's return type, without resolving the
+   * call, so its sweep reaches the inner call first. Resolving the calls
+   * before the sweep gives tsgo the order tsc-ts's sweep has; the
+   * signatures land in the memo getResolvedSignature reads. A query that
+   * fails stays out of the memo, so the direct query throws again where it
+   * is made. */
+  private resolveCallsFirst(nodes: readonly Node[]): void {
+    if (!NODE_BATCH_QUERIES) return;
+    let asked = false;
+    for (const node of nodes) {
+      if (node.kind !== SyntaxKind.CallExpression || this.cache.resolvedSignature.has(node))
+        continue;
+      if (!asked) {
+        if (this.resolvesSignatureBatches()) return;
+        asked = true;
+      }
+      try {
+        this.cache.resolvedSignature.set(node, this.raw.getResolvedSignature(node));
+      } catch {
+        // Unanswered: the direct query asks again.
+      }
+    }
+  }
+
   /** Batches symbol queries for every identifier under roots without the
    * usual companion getTypeOfSymbol batch. Preflight uses this for AST
    * analyses that themselves inspect deferred bodies for binding identity:
@@ -496,6 +552,7 @@ export class CheckerFacade {
     const distinctTypes = [...new Set(typeNodes)].filter(
       (node) => !this.cache.typeAtLocation.has(node),
     );
+    this.resolveCallsFirst(distinctTypes);
     const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
     distinctTypes.forEach((node, index) => this.cache.typeAtLocation.set(node, types[index]));
   }
@@ -509,9 +566,11 @@ export class CheckerFacade {
   prefetchTypeQueries(nodes: readonly Node[]): void {
     if (!NODE_BATCH_QUERIES) return;
     this.ensureActive();
+    const missing = [...new Set(nodes)].filter((node) => !this.cache.typeAtLocation.has(node));
+    this.resolveCallsFirst(missing);
     this.batchNodes(
       "getTypeAtLocations",
-      [...new Set(nodes)].filter((node) => !this.cache.typeAtLocation.has(node)),
+      missing,
       (chunk) => this.raw.getTypeAtLocation(chunk) as (Type | undefined)[],
       (node, type) => this.cache.typeAtLocation.set(node, type),
     );
@@ -540,6 +599,7 @@ export class CheckerFacade {
     const nodes = allNodes.filter(
       (n) => TYPE_PREFETCH_KINDS.has(n.kind) && !this.cache.typeAtLocation.has(n),
     );
+    this.resolveCallsFirst(nodes);
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
     nodes.forEach((n, i) => this.cache.typeAtLocation.set(n, types[i]));
   }
@@ -615,6 +675,7 @@ export class CheckerFacade {
     this.autoPrefetch(node, "types");
     if (this.cache.typeAtLocation.has(node))
       return this.cache.typeAtLocation.get(node) ?? this.anyType();
+    this.resolveCallsFirst([node]);
     const type = this.raw.getTypeAtLocation(node);
     this.cache.typeAtLocation.set(node, type);
     return type ?? this.anyType();

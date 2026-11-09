@@ -1594,6 +1594,11 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* Whether the record answers reflection from its declared fields alone: no
+ * kept source, no link to a wider source (looked for when `may_link`), and
+ * no live capsule with a view, a prototype or symbol-keyed members of its
+ * own (scr_json.c). */
+bool scr_record_reflects_static(const void *rec, bool may_link);
 /* A conversion of a native record into a narrower record type links the
  * copy to its source when the source has properties the copy's type does
  * not declare (scr_json.c): `source` moves in and is released with the

@@ -14,7 +14,11 @@ import {
   fetchThroughDispatcher,
   programHasUndiciPackage,
 } from "./fetch-dispatcher.js";
-import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
+import {
+  isDeclaredInAmbientNamespace,
+  packageMemberIsData,
+  packageTypeIsData,
+} from "../type-mapper.js";
 import {
   arrayOf,
   BOOL,
@@ -3108,16 +3112,23 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
   // read has a representation even though the package ships no code. Only a
   // package VALUE shape (a class, a merged value declaration) has nothing
   // to read from without that package's implementation.
-  if (
-    packageTypeIsData(lowerer.typeOf(access.expression), {
-      isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
-      isExternalTypeFile: lowerer.isExternalTypeFile,
-    })
-  )
-    return;
-  const pkg =
-    lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
-    lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));
+  const ctx = {
+    isStdlibFile: (sf: ts.SourceFile) => lowerer.isStdlibFile(sf),
+    isExternalTypeFile: lowerer.isExternalTypeFile,
+  };
+  const receiverType = lowerer.typeOf(access.expression);
+  if (packageTypeIsData(receiverType, ctx)) return;
+  let pkg = lowerer.npmPackageOf(receiverType);
+  if (pkg === null) {
+    // The receiver's type is the program's own (a spread copy, an
+    // intersection with a local shape, a `Pick`) and only the member's
+    // declaration is a package's. The same data test, asked of the shape
+    // that declares the member: a data shape's member is data the program
+    // holds, a value shape's member still has nothing to read from.
+    const member = lowerer.checker.getSymbolAtLocation(access.name);
+    pkg = lowerer.npmPackageOfSymbol(member);
+    if (pkg !== null && member && packageMemberIsData(member, lowerer.checker, ctx)) return;
+  }
   if (!pkg) return;
   lowerer.pushDiag(unsupportedPackageValueDiag(pkg, locOf(access)));
   throw new PoisonError();

@@ -118,6 +118,13 @@ static void live_array_ref_tests(void) {
   check(scr_dyn_has_key(capsule, one) && scr_dyn_has_own(capsule, one) && scr_dyn_has_own(capsule, length),
       "live array own presence");
   check(!scr_dyn_has_own(capsule, two) && !scr_dyn_has_own(capsule, four), "live array own absence");
+  ScrStr *named = S("then");
+  got = scr_dyn_typed_ref_key_get(capsule, named);
+  check(got && got->kind == SCR_DYN_UNDEF, "a name a live array does not hold reads undefined");
+  scr_dyn_release(got);
+  check(!scr_dyn_typed_ref_own_get(capsule, named), "a name is not an own member of a live array");
+  scr_str_release(named);
+  check(!scr_dyn_ref_is_error(capsule), "live array is not an error");
   check(live_array_materializations == 0, "live array reads never materialize");
 
   ScrDyn *value = scr_dyn_new_num(7);
@@ -205,8 +212,18 @@ static void live_record_ref_tests(void) {
   ScrDyn *got = scr_dyn_typed_ref_key_get(capsule, x);
   check(got && got->kind == SCR_DYN_NUM && got->v.num == 3, "live record field");
   scr_dyn_release(got);
-  check(!scr_dyn_typed_ref_key_get(capsule, label), "absent optional field needs the view");
-  check(!scr_dyn_typed_ref_key_get(capsule, missing), "unknown name needs the view");
+  check(!scr_dyn_typed_ref_own_get(capsule, label) && !scr_dyn_typed_ref_own_get(capsule, missing),
+      "an absent optional field and an unknown name are not own members");
+  got = scr_dyn_typed_ref_key_get(capsule, label);
+  check(got && got->kind == SCR_DYN_UNDEF, "absent optional field reads undefined without the view");
+  scr_dyn_release(got);
+  got = scr_dyn_typed_ref_key_get(capsule, missing);
+  check(got && got->kind == SCR_DYN_UNDEF, "unknown name reads undefined without the view");
+  scr_dyn_release(got);
+  ScrStr *inherited = S("toString");
+  check(!scr_dyn_typed_ref_key_get(capsule, inherited), "a name Object.prototype answers needs the view");
+  scr_str_release(inherited);
+  check(!scr_dyn_ref_is_error(capsule), "live record is not an error");
   check(scr_dyn_has_key(capsule, x) && scr_dyn_has_own(capsule, x), "live record own presence");
   check(!scr_dyn_has_own(capsule, label) && !scr_dyn_has_own(capsule, missing),
       "live record own absence");

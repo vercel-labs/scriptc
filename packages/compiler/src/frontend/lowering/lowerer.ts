@@ -520,9 +520,9 @@ import {
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
+  cjsNamespaceTargetOf,
   cjsWholeExportValueOf,
   hasWholeExportValue,
-  inlineNamespaceRequireOf,
   inlineProgramRequireOf,
   splitRequireBindingOf,
   splitWholeExportAliasTargetOf,
@@ -2078,9 +2078,22 @@ function lowerToIrWithIslands(
     for (const line of traceWidthCopies(resultLowerer, widthCopies))
       process.stderr.write(line + "\n");
   if (widthCopies.length > 0) result = { ...result, widthCopies };
+  const scanned = scanDivergences(resultLowerer, moduleOrder);
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
-    ...scanDivergences(resultLowerer, moduleOrder),
+    ...scanned,
+    // Key orders the witness pass could not follow (SC6014), except where
+    // the scan already names the same construction for its own order
+    // (SC6002).
+    ...resultLowerer.keyOrder.warnings.filter(
+      (warning) =>
+        !scanned.some(
+          (found) =>
+            found.code === "SC6002" &&
+            found.loc.file === warning.loc.file &&
+            found.loc.start === warning.loc.start,
+        ),
+    ),
     ...resultLowerer.sharedModuleWarnings,
     ...resultLowerer.islandWorkerWarnings,
     ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
@@ -3624,6 +3637,18 @@ export class Lowerer {
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Terminal export table, or null for whole values and pure re-export cycles. */
+  readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
+  /** Receiver proofs depend only on a module's source and stable bindings. */
+  readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Member write sites by property name across the program, built on the
+   * first query, and the exports each query proved change after their
+   * module initializes (cjs-inline-require.ts). */
+  cjsMemberWritesByName: Map<
+    string,
+    (ts.PropertyAccessExpression | ts.ElementAccessExpression)[]
+  > | null = null;
+  readonly cjsLateWrittenExports = new Map<ts.Symbol, boolean>();
   /** Per-module whole-export symbol (cjs-inline-require.ts). Null means the
    * module's exports are a table. */
   readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
@@ -3836,6 +3861,62 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** The record layout a fresh data literal takes when it flows into an
+   * untyped slot while the checker names one closed record type as its
+   * target (`contextual`: the constituents of its contextual type): that
+   * type, when the literal's own type widens into it member for member
+   * (the checker has proven the assignment; optional members the literal
+   * omits are absent). Null keeps the literal's own layout: no single
+   * record target, a target with an index signature or a tuple, a member
+   * the target does not declare, or a literal that is more than data (a
+   * spread, a method, an accessor, a computed name). */
+  contextualRecordLayout(
+    literal: ts.ObjectLiteralExpression,
+    contextual?: readonly ts.Type[],
+  ): (IrType & { kind: "record" }) | null {
+    if (contextual === undefined) {
+      // A declaration's initializer: the same rule, from the literal's own
+      // contextual type. A JavaScript literal and one that holds a binding
+      // whose array is still taking shape keep their dynamic form.
+      if (isJsSourceFile(ts.getSourceFileOfNode(literal)) || holdsEvolvingArray(this, literal))
+        return null;
+      const type = this.checker.getContextualType(literal);
+      const widened = type ? this.checker.getBaseTypeOfLiteralType(type) : undefined;
+      if (!widened) return null;
+      contextual = widened.isUnionType() ? ts.constituentTypes(widened) : [widened];
+    }
+    const targets = contextual.filter(
+      (part) =>
+        (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0,
+    );
+    if (targets.length !== 1) return null;
+    const target = targets[0]!;
+    if (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter))
+      return null;
+    const plain = literal.properties.nodes.every((prop) => {
+      if (ts.isShorthandPropertyAssignment(prop)) return true;
+      if (!ts.isPropertyAssignment(prop) || ts.isComputedPropertyName(prop.name)) return false;
+      let init: ts.Expression = prop.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      return !(
+        ts.isFunctionExpression(init) ||
+        ts.isArrowFunction(init) ||
+        ts.isClassExpression(init)
+      );
+    });
+    if (!plain) return null;
+    const own = this.mapTypeOf(this.typeOf(literal));
+    const declared = this.mapTypeOf(target);
+    if (own?.kind !== "record" || declared?.kind !== "record" || typeEquals(own, declared))
+      return null;
+    const from = this.shapes.get(own.shapeId);
+    const to = this.shapes.get(declared.shapeId);
+    if (!from || !to || from.tuple || to.tuple || from.indexValue || to.indexValue) return null;
+    if (!from.fields.every((field) => to.fields.some((other) => other.name === field.name)))
+      return null;
+    return this.widthLiftPlan(own, declared) === null ? null : declared;
   }
 
   /** An object or array literal in an untyped context: its contextual type
@@ -4522,10 +4603,16 @@ export class Lowerer {
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
-  /** Accessor exports' link-time values for ES-module importers, and the
-   * per-module flag that the copy already ran (cjsAccessorSnapshotStores). */
+  /** CommonJS exports' link-time values for ES-module importers (getters,
+   * and data exports that change later), and the per-module flag that the
+   * copy already ran (cjsAccessorSnapshotStores). */
   readonly cjsAccessorSnapshots = new Map<ts.Node, { id: string; type: IrType }>();
   readonly cjsSnapshotReady = new Map<ts.SourceFile, string>();
+  /** Export names ES-module importers bind from each CommonJS module; null
+   * entries bind every name (lower-exprs.ts esmBoundNamesOf). */
+  cjsEsmBoundNames: Map<ts.SourceFile, Set<string> | null> | null = null;
+  /** The module whose ES-module link first copied each changing data export. */
+  readonly cjsLinkedDataModules = new Map<ts.Symbol, ts.SourceFile>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */
@@ -5729,6 +5816,9 @@ export class Lowerer {
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
+      // Which module's link first copied a changing data export: a unit that
+      // records an entry changes what a later link lowering emits.
+      checkedTable("cjsLinkedDataModules", () => this.cjsLinkedDataModules.size),
       checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
       checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
       checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
@@ -5923,6 +6013,11 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "cjsNamespaceTargets",
+    "cjsReceiverProofs",
+    "cjsLateWrittenExports",
+    "cjsMemberWritesByName",
+    "cjsEsmBoundNames",
     "accessorRequirerSlots",
     "requireWholeExportSlots",
     "cjsNamespaces",
@@ -7803,7 +7898,7 @@ export class Lowerer {
       const namespaceRecv = this.cjsLocalModuleBindingOf(recv);
       if (namespaceRecv || this.cjsWholeExportMemberOf(recv, ident.text)) {
         const dep = ts.isIdentifier(recv)
-          ? this.localModuleBindingDepOf(recv)
+          ? this.cjsModuleBindingDepOf(recv)
           : this.cjsModuleRefDepOf(recv);
         const exported = dep
           ? namespaceRecv
@@ -8250,15 +8345,14 @@ export class Lowerer {
    * `require("./x")` (cjs-inline-require.ts) or tsc's unstamped
    * `x_1.default` interop read (cjs-tsc-interop.ts). */
   cjsModuleRefDepOf(expr: ts.Expression): ts.SourceFile | null {
-    const inline = inlineNamespaceRequireOf(this, expr);
-    if (inline !== null) return inline.dep;
-    const interop = tscInteropModuleOf(this, expr);
-    return interop !== null && cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
+    const ref = inlineProgramRequireOf(this, expr) ?? tscInteropModuleOf(this, expr);
+    return ref === null ? null : cjsNamespaceTargetOf(this, ref.dep);
   }
 
   /** The table module a CommonJS module binding identifier names. */
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
-    return this.localModuleBindingDepOf(expr);
+    const dep = this.localModuleBindingDepOf(expr);
+    return dep === null ? null : (cjsNamespaceTargetOf(this, dep) ?? dep);
   }
 
   /** The compiled module behind a require-like namespace binding: an
@@ -8595,7 +8689,7 @@ export class Lowerer {
       if (d && ts.isVariableDeclaration(d)) {
         let init = d.initializer;
         while (init && ts.isParenthesizedExpression(init)) init = init.expression;
-        if (!init || !ts.isObjectLiteralExpression(init)) return false;
+        if (!init || !ts.isObjectLiteralExpression(init)) return cjsNamespaceModule(this, dep);
       }
       // A represented whole export declares AT the `module.exports =`
       // statement itself. Scalar/function/factory-call roots register one
@@ -18308,6 +18402,16 @@ export class Lowerer {
           holdsEvolvingArray(this, x)
         ) {
           return lowerDynObjectLiteral(this, x);
+        }
+        // The checker names one closed record type as this literal's target
+        // (`{…} satisfies T`, an argument whose declared type the slot keeps
+        // dynamic). The value is read back at that type, so it is built in
+        // that type's layout, as an annotated binding builds it: the checked
+        // conversion back then finds the layout it asks for and hands out
+        // this object instead of converting a copy of it on every read.
+        const declared = this.contextualRecordLayout(x, parts);
+        if (declared) {
+          return this.coerceExistingInto(node, this.lowerObjectLiteral(x, declared), expected);
         }
       }
     }

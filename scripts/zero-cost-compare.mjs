@@ -512,8 +512,10 @@ export function symbolCheck({ typed, allowed, island = false, baseline, candidat
  * Readable, whose chunks are checked-dynamic values. bench/catalog-tables,
  * also added later, walks dictionaries of `object` values from JSON.parse.
  * bench/regex-tokenizer, also added later, calls `exec` as bench/regex-logs
- * does (regex exec metadata). Every other bench workload is fully typed and
- * must link none. The gate and
+ * does (regex exec metadata). bench/untyped-handoff, also added later, keeps
+ * typed records in `unknown` slots and calls their handlers through
+ * `(order: any) => number`: untyped slots are its subject. Every other bench
+ * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -531,6 +533,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/dynamic-methods",
   "bench/dynamic-properties",
   "bench/dynamic-properties-json",
+  "bench/untyped-record-probes",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -545,6 +548,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/untyped-validate",
   "bench/catalog-tables",
   "bench/regex-tokenizer",
+  "bench/untyped-handoff",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

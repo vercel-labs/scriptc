@@ -1174,7 +1174,7 @@ typedef struct {
 static ScrDyn *flat_get(const ScrDyn *v, const char *key) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     ScrStr *k = scr_str_new(key, strlen(key));
-    ScrDyn *r = scr_dyn_typed_ref_key_get(v, k);
+    ScrDyn *r = scr_dyn_typed_ref_own_get(v, k);
     scr_str_release(k);
     return r;
   }

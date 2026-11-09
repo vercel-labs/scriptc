@@ -5876,18 +5876,22 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
 
 ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL };
 
-/* Whether capsule `d` holds a native stream that answers member questions
- * without its view: its snapshot adapter is the stream unit's. This is all
- * a capsule of another kind pays, and all a program without a stream
- * carries: the questions are the record's. Before the unit's first stream
- * the record is empty and a capsule with no adapter is no stream; `view` is
- * read once, so the test holds while another thread fills the record in.
- * The comparison comes first: it alone turns a capsule of another kind
- * away, and only a match goes on to ask whether there is a record. */
+/* Whether capsule `d`, which has a snapshot adapter, holds a native stream
+ * that answers member questions without its view: the adapter is the stream
+ * unit's. This is all a capsule of another kind pays, and all a program
+ * without a stream carries: the questions are the record's. A capsule with
+ * no adapter would match the empty record, so only a caller that goes on to
+ * call the adapter may ask this way. */
+static inline bool scr_typed_ref_adapted_stream(const ScrDyn *d) {
+  return d->v.typed_ref.materialize == scr_stream_ref_hooks.view;
+}
+
+/* The same for a capsule that may have no adapter: before the unit's first
+ * stream the record is empty and such a capsule is no stream. The record is
+ * read once, so the test holds while another thread fills it in, and the
+ * comparison comes first: it alone turns a capsule of another kind away. */
 static inline bool scr_typed_ref_stream(const ScrDyn *d) {
-  ScrDyn *(*view)(void *) = scr_stream_ref_hooks.view;
-  if (__builtin_expect(d->v.typed_ref.materialize != view, 1)) return false;
-  return view != NULL;
+  return __builtin_expect(scr_typed_ref_adapted_stream(d), 0) && d->v.typed_ref.materialize;
 }
 
 /* What the view of live stream capsule `d` holds under `key`, which is no
@@ -14110,8 +14114,9 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
       size_t field;
       return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
     }
-    /* A stream's view holds its data properties and inherits its methods. */
-    if (scr_typed_ref_stream(v)) {
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
       int has = scr_stream_ref_hooks.has(v, key);
       if (has >= 0) return has != 0;
     }
@@ -14243,8 +14248,9 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
       return scr_dyn_has_key(v, key) || scr_dyn_object_proto_name(key);
     }
-    /* A stream's view holds its data properties and inherits its methods. */
-    if (scr_typed_ref_stream(v)) {
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
       int has = scr_stream_ref_hooks.has(v, key);
       if (has >= 0) return has != 0;
     }

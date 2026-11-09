@@ -9595,7 +9595,8 @@ function errorViewMetadataAdmits(property: ts.Symbol, ctx: TypeMapperCtx): boole
     return false;
   // A required member must still admit the absent value the slot reads.
   return (
-    (property.flags & ts.SymbolFlags.Optional) !== 0 || arms.some((arm) => arm.kind === "undefinedT")
+    (property.flags & ts.SymbolFlags.Optional) !== 0 ||
+    arms.some((arm) => arm.kind === "undefinedT")
   );
 }
 

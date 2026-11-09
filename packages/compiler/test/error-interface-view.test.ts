@@ -28,7 +28,8 @@ function firstParamType(ir: string, name: string): unknown {
     functions: { name: string; params: { type: unknown }[] }[];
   };
   const fn = module.functions.find((f) => f.name === name || f.name.endsWith(`.${name}`));
-  if (!fn) throw new Error(`no function ${name} in ${module.functions.map((f) => f.name).join(", ")}`);
+  if (!fn)
+    throw new Error(`no function ${name} in ${module.functions.map((f) => f.name).join(", ")}`);
   return fn.params[0]?.type;
 }
 

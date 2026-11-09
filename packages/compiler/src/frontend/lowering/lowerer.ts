@@ -87,6 +87,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { refuseForwardsToOwnCall } from "./module-member-this.js";
 import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
@@ -5022,6 +5023,11 @@ export class Lowerer {
    * (noteDeferredRefusal), one per statement. Warnings, so they leave with
    * the divergences and never fail the build. */
   readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** The sites whose receiver proof read `f.call(this, …)` or
+   * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
+   * `start:end:file`: refused when the lowered program gives a function its
+   * own `call` or `apply` (refuseForwardsToOwnCall). */
+  readonly receiverForwardSites = new Set<string>();
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5662,6 +5668,7 @@ export class Lowerer {
       setTable("recordFieldDeletes", this.recordFieldDeletes),
       setTable("freezableArrays", this.freezableArrays),
       setTable("weakKeys", this.weakKeys),
+      setTable("receiverForwardSites", this.receiverForwardSites),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
       // The shared-module plan runs inside the first unit that lowers a
@@ -13436,8 +13443,12 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
+    // Receiver proofs that took `call` and `apply` for the builtins, in a
+    // program whose finished module gives a function its own.
+    const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];
+    for (const diag of ownCallRefusals) this.pushDiag(diag);
     return {
-      module,
+      module: ownCallRefusals.length > 0 ? null : module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,

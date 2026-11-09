@@ -5,6 +5,10 @@
  * no module object to pass, so an export that reads `this` refuses instead
  * of seeing another receiver. */
 import * as ts from "../ts7/adapter.js";
+import { unsupportedDiag, type ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import type { IrModule } from "../../ir/ir.js";
+import { moduleShadowsFunctionMember } from "../../ir/runtime-features.js";
+import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { isRebindableFunction } from "./rebindable-functions.js";
@@ -20,31 +24,45 @@ function exportedValue(decl: ts.Node): ts.Node | undefined {
   return node;
 }
 
-/** The function an export binding holds, when its declaration shows it. */
-function exportedFunction(lowerer: Lowerer, value: ts.Node): ts.Node | null {
-  if (ts.isIdentifier(value)) return functionOfName(lowerer, value, noBindings).fn;
+/** Whether the function an export binding holds reads `this`, as far as the
+ * binding's value names that function in a form the proof below follows: a
+ * function, a name or namespace member that holds one, either arm of a
+ * conditional, the argument a standard function returns
+ * (`Object.defineProperty(function () {…}, "length", …)`, whatever the call
+ * defines), and the call of a program function (`makeRead()`,
+ * `inner.makeRead()`), whose result the call's arguments decide: that one
+ * "may read" unless the proof shows otherwise. A value of any other form
+ * (a member of an object, the result of a function the program does not
+ * define) names no function here and is not checked. */
+function exportReadsThis(
+  lowerer: Lowerer,
+  value: ts.Node,
+  depth: number,
+): "reads" | "may read" | null {
+  if (depth > maxDepth) return "may read";
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
   if (
     ts.isFunctionDeclaration(value) ||
     ts.isFunctionExpression(value) ||
     ts.isMethodDeclaration(value)
   )
-    return value;
-  return null;
-}
-
-/** The call of a program function an export binding holds (`makeRead()`,
- * directly or through an immutable alias), whose result the call's
- * arguments decide. */
-function exportedFactoryCall(lowerer: Lowerer, value: ts.Node): ts.CallExpression | null {
-  const call = ts.isIdentifier(value)
-    ? functionOfName(lowerer, value, noBindings).bound?.expr
-    : value;
-  return call !== undefined &&
-    ts.isCallExpression(call) &&
-    ts.isIdentifier(call.expression) &&
-    functionOfName(lowerer, call.expression, noBindings).fn !== null
-    ? call
-    : null;
+    return readsOwnThis(lowerer, value) ? "reads" : null;
+  if (ts.isConditionalExpression(value))
+    return (
+      exportReadsThis(lowerer, value.whenTrue, depth + 1) ??
+      exportReadsThis(lowerer, value.whenFalse, depth + 1)
+    );
+  if (ts.isCallExpression(value)) {
+    const returned = returnedArgument(lowerer, value);
+    if (returned !== null) return exportReadsThis(lowerer, returned.argument, depth + 1);
+    if ((functionOfReference(lowerer, value.expression, noBindings)?.fn ?? null) === null)
+      return null;
+    return ignoresThis(lowerer, value, noBindings, 0) ? null : "may read";
+  }
+  const held = functionOfReference(lowerer, value as ts.Expression, noBindings);
+  if (held === null) return null;
+  if (held.fn !== null) return readsOwnThis(lowerer, held.fn) ? "reads" : null;
+  return held.bound ? exportReadsThis(lowerer, held.bound.expr, depth + 1) : null;
 }
 
 /** Whether `node` is `f.apply(this, ...)` or `f.call(this, ...)`, which
@@ -71,6 +89,10 @@ const noBindings: Bindings = new Map();
 // `make = fnUntraced(function* () {…})`.
 const maxDepth = 16;
 
+/** The `f.call(this, …)` and `f.apply(this, …)` calls the proof in progress
+ * read as passing `this` on: reset where a proof starts. */
+let forwardsInProof = 0;
+
 /** The export a member read of an ES namespace import names (`ns.member`
  * after `import * as ns`): the namespace binding is immutable, and its
  * member is the exporting module's own binding. */
@@ -84,36 +106,45 @@ function namespaceMemberSymbol(lowerer: Lowerer, access: ts.Node): ts.Symbol | u
 
 /** The argument a call of a standard function returns:
  * `Object.defineProperty(f, "length", …)` and the other functions of
- * `Object` that return their first argument. A call that may give the
- * function its own `apply` or `call` returns none: `f.call(this, …)` then
- * runs that property, which the proof does not read. So the properties a
- * call defines must be named in its text, and `Object.setPrototypeOf`,
- * which changes where both are found, is not followed; nor is a property
+ * `Object` that return their first argument. `keepsCall` is whether the
+ * call provably leaves the function's `apply` and `call` as they were: a
+ * call that may give the function its own makes `f.call(this, …)` run that
+ * property, which the proof does not read. So the properties a call
+ * defines must be named in its text, `Object.setPrototypeOf`, which
+ * changes where both are found, keeps neither, and nor does a property
  * named `__proto__`, which `Object.assign` sets with the same effect. */
-function returnedArgument(lowerer: Lowerer, call: ts.CallExpression): ts.Expression | null {
+function returnedArgument(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): { argument: ts.Expression; keepsCall: boolean } | null {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
   const member = lowerer.stdlibGlobalMember(callee, "Object");
   const args = call.arguments.nodes;
-  const first = args[0];
-  if (member === null || first === undefined || ts.isSpreadElement(first)) return null;
+  const argument = args[0];
+  if (member === null || argument === undefined || ts.isSpreadElement(argument)) return null;
   switch (member) {
     case "freeze":
     case "preventExtensions":
     case "seal":
-      return first;
+      return { argument, keepsCall: true };
     case "defineProperty": {
       const key = args[1];
-      return key !== undefined &&
+      const keepsCall =
+        key !== undefined &&
         (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
-        keepsApplyAndCall(key.text)
-        ? first
-        : null;
+        keepsApplyAndCall(key.text);
+      return { argument, keepsCall };
     }
     case "defineProperties":
-      return args.length === 2 && definesNoApplyOrCall(args[1]) ? first : null;
+      return { argument, keepsCall: args.length === 2 && definesNoApplyOrCall(args[1]) };
     case "assign":
-      return args.slice(1).every((source) => definesNoApplyOrCall(source)) ? first : null;
+      return {
+        argument,
+        keepsCall: args.slice(1).every((source) => definesNoApplyOrCall(source)),
+      };
+    case "setPrototypeOf":
+      return { argument, keepsCall: false };
   }
   return null;
 }
@@ -150,6 +181,8 @@ function ignoresOwnThis(lowerer: Lowerer, fn: ts.Node, bindings: Bindings, depth
         ignores = false;
         return;
       }
+      // The proof took `apply` and `call` for the builtins here.
+      forwardsInProof++;
       visit(node.expression.expression);
       for (const arg of node.arguments.nodes.slice(1)) visit(arg);
       return;
@@ -162,12 +195,6 @@ function ignoresOwnThis(lowerer: Lowerer, fn: ts.Node, bindings: Bindings, depth
 
 type HeldFunction = { fn: ts.Node | null; bound?: { expr: ts.Expression; bindings: Bindings } };
 
-/** The function `name` provably holds, following imports and immutable
- * identifier aliases as well as direct function initializers. */
-function functionOfName(lowerer: Lowerer, name: ts.Identifier, bindings: Bindings): HeldFunction {
-  return functionOfSymbol(lowerer, valueSymbolOfName(lowerer, name), bindings, false);
-}
-
 /** The binding a name reads: the variable's, also where the name is a
  * shorthand property (`{ read }`). */
 function valueSymbolOfName(lowerer: Lowerer, name: ts.Identifier): ts.Symbol | undefined {
@@ -177,28 +204,27 @@ function valueSymbolOfName(lowerer: Lowerer, name: ts.Identifier): ts.Symbol | u
     : lowerer.checker.getSymbolAtLocation(name);
 }
 
-/** The function a reference provably holds while a proof follows it: a
- * name, or a member of a namespace import. Null for any other expression. */
+/** The function a reference provably holds: a name, or a member of a
+ * namespace import. Null for any other expression. */
 function functionOfReference(
   lowerer: Lowerer,
   expr: ts.Expression,
   bindings: Bindings,
 ): HeldFunction | null {
   if (ts.isIdentifier(expr))
-    return functionOfSymbol(lowerer, valueSymbolOfName(lowerer, expr), bindings, true);
+    return functionOfSymbol(lowerer, valueSymbolOfName(lowerer, expr), bindings);
   const member = namespaceMemberSymbol(lowerer, expr);
-  return member === undefined ? null : functionOfSymbol(lowerer, member, bindings, true);
+  return member === undefined ? null : functionOfSymbol(lowerer, member, bindings);
 }
 
-/* `proof` is set while a proof that a function ignores `this` follows the
- * binding: an immutable binding then also names what a namespace member it
- * is initialized with names, and any other initializer is handed back for
- * the proof to read. Which exports are checked at all does not widen. */
+/* The function a binding provably holds, following imports and immutable
+ * aliases: an immutable binding names what the name or the namespace member
+ * it is initialized with names, and any other initializer is handed back
+ * for the caller to read. */
 function functionOfSymbol(
   lowerer: Lowerer,
   start: ts.Symbol | undefined,
   bindings: Bindings,
-  proof: boolean,
 ): HeldFunction {
   let symbol = start;
   const seen = new Set<ts.Symbol>();
@@ -236,12 +262,10 @@ function functionOfSymbol(
         symbol = lowerer.checker.getSymbolAtLocation(init);
         continue;
       }
-      if (proof) {
-        const member = namespaceMemberSymbol(lowerer, init);
-        if (member === undefined) return { fn: null, bound: { expr: init, bindings } };
-        symbol = member;
-        continue;
-      }
+      const member = namespaceMemberSymbol(lowerer, init);
+      if (member === undefined) return { fn: null, bound: { expr: init, bindings } };
+      symbol = member;
+      continue;
     }
     break;
   }
@@ -381,7 +405,8 @@ function ignoresThis(
   // to this call's arguments.
   if (ts.isCallExpression(expr)) {
     const passed = returnedArgument(lowerer, expr);
-    if (passed !== null) return ignoresThis(lowerer, passed, bindings, depth + 1);
+    if (passed !== null)
+      return passed.keepsCall && ignoresThis(lowerer, passed.argument, bindings, depth + 1);
     const fn = functionOfReference(lowerer, expr.expression, bindings)?.fn ?? null;
     if (fn === null) return false;
     const params = (fn as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters;
@@ -422,9 +447,51 @@ export function moduleExportIgnoresThis(
   lowerer: Lowerer,
   value: ts.Expression | ts.FunctionDeclaration | ts.MethodDeclaration,
 ): boolean {
-  if (ts.isFunctionDeclaration(value) || ts.isMethodDeclaration(value))
-    return !isRebindableFunction(lowerer, value) && !readsOwnThis(lowerer, value);
-  return ignoresThis(lowerer, value, noBindings, 0);
+  forwardsInProof = 0;
+  const ignores =
+    ts.isFunctionDeclaration(value) || ts.isMethodDeclaration(value)
+      ? !isRebindableFunction(lowerer, value) && !readsOwnThis(lowerer, value)
+      : ignoresThis(lowerer, value, noBindings, 0);
+  if (ignores) noteReceiverForwards(lowerer, value);
+  return ignores;
+}
+
+/* A proof that read `f.call(this, …)` or `f.apply(this, …)` as passing the
+ * receiver on to `f` holds while both are the builtins. The runtime refuses
+ * a function its own `call` or `apply` (SC2020), except in the build a
+ * program selects by defining, writing or deleting an inherited member of
+ * a function under a name its text spells, or by reading `call` or `bind`
+ * as a value (ir/runtime-features.ts, fnMemberProps): there a function
+ * holds whatever `call` the program gives it, under a spelled key or a
+ * computed one. Which function such a write reaches is not followed, so
+ * the sites whose proof passed `this` on are kept, and all of them are
+ * refused once the lowered program selects that build
+ * (refuseForwardsToOwnCall). The sites are kept as text, which a unit's
+ * record carries (Lowerer.journalTables). */
+function noteReceiverForwards(lowerer: Lowerer, site: ts.Node): void {
+  if (forwardsInProof === 0) return;
+  const loc = locOf(site);
+  lowerer.receiverForwardSites.add(`${loc.start}:${loc.end}:${loc.file}`);
+}
+
+/** The diagnostics of those sites, for a program in which a function can
+ * hold its own `call` or `apply`: the replacement would receive the
+ * receiver the proof said nobody reads. */
+export function refuseForwardsToOwnCall(lowerer: Lowerer, mod: IrModule): ScrDiagnostic[] {
+  if (lowerer.receiverForwardSites.size === 0 || !moduleShadowsFunctionMember(mod)) return [];
+  return Array.from(lowerer.receiverForwardSites, (site) => {
+    const first = site.indexOf(":");
+    const second = site.indexOf(":", first + 1);
+    return unsupportedDiag(
+      "SC1090",
+      {
+        file: site.slice(second + 1),
+        start: Number(site.slice(0, first)),
+        end: Number(site.slice(first + 1, second)),
+      },
+      "calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program whose functions can hold their own 'call' or 'apply' (it defines, writes, deletes or reads as a value an inherited member of a function; a replacement would receive the module object Node passes as 'this', which this call has no value for)",
+    );
+  });
 }
 
 export function refuseModuleMemberThis(
@@ -437,16 +504,17 @@ export function refuseModuleMemberThis(
   for (const decl of symbol.declarations) {
     const value = exportedValue(decl);
     if (value === undefined) continue;
+    forwardsInProof = 0;
     // A factory's result reads `this` through the function it returns.
-    const factory = exportedFactoryCall(lowerer, value);
-    if (factory === null) {
-      const fn = exportedFunction(lowerer, value);
-      if (fn === null || !readsOwnThis(lowerer, fn)) continue;
-    } else if (ignoresThis(lowerer, factory, noBindings, 0)) continue;
+    const reads = exportReadsThis(lowerer, value, 0);
+    if (reads === null) {
+      noteReceiverForwards(lowerer, call);
+      continue;
+    }
     lowerer.unsupported(
       "SC1090",
       call,
-      `calling a module export that ${factory !== null ? "may read" : "reads"} 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
+      `calling a module export that ${reads} 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
     );
   }
 }

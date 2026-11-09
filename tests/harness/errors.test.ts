@@ -1429,6 +1429,107 @@ export const read = function (n) { return inner.call(this, n); };
     );
   });
 
+  // The export's value names the function that reads `this` in each form
+  // the receiver proof follows, not only as a function or a call by name.
+  test.for(
+    Object.entries({
+      "a factory named through a namespace": [
+        `import * as inner from "./inner.mjs";
+export const read = inner.dual(function (n) { return this === undefined ? n : -n; });
+`,
+        "may read",
+      ],
+      "a factory named through an alias of a namespace member": [
+        `import * as inner from "./inner.mjs";
+const make = inner.dual;
+export const read = make(function (n) { return this === undefined ? n : -n; });
+`,
+        "may read",
+      ],
+      "a namespace member": [
+        `import * as inner from "./inner.mjs";
+export const read = inner.reader;
+`,
+        "reads",
+      ],
+      "the argument Object.defineProperty returns": [
+        `export const read = Object.defineProperty(function (n) { return this === undefined ? n : -n; }, "length", { value: 2 });
+`,
+        "reads",
+      ],
+      "the argument Object.setPrototypeOf returns": [
+        `export const read = Object.setPrototypeOf(function (n) { return this === undefined ? n : -n; }, Function.prototype);
+`,
+        "reads",
+      ],
+      "an arm of a conditional": [
+        `const quiet = process.argv.length > 100;
+export const read = quiet ? (n) => n : function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+    }),
+  )(
+    "an export that holds a reader of 'this' as %s keeps the module-binding receiver fence",
+    async ([, [lib, reads]]) => {
+      const r = await compileAndRun(
+        "module-binding-export-forms",
+        `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+        "mjs",
+        {
+          "lib.mjs": lib,
+          "inner.mjs": `export function dual(body) { return function () { return body.apply(this, arguments); }; }
+export const reader = function (n) { return this === undefined ? n : -n; };
+`,
+        },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `^Uncaught Error: calling a module export that ${reads} 'this' through its module binding.*\\[SC1090 at .*module-binding-export-forms\\.mjs:3\\]\\n$`,
+        ),
+      );
+    },
+  );
+
+  // A statement can give a function its own `call` after the binding that
+  // holds it: the proof reads no statements, so a program that defines
+  // `call` or `apply` on a function keeps no proof that passes `this` on.
+  test.for(
+    Object.entries({
+      "Object.defineProperty": `Object.defineProperty(inner, "call", { value(self, n) { return self === undefined ? n : -n; } });`,
+      "an assignment": `inner.call = function (self, n) { return self === undefined ? n : -n; };`,
+      "a definition another function makes": `function arm(fn) { Object.defineProperty(fn, "call", { value(self, n) { return self === undefined ? n : -n; } }); }
+arm(inner);`,
+    }),
+  )(
+    "an export that passes 'this' on is refused where the program gives a function its own 'call' by %s",
+    async ([, define]) => {
+      await expect(
+        compileAndRun(
+          "module-binding-own-call-statement",
+          `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+          "mjs",
+          {
+            "lib.mjs": `const inner = function (n) { return n; };
+${define}
+export const read = function (n) { return inner.call(this, n); };
+`,
+          },
+        ),
+      ).rejects.toThrow(
+        /SC1090: calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program whose functions can hold their own 'call' or 'apply'/,
+      );
+    },
+  );
+
   test.for(
     Object.entries({
       "function expression": "exports.read = function () { return this.n; };",

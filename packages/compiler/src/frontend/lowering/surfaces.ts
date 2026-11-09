@@ -2465,18 +2465,25 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     writeFileSync: [
       "fs.writeFileSyncBytes",
       "fs.writeFileSyncBytesFlags",
+      "fs.writeFileSyncData",
+      "fs.writeFileSyncDataFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileSyncFdData",
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
+      "fs.writeFileDataOptionsSync",
     ],
-    // The bytes-data form and the { encoding, mode, flag } option-record
-    // forms over string and bytes data.
+    // The data forms (bytes, and the checked argument whose type the call
+    // site did not pin down) and the { encoding, mode, flag } option-record
+    // forms over them.
     appendFileSync: [
       "fs.appendFileSyncBytes",
+      "fs.appendFileSyncData",
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
+      "fs.appendFileDataOptionsSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -2537,12 +2544,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fsp.writeFileFlags",
       "fsp.writeFileBytes",
       "fsp.writeFileBytesFlags",
+      "fsp.writeFileData",
+      "fsp.writeFileDataFlags",
     ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
-    // The Uint8Array/Buffer-data form.
-    appendFile: ["fsp.appendFileBytes"],
+    // The bytes-data form and the checked-data-argument form.
+    appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],
     // The options forms.
     rm: ["fsp.rmOpts", "fsp.rmRetry"],
   },

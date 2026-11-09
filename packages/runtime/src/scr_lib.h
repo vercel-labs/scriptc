@@ -316,7 +316,13 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data);
  * descriptor's current offset; the descriptor stays open (closeSync owns
  * it). Errors carry the fd operation's errno shape. */
 void scr_fs_write_file_fd(double fd, ScrStr *data);
+/* The descriptor form over a checked data argument (string or view):
+ * scr_fs_bytes_write.c's entry writes the string or the view's bytes. */
+void scr_fs_write_file_fd_data(double fd, const ScrDyn *data);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
+/* One write(2) of raw bytes at `position` (-1: the current offset), with
+ * the fd validation and errno shape the other fd writes report. */
+double scr_fs_write_mem(double fd, const void *data, size_t length, double position);
 bool scr_fs_exists(ScrStr *path);
 /* existsSync over a statically typed byte path: the bytes decode as a string
  * and the probe runs on it, the conversion the value form also does. */
@@ -411,6 +417,12 @@ void scr_fs_write_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr 
                                      double mode, ScrStr *flags);
 void scr_fs_append_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
                                       double mode, ScrStr *flags);
+/* The same two writes over a checked data argument: the string arm encodes
+ * with `encoding`; the view arm writes the bytes as they are. */
+void scr_fs_write_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                    double mode, ScrStr *flags);
+void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                     double mode, ScrStr *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL
@@ -586,6 +598,10 @@ ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
 ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
 ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
                                            double exclusive);
+ScrPromise *scr_fsp_write_file_data(ScrStr *path, const ScrDyn *data);
+ScrPromise *scr_fsp_append_file_data(ScrStr *path, const ScrDyn *data);
+ScrPromise *scr_fsp_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
+                                          double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
@@ -613,6 +629,8 @@ ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding
 ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h, const ScrDyn *data,
+                                                    ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state

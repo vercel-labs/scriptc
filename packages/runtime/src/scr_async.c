@@ -173,7 +173,9 @@ static void *scr_fiber_stack_new(void) {
   return stack;
 }
 
-static void scr_fiber_stack_free(void *stack) {
+/* Out of line: a fiber's teardown is inlined into many callers, and each
+ * would carry the pool's growth and trim. */
+__attribute__((noinline)) static void scr_fiber_stack_free(void *stack) {
   if (!stack) return;
 #ifndef SCR_ASAN_FIBERS
   if (scr_fiber_nspares == scr_fiber_spares_cap) {

@@ -760,6 +760,20 @@ static inline void scr_cyc_free_inline(void *obj) {
   if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
   scr_mem_free(scr_cyc_hdr(obj));
 }
+/* The free of a block that is no JS value: a capture box or a union box.
+ * No dispose observer can hold one. A weak collection or a finalization
+ * registry is keyed by what scr_weak_key derives from a value (a dynamic
+ * node, a closure, a buffer, a handle's object, or the object a typed
+ * reference wraps: a record, array, class instance, map, set or
+ * generator), and a union reaches dynamic code as its arm, never as its
+ * box; kept record sources and record links are keyed by records, the
+ * buffers registry by views and their owners. So the free does not
+ * report. */
+static inline void scr_cyc_free_unobserved_inline(void *obj) {
+  scr_cyc_live--;
+  if (scr_cyc_gen(scr_cyc_hdr(obj)) == SCR_CYC_OLD) scr_cyc_old_freed++;
+  scr_mem_free(scr_cyc_hdr(obj));
+}
 _Static_assert(SCR_CYC_NURSERY == 0, "zeroed cycle headers start in the nursery");
 _Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 1 && SCR_CYC_OLD == 2,
                "LLVM backend's inline free compares an i8 generation against 2");
@@ -923,11 +937,17 @@ void scr_cyc_context_cleanup(void);
  * turns). Cheap: usually a nursery pass; a waiting mature backlog ages into
  * a bounded full pass so sparse roots cannot float forever. */
 void scr_cyc_collect_scheduled(void);
+/* The same decision for one of the event loop's turns. A turn is not a
+ * measure of garbage, so a nursery pass waits for the release path's rules,
+ * for young candidates to have waited through a quarter of a nursery's worth
+ * of turns, or for the loop's next idle moment (scr_cyc_collect_idle). */
+void scr_cyc_collect_turn(void);
 /* The thread's event loop runs (scr_loop_run): from now on a full pass the
  * death rule asks for waits for scr_cyc_collect_idle. */
 void scr_cyc_note_event_loop(void);
 /* The event loop is about to wait with nothing ready: runs the full pass
- * the death rule asked for, if one waits; returns whether it ran. */
+ * the death rule asked for, if one waits, or else collects the young
+ * candidates the turns left buffered; returns whether a decision ran. */
 bool scr_cyc_collect_idle(void);
 
 /* Publication (@scriptc/threads publish; scr_cycle.c): makes everything a

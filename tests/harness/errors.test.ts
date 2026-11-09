@@ -1403,6 +1403,32 @@ console.log(lib.add(1, 2), lib.add(2)(1), lib.next(3));
     },
   );
 
+  // A function that was given its own `call` is not one `this` can be
+  // passed on to unread: `inner.call(this, n)` runs the replacement, which
+  // receives the receiver as its first argument.
+  test("an export that passes 'this' on to a function with its own 'call' keeps the module-binding receiver fence", async () => {
+    const r = await compileAndRun(
+      "module-binding-own-call",
+      `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const inner = Object.defineProperty(function (n) { return n; }, "call", {
+  value(self, n) { return self === undefined ? n : -n; },
+});
+export const read = function (n) { return inner.call(this, n); };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding.*\[SC1090 at .*module-binding-own-call\.mjs:3\]\n$/,
+    );
+  });
+
   test.for(
     Object.entries({
       "function expression": "exports.read = function () { return this.n; };",

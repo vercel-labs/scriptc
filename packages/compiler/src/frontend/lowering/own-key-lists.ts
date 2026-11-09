@@ -86,29 +86,22 @@ interface KeyList {
   positions: Map<string, string>;
 }
 
-interface State {
+/** What this module keeps while it lowers. The Lowerer holds one as its
+ * `ownKeyLists` field: a table keyed by the Lowerer would hand the Lowerer
+ * over as an untyped key, and the compiler's own build would compile it
+ * for untyped code as well. */
+export class OwnKeyListState {
   /** The lists whose statements are being lowered, by the list's symbol. */
-  lists: Map<ts.Symbol, KeyList>;
+  readonly lists = new Map<ts.Symbol, KeyList>();
   /** Syntax being lowered as it was before this module. */
-  plain: Set<ts.Node>;
+  readonly plain = new Set<ts.Node>();
   /** How many lists' statements are being lowered twice. */
-  depth: number;
-}
-
-const STATES = new WeakMap<Lowerer, State>();
-
-function stateOf(lowerer: Lowerer): State {
-  let state = STATES.get(lowerer);
-  if (!state) {
-    state = { lists: new Map(), plain: new Set(), depth: 0 };
-    STATES.set(lowerer, state);
-  }
-  return state;
+  depth = 0;
 }
 
 /** Lowers `node` as it was lowered before this module. */
 function lowerPlain(lowerer: Lowerer, node: ts.Expression): IrExpr {
-  const state = stateOf(lowerer);
+  const state = lowerer.ownKeyLists;
   state.plain.add(node);
   try {
     return lowerer.lowerExpr(node);
@@ -446,7 +439,7 @@ export function lowerOwnKeyListScope(
   if (decl.initializer === undefined || !ts.isIdentifier(decl.name)) return null;
   const list = listCall(lowerer, decl.initializer);
   if (list === null || enclosingFunction(decl) === undefined) return null;
-  const state = stateOf(lowerer);
+  const state = lowerer.ownKeyLists;
   // Inside a probe the diagnostics go elsewhere, and a function with a
   // constant some closure captured before its declaration initializes that
   // constant's box once: both keep the array.
@@ -549,7 +542,7 @@ export function lowerOwnKeyListScope(
  * statements that are already counted. */
 function lowerSeparately(
   lowerer: Lowerer,
-  state: State,
+  state: OwnKeyListState,
   stmts: readonly ts.Statement[],
   plain: ts.Statement | null,
   again: boolean,
@@ -591,8 +584,8 @@ export function mentionsAny(node: unknown, ids: ReadonlySet<string>): boolean {
  * record that reflects statically and the name is read in the function
  * that declared the list. */
 function keyListOf(lowerer: Lowerer, node: ts.Node): KeyList | null {
-  const lists = STATES.get(lowerer)?.lists;
-  if (!lists || lists.size === 0 || !ts.isIdentifier(node)) return null;
+  const lists = lowerer.ownKeyLists.lists;
+  if (lists.size === 0 || !ts.isIdentifier(node)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(node);
   const list = symbol === undefined ? undefined : lists.get(symbol);
   return list !== undefined && list.ctx === lowerer.ctx ? list : null;
@@ -628,7 +621,7 @@ export function lowerOwnKeyQuestion(lowerer: Lowerer, expr: ts.Expression): IrEx
     const keyList = keyListOf(lowerer, expr.expression);
     if (keyList !== null) return varRef(keyList.count, F64, locOf(expr));
     const list = listCall(lowerer, expr.expression);
-    if (list === null || STATES.get(lowerer)?.plain.has(expr)) return null;
+    if (list === null || lowerer.ownKeyLists.plain.has(expr)) return null;
     const record = staticRecord(lowerer, list.record);
     if (record === null) return null;
     const before = lowerPlain(lowerer, expr);
@@ -684,7 +677,7 @@ export function lowerOwnKeyQuestion(lowerer: Lowerer, expr: ts.Expression): IrEx
       : prototypeCall(lowerer, expr.right) !== null && isObjectPrototype(lowerer, expr.left)
         ? prototypeCall(lowerer, expr.right)
         : null;
-  if (subject === null || STATES.get(lowerer)?.plain.has(expr)) return null;
+  if (subject === null || lowerer.ownKeyLists.plain.has(expr)) return null;
   const record = staticRecord(lowerer, subject);
   if (record === null) return null;
   const before = lowerPlain(lowerer, expr);

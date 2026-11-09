@@ -295,7 +295,7 @@ export interface DynHost extends WalkerHost {
   declBoundary?(): boolean;
   /** The program links the adoption unit (RuntimeFeatures declAdopt): a
    * typed slot's checked conversion keeps one identity with the dynamic
-   * value it was converted from (adoptSharedSource). */
+   * value it was converted from (dynCheckAdoptingHelper). */
   declAdopt?(): boolean;
   /** The program links Node islands (IrModule.nodeIsland): a value an
    * island made is a handle whose members live in Node, and a checked
@@ -413,6 +413,12 @@ export class LlDyn {
         return this.jsonParseHelper(args[0] as IrType)!;
       case "dyn.dynCheckHelper":
         return this.dynCheckHelper(args[0] as IrType, args[1] as boolean, args[2] === true);
+      case "dyn.dynCheckAdoptingHelper":
+        return this.dynCheckAdoptingHelper(
+          args[0] as IrType,
+          args[1] as boolean,
+          args[2] as boolean,
+        );
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
       case "dyn.promiseDynAdapterHelper":
@@ -3099,19 +3105,18 @@ export class LlDyn {
    * object file of one program), takes the helper, whose first test compares
    * the key by content and whose remaining paths view, convert or throw.
    *
-   * A caller that passes `paths` is told which path answered: `helper` is
-   * an i1 that is false where the capsule's own object was handed out (null
-   * where every value takes the helper). An adoption reads it, so the path
-   * without a call stays without one. */
+   * A typed slot's conversion (dynCheck.shared) passes `adopting`, the
+   * type's dynCheckAdoptingHelper, which then stands in the helper's place:
+   * the site's text differs from the unflagged site's in that name only. */
   checkedRecordConversion(
     B: BlockBuilder,
     t: IrType & { kind: "record" },
     d: string,
     path: string,
     preserveRefs = false,
-    paths?: { helper: string | null },
+    adopting?: string,
   ): string {
-    const helper = this.dynCheckHelper(t, preserveRefs);
+    const helper = adopting ?? this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
     // A codec handle's record is found through its box, never as a capsule.
     if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) {
@@ -3153,11 +3158,87 @@ export class LlDyn {
     B.startBlock(lDone);
     const converted = B.tmp();
     B.line(`${converted} = phi ptr [ ${held}, %${lOwn} ], [ ${checked}, %${lOther} ]`);
-    if (paths !== undefined) {
-      paths.helper = B.tmp();
-      B.line(`${paths.helper} = phi i1 [ false, %${lOwn} ], [ true, %${lOther} ]`);
-    }
     return converted;
+  }
+
+  /** dynCheckHelper for a typed slot's conversion that keeps one object
+   * (dynCheck.shared): the same signature and the same result, and a plain
+   * object or array that converted becomes a live capsule of the value
+   * built from it (scr_dyn_adopt_shared), so the dynamic value and the
+   * typed one stay one object. The adoption lives here, out of line: a call
+   * site is the unflagged site's text with this callee.
+   *
+   * Only a plain object or array has nodes to adopt (the kinds
+   * scr_dyn_adoptable names): every other value goes to the plain helper in
+   * a tail call. A failed check leaves its error pending and adopts nothing.
+   * A `borrowed` source is held for the adoption: the binding it was read
+   * from is a holder its count does not show, and the lenient walk adopts a
+   * node only when something else holds it.
+   *
+   * The plain helper itself where the program does not link the adoption
+   * unit (a library) or the type has no live capsule. */
+  dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {
+    const plain = this.dynCheckHelper(t, preserveRefs);
+    const host = this.host;
+    if (host.declAdopt?.() !== true) return plain;
+    const live = boxesAsLiveCapsule(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    );
+    if (!live) return plain;
+    const key = checkedConversionKey(t);
+    const builderKey = `${borrowed ? "adopt-borrowed" : "adopt"}:${preserveRefs ? "identity:" : ""}${key}`;
+    const existing = this.dynBuilders.get(builderKey);
+    if (existing) return existing;
+    const name = `sc_dc_${this.dynBuilders.size}`;
+    this.dynBuilders.set(builderKey, name);
+    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
+    host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    const B = new BlockBuilder();
+    const kind = this.kindOf(B, "%d");
+    const isArr = B.tmp();
+    const isObj = B.tmp();
+    const plainData = B.tmp();
+    B.line(`${isArr} = icmp eq i32 ${kind}, ${DYN_KIND.ARR}`);
+    B.line(`${isObj} = icmp eq i32 ${kind}, ${DYN_KIND.OBJ}`);
+    B.line(`${plainData} = or i1 ${isArr}, ${isObj}`);
+    const lData = B.newLabel("dca.data");
+    const lOther = B.newLabel("dca.other");
+    const lAdopt = B.newLabel("dca.adopt");
+    const lDone = B.newLabel("dca.done");
+    B.condBr(plainData, lData, lOther);
+    B.startBlock(lOther);
+    const passed = B.tmp();
+    B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
+    B.terminate(`ret ptr ${passed}`);
+    B.startBlock(lData);
+    const built = B.tmp();
+    B.line(`${built} = call ptr @${plain}(ptr %d, ptr %path)`);
+    const failed = B.tmp();
+    B.line(`${failed} = call zeroext i1 @scr_exc_pending()`);
+    B.condBr(failed, lDone, lAdopt);
+    B.startBlock(lAdopt);
+    const capsule = this.liveToDyn(B, t, built);
+    if (capsule !== null) {
+      const held = borrowed ? this.retainDyn(B, "%d") : null;
+      B.line(`call void @scr_dyn_adopt_shared(ptr %d, ptr ${capsule})`);
+      if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
+      B.line(`call void @scr_dyn_release(ptr ${capsule})`);
+    }
+    B.br(lDone);
+    B.startBlock(lDone);
+    B.terminate(`ret ptr ${built}`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) noinline ${FN_ATTRS} {`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    host.journalBuilt?.();
+    return name;
   }
 
   dynCheckHelper(t: IrType, preserveRefs = false, soleOwner = false): string {
@@ -6647,61 +6728,6 @@ export class LlDyn {
   /** The dyn argument spelling of one static value: dyn passes through
    * (+1), funcs box anonymously, everything else rides toDyn. `expr` is
    * BORROWED in every arm. Emits into the given builder. */
-  /** The adoption after a checked conversion at a typed slot
-   * (dynCheck.shared): `source`, where something else still holds it,
-   * becomes a live capsule of `built`, the value converted from it
-   * (scr_dyn_adopt_shared; a source that is not plain data keeps the
-   * copy). A `borrowed` source is held for the call: the binding it was
-   * read from is a holder its count does not show, and the lenient walk
-   * adopts a node only when something else holds it. Only a plain object
-   * or array has nodes to adopt (scr_dyn_adoptable, as adoptingCast asks):
-   * a source that already is a native value's capsule skips the boxing and
-   * the walk. `viaHelper`, where the conversion has it
-   * (checkedRecordConversion), is false where the capsule's own object was
-   * handed out: that path asks nothing. Nothing is emitted where the
-   * program does not link the adoption unit (a library) or the type has no
-   * live capsule. */
-  adoptSharedSource(
-    B: BlockBuilder,
-    t: IrType,
-    source: string,
-    built: string,
-    borrowed: boolean,
-    viaHelper: string | null = null,
-  ): void {
-    const host = this.host;
-    if (host.declAdopt?.() !== true) return;
-    const live = boxesAsLiveCapsule(
-      t,
-      (id) => host.recordsById.get(id),
-      (id) => host.unionsById.get(id),
-    );
-    if (!live) return;
-    host.declare(`declare zeroext i1 @scr_dyn_adoptable(ptr)`);
-    host.declare(`declare void @scr_dyn_adopt_shared(ptr, ptr)`);
-    host.declare(`declare void @scr_dyn_release(ptr)`);
-    const adoptable = B.tmp();
-    const adoptLabel = B.newLabel("adopt");
-    const doneLabel = B.newLabel("adopt.done");
-    if (viaHelper !== null) {
-      const askLabel = B.newLabel("adopt.ask");
-      B.condBr(viaHelper, askLabel, doneLabel);
-      B.startBlock(askLabel);
-    }
-    B.line(`${adoptable} = call zeroext i1 @scr_dyn_adoptable(ptr ${source})`);
-    B.condBr(adoptable, adoptLabel, doneLabel);
-    B.startBlock(adoptLabel);
-    const capsule = this.liveToDyn(B, t, built);
-    if (capsule !== null) {
-      const held = borrowed ? this.retainDyn(B, source) : null;
-      B.line(`call void @scr_dyn_adopt_shared(ptr ${source}, ptr ${capsule})`);
-      if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
-      B.line(`call void @scr_dyn_release(ptr ${capsule})`);
-    }
-    B.br(doneLabel);
-    B.startBlock(doneLabel);
-  }
-
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
    * types. Every typed value crossing into the dynamic tier this way keeps

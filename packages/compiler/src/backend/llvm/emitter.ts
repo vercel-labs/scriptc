@@ -9918,6 +9918,7 @@ for (const op of [
   "dyn.recordNameTable",
   "dyn.jsonParseHelper",
   "dyn.dynCheckHelper",
+  "dyn.dynCheckAdoptingHelper",
   "dyn.toDynHelper",
   "dyn.promiseDynAdapterHelper",
   "dyn.dynFuncThunkHelper",

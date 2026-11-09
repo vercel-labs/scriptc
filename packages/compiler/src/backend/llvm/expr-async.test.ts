@@ -78,18 +78,22 @@ test("plain arguments keep the original entry points", () => {
   expect(body).not.toContain("_parts");
 });
 
-/** The module of `function take(value: unknown) { <conversion of value to number[]>; }`
- * and the LLVM of `take`. */
-function conversionModule(conversion: (value: IrExpr, type: IrType) => IrExpr): {
+/** The module of `function take(value: unknown) { <conversion of value to the target>; }`
+ * and the LLVM of `take`. The target is number[], or the record `{ x: number }`. */
+function conversionModule(
+  conversion: (value: IrExpr, type: IrType) => IrExpr,
+  target: "array" | "record" = "array",
+): {
   mod: IrModule;
   llvm: string;
   body: string;
 } {
-  const numbers = arrayOf(F64);
+  const numbers: IrType = target === "array" ? arrayOf(F64) : { kind: "record", shapeId: "cell" };
   const mod: IrModule = {
     irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
+    records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
     functions: [
       { name: "main", loc, params: [], locals: [], returnType: VOID, body: [] },
       {
@@ -118,16 +122,6 @@ test("a typed slot's conversion adopts its source only while the node carries th
     loc,
   }));
   expect(moduleRuntimeFeatures(shared.mod).declAdopt).toBe(true);
-  expect(shared.body.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
-  const check = /call ptr @sc_dc_\d+\(/.exec(shared.body);
-  expect(check).not.toBeNull();
-  expect(shared.body.indexOf("@scr_dyn_adopt_shared")).toBeGreaterThan(check!.index);
-  // The adoption asks first whether the source has nodes to adopt: a source
-  // that already is a capsule skips the boxing and the walk.
-  const asks = shared.body.indexOf("call zeroext i1 @scr_dyn_adoptable(");
-  expect(asks).toBeGreaterThan(check!.index);
-  expect(shared.body.indexOf("@scr_dyn_adopt_shared")).toBeGreaterThan(asks);
-
   // A consumer that rebuilds the node from its other fields drops the flag
   // and gets the plain checked copy: the same check, no adoption, and the
   // adoption unit is not linked.
@@ -135,4 +129,68 @@ test("a typed slot's conversion adopts its source only while the node carries th
   expect(moduleRuntimeFeatures(copied.mod).declAdopt).toBe(false);
   expect(copied.llvm).not.toContain("scr_dyn_adopt_shared");
   expect(copied.body.match(/call ptr @sc_dc_\d+\(/g)).toHaveLength(1);
+
+  // The adoption is out of line: the flagged site is the plain site's text
+  // with another callee.
+  const callee = /call ptr @(sc_dc_\d+)\(/;
+  const plain = callee.exec(copied.body)![1]!;
+  const adopting = callee.exec(shared.body)![1]!;
+  expect(adopting).not.toBe(plain);
+  expect(shared.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
+
+  // The callee is never inlined into the site. A value that is not a plain
+  // object or array goes on to the plain helper in a tail call; a plain one
+  // is checked, and adopted only where the check left no error pending.
+  const helper = helperBody(shared.llvm, adopting);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\d+\(ptr %d, ptr %path\) noinline /);
+  const steps = [
+    /icmp eq i32 %t\d+, 4$/m,
+    /icmp eq i32 %t\d+, 5$/m,
+    new RegExp(`= tail call ptr @${plain}\\(ptr %d, ptr %path\\)`),
+    new RegExp(`= call ptr @${plain}\\(ptr %d, ptr %path\\)`),
+    /call zeroext i1 @scr_exc_pending\(\)/,
+    /call void @scr_dyn_adopt_shared\(ptr %d, ptr /,
+  ].map((step) => helper.search(step));
+  expect(steps.every((at) => at >= 0)).toBe(true);
+  expect(steps).toEqual([...steps].sort((a, b) => a - b));
+  expect(helper.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
 });
+
+test("a record's typed slot hands the type's own capsule out as the plain site does", () => {
+  const flagged = conversionModule(
+    (value, type) => ({ kind: "dynCheck", value, shared: true, type, loc }),
+    "record",
+  );
+  const copied = conversionModule(
+    (value, type) => ({ kind: "dynCheck", value, type, loc }),
+    "record",
+  );
+  const callees = (body: string): string[] =>
+    [...body.matchAll(/call ptr @(sc_dc_\d+)\(/g)].map((m) => m[1]!);
+  // One helper call in each: the path of every value but the type's own
+  // capsule, which hands its record out with no call (the address compare
+  // of its key) and never reaches the adoption.
+  const [plain] = callees(copied.body);
+  const [adopting] = callees(flagged.body);
+  expect(callees(copied.body)).toHaveLength(1);
+  expect(callees(flagged.body)).toHaveLength(1);
+  expect(adopting).not.toBe(plain);
+  expect(copied.body).toContain("typed_ref.type_key");
+  expect(copied.body).toMatch(
+    /= phi ptr \[ %t\d+, %dc\.own\.hit\d+ \], \[ %t\d+, %dc\.own\.other\d+ \]$/m,
+  );
+  // The flagged site is the plain site's text with the adopting helper as
+  // the callee: the function is the same size, and whether it is inlined
+  // into its callers is decided as without the flag.
+  expect(flagged.body).not.toContain("scr_dyn_adopt_shared");
+  expect(flagged.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
+  const helper = helperBody(flagged.llvm, adopting!);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\d+\(ptr %d, ptr %path\) noinline /);
+  expect(helper).toContain(`tail call ptr @${plain}(ptr %d, ptr %path)`);
+  expect(helper.match(/call void @scr_dyn_adopt_shared\(/g)).toHaveLength(1);
+});
+
+/** The definition of one conversion helper in a module's LLVM. */
+function helperBody(llvm: string, name: string): string {
+  return new RegExp(`^define internal ptr @${name}\\([^]*?^}`, "m").exec(llvm)![0];
+}

@@ -23,6 +23,7 @@ import {
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
+import { CLASS_KEY_SLOT_BYTES, classKeyFitsSlot } from "../../ir/class-key-index.js";
 import { serializeModuleParts } from "../../ir/serialize.js";
 import { createHash } from "node:crypto";
 import {
@@ -1757,6 +1758,15 @@ export class LlEmitter {
   /** Interned NUL-terminated C-string constants (scr_jb_puts labels, the
    * stringify indent text): UTF-8 text → { symbol, byte length }. */
   readonly cstrs = new Map<string, { sym: string; len: number }>();
+  /** The module's class key table (IrModule.classKeys): the type keys of
+   * the classes the program boxes, in class pre-order, each in a slot of
+   * CLASS_KEY_SLOT_BYTES bytes of one constant. Key text → slot index.
+   * cstr answers a table key's slot, so every site that boxes a class and
+   * every site that tests a capsule's key name the same address. */
+  readonly classKeySlots: ReadonlyMap<string, number>;
+  /** The table's symbol, named by its keys; null when the module lists no
+   * class, and then no table is written. */
+  readonly classKeysSymbol: string | null;
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
   /** Element data of the numeric array literals that become static tables
@@ -2492,6 +2502,17 @@ export class LlEmitter {
     previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
+    // The table's symbol is the first content symbol every emitter of the
+    // module takes, so the emitters of its function ranges name it alike.
+    const classKeys = (mod.classKeys ?? []).map((className) =>
+      typeKey({ kind: "object", className }),
+    );
+    for (const key of classKeys)
+      if (!classKeyFitsSlot(key))
+        throw new InternalCompilerError(`llvm emitter bug: class key ${key} fits no table slot`);
+    this.classKeySlots = new Map(classKeys.map((key, slot) => [key, slot]));
+    this.classKeysSymbol =
+      classKeys.length > 0 ? this.contentSymbol("sc_class_keys_", classKeys.join("\0")) : null;
     this.journal = journal;
     this.journaled =
       journal !== null ||
@@ -2940,6 +2961,11 @@ export class LlEmitter {
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
       classSubtypes: (name) => this.classSubtypes(name),
+      classKeyTable: () =>
+        this.classKeysSymbol === null
+          ? null
+          : { symbol: this.classKeysSymbol, count: this.classKeySlots.size },
+      classKeyRun: (names) => this.classKeyRun(names),
       classValueSubtypes: (name) => {
         // A classval may name a class with no lowering at all: a JS
         // instance field initializer's per-evaluation class expression
@@ -4325,6 +4351,8 @@ export class LlEmitter {
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
    * stringify-indent currency) — `@`-ref, first-use order. */
   cstr(text: string): string {
+    const slot = this.classKeySlots.get(text);
+    if (slot !== undefined) return this.classKeyRef(slot);
     let c = this.cstrs.get(text);
     if (!c) {
       c = { sym: this.contentSymbol("sc_cs_", text), len: Buffer.byteLength(text, "utf8") };
@@ -4332,6 +4360,34 @@ export class LlEmitter {
     }
     this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
+  }
+
+  /** The address of a slot of the class key table: a constant expression,
+   * usable wherever a constant's `@`-ref is. */
+  classKeyRef(slot: number): string {
+    return `getelementptr inbounds (i8, ptr @${this.classKeysSymbol}, i64 ${slot * CLASS_KEY_SLOT_BYTES})`;
+  }
+
+  /** The slots of the table's classes among `classNames`, which are a
+   * class and the classes below it: one run, since the table is in class
+   * pre-order. Null when the table holds none of them. A key pointer in
+   * the table and outside the run is none of them: a class the table
+   * lacks has a key constant of its own, of another text. */
+  classKeyRun(classNames: readonly string[]): { first: number; count: number } | null {
+    let first = Infinity,
+      last = -1,
+      found = 0;
+    for (const className of classNames) {
+      const slot = this.classKeySlots.get(typeKey({ kind: "object", className }));
+      if (slot === undefined) continue;
+      found++;
+      first = Math.min(first, slot);
+      last = Math.max(last, slot);
+    }
+    if (found === 0) return null;
+    // A list that is not one hierarchy's would leave a gap: no run then.
+    if (last - first + 1 !== found) return null;
+    return { first, count: found };
   }
 
   /** The method-id slot for a constant method name (methodIdSlots). */

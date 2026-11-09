@@ -75,7 +75,9 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
   return (
     stmt.kind === "switch" &&
     stmt.disc.kind === "libCall" &&
-    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+    (stmt.disc.fn === "dyn.classHash" ||
+      stmt.disc.fn === "dyn.classKeySlot" ||
+      stmt.disc.fn === "dyn.classValueHash")
   );
 }
 

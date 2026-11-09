@@ -18,6 +18,7 @@ import {
   unionBoxBits,
 } from "./inline-unions.js";
 import { InternalCompilerError } from "../../errors.js";
+import { CLASS_KEY_SLOT_BYTES } from "../../ir/class-key-index.js";
 /* ScrDyn helpers for the LLVM backend: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
  * converters (toDynHelper), the type-independent singletons (String
@@ -300,6 +301,12 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
+  /** The module's class key table (emitter.classKeySlots): its symbol and
+   * number of slots, or null without one. */
+  classKeyTable?(): { symbol: string; count: number } | null;
+  /** The table's run of slots for a class and the classes below it
+   * (emitter.classKeyRun). */
+  classKeyRun?(classNames: readonly string[]): { first: number; count: number } | null;
   /** The strict subclasses whose class-value constructor takes the same
    * arguments as `className`'s (classValueAbiEquals): the class values a
    * checked `classval` slot accepts besides its own class. */
@@ -2127,15 +2134,55 @@ export class LlDyn {
       `${keySlot} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
     );
     B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
-    const same = either(
-      keys.map((key) => {
-        const hit = B.tmp();
-        B.line(`${hit} = icmp eq ptr ${keyPtr}, ${this.host.cstr(key)}`);
-        return hit;
-      }),
-    );
+    // The module's class key table holds the keys of the classes the
+    // program boxes, in class pre-order, in slots of one size: a class and
+    // the classes below it are one run of slots, so one subtraction and
+    // one unsigned compare answer for all of them, whatever their number.
+    const table = this.host.classKeyTable?.() ?? null;
+    const classNames = types.every((type) => type.kind === "object")
+      ? types.map((type) => (type as IrType & { kind: "object" }).className)
+      : null;
+    const run = table !== null && classNames !== null ? this.host.classKeyRun!(classNames) : null;
+    // The key pointer's distance from the table: below the table's size
+    // for a capsule this program boxed from one of the table's classes.
+    const distance = B.tmp();
+    if (table !== null) {
+      const keyAt = B.tmp();
+      B.line(`${keyAt} = ptrtoint ptr ${keyPtr} to ${this.S}`);
+      B.line(`${distance} = sub ${this.S} ${keyAt}, ptrtoint (ptr @${table.symbol} to ${this.S})`);
+    }
+    const tests: string[] = [];
+    if (run !== null) {
+      const fromRun = B.tmp(),
+        hit = B.tmp();
+      B.line(`${fromRun} = sub ${this.S} ${distance}, ${run.first * CLASS_KEY_SLOT_BYTES}`);
+      B.line(`${hit} = icmp ult ${this.S} ${fromRun}, ${run.count * CLASS_KEY_SLOT_BYTES}`);
+      tests.push(hit);
+    }
+    for (const type of types) {
+      // The run answers for its classes; every other key is compared by
+      // its own address.
+      if (run !== null && this.host.classKeyRun!([(type as { className: string }).className]))
+        continue;
+      const hit = B.tmp();
+      B.line(`${hit} = icmp eq ptr ${keyPtr}, ${this.host.cstr(typeKey(type))}`);
+      tests.push(hit);
+    }
+    const same = either(tests);
     B.line(`store i1 true, ptr ${slot}`);
-    B.condBr(same, done, names);
+    if (table === null) B.condBr(same, done, names);
+    else {
+      // A key pointer inside the table that matched no test above names
+      // another class of the table: its text is none of these keys', so the
+      // name comparisons below would all answer false.
+      const elsewhere = B.newLabel("dc.keys.elsewhere");
+      B.condBr(same, done, elsewhere);
+      B.startBlock(elsewhere);
+      const inside = B.tmp();
+      B.line(`store i1 false, ptr ${slot}`);
+      B.line(`${inside} = icmp ult ${this.S} ${distance}, ${table.count * CLASS_KEY_SLOT_BYTES}`);
+      B.condBr(inside, done, names);
+    }
     B.startBlock(names);
     const named = either(
       keys.map((key) => {

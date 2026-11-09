@@ -541,6 +541,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.classHash",
+  "dyn.classKeySlot",
   "dyn.classValueHash",
   "dyn.compare",
   // Adoption reads the native value it was built into and turns shared

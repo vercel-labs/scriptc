@@ -52,3 +52,27 @@ export function classValueSlot(key: string, bits: number): number {
   const folded = (Math.imul(key.length, CLASS_KEY_LEN_MIX) + classKeyTail(key)) | 0;
   return Math.imul(folded, CLASS_VALUE_SLOT_MIX) >>> (32 - bits);
 }
+
+/** The bytes of one slot of the module's class key table
+ * (IrModule.classKeys): a key and its terminating NUL, padded with NULs.
+ * Every slot has this size, so a key pointer's distance from the table is
+ * the slot's index times it, and the classes below a class are one
+ * unsigned range of that distance. */
+export const CLASS_KEY_SLOT_BYTES = 64;
+
+/** The text every key of the class key table starts with: an instance's
+ * capsule key is this and the class's name. */
+export const CLASS_KEY_PREFIX = "object:";
+
+/** Whether a key fits one slot of the class key table: a class's capsule
+ * key in printable ASCII, so its bytes are its text, with room for the
+ * terminating NUL. A longer key keeps a constant of its own outside the
+ * table. */
+export function classKeyFitsSlot(key: string): boolean {
+  return (
+    key.length < CLASS_KEY_SLOT_BYTES &&
+    key.length > CLASS_KEY_PREFIX.length &&
+    key.startsWith(CLASS_KEY_PREFIX) &&
+    /^[\x20-\x7e]*$/.test(key)
+  );
+}

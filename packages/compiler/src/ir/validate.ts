@@ -4,6 +4,7 @@
  * an ICE that points at source is a gift to whoever debugs it.
  */
 import { validByteNumberToken } from "./byte-numbers.js";
+import { classKeyFitsSlot } from "./class-key-index.js";
 import { localScopeUses } from "./local-scopes.js";
 import type {
   IrClassDef,
@@ -133,6 +134,16 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
   if (mod.declBoundary !== undefined && mod.declBoundary !== true)
     errors.push({ message: "declBoundary must be true when present", loc: moduleLoc });
+  if (mod.classKeys !== undefined) {
+    const listed = new Set<string>();
+    for (const name of mod.classKeys) {
+      if (listed.has(name) || !classKeyFitsSlot(typeKey({ kind: "object", className: name })))
+        errors.push({ message: `class key table: bad entry '${name}'`, loc: moduleLoc });
+      listed.add(name);
+    }
+    if (listed.size === 0)
+      errors.push({ message: "class key table must be absent when empty", loc: moduleLoc });
+  }
   const declOrigins = mod.declOrigins;
   if (
     declOrigins !== undefined &&

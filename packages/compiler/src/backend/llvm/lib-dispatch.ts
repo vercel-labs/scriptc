@@ -27,7 +27,12 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
-import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
+import {
+  CLASS_KEY_LEN_MIX,
+  CLASS_KEY_PREFIX,
+  CLASS_KEY_SLOT_BYTES,
+  CLASS_VALUE_SLOT_MIX,
+} from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
@@ -36,6 +41,11 @@ import { RECORD_SOURCES_GATE } from "./alloc.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
+
+/** A key's first eight bytes as a little-endian word, masked to the bytes
+ * of CLASS_KEY_PREFIX, and the word those bytes are in a class key. */
+const CLASS_KEY_PREFIX_MASK = (1n << BigInt(8 * CLASS_KEY_PREFIX.length)) - 1n;
+const CLASS_KEY_PREFIX_WORD = Buffer.from(`${CLASS_KEY_PREFIX}\0`, "latin1").readBigUInt64LE(0);
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -746,6 +756,115 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         type: "i32",
         signed: true,
         range: { min: -1, max: 2147483647 },
+      },
+    };
+  }
+  if (e.fn === "dyn.classKeySlot") {
+    // A generated class table's discriminant over the module's class key
+    // table: the slot of the capsule's key. A capsule this program boxed
+    // carries a slot's address, so its slot is its key pointer's distance
+    // from the table. A capsule whose key lives elsewhere (boxed by the
+    // runtime or by another compilation unit) has its key compared with
+    // each slot's, by length and bytes: what the branches' own key tests
+    // compare. A value that is no capsule, and a key no slot holds, answer
+    // -1, which no case matches.
+    const symbol = host.classKeysSymbol;
+    if (symbol === null)
+      throw new InternalCompilerError(
+        "llvm emitter bug: dyn.classKeySlot without a class key table",
+      );
+    const count = host.classKeySlots.size;
+    const S = host.sizeType;
+    const value = host.emitReadReceiver(e.args[0]!);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i32`);
+    B.line(`store i32 -1, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("class.slot.inspect");
+    const capsule = B.newLabel("class.slot.capsule");
+    const inside = B.newLabel("class.slot.inside");
+    const outside = B.newLabel("class.slot.outside");
+    const scan = B.newLabel("class.slot.scan");
+    const same = B.newLabel("class.slot.same");
+    const done = B.newLabel("class.slot.done");
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const typed = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    B.condBr(typed, capsule, done);
+    B.startBlock(capsule);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp(),
+      keyAt = B.tmp(),
+      distance = B.tmp(),
+      within = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    B.line(`${keyAt} = ptrtoint ptr ${keyPtr} to ${S}`);
+    B.line(`${distance} = sub ${S} ${keyAt}, ptrtoint (ptr @${symbol} to ${S})`);
+    B.line(`${within} = icmp ult ${S} ${distance}, ${count * CLASS_KEY_SLOT_BYTES}`);
+    B.condBr(within, inside, outside);
+    B.startBlock(inside);
+    const index = B.tmp();
+    B.line(`${index} = udiv ${S} ${distance}, ${CLASS_KEY_SLOT_BYTES}`);
+    let index32 = index;
+    if (S === "i64") {
+      index32 = B.tmp();
+      B.line(`${index32} = trunc i64 ${index} to i32`);
+    }
+    B.line(`store i32 ${index32}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(outside);
+    const lenSlot = B.tmp(),
+      lenWord = B.tmp(),
+      len = B.tmp(),
+      hasKey = B.tmp(),
+      sized = B.tmp(),
+      comparable = B.tmp();
+    B.line(
+      `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+    );
+    B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+    B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
+    // Every key of the table is `object:` and a class name: eight bytes
+    // or more. A record's, an array's or a collection's capsule is done
+    // here, on its key's first bytes.
+    B.line(`${sized} = icmp sge i32 ${len}, ${CLASS_KEY_PREFIX.length + 1}`);
+    B.line(`${comparable} = and i1 ${hasKey}, ${sized}`);
+    B.condBr(comparable, scan, done);
+    B.startBlock(scan);
+    const head = B.tmp(),
+      prefix = B.tmp(),
+      classKey = B.tmp();
+    B.line(`${head} = load i64, ptr ${keyPtr}, align 1`);
+    B.line(`${prefix} = and i64 ${head}, ${CLASS_KEY_PREFIX_MASK}`);
+    B.line(`${classKey} = icmp eq i64 ${prefix}, ${CLASS_KEY_PREFIX_WORD}`);
+    B.condBr(classKey, same, done);
+    B.startBlock(same);
+    // A class key that lives outside the table: the table's lookup by the
+    // key's length and bytes (emit-module.ts classKeyFind).
+    const found = B.tmp();
+    B.line(`${found} = call i32 @${symbol}_find(ptr ${keyPtr}, i32 ${len})`);
+    B.line(`store i32 ${found}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const selector = B.tmp();
+    B.line(`${selector} = load i32, ptr ${slot}`);
+    const out = B.tmp();
+    B.line(`${out} = sitofp i32 ${selector} to double`);
+    return {
+      name: out,
+      type: e.type,
+      integer: {
+        name: selector,
+        type: "i32",
+        signed: true,
+        range: { min: -1, max: count - 1 },
       },
     };
   }

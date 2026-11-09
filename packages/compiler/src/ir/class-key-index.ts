@@ -53,26 +53,26 @@ export function classValueSlot(key: string, bits: number): number {
   return Math.imul(folded, CLASS_VALUE_SLOT_MIX) >>> (32 - bits);
 }
 
-/** The bytes of one slot of the module's class key table
- * (IrModule.classKeys): a key and its terminating NUL, padded with NULs.
- * Every slot has this size, so a key pointer's distance from the table is
- * the slot's index times it, and the classes below a class are one
- * unsigned range of that distance. */
-export const CLASS_KEY_SLOT_BYTES = 64;
+/** The fewest bytes of one slot of a module's class key table
+ * (IrModule.classKeys). */
+export const CLASS_KEY_MIN_SLOT_BYTES = 64;
 
 /** The text every key of the class key table starts with: an instance's
  * capsule key is this and the class's name. */
 export const CLASS_KEY_PREFIX = "object:";
 
-/** Whether a key fits one slot of the class key table: a class's capsule
- * key in printable ASCII, so its bytes are its text, with room for the
- * terminating NUL. A longer key keeps a constant of its own outside the
- * table. */
-export function classKeyFitsSlot(key: string): boolean {
-  return (
-    key.length < CLASS_KEY_SLOT_BYTES &&
-    key.length > CLASS_KEY_PREFIX.length &&
-    key.startsWith(CLASS_KEY_PREFIX) &&
-    /^[\x20-\x7e]*$/.test(key)
-  );
+/** The bytes of one slot of a module's class key table: a key in UTF-8 and
+ * its terminating NUL, padded with NULs. Every slot of one module has one
+ * size: the longest key's with its NUL, rounded up to a power of two, and
+ * at least CLASS_KEY_MIN_SLOT_BYTES. So every class key fits a slot, a key
+ * pointer's distance from the table is the slot's index times the size (a
+ * shift), and the classes below a class are one unsigned range of that
+ * distance. */
+export function classKeySlotBytes(keys: Iterable<string>): number {
+  let size = CLASS_KEY_MIN_SLOT_BYTES;
+  for (const key of keys) {
+    const bytes = Buffer.byteLength(key, "utf8") + 1;
+    while (size < bytes) size *= 2;
+  }
+  return size;
 }

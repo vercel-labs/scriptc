@@ -2,12 +2,7 @@ import { primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
-import {
-  classKeyFitsSlot,
-  classKeyHash,
-  classValueSlot,
-  classValueSlotBits,
-} from "../../ir/class-key-index.js";
+import { classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
 import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -578,18 +573,6 @@ function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | 
   return null;
 }
 
-/** The fewest distinct classes a run can dispatch on. Indexing costs a key
- * load, a multiply and a compare tree whatever the table's size, while the
- * chain costs a key test per class it skips: measured per read over tables
- * read in rotation, indexing is 1.2 ns a read ahead at 20 classes, 4.1 ns at
- * 40, 8.3 ns at 60 and 15 to 48 ns at 200. The crossover is far below this
- * threshold, so what it decides is which tables change at all. Whole
- * programs whose largest table holds fewer than this many classes measured
- * within noise; the ones that gained (a nested decode -36.5%, 200-class reads
- * -47%) gained through tables above it, and every smaller table keeps the
- * chain it had. */
-const MIN_CLASS_DISPATCH_CASES = 64;
-
 /** The fewest distinct classes a run of class-value branches dispatches on
  * (`dyn.classIs` tests: `x instanceof C`, `new C()` and a static member of
  * an untyped constructor `C`). The receiver of such a table is most often
@@ -605,13 +588,13 @@ const MIN_CLASS_VALUE_DISPATCH_CASES = 8;
 
 /** The exact key test of one class branch: the receiver local, the key, and
  * the builtin that folds a receiver of that kind to the key's switch case
- * (`dyn.classHash` for a capsule tested with `dyn.typedRefIs`,
+ * (`dyn.classKeySlot` for a capsule tested with `dyn.typedRefIs`,
  * `dyn.classValueHash` for a class value tested with `dyn.classIs`). */
 interface ClassKeyTest {
   value: IrExpr;
   receiver: string;
   key: string;
-  index: "dyn.classHash" | "dyn.classValueHash";
+  index: "dyn.classKeySlot" | "dyn.classValueHash";
 }
 
 /** A class branch as a run holds it. `returns`: the branch's last statement
@@ -678,9 +661,10 @@ function leavesSwitch(statements: readonly IrStmt[]): boolean {
 }
 
 /** The receiver local and interned type key of `dyn.typedRefIs(v, "object:C")`,
- * or of the branch-conditional form `test ? instanceOf(v, C) : false`. The
- * key must be ASCII: the dispatch indexes on the key's length and last four
- * bytes, which for ASCII are the key text's own. */
+ * or of the branch-conditional form `test ? instanceOf(v, C) : false`. A
+ * class value's key must be ASCII: that dispatch indexes on the key's length
+ * and last four bytes, which for ASCII are the key text's own. A capsule's
+ * key is any class's: the class key table holds its bytes. */
 function classKeyTest(cond: IrExpr): ClassKeyTest | null {
   if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
     return classKeyTest(cond.cond);
@@ -689,15 +673,16 @@ function classKeyTest(cond: IrExpr): ClassKeyTest | null {
   // constructor itself): the two kinds of table never share a run.
   const index: ClassKeyTest["index"] | null =
     cond.fn === "dyn.typedRefIs"
-      ? "dyn.classHash"
+      ? "dyn.classKeySlot"
       : cond.fn === "dyn.classIs"
         ? "dyn.classValueHash"
         : null;
   if (index === null) return null;
   const [value, key] = cond.args;
   if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
-  const prefix = index === "dyn.classHash" ? "object:" : "classval:";
-  if (!key.value.startsWith(prefix) || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  const prefix = index === "dyn.classKeySlot" ? "object:" : "classval:";
+  if (!key.value.startsWith(prefix)) return null;
+  if (index === "dyn.classValueHash" && !/^[\x20-\x7e]*$/.test(key.value)) return null;
   return { value, receiver: value.localId, key: key.value, index };
 }
 
@@ -742,9 +727,7 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
   return (
     stmt.kind === "switch" &&
     stmt.disc.kind === "libCall" &&
-    (stmt.disc.fn === "dyn.classHash" ||
-      stmt.disc.fn === "dyn.classKeySlot" ||
-      stmt.disc.fn === "dyn.classValueHash")
+    (stmt.disc.fn === "dyn.classKeySlot" || stmt.disc.fn === "dyn.classValueHash")
   );
 }
 
@@ -762,47 +745,27 @@ interface ClassRunBranch extends ClassBranch {
   stmt: IrStmt;
 }
 
-/** The run's leading branches that stay in the chain ahead of the switch.
- * Indexing costs a key load, a multiply and a walk of the compare tree before
- * the matching branch's own guard runs, so a class the table tests early is
- * cheaper in the chain: a read that hits one of them never computes the
- * index. Keeping the first two measured the difference: one effect program
- * whose tables are large but read near their front ran 3.3% slower with every
- * branch in the switch (757.0 ms against 735.5 ms over 30 interleaved rounds)
- * and at the baseline time with two peeled (737.5 ms), while a 200-class read,
- * where the hit sits deep, keeps its gain. */
-const CLASS_DISPATCH_HEAD = 2;
-
-/** Replace each run of consecutive class branches on one receiver (at least
- * MIN_CLASS_DISPATCH_CASES distinct classes) with a switch that selects the
- * receiver's class. The branches move into the switch's cases unchanged and
- * in order, branches whose keys hash together in one case; a key shared
- * with a class outside the table selects that case, whose guards are false,
- * and the switch's fallthrough reaches the remaining guards and the
- * statements after the run exactly as the chain would. The run's first
- * CLASS_DISPATCH_HEAD branches stay in the chain ahead of the switch: they
- * run in order before it, and a class they select returns as it always did,
- * so the switch only sees the receiver once those tests have failed.
+/** Replace each run of consecutive class branches on one receiver with a
+ * switch that selects the receiver's class. The branches move into the
+ * switch's cases unchanged and in order, and each case ends with a `break`:
+ * no later case holds a branch of the same class, so the guards the chain
+ * would still walk are all false.
  *
- * Two kinds of run have no such head and are indexed whole, and each of
- * their cases ends with a `break`: no later case can hold a branch of the
- * same class (equal keys share a case), so the guards the chain would
- * still walk are all false. A run of class-value branches (`dyn.classIs`)
- * is reached mostly by values that are no compiled class: the index sends
- * them past every branch at once, or, when such a value's key folds to an
- * occupied slot, past the table after that slot's guards. A run of
- * branches that can complete is one whose selected class continues after
- * the run. Runs of returning capsule branches keep the fallthrough they
- * were built with.
+ * A run of capsule branches (`dyn.typedRefIs`) switches on the receiver's
+ * slot in the module's class key table (`slots`: key → slot), from
+ * MIN_CLASS_KEY_SLOT_CASES distinct classes of the table. Each case holds the
+ * branches of one key: the slot names the receiver's key exactly. A branch
+ * whose key the table lacks (a class no boxed value was typed as: no
+ * capsule of this program carries it) stays in the chain behind the switch.
+ * Branches of different keys exclude each other and their tests have no
+ * effect, so the order between the two groups decides nothing.
  *
- * `slots` is the module's class key table: key → slot. A run's capsule
- * branches whose keys the table holds (at least MIN_CLASS_KEY_SLOT_CASES
- * distinct ones) move, in order, into a switch on the receiver's slot,
- * ahead of the run's other branches, which keep the rules above. Branches
- * of different keys exclude each other and their tests have no effect, so
- * the order between the two groups decides nothing. Each case holds the
- * branches of one key and ends with a `break`: the slot names the
- * receiver's key exactly, so every other guard of the run is false. */
+ * A run of class-value branches (`dyn.classIs`), from
+ * MIN_CLASS_VALUE_DISPATCH_CASES distinct classes, switches on a hash of the
+ * constructor's key, branches whose keys hash together in one case. It is
+ * reached mostly by values that are no compiled class: the index sends them
+ * past every branch at once, or, when such a value's key folds to an
+ * occupied slot, past the table after that slot's guards. */
 function indexBranchRuns(body: IrStmt[], slots: ReadonlyMap<string, number>): IrStmt[] {
   let rebuilt: IrStmt[] | null = null;
   let i = 0;
@@ -827,25 +790,19 @@ function indexBranchRuns(body: IrStmt[], slots: ReadonlyMap<string, number>): Ir
       branch = i < body.length ? classBranch(body[i]!) : null;
     }
     const values = first.index === "dyn.classValueHash";
-    const slotted = values ? [] : run.filter((branch) => slots.has(branch.key));
-    const bySlot = new Set(slotted.map((branch) => branch.key)).size >= MIN_CLASS_KEY_SLOT_CASES;
-    const rest = bySlot ? run.filter((branch) => !slots.has(branch.key)) : run;
-    const keys = [...new Set(rest.map((branch) => branch.key))];
-    const hashed =
-      keys.length >= (values ? MIN_CLASS_VALUE_DISPATCH_CASES : MIN_CLASS_DISPATCH_CASES);
-    if (!bySlot && !hashed) {
+    const indexed = values ? run : run.filter((branch) => slots.has(branch.key));
+    const distinct = new Set(indexed.map((branch) => branch.key)).size;
+    if (distinct < (values ? MIN_CLASS_VALUE_DISPATCH_CASES : MIN_CLASS_KEY_SLOT_CASES)) {
       if (rebuilt) for (const branch of run) rebuilt.push(branch.stmt);
       continue;
     }
     rebuilt ??= body.slice(0, start);
-    if (bySlot) rebuilt.push(classSlotDispatch(slotted, slots));
-    if (!hashed) {
-      for (const branch of rest) rebuilt.push(branch.stmt);
+    if (values) {
+      rebuilt.push(classValueDispatch(run));
       continue;
     }
-    const head = values || !first.returns ? 0 : Math.min(CLASS_DISPATCH_HEAD, rest.length - 1);
-    for (const branch of rest.slice(0, head)) rebuilt.push(branch.stmt);
-    rebuilt.push(classDispatch(rest.slice(head)));
+    rebuilt.push(classSlotDispatch(indexed, slots));
+    for (const branch of run) if (!slots.has(branch.key)) rebuilt.push(branch.stmt);
   }
   return rebuilt ?? body;
 }
@@ -882,43 +839,38 @@ function classSlotDispatch(
   };
 }
 
-/** The switch that selects one of the run's branches, keyed by the class
- * hash the emitted code computes from the receiver's key. A table of class
- * values is keyed by a slot instead: the hash's high bits in a range about
- * twice the table's size, which makes the switch a jump table, so a class
- * value reaches its branch in one indexed jump however many classes the
- * table holds. */
-function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
+/** The switch that selects one of a run's class-value branches, keyed by a
+ * slot the emitted code computes from the constructor's key: the high bits
+ * of the key's hash in a range about twice the table's size, which makes
+ * the switch a jump table, so a class value reaches its branch in one
+ * indexed jump however many classes the table holds. Every case ends with a
+ * `break`: no later case holds a branch of the same class (equal keys share
+ * a case), so a value the case's own guards reject, such as a builtin
+ * constructor whose key folds to an occupied slot, is done with the table
+ * there instead of walking the guards behind it. */
+function classValueDispatch(run: readonly ClassRunBranch[]): IrStmt {
   const first = run[0]!;
   const loc = first.stmt.loc;
-  const values = first.index === "dyn.classValueHash";
-  const bits = values ? classValueSlotBits(new Set(run.map((branch) => branch.key)).size) : 0;
+  const bits = classValueSlotBits(new Set(run.map((branch) => branch.key)).size);
   const branches = new Map<number, IrStmt[]>();
   for (const branch of run) {
-    const hash = values ? classValueSlot(branch.key, bits) : classKeyHash(branch.key);
-    const ofHash = branches.get(hash);
-    if (ofHash) ofHash.push(branch.stmt);
-    else branches.set(hash, [branch.stmt]);
+    const slot = classValueSlot(branch.key, bits);
+    const ofSlot = branches.get(slot);
+    if (ofSlot) ofSlot.push(branch.stmt);
+    else branches.set(slot, [branch.stmt]);
   }
-  const receiver = varRef(first.receiver, first.value.type, loc);
   return {
     kind: "switch",
     disc: {
       kind: "libCall",
-      fn: first.index,
-      args: values ? [receiver, numLit(bits, loc)] : [receiver],
+      fn: "dyn.classValueHash",
+      args: [varRef(first.receiver, first.value.type, loc), numLit(bits, loc)],
       type: F64,
       loc,
     },
-    // A case of returning capsule branches falls through to the cases
-    // after it, as those tables were built; every other case ends with a
-    // `break`. No later case holds a branch of the same class (equal keys
-    // share a case), so a value the case's own guards reject, such as a
-    // builtin constructor whose key folds to an occupied slot, is done with
-    // the table there instead of walking the guards behind it.
-    cases: [...branches].map(([hash, body]) => ({
-      test: numLit(hash, loc),
-      body: first.returns && !values ? body : [...body, { kind: "break", loc }],
+    cases: [...branches].map(([slot, body]) => ({
+      test: numLit(slot, loc),
+      body: [...body, { kind: "break", loc }],
     })),
     loc,
   };
@@ -6125,13 +6077,11 @@ export class ClassDynamicDispatch {
   }
 
   /** Each generated class table tests its classes in order, one exact type
-   * key test per class, so a receiver costs time linear in the program's
-   * class count. Replace each run of such branches with a switch on the
-   * length and last four bytes of the receiver's key: the branches
-   * themselves stay, each still guarded by its key test, and the switch
-   * selects the class the receiver is. Runs whose branches continue instead
-   * of leaving the helper, or that hold fewer than sixty-four distinct classes,
-   * keep the chain. */
+   * key test per class, so a receiver would cost time linear in the program's
+   * class count. Settle the module's class key table and replace each run of
+   * such branches with a switch on the receiver's slot in it
+   * (indexBranchRuns): the branches themselves stay, each still guarded by
+   * its key test, and the switch selects the class the receiver is. */
   private indexClassBranches(lowerer: Lowerer): void {
     this.keyTable = this.classKeyOrder(lowerer);
     const slots = new Map(
@@ -6157,8 +6107,7 @@ export class ClassDynamicDispatch {
    * classes below it, in class pre-order: a class, then its subclasses,
    * depth first, roots and subclasses in declaration order. A capsule's
    * class is any of them, since boxing and normalization select the
-   * instance's own class. Classes whose key fits no table slot are left
-   * out and keep a key constant of their own. */
+   * instance's own class. */
   private classKeyOrder(lowerer: Lowerer): string[] {
     const seeds = new Set([...this.boxed, ...this.boxedStatic]);
     if (seeds.size === 0) return [];
@@ -6169,7 +6118,7 @@ export class ClassDynamicDispatch {
       const take = below || seeds.has(name);
       if (take && !listed.has(name)) {
         listed.add(name);
-        if (classKeyFitsSlot(typeKey({ kind: "object", className: name }))) order.push(name);
+        order.push(name);
       }
       for (const child of info.subclasses) visit(child, take);
     };

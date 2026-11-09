@@ -327,7 +327,6 @@ function buildLibFnSignatures() {
      * folded to the case it selects, or -1 for a value that is not a capsule
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
-    "dyn.classHash": { argTypes: [DYN], result: F64 },
     /** A generated class table's dispatch over the module's class key table
      * (IrModule.classKeys): the index in that list of the class whose key
      * the receiver's capsule carries, or -1 for a value that is no capsule

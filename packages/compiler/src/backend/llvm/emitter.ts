@@ -23,7 +23,7 @@ import {
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
-import { CLASS_KEY_SLOT_BYTES, classKeyFitsSlot } from "../../ir/class-key-index.js";
+import { classKeySlotBytes } from "../../ir/class-key-index.js";
 import { serializeModuleParts } from "../../ir/serialize.js";
 import { createHash } from "node:crypto";
 import {
@@ -1760,10 +1760,13 @@ export class LlEmitter {
   readonly cstrs = new Map<string, { sym: string; len: number }>();
   /** The module's class key table (IrModule.classKeys): the type keys of
    * the classes the program boxes, in class pre-order, each in a slot of
-   * CLASS_KEY_SLOT_BYTES bytes of one constant. Key text → slot index.
+   * classKeySlotBytes bytes of one constant. Key text → slot index.
    * cstr answers a table key's slot, so every site that boxes a class and
    * every site that tests a capsule's key name the same address. */
   readonly classKeySlots: ReadonlyMap<string, number>;
+  /** The bytes of one slot of this module's table (ir/class-key-index.ts
+   * classKeySlotBytes): a power of two that holds the module's longest key. */
+  readonly classKeySlotBytes: number;
   /** The table's symbol, named by its keys; null when the module lists no
    * class, and then no table is written. */
   readonly classKeysSymbol: string | null;
@@ -2507,9 +2510,7 @@ export class LlEmitter {
     const classKeys = (mod.classKeys ?? []).map((className) =>
       typeKey({ kind: "object", className }),
     );
-    for (const key of classKeys)
-      if (!classKeyFitsSlot(key))
-        throw new InternalCompilerError(`llvm emitter bug: class key ${key} fits no table slot`);
+    this.classKeySlotBytes = classKeySlotBytes(classKeys);
     this.classKeySlots = new Map(classKeys.map((key, slot) => [key, slot]));
     this.classKeysSymbol =
       classKeys.length > 0 ? this.contentSymbol("sc_class_keys_", classKeys.join("\0")) : null;
@@ -2964,7 +2965,11 @@ export class LlEmitter {
       classKeyTable: () =>
         this.classKeysSymbol === null
           ? null
-          : { symbol: this.classKeysSymbol, count: this.classKeySlots.size },
+          : {
+              symbol: this.classKeysSymbol,
+              count: this.classKeySlots.size,
+              slotBytes: this.classKeySlotBytes,
+            },
       classKeyRun: (names) => this.classKeyRun(names),
       classValueSubtypes: (name) => {
         // A classval may name a class with no lowering at all: a JS
@@ -4365,7 +4370,7 @@ export class LlEmitter {
   /** The address of a slot of the class key table: a constant expression,
    * usable wherever a constant's `@`-ref is. */
   classKeyRef(slot: number): string {
-    return `getelementptr inbounds (i8, ptr @${this.classKeysSymbol}, i64 ${slot * CLASS_KEY_SLOT_BYTES})`;
+    return `getelementptr inbounds (i8, ptr @${this.classKeysSymbol}, i64 ${slot * this.classKeySlotBytes})`;
   }
 
   /** The slots of the table's classes among `classNames`, which are a

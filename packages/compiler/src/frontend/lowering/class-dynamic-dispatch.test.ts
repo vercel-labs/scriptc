@@ -410,7 +410,7 @@ test("the untyped read-only bag selects classes as the bag dispatch does, withou
   expect(text(read.body)).toContain('"className":"Widget","field":"%dynProperties"');
 });
 
-test("indexes a class table's branches on the receiver's class key at sixty-four or more classes", () => {
+test("indexes a class table's branches on the receiver's slot in the class key table", () => {
   const { lowerer, liftedFns } = context();
   const names = Array.from({ length: 64 }, (_, i) => `Class${i}`);
   for (const name of names)
@@ -452,19 +452,20 @@ test("indexes a class table's branches on the receiver's class key at sixty-four
   const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
   expect(dispatchSwitch).toMatchObject({
     kind: "switch",
-    disc: { kind: "libCall", fn: "dyn.classHash" },
+    disc: { kind: "libCall", fn: "dyn.classKeySlot" },
   });
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
-  // The table's first two classes stay in the chain ahead of the switch and
-  // hold no case of their own.
+  // The table lists the boxed classes in declaration order (none has a
+  // subclass), and every class has a case: no branch stays ahead of the switch.
+  expect(dispatch.classKeys()).toEqual(names);
   const at = bag.body.indexOf(dispatchSwitch);
   const aheadKeys = bag.body
     .slice(0, at)
     .flatMap((stmt) => (branchKey(stmt) === null ? [] : [branchKey(stmt)]));
-  expect(aheadKeys).toHaveLength(2);
-  expect(dispatchSwitch.cases).toHaveLength(names.length - 2);
-  const hashes = dispatchSwitch.cases.map(({ test }) => JSON.stringify(test));
-  expect(new Set(hashes).size).toBe(names.length - 2);
+  expect(aheadKeys).toHaveLength(0);
+  expect(dispatchSwitch.cases).toHaveLength(names.length);
+  const slots = dispatchSwitch.cases.map(({ test }) => JSON.stringify(test));
+  expect(new Set(slots).size).toBe(names.length);
   // Each case keeps its branch, guarded by the branch's own key test.
   const keys = dispatchSwitch.cases.map(({ body }) => {
     const branch = body[0];
@@ -481,7 +482,7 @@ test("indexes a class table's branches on the receiver's class key at sixty-four
   );
 });
 
-test("keeps two classes whose keys hash alike in one case, in order", () => {
+test("gives two classes whose keys agree in length and tail a case each", () => {
   const { lowerer, liftedFns } = context();
   const names = [...Array.from({ length: 62 }, (_, i) => `Class${i}`), "AlphaThing", "BravoThing"];
   for (const name of names)
@@ -524,24 +525,19 @@ test("keeps two classes whose keys hash alike in one case, in order", () => {
   const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
   /* `object:AlphaThing` and `object:BravoThing` have the same length and end
-   * in the same four bytes, so the dispatch cannot separate them: one case
-   * holds both branches and their own key tests pick between them, which
-   * keeps every class reachable. The run's first two classes stay in the
-   * chain ahead of the switch and hold no case of their own. */
-  expect(dispatchSwitch.cases).toHaveLength(names.length - 3);
-  const shared = dispatchSwitch.cases.filter(({ body }) => body.length === 2);
-  expect(shared).toHaveLength(1);
-  const sharedKeys = shared[0]!.body.map(branchKey);
-  const collided = chainKeys.filter(
-    (key) => key === "object:AlphaThing" || key === "object:BravoThing",
-  );
-  expect(sharedKeys).toEqual(collided);
-  expect(collided).toHaveLength(2);
+   * in the same four bytes. The class key table gives each class a slot of
+   * its own, so each has a case of its own. */
+  expect(dispatchSwitch.disc).toMatchObject({ kind: "libCall", fn: "dyn.classKeySlot" });
+  expect(dispatchSwitch.cases).toHaveLength(names.length);
+  for (const { body } of dispatchSwitch.cases)
+    expect(body.map((stmt) => stmt.kind)).toEqual(["if", "break"]);
+  expect(chainKeys).toContain("object:AlphaThing");
+  expect(chainKeys).toContain("object:BravoThing");
 });
 
-test("keeps the class chain below sixty-four classes", () => {
+test("keeps the class chain below three classes", () => {
   const { lowerer, liftedFns } = context();
-  const names = Array.from({ length: 63 }, (_, i) => `Class${i}`);
+  const names = Array.from({ length: 2 }, (_, i) => `Class${i}`);
   for (const name of names)
     lowerer.classes.set(name, {
       def: { name, fields: [] },
@@ -871,29 +867,108 @@ test("indexes a table of class values on the constructor's key from eight classe
   ]);
 });
 
+/** A dispatch that has seen a value of each class boxed, so the class key
+ * table lists the classes in this order. */
+function boxing(
+  { lowerer, liftedFns }: ReturnType<typeof context>,
+  names: readonly string[],
+): ClassDynamicDispatch {
+  for (const name of names)
+    lowerer.classes.set(name, {
+      def: { name, fields: [] },
+      fields: new Map(),
+      methods: new Map(),
+      subclasses: [],
+      base: null,
+    } as unknown as ClassInfo);
+  const target = fn(
+    "target",
+    names.map((name) =>
+      statement({
+        kind: "dynFrom",
+        value: {
+          kind: "varRef",
+          localId: "instance",
+          type: { kind: "object", className: name },
+          loc,
+        },
+        type: DYN,
+        loc,
+      }),
+    ),
+  );
+  const dispatch = new ClassDynamicDispatch();
+  dispatch.process(lowerer, [target, ...liftedFns]);
+  return dispatch;
+}
+
 test("does not put class values and capsules of one receiver in one switch", () => {
-  const { lowerer, liftedFns } = context();
-  const values = Array.from({ length: 8 }, (_, i) => `classval:Class${i}`);
-  const capsules = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  const names = Array.from({ length: 8 }, (_, i) => `Class${i}`);
+  const dispatch = boxing(made, names);
   const table = classTable("%mixed", [], "dyn.classIs", () => []);
   table.body = [
-    ...classTable("%a", values, "dyn.classIs", () => [returnsTrue]).body.slice(0, -1),
-    ...classTable("%b", capsules, "dyn.typedRefIs", () => [returnsTrue]).body,
+    ...classTable(
+      "%a",
+      names.map((name) => `classval:${name}`),
+      "dyn.classIs",
+      () => [returnsTrue],
+    ).body.slice(0, -1),
+    ...classTable(
+      "%b",
+      names.map((name) => `object:${name}`),
+      "dyn.typedRefIs",
+      () => [returnsTrue],
+    ).body,
   ];
   liftedFns.push(table);
-  new ClassDynamicDispatch().finalize(lowerer);
+  dispatch.finalize(lowerer);
   const switches = table.body.filter((stmt) => stmt.kind === "switch");
   expect(switches.map((stmt) => (stmt.disc.kind === "libCall" ? stmt.disc.fn : null))).toEqual([
     "dyn.classValueHash",
-    "dyn.classHash",
+    "dyn.classKeySlot",
   ]);
-  // The capsule run keeps its two leading branches in the chain.
-  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "if", "if", "switch", "return"]);
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "switch", "return"]);
+});
+
+test("a capsule branch of a class no value was boxed as stays in the chain", () => {
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  const names = Array.from({ length: 4 }, (_, i) => `Class${i}`);
+  const dispatch = boxing(made, names);
+  // `object:Elsewhere` is tested, but no boxed value was typed as it: the
+  // class key table lacks it and no capsule of the program carries it.
+  const keys = [
+    "object:Class0",
+    "object:Elsewhere",
+    ...names.slice(1).map((name) => `object:${name}`),
+  ];
+  const table = classTable("%mixed", keys, "dyn.typedRefIs", () => [returnsTrue]);
+  const unboxed = classTable(
+    "%unboxed",
+    Array.from({ length: 70 }, (_, i) => `object:Other${i}`),
+    "dyn.typedRefIs",
+    () => [returnsTrue],
+  );
+  liftedFns.push(table, unboxed);
+  dispatch.finalize(lowerer);
+  expect(dispatch.classKeys()).toEqual(names);
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "if", "return"]);
+  expect(branchKey(table.body[1])).toBe("object:Elsewhere");
+  const dispatchSwitch = table.body[0];
+  if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
+  expect(dispatchSwitch.cases).toHaveLength(names.length);
+  // A table of classes the program never boxes keeps its chain, whatever its size.
+  expect(unboxed.body.some((stmt) => stmt.kind === "switch")).toBe(false);
 });
 
 test("indexes class branches that can complete, and closes each case with a break", () => {
-  const { lowerer, liftedFns } = context();
-  const keys = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  const names = Array.from({ length: 3 }, (_, i) => `Class${i}`);
+  const keys = names.map((name) => `object:${name}`);
+  const dispatch = boxing(made, names);
   // A keyed read's prelude: the class's branch returns only for some keys.
   const prelude = (): IrStmt[] => [
     {
@@ -904,14 +979,14 @@ test("indexes class branches that can complete, and closes each case with a brea
       loc,
     },
   ];
-  const table = classTable("%dyn.class.computed.0", keys, "dyn.typedRefIs", prelude);
-  const short = classTable("%dyn.class.computed.1", keys.slice(0, 63), "dyn.typedRefIs", prelude);
+  const table = classTable("%keyed.0", keys, "dyn.typedRefIs", prelude);
+  const short = classTable("%keyed.1", keys.slice(0, 2), "dyn.typedRefIs", prelude);
   liftedFns.push(table, short);
-  new ClassDynamicDispatch().finalize(lowerer);
+  dispatch.finalize(lowerer);
   expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "return"]);
   const dispatchSwitch = table.body[0];
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
-  expect(dispatchSwitch.disc).toMatchObject({ kind: "libCall", fn: "dyn.classHash" });
+  expect(dispatchSwitch.disc).toMatchObject({ kind: "libCall", fn: "dyn.classKeySlot" });
   expect(dispatchSwitch.cases).toHaveLength(keys.length);
   for (const { body } of dispatchSwitch.cases) {
     // No later case holds a branch of the same class, so the selected
@@ -923,8 +998,11 @@ test("indexes class branches that can complete, and closes each case with a brea
 });
 
 test("keeps returning and completing class branches in separate runs", () => {
-  const { lowerer, liftedFns } = context();
-  const keys = Array.from({ length: 64 }, (_, i) => `object:Class${i}`);
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  const names = Array.from({ length: 5 }, (_, i) => `Class${i}`);
+  const keys = names.map((name) => `object:${name}`);
+  const dispatch = boxing(made, names);
   const table = classTable("%split", [], "dyn.typedRefIs", () => []);
   table.body = [
     ...classTable("%a", keys, "dyn.typedRefIs", () => [statement(variable("key"))]).body.slice(
@@ -934,12 +1012,15 @@ test("keeps returning and completing class branches in separate runs", () => {
     ...classTable("%b", keys, "dyn.typedRefIs", () => [returnsTrue]).body,
   ];
   liftedFns.push(table);
-  new ClassDynamicDispatch().finalize(lowerer);
-  // The returning run is built as it always was: two branches ahead of the
-  // switch, cases without a break.
-  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "if", "if", "switch", "return"]);
+  dispatch.finalize(lowerer);
+  // Each run has a switch of its own, a case per class, every case closed
+  // by a break: the slot names the receiver's class exactly.
+  expect(table.body.map((stmt) => stmt.kind)).toEqual(["switch", "switch", "return"]);
   const [completing, returning] = table.body.filter((stmt) => stmt.kind === "switch");
-  expect(completing!.cases.every(({ body }) => body[body.length - 1]!.kind === "break")).toBe(true);
-  expect(returning!.cases.every(({ body }) => body.every((stmt) => stmt.kind === "if"))).toBe(true);
-  expect(returning!.cases).toHaveLength(keys.length - 2);
+  for (const dispatchSwitch of [completing!, returning!]) {
+    expect(dispatchSwitch.cases).toHaveLength(keys.length);
+    expect(dispatchSwitch.cases.every(({ body }) => body[body.length - 1]!.kind === "break")).toBe(
+      true,
+    );
+  }
 });

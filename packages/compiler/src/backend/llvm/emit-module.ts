@@ -83,7 +83,7 @@ import {
 } from "./cpu-dispatch.js";
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
-import { CLASS_KEY_LEN_MIX, CLASS_KEY_SLOT_BYTES, classKeyHash } from "../../ir/class-key-index.js";
+import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
 import {
   type FunctionLayout,
@@ -338,17 +338,25 @@ const PARTITION_GROUP_END = "; scriptc-group";
  * a capsule whose class key lives outside the table (boxed by the runtime
  * or by another compilation unit); its caller has checked that the key
  * holds eight bytes or more. A switch on the key's length and last four
- * bytes (classKeyHash) selects the slots to compare, most often one, and
+ * bytes selects the slots to compare, most often one, and
  * each is compared by its length and then its bytes, a word at a time:
  * what scr_dyn_typed_ref_is compares. */
 function classKeyFind(emitter: LlEmitter): string[] {
   const symbol = emitter.classKeysSymbol!;
-  const byHash = new Map<number, { key: string; slot: number }[]>();
+  // A little-endian word of a key's bytes, as the emitted loads read it.
+  const word = (bytes: Uint8Array, at: number, size: number): bigint => {
+    let value = 0n;
+    for (let i = size - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[at + i]!);
+    return value;
+  };
+  const byHash = new Map<number, { bytes: Uint8Array; slot: number }[]>();
   for (const [key, slot] of emitter.classKeySlots) {
-    const hash = classKeyHash(key);
+    const bytes = Buffer.from(key, "utf8");
+    const tail = Number(word(bytes, bytes.length - 4, 4));
+    const hash = (Math.imul(bytes.length, CLASS_KEY_LEN_MIX) + tail) & 0x7fffffff;
     const ofHash = byHash.get(hash);
-    if (ofHash) ofHash.push({ key, slot });
-    else byHash.set(hash, [{ key, slot }]);
+    if (ofHash) ofHash.push({ bytes, slot });
+    else byHash.set(hash, [{ bytes, slot }]);
   }
   const groups = [...byHash];
   const lines = [
@@ -365,10 +373,9 @@ function classKeyFind(emitter: LlEmitter): string[] {
     `  ]`,
   ];
   groups.forEach(([, candidates], group) => {
-    candidates.forEach(({ key, slot }, index) => {
+    candidates.forEach(({ bytes, slot }, index) => {
       const at = `h${group}.${index}`;
       const next = index + 1 < candidates.length ? `h${group}.${index + 1}` : "miss";
-      const bytes = Buffer.from(key, "latin1");
       // Whole words from the key's start, and its last eight bytes.
       const offsets: number[] = [];
       for (let offset = 0; offset + 8 <= bytes.length; offset += 8) offsets.push(offset);
@@ -380,14 +387,14 @@ function classKeyFind(emitter: LlEmitter): string[] {
         `${at}.bytes:`,
       );
       let all = "true";
-      offsets.forEach((offset, word) => {
+      offsets.forEach((offset, n) => {
         lines.push(
-          `  %${at}.p${word} = getelementptr inbounds i8, ptr %key, i32 ${offset}`,
-          `  %${at}.w${word} = load i64, ptr %${at}.p${word}, align 1`,
-          `  %${at}.e${word} = icmp eq i64 %${at}.w${word}, ${bytes.readBigInt64LE(offset)}`,
-          `  %${at}.a${word} = and i1 ${all}, %${at}.e${word}`,
+          `  %${at}.p${n} = getelementptr inbounds i8, ptr %key, i32 ${offset}`,
+          `  %${at}.w${n} = load i64, ptr %${at}.p${n}, align 1`,
+          `  %${at}.e${n} = icmp eq i64 %${at}.w${n}, ${word(bytes, offset, 8)}`,
+          `  %${at}.a${n} = and i1 ${all}, %${at}.e${n}`,
         );
-        all = `%${at}.a${word}`;
+        all = `%${at}.a${n}`;
       });
       lines.push(
         `  br i1 ${all}, label %${at}.hit, label %${next}`,
@@ -1338,13 +1345,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (emitter.templateStringsInstances.size > 0) out.push(``);
   if (emitter.classKeysSymbol !== null) {
     // The class key table (emitter.classKeySlots): one slot per class, its
-    // key NUL-terminated and padded with NULs to the slot's size.
+    // key NUL-terminated and padded with NULs to the module's slot size.
     const keys = [...emitter.classKeySlots.keys()];
+    const size = emitter.classKeySlotBytes;
     const bytes = keys
-      .map((key) => llStrBytes(key) + "\\00".repeat(CLASS_KEY_SLOT_BYTES - key.length - 1))
+      .map((key) => llStrBytes(key) + "\\00".repeat(size - Buffer.byteLength(key, "utf8") - 1))
       .join("");
     out.push(
-      `@${emitter.classKeysSymbol} = internal constant [${keys.length * CLASS_KEY_SLOT_BYTES} x i8] c"${bytes}"`,
+      `@${emitter.classKeysSymbol} = internal constant [${keys.length * size} x i8] c"${bytes}"`,
       ``,
     );
   }

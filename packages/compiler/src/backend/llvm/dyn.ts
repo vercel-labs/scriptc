@@ -18,7 +18,6 @@ import {
   unionBoxBits,
 } from "./inline-unions.js";
 import { InternalCompilerError } from "../../errors.js";
-import { CLASS_KEY_SLOT_BYTES } from "../../ir/class-key-index.js";
 /* ScrDyn helpers for the LLVM backend: per-type match predicates
  * (dynMatchHelper), checked builders (dynCheckHelper), static→dyn
  * converters (toDynHelper), the type-independent singletons (String
@@ -301,9 +300,9 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
-  /** The module's class key table (emitter.classKeySlots): its symbol and
-   * number of slots, or null without one. */
-  classKeyTable?(): { symbol: string; count: number } | null;
+  /** The module's class key table (emitter.classKeySlots): its symbol, its
+   * number of slots and the bytes of one slot, or null without one. */
+  classKeyTable?(): { symbol: string; count: number; slotBytes: number } | null;
   /** The table's run of slots for a class and the classes below it
    * (emitter.classKeyRun). */
   classKeyRun?(classNames: readonly string[]): { first: number; count: number } | null;
@@ -2155,8 +2154,8 @@ export class LlDyn {
     if (run !== null) {
       const fromRun = B.tmp(),
         hit = B.tmp();
-      B.line(`${fromRun} = sub ${this.S} ${distance}, ${run.first * CLASS_KEY_SLOT_BYTES}`);
-      B.line(`${hit} = icmp ult ${this.S} ${fromRun}, ${run.count * CLASS_KEY_SLOT_BYTES}`);
+      B.line(`${fromRun} = sub ${this.S} ${distance}, ${run.first * table!.slotBytes}`);
+      B.line(`${hit} = icmp ult ${this.S} ${fromRun}, ${run.count * table!.slotBytes}`);
       tests.push(hit);
     }
     for (const type of types) {
@@ -2180,7 +2179,7 @@ export class LlDyn {
       B.startBlock(elsewhere);
       const inside = B.tmp();
       B.line(`store i1 false, ptr ${slot}`);
-      B.line(`${inside} = icmp ult ${this.S} ${distance}, ${table.count * CLASS_KEY_SLOT_BYTES}`);
+      B.line(`${inside} = icmp ult ${this.S} ${distance}, ${table.count * table.slotBytes}`);
       B.condBr(inside, done, names);
     }
     B.startBlock(names);

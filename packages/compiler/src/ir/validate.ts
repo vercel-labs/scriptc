@@ -4,7 +4,6 @@
  * an ICE that points at source is a gift to whoever debugs it.
  */
 import { validByteNumberToken } from "./byte-numbers.js";
-import { classKeyFitsSlot } from "./class-key-index.js";
 import { localScopeUses } from "./local-scopes.js";
 import type {
   IrClassDef,
@@ -137,7 +136,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
   if (mod.classKeys !== undefined) {
     const listed = new Set<string>();
     for (const name of mod.classKeys) {
-      if (listed.has(name) || !classKeyFitsSlot(typeKey({ kind: "object", className: name })))
+      if (listed.has(name) || name.length === 0)
         errors.push({ message: `class key table: bad entry '${name}'`, loc: moduleLoc });
       listed.add(name);
     }

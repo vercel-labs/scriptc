@@ -30,7 +30,6 @@ import { DYN_KIND } from "./dyn.js";
 import {
   CLASS_KEY_LEN_MIX,
   CLASS_KEY_PREFIX,
-  CLASS_KEY_SLOT_BYTES,
   CLASS_VALUE_SLOT_MIX,
 } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
@@ -45,7 +44,10 @@ const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
 /** A key's first eight bytes as a little-endian word, masked to the bytes
  * of CLASS_KEY_PREFIX, and the word those bytes are in a class key. */
 const CLASS_KEY_PREFIX_MASK = (1n << BigInt(8 * CLASS_KEY_PREFIX.length)) - 1n;
-const CLASS_KEY_PREFIX_WORD = Buffer.from(`${CLASS_KEY_PREFIX}\0`, "latin1").readBigUInt64LE(0);
+const CLASS_KEY_PREFIX_WORD = [...CLASS_KEY_PREFIX].reduceRight(
+  (word, char) => (word << 8n) | BigInt(char.charCodeAt(0)),
+  0n,
+);
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -680,85 +682,6 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
   }
-  if (e.fn === "dyn.classHash") {
-    // A generated class table's discriminant: the switch dispatches on the
-    // length and last four bytes of the capsule's class key, the fields a
-    // class branch's own key test compares, so the table's branches (each
-    // still guarded by its own key test) are reached without walking the
-    // chain. A value that is not a capsule, a capsule without a key, and a
-    // key shorter than the four bytes this reads answer -1, which no case
-    // matches, and the switch's fallthrough takes the statements after it;
-    // no branch of the table can match such a value either.
-    const value = host.emitReadReceiver(e.args[0]!);
-    const slot = B.slot();
-    B.entryAllocas.push(`${slot} = alloca i32`);
-    B.line(`store i32 -1, ptr ${slot}`);
-    const present = B.tmp();
-    const inspect = B.newLabel("class.hash.inspect");
-    const hashed = B.newLabel("class.hash.hashed");
-    const done = B.newLabel("class.hash.done");
-    B.line(`${present} = icmp ne ptr ${value.name}, null`);
-    B.condBr(present, inspect, done);
-    B.startBlock(inspect);
-    const kind = host.dynKind(value.name);
-    const keySlot = B.tmp(),
-      keyPtr = B.tmp();
-    B.line(
-      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
-    );
-    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
-    const lenSlot = B.tmp(),
-      lenWord = B.tmp(),
-      len = B.tmp();
-    B.line(
-      `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
-    );
-    B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
-    B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
-    const typed = B.tmp(),
-      hasKey = B.tmp(),
-      long = B.tmp(),
-      isCapsule = B.tmp(),
-      hashable = B.tmp();
-    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
-    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
-    B.line(`${long} = icmp sge i32 ${len}, 4`);
-    B.line(`${isCapsule} = and i1 ${typed}, ${hasKey}`);
-    B.line(`${hashable} = and i1 ${isCapsule}, ${long}`);
-    B.condBr(hashable, hashed, done);
-    B.startBlock(hashed);
-    const tailAt = B.tmp(),
-      tailStart = B.tmp(),
-      tailPtr = B.tmp(),
-      tail = B.tmp(),
-      folded = B.tmp(),
-      sum = B.tmp(),
-      masked = B.tmp();
-    B.line(`${tailAt} = sub i32 ${len}, 4`);
-    B.line(`${tailStart} = sext i32 ${tailAt} to i64`);
-    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${tailStart}`);
-    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
-    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
-    B.line(`${sum} = add i32 ${folded}, ${tail}`);
-    B.line(`${masked} = and i32 ${sum}, 2147483647`);
-    B.line(`store i32 ${masked}, ptr ${slot}`);
-    B.br(done);
-    B.startBlock(done);
-    const selector = B.tmp();
-    B.line(`${selector} = load i32, ptr ${slot}`);
-    const out = B.tmp();
-    B.line(`${out} = sitofp i32 ${selector} to double`);
-    return {
-      name: out,
-      type: e.type,
-      integer: {
-        name: selector,
-        type: "i32",
-        signed: true,
-        range: { min: -1, max: 2147483647 },
-      },
-    };
-  }
   if (e.fn === "dyn.classKeySlot") {
     // A generated class table's discriminant over the module's class key
     // table: the slot of the capsule's key. A capsule this program boxed
@@ -774,6 +697,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         "llvm emitter bug: dyn.classKeySlot without a class key table",
       );
     const count = host.classKeySlots.size;
+    const slotBytes = host.classKeySlotBytes;
     const S = host.sizeType;
     const value = host.emitReadReceiver(e.args[0]!);
     const slot = B.slot();
@@ -806,11 +730,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
     B.line(`${keyAt} = ptrtoint ptr ${keyPtr} to ${S}`);
     B.line(`${distance} = sub ${S} ${keyAt}, ptrtoint (ptr @${symbol} to ${S})`);
-    B.line(`${within} = icmp ult ${S} ${distance}, ${count * CLASS_KEY_SLOT_BYTES}`);
+    B.line(`${within} = icmp ult ${S} ${distance}, ${count * slotBytes}`);
     B.condBr(within, inside, outside);
     B.startBlock(inside);
     const index = B.tmp();
-    B.line(`${index} = udiv ${S} ${distance}, ${CLASS_KEY_SLOT_BYTES}`);
+    B.line(`${index} = udiv ${S} ${distance}, ${slotBytes}`);
     let index32 = index;
     if (S === "i64") {
       index32 = B.tmp();

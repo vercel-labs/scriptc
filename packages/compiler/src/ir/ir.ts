@@ -1178,12 +1178,15 @@ export interface IrModule {
   /** The classes whose instances the program boxes as untyped values, each
    * with the classes below it, in class pre-order: a class, then its
    * subclasses, depth first. The backend lays their type keys out in this
-   * order in one table of fixed slots (backend/llvm/class-keys.ts), so a
-   * capsule's class is the slot its key pointer falls in, and a class with
-   * everything below it is one run of slots. A generated class table
-   * switches on the slot (`dyn.classKeySlot`), whose case values are
-   * indexes in this list. A class the list lacks keeps a key constant of
-   * its own and the name comparisons. Absent when the program boxes no
+   * order in one table of slots of one size (ir/class-key-index.ts
+   * classKeySlotBytes: the module's longest key rounded up to a power of
+   * two, at least 64 bytes), so a capsule's class is the slot its key
+   * pointer falls in, and a class with everything below it is one run of
+   * slots. A generated class table switches on the slot
+   * (`dyn.classKeySlot`), whose case values are indexes in this list. A
+   * class the list lacks is one no boxed value was typed as: no capsule of
+   * the program carries its key, and a test for it keeps a key constant of
+   * its own and the name comparison. Absent when the program boxes no
    * class. */
   classKeys?: string[];
   /** A JavaScript source may resize, grow or detach an ArrayBuffer

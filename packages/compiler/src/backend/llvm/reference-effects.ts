@@ -149,7 +149,6 @@ function expressionPreservesEdges(
         // Class brand tests compare a capsule's key; they run no user code.
         e.fn === "dyn.typedRefKeyIs" ||
         e.fn === "dyn.typedRefIs" ||
-        e.fn === "dyn.classHash" ||
         e.fn === "dyn.classKeySlot" ||
         e.fn === "dyn.classValueHash" ||
         // jsval conversions (ir/jsval.ts) answer as the dyn forms they

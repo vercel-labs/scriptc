@@ -2317,6 +2317,10 @@ const RUNTIME_FEATURE_RULES = {
       "fs.appendFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.appendFileBytesOptionsSync",
+      "fs.writeFileSyncDataFlags",
+      "fsp.writeFileDataFlags",
+      "fs.writeFileDataOptionsSync",
+      "fs.appendFileDataOptionsSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
     ],
@@ -2327,13 +2331,28 @@ const RUNTIME_FEATURE_RULES = {
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
-  /** The BYTE-data spellings of the options write and of
+  /** The BYTE-data and checked-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
-   * for byte. The unit carries its own static copy of scr_fs_flags.c's
-   * mode validation, so it links alone. */
+   * for byte. The unit carries its own static copy of scr_fs_flags.c's mode
+   * and encoding validation. Its checked-data options forms call the string
+   * and byte writers in scr_fs_flags.c, so those forms also turn fsFlags
+   * on. */
   fsBytesWrites: rule({
-    fns: ["fs.writeFileSyncBytesFlags", "fsp.writeFileBytes", "fsp.writeFileBytesFlags"],
+    fns: [
+      "fs.writeFileSyncBytesFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+      "fs.writeFileSyncData",
+      "fs.appendFileSyncData",
+      "fs.writeFileSyncDataFlags",
+      "fsp.writeFileData",
+      "fsp.appendFileData",
+      "fsp.writeFileDataFlags",
+      "fs.writeFileDataOptionsSync",
+      "fs.appendFileDataOptionsSync",
+      "fs.writeFileSyncFdData",
+    ],
   }),
   /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
    * scr_bytes_strdec_dyn.c. */

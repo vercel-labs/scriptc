@@ -450,6 +450,21 @@ void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
                             data->len * scr_bytes_elem_size(data->elem));
 }
 
+/* FileHandle.writeFile over a checked data argument: a string or any
+ * Buffer/TypedArray/DataView, whose bytes are written as they are. */
+static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data) {
+  if (data->kind == SCR_DYN_STR) {
+    scr_file_handle_write_file(h, data->v.str);
+    return;
+  }
+  if (data->kind == SCR_DYN_BYTES) {
+    scr_file_handle_write_file_bytes(h, data->v.bytes);
+    return;
+  }
+  scr_dyn_arg_type_fail("data", "of type string or an instance of Buffer, TypedArray, or DataView",
+                        data);
+}
+
 ScrStats *scr_file_handle_stat(ScrFileHandle *h) {
   if (!scr_file_handle_require_open(h)) return NULL;
   int err = 0;
@@ -546,6 +561,14 @@ ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h,
                                                      ScrStr *encoding) {
   (void)encoding;
   scr_file_handle_write_file_bytes(h, data);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h,
+                                                    const ScrDyn *data,
+                                                    ScrStr *encoding) {
+  (void)encoding;
+  scr_file_handle_write_file_data(h, data);
   return scr_promise_settled_void();
 }
 

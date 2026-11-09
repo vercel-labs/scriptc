@@ -393,13 +393,14 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
-  // The byte-data two-argument forms: appendFile appends, writeFile
-  // truncates (the same difference the string forms have).
+  // The two-argument forms: appendFile appends, writeFile truncates (the
+  // same difference the string forms have). A u8 view takes the byte unit;
+  // a value whose type the call site did not pin down takes the
+  // checked-data unit.
   if (
     bi.module === "fs/promises" &&
     (bi.member === "appendFile" || bi.member === "writeFile") &&
-    expr.arguments.nodes.length === 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
+    expr.arguments.nodes.length === 2
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
@@ -440,8 +441,7 @@ export function lowerBuiltinModuleCall(
   // `{ mode?: <number>, encoding?: "utf8" }` — the mode is open(2)'s
   // O_CREAT argument (creation only; an existing file keeps its
   // permissions, exactly Node), and the encoding may only spell the
-  // utf8 the runtime writes anyway. String data only — Buffer options
-  // remain outside the static surface.
+  // utf8 the runtime writes anyway.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {

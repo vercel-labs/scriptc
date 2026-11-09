@@ -920,6 +920,20 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** The live capsule an adoption boxes a value of type `type` as, for the
+ * rules that read what a module boxes: the backend builds it where it
+ * emits the adoption (a `dynCheck` with `shared`), so no `dynFrom` in the
+ * module stands for it. */
+function adoptionCapsule(type: IrType, loc: IrExpr["loc"]): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: { kind: "varRef", localId: "%adopted", type, loc },
+    liveRef: true,
+    type: { kind: "dyn" },
+    loc,
+  };
+}
+
 /** Whether the module holds a runtimeFence that stands for a deferred
  * diagnostic: the statement the backend throws through the reporter. A
  * library's fences keep the plain throw (emit-statements.ts), so a library
@@ -1811,12 +1825,15 @@ const RUNTIME_FEATURE_RULES = {
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
-  /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
-   * casts, and closures boxed in a boundary program, which adopt their
-   * arguments. */
+  /** Adoption (scr_decl_adopt.c): a dynamic object or array converted to a
+   * record or array becomes a live capsule of the converted value. Linked
+   * by the declaration-typed boundary's casts (and its boxed closures,
+   * which adopt their arguments) and by every checked conversion at a typed
+   * slot that shares its source. */
   declAdopt: rule({
     fns: ["dyn.declAdopt", "dyn.adoptShared", "dyn.adoptable"],
     initial: (mod) => mod.declBoundary === true,
+    expr: (node) => node.kind === "dynCheck" && node.shared === true,
   }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).
@@ -2615,7 +2632,7 @@ function scanRuntimeFeatures(
       unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
       classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
     });
-  const expr = (node: IrExpr): boolean => {
+  const visit = (node: IrExpr): boolean => {
     for (let i = 0; i < scans.length; i++) scans[i]!.scan.expr(node);
     if (node.kind === "libCall") {
       const fn = node.fn;
@@ -2629,6 +2646,14 @@ function scanRuntimeFeatures(
         if (!features[name] && ruleOf(name).expr!(node, typeTables)) features[name] = true;
     }
     return keepGoing();
+  };
+  const expr = (node: IrExpr): boolean => {
+    if (!visit(node)) return false;
+    // A typed slot's adoption boxes the converted value as a live capsule
+    // the module holds no `dynFrom` for: the rules read it as one.
+    if (node.kind === "dynCheck" && node.shared === true)
+      return visit(adoptionCapsule(node.type, node.loc));
+    return true;
   };
   const type = (node: IrType): boolean => {
     for (const name of FEATURES_BY_TYPE.get(node.kind) ?? []) features[name] = true;

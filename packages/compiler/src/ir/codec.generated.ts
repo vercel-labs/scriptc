@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "f21063783aa28db1";
+export const IR_CODEC_LAYOUT = "ef6cc93383914c29";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -153,7 +153,7 @@ const KEYS125: readonly string[] = ["kind","numbers","strings","index","type","l
 const KEYS126: readonly string[] = ["kind","value","type","loc"];
 const KEYS127: readonly string[] = ["kind","elems","type","loc"];
 const KEYS128: readonly string[] = ["kind","callee","receiver","calleeName","calleeNameValue","args","spreads","type","loc"];
-const KEYS129: readonly string[] = ["kind","value","preserveRefs","adopt","exact","partialView","inferredSite","origin","pathIndex","type","loc"];
+const KEYS129: readonly string[] = ["kind","value","preserveRefs","adopt","shared","exact","partialView","inferredSite","origin","pathIndex","type","loc"];
 const KEYS130: readonly string[] = ["kind","value","spelling","firstProp","type","loc"];
 const KEYS131: readonly string[] = ["kind","value","type","loc","liveRef","fnName","fnNameMainThreadOnly","fnLength"];
 const KEYS132: readonly string[] = ["kind","key","negated","value","type","loc"];
@@ -3095,6 +3095,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.bool(v.adopt);
       }
+      if (v.shared === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.bool(v.shared);
+      }
       if (v.exact === undefined) w.byte(0);
       else {
         w.byte(1);
@@ -4200,14 +4205,15 @@ function decIrExpr(r: IrReader): IrExpr {
       const f0 = decIrExpr(r);
       const f1 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.preserveRefs") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>);
       const f2 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.adopt") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>);
-      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.exact") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>);
-      const f4 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.partialView") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>);
-      const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.inferredSite") === 0 ? undefined : r.str();
-      const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.origin") === 0 ? undefined : r.num();
-      const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathIndex") === 0 ? undefined : r.num();
-      const f8 = decIrType(r);
-      const f9 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { exact: f3 } : {}), ...(f4 !== undefined ? { partialView: f4 } : {}), ...(f5 !== undefined ? { inferredSite: f5 } : {}), ...(f6 !== undefined ? { origin: f6 } : {}), ...(f7 !== undefined ? { pathIndex: f7 } : {}), type: f8, loc: f9 };
+      const f3 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.shared") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["shared"]>);
+      const f4 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.exact") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>);
+      const f5 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.partialView") === 0 ? undefined : (r.bool() as NonNullable<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>);
+      const f6 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.inferredSite") === 0 ? undefined : r.str();
+      const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.origin") === 0 ? undefined : r.num();
+      const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathIndex") === 0 ? undefined : r.num();
+      const f9 = decIrType(r);
+      const f10 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { shared: f3 } : {}), ...(f4 !== undefined ? { exact: f4 } : {}), ...(f5 !== undefined ? { partialView: f5 } : {}), ...(f6 !== undefined ? { inferredSite: f6 } : {}), ...(f7 !== undefined ? { origin: f7 } : {}), ...(f8 !== undefined ? { pathIndex: f8 } : {}), type: f9, loc: f10 };
       return o;
     }
     case 27: {

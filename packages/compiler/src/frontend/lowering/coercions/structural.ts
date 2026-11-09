@@ -1,4 +1,5 @@
 import { adaptedFunction } from "./function-adapters.js";
+import { sharedDynConversion } from "../expressions/narrowing.js";
 import { fieldOrigin } from "../decl-origin.js";
 import { keyedHelperName } from "../stable-names.js";
 import { constructedValue } from "../constructor-returns.js";
@@ -376,7 +377,7 @@ export function applyWidthLift(
       return { kind: "dynFrom", value, type: DYN, loc };
     }
     case "dynOut":
-      return { kind: "dynCheck", value, type: dst, loc };
+      return sharedDynConversion(lowerer, value, dst, loc);
     case "checkedWiden": {
       if (dst.kind !== "record" || value.type.kind !== "record")
         throw new InternalCompilerError("lowerer bug: checkedWiden lift shape");

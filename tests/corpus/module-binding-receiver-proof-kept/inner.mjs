@@ -8,3 +8,13 @@ export function dual(body) {
 export const plain = function (n) {
   return "plain " + n;
 };
+// A factory that chooses what it returns by the number of its arguments,
+// and an export it made.
+export const byArity = function () {
+  if (arguments.length === 1) {
+    const first = arguments[0];
+    return (n) => first + " " + n;
+  }
+  return dual((a, b) => a + " " + b).apply(this, arguments);
+};
+export const partial = byArity("chosen");

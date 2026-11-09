@@ -82,3 +82,21 @@ const withPrototype = function (n) {
 };
 Object.setPrototypeOf(withPrototype, { tag: "p" });
 export const throughPrototype = (n) => withPrototype(n) + " " + withPrototype.tag;
+
+// Values the proof cannot follow to a function are called as they always
+// were: a member of a standard object, a member of an object a function
+// built, a binding assigned again, a factory that chooses what it returns
+// by its arguments (named here through the namespace), a member of an
+// object literal that ignores `this`.
+const built = Object.fromEntries([["read", (n) => "built " + n]]);
+const written = {
+  read(n) {
+    return "written " + n;
+  },
+};
+export const isList = Array.isArray;
+export const fromBuilt = built.read;
+export let assignedAgain = (n) => "first " + n;
+assignedAgain = (n) => "again " + n;
+export const chosen = inner.partial;
+export const fromWritten = written.read;

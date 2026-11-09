@@ -1485,43 +1485,54 @@ export const read = none || function (n) { return this === undefined ? n : -n; }
 `,
         "reads",
       ],
-      // The forms the proof does not follow name no function, so nothing is
-      // proven about them.
-      "a member of an object": [
+      "a name another module exports": [
+        `export { reader as read } from "./inner.mjs";
+`,
+        "reads",
+      ],
+      // A member of an object the text writes out names the function too.
+      "a property of an object literal": [
         `const all = { read: function (n) { return this === undefined ? n : -n; } };
 export const read = all.read;
 `,
-        "may read",
+        "reads",
       ],
-      "an element of an array": [
+      "a method of an object literal": [
+        `const all = { read(n) { return this === undefined ? n : -n; } };
+export const read = all.read;
+`,
+        "reads",
+      ],
+      "an element of an array literal": [
         `const all = [function (n) { return this === undefined ? n : -n; }];
 export const read = all[0];
 `,
-        "may read",
+        "reads",
       ],
       "a static method of a class": [
         `class All { static read(n) { return this === undefined ? n : -n; } }
 export const read = All.read;
 `,
-        "may read",
+        "reads",
       ],
-      "a destructured name": [
+      "a name destructured from an object literal": [
         `const all = { read: function (n) { return this === undefined ? n : -n; } };
 export const { read } = all;
 `,
-        "may read",
+        "reads",
       ],
+      // A binding the program assigns holds each value it is given.
       "a binding assigned after its declaration": [
         `export let read;
 read = function (n) { return this === undefined ? n : -n; };
 `,
-        "may read",
+        "reads",
       ],
       "a binding assigned again": [
         `export let read = (n) => n;
 read = function (n) { return this === undefined ? n : -n; };
 `,
-        "may read",
+        "reads",
       ],
     }),
   )(
@@ -1595,8 +1606,8 @@ export const read = (n) => inner.call(undefined, n);
       "an assignment": `inner.call = function (self, n) { return self === undefined ? n : -n; };`,
       "a definition another function makes": `function arm(fn) { Object.defineProperty(fn, "call", { value(self, n) { return self === undefined ? n : -n; } }); }
 arm(inner);`,
-      "a key computed at run time, in a program that defines another member": `Object.defineProperty(inner, "bind", { value: 1 });
-Object.defineProperty(inner, ["ca", "ll"].join(""), { value(self, n) { return self === undefined ? n : -n; } });`,
+      "a key a const names": `const key = "call";
+Object.defineProperty(inner, key, { value(self, n) { return self === undefined ? n : -n; } });`,
     }),
   )(
     "an export that passes 'this' on is refused where the program gives a function its own 'call' by %s",

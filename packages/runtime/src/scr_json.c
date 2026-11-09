@@ -5871,10 +5871,35 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
+SCR_TL const ScrStreamRefHooks *scr_stream_ref_hooks = NULL;
+
+/* What the view of live stream capsule `d` holds under `key`, as
+ * ScrStreamRefHooks.member answers it, without building the view: a view
+ * holds 25 method closures and becomes the capsule's, which then builds it
+ * again for every later question. -1 when the view must answer: `d` is no
+ * such capsule or has a view, a prototype or symbols of its own, or `key`
+ * is a name the view inherits from Object.prototype. */
+static int scr_typed_ref_stream_member(const ScrDyn *d, const ScrStr *key, ScrDyn **value) {
+  const ScrStreamRefHooks *hooks = scr_stream_ref_hooks;
+  if (!hooks || d->v.typed_ref.materialize != hooks->view) return -1;
+  if (!scr_typed_ref_plain(d) || scr_dyn_object_proto_name(key)) return -1;
+  int member = hooks->member(d->v.typed_ref.ptr, key->data, key->len, value);
+  /* A name the view holds nowhere is Object.prototype's to answer once the
+   * program has made that a value and put the name on it. */
+  if (member == 0 && scr_builtin_object_prototype &&
+      scr_dyn_property_owner(scr_builtin_object_prototype, key->data, key->len))
+    return -1;
+  return member;
+}
+
 /* What the snapshot of live capsule `d` would answer for a read of `key`,
  * which names no present field or element of it: +1, or NULL when the read
  * needs the snapshot. */
 static ScrDyn *scr_typed_ref_unowned_get(const ScrDyn *d, const ScrStr *key) {
+  ScrDyn *value = NULL;
+  int member = scr_typed_ref_stream_member(d, key, &value);
+  if (member == 0) return scr_dyn_retain(scr_dyn_undefined());
+  if (member == 1) return value;
   if (scr_dyn_object_proto_name(key)) return NULL;
   if (d->v.typed_ref.record)
     return scr_typed_ref_plain_record(d) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
@@ -14040,6 +14065,9 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
       size_t field;
       return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
     }
+    /* A stream's view holds its data properties and inherits its methods. */
+    int member = scr_typed_ref_stream_member(v, key, NULL);
+    if (member >= 0) return member != 0;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     bool out = scr_dyn_has_key(materialized, key);
     scr_dyn_release(materialized);
@@ -14168,6 +14196,9 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
       return scr_dyn_has_key(v, key) || scr_dyn_object_proto_name(key);
     }
+    /* A stream's view holds its data properties and inherits its methods. */
+    int member = scr_typed_ref_stream_member(v, key, NULL);
+    if (member >= 0) return member != 0;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);

@@ -857,6 +857,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s);
 static inline void scr_stream_settle_next(ScrStream *s) {
   if (s->st->r.next_waiter && !s->st->r.next_reading) scr_stream_settle_next_waiter(s);
 }
+static const ScrStreamRefHooks scr_stream_ref_hooks_impl;
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open);
@@ -2777,6 +2778,8 @@ static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r,
                                     bool emit_close, bool allow_half_open) {
   static ScrCycType cyc_type = { &scr_stream_trace, &scr_stream_gcfree, SCR_CYC_KIND_STREAM };
   ScrStream *s = scr_cyc_alloc(sizeof *s, &cyc_type);
+  /* A stream seen as `unknown` answers member questions from here on. */
+  scr_stream_ref_hooks = &scr_stream_ref_hooks_impl;
   s->rc = 1;
   s->vt = vt;
   s->reg = NULL;
@@ -9098,6 +9101,51 @@ ScrDyn *scr_stream_dyn_view(ScrStream *stream) {
   scr_dyn_release(prototype);
   return view;
 }
+
+ScrDyn *scr_stream_ref_view(void *stream) { return scr_stream_dyn_view(stream); }
+
+static bool scr_stream_ref_named(const char *name, const char *key, size_t key_len) {
+  return name[0] == key[0] && strlen(name) == key_len && memcmp(name, key, key_len) == 0;
+}
+
+/* ScrStreamRefHooks.member: what scr_stream_dyn_view's object holds under
+ * `key`. The two must agree name for name: its own data properties, then
+ * the methods of its prototype. */
+static int scr_stream_ref_member(void *p, const char *key, size_t key_len, ScrDyn **value) {
+  ScrStream *stream = p;
+  /* A native stream's kind adds members of its own to the view. */
+  if (stream->st->native && stream->st->native_ops && stream->st->native_ops->view) return -1;
+  /* Every member starts with a lowercase letter: most absent names stop at
+   * the set of those letters, made from the tables on first use. */
+  static SCR_TL uint32_t initials;
+  if (!initials) {
+    for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++)
+      initials |= UINT32_C(1) << (scr_stream_dyn_methods[i][0] - 'a');
+    for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++)
+      initials |= UINT32_C(1) << (scr_stream_dyn_properties[i][0] - 'a');
+  }
+  unsigned initial = key_len ? (unsigned)(unsigned char)key[0] - 'a' : 26;
+  if (initial > 25 || !(initials >> initial & 1)) return 0;
+  for (size_t i = 0; i < sizeof scr_stream_dyn_methods / sizeof *scr_stream_dyn_methods; i++)
+    if (scr_stream_ref_named(scr_stream_dyn_methods[i], key, key_len)) return 2;
+  for (size_t i = 0; i < sizeof scr_stream_dyn_properties / sizeof *scr_stream_dyn_properties; i++) {
+    const char *name = scr_stream_dyn_properties[i];
+    if (!scr_stream_ref_named(name, key, key_len)) continue;
+    if (value) *value = scr_stream_dyn_property(stream, name);
+    return 1;
+  }
+  if (stream->st->has_r && scr_stream_ref_named("readableFlowing", key, key_len)) {
+    int flowing = stream->st->r.flowing;
+    if (value) *value = flowing < 0 ? scr_dyn_new_null() : scr_dyn_new_bool(flowing == 1);
+    return 1;
+  }
+  return 0;
+}
+
+static const ScrStreamRefHooks scr_stream_ref_hooks_impl = {
+  scr_stream_ref_view,
+  scr_stream_ref_member,
+};
 
 /* ── node:crypto Hash and Hmac values as streams ─────────────────────
  * Node's Hash and Hmac are Transforms. A value used as a stream gets one

@@ -1638,6 +1638,20 @@ ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d);
 /* Attach the bag and prototype hooks of a capsule of a bag-tracked class
  * instance (idempotent). */
 void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
+/* A native stream seen as `unknown`, installed by the stream unit with its
+ * first stream and NULL before. A capsule whose snapshot adapter is `view`
+ * itself holds a stream whose view is exactly the object `view` builds, so
+ * a question about one member of it needs no view.
+ *   member: what the view of `stream` holds under `key`: 0 nothing, 1 a
+ *           data property (its value +1 in *value when `value` is not
+ *           NULL), 2 a method, -1 when only the view can say. */
+typedef struct ScrStreamRefHooks {
+  ScrDyn *(*view)(void *stream);
+  int (*member)(void *stream, const char *key, size_t key_len, ScrDyn **value);
+} ScrStreamRefHooks;
+extern SCR_TL const ScrStreamRefHooks *scr_stream_ref_hooks;
+/* scr_stream_dyn_view as a capsule's snapshot adapter. */
+ScrDyn *scr_stream_ref_view(void *stream);
 /* The method `key` that a call on a bag-tracked class instance capsule
  * reads from its view, +1, when an ordinary data property answers it: an
  * own one (a declared field's value from its native slot, or another bag

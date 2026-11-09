@@ -2526,4 +2526,200 @@ try {
     );
     expect(r.stderr).toBe("");
   });
+
+  test("an untyped Map or Set converts to a typed collection type only when every entry conforms, and stays one collection", async () => {
+    // The conforming conversions are differential (corpus
+    // untyped-collection-typed-slot.ts). Here: what throws where Node, which
+    // checks nothing, runs. A non-conforming entry names its position in
+    // iteration order, then 0 for a key and 1 for a value; the collection is
+    // left as it was. A converted collection has ONE typed layout: another
+    // typed collection type and a non-conforming write through the untyped
+    // side are refused by name, never answered with a copy.
+    const r = await compileAndRun(
+      "untyped-collection-typed-slot-failures",
+      `function invoke(callee: unknown, argument: unknown): unknown {
+  if (typeof callee === "function") return callee(argument);
+  return undefined;
+}
+function attempt(label: string, body: () => unknown): void {
+  try {
+    console.log(label + ": " + String(body()));
+  } catch (error) {
+    console.log(label + ": " + (error instanceof TypeError) + " " + (error as Error).message);
+  }
+}
+function total(counts: Map<string, number>): number {
+  let sum = 0;
+  for (const [, count] of counts) sum += count;
+  return sum;
+}
+function size(names: Set<string>): number {
+  return names.size;
+}
+function loose(counts: Map<string, unknown>): number {
+  return counts.size;
+}
+interface Booking {
+  guest: string;
+  nights: number;
+}
+function nights(byRoom: Map<string, Booking>): number {
+  let sum = 0;
+  for (const [, booking] of byRoom) sum += booking.nights;
+  return sum;
+}
+const badValue = new Map<unknown, unknown>([["a", 1], ["b", "two"]]);
+attempt("value", () => invoke(total, badValue));
+const hidden: unknown = badValue;
+attempt("value, cast", () => total(hidden as Map<string, number>));
+attempt("still untyped", () => badValue.size + " " + String(badValue.get("b")));
+const badKey = new Map<unknown, unknown>([["a", 1], [2, 2]]);
+attempt("key", () => invoke(total, badKey));
+const badMember = new Set<unknown>(["a", 2]);
+attempt("member", () => invoke(size, badMember));
+attempt("not a collection", () => invoke(total, { size: 0 }));
+attempt("a set for a map", () => invoke(total, new Set<unknown>(["a"])));
+const good = new Map<unknown, unknown>([["a", 1]]);
+attempt("first typed view", () => invoke(total, good));
+attempt("another typed layout", () => invoke(loose, good));
+attempt("non-conforming write through the untyped side", () => good.set("b", "two").size);
+attempt("conforming write through the untyped side", () => good.set("b", 2).size);
+attempt("typed view again", () => invoke(total, good));
+const bornTyped = new Map<string, number | string>([["a", 1]]);
+attempt("born with another layout", () => invoke(total, bornTyped));
+const held: unknown = JSON.parse('{"guest":"eve","nights":2}');
+const sharing = new Map<unknown, unknown>([["r1", held]]);
+attempt("an entry something else holds", () => invoke(nights, sharing));
+const pruned = new Map<unknown, unknown>([["a", 1], ["b", 2], ["c", 3]]);
+pruned.delete("a");
+attempt("first view while iterated past a removed entry", () => {
+  let out = "";
+  for (const [key] of pruned) out += String(key) + String(invoke(total, pruned));
+  return out;
+});
+attempt("first view after that loop", () => invoke(total, pruned));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "value: true expected number at $[0][1][1], got string",
+        "value, cast: true expected number at $[1][1], got string",
+        "still untyped: 2 two",
+        "key: true expected string at $[0][1][0], got number",
+        "member: true expected string at $[0][1], got number",
+        "not a collection: true expected map<string,f64> at $[0], got object",
+        "a set for a map: true expected map<string,f64> at $[0], got Set",
+        "first typed view: 1",
+        "another typed layout: true expected map<string,dyn> at $[0], got Map",
+        "non-conforming write through the untyped side: true expected number at $, got string",
+        "conforming write through the untyped side: 2",
+        "typed view again: 3",
+        "born with another layout: true expected map<string,f64> at $[0], got Map",
+        "an entry something else holds: true expected object that nothing else references (a typed Map takes its entries without copying them) at $[0][0][1], got object",
+        "first view while iterated past a removed entry: true expected map<string,f64> at $[0], got Map",
+        "first view after that loop: 5",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an entry of an untyped Map or Set converts only when nothing else holds what it holds, and the collection must not change while it is checked", async () => {
+    // A typed collection takes its entries without copying them: a plain
+    // object or array converts to a typed value, so one that the program
+    // still reaches another way, at any depth of an entry, would become
+    // two objects. Node, which converts nothing, runs these; here they
+    // throw by name with the path of the held value. So does a collection
+    // that a getter of an entry writes to while the entries are checked.
+    const r = await compileAndRun(
+      "untyped-collection-typed-slot-held-members",
+      `function invoke(callee: unknown, argument: unknown): unknown {
+  if (typeof callee === "function") return callee(argument);
+  return undefined;
+}
+function attempt(label: string, body: () => unknown): void {
+  try {
+    console.log(label + ": " + String(body()));
+  } catch (error) {
+    console.log(label + ": " + (error instanceof TypeError) + " " + (error as Error).message);
+  }
+}
+interface Stay {
+  room: number;
+  guests: string[];
+}
+interface Pair {
+  first: Stay;
+  second: Stay;
+}
+function rooms(byGuest: Map<string, Stay>): number {
+  let sum = 0;
+  for (const [, stay] of byGuest) sum += stay.room;
+  return sum;
+}
+function listed(all: Set<Stay[]>): number {
+  return all.size;
+}
+function paired(all: Map<string, Pair>): number {
+  return all.size;
+}
+function stayWith(guests: unknown): unknown {
+  const stay: any = JSON.parse('{"room":4}');
+  stay.guests = guests;
+  return stay;
+}
+function listOf(stay: unknown): unknown {
+  const list: any = JSON.parse("[null]");
+  list[0] = stay;
+  return list;
+}
+function twice(): unknown {
+  const pair: any = JSON.parse("{}");
+  pair.first = JSON.parse('{"room":2,"guests":[]}');
+  pair.second = pair.first;
+  return pair;
+}
+attempt("members of its own", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(JSON.parse('["bo"]'))]])));
+const guests: unknown = JSON.parse('["ada"]');
+attempt("a member something else holds", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(guests)]])));
+const kept: unknown = JSON.parse('{"room":2,"guests":[]}');
+attempt("an element something else holds", () => invoke(listed, new Set<unknown>([listOf(kept)])));
+attempt("one object under two members", () => invoke(paired, new Map<unknown, unknown>([["p", twice()]])));
+const changing = new Map<unknown, unknown>();
+let acted = false;
+function watched(): unknown {
+  const stay: any = JSON.parse('{"guests":[]}');
+  Object.defineProperty(stay, "room", {
+    enumerable: true,
+    get: () => {
+      if (!acted) {
+        acted = true;
+        changing.set("ada", JSON.parse('{"room":9,"guests":[]}'));
+      }
+      return 1;
+    },
+  });
+  return stay;
+}
+changing.set("ada", JSON.parse('{"room":4,"guests":[]}'));
+changing.set("bo", watched());
+attempt("an entry written while the entries are checked", () => invoke(rooms, changing));
+attempt("the same collection afterwards", () => invoke(rooms, changing));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "members of its own: 4",
+        "a member something else holds: true expected array that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].guests, got array",
+        "an element something else holds: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][0], got object",
+        "one object under two members: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].first, got object",
+        "an entry written while the entries are checked: true expected Map whose entries stay as they are while they are checked at $[0], got Map",
+        "the same collection afterwards: 10",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
 });

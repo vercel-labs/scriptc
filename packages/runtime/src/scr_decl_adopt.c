@@ -218,3 +218,11 @@ void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule) {
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule) {
   scr_decl_adopt_run(source, capsule, true);
 }
+
+/* Whether either adoption above can change anything for `source`: the walk
+ * leaves at once for a value that is not a plain object or array (a capsule
+ * of a native value, a primitive, a function). A cast asks before it boxes
+ * its result for the call. */
+bool scr_dyn_adoptable(const ScrDyn *source) {
+  return source && (source->kind == SCR_DYN_OBJ || source->kind == SCR_DYN_ARR);
+}

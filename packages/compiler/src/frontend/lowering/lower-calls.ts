@@ -5840,7 +5840,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "bytes",
   "arrayBuffer",
   // Promise.prototype (SCR_DYN_PROMISE receivers): the reaction trio
-  // rides the fiber machinery (scr_dyn_promise_then); on every other dyn
+  // registers native reactions (scr_dyn_promise_then); on every other dyn
   // kind then/catch/finally answer the stored-member path (OBJ own
   // members call, the rest throw Node's is-not-a-function).
   "then",

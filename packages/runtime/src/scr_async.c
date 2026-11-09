@@ -180,6 +180,9 @@ enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 #define SCR_CB_ANY SIZE_MAX /* all_idx of an any-settlement callback */
 #endif
 #define SCR_CB_BATCH (SIZE_MAX - 1)
+/* job_at of a job envelope that subscribes its reaction when it runs
+ * (scr_promise_react_next). */
+#define SCR_CB_SUBSCRIBE (SIZE_MAX - 2)
 
 typedef struct ScrFiber ScrFiber;
 
@@ -406,9 +409,8 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
-#ifdef SCR_NATIVE_REACTIONS
-/* A native reaction's steps (scr_promise_react). Only the build for
- * programs with web streams has them (runtime-pack-matrix.mjs). */
+/* A native reaction's steps (scr_promise_react): the callback waiter
+ * without a destination. */
 static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
   if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
 }
@@ -418,11 +420,6 @@ static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *
   scr_promise_reaction_drop(cb);
 }
 #define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
-#else
-#define SCR_PROMISE_IS_REACTION(cb) false
-#define scr_promise_reaction_drop(cb) ((void)0)
-#define scr_promise_reaction_run(cb, src) ((void)0)
-#endif
 
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
@@ -2302,12 +2299,19 @@ static void scr_promise_cb_queue(const struct ScrPromiseCbWaiter *cb, ScrPromise
   scr_ready_push(job);
 }
 
+static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb);
+
 /* Runs and frees a reaction job envelope. */
 static void scr_promise_job_run(ScrFiber *f) {
   ScrPromise *src = f->cb_src;
   struct ScrPromiseCbWaiter cb = f->cb;
   scr_mem_free(f);
-  if (cb.job_at != SCR_CB_BATCH) {
+  if (cb.job_at == SCR_CB_SUBSCRIBE) {
+    /* scr_promise_react_next's turn: the reaction subscribes now, and the
+     * waiter's references move into the subscription. */
+    cb.job_at = 0;
+    scr_promise_cb_subscribe(src, cb);
+  } else if (cb.job_at != SCR_CB_BATCH) {
     scr_promise_cb_run(&cb, src);
   } else {
     if (src != NULL) scr_promise_settle_from(cb.dst, src);
@@ -2341,14 +2345,20 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
-#ifdef SCR_NATIVE_REACTIONS
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
   struct ScrPromiseCbWaiter cb = {0};
   cb.reaction = reaction;
   cb.ctx = ctx;
   scr_promise_cb_subscribe(p, cb);
 }
-#endif
+
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  cb.job_at = SCR_CB_SUBSCRIBE;
+  scr_promise_cb_queue(&cb, p);
+}
 
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then

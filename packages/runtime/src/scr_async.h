@@ -196,11 +196,11 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
 /* .then/.catch/.finally over a dyn promise (scr_dyn_invoke's promise arm
- * and the compiled dyn-receiver path): one reaction fiber per
- * registration — awaits src, runs the checked-dynamic tree handler (non-callable handlers
- * pass the settlement through; a returned dyn promise is adopted), and
- * settles a fresh result promise, answered BOXED (+1). Microtask-exact
- * ordering rides the fiber machinery. */
+ * and the compiled dyn-receiver path): one native reaction per
+ * registration (scr_promise_react) — its job runs the checked-dynamic tree
+ * handler once src settles (non-callable handlers pass the settlement
+ * through; a returned dyn promise is adopted), and settles a fresh result
+ * promise, answered BOXED (+1). */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
 /* A native reaction to a promise's settlement, as PerformPromiseThen with
  * native steps: react(ctx, settled) runs as a reaction job once the promise
@@ -216,6 +216,10 @@ typedef struct ScrPromiseReaction {
 /* Subscribes a native reaction to `p` (the descriptor outlives it) and
  * marks `p` handled, as a `then` does. */
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* The same one microtask turn later, as the job that resolves a promise
+ * with another one calls its `then` (NewPromiseResolveThenableJob): `p`
+ * stays alive and unhandled until that turn. */
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber

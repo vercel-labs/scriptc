@@ -110,15 +110,13 @@ test("a process stream held as a value selects the island build that shares its 
   });
 });
 
-test("web streams and Node islands select an async build that defines both", () => {
-  const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
-  expect(variant.defines).toEqual(
-    expect.arrayContaining(["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS"]),
-  );
-  // Each feature alone still selects its own build, byte for byte.
+test("web streams select no async build of their own: every build has native reactions", () => {
+  expect(
+    selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS"]);
   expect(
     selected("scr_async.c", { webStreams: true, nodeIsland: false, workers: false }).defines,
-  ).toEqual(["SCR_NATIVE_REACTIONS"]);
+  ).toEqual([]);
   expect(
     selected("scr_async.c", { webStreams: false, nodeIsland: true, workers: false }).defines,
   ).toEqual(["SCR_NODE_ISLANDS"]);

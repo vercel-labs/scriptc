@@ -917,11 +917,17 @@ void scr_cyc_context_cleanup(void);
  * turns). Cheap: usually a nursery pass; a waiting mature backlog ages into
  * a bounded full pass so sparse roots cannot float forever. */
 void scr_cyc_collect_scheduled(void);
+/* The same decision for one of the event loop's turns. A turn is not a
+ * measure of garbage, so a nursery pass waits for the release path's rules,
+ * for young candidates to have waited through a quarter of a nursery's worth
+ * of turns, or for the loop's next idle moment (scr_cyc_collect_idle). */
+void scr_cyc_collect_turn(void);
 /* The thread's event loop runs (scr_loop_run): from now on a full pass the
  * death rule asks for waits for scr_cyc_collect_idle. */
 void scr_cyc_note_event_loop(void);
 /* The event loop is about to wait with nothing ready: runs the full pass
- * the death rule asked for, if one waits; returns whether it ran. */
+ * the death rule asked for, if one waits, or else collects the young
+ * candidates the turns left buffered; returns whether a decision ran. */
 bool scr_cyc_collect_idle(void);
 
 /* Publication (@scriptc/threads publish; scr_cycle.c): makes everything a

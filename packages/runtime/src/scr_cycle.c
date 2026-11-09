@@ -244,6 +244,8 @@ typedef struct {
   uint32_t gray_comp;
   ScrVec live_ranges;
   size_t scheduled_mature_age;
+  size_t turn_age;
+  unsigned char age_shift;
   size_t xg_freed;
   size_t mature_dead;
   struct ScrCycKind *kinds;
@@ -280,6 +282,8 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_gray_comp (scr_cyc_thread.gray_comp)
 #define scr_live_ranges (scr_cyc_thread.live_ranges)
 #define scr_cyc_scheduled_mature_age (scr_cyc_thread.scheduled_mature_age)
+#define scr_cyc_turn_age (scr_cyc_thread.turn_age)
+#define scr_cyc_age_shift (scr_cyc_thread.age_shift)
 #define scr_xg_freed (scr_cyc_thread.xg_freed)
 #define scr_cyc_mature_dead (scr_cyc_thread.mature_dead)
 #define scr_cyc_fallen (scr_cyc_thread.fallen)
@@ -787,6 +791,41 @@ static SCR_TL ScrVec scr_live_ranges;
 static SCR_TL size_t scr_cyc_scheduled_mature_age = 0;
 #endif
 
+/* The event loop's turns are collection points too, but a turn is not a
+ * measure of garbage: a program that awaits reaches one after every
+ * callback, with a handful of candidates buffered, most of which reference
+ * counting frees before the next turn (a settled promise, its reactions).
+ * A pass on every turn pays the pass's fixed work and walks those
+ * candidates for nothing, so its cost follows the number of awaits. A turn
+ * therefore leaves the nursery to the release path's rules (the candidate
+ * window and the allocation counter, which follow what the program buffers
+ * and allocates) and runs a nursery pass of its own only when
+ *   - a growth rule is due (the turn is then the cheaper place for it), or
+ *   - young candidates have waited through a quarter of a nursery's worth
+ *     of turns (`turn_age`), so a program that turns without buffering
+ *     does not keep its last candidates for ever, or
+ *   - the loop is about to wait with nothing ready (scr_cyc_collect_idle):
+ *     what the turns deferred is collected before the program sleeps, so
+ *     an idle program holds no young cyclic garbage.
+ * A pinned trigger below four keeps the pass on every turn.
+ *
+ * The scheduled-age rule is a full walk, so its period must not be a fixed
+ * number of turns either: with live older candidates waiting (a program
+ * that reads a long-lived structure buffers them on every turn) it would
+ * walk the whole heap once per nursery's worth of turns, for ever. An
+ * age-triggered full pass that freed nothing doubles the age the next one
+ * needs (`age_shift`), while that age is below the live heap's object count
+ * and up to SCR_CYC_AGE_MAX_SHIFT doublings, and one that freed anything
+ * starts over. Unproductive age passes then cost at most one object's walk
+ * per turn, amortized; the backstop stays: older garbage still cannot float
+ * for ever. */
+#define SCR_CYC_TURN_AGE_DIV 4
+#define SCR_CYC_AGE_MAX_SHIFT 16
+#ifndef SCR_WORKERS
+static SCR_TL size_t scr_cyc_turn_age = 0;
+static SCR_TL unsigned char scr_cyc_age_shift = 0;
+#endif
+
 static size_t scr_cyc_buffered(void) {
   return scr_roots[SCR_CYC_NURSERY].n + scr_roots[SCR_CYC_MATURE].n
          + scr_roots[SCR_CYC_OLD].n;
@@ -966,9 +1005,10 @@ static SCR_CYC_SCHEDULING bool scr_cyc_died(void) {
  * adapts that level's growth fraction (scr_cyc_adapt_growth).
  *
  * Every level shares this one body, so a program that links the collector
- * carries a single copy of the scheduling logic. */
-static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death,
-                                                      bool routed) {
+ * carries a single copy of the scheduling logic. Returns what the pass
+ * freed. */
+static SCR_CYC_SCHEDULING size_t scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death,
+                                                        bool routed) {
   size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
   size_t fallen = scr_cyc_fallen;
@@ -1000,7 +1040,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   }
   if (gen == SCR_CYC_NURSERY) {
     scr_cyc_nursery_freed += freed;
-    return;
+    return freed;
   }
   if (scr_cyc_adapt_nursery(old_reclaimed)) {
     scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
@@ -1019,6 +1059,7 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
   } else if (by_growth)
     scr_cyc_adapt_growth(gen, growth,
                          gen == SCR_CYC_OLD ? old_reclaimed : freed);
+  return freed;
 }
 
 /* Whether a growth rule asks for a pass: the allocation counter, or either
@@ -1084,8 +1125,10 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(bool routed) {
  * (the event loop between turns) rather than a threshold. Deliberately NOT
  * scr_collect_cycles: that one is the exit-time full sweep, and running it
  * per turn would walk the whole live heap every turn — which is exactly the
- * cost the generations exist to avoid. */
-void scr_cyc_collect_scheduled(void) {
+ * cost the generations exist to avoid.
+ * `turn`: the point is one of the event loop's turns, which defers a nursery
+ * pass to the release path's rules (see SCR_CYC_TURN_AGE_DIV). */
+static SCR_CYC_SCHEDULING void scr_cyc_collect_point(bool turn) {
 #ifdef SCR_YIN
   /* A collection point also collects the nursery when anything entered it
    * since its last collection, so young garbage does not wait for the
@@ -1096,14 +1139,21 @@ void scr_cyc_collect_scheduled(void) {
   scr_cyc_note_fall();
   if (scr_cyc_buffered() == 0) {
     scr_cyc_scheduled_mature_age = 0;
+    scr_cyc_turn_age = 0;
     return;
   }
   if (!scr_cyc_older_backlog()) {
     scr_cyc_scheduled_mature_age = 0;
-  } else if (++scr_cyc_scheduled_mature_age
-             >= scr_cyc_nursery_base()) {
-    scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false, true);
-    return;
+  } else {
+    size_t need = scr_cyc_nursery_base() << scr_cyc_age_shift;
+    if (++scr_cyc_scheduled_mature_age >= need) {
+      scr_cyc_turn_age = 0;
+      if (scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false, true) != 0)
+        scr_cyc_age_shift = 0;
+      else if (need < scr_cyc_live && scr_cyc_age_shift < SCR_CYC_AGE_MAX_SHIFT)
+        scr_cyc_age_shift++;
+      return;
+    }
   }
   /* The decision below is the release path's: it tests the heap and the
    * older buffers against the growth, backlog and death rules, and every
@@ -1116,21 +1166,41 @@ void scr_cyc_collect_scheduled(void) {
    * re-armed counters count candidates, and a turn that only leaves older
    * candidates must still collect what the heap grew past its level's
    * fraction. */
-  if (scr_roots[SCR_CYC_NURSERY].n == 0 && !scr_cyc_growth_due()) {
+  bool growth_due = scr_cyc_growth_due();
+  if (scr_roots[SCR_CYC_NURSERY].n == 0 && !growth_due) {
+    scr_cyc_turn_age = 0;
     scr_cyc_rearm_over_buffered();
     return;
   }
+  /* A turn with young candidates and no growth rule due: they wait for the
+   * release path's rules, a later turn or the loop's next idle moment. The
+   * counters are not re-armed: the release path keeps counting from the
+   * last pass. */
+  if (turn && !growth_due && ++scr_cyc_turn_age < scr_cyc_nursery_base() / SCR_CYC_TURN_AGE_DIV)
+    return;
+  scr_cyc_turn_age = 0;
   scr_cyc_collect_due(true);
 }
+
+void scr_cyc_collect_scheduled(void) { scr_cyc_collect_point(false); }
+
+void scr_cyc_collect_turn(void) { scr_cyc_collect_point(true); }
 
 void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
 
 /* The death rule held when it asked for the waiting pass, and nothing
  * dies while the loop waits, so the pass runs without checking the rule
  * again: a heap that kept shrinking since would fail its size test, and
- * the dead structure it was asked for would stay buffered. */
+ * the dead structure it was asked for would stay buffered. Without such a
+ * pass waiting, the idle moment collects the young candidates the turns
+ * left buffered. */
 bool scr_cyc_collect_idle(void) {
-  if (!scr_cyc_death_due_live || scr_collecting) return false;
+  if (scr_collecting) return false;
+  if (!scr_cyc_death_due_live) {
+    if (scr_cyc_turn_age == 0) return false;
+    scr_cyc_collect_point(false);
+    return true;
+  }
   scr_cyc_note_fall();
   scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true, false);
   return true;
@@ -2304,6 +2374,7 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
    * baselines stay those of the last pass over them all. */
   scr_cyc_live_seen = scr_cyc_live;
   if (scr_cyc_take == NULL) {
+    scr_cyc_turn_age = 0; /* the nursery's candidates were all walked */
     /* A full pass the growth rule did not choose (death, backlog, scheduled
      * age) may raise the growth baselines but not lower them. After it
      * reclaims a dropped structure, the heap regrowing to where it was is
@@ -2610,7 +2681,10 @@ void scr_collect_cycles(void) {
    * want nothing reclaimable left behind. Only a pass that freed something
    * can have buffered anything new, so a pass that comes up empty ends
    * this; and since each repeat needs a strictly smaller live heap to
-   * continue, it terminates. */
+   * continue, it terminates.
+   * It leaves no candidate waiting, so the scheduled-age rule's backoff
+   * starts over with it: what waits next has not been walked for nothing. */
+  scr_cyc_age_shift = 0;
 #ifdef SCR_YIN
   /* The nursery first: afterwards no young object is left (a teardown
    * never allocates one), so the passes see every object. */

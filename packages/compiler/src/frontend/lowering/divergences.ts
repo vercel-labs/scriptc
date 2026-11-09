@@ -377,11 +377,7 @@ export function scanDivergences(
       for (const [index, argument] of (call.arguments?.nodes ?? []).entries()) {
         const parameter = declaration.parameters.nodes[index];
         if (parameter?.type === undefined || ts.isSpreadElement(argument)) continue;
-        bind(
-          checker.getTypeFromTypeNode(parameter.type),
-          checker.getTypeAtLocation(argument),
-          0,
-        );
+        bind(checker.getTypeFromTypeNode(parameter.type), checker.getTypeAtLocation(argument), 0);
       }
     };
     safely(() => checker.prefetchResolvedSignatures(calls));
@@ -394,9 +390,10 @@ export function scanDivergences(
         // generic declaration has as its type arguments.
         safely(() => {
           const made = checker.getTypeAtLocation(construction);
-          if (!made.isTypeReference() || made.getTarget() === made) return;
+          const generic = made.isTypeReference() ? made.getTarget() : undefined;
+          if (generic === undefined || generic === made) return;
           const given = checker.getTypeArguments(made);
-          for (const [index, parameter] of checker.getTypeArguments(made.getTarget()).entries()) {
+          for (const [index, parameter] of checker.getTypeArguments(generic).entries()) {
             const argument = given[index];
             if (argument !== undefined) bind(parameter, argument, 0);
           }

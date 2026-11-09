@@ -13,6 +13,7 @@ import {
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
 import { islandFunctionView, lowerIslandExpr } from "./lower-node-island.js";
+import { lowerOwnKeyQuestion } from "./own-key-lists.js";
 import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -386,7 +387,13 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   try {
     if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
       lowerExprAttemptsExceeded(lowerer);
-    let lowered = lowerExprInner(lowerer, expr);
+    // An own-key question about a record held under its type is answered
+    // from the type (own-key-lists.ts). Only a `.length` read and a strict
+    // equality can be one.
+    let lowered =
+      (ts.isPropertyAccessExpression(expr) || ts.isBinaryExpression(expr)
+        ? lowerOwnKeyQuestion(lowerer, expr)
+        : null) ?? lowerExprInner(lowerer, expr);
     // An island's function in a slot the program types as a function is its
     // typed view there. Programs without islands skip it.
     if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")

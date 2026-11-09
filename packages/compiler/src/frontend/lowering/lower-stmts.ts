@@ -252,6 +252,7 @@ import {
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import { lowerFunduleMemberDecl } from "./lower-fundule.js";
+import { lowerOwnKeyListDecl } from "./own-key-lists.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -2493,6 +2494,10 @@ function lowerVarDeclarator(
   // position (lower-fundule.ts) — no module global exists for it.
   const funduleStore = lowerFunduleMemberDecl(lowerer, decl);
   if (funduleStore !== null) return funduleStore;
+  // A key list of a typed record that is only counted and compared with
+  // names is never built (own-key-lists.ts).
+  const ownKeyList = lowerOwnKeyListDecl(lowerer, decl, isConst);
+  if (ownKeyList !== null) return ownKeyList;
   // `var m; m = require("./x")`: the declaration is alias plumbing; the
   // assignment owns the module's run-once %init (cjs-inline-require.ts).
   // A read that code before the assignment can reach keeps Node's hoisted

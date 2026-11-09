@@ -2923,6 +2923,13 @@ export function stringPropertyKey(
     : null;
 }
 
+/** The hidden local of a write's key that names a string without being
+ * typed `string` (stringPropertyKey's missing-element form). The class
+ * dispatch tells such a write from a write under a key typed `string` by
+ * this local: the first takes a named helper, the second the computed
+ * helper it always took (ClassDynamicDispatch). */
+export const NAMED_SET_KEY = "%setName";
+
 /** The reference of a checked member write, evaluated ahead of the value
  * it will take: the receiver and the key are held in temporaries (key
  * coercion waits for PutValue), and `store` writes a checked-dynamic value
@@ -2945,7 +2952,13 @@ export function dynMemberReference(
     : null;
   const stringKey = namedKey !== null;
   const keyValue = namedKey ?? boxedKey;
-  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
+  // A key typed `string` keeps the local it always had; one that names a
+  // string by conversion takes NAMED_SET_KEY.
+  const converted = stringKey && boxedKey.kind === "dynFrom" && namedKey !== boxedKey.value;
+  const key = lowerer.declareHiddenLocal(
+    converted ? NAMED_SET_KEY : "%setKey",
+    stringKey ? STRING : DYN,
+  );
   return {
     stmts: [
       { kind: "varDecl", localId: receiver.id, init: recv, loc },

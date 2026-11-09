@@ -1,4 +1,4 @@
-import { primitiveConstructorOr } from "./lower-exprs.js";
+import { NAMED_SET_KEY, primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
@@ -3017,6 +3017,17 @@ export class ClassDynamicDispatch {
             ].includes(expr.fn))
             ? expr
             : null;
+        // A write whose key names a string without being typed `string`
+        // (lower-exprs.ts NAMED_SET_KEY). It and the `in` probe by a name
+        // are the named forms: before keys were passed by name their sites
+        // called the helpers that take a boxed key, so they get helpers of
+        // their own (`%dyn.class.named.<n>`), which keep that helper's
+        // checked-dynamic parameters (ir/jsval.ts jsvalParams).
+        const writeKey = computedWrite?.args[1];
+        const namedWrite =
+          computedWrite?.fn === "dyn.keySet" &&
+          writeKey?.kind === "varRef" &&
+          writeKey.localId.startsWith(`${NAMED_SET_KEY}.`);
         if (computedRead || computedWrite || computedProbe) {
           const probe = computedProbe
             ? computedProbe.fn === "dyn.hasKeyComputed" || namedProbe
@@ -3063,6 +3074,7 @@ export class ClassDynamicDispatch {
             reflect,
             !!indexKey,
             ...(sloppyWrite ? ["sloppy"] : []),
+            ...(namedWrite ? ["named"] : []),
           ]);
           let dispatch = this.computed.get(key);
           if (!dispatch) {
@@ -3128,7 +3140,7 @@ export class ClassDynamicDispatch {
                   ]
                 : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
-              name: `%dyn.class.computed.${this.computed.size}`,
+              name: `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}.${this.computed.size}`,
               params,
               returnType:
                 (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,

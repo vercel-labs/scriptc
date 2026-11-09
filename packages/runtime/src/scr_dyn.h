@@ -485,6 +485,7 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending
  * TypeError's message gains the declaration and the type patch that would
@@ -1658,9 +1659,15 @@ const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
 /* Whether a class instance capsule's class prototype chain defines a
  * method or accessor named key; false for other values. */
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key);
-/* Fast keyed read on a live array capsule: +1 value for `length` and for
- * present or explicitly-undefined elements; NULL when the answer needs the
- * snapshot (holes, out-of-range, non-index names, or no bound ops). */
+/* The own member `key` of a live capsule, from its native value: +1 value
+ * for a present record field, an array's `length` and its present or
+ * explicitly-undefined elements; NULL when the capsule has no such member
+ * or the answer needs the snapshot (holes, out-of-range, or no bound ops). */
+ScrDyn *scr_dyn_typed_ref_own_get(const ScrDyn *d, const ScrStr *key);
+/* The keyed read d[key] of a capsule without its snapshot: the own member
+ * (scr_dyn_typed_ref_own_get), or undefined for a name that the snapshot of
+ * a live record or array would not own and nothing it inherits answers;
+ * NULL when the read needs the snapshot. */
 ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
 /* +1 view of an own element of a bound live array capsule; NULL for a hole
  * or an index at or past its length. */

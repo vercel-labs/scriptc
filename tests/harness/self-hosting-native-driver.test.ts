@@ -229,6 +229,10 @@ test(
       // SC6001 reports (frontend/lowering/width-copies.ts): its IR nodes
       // are records of many shapes. The self-builds leave that out too.
       const copies = "--no-copy-warning";
+      // Several of those record types are built in more than one key order
+      // (spreads of IR nodes), which SC6014 reports once per type
+      // (frontend/lowering/key-order-witness.ts). Left out as well.
+      const keyOrders = "--no-key-order-warning";
       const ffi = join(directory, ".scriptc/distribution-seed/compiler.ffi.json");
       const rebuilt = executable("scriptc-rebuilt");
       const checkProgram = async (compiler: string, source: string, extra: string[] = []) => {
@@ -705,6 +709,7 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
               ffi,
               quiet,
               copies,
+              keyOrders,
             ],
             "scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n",
           ),
@@ -723,7 +728,18 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
           await bootstrapStep("rebuilt compiler emits itself", () =>
             invoke(
               rebuilt,
-              ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi, quiet, copies],
+              [
+                "build",
+                entry,
+                "--emit=llvm",
+                "-o",
+                rebuiltLlvm,
+                "--ffi",
+                ffi,
+                quiet,
+                copies,
+                keyOrders,
+              ],
               "",
               { SCRIPTC_EMIT_WORKER_FAIL: "all" },
             ),
@@ -757,7 +773,18 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
       const rebuildFrontend = async () => {
         const lowered = join(directory, "cli.ir.json");
         const output = await bootstrapStep("sanitized native frontend lowers the compiler", () =>
-          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi, quiet, copies]),
+          invoke(seed, [
+            "build",
+            entry,
+            "--emit=ir",
+            "-o",
+            lowered,
+            "--ffi",
+            ffi,
+            quiet,
+            copies,
+            keyOrders,
+          ]),
         );
         expect(output.trim()).toBe(lowered);
         await compareArtifacts({ ir: true, llvm: false });
@@ -786,6 +813,7 @@ console.log(reached, table[0] === Math.sin(0.5), table[1] === Math.cbrt(2), tabl
               "--from-lowered-accept=compiler,options,inputs",
               quiet,
               copies,
+              keyOrders,
             ],
             "scriptc: warning: --from-lowered: building from " +
               seedIr +

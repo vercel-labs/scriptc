@@ -22178,7 +22178,7 @@ static void scr_weak_reached(void *obj, const ScrCycType *type) {
 static void scr_weak_restore_all(bool judge) {
   while (scr_weak_work.n) {
     void *obj = scr_weak_work.v[--scr_weak_work.n];
-    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    const ScrCycType *type = scr_cyc_type_of(obj);
     scr_weak_trace(obj, type, scr_weak_black_visit);
     if (judge) scr_weak_reached(obj, type);
   }
@@ -22230,7 +22230,7 @@ static void scr_weak_gray_from(const ScrWeakEntry *entry) {
   scr_weak_vec_push(&scr_weak_work, entry->value);
   while (scr_weak_work.n) {
     void *obj = scr_weak_work.v[--scr_weak_work.n];
-    scr_weak_trace(obj, scr_cyc_type(scr_cyc_hdr(obj)), scr_weak_gray_visit);
+    scr_weak_trace(obj, scr_cyc_type_of(obj), scr_weak_gray_visit);
   }
 }
 
@@ -22285,7 +22285,7 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
     while (grows && !left.cut) {
       for (; scanned < scr_weak_grayed.n && !left.cut; scanned++) {
         void *obj = scr_weak_grayed.v[scanned];
-        if (scr_cyc_type(scr_cyc_hdr(obj))->kind == SCR_CYC_KIND_PROMISE) {
+        if (scr_cyc_type_of(obj)->kind == SCR_CYC_KIND_PROMISE) {
           ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
           if (hold) scr_weak_add_keyed(hold->key, pend, &left);
         }
@@ -22302,7 +22302,7 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   if (scr_weak_promise_cells && scr_weak_promise_cells->entries)
     for (size_t i = 0; i < scr_weak_grayed.n; i++) {
       void *obj = scr_weak_grayed.v[i];
-      if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_PROMISE) continue;
+      if (scr_cyc_type_of(obj)->kind != SCR_CYC_KIND_PROMISE) continue;
       ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
       if (hold) hold->mark++;
     }
@@ -22334,7 +22334,7 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   if (scr_weak_promise_cells && scr_weak_promise_cells->entries)
     for (size_t i = 0; i < scr_weak_grayed.n; i++) {
       void *obj = scr_weak_grayed.v[i];
-      if (scr_cyc_type(scr_cyc_hdr(obj))->kind != SCR_CYC_KIND_PROMISE) continue;
+      if (scr_cyc_type_of(obj)->kind != SCR_CYC_KIND_PROMISE) continue;
       ScrWeakEntry *hold = scr_weak_promise_hold_of(obj);
       if (hold) hold->mark = 0;
     }
@@ -22362,7 +22362,7 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   return ended;
 }
 
-size_t scr_weak_collect_entries(void) {
+static size_t scr_weak_judge_all(void) {
   if (scr_weak_judging || !scr_weak_index) return 0;
   scr_weak_judging = true;
   ScrWeakVec pend = {0};
@@ -22441,7 +22441,7 @@ static void scr_weak_judge_due(void) {
     all = judged && reclaimed && (reclaimed >= grown || reclaimed * (entries / judged + 1) * 4 >= grown);
   }
   if (all) {
-    ended += scr_weak_collect_entries();
+    ended += scr_weak_judge_all();
     reclaimed = before > scr_weak_heap() ? before - scr_weak_heap() : 0;
     if (reclaimed < ended) reclaimed = ended;
     scr_weak_judge_idle = reclaimed * 4 < grown;
@@ -22637,6 +22637,12 @@ bool scr_weak_set_is(const ScrDyn *value) {
 }
 ScrDyn *scr_weak_map_new(ScrDyn *seed) { return scr_weak_collection_new(seed, false); }
 ScrDyn *scr_weak_set_new(ScrDyn *seed) { return scr_weak_collection_new(seed, true); }
+/* The exported entry only forwards, and stands after the constructors. The
+ * compiler lays this file's storage out in the order its exported functions
+ * first reach it: an exported function that read the index itself, or one
+ * that stood before the constructors, would move storage in every
+ * executable that links this file, weak collection or not. */
+size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
 
 /* FinalizationRegistry. register() and unregister() validate and keep their
  * bookkeeping as Node does; the cleanup callback never runs, which

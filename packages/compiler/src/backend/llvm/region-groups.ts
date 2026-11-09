@@ -497,12 +497,14 @@ function quietElement(type: IrType): boolean {
  * - `recordOvfKeys` lowers to `scr_map_keys_js_order` (scr_map.c): it
  *   walks the overflow map's entries and retains each key string into a
  *   fresh `string[]`. Keys are strings; nothing is converted or called.
- * - `recordKeyGet` of the overflow map alone with a number or boolean
- *   result lowers to `scr_map_get_str_f64` / `scr_map_get_str_bool`
- *   (keyedRecordReadInto in expr-records.ts): one hash lookup and a copy of
- *   the stored scalar; a miss stores the undefined arm or NaN, or traps.
- *   Reads of declared fields and results of other types stay unlisted:
- *   they pass through record views and conversions not proven here.
+ * - `recordKeyGet` of the overflow map alone with a static result
+ *   (keyedRecordReadInto in expr-records.ts): a number or boolean value is
+ *   one `scr_map_get_str_f64` / `scr_map_get_str_bool` lookup and a copy;
+ *   any other value is a string-keyed entry lookup, a retain of the stored
+ *   reference and, for a union result, a wrap of it; a miss stores the
+ *   undefined arm or NaN, or traps. Reads that also cover declared fields
+ *   and reads with a dynamic result stay unlisted: they pass through
+ *   record views and conversions to dynamic values not proven here.
  * - `join` on a private array (privateArrays) of strings, numbers or
  *   booleans with a string separator lowers to `scr_arr_join`
  *   (scr_array.c), which copies string bytes and formats numbers and
@@ -517,7 +519,7 @@ function quietElement(type: IrType): boolean {
 function quietOperation(node: Node, fn: IrFunction | null): boolean {
   if (node.kind === "recordOvfKeys") return true;
   if (node.kind === "recordKeyGet")
-    return node.overflowOnly === true && (node.type.kind === "f64" || node.type.kind === "bool");
+    return node.overflowOnly === true && node.type.kind !== "dyn";
   if (node.kind === "arrIntrinsic" && node.method === "join") {
     const receiver = node.receiver;
     return (

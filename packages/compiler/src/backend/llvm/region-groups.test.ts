@@ -641,10 +641,13 @@ function joinsCaptured(n: number): number {
 }
 const tally: Record<string, number> = {};
 tally["k" + shared.length] = 1;
+const sizes: Record<string, { size: number }> = {};
+sizes["s" + shared.length] = { size: 2 };
 let total = 0;
 for (let r = 0; r < 3; r++) {
   total += joinsOwn(5) + joinsShared(5) + joinsHanded(5, shared) + joinsAliased(5) + joinsCaptured(5);
   for (const [key, v] of Object.entries(tally)) total += key.length + v;
+  for (const [key, v] of Object.entries(sizes)) total += key.length + v.size;
 }
 console.log(total, saved.length);
 `);
@@ -659,11 +662,11 @@ console.log(total, saved.length);
     expect(groups.leakFree.has(name)).toBe(false);
     expect(callsOf(mod, name).some((c) => groups.calls.has(c))).toBe(false);
   }
-  // \`Object.entries\` of a dictionary of numbers reads the key snapshot and
-  // the stored numbers: map lookups only.
+  // \`Object.entries\` of a dictionary reads the key snapshot and the stored
+  // values, numbers or references: map lookups and retains only.
   const entries = mod.functions.filter((fn) => fn.name.startsWith("%obj.entries"));
-  expect(entries.length).toBe(1);
-  expect(groups.leakFree.has(entries[0]!.name)).toBe(true);
+  expect(entries.length).toBe(2);
+  for (const fn of entries) expect(groups.leakFree.has(fn.name)).toBe(true);
 });
 
 test("the source table names the allocation kinds", () => {

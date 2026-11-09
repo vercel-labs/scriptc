@@ -4,8 +4,7 @@
  * on the native TypeScript compiler (one spawned tsgo server behind
  * Ts7Host, through the ts7/ adapter) with scriptc's OWN resolver
  * (resolve.ts) standing in for ts.resolveModuleName /
- * ts.resolveTypeReferenceDirective, which typescript@7.0.2 no longer
- * ships.
+ * ts.resolveTypeReferenceDirective.
  *
  * HISTORY. This began as a deliberately MECHANICAL PORT of the
  * typescript@5.9.3 checkPreflight (the adapter's design: swap the ts
@@ -4492,7 +4491,10 @@ function topLevelInertness7(program: ts.Program): (stmt: ts.Statement) => ts.Nod
     if (hasDecorator(c)) return c;
     for (const h of c.heritageClauses?.nodes ?? []) {
       if (h.token !== ts.SyntaxKind.ExtendsKeyword) continue;
-      for (const t of h.types.nodes) if (!inert(t.expression)) return t.expression;
+      for (const t of h.types.nodes) {
+        if (!ts.isExpressionWithTypeArguments(t)) continue;
+        if (!inert(t.expression)) return t.expression;
+      }
     }
     for (const m of c.members.nodes) {
       if (ts.isClassStaticBlockDeclaration(m)) return m;
@@ -4900,7 +4902,12 @@ function cjsCycleRefusal7(
     return false;
   };
   const inertPart = (part: ts.Node): boolean => {
-    if (ts.isHeritageClause(part)) return part.types.nodes.every((t) => inertExpr(t.expression));
+    // An implements element or an interface's base names a type, which
+    // evaluates nothing at run time.
+    if (ts.isHeritageClause(part))
+      return part.types.nodes.every(
+        (t) => !ts.isExpressionWithTypeArguments(t) || inertExpr(t.expression),
+      );
     if (ts.isComputedPropertyName(part)) return inertExpr(part.expression);
     return ts.isExpression(part) && inertExpr(part);
   };

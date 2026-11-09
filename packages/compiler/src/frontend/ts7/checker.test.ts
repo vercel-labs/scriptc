@@ -19,11 +19,15 @@ import type { Identifier, SourceFile } from "./ast-types.js";
 const tempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
 const protocolPath = (path: string) => path.replaceAll("\\", "/");
 
-/** The default checker (tsc-ts) and tsc 7.1. */
+/** The default checker (tsc-ts) and tsc 7.1, which both speak the 7.1
+ * protocol; SCRIPTC_CHECKER=tsgo makes the default checker tsc 7.1 itself. */
 const servers: Ts7TestServer[] = [
-  { name: "tsc 7.0", executable: ts7Executable(), ts71: false },
+  { name: "tsc-ts", executable: ts7Executable(), ts71: true },
   ...ts7TestServers().filter((server) => server.ts71),
-];
+].filter(
+  (server, index, list) =>
+    list.findIndex((other) => other.executable === server.executable) === index,
+);
 
 function connect(server: Ts7TestServer, files: Record<string, string>) {
   const dir = mkdtempSync(join(tempRoot, "scriptc-checker-lifetime-"));

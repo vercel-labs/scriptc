@@ -1804,6 +1804,10 @@ ScrDyn *scr_weak_map_new(ScrDyn *entries);
 ScrDyn *scr_finalization_registry_new(ScrDyn *cleanup);
 bool scr_finalization_registry_is(const ScrDyn *value);
 ScrDyn *scr_weak_set_new(ScrDyn *values);
+/* Ends this thread's weak-collection entries whose key or collection only
+ * the entries' own values keep alive; returns how many. A collector pass
+ * runs it by itself as the heap grows. */
+size_t scr_weak_collect_entries(void);
 ScrDyn *scr_dyn_from_entries(ScrDyn *entries);
 ScrDyn *scr_dyn_mark_snapshot(ScrDyn *value); /* consumes and returns +1 */
 /* Optional non-owning observers, installed by weak collections (worker

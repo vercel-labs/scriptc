@@ -287,6 +287,12 @@ static inline uint32_t scr_cyc_type_id(ScrCycType *type) {
 }
 
 static inline const ScrCycType *scr_cyc_type(const ScrCycHdr *h) { return &scr_cyc_types[h->id]; }
+/* scr_cyc_type of an object, as a call (scr_cycle.c): for code in a unit
+ * that does not name scr_cyc_types otherwise. A unit's first reference to a
+ * symbol every program links moves that symbol in the symbol table of every
+ * executable that links the unit; a reference to this function leaves no
+ * trace in an executable that drops the caller. */
+const ScrCycType *scr_cyc_type_of(const void *obj);
 static inline unsigned scr_cyc_color(const ScrCycHdr *h) { return h->color; }
 static inline void scr_cyc_set_color(ScrCycHdr *h, unsigned color) { h->color = (uint8_t)color; }
 static inline unsigned scr_cyc_gen(const ScrCycHdr *h) { return h->gen; }

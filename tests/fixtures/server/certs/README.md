@@ -12,6 +12,11 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
 (ca2 repeats the ca recipe with its own key and CN.)
 
+`intermediate.pem` reuses the throwaway `ca2-key.pem`, with a different subject signed by `ca.pem`. `intermediate-localhost.pem` reuses `localhost-key.pem` and is signed by that intermediate. The TLS SPKI tests use these public certificates to distinguish a selected intermediate from the unrelated `ca2.pem` peer certificate. No new private keys are needed:
+
+    openssl req -new -key ca2-key.pem -subj "/CN=scriptc test intermediate" -config san.cnf | openssl x509 -req -CA ca.pem -CAkey ca-key.pem -set_serial 4243 -days 36500 -extfile san.cnf -extensions caext -out intermediate.pem
+    openssl req -new -key localhost-key.pem -subj "/CN=localhost" -config san.cnf | openssl x509 -req -CA intermediate.pem -CAkey ca2-key.pem -set_serial 4244 -days 36500 -extfile san.cnf -extensions ext -out intermediate-localhost.pem
+
 `alt.pem`/`alt-key.pem` (the SNI fixtures' second identity: CN=alt.localhost, SAN DNS:alt.localhost) repeats the leaf recipe against the same `ca.pem`, with an ext section whose subjectAltName is `DNS:alt.localhost`.
 
 `localhost-rsa.pem`/`localhost-rsa-key.pem` is a second localhost leaf with the same subject and SAN whose key is RSA 2048, signed by `ca.pem`, for the cipher suites that authenticate with RSA (the finite-field Diffie-Hellman suites have no ECDSA form):

@@ -41,9 +41,13 @@ export function withLibraryRuntimeFlavors(matrix) {
   ].map((unit) => ({
     ...unit,
     // Libraries run neither workers nor the young-in nursery (an
-    // executable-only experiment).
+    // executable-only experiment), and they carry no promise unit, so no
+    // promise adapter exists for a checked-dynamic key to name.
     variants: unit.variants.filter(
-      (variant) => !variant.defines.includes("SCR_WORKERS") && !variant.defines.includes("SCR_YIN"),
+      (variant) =>
+        !variant.defines.includes("SCR_WORKERS") &&
+        !variant.defines.includes("SCR_YIN") &&
+        !variant.defines.includes("SCR_DYN_PROMISE_KEYS"),
     ),
   }));
   const flavors = { ...matrix.flavors };

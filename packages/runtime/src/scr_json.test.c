@@ -1427,6 +1427,130 @@ static void record_frozen_bit(void) {
   assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
 }
 
+/* A write under a run-time name as its site makes it: the record's entry
+ * for an ordinary object, and the generic write when that entry leaves the
+ * assignment alone. `record` (when given) says which of the two took it. */
+static void assign_named_by(ScrDyn *object, const char *name, ScrDyn *value, bool *record) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  bool assigned = object->kind == SCR_DYN_OBJ && scr_dyn_key_set_record(object, key, value);
+  if (!assigned) {
+    assert(!scr_exc_pending());
+    scr_dyn_key_set(object, key, value);
+  }
+  if (record) *record = assigned;
+  scr_str_release(key);
+}
+
+static void assign_named(ScrDyn *object, const char *name, ScrDyn *value) {
+  assign_named_by(object, name, value, NULL);
+}
+
+static double member_number(const ScrDyn *object, const char *name) {
+  const ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
+  assert(value && value->kind == SCR_DYN_NUM);
+  return value->v.num;
+}
+
+/* A by-name write site's assignment (scr_dyn_key_set_record, else
+ * scr_dyn_key_set) on plain records: members appended along a layout's most
+ * recent transition and along another one, members replaced in place, and
+ * the receivers and names that keep the general assignment. */
+static void named_record_assignment(void) {
+  static const char *const names[] = {"id",    "type",  "title", "body",  "href",  "count",
+                                      "items", "owner", "state", "flags", "extra", "longer-than-eight"};
+  enum { NAMES = 12, RECORDS = 64 };
+  ScrDyn *records[RECORDS];
+  ScrDyn *shared = scr_dyn_new_obj();
+  for (int r = 0; r < RECORDS; r++) {
+    records[r] = scr_dyn_new_obj();
+    for (int k = 0; k < NAMES; k++) {
+      /* Odd records leave one name out: a second transition from the
+       * prefix the two shapes share. */
+      if ((r & 1) && k == 2) continue;
+      ScrDyn *value = k == 6 ? scr_dyn_retain(shared) : scr_dyn_new_num(r * 100 + k);
+      assign_named(records[r], names[k], value);
+      scr_dyn_release(value);
+    }
+  }
+  assert(!scr_exc_pending());
+  assert(shared->rc == 1 + RECORDS);
+  for (int r = 0; r < RECORDS; r++) {
+    size_t at = 0;
+    for (int k = 0; k < NAMES; k++) {
+      if ((r & 1) && k == 2) continue;
+      size_t length;
+      const char *key = scr_dyn_obj_key_at(records[r], at++, &length);
+      assert(length == strlen(names[k]) && memcmp(key, names[k], length) == 0);
+      if (k == 6) assert(scr_dyn_obj_get(records[r], names[k], length) == shared);
+      else assert(member_number(records[r], names[k]) == r * 100 + k);
+    }
+    assert(records[r]->v.obj.len == at);
+  }
+  /* Records of one shape share one layout. */
+  assert(records[0]->v.obj.layout && records[0]->v.obj.layout == records[2]->v.obj.layout);
+  assert(records[1]->v.obj.layout == records[3]->v.obj.layout);
+  assert(records[0]->v.obj.layout != records[1]->v.obj.layout);
+
+  /* A member the record holds is replaced where it is: the old value is
+   * released, the layout and the other members stay. */
+  const ScrLayout *layout = records[0]->v.obj.layout;
+  for (int k = NAMES - 1; k >= 0; k--) {
+    ScrDyn *value = scr_dyn_new_num(-k);
+    assign_named(records[0], names[k], value);
+    scr_dyn_release(value);
+  }
+  assert(shared->rc == RECORDS && records[0]->v.obj.layout == layout);
+  assert(records[0]->v.obj.len == NAMES);
+  for (int k = 0; k < NAMES; k++) assert(member_number(records[0], names[k]) == -k);
+  /* A record written into itself. */
+  assign_named(records[0], "id", records[0]);
+  assert(scr_dyn_obj_get(records[0], "id", 2) == records[0]);
+  ScrDyn *zero = scr_dyn_new_num(0);
+  bool record = false;
+  assign_named_by(records[0], "id", zero, &record);
+  assert(record);
+
+  /* A record that takes no new members refuses one and replaces an old
+   * one, both in the general assignment. */
+  scr_dyn_release(scr_dyn_prevent_extensions(records[1]));
+  assign_named_by(records[1], "added", zero, &record);
+  assert(!record);
+  assert(scr_exc_pending());
+  scr_exc_clear();
+  assert(records[1]->v.obj.len == NAMES - 1 && !scr_dyn_obj_get(records[1], "added", 5));
+  assign_named(records[1], "id", zero);
+  assert(!scr_exc_pending() && member_number(records[1], "id") == 0);
+
+  /* A record with a prototype object gets its own member; the prototype
+   * keeps its value. */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  ScrDyn *seven = scr_dyn_new_num(7);
+  assign_named(prototype, "inherited", seven);
+  scr_dyn_release(scr_dyn_set_prototype(records[3], prototype));
+  assign_named_by(records[3], "inherited", zero, &record);
+  assert(!record);
+  assign_named(records[3], "added", zero);
+  assert(!scr_exc_pending());
+  assert(member_number(records[3], "inherited") == 0 && member_number(prototype, "inherited") == 7);
+  assert(records[3]->v.obj.len == NAMES + 1);
+
+  /* The names an Error's view syncs are ordinary members of a record. */
+  static const char *const synced[] = {"name", "message", "stack", "cause", "code"};
+  for (int k = 0; k < 5; k++) assign_named(records[5], synced[k], seven);
+  for (int k = 0; k < 5; k++) assert(member_number(records[5], synced[k]) == 7);
+  assert(records[5]->v.obj.len == NAMES - 1 + 5 && !scr_exc_pending());
+
+  scr_dyn_release(seven);
+  scr_dyn_release(zero);
+  scr_dyn_release(prototype);
+  for (int r = 0; r < RECORDS; r++) scr_dyn_release(records[r]);
+  assert(shared->rc == 1);
+  scr_dyn_release(shared);
+#ifdef SCR_RC_AUDIT
+  scr_layout_reset_idle();
+#endif
+}
+
 /* A stand-in for the stream unit (ScrStreamRefHooks): `ready` is a data
  * property of the view, `write` a member of its prototype, `native` a name
  * only the view can answer. It counts the views built and the questions
@@ -1590,6 +1714,7 @@ int main(void) {
   scr_init();
   checked_storage();
   shared_property_keys();
+  named_record_assignment();
   checked_leaf_cycles();
   checked_number_storage();
   buffered_leaf_release();

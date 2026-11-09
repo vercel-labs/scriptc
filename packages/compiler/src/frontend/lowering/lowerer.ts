@@ -264,6 +264,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import type { Defines } from "../defines.js";
+import { programImportsNodeApi } from "../node-api-import.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -4677,8 +4678,8 @@ export class Lowerer {
    * (memberCallReceivers), computed on first use. */
   memberReceivers: MemberCallReceivers | undefined = undefined;
   /** Whether the program imports @scriptc/node (programImportsNodeApi), so
-   * a checked-dynamic value may be a Node island value; computed on first
-   * use. */
+   * a checked-dynamic value may be a Node island value and code the build
+   * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
@@ -4796,6 +4797,10 @@ export class Lowerer {
   /** Whether the program contains the built-in undici package
    * (fetch-dispatcher.ts), found on first use. */
   undiciPackageInProgram: boolean | null = null;
+  /** Whether the program writes or deletes an environment variable through
+   * a name that is not a literal (constant-conditions.ts), found on first
+   * use. */
+  computedEnvironmentWrite: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -6009,6 +6014,9 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // Asked only where no unit is recorded: a build that reuses units leaves
+    // the conditions `--define` decides to the run (constant-conditions.ts).
+    "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -15295,6 +15303,15 @@ export class Lowerer {
   hasNodeIslands(): boolean {
     const islands = this.nodeIslands;
     return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
+  }
+
+  /** Whether code of the program can run in Node.js: the build has an
+   * island set, or a source file imports @scriptc/node. Known before any
+   * unit lowers, which usesNodeIsland is not. */
+  mayRunInNode(): boolean {
+    return (
+      this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
+    );
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when

@@ -54,8 +54,8 @@ Casts between program classes are checked too: casting an instance to a class it
 `SC6004` reports calls that pass such an instance to a function that casts it.
 
 A value typed by an interface that extends `Error` is an error object or a plain object that has the members.
-Handing it to a parameter, a binding or a return typed by an `Error` class checks that it is an error and throws a `TypeError` for the plain object, where Node.js reads the members.
-`SC6004` reports those sites too.
+Handing it to a slot typed by an `Error` class (a parameter, a binding, a return, a member or an element) checks that it is an error and throws a `TypeError` for the plain object, where Node.js reads the members.
+`SC6004` reports those sites too, except inside a generic function that is called with such a type.
 
 A Promise converted from `unknown` to a typed result validates its fulfilled value.
 A mismatch rejects with a `TypeError`.

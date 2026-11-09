@@ -606,6 +606,66 @@ console.log(total, saved.length);
   expect(callsOf(mod, "measures").every((c) => groups.calls.has(c))).toBe(true);
 });
 
+test("operations proven unable to run program code keep the call region", async () => {
+  const mod = await moduleFor(`${ITEMS}
+const shared: string[] = ["a", "b"];
+function joinsOwn(n: number): number {
+  const mine = own(n);
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) out.push("w" + i);
+  return mine.length + out.join(" ").length;
+}
+function joinsShared(n: number): number {
+  const mine = own(n);
+  return mine.length + shared.join(" ").length;
+}
+function joinsHanded(n: number, parts: string[]): number {
+  const mine = own(n);
+  return mine.length + parts.join(" ").length;
+}
+function joinsAliased(n: number): number {
+  const mine = own(n);
+  const out: string[] = [];
+  const alias = out;
+  alias.push("x");
+  return mine.length + out.join(" ").length;
+}
+function joinsCaptured(n: number): number {
+  const mine = own(n);
+  const out: string[] = [];
+  const add = (s: string): void => {
+    out.push(s);
+  };
+  add("x");
+  return mine.length + out.join(" ").length;
+}
+const tally: Record<string, number> = {};
+tally["k" + shared.length] = 1;
+let total = 0;
+for (let r = 0; r < 3; r++) {
+  total += joinsOwn(5) + joinsShared(5) + joinsHanded(5, shared) + joinsAliased(5) + joinsCaptured(5);
+  for (const [key, v] of Object.entries(tally)) total += key.length + v;
+}
+console.log(total, saved.length);
+`);
+  const groups = analyzeRegionGroups(mod);
+  // An array only this function can reach holds no foreign element, so
+  // joining it converts nothing through program code.
+  expect(groups.leakFree.has("joinsOwn")).toBe(true);
+  expect(callsOf(mod, "joinsOwn").every((c) => groups.calls.has(c))).toBe(true);
+  // A string array from anywhere else, or one with a second reference, may
+  // hold an element a dynamic view wrote: its join can run a \`toString\`.
+  for (const name of ["joinsShared", "joinsHanded", "joinsAliased", "joinsCaptured"]) {
+    expect(groups.leakFree.has(name)).toBe(false);
+    expect(callsOf(mod, name).some((c) => groups.calls.has(c))).toBe(false);
+  }
+  // \`Object.entries\` of a dictionary of numbers reads the key snapshot and
+  // the stored numbers: map lookups only.
+  const entries = mod.functions.filter((fn) => fn.name.startsWith("%obj.entries"));
+  expect(entries.length).toBe(1);
+  expect(groups.leakFree.has(entries[0]!.name)).toBe(true);
+});
+
 test("the source table names the allocation kinds", () => {
   const allocations = Object.entries(SOURCE_KINDS)
     .filter(([, how]) => how === "allocation")

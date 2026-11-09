@@ -411,6 +411,127 @@ const SPREAD_METHODS = new Set(["pushSpread", "unshiftSpread", "concatSpread"]);
  * receiver holds. */
 const COLLECTION_COPIES = new Set(["clone", "keySet", "valueSet", "toArray"]);
 
+/** What a private array may be the receiver of (privateArrays). */
+const PRIVATE_ARRAY_METHODS = new Set(["push", "length", "join"]);
+
+/** The locals of `fn` that hold an array no other code can reach: unboxed
+ * locals of the function itself (no parameter, capture or module binding),
+ * declared with an empty array literal of strings, numbers or booleans, and mentioned
+ * nowhere else in the function except as the receiver of `push`, `length`
+ * and `join`. The local is never read as a value, assigned, captured or
+ * passed on, so the array has no second reference and no dynamic view.
+ *
+ * Mentions are counted over the raw node records, whatever their shape, so
+ * that a mention this function does not know (a capture list, a new node
+ * kind) disqualifies the local instead of being missed. */
+const privateArraysOf = new WeakMap<IrFunction, ReadonlySet<string>>();
+function privateArrays(fn: IrFunction): ReadonlySet<string> {
+  const known = privateArraysOf.get(fn);
+  if (known !== undefined) return known;
+  // The function's own unboxed locals: a module binding (`%g.…`) is shared
+  // with every function, and a boxed local with the closures that capture it.
+  const own = new Set<string>();
+  for (const local of fn.locals)
+    if (local.boxed !== true && !local.id.startsWith("%")) own.add(local.id);
+  for (const param of fn.params) own.delete(param.localId);
+  for (const capture of fn.captures ?? []) own.delete(capture.localId);
+  // The mentions the rule allows, per candidate local.
+  const allowed = new Map<string, number>();
+  forEachNode(fn.body, (node) => {
+    if (node.kind === "varDecl" && own.has(node.localId)) {
+      const init = node.init;
+      if (
+        init !== null &&
+        init.kind === "arrayLit" &&
+        init.elems.length === 0 &&
+        (init.spreads === undefined || init.spreads.length === 0) &&
+        init.type.kind === "array" &&
+        quietElement(init.type.elem)
+      )
+        allowed.set(node.localId, (allowed.get(node.localId) ?? 0) + 1);
+    }
+  });
+  if (allowed.size > 0) {
+    forEachNode(fn.body, (node, parent) => {
+      if (
+        node.kind === "varRef" &&
+        allowed.has(node.localId) &&
+        parent !== undefined &&
+        parent.kind === "arrIntrinsic" &&
+        same(parent.receiver, node) &&
+        PRIVATE_ARRAY_METHODS.has(parent.method)
+      )
+        allowed.set(node.localId, allowed.get(node.localId)! + 1);
+    });
+    const mentions = new Map<string, number>();
+    const count = (value: unknown): void => {
+      if (typeof value === "string") {
+        if (allowed.has(value)) mentions.set(value, (mentions.get(value) ?? 0) + 1);
+      } else if (Array.isArray(value)) {
+        for (const item of value) count(item);
+      } else if (value !== null && typeof value === "object") {
+        for (const key in value) {
+          if (key !== "loc" && key !== "type") count((value as Record<string, unknown>)[key]);
+        }
+      }
+    };
+    count(fn.body);
+    for (const [id, n] of allowed) if (mentions.get(id) !== n) allowed.delete(id);
+  }
+  const found: ReadonlySet<string> = new Set(allowed.keys());
+  privateArraysOf.set(fn, found);
+  return found;
+}
+
+/** Element types whose `join` text the runtime writes itself. */
+function quietElement(type: IrType): boolean {
+  return type.kind === "string" || type.kind === "f64" || type.kind === "bool";
+}
+
+/** Operations outside may-throw.ts's bounded list that still cannot run
+ * code of the program, for the operand types and receivers named here.
+ * This list is the arena analysis's own: the bounded list also promises
+ * that an operation cannot block and steers the stack checks, so it is not
+ * the place to widen.
+ *
+ * - `recordOvfKeys` lowers to `scr_map_keys_js_order` (scr_map.c): it
+ *   walks the overflow map's entries and retains each key string into a
+ *   fresh `string[]`. Keys are strings; nothing is converted or called.
+ * - `recordKeyGet` of the overflow map alone with a number or boolean
+ *   result lowers to `scr_map_get_str_f64` / `scr_map_get_str_bool`
+ *   (keyedRecordReadInto in expr-records.ts): one hash lookup and a copy of
+ *   the stored scalar; a miss stores the undefined arm or NaN, or traps.
+ *   Reads of declared fields and results of other types stay unlisted:
+ *   they pass through record views and conversions not proven here.
+ * - `join` on a private array (privateArrays) of strings, numbers or
+ *   booleans with a string separator lowers to `scr_arr_join`
+ *   (scr_array.c), which copies string bytes and formats numbers and
+ *   booleans itself. Its one path into program code is the string
+ *   conversion of a foreign element (SCR_ARR_FOREIGN), and such an element
+ *   is only ever stored by `scr_arr_set_foreign`, through a dynamic view of
+ *   the array or a stream bridge. A private array has neither: its only
+ *   reference is the local, and the local is only a receiver of `push`
+ *   (typed elements), `length` and `join`. A `string[]` that came from
+ *   anywhere else may hold a foreign element, so `join` on it stays
+ *   unlisted. */
+function quietOperation(node: Node, fn: IrFunction | null): boolean {
+  if (node.kind === "recordOvfKeys") return true;
+  if (node.kind === "recordKeyGet")
+    return node.overflowOnly === true && (node.type.kind === "f64" || node.type.kind === "bool");
+  if (node.kind === "arrIntrinsic" && node.method === "join") {
+    const receiver = node.receiver;
+    return (
+      fn !== null &&
+      receiver.kind === "varRef" &&
+      receiver.type.kind === "array" &&
+      quietElement(receiver.type.elem) &&
+      node.args.every((a) => a.type.kind === "string") &&
+      privateArrays(fn).has(receiver.localId)
+    );
+  }
+  return false;
+}
+
 /** Array intrinsics that call their function-typed arguments natively. */
 const CALLBACK_INTRINSICS = new Set(["sortDense", "sortValues"]);
 const callbackArg = (child: Node, parent: Node | undefined): boolean =>
@@ -954,7 +1075,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     // `toJSON` or a `toString` the runtime calls run with this function's
     // arena as the allocation target, like a generator's body, and what
     // they keep would be dropped with it.
-    return boundedNode(node);
+    return boundedNode(node) || quietOperation(node, current);
   };
   /** The values `e` can produce, through casts and conditionals. */
   const leaves = (e: Node, out: Node[] = []): Node[] => {

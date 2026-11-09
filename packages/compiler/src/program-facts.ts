@@ -682,6 +682,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a split require binding's own file has to spell `require`",
   ),
   scan(
+    "frontend/lowering/class-dynamic-dispatch.ts#ClassDynamicDispatch",
+    2,
+    "closed-world",
+    "whether the program can delete an error's own `stack` (a delete of a member named `stack` or of a computed key, or a use of deleteProperty): asked only for an Error subclass that declares a `stack` accessor, and only that class's `stack` read by name changes",
+  ),
+  scan(
     "frontend/lowering/construction-reads.ts#classHierarchyOf",
     1,
     "prefilter",

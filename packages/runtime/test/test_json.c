@@ -814,7 +814,7 @@ static ScrDyn *no_view(void *value) {
 }
 
 /* `value instanceof C` for a class of the program walks the value's
- * prototype chain with scr_dyn_get_prototype_for_identity. The question has
+ * prototype chain with scr_dyn_class_test_prototype. The question has
  * an answer for every value, so the read ends the walk with null where the
  * runtime models no chain a program class could be on, and never throws. */
 static void test_class_test_walk(void) {
@@ -826,7 +826,7 @@ static void test_class_test_walk(void) {
   ScrDyn *generator = scr_dyn_new_typed_ref(source, view_retain, view_release, "generator<f64>", 14, no_view, NULL);
   ScrDyn *ended[] = {instance, generator, scr_dyn_new_num(1), scr_dyn_new_str(text), scr_dyn_new_bool(true)};
   for (size_t i = 0; i < sizeof ended / sizeof *ended; i++) {
-    ScrDyn *prototype = scr_dyn_get_prototype_for_identity(ended[i]);
+    ScrDyn *prototype = scr_dyn_class_test_prototype(ended[i]);
     check(prototype && prototype->kind == SCR_DYN_NULL && !scr_exc_pending(),
           "a value without a modeled prototype chain ends a class test's walk");
     if (scr_exc_pending()) scr_exc_clear();
@@ -840,11 +840,11 @@ static void test_class_test_walk(void) {
    * Object.prototype, then null. */
   ScrDyn *parent = scr_dyn_new_obj();
   ScrDyn *child = scr_dyn_obj_create(parent);
-  ScrDyn *first = scr_dyn_get_prototype_for_identity(child);
+  ScrDyn *first = scr_dyn_class_test_prototype(child);
   check(first == parent && !scr_exc_pending(), "a class test's walk follows an object's own prototype");
-  ScrDyn *second = scr_dyn_get_prototype_for_identity(first);
+  ScrDyn *second = scr_dyn_class_test_prototype(first);
   check(second && second->kind == SCR_DYN_OBJ && second != parent, "the walk reaches Object.prototype");
-  ScrDyn *third = scr_dyn_get_prototype_for_identity(second);
+  ScrDyn *third = scr_dyn_class_test_prototype(second);
   check(third && third->kind == SCR_DYN_NULL && !scr_exc_pending(), "the walk ends after Object.prototype");
   scr_dyn_release(third);
   scr_dyn_release(first);

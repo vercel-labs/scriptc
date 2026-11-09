@@ -495,7 +495,7 @@ export function classInstanceOf(
                 localId: "candidate",
                 value: {
                   kind: "libCall",
-                  fn: "dyn.getPrototypeForIdentity",
+                  fn: "dyn.classTestPrototype",
                   args: [candidate],
                   type: DYN,
                   loc,
@@ -1722,7 +1722,7 @@ export class ClassDynamicDispatch {
   /** The prototype reads of identity walks, by libCall, and the classes
    * each one answers for boxed instances. */
   private readonly prototypeIdentityHelpers = new Map<
-    "dyn.getPrototype" | "dyn.getPrototypeForIdentity",
+    "dyn.getPrototype" | "dyn.classTestPrototype",
     { fn: IrFunction; classes: Set<string> }
   >();
   /** `value instanceof Error` through Error.prototype: boxed instances of
@@ -2676,7 +2676,7 @@ export class ClassDynamicDispatch {
         }
         if (
           expr.kind === "libCall" &&
-          (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.getPrototypeForIdentity") &&
+          (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.classTestPrototype") &&
           expr.args[0]?.kind !== "dynObjLit"
         ) {
           if (expr.prototypeIdentityOnly) {

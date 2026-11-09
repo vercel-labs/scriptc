@@ -232,6 +232,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Reflect.getPrototypeOf's primitive-target check; a unit of its own so
   // scr_json.c keeps its layout for every program that never reflects.
   ["scr_dyn_reflect_proto.c", "reflectProtoTarget"],
+  // The prototype read of a class test's walk (`value instanceof C` of an
+  // untyped value); a unit of its own so scr_json.c keeps its layout for
+  // every program without such a test.
+  ["scr_dyn_class_test.c", "classTestPrototype"],
   // `delete` of a key a record's type does not declare, removed from the
   // record's kept source; a unit of its own so scr_json.c keeps its layout
   // for every other program.

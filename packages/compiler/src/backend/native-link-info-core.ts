@@ -175,6 +175,9 @@ export interface NativeLinkFeatures {
   /** Reflect.getPrototypeOf's primitive-target check compiles
    * scr_dyn_reflect_proto.c; absent (false) otherwise. */
   reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk (`value instanceof C` of an
+   * untyped value) compiles scr_dyn_class_test.c; absent (false) otherwise. */
+  classTestPrototype?: boolean;
   /** `delete` of a key a record's type does not declare:
    * scr_record_source_delete.c. Absent (false) for programs without one. */
   recordSourceDelete?: boolean;

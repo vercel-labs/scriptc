@@ -126,6 +126,7 @@ export interface EarlyExecutableNativeFeatures {
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   reflectProtoTarget?: boolean;
+  classTestPrototype?: boolean;
   recordSourceDelete?: boolean;
   recordViewFrozen?: boolean;
   genBind?: boolean;

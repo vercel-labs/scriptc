@@ -1073,6 +1073,13 @@ function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
  * event names. */
 const UNWIND_RETRY_NAMES = 20;
 
+/** The most statement values a throw site releases in its own block. A site
+ * that holds more branches to shared release blocks (emitUnwind), so the
+ * releases of one statement's throw sites grow with the values it holds
+ * rather than with their square. Sites at or under the limit are emitted as
+ * they always were. */
+export const UNWIND_CHAIN_MIN_VALUES = 32;
+
 /** SCRIPTC_EMIT_UNWIND_FAIL=n, for tests of the retry: the first emission
  * ends as if it had found every n-th unwinding-ABI function, in the
  * module's order, breaking the ABI. */
@@ -2108,11 +2115,18 @@ export class LlEmitter {
   scopes: LlScopeEntry[][] = [];
   /** Scope slots dominate every throw site. Share their exceptional cleanup
    * for identical live bindings and handlers; statement temporaries stay at
-   * their own throw sites because their SSA values are path-dependent. */
+   * their own throw sites because their SSA values are path-dependent,
+   * unless a site holds many of them (unwindReleases). */
   readonly unwindCleanups = new Map<
     string,
     { label: string; entries: LlScopeEntry[]; terminator: string }
   >();
+  /** The shared release blocks of throw sites that hold more than
+   * UNWIND_CHAIN_MIN_VALUES statement values (emitUnwind), in creation
+   * order: each releases one value and branches to `next`. */
+  readonly unwindReleases: { label: string; value: LlValue; next: string }[] = [];
+  /** The block of unwindReleases for a value, by the label it continues to. */
+  readonly unwindReleaseLabels = new Map<LlValue, Map<string, string>>();
   /** Enclosing break/continue targets. `kind` separates loops from
    * switches and labeled blocks: an unlabeled break binds to the innermost
    * NON-BLOCK entry (loop or switch — blocks only enter the stack when
@@ -4774,7 +4788,17 @@ export class LlEmitter {
     const target = this.tryStack[this.tryStack.length - 1];
     const frameDepth = target?.frameDepth ?? 0;
     const scopeDepth = target?.scopeDepth ?? 0;
-    for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseTemps(this.frames[i]!);
+    // A throw site releases the statement values alive at it. One statement
+    // with n fallible steps that each leave a value alive (the members of a
+    // literal, the operands of a long concatenation) has n throw sites that
+    // release 1, 2, …, n values: written out at each site, that is n²/2
+    // release calls. A site that holds more than UNWIND_CHAIN_MIN_VALUES
+    // values branches to shared blocks instead (unwindReleaseChain).
+    let held = 0;
+    for (let i = this.frames.length - 1; i >= frameDepth; i--) held += this.frames[i]!.length;
+    const chained = held > UNWIND_CHAIN_MIN_VALUES;
+    if (!chained)
+      for (let i = this.frames.length - 1; i >= frameDepth; i--) this.releaseTemps(this.frames[i]!);
     let terminator: string;
     if (target) {
       target.used = true;
@@ -4813,7 +4837,7 @@ export class LlEmitter {
         key += `\0${entry.slot}\0${entry.boxed ? "@scr_box_release" : releaseSym(this.shapeHost, entry.type)}`;
       }
     }
-    if (entries.length === 0) {
+    if (entries.length === 0 && !chained) {
       if (
         passThrough !== undefined &&
         !target &&
@@ -4832,7 +4856,44 @@ export class LlEmitter {
       cleanup = { label: this.B.newLabel("exc.cleanup"), entries, terminator };
       this.unwindCleanups.set(key, cleanup);
     }
-    this.B.br(cleanup.label);
+    // The shared blocks end in the cleanup, which is then the scope's
+    // releases (none for a function without bindings) and the terminator.
+    this.B.br(chained ? this.unwindReleaseChain(frameDepth, cleanup.label) : cleanup.label);
+  }
+
+  /** The label of the shared blocks that release the statement frames from
+   * the innermost down to `frameDepth` and then branch to `tail`. Each block
+   * releases one value and branches to the block for the values before it,
+   * so a throw site that holds one more value than an earlier site adds one
+   * block. Within a frame the newest value is released first and the arena
+   * lists last; the frames go innermost first, as in releaseTemps. A block
+   * is shared by the sites whose remaining releases are the same values, so
+   * every value it names is alive at each site that reaches it. */
+  private unwindReleaseChain(frameDepth: number, tail: string): string {
+    let next = tail;
+    for (let i = frameDepth; i < this.frames.length; i++) {
+      const frame = this.frames[i]!;
+      for (let j = frame.length - 1; j >= 0; j--)
+        if (frame[j]!.arena !== undefined) next = this.unwindReleaseBlock(frame[j]!, next);
+      for (const value of frame)
+        if (value.arena === undefined) next = this.unwindReleaseBlock(value, next);
+    }
+    return next;
+  }
+
+  private unwindReleaseBlock(value: LlValue, next: string): string {
+    let labels = this.unwindReleaseLabels.get(value);
+    if (labels === undefined) {
+      labels = new Map();
+      this.unwindReleaseLabels.set(value, labels);
+    }
+    let label = labels.get(next);
+    if (label === undefined) {
+      label = this.B.newLabel("exc.release");
+      labels.set(next, label);
+      this.unwindReleases.push({ label, value, next });
+    }
+    return label;
   }
 
   /** Loads the running thread's exact pending word (ELF worker

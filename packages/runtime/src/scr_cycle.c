@@ -800,26 +800,42 @@ static size_t scr_cyc_buffered(void) {
  * trigger or would need the buffer to grow. While a pass runs, every
  * release takes the call. Recomputed wherever the buffers, the nursery
  * buffer's capacity or the trigger change in bulk; the release and death
- * paths adjust it by one (scr_cyc_window_shrink). */
+ * paths adjust it by one (scr_cyc_window_shrink).
+ *
+ * The window is the smaller of two numbers: what the trigger leaves (the
+ * formula) and the nursery buffer's capacity. scr_cyc_window_slack is how
+ * far the formula lies above the window, which is above zero only where the
+ * capacity is the smaller one. */
+#if SCR_CYC_INLINE_BUFFERING
+static size_t scr_cyc_window_slack = 0;
+#endif
 static inline void scr_cyc_window_update(void) {
 #if SCR_CYC_INLINE_BUFFERING
-  size_t window = 0;
+  size_t window = 0, slack = 0;
   if (!scr_collecting) {
     size_t older = scr_roots[SCR_CYC_MATURE].n + scr_roots[SCR_CYC_OLD].n;
     if (scr_cyc_trigger > older + 1) window = scr_cyc_trigger - older - 1;
-    if (window > scr_roots[SCR_CYC_NURSERY].cap) window = scr_roots[SCR_CYC_NURSERY].cap;
+    if (window > scr_roots[SCR_CYC_NURSERY].cap) {
+      slack = window - scr_roots[SCR_CYC_NURSERY].cap;
+      window = scr_roots[SCR_CYC_NURSERY].cap;
+    }
   }
   scr_cyc_buffers.window = window;
+  scr_cyc_window_slack = slack;
 #endif
 }
 
 /* One step of the window's formula going down by one: an older candidate
- * was buffered, or a nursery death lowered the trigger. A window below the
- * formula only sends more releases through the call, so the clamp to the
- * capacity can stay where it is. */
+ * was buffered, or a nursery death lowered the trigger. The step comes out
+ * of the slack first: while the capacity is what bounds the window, a
+ * candidate that is buffered and then dies leaves the window where it was,
+ * so a program whose candidates die young keeps appending inline until the
+ * trigger itself is reached. A window below the formula would only send
+ * more releases through the call. */
 static inline void scr_cyc_window_shrink(void) {
 #if SCR_CYC_INLINE_BUFFERING
-  if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
+  if (scr_cyc_window_slack) scr_cyc_window_slack--;
+  else if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
 #endif
 }
 

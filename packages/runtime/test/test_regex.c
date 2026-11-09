@@ -515,6 +515,65 @@ static void test_string_replace(void) {
   scr_str_release(plain);
 }
 
+static void test_string_replace_one_char(void) {
+  /* A one-character search value: one scan, the subject itself when it has
+   * no match, and otherwise a result allocated once at its exact size. */
+  ScrStr *s = S("..a..b.");
+  ScrStr *dot = S(".");
+  ScrStr *x = S("x");
+  ScrStr *empty = S("");
+  ScrStr *plain = S("--");
+  ScrStr *dollars = S("[$&$$$1]");
+  ScrStr *same = scr_str_replace_literal(s, x, plain, true);
+  check(same == s, "one-char replaceAll: a subject without the character is returned as it is");
+  scr_str_release(same);
+  same = scr_str_replace_literal(s, x, plain, false);
+  check(same == s, "one-char replace: a subject without the character is returned as it is");
+  scr_str_release(same);
+  same = scr_str_replace_literal(empty, x, plain, true);
+  check(same == empty, "one-char replaceAll: the empty subject");
+  scr_str_release(same);
+  same = scr_str_replace_literal(dot, plain, x, true);
+  check(same == dot, "replaceAll: a search value longer than the subject");
+  scr_str_release(same);
+  expect_str(scr_str_replace_literal(s, dot, plain, true), "----a----b--",
+             "one-char replaceAll: adjacent matches at both ends");
+  expect_str(scr_str_replace_literal(s, dot, plain, false), "--.a..b.", "one-char replace: the first match");
+  expect_str(scr_str_replace_literal(s, dot, x, true), "xxaxxbx", "one-char replaceAll: same length");
+  expect_str(scr_str_replace_literal(s, dot, empty, true), "ab", "one-char replaceAll: removal");
+  expect_str(scr_str_replace_literal(s, dot, dollars, true), "[.$$1][.$$1]a[.$$1][.$$1]b[.$$1]",
+             "one-char replaceAll: $& and $$ expand, $1 stays");
+  expect_str(scr_str_replace_literal(dot, dot, plain, true), "--", "one-char replaceAll: the whole subject");
+  /* Non-ASCII text around an ASCII search value, and a non-ASCII one. */
+  ScrStr *wide = S("\xC3\xA9" "." "\xC3\xBC" "." "\xF0\x9F\x98\x80");
+  ScrStr *eacute = S("\xC3\xA9");
+  expect_str(scr_str_replace_literal(wide, dot, plain, true),
+             "\xC3\xA9" "--" "\xC3\xBC" "--" "\xF0\x9F\x98\x80", "one-char replaceAll: non-ASCII subject");
+  expect_str(scr_str_replace_literal(wide, eacute, plain, true), "--." "\xC3\xBC" "." "\xF0\x9F\x98\x80",
+             "replaceAll: non-ASCII search value");
+  expect_str(scr_str_replace_literal(wide, dot, eacute, true),
+             "\xC3\xA9" "\xC3\xA9" "\xC3\xBC" "\xC3\xA9" "\xF0\x9F\x98\x80",
+             "one-char replaceAll: non-ASCII replacement");
+  /* Matches do not overlap: the scan resumes after each one. */
+  ScrStr *run = S("aaa");
+  ScrStr *pair = S("aa");
+  ScrStr *a = S("a");
+  expect_str(scr_str_replace_literal(run, pair, x, true), "xa", "replaceAll: matches do not overlap");
+  expect_str(scr_str_replace_literal(run, a, pair, true), "aaaaaa",
+             "one-char replaceAll: the replacement is not scanned again");
+  scr_str_release(s);
+  scr_str_release(dot);
+  scr_str_release(x);
+  scr_str_release(empty);
+  scr_str_release(plain);
+  scr_str_release(dollars);
+  scr_str_release(wide);
+  scr_str_release(eacute);
+  scr_str_release(run);
+  scr_str_release(pair);
+  scr_str_release(a);
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -534,6 +593,7 @@ int main(int argc, char **argv) {
   test_capture_capacity();
   test_exec_groups();
   test_string_replace();
+  test_string_replace_one_char();
   test_build_time_matcher();
   test_replace_matcher();
   test_exec_spans();

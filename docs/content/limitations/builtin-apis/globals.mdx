@@ -8,6 +8,7 @@
   `for (key in globalThis)` visits Node's enumerable globals in Node's order, then the program's own global properties.
   `key in globalThis` and `Reflect.has(globalThis, key)` answer for the names of Node's global object, the names it inherits from `Object.prototype`, and the program's own global properties.
   A global object that untyped code received answers `false` to `in` for every name.
+  In JavaScript, a name no declaration binds reads the program's own global property of that name, as in Node: after `globalThis.X = class X {}` or `global.X = function () {}`, in the same module or another, `X`, `new X()`, `X()` and `typeof X` use that value; with no such property, a read throws `ReferenceError: X is not defined` and `typeof X` is `"undefined"`.
   `navigator` answers Node's `hardwareConcurrency`, `language`, `languages`, `platform`, and `userAgent`, with `language` derived from `LC_ALL`, `LC_MESSAGES`, or `LANG` as Node does.
   `navigator.locks` raises `SC2020`, as does `navigator.language` for a locale outside the `language_TERRITORY.codeset@modifier` form, or one whose language or territory needs ICU's tables (a three-letter territory, for example).
   `Temporal` is not defined, as in Node.js 24: `typeof Temporal` is `"undefined"`, `globalThis.Temporal` is `undefined`, and any other use throws `ReferenceError: Temporal is not defined`.

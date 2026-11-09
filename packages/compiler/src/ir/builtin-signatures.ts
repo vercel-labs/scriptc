@@ -4552,6 +4552,14 @@ function buildLibFnSignatures() {
     "dyn.installBuiltinStatics": { argTypes: [DYN], result: VOID },
     /** The keys `for (key in globalThis)` visits, as a fresh object. */
     "global.forInObject": { argTypes: [], result: DYN },
+    /** A JavaScript read of a name no declaration binds (scr_node_builtin.c):
+     * the global object's own property of that name, or Node's
+     * ReferenceError "<name> is not defined" when it has none. bindingValue
+     * is the same property for `typeof`, undefined when absent; bindingHas
+     * tests that the property exists. */
+    "global.bindingRead": { argTypes: [STRING], result: DYN },
+    "global.bindingValue": { argTypes: [STRING], result: DYN },
+    "global.bindingHas": { argTypes: [STRING], result: BOOL },
     /** Node's navigator global (scr_node_builtin.c). */
     "navigator.object": { argTypes: [], result: DYN },
     "navigator.language": { argTypes: [], result: STRING },

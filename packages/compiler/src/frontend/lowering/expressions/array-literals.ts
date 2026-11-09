@@ -464,6 +464,22 @@ export function lowerArrayLiteral(
     )
   )
     mapped = DYN;
+  // An element the checker types as only `undefined` or `null` while the
+  // binding it reads holds another value (NarrowingStability
+  // restoredNothingRead: `let c = void 0; c = 4; [c]`): the checker's element
+  // type cannot hold the value, so the literal is checked-dynamic.
+  if (
+    !expected &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.nodes.some(
+      (element) =>
+        !ts.isSpreadElement(element) &&
+        !ts.isOmittedExpression(element) &&
+        lowerer.narrowing.restoredNothingRead(element) !== null,
+    )
+  )
+    mapped = DYN;
   // An EMPTY literal under a CONST ASSERTION whose type queries panicked
   // (tsgo's readonly-[] TupleType conversion) uses a unit-element array,
   // mapType's own `[] as const` rule.

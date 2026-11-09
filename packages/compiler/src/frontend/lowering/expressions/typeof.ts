@@ -296,9 +296,35 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   if (ts.isIdentifier(tested) && !isUnresolvedCjsExports(lowerer, tested)) {
     const sym = lowerer.checker.getSymbolAtLocation(tested);
     if (!sym) {
-      // Undeclared, unless Node's global object has or inherits the name.
-      const value = undeclaredGlobalTypeof(tested.text) ?? "undefined";
-      return { kind: "strLit", value, type: STRING, loc };
+      // A name no declaration binds: Node's answer for a name its global
+      // object has or inherits (`toString`), else "undefined". In a `.js`
+      // source the global object's own property of that name, when the
+      // program created one, answers first.
+      const inherited = undeclaredGlobalTypeof(tested.text);
+      const fallback: IrExpr = {
+        kind: "strLit",
+        value: inherited ?? "undefined",
+        type: STRING,
+        loc,
+      };
+      if (!isJsSourceFile(ts.getSourceFileOfNode(tested))) return fallback;
+      const name: IrExpr = { kind: "strLit", value: tested.text, type: STRING, loc };
+      const own: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [{ kind: "libCall", fn: "global.bindingValue", args: [name], type: DYN, loc }],
+        type: STRING,
+        loc,
+      };
+      if (inherited === null) return own;
+      return {
+        kind: "ternary",
+        cond: { kind: "libCall", fn: "global.bindingHas", args: [name], type: BOOL, loc },
+        then: own,
+        else_: fallback,
+        type: STRING,
+        loc,
+      };
     }
     // A declared global Node 24 does not define (the temporal global,
     // localStorage): typeof answers "undefined" without reading it, like

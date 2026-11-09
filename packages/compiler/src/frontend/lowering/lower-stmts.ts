@@ -1711,6 +1711,14 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (ts.isVariableDeclaration(nameNode.parent) && nameNode.parent.name === nameNode) {
     type = staticImportNamespaceType(lowerer, nameNode.parent.initializer) ?? type;
   }
+  // `var c = void 0` / `var v: undefined`: the unit-only union, as for a
+  // `let` binding of the same type (lowerVarDecl). Its undefined arm is the
+  // hoisted value and the initializer's value.
+  if (
+    type?.kind === "void" &&
+    isUnitOnlyTsType(lowerer.typeOf(nameNode), lowerer.typeParamResolver)
+  )
+    type = unitOnlyUnion(lowerer.unions);
   if (!type || type.kind === "void") return null;
   // A JavaScript `var` holds whatever its writes store, as a `let` does:
   // the checker types it by its initializer and checks no later write

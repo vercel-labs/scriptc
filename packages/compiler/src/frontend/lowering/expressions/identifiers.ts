@@ -1,7 +1,11 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
 import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototype.js";
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
-import { hostGlobalCallTarget, hostGlobalNameOfIdentifier } from "../host-globals.js";
+import {
+  NODE_GLOBALS_WITHOUT_NATIVE,
+  hostGlobalCallTarget,
+  hostGlobalNameOfIdentifier,
+} from "../host-globals.js";
 import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
@@ -1366,10 +1370,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
-  if (
-    undeclared &&
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || lowerer.projectLibraryNameAt(expr))
-  ) {
+  // In a `.js` source the read is the global object's own property of that
+  // name when the program created one (`globalThis.X = class X {}`, in this
+  // module or another), as in Node, and the ReferenceError otherwise.
+  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
+  if (undeclared && lowerer.projectLibraryNameAt(expr)) {
     return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here

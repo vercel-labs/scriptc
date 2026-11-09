@@ -317,8 +317,10 @@ static void scr_rc_destroy_defer(void *obj, void (*destroy)(void *)) {
   scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
 }
 
-/* Runs the queued disposals once the outermost one has returned. */
-static void scr_rc_destroy_drain(void) {
+/* Runs the queued disposals once the outermost one has returned. The queue's
+ * storage exists exactly while a disposal is queued (the first deferral
+ * allocates it, the drain frees it), so the callers test that one pointer. */
+static SCR_COLD void scr_rc_destroy_drain(void) {
   while (scr_destroy_count) {
     ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
     scr_destroy_depth = 1;
@@ -342,7 +344,7 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
   scr_destroy_depth++;
   destroy(obj);
   scr_destroy_depth--;
-  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  if (scr_destroy_depth == 0 && scr_destroy_pending) scr_rc_destroy_drain();
 }
 
 void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
@@ -354,7 +356,7 @@ void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
   scr_destroy_depth++;
   tail = destroy_seg(obj, tail);
   scr_destroy_depth--;
-  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  if (scr_destroy_depth == 0 && scr_destroy_pending) scr_rc_destroy_drain();
   return tail;
 }
 

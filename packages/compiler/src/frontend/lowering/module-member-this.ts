@@ -83,25 +83,54 @@ function namespaceMemberSymbol(lowerer: Lowerer, access: ts.Node): ts.Symbol | u
 }
 
 /** The argument a call of a standard function returns:
- * `Object.defineProperty(f, …)` and the other functions of `Object` that
- * return their first argument. */
+ * `Object.defineProperty(f, "length", …)` and the other functions of
+ * `Object` that return their first argument. A call that may give the
+ * function its own `apply` or `call` returns none: `f.call(this, …)` then
+ * runs that property, which the proof does not read. So the properties a
+ * call defines must be named in its text, and `Object.setPrototypeOf`,
+ * which changes where both are found, is not followed; nor is a property
+ * named `__proto__`, which `Object.assign` sets with the same effect. */
 function returnedArgument(lowerer: Lowerer, call: ts.CallExpression): ts.Expression | null {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
   const member = lowerer.stdlibGlobalMember(callee, "Object");
-  if (member === null || !returnsFirstArgument.has(member)) return null;
-  const first = call.arguments.nodes[0];
-  return first === undefined || ts.isSpreadElement(first) ? null : first;
+  const args = call.arguments.nodes;
+  const first = args[0];
+  if (member === null || first === undefined || ts.isSpreadElement(first)) return null;
+  switch (member) {
+    case "freeze":
+    case "preventExtensions":
+    case "seal":
+      return first;
+    case "defineProperty": {
+      const key = args[1];
+      return key !== undefined &&
+        (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+        keepsApplyAndCall(key.text)
+        ? first
+        : null;
+    }
+    case "defineProperties":
+      return args.length === 2 && definesNoApplyOrCall(args[1]) ? first : null;
+    case "assign":
+      return args.slice(1).every((source) => definesNoApplyOrCall(source)) ? first : null;
+  }
+  return null;
 }
-const returnsFirstArgument: ReadonlySet<string> = new Set([
-  "assign",
-  "defineProperties",
-  "defineProperty",
-  "freeze",
-  "preventExtensions",
-  "seal",
-  "setPrototypeOf",
-]);
+
+const keepsApplyAndCall = (key: string): boolean =>
+  key !== "apply" && key !== "call" && key !== "__proto__";
+
+/** Whether `node` is an object literal whose every property has a plain
+ * name other than `apply`, `call` and `__proto__`. */
+function definesNoApplyOrCall(node: ts.Expression | undefined): boolean {
+  if (node === undefined || !ts.isObjectLiteralExpression(node)) return false;
+  return node.properties.nodes.every((property) => {
+    if (ts.isSpreadAssignment(property)) return false;
+    const name = property.name;
+    return (ts.isIdentifier(name) || ts.isStringLiteral(name)) && keepsApplyAndCall(name.text);
+  });
+}
 
 /** Whether `fn`'s own body uses `this` only to pass it on with `.apply` or
  * `.call` to functions that ignore it (and so also when it doesn't use

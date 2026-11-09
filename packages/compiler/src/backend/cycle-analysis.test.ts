@@ -952,3 +952,66 @@ test("a hierarchy member's explanation names the member that needs the header", 
     },
   });
 });
+
+test("a weak-collection key is traced with every type that can reach it", () => {
+  const plain = module();
+  plain.records = [shape("key", [F64]), shape("holder", [ref("key")]), shape("other", [F64])];
+  checkExact(plain, []);
+  const keyed = structuredClone(plain);
+  keyed.weakKeys = ["record:key"];
+  checkExact(keyed, ["record:holder", "record:key"]);
+  expect(explainCycle(keyed, "record:holder")).toEqual({
+    kind: "intrinsic",
+    steps: [{ from: "record:holder", label: { kind: "field", field: "field0", mutable: false } }],
+    owner: "record:key",
+    field: "",
+    holds: "weakKey",
+  });
+  // A unit the module does not have names nothing.
+  const stale = structuredClone(plain);
+  stale.weakKeys = ["record:gone", "object:Gone"];
+  checkExact(stale, []);
+});
+
+test("a weak key of a class type can be an instance of any class in its subtree", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Root", loc, fields: [] },
+    { name: "Base", loc, base: "Root", fields: [] },
+    { name: "Derived", loc, base: "Base", fields: [] },
+    { name: "Apart", loc, fields: [] },
+  ];
+  mod.records = [
+    shape("holdsDerived", [{ kind: "object", className: "Derived" }]),
+    shape("holdsApart", [{ kind: "object", className: "Apart" }]),
+  ];
+  mod.weakKeys = ["object:Base"];
+  // Root shares the hierarchy's layout; a Derived can be the key.
+  checkExact(mod, ["object:Root", "object:Base", "object:Derived", "record:holdsDerived"]);
+});
+
+test("a checked weak key can be any value the program converts to a checked value", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Boxed", loc, fields: [] },
+    { name: "Kept", loc, fields: [] },
+  ];
+  mod.records = [
+    shape("converted", [arrayOf({ kind: "union", unionId: "arm" })]),
+    shape("inner", [F64]),
+    shape("typedOnly", [{ kind: "object", className: "Kept" }]),
+  ];
+  mod.unions = [{ id: "arm", arms: [ref("inner"), { kind: "object", className: "Boxed" }] }];
+  const convert: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "dynFrom", value: value(ref("converted")), type: DYN, loc },
+    loc,
+  };
+  mod.functions[0]!.body.push(convert);
+  checkExact(mod, []);
+  const keyed = structuredClone(mod);
+  keyed.weakKeys = ["*"];
+  // The conversion reaches the record's fields, container elements and
+  // union arms; a type no conversion names keeps its layout.
+  checkExact(keyed, ["object:Boxed", "record:converted", "record:inner"], ["arm"]);
+});

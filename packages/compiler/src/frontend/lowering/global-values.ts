@@ -16,7 +16,13 @@
  * (lower-namespaces.ts) is not among the names: the global object has no
  * such property and the read answers undefined. The lookup never answers
  * `undefined`, which the runtime would read as a request for a placeholder
- * string. */
+ * string.
+ *
+ * A module that stores the global object as a value the compiler does not
+ * follow (storesGlobalObject) installs the lookup too. The reads off such a
+ * value reach the runtime by name, so the lookup then holds the names the
+ * program reads by name off a value that can be one (storedGlobalReadNames)
+ * and not every declared global: a program pays for the builtins it names. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import {
@@ -496,8 +502,7 @@ function storedAt(value: ts.Node): boolean {
   }
   if (ts.isVariableDeclaration(parent) && parent.initializer === value)
     return !(
-      ts.isIdentifier(parent.name) &&
-      (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
+      ts.isIdentifier(parent.name) && (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
     );
   return true;
 }

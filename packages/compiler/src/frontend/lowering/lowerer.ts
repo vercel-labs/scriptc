@@ -18397,10 +18397,10 @@ export class Lowerer {
   lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
-      // An adapting promise changes identity, while the Error boundary
-      // snapshots mutable fields. Neither is a live collection reference.
+      // The Error boundary snapshots mutable fields, so its copy is no live
+      // collection reference. A promise's adapter is one: it shares the
+      // promise's identity, which the collection hashes and compares.
       const copiesReference = (type: IrType): boolean =>
-        (type.kind === "promise" && type.inner.kind !== "dyn") ||
         (type.kind === "object" &&
           (RUNTIME_ERROR_CLASSES.has(type.className) ||
             this.isSubclassOf(type.className, "%Error"))) ||
@@ -18408,7 +18408,7 @@ export class Lowerer {
           (this.unions.get(type.unionId)?.arms.some(copiesReference) ?? false));
       if (value.kind === "dynFrom" && copiesReference(value.value.type)) {
         this.noLowering(
-          "collection slot conversion requiring an Error snapshot or promise adapter",
+          "collection slot conversion requiring an Error snapshot",
           node,
           "use a collection with the original reference type; checked collection slots require identity-preserving conversions",
         );

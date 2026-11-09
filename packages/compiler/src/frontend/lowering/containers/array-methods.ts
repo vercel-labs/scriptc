@@ -2018,11 +2018,14 @@ function lowerArraySearchValues(
 
   // Preserve the existing fast path for an ordinary, non-union needle. Its
   // runtime implementation already has exact primitive/reference equality.
+  // A promise is no such element: a conversion of it is another address
+  // with the same identity, which the search helper's `===` compares.
   if (
     method !== "lastIndexOf" &&
     call.arguments.nodes.length === 1 &&
     elem.kind !== "union" &&
     elem.kind !== "bigint" &&
+    elem.kind !== "promise" &&
     typeEquals(needle.type, elem)
   ) {
     return {

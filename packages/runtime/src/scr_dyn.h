@@ -1954,6 +1954,12 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* The same write at a site whose name is known only at run time, tried
+ * first for a receiver of kind OBJ: true when the member was assigned to a
+ * plain record (layout mode, no prototype object, extensible) through its
+ * layout; false, with nothing done and nothing thrown, when the site must
+ * call scr_dyn_key_set. All three operands BORROWED. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 /* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
  * it creates or updates the own data property and never runs an inherited
  * accessor, so a `__proto__` member is an ordinary own member instead of

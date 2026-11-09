@@ -1837,8 +1837,7 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message",
-  "N.mapkey": "refused:SC2020"
+  "U.clone": "message"
  },
  "promise-pending.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -1850,8 +1849,6 @@
   "i2n/I.same@param": "wrong",
   "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "wrong",
-  "i2n/N.mapkey": "refused:SC2020",
-  "n2i2n/N.mapkey": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "i2n2i/I.same": "wrong",
@@ -1882,8 +1879,7 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message",
-  "N.mapkey": "refused:SC2020"
+  "U.clone": "message"
  },
  "promise-rejected.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -1894,8 +1890,6 @@
   "i2n/I.same@param": "wrong",
   "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "wrong",
-  "i2n/N.mapkey": "refused:SC2020",
-  "n2i2n/N.mapkey": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "i2n2i/I.same": "wrong",
@@ -1925,9 +1919,7 @@
   "T.json": "refused:SC1090",
   "T.clone": "message",
   "U.forin": "unsupported",
-  "U.clone": "message",
-  "N.mapkey": "refused:SC2020",
-  "W.result.mapkey": "refused:SC2020"
+  "U.clone": "message"
  },
  "promise-resolved.p": {
   "n2i/I.inspect": "clone=wrong",
@@ -1938,8 +1930,6 @@
   "i2n/I.same@param": "wrong",
   "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "wrong",
-  "i2n/N.mapkey": "refused:SC2020",
-  "n2i2n/N.mapkey": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "i2n2i/I.same": "wrong",
@@ -1974,9 +1964,6 @@
   "i2n/I.same@param": "wrong",
   "i2n/I.same@field": "wrong",
   "i2n/I.same@element": "wrong",
-  "i2n/N.mapkey": "refused:SC2020",
-  "n2i2n/N.is": "wrong",
-  "n2i2n/N.mapkey": "refused:SC2020",
   "n2i2n/U.forin": "unsupported",
   "n2i2n/U.clone": "message",
   "i2n2i/I.same": "wrong",

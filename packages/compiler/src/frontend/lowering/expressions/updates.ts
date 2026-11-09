@@ -272,6 +272,12 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // A DISCARDED negation of a void-typed operand (`!register();`,
+      // TS1345 admitted in a JavaScript source): the expression statement
+      // drops the boolean, so the operand evaluates once for its effects
+      // and its own lowering answers. Reached only through the admitted
+      // site (tsc-codes.ts), never by syntax.
+      if (lowerer.opinionAt(expr, 1345)) return lowerer.lowerExpr(expr.operand);
       // `!runtimeBuffer` over an alias of the Buffer global: Node always
       // defines Buffer (the condition twin is lowerCondition's).
       if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))

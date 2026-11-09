@@ -289,6 +289,32 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
   return false;
 };
 
+/** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
+ * `!function () { … }();`): the operand still evaluates once for its
+ * effects and any exception, while the value the negation would read is
+ * never consumed. A negation whose result is used — an initializer, a
+ * condition, a logical operand — keeps the diagnostic, because converting a
+ * value the checker types `void` needs a runtime value the lowering does
+ * not model. */
+const discardedVoidNegation = (node: ts.Node): boolean => {
+  // The diagnostic's span is the void-typed OPERAND (the call), so climb
+  // to the `!` that tests it, then out of any parentheses.
+  let operand: ts.Node = node;
+  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
+    operand = operand.parent;
+  const negation = operand.parent;
+  if (
+    negation === undefined ||
+    !ts.isPrefixUnaryExpression(negation) ||
+    negation.operator !== ts.SyntaxKind.ExclamationToken
+  )
+    return false;
+  let outer: ts.Node = negation;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+};
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -1082,6 +1108,23 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // 1345, a discarded negation of a void-typed operand (`!register();`):
+  // Node evaluates the operand once and throws the boolean away, and the
+  // operand's ordinary lowering does exactly that. A consumed negation
+  // keeps the triage row below, and a checked project keeps the diagnostic:
+  // it asked tsc to judge the test.
+  [
+    1345,
+    inCheckedJs(
+      at(
+        discardedVoidNegation,
+        CHECKER(
+          "a discarded negation's boolean is never consumed: Node evaluates the operand once for its effects, and the operand's ordinary lowering does the same",
+          ["tests/corpus/discarded-void-negation.mjs"],
+        ),
+      ),
+    ),
+  ],
   // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
   // Each row below is a `checker` row: at the admitted site the checker's
   // type is still a truthful bound on every runtime value, so the ordinary
@@ -1318,6 +1361,16 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
+  // The discarded `!voidCall();` sites are admitted by the 1345 opinion row;
+  // every site whose boolean is consumed needs a runtime value for a
+  // void-typed operand, which the lowering does not model.
+  [
+    1345,
+    REWRITE(
+      "a truthiness test of a void-typed expression whose boolean is used",
+      "the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model",
+    ),
+  ],
   [1359, KEEP(KEEP_GRAMMAR)],
   [1368, KEEP(KEEP_GRAMMAR)],
   [1451, KEEP(KEEP_GRAMMAR)],
@@ -1532,15 +1585,15 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [
     2629,
     REWRITE(
-      "assigning to a class name binding",
-      "Node throws a TypeError at the assignment; the class binding is read-only",
+      "assigning to a class binding",
+      "a class declaration's outer binding is mutable, so Node replaces it; only a named class expression's inner binding is immutable, where strict code throws a TypeError. The class lowering does not model either assignment",
     ),
   ],
   [
     2630,
     REWRITE(
-      "assigning to a function declaration name",
-      "Node throws a TypeError at the assignment in strict mode and modules",
+      "assigning to a function binding",
+      "a function declaration's binding is mutable, so Node replaces it; only a named function expression's inner binding is immutable, where strict code throws a TypeError. The function lowering does not model either assignment",
     ),
   ],
   [2660, KEEP(KEEP_GRAMMAR)],
@@ -1591,8 +1644,8 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [
     2739,
     REFUSE(
-      "a set-like argument the checker cannot prove implements 'has' and 'size'",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+      "a value lacking a required property of its declared type",
+      "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
   [

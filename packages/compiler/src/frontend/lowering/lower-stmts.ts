@@ -295,12 +295,7 @@ import { isCompiledPrototypeMember } from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
-import {
-  classesHoldingOwnCode,
-  classHoldsOwnCode,
-  errorViewMemberType,
-  isErrorViewType,
-} from "./builtins/errors.js";
+import { classesHoldingOwnCode, classHoldsOwnCode } from "./builtins/errors.js";
 import { classForInHasKey, classPropertiesHelper } from "./class-dynamic-dispatch.js";
 import {
   classHasIndexSignature,
@@ -4102,35 +4097,6 @@ export function lowerBindingPattern(
             type: DYN,
             loc,
           };
-        } else if (
-          srcType.className === "%Error" &&
-          !lowerer.findMethodOn(info, propName) &&
-          isErrorViewType(lowerer, lowerer.typeOf(pattern)) &&
-          errorViewMemberType(lowerer, lowerer.typeOf(pattern), propName) !== null
-        ) {
-          // A member an Error view names (`const { stack, status } = error
-          // as FailureLike`), read as the dotted read is: `stack` and `cause`
-          // from the error's slots, every other member off the error's
-          // checked-dynamic node at the member's declared type.
-          value =
-            propName === "stack" || propName === "cause"
-              ? {
-                  kind: "libCall",
-                  fn: propName === "stack" ? "error.stack" : "error.cause",
-                  args: [srcRef()],
-                  type: propName === "stack" ? STRING : DYN,
-                  loc,
-                }
-              : lowerer.coerceToExpected(
-                  {
-                    kind: "dynKeyGet",
-                    value: lowerer.coerceToExpected(srcRef(), DYN),
-                    key: { kind: "strLit", value: propName, type: STRING, loc },
-                    type: DYN,
-                    loc,
-                  },
-                  errorViewMemberType(lowerer, lowerer.typeOf(pattern), propName)!,
-                );
         } else {
           lowerer.unsupported(
             "SC1031",

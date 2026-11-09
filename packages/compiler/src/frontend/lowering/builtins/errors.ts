@@ -84,34 +84,6 @@ const ERROR_SLOT_MEMBERS = new Set([
   "dest",
 ]);
 
-/** Whether a checker type that maps to the Error class is a VIEW of an
- * error with members of its own: the intersection `Error & { ... }`, or an
- * interface the program declares that extends the lib's Error interface
- * (the type mapper gives both the Error class). The members such a view
- * names are read off the error itself. The lib's own Error interface is no
- * view: every member it has is the lib's. */
-export function isErrorViewType(lowerer: Lowerer, type: ts.Type): boolean {
-  if (type.isIntersectionType()) return true;
-  const symbol = type.getSymbol();
-  const declarations = symbol ? symbol.declarations : [];
-  return (
-    declarations.length > 0 &&
-    declarations.every(
-      (decl) =>
-        ts.isInterfaceDeclaration(decl) && !lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)),
-    )
-  );
-}
-
-/** The type a member an Error view names is read at, or null when the view
- * has no such member or its type has no value form. */
-export function errorViewMemberType(lowerer: Lowerer, view: ts.Type, name: string): IrType | null {
-  const member = lowerer.checker.getPropertyOfType(view, name);
-  if (!member) return null;
-  const type = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(member));
-  return type && type.kind !== "void" ? type : null;
-}
-
 export function lowerErrorCodeProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -195,17 +167,16 @@ export function lowerErrorCodeProperty(
       declared,
     );
   }
-  // A member an `Error & { ... }` intersection, or an interface that
-  // extends Error, adds beyond Error's own and the system-error metadata
-  // (`Object.assign(new Error(m), { status })`): an own property of the
-  // error's checked-dynamic node, read at the declared type (the view's
-  // mapping admits only checkable types).
+  // A member an `Error & { ... }` intersection adds beyond Error's own and
+  // the system-error metadata (`Object.assign(new Error(m), { status })`):
+  // an own property of the error's checked-dynamic node, read at the
+  // declared type (the intersection mapping admits only checkable types).
   if (
     recvT.className === "%Error" &&
     !ERROR_SLOT_MEMBERS.has(expr.name.text) &&
     !expr.questionDotToken &&
     !lowerer.isStdlibMember(expr) &&
-    isErrorViewType(lowerer, lowerer.typeOf(expr.expression))
+    lowerer.typeOf(expr.expression).isIntersectionType()
   ) {
     const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (declared && declared.kind !== "void") {
@@ -244,7 +215,7 @@ export function lowerErrorCodeProperty(
   if (!info || info.def.name !== "%Error") return null;
   if (
     !lowerer.isStdlibMember(expr) &&
-    !(recvT.className === "%Error" && isErrorViewType(lowerer, lowerer.typeOf(expr.expression)))
+    !(recvT.className === "%Error" && lowerer.typeOf(expr.expression).isIntersectionType())
   )
     return null;
   if (expr.name.text === "code" && isExecExceptionType(lowerer, lowerer.typeOf(expr.expression))) {

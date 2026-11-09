@@ -262,7 +262,6 @@ import { narrowStoredClassValue, structuralReadType } from "../class-unions.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { lowerUnionFieldRead, narrowedArmRead, narrowedUnionView } from "./union-fields.js";
 import { errorPropertyRead } from "../error-methods.js";
-import { isErrorViewType } from "../builtins/errors.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { partialAssertionFields, partialFieldRead } from "../partial-assertions.js";
 import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/compression.js";
@@ -1843,12 +1842,11 @@ export function lowerPropertyAccessExpr(
   // `name` or `message` of a value that is an error object, read through an
   // intersection that restates the member (`Error & { name?: string }`, the
   // result of an assertion or a type guard): the value is the error itself,
-  // so the error reader answers, as it does on the class. An interface that
-  // extends Error and restates the member is the same view.
+  // so the error reader answers, as it does on the class.
   if (
     !expr.questionDotToken &&
     (expr.name.text === "name" || expr.name.text === "message") &&
-    isErrorViewType(lowerer, lowerer.typeOf(expr.expression))
+    lowerer.typeOf(expr.expression).isIntersectionType()
   ) {
     const error = tryLowerExpression(lowerer, expr.expression);
     if (

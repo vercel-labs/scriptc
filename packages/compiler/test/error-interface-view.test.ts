@@ -43,7 +43,7 @@ class Failure extends Error {
 }
 `;
 
-test("an interface that extends Error is the Error class, as the intersection is", async () => {
+test("an interface that extends Error is a checked view; the intersection is the Error class", async () => {
   const { ir } = await build(`
 interface Like extends Error {
   stack?: string;
@@ -61,10 +61,27 @@ function see(v: unknown): void {
 see(new Error("plain"));
 `);
   expect(firstParamType(ir, "viaIntersection")).toEqual({ kind: "object", className: "%Error" });
-  expect(firstParamType(ir, "viaInterface")).toEqual({ kind: "object", className: "%Error" });
+  // The interface has two kinds of values, an error and a plain object with
+  // the members: it holds both as the checked-dynamic value.
+  expect(firstParamType(ir, "viaInterface")).toEqual({ kind: "dyn" });
 });
 
-test("an interface the Error class cannot answer keeps its record", async () => {
+test("an interface that only names the members of Error keeps its record", async () => {
+  const { ir } = await build(`
+interface Shaped {
+  name: string;
+  message: string;
+  status?: number;
+}
+function shaped(e: Shaped): string {
+  return e.message;
+}
+console.log(shaped({ name: "a", message: "b" }));
+`);
+  expect(firstParamType(ir, "shaped")).toMatchObject({ kind: "record" });
+});
+
+test("a self-referential and a generic interface that extend Error are views too", async () => {
   const { ir } = await build(`
 interface Chain extends Error {
   next?: Chain;
@@ -80,8 +97,8 @@ function carried(e: Carrier<number>): string {
 }
 console.log(chained({ name: "a", message: "b" }), carried({ name: "c", message: "d" }));
 `);
-  expect(firstParamType(ir, "chained")).toMatchObject({ kind: "record" });
-  expect(firstParamType(ir, "carried")).toMatchObject({ kind: "record" });
+  expect(firstParamType(ir, "chained")).toEqual({ kind: "dyn" });
+  expect(firstParamType(ir, "carried")).toEqual({ kind: "dyn" });
 });
 
 test("an error handed to a record type converts through its checked view", async () => {

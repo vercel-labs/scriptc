@@ -23,7 +23,7 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { denotesEnvironment } from "./builtins/environment.js";
+import { denotesEnvironment, refuseDefinedEnvWrite } from "./builtins/environment.js";
 import {
   DELETE_NULLISH_RECEIVER,
   erasedDeletePlan,
@@ -227,6 +227,7 @@ function lowerEnvironmentDeleteExpr(
       expr,
       `'delete' of environment keys of '${lowerer.fmt(key.type)}' values (env keys are strings; a Symbol key removes nothing)`,
     );
+  refuseDefinedEnvWrite(lowerer, key, target);
   return {
     kind: "seqExpr",
     stmts: [

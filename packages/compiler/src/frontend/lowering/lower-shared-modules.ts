@@ -14,8 +14,9 @@
  * A shared module is registered at program start (nodeIsland.share, never
  * loads Node) with its accessor: a generated function that answers the
  * current values of its exports as a dyn array, the TDZ sentinel for a let
- * or const whose declaration has not run yet (a flag the module's %init
- * sets right after the declaration). The bootstrap's loader hooks
+ * or const whose declaration has not run yet and undefined for a var whose
+ * declaration has not run yet (a flag the module's %init sets right after
+ * the declaration). The bootstrap's loader hooks
  * (runtime scr_node_island_hooks.cjs) resolve island imports of the module
  * to a generated ES module over those values.
  *
@@ -49,6 +50,7 @@ import {
 } from "./lower-node-island.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
+import { bindingNeverReassigned } from "./binding-analysis.js";
 
 type ExportKind = "function" | "class" | "let" | "const" | "var";
 
@@ -57,7 +59,7 @@ interface SharedExport {
   kind: ExportKind;
   /** The declaration's name: its reference is the export's value. */
   ident: ts.Identifier;
-  /** let/const: the flag global set after the declaration ran. */
+  /** let/const/var: the flag global set after the declaration ran. */
   flag?: string;
 }
 
@@ -192,6 +194,16 @@ function moduleExports(sf: ts.SourceFile): SharedExport[] {
     }
   }
   return out;
+}
+
+/** The class expression that initializes the variable `ident` declares
+ * (`var Shape = class { … }`), or null. */
+function classExpressionOf(ident: ts.Identifier): ts.ClassExpression | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  const initializer = withoutParenthesesTypeWrappers(decl.initializer);
+  return ts.isClassExpression(initializer) ? initializer : null;
 }
 
 /** The name of a class imported from `spec` that the island file extends
@@ -349,6 +361,12 @@ export function statefulReason(sf: ts.SourceFile): string | null {
       continue;
     return "its evaluation has effects beyond declarations";
   }
+  // A class exported through an `export { … }` list, declared or as the
+  // class expression a variable holds, is an exported class too: with two
+  // copies an instance of one side fails the other side's instanceof.
+  for (const e of moduleExports(sf))
+    if (e.kind === "class" || classExpressionOf(e.ident) !== null)
+      return `it exports the class '${e.name}'`;
   // Writes from function bodies to module-level bindings.
   let reason: string | null = null;
   const visit = (node: ts.Node, inFunction: boolean): void => {
@@ -500,7 +518,10 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
     }
     const exports = moduleExports(sf);
     for (const e of exports) {
-      if (e.kind !== "let" && e.kind !== "const") continue;
+      // Function and class declarations are hoisted: their values exist
+      // before the module's body runs. A variable's storage holds no value
+      // of its type until its declaration ran, whichever keyword declares it.
+      if (e.kind !== "let" && e.kind !== "const" && e.kind !== "var") continue;
       const flag = `%g.shared.${plans.length}.${e.name}%initialized`;
       lowerer.globalsList.push({ id: flag, name: "%initialized", type: BOOL, mutable: true });
       e.flag = flag;
@@ -541,6 +562,24 @@ export function sharedInitFlagStores(lowerer: Lowerer, stmt: ts.Statement): IrSt
   }));
 }
 
+/** The class an export's value is, or null: the class its declaration
+ * declares, or the class expression that initializes a variable nothing
+ * reassigns (`var Shape = class { … }; export { Shape }`, the form
+ * bundlers write for a class declaration). Island code constructs it and
+ * calls its methods like a declared class's. */
+function exportedClass(lowerer: Lowerer, e: SharedExport): ts.ClassLikeDeclaration | null {
+  const decl = e.ident.parent;
+  if (decl === undefined) return null;
+  if (ts.isClassDeclaration(decl)) return decl;
+  const initializer = classExpressionOf(e.ident);
+  if (initializer === null) return null;
+  if (e.kind !== "const") {
+    const symbol = lowerer.checker.getSymbolAtLocation(e.ident);
+    if (!symbol || !bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)) return null;
+  }
+  return initializer;
+}
+
 /** The registrations the entry's %init runs first: one nodeIsland.share
  * per shared module, with its accessor. */
 export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
@@ -562,9 +601,10 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
           if (!(error instanceof PoisonError)) throw error;
           continue;
         }
-        if (e.kind === "class") {
-          const builder = classMethodsBuilder(lowerer, e.ident, loc) ?? dynUndefinedExpr(loc);
-          const construct = classConstructHelper(lowerer, e.ident, loc) ?? dynUndefinedExpr(loc);
+        const cls = exportedClass(lowerer, e);
+        if (cls !== null) {
+          const builder = classMethodsBuilder(lowerer, cls, e.ident, loc) ?? dynUndefinedExpr(loc);
+          const construct = classConstructHelper(lowerer, cls, loc) ?? dynUndefinedExpr(loc);
           value = {
             kind: "libCall",
             fn: "nodeIsland.classMethodsOf",
@@ -574,11 +614,18 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
           };
         }
         if (e.flag !== undefined) {
+          // Before its declaration ran a let or const is in its temporal
+          // dead zone, and a var is undefined (it is hoisted). The storage
+          // is never read then: it holds no value of the export's type (a
+          // class value's is no class object at all).
           value = {
             kind: "ternary",
             cond: { kind: "varRef", localId: e.flag, type: BOOL, loc },
             then: value,
-            else_: { kind: "libCall", fn: "nodeIsland.sharedTdz", args: [], type: DYN, loc },
+            else_:
+              e.kind === "var"
+                ? dynUndefinedExpr(loc)
+                : { kind: "libCall", fn: "nodeIsland.sharedTdz", args: [], type: DYN, loc },
             type: DYN,
             loc,
           };

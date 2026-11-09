@@ -1540,6 +1540,286 @@ static void record_frozen_bit(void) {
   assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
 }
 
+/* A write under a run-time name as its site makes it: the record's entry
+ * for an ordinary object, and the generic write when that entry leaves the
+ * assignment alone. `record` (when given) says which of the two took it. */
+static void assign_named_by(ScrDyn *object, const char *name, ScrDyn *value, bool *record) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  bool assigned = object->kind == SCR_DYN_OBJ && scr_dyn_key_set_record(object, key, value);
+  if (!assigned) {
+    assert(!scr_exc_pending());
+    scr_dyn_key_set(object, key, value);
+  }
+  if (record) *record = assigned;
+  scr_str_release(key);
+}
+
+static void assign_named(ScrDyn *object, const char *name, ScrDyn *value) {
+  assign_named_by(object, name, value, NULL);
+}
+
+static double member_number(const ScrDyn *object, const char *name) {
+  const ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
+  assert(value && value->kind == SCR_DYN_NUM);
+  return value->v.num;
+}
+
+/* A by-name write site's assignment (scr_dyn_key_set_record, else
+ * scr_dyn_key_set) on plain records: members appended along a layout's most
+ * recent transition and along another one, members replaced in place, and
+ * the receivers and names that keep the general assignment. */
+static void named_record_assignment(void) {
+  static const char *const names[] = {"id",    "type",  "title", "body",  "href",  "count",
+                                      "items", "owner", "state", "flags", "extra", "longer-than-eight"};
+  enum { NAMES = 12, RECORDS = 64 };
+  ScrDyn *records[RECORDS];
+  ScrDyn *shared = scr_dyn_new_obj();
+  for (int r = 0; r < RECORDS; r++) {
+    records[r] = scr_dyn_new_obj();
+    for (int k = 0; k < NAMES; k++) {
+      /* Odd records leave one name out: a second transition from the
+       * prefix the two shapes share. */
+      if ((r & 1) && k == 2) continue;
+      ScrDyn *value = k == 6 ? scr_dyn_retain(shared) : scr_dyn_new_num(r * 100 + k);
+      assign_named(records[r], names[k], value);
+      scr_dyn_release(value);
+    }
+  }
+  assert(!scr_exc_pending());
+  assert(shared->rc == 1 + RECORDS);
+  for (int r = 0; r < RECORDS; r++) {
+    size_t at = 0;
+    for (int k = 0; k < NAMES; k++) {
+      if ((r & 1) && k == 2) continue;
+      size_t length;
+      const char *key = scr_dyn_obj_key_at(records[r], at++, &length);
+      assert(length == strlen(names[k]) && memcmp(key, names[k], length) == 0);
+      if (k == 6) assert(scr_dyn_obj_get(records[r], names[k], length) == shared);
+      else assert(member_number(records[r], names[k]) == r * 100 + k);
+    }
+    assert(records[r]->v.obj.len == at);
+  }
+  /* Records of one shape share one layout. */
+  assert(records[0]->v.obj.layout && records[0]->v.obj.layout == records[2]->v.obj.layout);
+  assert(records[1]->v.obj.layout == records[3]->v.obj.layout);
+  assert(records[0]->v.obj.layout != records[1]->v.obj.layout);
+
+  /* A member the record holds is replaced where it is: the old value is
+   * released, the layout and the other members stay. */
+  const ScrLayout *layout = records[0]->v.obj.layout;
+  for (int k = NAMES - 1; k >= 0; k--) {
+    ScrDyn *value = scr_dyn_new_num(-k);
+    assign_named(records[0], names[k], value);
+    scr_dyn_release(value);
+  }
+  assert(shared->rc == RECORDS && records[0]->v.obj.layout == layout);
+  assert(records[0]->v.obj.len == NAMES);
+  for (int k = 0; k < NAMES; k++) assert(member_number(records[0], names[k]) == -k);
+  /* A record written into itself. */
+  assign_named(records[0], "id", records[0]);
+  assert(scr_dyn_obj_get(records[0], "id", 2) == records[0]);
+  ScrDyn *zero = scr_dyn_new_num(0);
+  bool record = false;
+  assign_named_by(records[0], "id", zero, &record);
+  assert(record);
+
+  /* A record that takes no new members refuses one and replaces an old
+   * one, both in the general assignment. */
+  scr_dyn_release(scr_dyn_prevent_extensions(records[1]));
+  assign_named_by(records[1], "added", zero, &record);
+  assert(!record);
+  assert(scr_exc_pending());
+  scr_exc_clear();
+  assert(records[1]->v.obj.len == NAMES - 1 && !scr_dyn_obj_get(records[1], "added", 5));
+  assign_named(records[1], "id", zero);
+  assert(!scr_exc_pending() && member_number(records[1], "id") == 0);
+
+  /* A record with a prototype object gets its own member; the prototype
+   * keeps its value. */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  ScrDyn *seven = scr_dyn_new_num(7);
+  assign_named(prototype, "inherited", seven);
+  scr_dyn_release(scr_dyn_set_prototype(records[3], prototype));
+  assign_named_by(records[3], "inherited", zero, &record);
+  assert(!record);
+  assign_named(records[3], "added", zero);
+  assert(!scr_exc_pending());
+  assert(member_number(records[3], "inherited") == 0 && member_number(prototype, "inherited") == 7);
+  assert(records[3]->v.obj.len == NAMES + 1);
+
+  /* The names an Error's view syncs are ordinary members of a record. */
+  static const char *const synced[] = {"name", "message", "stack", "cause", "code"};
+  for (int k = 0; k < 5; k++) assign_named(records[5], synced[k], seven);
+  for (int k = 0; k < 5; k++) assert(member_number(records[5], synced[k]) == 7);
+  assert(records[5]->v.obj.len == NAMES - 1 + 5 && !scr_exc_pending());
+
+  scr_dyn_release(seven);
+  scr_dyn_release(zero);
+  scr_dyn_release(prototype);
+  for (int r = 0; r < RECORDS; r++) scr_dyn_release(records[r]);
+  assert(shared->rc == 1);
+  scr_dyn_release(shared);
+#ifdef SCR_RC_AUDIT
+  scr_layout_reset_idle();
+#endif
+}
+
+/* A stand-in for the stream unit (ScrStreamRefHooks): `ready` is a data
+ * property of the view, `write` a member of its prototype, `native` a name
+ * only the view can answer. It counts the views built and the questions
+ * the hook was asked. */
+typedef struct {
+  size_t rc;
+  int views, asked;
+} TestStream;
+static void *test_stream_retain(void *ptr) {
+  ((TestStream *)ptr)->rc++;
+  return ptr;
+}
+static void test_stream_release(void *ptr) {
+  TestStream *stream = ptr;
+  if (stream && !--stream->rc) free(stream);
+}
+static ScrDyn *test_stream_view(void *ptr) {
+  ((TestStream *)ptr)->views++;
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "ready", 5, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(prototype, "write", 5, scr_dyn_new_num(7));
+  scr_dyn_release(scr_dyn_set_prototype(view, prototype));
+  scr_dyn_release(prototype);
+  return view;
+}
+static ScrDyn *test_other_view(void *ptr) {
+  ((TestStream *)ptr)->views++;
+  return scr_dyn_new_obj();
+}
+static int test_stream_member(void *ptr, const char *key, size_t key_len, ScrDyn **value) {
+  ((TestStream *)ptr)->asked++;
+  if (key_len == 5 && memcmp(key, "ready", 5) == 0) {
+    if (value) *value = scr_dyn_new_bool(true);
+    return 1;
+  }
+  if (key_len == 5 && memcmp(key, "write", 5) == 0) return 2;
+  if (key_len == 6 && memcmp(key, "native", 6) == 0) return -1;
+  return 0;
+}
+static ScrDyn *test_stream_capsule(TestStream **stream, ScrDyn *(*view)(void *)) {
+  *stream = calloc(1, sizeof **stream);
+  assert(*stream);
+  (*stream)->rc = 1;
+  ScrDyn *capsule = scr_dyn_new_typed_ref(*stream, test_stream_retain, test_stream_release,
+                                          "TestStream", 10, view, NULL);
+  test_stream_release(*stream);
+  return capsule;
+}
+
+/* One question to a fresh capsule whose adapter is `view`: the read (NULL
+ * when it needs the view), `in` and Reflect.has, with the views each built
+ * and the questions the hook was asked in all. */
+typedef struct {
+  ScrDyn *read;
+  bool in, has;
+  int read_views, in_views, has_views, asked;
+} TestStreamAnswer;
+static TestStreamAnswer test_stream_ask(ScrDyn *(*view)(void *), const char *name) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  TestStreamAnswer answer = {0};
+  TestStream *stream;
+  ScrDyn *capsule = test_stream_capsule(&stream, view);
+  answer.read = scr_dyn_typed_ref_key_get(capsule, key);
+  answer.read_views = stream->views;
+  answer.asked = stream->asked;
+  scr_dyn_release(capsule);
+  capsule = test_stream_capsule(&stream, view);
+  answer.in = scr_dyn_in(capsule, key);
+  answer.in_views = stream->views;
+  answer.asked += stream->asked;
+  scr_dyn_release(capsule);
+  capsule = test_stream_capsule(&stream, view);
+  answer.has = scr_dyn_has_key(capsule, key);
+  answer.has_views = stream->views;
+  answer.asked += stream->asked;
+  scr_dyn_release(capsule);
+  scr_str_release(key);
+  assert(!scr_exc_pending());
+  return answer;
+}
+
+static void stream_ref_member_questions(void) {
+  /* Before the stream unit's first stream nothing answers but the view. */
+  assert(!scr_stream_ref_hooks.view && !scr_stream_ref_hooks.member);
+  assert(!scr_stream_ref_hooks.get && !scr_stream_ref_hooks.has);
+  TestStreamAnswer answer = test_stream_ask(test_stream_view, "flush");
+  assert(!answer.read && !answer.in && !answer.has && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+  /* A capsule with no adapter is no stream while the record is empty: no
+   * question reaches the record's functions, which are not there yet. */
+  TestStream *stream;
+  ScrDyn *capsule = test_stream_capsule(&stream, NULL);
+  ScrStr *key = scr_str_new("flush", 5);
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && stream->asked == 0);
+  /* Nor while another thread is filling the record in: the questions are
+   * set and `view`, which goes in last, is not. */
+  scr_stream_ref_hooks.member = test_stream_member;
+  scr_stream_ref_hooks.get = scr_typed_ref_stream_get;
+  scr_stream_ref_hooks.has = scr_typed_ref_stream_has;
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && stream->asked == 0);
+  scr_dyn_release(capsule);
+
+  scr_stream_ref_hooks.view = test_stream_view;
+
+  /* A name the view holds nowhere: answered, and no view is built. */
+  answer = test_stream_ask(test_stream_view, "flush");
+  assert(answer.read == scr_dyn_undefined() && !answer.in && !answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+  answer = test_stream_ask(test_stream_view, "");
+  assert(answer.read == scr_dyn_undefined() && !answer.in && !answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+
+  /* A data property: its value, and no view. */
+  answer = test_stream_ask(test_stream_view, "ready");
+  assert(answer.read && answer.read->kind == SCR_DYN_BOOL && answer.read->v.b && answer.in && answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+  scr_dyn_release(answer.read);
+
+  /* A method: present without a view; its value is the view's to give. */
+  answer = test_stream_ask(test_stream_view, "write");
+  assert(!answer.read && answer.in && answer.has);
+  assert(answer.read_views + answer.in_views + answer.has_views == 0 && answer.asked == 3);
+
+  /* A name only the view can answer: every question builds it. */
+  answer = test_stream_ask(test_stream_view, "native");
+  assert(!answer.read && !answer.in && !answer.has);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1 && answer.asked == 3);
+
+  /* A name of Object.prototype is never the hook's. */
+  answer = test_stream_ask(test_stream_view, "hasOwnProperty");
+  assert(!answer.read && answer.in && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+
+  /* A capsule of another kind is never asked. */
+  answer = test_stream_ask(test_other_view, "flush");
+  assert(!answer.read && !answer.in && !answer.has && answer.asked == 0);
+  assert(answer.read_views == 0 && answer.in_views == 1 && answer.has_views == 1);
+
+  /* A capsule that has a view answers from it. */
+  capsule = test_stream_capsule(&stream, test_stream_view);
+  scr_dyn_release(scr_dyn_typed_ref_materialize(capsule));
+  assert(!scr_dyn_typed_ref_key_get(capsule, key) && !scr_dyn_in(capsule, key) && !scr_dyn_has_key(capsule, key));
+  assert(stream->asked == 0 && stream->views >= 1);
+  scr_str_release(key);
+  scr_dyn_release(capsule);
+
+  scr_stream_ref_hooks.view = NULL;
+  scr_stream_ref_hooks.get = NULL;
+  scr_stream_ref_hooks.has = NULL;
+  scr_stream_ref_hooks.member = NULL;
+  assert(!scr_exc_pending());
+}
+
 int main(void) {
   json_string_boundaries();
   record_frozen_bit();
@@ -1547,6 +1827,7 @@ int main(void) {
   scr_init();
   checked_storage();
   shared_property_keys();
+  named_record_assignment();
   checked_leaf_cycles();
   checked_number_storage();
   buffered_leaf_release();
@@ -1560,6 +1841,7 @@ int main(void) {
   copy_prop_modes();
   record_source_get();
   record_source_hidden_key();
+  stream_ref_member_questions();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

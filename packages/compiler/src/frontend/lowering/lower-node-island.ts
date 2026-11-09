@@ -20,12 +20,14 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
+import { fileWritesBinding } from "../binding-writes.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
   DYN,
@@ -752,17 +754,21 @@ function islandImportSite(
       if (spec === null) return null;
       const file = ts.getSourceFileOfNode(decl).fileName;
       const path = islandModuleFile(islands, file, spec, "require");
-      return path === null ? null : { path, form: { name: property.name } };
+      if (path === null || !keepsRequiredModule(islands, checker, property.declaration))
+        return null;
+      return { path, form: { name: property.name } };
     }
     // `const x = require("pkg")` (a CommonJS module of a native package
     // requiring an island package): x is module.exports. Only at the
     // module's top level: a function's own binding is a local.
     const statement = decl.parent?.parent;
     if (statement === undefined || !ts.isSourceFile(statement.parent)) return null;
+    if (!ts.isVariableDeclaration(decl)) return null;
     const spec = requireSpecOf(checker, decl);
     if (spec === null) return null;
     const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
-    return path === null ? null : { path, form: "required" };
+    if (path === null || !keepsRequiredModule(islands, checker, decl)) return null;
+    return { path, form: "required" };
   }
   const spec = moduleSpecifierOf(importDecl);
   if (spec === null || importDecl === undefined) return null;
@@ -2090,14 +2096,13 @@ function classMethodsBuilderOf(
 }
 
 /** NI-6: the method-table builder of the class a shared module exports
- * (`ident` is its declaration's name), or null. */
+ * (`decl` is the class, `ident` the export's name), or null. */
 export function classMethodsBuilder(
   lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
   ident: ts.Identifier,
   loc: SrcLoc,
 ): IrExpr | null {
-  const decl = ident.parent;
-  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
   return classMethodsBuilderOf(lowerer, lowerer.classNamer(decl), ident, loc);
 }
 
@@ -2108,11 +2113,9 @@ export function classMethodsBuilder(
  * parameters (the island's `new` then throws). */
 export function classConstructHelper(
   lowerer: Lowerer,
-  ident: ts.Identifier,
+  decl: ts.ClassLikeDeclaration,
   loc: SrcLoc,
 ): IrExpr | null {
-  const decl = ident.parent;
-  if (decl === undefined || !ts.isClassDeclaration(decl)) return null;
   const className = lowerer.classNamer(decl);
   const info = lowerer.classes.get(className);
   if (info === undefined || info.def.runtime || info.localClass || info.generic) return null;
@@ -2485,6 +2488,32 @@ function islandChainDot(
   }
 }
 
+/** Whether the nearest `?.` no chain lowering has consumed sits below
+ * `expr` in its access spine on a receiver that is not an island value:
+ * `expr` is then a tail of that native chain, and a nullish receiver
+ * short-circuits the island reads in it as well. */
+function nativeGuardBelow(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let cur: ts.Expression = expr;
+  for (;;) {
+    if (lowerer.chainRecvByNode.has(cur)) return false;
+    if (ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
+    if (
+      ts.isCallExpression(cur) ||
+      ts.isPropertyAccessExpression(cur) ||
+      ts.isElementAccessExpression(cur)
+    ) {
+      if (cur.questionDotToken && !handledDots.has(cur) && !lowerer.chainHandled.has(cur))
+        return cur !== expr && !isForeignExpr(lowerer, cur.expression);
+      cur = cur.expression;
+      continue;
+    }
+    return false;
+  }
+}
+
 /** An optional chain guarded by an island receiver: the receiver
  * evaluates once; nullish answers undefined, anything else runs the
  * whole chain with the receiver read back from the guard. */
@@ -2598,6 +2627,11 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   ) {
     const chain = islandChainDot(lowerer, expr);
     if (chain !== null) return lowerIslandChain(lowerer, expr, chain, loc);
+    // `holder?.config.flag` with a native `holder` and an island `config`:
+    // the native receiver's `?.` guards the island reads above it too, so
+    // the chain's own lowering runs them inside its guard.
+    if (nativeGuardBelow(lowerer, expr) && isOptionalChainTail(lowerer, expr))
+      return lowerer.lowerOptionalChain(expr);
   }
   if (ts.isArrayLiteralExpression(expr)) {
     if (
@@ -3492,13 +3526,53 @@ function plainLiteral(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpressi
 }
 
 /** The specifier of `x = require("spec")` (a variable declaration binding
- * an identifier to a literal require), or null. */
-function requireSpecOf(checker: ts.TypeChecker, decl: ts.Node): string | null {
-  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
-  // Only a const keeps the module: a let or var can be reassigned.
-  const list = decl.parent;
-  if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0) return null;
+ * an identifier to a literal require), or null. Whether the binding keeps
+ * the module is keepsRequiredModule's question, asked once the specifier
+ * names an island module. */
+function requireSpecOf(checker: ts.TypeChecker, decl: ts.VariableDeclaration): string | null {
+  if (!ts.isIdentifier(decl.name) || !ts.isVariableDeclarationList(decl.parent)) return null;
   return requireInitSpecOf(checker, decl);
+}
+
+/** Whether the names `decl` binds hold the required module for good, so
+ * each is the module (or its member) at every use: a `const`, or a `let` or
+ * `var` that nothing in its file writes again (binding-writes.ts: an
+ * assignment, an update, a loop target or a second initializing
+ * declaration). ES5-style CommonJS declares every require with `var`. A
+ * binding that is written keeps the ordinary lowering.
+ *
+ * Shortcut: a read of such a `var` before its statement runs (a hoisted
+ * function called above the declaration) finds the module global unassigned
+ * and stops the program, where Node reads undefined; a `const` stops there
+ * in Node too. */
+function keepsRequiredModule(
+  islands: NodeIslandSet,
+  checker: ts.TypeChecker,
+  decl: ts.VariableDeclaration,
+): boolean {
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list)) return false;
+  if ((list.flags & ts.NodeFlags.Const) !== 0) return true;
+  const file = ts.getSourceFileOfNode(decl);
+  const names = ts.isIdentifier(decl.name)
+    ? [decl.name]
+    : ts.isObjectBindingPattern(decl.name)
+      ? decl.name.elements.nodes.map((e) => e.name)
+      : [];
+  if (names.length === 0) return false;
+  for (const name of names) {
+    if (name === undefined || !ts.isIdentifier(name)) return false;
+    const symbol = checker.getSymbolAtLocation(name);
+    if (symbol === undefined) return false;
+    const answers = (islands.bindingsNeverWritten ??= new Map<object, boolean>());
+    let unwritten = answers.get(symbol);
+    if (unwritten === undefined) {
+      unwritten = !fileWritesBinding(symbol, file, (ident) => bindingSymbolOf(checker, ident));
+      answers.set(symbol, unwritten);
+    }
+    if (!unwritten) return false;
+  }
+  return true;
 }
 
 /** The property a destructured CommonJS require binds: `name` in
@@ -3532,14 +3606,14 @@ function islandPatternBindable(pattern: ts.ObjectBindingPattern): boolean {
 
 /** Whether the top-level declaration `decl` of a JavaScript module loads
  * its island module at the statement (lowerIslandRequireAtStatement)
- * rather than in the module's %init prelude: `const` declarations binding
- * an identifier or a plain object pattern. Reads before the statement are
- * TDZ errors in Node, so the binding is never observed unassigned. `let`
- * and `var` bindings can be reassigned: they keep the ordinary lowering. */
+ * rather than in the module's %init prelude: declarations binding an
+ * identifier or a plain object pattern, when the binding keeps the module
+ * (keepsRequiredModule, which every caller asks once the specifier names an
+ * island module). Reads of a `const` before the statement are TDZ errors in
+ * Node, so that binding is never observed unassigned. */
 function loadsAtStatement(decl: ts.VariableDeclaration): boolean {
   const list = decl.parent;
   if (list === undefined || !ts.isVariableDeclarationList(list)) return false;
-  if ((list.flags & ts.NodeFlags.Const) === 0) return false;
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
   if (ts.isIdentifier(decl.name)) return true;
   return ts.isObjectBindingPattern(decl.name) && islandPatternBindable(decl.name);
@@ -3563,6 +3637,7 @@ export function lowerIslandRequireAtStatement(
   const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
   const module = path === null ? undefined : lowerer.islandModules.get(path);
   if (path === null || module === undefined) return null;
+  if (!keepsRequiredModule(islands, lowerer.checker, decl)) return null;
   const loc = locOf(decl);
   const load = runsAtModuleEvaluation(decl)
     ? deferIslandModule(lowerer, path, loc)
@@ -3612,7 +3687,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       if (loadsAtStatement(decl)) {
         const spec = requireInitSpecOf(lowerer.checker, decl);
         const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
-        if (path !== null) {
+        if (path !== null && keepsRequiredModule(islands, lowerer.checker, decl)) {
           lowerer.noteIslandOnWorkerThread(spec!, decl);
           lowerer.usesNodeIsland = true;
           islandModuleGlobal(lowerer, path);
@@ -3622,7 +3697,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       const spec = requireSpecOf(lowerer.checker, decl);
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");
-      if (path === null) continue;
+      if (path === null || !keepsRequiredModule(islands, lowerer.checker, decl)) continue;
       lowerer.noteIslandOnWorkerThread(spec, decl);
       lowerer.usesNodeIsland = true;
       const loc = locOf(decl);

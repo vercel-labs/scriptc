@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-one-identity.ts"
+ ],
+ "diags": []
+}

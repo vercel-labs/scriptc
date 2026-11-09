@@ -159,3 +159,37 @@ test("TypeScript 7.1 constant values are read from their answer object", () => {
   expect(checker.getConstantValue(node)).toBeNaN();
   expect(checker.getConstantValue(node)).toBeUndefined();
 });
+
+test("a TypeScript 7.1 type with the tuple flag and no tuple data reads as a checker panic", () => {
+  // tsgo 7.1.0-beta's answers for the literal of `const [first = 7] = [];` and for its target, the empty tuple.
+  const literal = {
+    id: 98,
+    flags: 1048576,
+    objectFlags: 2768908,
+    isTupleType: true,
+    value: null,
+    target: 96,
+    isThisType: false,
+  };
+  const emptyTuple = {
+    id: 96,
+    flags: 1048576,
+    objectFlags: 12,
+    isTupleType: true,
+    value: null,
+    target: 96,
+    fixedLength: 0,
+    readonly: false,
+    isThisType: false,
+  };
+  const { checker } = server((method, query) => {
+    if (method === "getTypeAtPosition") return query["position"] === 0 ? literal : emptyTuple;
+    if (method === "getTypesAtPositions") return [emptyTuple, literal];
+    throw new Error(`unexpected ${method}`);
+  });
+  expect(() => checker.getTypeAtPosition("/main.ts", 0)).toThrow(/^panic: /);
+  const target = checker.getTypeAtPosition("/main.ts", 1)!;
+  expect(checker.isTupleType(target)).toBe(true);
+  // One such type fails its whole reply, as the panic of a server that cannot serialize it does.
+  expect(() => checker.getTypeAtPosition("/main.ts", [1, 0])).toThrow(/^panic: /);
+});

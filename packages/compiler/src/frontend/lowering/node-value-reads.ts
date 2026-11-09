@@ -105,12 +105,15 @@ function receiverOfMember(node: ts.Node): string | null {
 /** The value the program's global lookup (global-values.ts) holds for the
  * global `name` when no lowering has one: what the bare spelling reads,
  * without a refusal of its own. Null for a value whose read is refused,
- * which the runtime refuses when the name is asked for. */
+ * which the runtime refuses when the name is asked for. `readStored` says
+ * the program reads the name off a stored global object (`root.process`):
+ * that read is a read of the object, wherever its value goes. */
 export function storedGlobalValue(
   lowerer: Lowerer,
   name: string,
   node: ts.Node,
   loc: SrcLoc,
+  readStored = false,
 ): IrExpr | null {
   const kind = nodeGlobalKind(name);
   if (kind === null) return null;
@@ -120,7 +123,8 @@ export function storedGlobalValue(
   // object, and identity across the spellings is what the stored read is
   // for. A program that never reads it keeps the refusal, and does not
   // carry the object.
-  return nodeGlobalObjectMembers(name) !== undefined && programReadsGlobalValue(lowerer, name)
+  return nodeGlobalObjectMembers(name) !== undefined &&
+    (readStored || programReadsGlobalValue(lowerer, name))
     ? nodeObjectValue(lowerer, name, node, loc)
     : null;
 }

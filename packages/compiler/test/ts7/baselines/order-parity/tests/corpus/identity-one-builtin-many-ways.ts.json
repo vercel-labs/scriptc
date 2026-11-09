@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/identity-one-builtin-many-ways.ts"
+ ],
+ "diags": []
+}

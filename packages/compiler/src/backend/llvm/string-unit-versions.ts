@@ -80,11 +80,13 @@ const UNIT_SAFE_BYTES_METHODS: ReadonlySet<IrBytesIntrinsicMethod> = new Set([
 /** Whether `e` (or statement `s`) uses only operations that index no
  * string: numbers, booleans, locals, records and class fields, typed
  * arrays, number arrays and Math. `reads` admits the string reads a
- * version covers; `calls` the callees. */
+ * version covers; `calls` the callees. `switches` hears of each `switch`
+ * among them. */
 function unitSafe(
   node: { e: IrExpr } | { s: IrStmt },
   reads: (e: IrExpr & { kind: "strIntrinsic" }) => boolean,
   calls: (callee: string) => boolean,
+  switches: () => void,
 ): boolean {
   const expr = (e: IrExpr): boolean => {
     switch (e.kind) {
@@ -151,6 +153,11 @@ function unitSafe(
       case "fieldSet":
       case "bytesSet":
         break;
+      case "switch":
+        // A switch over a number compares numbers: it reads no string.
+        if (s.disc.type.kind !== "f64") return false;
+        switches();
+        break;
       default:
         return false;
     }
@@ -159,50 +166,82 @@ function unitSafe(
   return "e" in node ? expr(node.e) : stmt(node.s);
 }
 
+/** The functions a units version may call, each with whether it reaches a
+ * `switch`, in its own body or through a function it calls. */
+export type UnitSafeFunctions = ReadonlyMap<string, boolean>;
+
 /** The module's functions a units version may call: synchronous
  * functions without captures whose bodies use only unit-safe operations,
  * read no string, and call only such functions. */
-export function unitSafeFunctions(mod: IrModule): ReadonlySet<string> {
+export function unitSafeFunctions(mod: IrModule): UnitSafeFunctions {
   const candidates = new Map(
     mod.functions
       .filter((fn) => !fn.async && !fn.generator && !(fn.captures?.length ?? 0))
       .map((fn) => [fn.name, fn]),
   );
   const safe = new Set(candidates.keys());
+  // What the last pass over each function heard: its callees, and whether
+  // its own body holds a `switch`.
+  const callees = new Map<string, string[]>();
+  const switching = new Set<string>();
   for (let settled = false; !settled;) {
     settled = true;
     for (const name of safe) {
       const fn = candidates.get(name)!;
+      const called: string[] = [];
       const ok = fn.body.every((s) =>
         unitSafe(
           { s },
           () => false,
-          (callee) => safe.has(callee),
+          (callee) => {
+            called.push(callee);
+            return safe.has(callee);
+          },
+          () => switching.add(name),
         ),
       );
-      if (!ok) {
+      if (ok) callees.set(name, called);
+      else {
         safe.delete(name);
         settled = false;
       }
     }
   }
-  return safe;
+  for (let settled = false; !settled;) {
+    settled = true;
+    for (const name of safe) {
+      if (switching.has(name) || !callees.get(name)!.some((callee) => switching.has(callee)))
+        continue;
+      switching.add(name);
+      settled = false;
+    }
+  }
+  return new Map([...safe].map((name) => [name, switching.has(name)]));
 }
 
-/** The `length` reads of the binding `receiver` in a loop whose every
- * part is unit-safe, reading only charCodeAt and length of `receiver` and
- * calling only `safe` functions; null for any other loop. */
+/** For a loop whose every part is unit-safe, reading only charCodeAt and
+ * length of the binding `receiver` and calling only `safe` functions: the
+ * `length` reads of `receiver`, and whether the loop reaches a `switch`.
+ * Null for any other loop. */
 export function unitSafeLoop(
   loop: IrStmt & { kind: "for" | "while" },
   receiver: string,
-  safe: ReadonlySet<string>,
-): ReadonlySet<IrExpr> | null {
+  safe: UnitSafeFunctions,
+): { lengths: ReadonlySet<IrExpr>; switches: boolean } | null {
   const lengths = new Set<IrExpr>();
+  let switches = false;
   const reads = (e: IrExpr & { kind: "strIntrinsic" }): boolean => {
     if (e.receiver.kind !== "varRef" || e.receiver.localId !== receiver) return false;
     if (e.method === "length") lengths.add(e);
     return e.method === "charCodeAt" || e.method === "length";
   };
-  const calls = (callee: string): boolean => safe.has(callee);
-  return unitSafe({ s: loop }, reads, calls) ? lengths : null;
+  const calls = (callee: string): boolean => {
+    const switching = safe.get(callee);
+    if (switching) switches = true;
+    return switching !== undefined;
+  };
+  const found = unitSafe({ s: loop }, reads, calls, () => {
+    switches = true;
+  });
+  return found ? { lengths, switches } : null;
 }

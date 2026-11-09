@@ -520,9 +520,9 @@ import {
   type SplitRequireBinding,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
+  cjsNamespaceTargetOf,
   cjsWholeExportValueOf,
   hasWholeExportValue,
-  inlineNamespaceRequireOf,
   inlineProgramRequireOf,
   splitRequireBindingOf,
   splitWholeExportAliasTargetOf,
@@ -3637,6 +3637,18 @@ export class Lowerer {
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Terminal export table, or null for whole values and pure re-export cycles. */
+  readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
+  /** Receiver proofs depend only on a module's source and stable bindings. */
+  readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Member write sites by property name across the program, built on the
+   * first query, and the exports each query proved change after their
+   * module initializes (cjs-inline-require.ts). */
+  cjsMemberWritesByName: Map<
+    string,
+    (ts.PropertyAccessExpression | ts.ElementAccessExpression)[]
+  > | null = null;
+  readonly cjsLateWrittenExports = new Map<ts.Symbol, boolean>();
   /** Per-module whole-export symbol (cjs-inline-require.ts). Null means the
    * module's exports are a table. */
   readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
@@ -4591,10 +4603,16 @@ export class Lowerer {
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
-  /** Accessor exports' link-time values for ES-module importers, and the
-   * per-module flag that the copy already ran (cjsAccessorSnapshotStores). */
+  /** CommonJS exports' link-time values for ES-module importers (getters,
+   * and data exports that change later), and the per-module flag that the
+   * copy already ran (cjsAccessorSnapshotStores). */
   readonly cjsAccessorSnapshots = new Map<ts.Node, { id: string; type: IrType }>();
   readonly cjsSnapshotReady = new Map<ts.SourceFile, string>();
+  /** Export names ES-module importers bind from each CommonJS module; null
+   * entries bind every name (lower-exprs.ts esmBoundNamesOf). */
+  cjsEsmBoundNames: Map<ts.SourceFile, Set<string> | null> | null = null;
+  /** The module whose ES-module link first copied each changing data export. */
+  readonly cjsLinkedDataModules = new Map<ts.Symbol, ts.SourceFile>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */
@@ -5792,6 +5810,9 @@ export class Lowerer {
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
+      // Which module's link first copied a changing data export: a unit that
+      // records an entry changes what a later link lowering emits.
+      checkedTable("cjsLinkedDataModules", () => this.cjsLinkedDataModules.size),
       checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
       checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
       checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
@@ -5986,6 +6007,11 @@ export class Lowerer {
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "cjsNamespaceTargets",
+    "cjsReceiverProofs",
+    "cjsLateWrittenExports",
+    "cjsMemberWritesByName",
+    "cjsEsmBoundNames",
     "accessorRequirerSlots",
     "requireWholeExportSlots",
     "cjsNamespaces",
@@ -7864,7 +7890,7 @@ export class Lowerer {
       const namespaceRecv = this.cjsLocalModuleBindingOf(recv);
       if (namespaceRecv || this.cjsWholeExportMemberOf(recv, ident.text)) {
         const dep = ts.isIdentifier(recv)
-          ? this.localModuleBindingDepOf(recv)
+          ? this.cjsModuleBindingDepOf(recv)
           : this.cjsModuleRefDepOf(recv);
         const exported = dep
           ? namespaceRecv
@@ -8311,15 +8337,14 @@ export class Lowerer {
    * `require("./x")` (cjs-inline-require.ts) or tsc's unstamped
    * `x_1.default` interop read (cjs-tsc-interop.ts). */
   cjsModuleRefDepOf(expr: ts.Expression): ts.SourceFile | null {
-    const inline = inlineNamespaceRequireOf(this, expr);
-    if (inline !== null) return inline.dep;
-    const interop = tscInteropModuleOf(this, expr);
-    return interop !== null && cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
+    const ref = inlineProgramRequireOf(this, expr) ?? tscInteropModuleOf(this, expr);
+    return ref === null ? null : cjsNamespaceTargetOf(this, ref.dep);
   }
 
   /** The table module a CommonJS module binding identifier names. */
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
-    return this.localModuleBindingDepOf(expr);
+    const dep = this.localModuleBindingDepOf(expr);
+    return dep === null ? null : (cjsNamespaceTargetOf(this, dep) ?? dep);
   }
 
   /** The compiled module behind a require-like namespace binding: an
@@ -8656,7 +8681,7 @@ export class Lowerer {
       if (d && ts.isVariableDeclaration(d)) {
         let init = d.initializer;
         while (init && ts.isParenthesizedExpression(init)) init = init.expression;
-        if (!init || !ts.isObjectLiteralExpression(init)) return false;
+        if (!init || !ts.isObjectLiteralExpression(init)) return cjsNamespaceModule(this, dep);
       }
       // A represented whole export declares AT the `module.exports =`
       // statement itself. Scalar/function/factory-call roots register one

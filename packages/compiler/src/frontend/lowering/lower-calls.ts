@@ -352,7 +352,7 @@ import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.j
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
-import { nullishValueUnitOf } from "./binding-analysis.js";
+import { isWriteTarget, nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
@@ -11651,25 +11651,6 @@ export function valueListCallbackReturn(
   return lowerer.checker.isArrayType(type) && lowerer.mapTypeOf(type)?.kind === "dyn"
     ? arrayOf(DYN)
     : undefined;
-}
-
-/** Whether an access is assigned, updated or deleted. */
-function isWriteTarget(access: ts.Expression): boolean {
-  let node: ts.Node = access;
-  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  const parent = node.parent;
-  if (ts.isBinaryExpression(parent))
-    return (
-      parent.left === node &&
-      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-    );
-  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
-    return (
-      parent.operator === ts.SyntaxKind.PlusPlusToken ||
-      parent.operator === ts.SyntaxKind.MinusMinusToken
-    );
-  return ts.isDeleteExpression(parent);
 }
 
 /** The array methods with native lowerings over a list of checked-dynamic

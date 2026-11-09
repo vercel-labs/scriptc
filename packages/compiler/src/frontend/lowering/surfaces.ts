@@ -29,6 +29,7 @@ import {
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 import { V8_MEMBER_REASON } from "../builtin-modules.js";
+import { globalObjectMember } from "./global-object-names.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
 const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
@@ -4033,9 +4034,13 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // member.
     const selected = staticallySelected(lowerer, expr.expression);
     const symbol =
-      selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
+      (selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
         ? lowerer.checker.getSymbolAtLocation(expr.name)
-        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text);
+        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text)) ??
+      // A spelling whose static type names no such member (`const host: any
+      // = globalThis; host.fetch`) is still the global object, as a cast of
+      // it is: the member is the global object's own.
+      globalObjectMember(lowerer, expr);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
     return ts.symbolName(symbol) === "global" ? "globalThis" : ts.symbolName(symbol);
   }

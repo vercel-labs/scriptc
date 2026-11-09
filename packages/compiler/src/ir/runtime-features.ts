@@ -435,7 +435,7 @@ const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Member names whose constant-key dynamic reads answer the inherited Object.prototype member through the dyn-invoke unit. Mirrors expr-dynamic.ts INHERITED_OBJECT_MEMBERS (the IR layer does not import the backend). */
-const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
+export const INHERITED_MEMBER_NAMES: ReadonlySet<string> = new Set([
   "constructor",
   "hasOwnProperty",
   "propertyIsEnumerable",
@@ -1772,7 +1772,7 @@ const RUNTIME_FEATURE_RULES = {
    * casts, and closures boxed in a boundary program, which adopt their
    * arguments. */
   declAdopt: rule({
-    fns: ["dyn.declAdopt", "dyn.adoptShared"],
+    fns: ["dyn.declAdopt", "dyn.adoptShared", "dyn.adoptable"],
     initial: (mod) => mod.declBoundary === true,
   }),
   // Checked conversions into package-declared types name the declaration

@@ -379,6 +379,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (failOnRaw === "divergences" && !copyWarning) {
     fail(`--fail-on=divergences checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
   }
+  // --no-key-order-warning leaves out SC6014 (frontend/lowering/key-order-witness.ts).
+  const keyOrderWarning = values["key-order-warning"] !== false;
+  if (failOnRaw === "divergences" && !keyOrderWarning) {
+    fail(`--fail-on=divergences checks the warning --no-key-order-warning leaves out\n\n${USAGE}`);
+  }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -610,6 +615,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
     if (!dynamicTierWarning) delete coverage.performance;
     if (!copyWarning && coverage.divergences !== undefined)
       coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+    if (!keyOrderWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -734,7 +741,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     const warnings = (result.warnings ?? []).filter(
       (d) =>
-        (dynamicTierWarning || !isPerformanceCode(d.code)) && (copyWarning || d.code !== "SC6001"),
+        (dynamicTierWarning || !isPerformanceCode(d.code)) &&
+        (copyWarning || d.code !== "SC6001") &&
+        (keyOrderWarning || d.code !== "SC6014"),
     );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({

@@ -46,6 +46,7 @@ export const CLI_OPTIONS = {
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
   "copy-warning": { type: "boolean", default: true },
+  "key-order-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
   "node-islands": { type: "string" },
   "node-island": { type: "string", multiple: true },
@@ -546,6 +547,18 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  "key-order-warning": {
+    entries: [
+      {
+        term: "--no-key-order-warning",
+        help: [
+          "build and coverage: leave out SC6014, the warning for a",
+          "record type whose objects create their keys in orders",
+          "the compiler does not follow per object",
+        ],
+      },
+    ],
+  },
   "node-islands": {
     entries: [
       {
@@ -716,6 +729,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "tier",
   "dynamic-tier-warning",
   "copy-warning",
+  "key-order-warning",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -781,6 +795,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "explain-dynamic",
       "dynamic-tier-warning",
       "copy-warning",
+      "key-order-warning",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
@@ -1007,7 +1022,14 @@ export const CLI_FAST_PATHS = {
   /** `coverage` replaying the verdict of an unchanged program. */
   coverage: {
     commands: ["coverage"],
-    options: ["print", "fail-on", "coverage", "dynamic-tier-warning", "copy-warning"],
+    options: [
+      "print",
+      "fail-on",
+      "coverage",
+      "dynamic-tier-warning",
+      "copy-warning",
+      "key-order-warning",
+    ],
   },
 } satisfies Record<string, CliFastPath>;
 

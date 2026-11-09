@@ -1285,11 +1285,16 @@ export function emitClassShapes(
     // SCR_CYC_ACYCLIC, so releases never buffer them. An Array subclass's
     // trace also visits its elements by their current element ops
     // (scr_arr_subclass_trace), so it is never acyclic.
+    // A class traced only for the weak analysis (ShapeHost.weakOnly) is
+    // never on a cycle either, whatever its fields hold: it is emitted the
+    // same way, and the weak analysis reads its trace from scr_weak_traces.
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`object:${cls.name}`);
     const acyclic =
       traced &&
       runtimePrefix === null &&
       !isStreamRooted &&
-      tracedFields.length === 0 &&
+      (tracedFields.length === 0 || weakOnly) &&
       cls.arrayElem === undefined;
     const bounded =
       runtimePrefix !== null ||
@@ -1854,10 +1859,14 @@ export function emitClassShapes(
       // trace: visit exactly the cycle-capable fields; gcFree: release
       // exactly the complement, then free (the trace/teardown complement
       // contract in scr_runtime.h).
+      // An acyclic class's descriptor names no trace, so for the collector
+      // every reference is the teardown's.
       const indexed = indexedFields;
       const untracedRefFields = indexed.filter(
-        (f) => isRefCounted(f.type) && traceAdapter(host, f.type) === null,
+        (f) => isRefCounted(f.type) && (acyclic || traceAdapter(host, f.type) === null),
       );
+      if (acyclic && tracedFields.length > 0)
+        host.weakOnly!.trace(cycType, `@${mangleClassTrace(cls.name)}`);
       const tr: string[] = [
         `define internal void @${mangleClassTrace(cls.name)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} { ; trace ${cls.name}`,
         `entry:`,

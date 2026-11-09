@@ -1,3 +1,8 @@
+// @skip-darwin
+// macOS: closing fd 1 makes the Node reference abort while it exits (libuv's
+// uv__close asserts that the descriptor is above stderr), so there is no
+// reference output there; the program is compared on the other platforms.
+//
 // A write that fails on a process stream value (its descriptor is closed):
 // write answers false, the callback gets the error from a tick, and the
 // 'error' listeners that are still registered get it from the tick after

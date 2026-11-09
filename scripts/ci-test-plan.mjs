@@ -72,12 +72,14 @@ export const memoryHeavyFiles = {
 };
 
 // The sanitized self-hosting native-frontend build needs most of a 16 GB
-// runner by itself: its clang compile of the whole frontend under ASan takes
-// 10.5 GB beside a 3.8 GB compile in Node. Beside a shard's corpus workers an
-// OOM killed it intermittently (SIGKILL at 670-740 s, empty stderr, every test
-// skipped). The sanitized Linux suite runs these three files in the
+// runner by itself: its clang compile of the whole frontend under ASan runs
+// one clang per core, the largest of them 5.1 GB, beside a compile in Node
+// that holds 6.5 to 7.4 GB. Beside a shard's corpus workers an OOM killed it
+// intermittently (SIGKILL at 670-740 s, empty stderr, every test skipped).
+// The sanitized Linux suite runs these three files in the
 // native_frontend_san jobs (.github/workflows/ci.yml), one file per job with
-// one worker and no corpus. The plain suite and the macOS shards keep them in
+// one worker and no corpus, on two of the runner's cores: four clangs at once
+// no longer fit. The plain suite and the macOS shards keep them in
 // the shard side queue, where the compiler's peak fits (macOS has no
 // LeakSanitizer and runs these files one at a time beside the corpus).
 export const nativeFrontendFiles = [

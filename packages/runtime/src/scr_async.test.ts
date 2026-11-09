@@ -51,13 +51,6 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
-// The sanitizer lane unmaps every finished stack at once and keeps no pool.
-test("the stack pool keeps the stacks of a burst and gives them back when unused", async () => {
-  const result = await execFileAsync(bin, ["pool"]);
-  expect(result.stdout).toBe(sanitize ? "" : "the stack pool grows to a burst and decays\n");
-  expect(withoutContextWarning(result.stderr)).toBe("");
-});
-
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.

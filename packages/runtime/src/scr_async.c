@@ -88,50 +88,27 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
  * sleeps: at most once per SCR_FIBER_TRIM_MS, a sleep unmaps the spares
  * that no fiber took since the previous trim (the pool's low-water mark),
  * and a sleep longer than twice that unmaps every spare, so an idle
- * program gives the memory back as before.
- *
- * The pool grows to the largest burst: with more fibers alive at once
- * than a fixed number of spares, every round of such a burst would map,
- * fault in and unmap a stack for each fiber above that number. A program
- * whose loop never sleeps gives the stacks of a burst that does not come
- * back after SCR_FIBER_TRIM_FREES finished fibers: that trim unmaps the
- * spares no fiber took since the previous trim, down to SCR_FIBER_SPARES.
- * The sanitizer lane unmaps every finished stack immediately. */
+ * program gives the memory back as before. The sanitizer lane unmaps
+ * every finished stack immediately. */
 #ifndef SCR_ASAN_FIBERS
 #define SCR_FIBER_SPARES 64
 #define SCR_FIBER_TRIM_MS 1000.0
-#define SCR_FIBER_TRIM_FREES 4096
-static SCR_TL void **scr_fiber_spares;
-static SCR_TL size_t scr_fiber_nspares, scr_fiber_spares_cap;
+static SCR_TL void *scr_fiber_spares[SCR_FIBER_SPARES];
+static SCR_TL size_t scr_fiber_nspares;
 static SCR_TL bool scr_fiber_cleanup_registered;
 /* The fewest spares the pool held since the last trim: the spares below
  * this index went unused for the whole window. */
 static SCR_TL size_t scr_fiber_spares_low;
 static SCR_TL double scr_fiber_trimmed_at;
-/* Stacks returned to the pool since the last trim. */
-static SCR_TL size_t scr_fiber_frees;
-
-/* Unmaps the spares that went unused since the last trim, except `keep`. */
-static void scr_fiber_stacks_trim_unused(size_t keep) {
-  size_t unused = scr_fiber_spares_low > keep ? scr_fiber_spares_low - keep : 0;
-  if (unused != 0) {
-    for (size_t i = 0; i < unused; i++) (void)munmap(scr_fiber_spares[i], SCR_FIBER_STACK);
-    scr_fiber_nspares -= unused;
-    memmove(scr_fiber_spares, scr_fiber_spares + unused, scr_fiber_nspares * sizeof *scr_fiber_spares);
-  }
-  scr_fiber_spares_low = scr_fiber_nspares;
-  scr_fiber_frees = 0;
-}
 #endif
 
 static void scr_fiber_stacks_clear(void) {
 #ifndef SCR_ASAN_FIBERS
-  while (scr_fiber_nspares > 0) (void)munmap(scr_fiber_spares[--scr_fiber_nspares], SCR_FIBER_STACK);
-  free(scr_fiber_spares);
-  scr_fiber_spares = NULL;
-  scr_fiber_spares_cap = 0;
+  while (scr_fiber_nspares > 0) {
+    (void)munmap(scr_fiber_spares[--scr_fiber_nspares], SCR_FIBER_STACK);
+    scr_fiber_spares[scr_fiber_nspares] = NULL;
+  }
   scr_fiber_spares_low = 0;
-  scr_fiber_frees = 0;
 #endif
 }
 
@@ -144,7 +121,12 @@ static void scr_fiber_stacks_trim(double now, double wait) {
     return;
   }
   if (now - scr_fiber_trimmed_at < SCR_FIBER_TRIM_MS) return;
-  scr_fiber_stacks_trim_unused(0);
+  size_t unused = scr_fiber_spares_low;
+  for (size_t i = 0; i < unused; i++) (void)munmap(scr_fiber_spares[i], SCR_FIBER_STACK);
+  scr_fiber_nspares -= unused;
+  memmove(scr_fiber_spares, scr_fiber_spares + unused, scr_fiber_nspares * sizeof *scr_fiber_spares);
+  memset(scr_fiber_spares + scr_fiber_nspares, 0, unused * sizeof *scr_fiber_spares);
+  scr_fiber_spares_low = scr_fiber_nspares;
   scr_fiber_trimmed_at = now;
 #else
   (void)now;
@@ -156,6 +138,7 @@ static void *scr_fiber_stack_new(void) {
 #ifndef SCR_ASAN_FIBERS
   if (scr_fiber_nspares > 0) {
     void *stack = scr_fiber_spares[--scr_fiber_nspares];
+    scr_fiber_spares[scr_fiber_nspares] = NULL;
     if (scr_fiber_nspares < scr_fiber_spares_low) scr_fiber_spares_low = scr_fiber_nspares;
     return stack;
   }
@@ -173,22 +156,11 @@ static void *scr_fiber_stack_new(void) {
   return stack;
 }
 
-/* Out of line: a fiber's teardown is inlined into many callers, and each
- * would carry the pool's growth and trim. */
-__attribute__((noinline)) static void scr_fiber_stack_free(void *stack) {
+static void scr_fiber_stack_free(void *stack) {
   if (!stack) return;
 #ifndef SCR_ASAN_FIBERS
-  if (scr_fiber_nspares == scr_fiber_spares_cap) {
-    size_t cap = scr_fiber_spares_cap ? scr_fiber_spares_cap * 2 : SCR_FIBER_SPARES;
-    void **grown = realloc(scr_fiber_spares, cap * sizeof *grown);
-    if (grown) {
-      scr_fiber_spares = grown;
-      scr_fiber_spares_cap = cap;
-    }
-  }
-  if (scr_fiber_nspares < scr_fiber_spares_cap) {
+  if (scr_fiber_nspares < SCR_FIBER_SPARES) {
     scr_fiber_spares[scr_fiber_nspares++] = stack;
-    if (++scr_fiber_frees >= SCR_FIBER_TRIM_FREES) scr_fiber_stacks_trim_unused(SCR_FIBER_SPARES);
     return;
   }
 #endif
@@ -2869,8 +2841,7 @@ static void scr_fiber_destroy(ScrFiber *f) {
   scr_als_ctx_release(f->als);
   if (f->region != NULL) atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed)->drop(f->region);
 #if !defined(_WIN32) && !defined(__wasi__)
-  /* A stackless body has no stack: its teardown takes no call for one. */
-  if (f->stack) scr_fiber_stack_free(f->stack);
+  scr_fiber_stack_free(f->stack);
 #else
   free(f->stack);
 #endif

@@ -296,7 +296,6 @@ import {
 } from "../tier-analysis.js";
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
-import { finalizeReplaceablePrototypeMethods } from "./class-generic-members.js";
 import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
 import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
@@ -4539,18 +4538,6 @@ export class Lowerer {
     ts.Node,
     { fnName: string; type: IrType; selfReads: number } | null
   >();
-  /** The members of generic classes' prototypes that dynamic code reads, by
-   * the name of the function that selects an instantiation's member. */
-  readonly genericPrototypeMembers = new Map<
-    string,
-    import("./class-generic-members.js").GenericPrototypeMember
-  >();
-  /** The prototype methods dynamic code can replace, by the name of their
-   * slot (replaceablePrototypeMethod). */
-  readonly replaceablePrototypeMethods = new Map<
-    string,
-    import("./class-generic-members.js").ReplaceablePrototypeMethod
-  >();
   readonly classMethodValueSelections = new Map<
     string,
     import("./class-method-values.js").ClassMethodValueSelection
@@ -5733,8 +5720,6 @@ export class Lowerer {
       checkedTable("structuralClassPeers", () => this.structuralClassPeers.size),
       checkedTable("methodLambdasInProgress", () => this.methodLambdasInProgress.size),
       checkedTable("classMethodValueSelections", () => this.classMethodValueSelections.size),
-      checkedTable("genericPrototypeMembers", () => this.genericPrototypeMembers.size),
-      checkedTable("replaceablePrototypeMethods", () => this.replaceablePrototypeMethods.size),
       checkedTable("stdlibGlobalAliases", () => this.stdlibGlobalAliases.size),
       // The snapshots' own declarations and their one-report memory: both
       // grow with stdlibGlobalAliases, one entry per registered declaration.
@@ -13114,7 +13099,6 @@ export class Lowerer {
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
-    finalizeReplaceablePrototypeMethods(this, functions);
     finalizePrivateBrands(this, functions);
     routeWrapperConsumers(this, functions);
     trackClassFieldCreation(this, functions);

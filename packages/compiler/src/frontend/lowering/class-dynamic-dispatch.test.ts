@@ -48,7 +48,6 @@ function context() {
     prototypeMethodAccesses: new Map(),
     protocolDispatches: new Map(),
     classMethodValueSelections: new Map(),
-    genericPrototypeMembers: new Map(),
     isSubclassOf: () => false,
     nodeAtLoc: () => null,
   } as unknown as Lowerer;

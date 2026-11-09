@@ -3,13 +3,12 @@ import {
   isClassOwnEnumerableFieldName,
   isDynTypedRefType,
   typeKey,
-  type IrExpr,
   type IrFunction,
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
-import { everyExprChild, everyStmtList } from "../../ir/traverse.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { toPrimitiveHint } from "./class-dynamic-dispatch.js";
 import { GENERATOR_STEP_METHODS, HELPER_METHODS } from "./generator-dynamic-dispatch.js";
 
@@ -140,53 +139,7 @@ export class DispatchSites {
    * statement list. */
   forget(fn: IrFunction): void {
     this.sites.delete(fn);
-    this.withoutDynamicUse.delete(fn);
   }
-
-  private dynamicUse = false;
-  /** The bodies that held no operation on a dynamic value when they were
-   * last looked at, kept by the rule `of` reuses a summary with. */
-  private readonly withoutDynamicUse = new Map<IrFunction, BodyMark>();
-
-  /** Whether the program can read or write a member of a dynamic value:
-   * one of `functions` holds an operation on one (usesDynamicValue). The
-   * answer only turns true, and a body is looked at again only after it
-   * changed. */
-  usesDynamicValues(functions: readonly IrFunction[]): boolean {
-    if (this.dynamicUse) return true;
-    for (const fn of functions) {
-      const seen = this.withoutDynamicUse.get(fn);
-      if (
-        seen !== undefined &&
-        !fn.name.startsWith(PROTOTYPE_DATA_PREFIX) &&
-        seen.statements === fn.body &&
-        seen.length === fn.body.length &&
-        seen.first === fn.body[0] &&
-        seen.last === fn.body[fn.body.length - 1]
-      )
-        continue;
-      if (usesDynamicValue(fn.body)) {
-        this.dynamicUse = true;
-        this.withoutDynamicUse.clear();
-        return true;
-      }
-      this.withoutDynamicUse.set(fn, {
-        statements: fn.body,
-        length: fn.body.length,
-        first: fn.body[0],
-        last: fn.body[fn.body.length - 1],
-      });
-    }
-    return false;
-  }
-}
-
-/** What tells a body apart from the one a summary was made from. */
-interface BodyMark {
-  statements: IrStmt[];
-  length: number;
-  first: IrStmt | undefined;
-  last: IrStmt | undefined;
 }
 
 function scanSites(statements: IrStmt[]): FunctionSites {
@@ -340,44 +293,4 @@ function sameSites(left: FunctionSites, right: FunctionSites): boolean {
     left.basePrototypes === right.basePrototypes &&
     left.caughtValues === right.caughtValues
   );
-}
-
-/** Whether `expr` only hands the dynamic values among its operands along,
- * converts them back, or asks what they are: a call that passes them as
- * arguments or as its receiver, a literal or a choice that holds them, a
- * test of their kind or identity, the checked conversion back to a class
- * constructor. None of these reads a member of the value. */
-function passesDynamicOperands(expr: IrExpr): boolean {
-  switch (expr.kind) {
-    case "call":
-    case "callValue":
-    case "virtualCall":
-    case "new":
-    case "newValue":
-    case "recordLit":
-    case "arrayLit":
-    case "ternary":
-    case "nullish":
-    case "orDefault":
-    case "dynTest":
-    case "dynScalarEq":
-      return true;
-    case "dynCheck":
-      return expr.type.kind === "classval";
-    default:
-      return false;
-  }
-}
-
-/** Whether a body holds an operation on a dynamic value that can read or
- * write one of its members: any expression with a dynamic operand other
- * than the ones that pass it along (passesDynamicOperands), and a loop
- * over a dynamic value, which asks it for its iterator. */
-function usesDynamicValue(statements: IrStmt[]): boolean {
-  const typed = (operand: IrExpr): boolean => operand.type.kind !== "dyn";
-  const kept = (): boolean => true;
-  return !everyStmtList(statements, {
-    stmt: (statement) => statement.kind !== "forOf" || typed(statement.iterable),
-    expr: (expr) => passesDynamicOperands(expr) || everyExprChild(expr, typed, kept),
-  });
 }

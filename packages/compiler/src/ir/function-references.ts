@@ -41,7 +41,6 @@ function metadataReferences(mod: IrModule, jsEntries: boolean): string[] {
     if (cls.arrayFields !== undefined) names.push(cls.arrayFields);
     if (cls.arraySpecies !== undefined) names.push(cls.arraySpecies);
     if (cls.stringTagHelper !== undefined) names.push(cls.stringTagHelper);
-    if (cls.staticsHelper !== undefined) names.push(cls.staticsHelper);
     for (const accessor of cls.viewAccessors ?? []) names.push(accessor.helper);
   }
   for (const link of mod.recordLinks ?? []) names.push(link.compose);

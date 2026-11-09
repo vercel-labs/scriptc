@@ -56,7 +56,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
-import { mangleFunction, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
+import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -304,10 +304,6 @@ export interface DynHost extends WalkerHost {
    * arguments as `className`'s (classValueAbiEquals): the class values a
    * checked `classval` slot accepts besides its own class. */
   classValueSubtypes(className: string): readonly string[];
-  /** The helper that defines the static members of `className` in the
-   * table of its constructor seen as a dynamic value
-   * (IrClassDef.staticsHelper), when the class has one. */
-  classStaticsHelper?(className: string): string | undefined;
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
   /** The closures with a jsval body (IrFunction.jsEntry) on targets with
@@ -3176,19 +3172,7 @@ export class LlDyn {
     const want = host.cstr(dynDesc(t, this.host.recordsById, this.host.unionsById));
     const B = new BlockBuilder();
     if (t.kind === "classval") {
-      // A constructor value of a class with a table of its static members
-      // may carry another instantiation's identity: the check answers the
-      // class object of the value itself.
-      const check = (className: string): string => {
-        const fn =
-          host.classStaticsHelper?.(className) !== undefined
-            ? "scr_dyn_class_check_own"
-            : "scr_dyn_class_check";
-        host.declare(`declare ptr @${fn}(ptr, ptr, ptr)`);
-        return fn;
-      };
-      // Declared before the subclass tests below, as the one check always was.
-      const own = check(t.className);
+      host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
       // A subclass's class value checks into the base class's slot when
       // construction through the slot can call its thunk with the base
       // constructor's arguments; any other subclass fails the check.
@@ -3204,13 +3188,15 @@ export class LlDyn {
           B.condBr(matched, yes, no);
           B.startBlock(yes);
           const sub = B.tmp();
-          B.line(`${sub} = call ptr @${check(className)}(ptr %d, ptr ${subKey}, ptr %path)`);
+          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
           B.terminate(`ret ptr ${sub}`);
           B.startBlock(no);
         }
       }
       const checked = B.tmp();
-      B.line(`${checked} = call ptr @${own}(ptr %d, ptr ${host.cstr(key)}, ptr %path)`);
+      B.line(
+        `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,
+      );
       B.terminate(`ret ptr ${checked}`);
       this.defs.push(
         `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
@@ -4818,35 +4804,9 @@ export class LlDyn {
         break;
       }
       case "classval": {
-        // A class that carries a table of its static members takes the
-        // constructor value that can share another instantiation's identity.
-        const statics = host.classStaticsHelper?.(t.className);
-        const make = statics !== undefined ? "scr_dyn_new_class_shared" : "scr_dyn_new_class";
-        host.declare(`declare ptr @${make}(ptr, ptr)`);
+        host.declare(`declare ptr @scr_dyn_new_class(ptr, ptr)`);
         const r = B.tmp();
-        B.line(`${r} = call ptr @${make}(ptr %v, ptr ${host.cstr(key)})`);
-        if (statics !== undefined) {
-          // The first conversion of the constructor defines its class's
-          // static members in the table the runtime just created.
-          host.declare(`declare zeroext i1 @scr_dyn_class_statics_begin(ptr)`);
-          const begin = B.tmp();
-          B.line(`${begin} = call zeroext i1 @scr_dyn_class_statics_begin(ptr ${r})`);
-          const define = B.newLabel("cs.define");
-          const done = B.newLabel("cs.done");
-          B.condBr(begin, define, done);
-          B.startBlock(define);
-          B.line(`call void @${mangleFunction(statics)}()`);
-          // The helper may have made the class stand for another one as a
-          // dynamic value (an instantiation of a generic class, whose
-          // declaration is one class object in JavaScript): the value made
-          // before it ran does not carry that identity, a new one does.
-          host.declare(`declare void @scr_dyn_release(ptr)`);
-          B.line(`call void @scr_dyn_release(ptr ${r})`);
-          const again = B.tmp();
-          B.line(`${again} = call ptr @${make}(ptr %v, ptr ${host.cstr(key)})`);
-          B.terminate(`ret ptr ${again}`);
-          B.startBlock(done);
-        }
+        B.line(`${r} = call ptr @scr_dyn_new_class(ptr %v, ptr ${host.cstr(key)})`);
         B.terminate(`ret ptr ${r}`);
         break;
       }

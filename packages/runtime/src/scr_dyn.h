@@ -416,12 +416,6 @@ typedef struct {
    * hasOwnProperty) answer as they do on the instance, where the accessor
    * is a prototype member. */
   bool class_view : 1;
-  /* A static member of a compiled class in the table of its constructor
-   * (scr_dyn_class_static_slot). A field is an accessor over the class's
-   * native storage that reads, writes and reports its descriptor as the data
-   * property it is in JavaScript; a method is the value typed calls bypass.
-   * Deleting or redefining either, or replacing a method, fences. */
-  bool native_data : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -2228,18 +2222,6 @@ void scr_dyn_func_set_js(ScrDyn *fn, ScrDynThunk thunk, ScrDynJsEntry entry);
  * length is not its adapter's parameter count). */
 void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
-/* The static table of a compiled class whose constructor became a dynamic
- * value: begin creates it and answers true exactly once per class object,
- * and the compiler's helper then defines the class's static members and
- * `prototype` in it; static_slot marks one as backed by native storage. */
-bool scr_dyn_class_statics_begin(ScrDyn *constructor);
-/* scr_dyn_new_class for a class with such a table: an instantiation of a
- * generic class shares the identity and the table of the first one
- * (scr_dyn_class_share) and keeps its own class object, which
- * scr_dyn_class_check_own answers. */
-ScrDyn *scr_dyn_new_class_shared(ScrClassObj *cls, const char *type_key);
-ScrDyn *scr_dyn_class_static_slot(ScrDyn *constructor, ScrDyn *key);
-ScrDyn *scr_dyn_class_share(ScrDyn *constructor, ScrDyn *first);
 /* EventEmitter and the stream constructors as untyped constructor values,
  * and instanceof over untyped constructor functions
  * (scr_dyn_builtin_class.c, linked with the dynBuiltinClass feature). */
@@ -2326,7 +2308,6 @@ ScrUrl *scr_url_checked_from_path(const ScrDyn *value, const ScrDyn *options);
 ScrUrl *scr_dyn_native_url_check(const ScrDyn *value, const ScrDynPath *path);
 ScrRegex *scr_dyn_native_regex_check(const ScrDyn *value, const ScrDynPath *path);
 ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, const ScrDynPath *path);
-ScrClassObj *scr_dyn_class_check_own(const ScrDyn *value, const char *type_key, const ScrDynPath *path);
 
 /* The dynCheck failure path: builds "TypeError: expected <want> at <path>,
  * got <kind>" (got == NULL renders as "undefined" — a missing object

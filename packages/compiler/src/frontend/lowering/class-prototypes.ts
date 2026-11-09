@@ -26,12 +26,6 @@ import {
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
-import {
-  genericClassConstructor,
-  genericPrototypeMember,
-  inGenericChain,
-  replaceablePrototypeMethod,
-} from "./class-generic-members.js";
 import { iteratorPrototypeExpr } from "./iterator-prototype.js";
 
 /** Data added to a top-level class prototype has shared identity and remains
@@ -43,7 +37,6 @@ export function classPrototypeData(
   loc: SrcLoc,
   receiver?: IrExpr,
   metadataOnly = false,
-  view = false,
 ): IrExpr | null {
   if (info.localClass) {
     if (!receiver) return null;
@@ -103,32 +96,15 @@ export function classPrototypeData(
   }
   if (
     info.mixinInstance ||
+    info.generic ||
+    info.genericInstance ||
     info.def.runtime ||
     info.builtinEmitter ||
     info.builtinStream ||
     info.builtinError
   )
     return null;
-  // A generic class, its instantiations and the classes below them have no
-  // prototype data in typed code (the typed prototype forms are refused).
-  // Dynamic code (`view`) sees one prototype object per declaration, as
-  // JavaScript has: an instantiation answers with its declaration's.
-  if (info.generic || info.genericInstance) {
-    if (!view) return null;
-    if (info.genericInstance)
-      return classPrototypeData(
-        lowerer,
-        info.genericInstance.family,
-        loc,
-        undefined,
-        metadataOnly,
-        true,
-      );
-    if (!info.decl || isJsSourceFile(ts.getSourceFileOfNode(info.decl)) || info.classDecorators)
-      return null;
-  }
-  const viewed = view && inGenericChain(info);
-  if ((viewed ? info.prototypeViewHelper : info.def.prototypeDataHelper) === undefined) {
+  if (info.def.prototypeDataHelper === undefined) {
     const base = info.callableBase
       ? varRef(info.callableBase.prototypeId, DYN, loc)
       : info.base && !info.base.builtinError
@@ -144,15 +120,13 @@ export function classPrototypeData(
                 )
               : undefined,
             metadataOnly,
-            view,
           )
         : null;
     if (info.base && !info.base.builtinError && base === null) return null;
-    const name = `%prototype.${viewed ? "view" : "data"}.${info.def.name}`;
+    const name = `%prototype.data.${info.def.name}`;
     const globalId = `%g.${name}`;
     const readyId = `${globalId}.ready`;
-    if (viewed) info.prototypeViewHelper = name;
-    else info.def.prototypeDataHelper = name;
+    info.def.prototypeDataHelper = name;
     lowerer.shareHelper(name);
     const className = info.def.jsName ?? info.def.name;
     lowerer.globalsList.push({
@@ -215,7 +189,6 @@ export function classPrototypeData(
     };
     lowerer.liftedFns.push(helper);
   }
-  if (viewed) return { kind: "call", callee: info.prototypeViewHelper!, args: [], type: DYN, loc };
   if (!metadataOnly && !info.prototypeObservedMethodsReady) {
     info.prototypeObservedMethodsReady = true;
     const helper = lowerer.liftedFnNamed(info.def.prototypeDataHelper)!;
@@ -288,7 +261,7 @@ export function classPrototypeData(
         });
     }
   }
-  return { kind: "call", callee: info.def.prototypeDataHelper!, args: [], type: DYN, loc };
+  return { kind: "call", callee: info.def.prototypeDataHelper, args: [], type: DYN, loc };
 }
 
 /** Whether reads of method `name` on instances of `info` use the observed
@@ -355,13 +328,9 @@ export function reflectClassPrototype(
   info: ClassInfo,
   loc: SrcLoc,
   receiver: IrExpr,
-  view = false,
 ): IrExpr | null {
-  if (view && info.genericInstance)
-    return reflectClassPrototype(lowerer, info.genericInstance.family, loc, receiver, true);
-  const prototype = classPrototypeData(lowerer, info, loc, receiver, false, view);
+  const prototype = classPrototypeData(lowerer, info, loc, receiver);
   if (!prototype || !info.decl) return prototype;
-  const viewed = view && inGenericChain(info);
   const refuse = (message: string): IrExpr => {
     const name = `%prototype.refusal:${info.def.name}`;
     if (lowerer.liftedFnNamed(name) === undefined)
@@ -394,14 +363,11 @@ export function reflectClassPrototype(
       info.def.baseValueGlobal
         ? varRef(info.def.baseValueGlobal, { kind: "classval", className: info.base.def.name }, loc)
         : receiver,
-      view,
     );
-    if ((info.base.genericInstance?.family ?? info.base).prototypeReflectionRefusal)
+    if (info.base.prototypeReflectionRefusal)
       return refuse("prototype reflection with this base class is not supported yet");
   }
-  const helper = lowerer.liftedFnNamed(
-    viewed ? info.prototypeViewHelper : info.def.prototypeDataHelper,
-  );
+  const helper = lowerer.liftedFnNamed(info.def.prototypeDataHelper);
   const initialization = helper?.body[0];
   if (!helper || initialization?.kind !== "if" || info.prototypeReflectionReady) return prototype;
   info.prototypeReflectionReady = true;
@@ -451,12 +417,10 @@ export function reflectClassPrototype(
     value: { kind: "boolLit", value: true, type: BOOL, loc } as IrExpr,
   };
   initialization.then.push(
-    define(
-      { kind: "strLit", value: "constructor", type: STRING, loc },
-      info.generic
-        ? [{ key: "get", value: genericClassConstructor(lowerer, info, loc) }]
-        : [{ key: "value", value: classValueRef(lowerer, info, info.decl) }, writable],
-    ),
+    define({ kind: "strLit", value: "constructor", type: STRING, loc }, [
+      { key: "value", value: classValueRef(lowerer, info, info.decl) },
+      writable,
+    ]),
     {
       kind: "assign",
       localId: prototypeReflectedFlag(lowerer, info),
@@ -492,9 +456,7 @@ export function reflectClassPrototype(
       let before = lowerer.diags.length;
       let value: IrExpr | null;
       try {
-        value = info.generic
-          ? genericPrototypeMember(lowerer, info, member, method, loc)
-          : classMethodValue(lowerer, info.decl, info, method, loc);
+        value = classMethodValue(lowerer, info.decl, info, method, loc);
       } catch (error) {
         if (!(error instanceof PoisonError)) throw error;
         lowerer.diags.splice(before);
@@ -519,49 +481,14 @@ export function reflectClassPrototype(
           "prototype reflection with a computed member key that has no lowering is not supported yet",
         );
       }
-      // Typed calls reach a method without reading this object. A method
-      // with a slot of its own (replaceablePrototypeMethod) takes a
-      // replacement through the dynamic view and refuses, by name, a later
-      // run of the declared method; any other method refuses the
-      // replacement itself.
-      const slot =
-        viewed && ts.isMethodDeclaration(member) && !ts.isComputedPropertyName(member.name)
-          ? replaceablePrototypeMethod(lowerer, info, member, method, loc)
-          : null;
-      if (slot)
-        initialization.then.push(
-          {
-            kind: "assign",
-            localId: slot.valueId,
-            value: lowerer.coerceToExpected(value, DYN),
-            loc,
-          },
-          define(key, [
-            { key: "get", value: slot.get },
-            { key: "set", value: slot.set },
-          ]),
-        );
-      else
-        initialization.then.push(
-          define(
-            key,
-            ts.isMethodDeclaration(member)
-              ? [{ key: "value", value }, writable]
-              : [{ key: ts.isGetAccessor(member) ? "get" : "set", value }],
-          ),
-        );
-      if (viewed && ts.isMethodDeclaration(member))
-        initialization.then.push({
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "dyn.classStaticSlot",
-            args: [prototype, lowerer.coerceToExpected(key, DYN)],
-            type: DYN,
-            loc,
-          },
-          loc,
-        });
+      initialization.then.push(
+        define(
+          key,
+          ts.isMethodDeclaration(member)
+            ? [{ key: "value", value }, writable]
+            : [{ key: ts.isGetAccessor(member) ? "get" : "set", value }],
+        ),
+      );
     }
   } finally {
     helper.locals.push(...context.locals);

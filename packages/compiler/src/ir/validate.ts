@@ -540,21 +540,6 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
-    if (cls.staticsHelper !== undefined) {
-      const helper = functionsByName.get(cls.staticsHelper);
-      if (
-        !helper ||
-        helper.params.length !== 0 ||
-        helper.returnType.kind !== "void" ||
-        helper.captures !== undefined ||
-        helper.classCaptures !== undefined
-      ) {
-        errors.push({
-          message: `class ${cls.name}: statics helper must be a noncapturing () => void function`,
-          loc: cls.loc,
-        });
-      }
-    }
     for (const accessor of cls.viewAccessors ?? []) {
       const helper = functionsByName.get(accessor.helper);
       const receiver = helper?.params[0]?.type;

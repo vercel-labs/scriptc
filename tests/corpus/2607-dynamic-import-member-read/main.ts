@@ -27,6 +27,10 @@ async function members(): Promise<void> {
   const describe = (await import("./named.ts")).describe;
   console.log("value:", describe("value"));
   console.log("count:", (await import("./named.ts")).counter.count);
+  // The call is the member's own call: a generic function is instantiated
+  // and a default parameter is filled in, as through a namespace binding.
+  console.log("generic:", (await import("./named.ts")).pair("a", "b").join("+"));
+  console.log("default:", (await import("./named.ts")).scale(2), (await import("./named.ts")).scale(2, 5));
 }
 
 main("other")

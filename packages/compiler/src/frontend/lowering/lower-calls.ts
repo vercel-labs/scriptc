@@ -1795,63 +1795,25 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     !expr.expression.questionDotToken &&
     ts.isIdentifier(expr.expression.name)
   ) {
-    // A call through a receiver that evaluates
-    // (`(await import("./m")).f(1)`): the callee is the member's value,
-    // read after the receiver ran (the property read's own lowering), and
-    // the call goes through that value.
-    if (
-      nsReceiverEvaluates(expr.expression.expression) &&
-      nsMemberIdentOf(lowerer, expr.expression, true)
-    ) {
-      const callee = lowerer.lowerExpr(expr.expression);
-      const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
-      if (checked) return checked;
-      if (callee.type.kind !== "func")
-        lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
-    }
-    const nsMember = nsMemberIdentOf(lowerer, expr.expression);
+    // A receiver that evaluates (`(await import("./m")).f(1)`) runs first,
+    // for what it does (the import evaluates the module, once). The call
+    // itself is the namespace member's call, with the same fences (an
+    // export that reads `this` stays refused: the call has no module
+    // object to pass) and the same direct paths.
+    const receiverEvaluates = nsReceiverEvaluates(expr.expression.expression);
+    const nsMember = nsMemberIdentOf(lowerer, expr.expression, receiverEvaluates);
     if (nsMember) {
-      // A builtin RE-EXPORT FACADE member (`import * as assert from
-      // "./facade.js"` over `export { ok } from "node:assert"` —
-      // a universal re-export facade): builtinMemberOf's alias chase
-      // resolves the builtin module/member, and the spokes own the call
-      // exactly as a direct builtin import. Ordinary user-module
-      // members answer null there and resolve below.
-      const facadeServed = lowerer.lowerNamespaceBuiltinCall(expr, expr.expression);
-      if (facadeServed) return facadeServed;
-      const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
-      if (memberSym) fenceEarlyNsMemberRef(lowerer, expr.expression, memberSym);
-      refuseModuleMemberThis(lowerer, expr, nsMember);
-      // A member of a function+namespace merge is an own property of the
-      // function object (lower-fundule.ts), and the qualified call reads
-      // that property as Node does: after `Object.assign(fmt, { helper })`
-      // or a write through an untyped alias, `fmt.helper()` runs the
-      // function the property holds now. The direct paths below name the
-      // declaration, so a merge member takes the call through its value.
-      const merged = funduleMemberOf(lowerer, lowerer.resolveValueSymbol(nsMember)) !== null;
-      const generic = merged ? null : lowerer.genericFnOf(nsMember);
-      if (generic) return lowerer.lowerGenericCall(expr, generic);
-      const sig = merged ? null : lowerer.fnSigOf(nsMember);
-      if (sig) {
-        lowerer.noteEdge(sig.name);
-        const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
-        return reconcileOverloadReturn(lowerer, expr, {
-          kind: "call",
-          callee: sig.name,
-          args,
-          type: sig.returnType,
-          loc,
-        });
-      }
-      const callee = lowerer.lowerExpr(nsMember);
-      const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
-      if (checked) return checked;
-      if (callee.type.kind !== "func")
-        lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
-      const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-      return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+      if (!receiverEvaluates)
+        return lowerNsMemberCall(lowerer, expr, expr.expression, nsMember, loc, false);
+      const receiver = lowerer.lowerExpr(expr.expression.expression);
+      const call = lowerNsMemberCall(lowerer, expr, expr.expression, nsMember, loc, true);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc: receiver.loc }],
+        result: call,
+        type: call.type,
+        loc,
+      };
     }
     // An AMBIENT namespace callee (`M.f()` where only `declare
     // namespace M` exists): Node evaluates the callee first and throws
@@ -2712,6 +2674,59 @@ function structuredResultHoldsCopy(lowerer: Lowerer, t: IrType): boolean {
  * calls). tsc guarantees the callee is callable; anything that lowers to
  * a non-func IR type was already rejected while lowering the callee.
  * HYBRID (function-with-properties) values call through their %call slot. */
+/** A call of a namespace member (`N.f(1)`, `ns.f(1)`): the member resolves
+ * like a bare identifier. `receiverEvaluated` says the caller evaluates the
+ * receiver itself before the call (`(await import("./m")).f(1)`): the
+ * module's body ran there, so the source-order fence of a namespace
+ * binding has nothing to guard. Every other fence and path is the same. */
+function lowerNsMemberCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  nsMember: ts.Identifier,
+  loc: SrcLoc,
+  receiverEvaluated: boolean,
+): IrExpr {
+  // A builtin RE-EXPORT FACADE member (`import * as assert from
+  // "./facade.js"` over `export { ok } from "node:assert"` —
+  // a universal re-export facade): builtinMemberOf's alias chase
+  // resolves the builtin module/member, and the spokes own the call
+  // exactly as a direct builtin import. Ordinary user-module
+  // members answer null there and resolve below.
+  const facadeServed = lowerer.lowerNamespaceBuiltinCall(expr, access);
+  if (facadeServed) return facadeServed;
+  const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
+  if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
+  refuseModuleMemberThis(lowerer, expr, nsMember);
+  // A member of a function+namespace merge is an own property of the
+  // function object (lower-fundule.ts), and the qualified call reads
+  // that property as Node does: after `Object.assign(fmt, { helper })`
+  // or a write through an untyped alias, `fmt.helper()` runs the
+  // function the property holds now. The direct paths below name the
+  // declaration, so a merge member takes the call through its value.
+  const merged = funduleMemberOf(lowerer, lowerer.resolveValueSymbol(nsMember)) !== null;
+  const generic = merged ? null : lowerer.genericFnOf(nsMember);
+  if (generic) return lowerer.lowerGenericCall(expr, generic);
+  const sig = merged ? null : lowerer.fnSigOf(nsMember);
+  if (sig) {
+    lowerer.noteEdge(sig.name);
+    const args = lowerer.completeArgs(expr.arguments.nodes, sig.params, loc, expr);
+    return reconcileOverloadReturn(lowerer, expr, {
+      kind: "call",
+      callee: sig.name,
+      args,
+      type: sig.returnType,
+      loc,
+    });
+  }
+  const callee = lowerer.lowerExpr(nsMember);
+  const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+  if (checked) return checked;
+  if (callee.type.kind !== "func") lowerer.badType(access, lowerer.typeOf(access));
+  const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
+  return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+}
+
 function lowerCalleeValueCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   let callee = lowerer.lowerExpr(expr.expression);
   {

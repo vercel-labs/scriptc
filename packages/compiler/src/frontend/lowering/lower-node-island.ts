@@ -23,6 +23,7 @@ import * as ts from "../ts7/adapter.js";
 import { fileWritesBinding } from "../binding-writes.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
@@ -3195,8 +3196,7 @@ export function islandSubclassHeritage(
 ): ts.ExpressionWithTypeArguments | null {
   const islands = lowerer.nodeIslands;
   if (islands === null || decl.name === undefined || !ts.isSourceFile(decl.parent)) return null;
-  const t = decl.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword)?.types
-    ?.nodes[0];
+  const t = extendsElementOf(decl);
   if (t === undefined) return null;
   if (!isForeignType(islands, lowerer.typeOf(t.expression), lowerer.checker)) return null;
   return t;

@@ -7203,6 +7203,7 @@ export class Lowerer {
             (clause) =>
               clause.token === ts.SyntaxKind.ExtendsKeyword &&
               clause.types.nodes.some((base) => {
+                if (!ts.isExpressionWithTypeArguments(base)) return false;
                 const expression = base.expression;
                 if (ts.isCallExpression(expression)) return true;
                 if (ts.isIdentifier(expression) && this.isStdlibGlobal(expression, expression.text))

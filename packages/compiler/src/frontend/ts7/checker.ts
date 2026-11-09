@@ -1,13 +1,13 @@
 import { CheckerCache } from "./checker-cache.js";
-/* The checker facade: 5.9.3-shaped TypeChecker methods over 7.0.2's sync
+/* The checker facade: 5.9.3-shaped TypeChecker methods over 7.1's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
- * of the 7.0.2 client costs 0.1-0.3 ms of IPC per query; the census counted
+ * of the sync client costs 0.1-0.3 ms of IPC per query; the census counted
  * 32,226 checker calls lowering mock-gateway, so a transparent adapter would
  * add seconds. Batched, the same queries run at ~0.005 ms/call — parity with
  * 5.9.3. Three mechanisms make batching and reuse the DEFAULT path:
  *
  * 1. IDENTITY MEMOS. One program-owned Map per query kind, keyed on the client-side
- *    node/type/symbol object. Safe because the 7.0.2 client registry dedupes
+ *    node/type/symbol object. Safe because the client registry dedupes
  *    by server handle id (probe-verified: the same symbol/type from any two
  *    queries is the same object), and a snapshot is immutable — an answer
  *    never changes for the life of the program. The client itself does NOT
@@ -258,7 +258,7 @@ export class CheckerFacade {
   private readonly unknownBatchMethods = new Set<string>();
 
   constructor(
-    /** The underlying 7.0.2 sync checker — exposed for methods the facade
+    /** The underlying 7.1 sync checker — exposed for methods the facade
      * does not shim; going around the facade forfeits memoization only. */
     readonly raw: Checker,
     private readonly options: { autoPrefetch?: boolean; project?: Project } = {},
@@ -921,10 +921,10 @@ export class CheckerFacade {
 
   /** 5.9.3's checker.isTupleType answers true for tuple SHAPES and for
    * REFERENCES to them (Pair<number>, a readonly [T, T] instantiation).
-   * The 7.0.2 client-side Type.isTupleType() sees only the shape — a
-   * reference answers false there (measured; the facade suite pins it) —
-   * so shape-true and non-object-false resolve locally and only object
-   * types that are not visibly tuples round-trip, memoized. */
+   * The client-side Type.isTupleType() answers for a reference, and a tuple
+   * target itself does not qualify there, so references and non-object
+   * types resolve locally and only object types that are not references
+   * round-trip, memoized. */
   isTupleType(type: Type): boolean {
     this.ensureActive();
     if (type.isTupleType()) return true;
@@ -1019,8 +1019,10 @@ export class CheckerFacade {
     return this.intrinsic("boolean", () => this.raw.getBooleanType());
   }
 
-  /** 7.0.2 dropped getAwaitedType (the census's one MISSING checker method).
-   * Shimmed per the survey: unwrap Promise/PromiseLike references through
+  /** 5.9.3's checker.getAwaitedType. A 7.0 server has no such method (the
+   * census's one MISSING checker method), and the facade answers the same
+   * way on both protocols, so it computes the answer client-side per the
+   * survey: unwrap Promise/PromiseLike references through
    * their type argument, distributing over unions. The client cannot BUILD
    * union types, so a union whose arms unwrap to more than one distinct type
    * returns undefined (callers fall back to the input; the census's one call

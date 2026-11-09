@@ -60,6 +60,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { fsStreamClassOf, lowerFsStreamNew } from "./builtins/fs-streams.js";
 import { codeGenerationCalleeOf, lowerCodeGenerationCall } from "./code-generation.js";
 import * as ts from "../ts7/adapter.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import { lowerZlibStreamNew, zlibClassName, zlibStreamModeOf } from "./builtins/compression.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -1944,10 +1945,9 @@ export function guaranteedDecorationThrow(
     if (v === "opaque") return null;
     if (v !== "effectFree") return v;
   }
-  const heritage = decl.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword)
-    ?.types?.nodes[0];
+  const heritage = extendsElementOf(decl)?.expression;
   if (heritage) {
-    const h = withoutParentheses(heritage.expression);
+    const h = withoutParentheses(heritage);
     if (h.kind !== ts.SyntaxKind.NullKeyword && !ts.isIdentifier(h)) return null;
   }
   for (const member of decl.members.nodes) {
@@ -2387,7 +2387,11 @@ export function collectClassShapeInner(
       // (Assigning an instance INTO an interface-typed slot is a separate
       // question, owned by the shape-coercion fences at those sites.)
       if (clause.token === ts.SyntaxKind.ImplementsKeyword) continue;
-      const t = clause.types.nodes[0];
+      // An extends element is an ExpressionWithTypeArguments; the type
+      // reference form names an interface's base type.
+      const element = clause.types.nodes[0];
+      const t =
+        element !== undefined && ts.isExpressionWithTypeArguments(element) ? element : undefined;
       if (familyMode && t) {
         const reference = ts.isPropertyAccessExpression(t.expression)
           ? t.expression.name
@@ -2711,9 +2715,7 @@ export function collectClassShapeInner(
     }
 
     if (base?.localClass && !perEvaluationClass(decl) && !computedBase && !factoryBaseExpression) {
-      const heritage = decl.heritageClauses?.nodes.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-      )?.types?.nodes[0];
+      const heritage = extendsElementOf(decl);
       if (heritage) factoryBaseExpression = heritage.expression;
       else
         lowerer.unsupported("SC1090", decl, "extending a function-local class outside a function");
@@ -7223,9 +7225,7 @@ export function lowerClassExpressionInfo(
     });
     info.localClass = { context: null, bodies: new Map(), captureSources: [], ready: false };
     if (info.base?.localClass) {
-      const baseExpression = expr.heritageClauses?.nodes.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-      )?.types?.nodes[0]?.expression;
+      const baseExpression = extendsElementOf(expr)?.expression;
       if (baseExpression) info.localClass.baseExpression = baseExpression;
     }
   }
@@ -7540,9 +7540,7 @@ function lowerClassValue(
  * (a call, construction, assignment, update, delete, await or yield
  * outside nested functions). */
 function heritageWithEffects(decl: ts.ClassLikeDeclaration): ts.Expression | undefined {
-  const heritage = decl.heritageClauses?.nodes.find(
-    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-  )?.types?.nodes[0]?.expression;
+  const heritage = extendsElementOf(decl)?.expression;
   if (heritage === undefined) return undefined;
   const effects = (node: ts.Node): boolean => {
     if (ts.isFunctionLike(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node))

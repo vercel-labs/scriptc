@@ -1006,9 +1006,10 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/5)
     runs-on: macos-15
-    # Each LLVM differential slice takes 30 to 35 minutes on a hosted runner.
-    # The package/install and link-parity contracts run in their own job
-    # (llvm_artifacts_macos_arm64_contracts), so no slice carries them.
+    # Each LLVM differential slice takes 30 to 40 minutes on a hosted runner.
+    # The package/install and link-parity contracts and the Node island
+    # harness run in their own job (llvm_artifacts_macos_arm64_contracts), so
+    # no slice carries them.
     timeout-minutes: 50
     strategy:
       fail-fast: false
@@ -1035,12 +1036,9 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
-      # Node island tests load Node from a libnode pack, and fail rather
-      # than skip on macOS CI when none is configured.
+      # The corpus's Node island programs load Node from a libnode pack, and
+      # fail rather than skip on macOS CI when none is configured.
       - uses: ./.github/actions/libnode
-      - name: Node island harness
-        if: matrix.shard == 1
-        run: pnpm test tests/harness/node-island packages/libnode-common
       - name: LLVM release/dev differential (${{ matrix.shard }}/5)
         env:
           SCRIPTC_TEST_WORKERS: "4"
@@ -1054,7 +1052,9 @@ jobs:
     # The no-clang object, helper parity, packaged helper and packed npm
     # installation contracts (which also install the host libnode pack): about
     # 12 minutes, which used to run in front of shard 1's differential slice
-    # and took that job to 45-50 minutes.
+    # and took that job to 45-50 minutes. The Node island harness (7 to 10
+    # minutes) runs here for the same reason: in front of shard 1's slice it
+    # kept that job at 43-50 minutes, against the slices' 50-minute limit.
     # Its native CLI build alone can pass 30 minutes on a busy runner.
     timeout-minutes: 50
     steps:
@@ -1078,6 +1078,9 @@ jobs:
       # installation: the same build succeeds with the pack and fails with
       # SC8005 without it.
       - uses: ./.github/actions/libnode
+      # Node island tests fail rather than skip on macOS CI without the pack.
+      - name: Node island harness
+        run: pnpm test tests/harness/node-island packages/libnode-common
       - name: No-clang assembly/object contract
         run: pnpm test packages/cli/test/native-output.test.ts
       - name: Helper diagnostics and object/link parity

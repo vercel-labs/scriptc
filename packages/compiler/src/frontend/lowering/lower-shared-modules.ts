@@ -27,7 +27,7 @@
  * specifier inside a comment or string can only add a candidate (an extra
  * shared module), never lose one. */
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { resolveFrom } from "../../node-islands/resolve.js";
+import { resolveFrom } from "../../node-islands/host.js";
 import { join } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";

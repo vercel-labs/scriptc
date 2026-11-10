@@ -7875,6 +7875,51 @@ function preflightDiagnostics7(
   return { diags, startupCrash: startupCrash ?? linkCrash };
 }
 
+/** The block-comment spans of one source file, in order. Every block comment
+ * is the leading trivia of the first token after it: the token's full start
+ * (which includes the trivia) precedes its start, so the comment opener lies
+ * in `[node.pos, tokenStart)`. Walking the arms rather than the raw text keeps
+ * a `/*` inside a string or a template off the index. */
+export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [number, number])[] {
+  const text = sf.text;
+  const found: [number, number][] = [];
+  const scanned = new Set<number>();
+  const collect = (from: number, to: number): void => {
+    // Search only the trivia span, not the rest of the text: `indexOf` on
+    // `text` runs to the next opener or the end of the file, and a file with
+    // one admitted setter and a large comment-free body gives every node a
+    // trivia span with no opener in it, so the walk would be quadratic in the
+    // file's length.
+    const trivia = text.slice(from, to);
+    let offset = trivia.indexOf("/*");
+    while (offset >= 0) {
+      const open = from + offset;
+      const close = text.indexOf("*/", open + 2);
+      const end = close < 0 ? text.length : close + 2;
+      // A block-comment opener in the leading trivia of several nodes (a
+      // statement and its first token share a full start) is one comment.
+      if (!scanned.has(open)) {
+        scanned.add(open);
+        found.push([open, end]);
+      }
+      offset = trivia.indexOf("/*", end - from);
+    }
+  };
+  let triviaFrom = -1;
+  let triviaTo = -1;
+  ts.walkPreorder(sf, (node) => {
+    const start = ts.tokenStartOfNode(node);
+    if (node.pos < 0 || node.pos >= start) return;
+    // Nodes that share a first token share a trivia span; scan it once.
+    if (node.pos === triviaFrom && start === triviaTo) return;
+    triviaFrom = node.pos;
+    triviaTo = start;
+    collect(node.pos, start);
+  });
+  found.sort((a, b) => a[0] - b[0]);
+  return found.filter((span, index) => index === 0 || span[0] !== found[index - 1]![0]);
+}
+
 /** The tsc gate, and the JavaScript opinion sites it admits on the way: the
  * program's TypeScript errors, filtered to the ones whose files the build
  * compiles, with the project-world second chance. */
@@ -7998,35 +8043,10 @@ function preflightGate7(load: LoadResult): PreflightGate {
    * program carry one file name with different offsets; it lives only for
    * this gate's diagnostics, so a plain Map is enough. */
   const commentSpans = new Map<ts.SourceFile, readonly (readonly [number, number])[]>();
-  const blockCommentSpansOf = (sf: ts.SourceFile): readonly (readonly [number, number])[] => {
+  const commentSpansOf = (sf: ts.SourceFile): readonly (readonly [number, number])[] => {
     let spans = commentSpans.get(sf);
     if (spans !== undefined) return spans;
-    const text = sf.text;
-    const found: [number, number][] = [];
-    const scanned = new Set<number>();
-    const collect = (from: number, to: number): void => {
-      let open = text.indexOf("/*", from);
-      while (open >= 0 && open < to) {
-        const close = text.indexOf("*/", open + 2);
-        const end = close < 0 ? text.length : close + 2;
-        // A block-comment opener in the leading trivia of several nodes (a
-        // statement and its first token share a full start) is one comment.
-        if (!scanned.has(open)) {
-          scanned.add(open);
-          found.push([open, end]);
-        }
-        open = text.indexOf("/*", end);
-      }
-    };
-    // Every comment is the leading trivia of the first token after it: the
-    // token's full start precedes its start. Walking the arms (not the raw
-    // text) keeps a `/*` inside a string or a template off the index.
-    ts.walkPreorder(sf, (node) => {
-      const start = ts.tokenStartOfNode(node);
-      if (node.pos >= 0 && node.pos < start) collect(node.pos, start);
-    });
-    found.sort((a, b) => a[0] - b[0]);
-    spans = found.filter((span, index) => index === 0 || span[0] !== found[index - 1]![0]);
+    spans = blockCommentSpansOf(sf);
     commentSpans.set(sf, spans);
     return spans;
   };
@@ -8036,7 +8056,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     if (d.pos === undefined || d.end === undefined) return false;
     const sf = p.getSourceFile(d.fileName);
     if (sf === undefined) return false;
-    const spans = blockCommentSpansOf(sf);
+    const spans = commentSpansOf(sf);
     let low = 0;
     let high = spans.length - 1;
     while (low <= high) {

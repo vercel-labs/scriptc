@@ -29,3 +29,26 @@ try {
 } catch (error) {
   console.log(error.message);
 }
+// A parenthesized operand is the same discarded negation.
+!(register());
+// Only the negation whose operand the diagnostic was reported on is
+// discarded: an admitted discarded negation nested inside an IIFE leaves the
+// IIFE's negation around it consuming the boolean it reads.
+console.log(
+  !(function () {
+    !register();
+    return false;
+  })(),
+);
+console.log(
+  !(() => {
+    !register();
+    return false;
+  })(),
+);
+if (!(function () {
+  !register();
+  return 0;
+})())
+  console.log("truthy result negated");
+

@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { checkPreflight, loadProgram } from "./program-node.js";
+import { blockCommentSpansOf, checkPreflight, loadProgram } from "./program-node.js";
 
 function diagnostics(library: string, extension = "js") {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-jsdoc-setter-"));
@@ -93,6 +93,45 @@ test("a dependency can document many setters", () => {
 }`,
   ).join("\n");
   expect(diagnostics(bindings)).toEqual([]);
+});
+
+test("comment indexing over a large comment-free body stays linear", () => {
+  // One documented setter makes preflight index its file's block comments,
+  // walking every node's leading trivia. Searching the whole text from each
+  // span ran to the next opener or the end of the file, and a comment-free
+  // body has a span for every node and no opener: this file took about ten
+  // seconds to index. Bounded to the span it takes milliseconds; the bound
+  // leaves a slow machine an order of magnitude.
+  const body = Array.from(
+    { length: 64_000 },
+    (_, index) => `const value${index} = ${index} + ${index * 2};`,
+  );
+  const source = `${CLASS_SETTER}\n${body.join("\n")}`;
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-jsdoc-setter-"));
+  try {
+    writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+    writeFileSync(join(directory, "library.js"), source);
+    writeFileSync(
+      join(directory, "main.ts"),
+      'import * as library from "./library.js"; console.log(library);',
+    );
+    const load = loadProgram(join(directory, "main.ts"));
+    try {
+      const sf = load.program.getSourceFiles().find((file) => file.fileName.endsWith("library.js"));
+      expect(sf).toBeDefined();
+      const started = performance.now();
+      const spans = blockCommentSpansOf(sf!);
+      const elapsed = performance.now() - started;
+      expect(spans.map(([start, end]) => source.slice(start, end))).toEqual([
+        "/** @param {string | null} [next] */",
+      ]);
+      expect(elapsed).toBeLessThan(1_000);
+    } finally {
+      load.dispose();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("a JSX snapshot and the lowered program agree on the comment spans", () => {

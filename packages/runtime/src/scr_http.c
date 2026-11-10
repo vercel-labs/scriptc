@@ -1526,13 +1526,17 @@ static void scr_http_res_set_headers_pair(void *ctx, ScrStr *name, ScrStr *value
   scr_dyn_release(boxed);
 }
 
-bool scr_fetch_headers_each(const ScrDyn *value,
-                            void (*visit)(void *ctx, ScrStr *name, ScrStr *value), void *ctx);
+/* The fetch unit's Headers walk, installed when that unit is linked (as the
+ * h2 ops are): a program without it has no Headers to pass. */
+static SCR_TL ScrHttpHeadersEach scr_http_headers_each = NULL;
+
+void scr_http_set_headers_each(ScrHttpHeadersEach each) { scr_http_headers_each = each; }
 
 void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/) {
   if (!scr_http_res_headers_unsent(r, "set")) return;
   ScrHttpSetHeaders s = {r, NULL};
-  if (!scr_fetch_headers_each(headers, &scr_http_res_set_headers_pair, &s)) {
+  if (scr_http_headers_each == NULL ||
+      !scr_http_headers_each(headers, &scr_http_res_set_headers_pair, &s)) {
     if (headers->kind != SCR_DYN_HANDLE || headers->v.handle.tag != SCR_DYNH_MAP) {
       scr_dyn_arg_type_fail("headers", "an instance of Headers or Map", headers);
       return;

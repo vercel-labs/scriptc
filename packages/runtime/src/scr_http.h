@@ -145,6 +145,9 @@ void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *v
  * may throw ERR_HTTP_INVALID_HEADER_VALUE. */
 void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/);
+typedef bool (*ScrHttpHeadersEach)(const ScrDyn *value,
+                                   void (*visit)(void *ctx, ScrStr *name, ScrStr *value), void *ctx);
+void scr_http_set_headers_each(ScrHttpHeadersEach each);
 void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *value /*borrowed*/);
 void scr_http_res_write_head(ScrHttpRes *r, double status);
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/, ScrArr *values /*borrowed*/);

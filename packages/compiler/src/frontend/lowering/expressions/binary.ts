@@ -2841,14 +2841,43 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // The prefix runs before the result reads an operand left in place, so
     // a hoisted right operand would run before a left operand that reads a
     // variable or a field: `local + (local = "x")` must read `local` first.
-    // Only a literal cannot observe what the right operand does.
+    // The left operand stays in place only when it is a literal or when the
+    // right operand only reads (`c + rest.length`); any other kind of
+    // expression on the right, an assignment or a call among them, might
+    // write what the left one reads.
     const literal = (operand: IrExpr): boolean =>
       operand.kind === "strLit" ||
       operand.kind === "numLit" ||
       operand.kind === "boolLit" ||
       operand.kind === "unitLit";
+    const readsOnly = (operand: IrExpr): boolean => {
+      switch (operand.kind) {
+        case "strLit":
+        case "numLit":
+        case "boolLit":
+        case "unitLit":
+        case "varRef":
+          return true;
+        case "fieldGet":
+        case "recordGet":
+          return readsOnly(operand.obj);
+        case "unionNarrow":
+        case "downcast":
+        case "unionIsTag":
+        case "unionWrap":
+          return readsOnly(operand.value);
+        case "arrIntrinsic":
+          return operand.method === "length" && readsOnly(operand.receiver);
+        case "ternary":
+          return readsOnly(operand.cond) && readsOnly(operand.then) && readsOnly(operand.else_);
+        default:
+          return false;
+      }
+    };
     const stableLeft =
-      repeatable(left) && (repeatable(right) || literal(left)) ? left : hoist(left);
+      repeatable(left) && (repeatable(right) || literal(left) || readsOnly(right))
+        ? left
+        : hoist(left);
     const stableRight = repeatable(right) ? right : hoist(right);
     const leftString = lowerer.ensureString(stableLeft, expr.left);
     const rightString = lowerer.ensureString(stableRight, expr.right);

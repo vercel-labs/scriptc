@@ -4340,7 +4340,7 @@ static void scr_record_source_disposed(void *rec) {
 static void scr_record_link_disposed(void *copy);
 static SCR_TL size_t scr_record_link_count;
 
-static void scr_dispose_observers(void *object) {
+static __attribute__((noinline)) void scr_dispose_observed(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
    * a program without the fact has no table to consult. */
@@ -4349,6 +4349,22 @@ static void scr_dispose_observers(void *object) {
   if (scr_weak_maybe_key(object)) scr_weak_disposed(object);
   if (scr_record_source_count) scr_record_source_disposed(object);
   if (scr_record_link_count) scr_record_link_disposed(object);
+}
+
+/* Once installed, the hook runs for every native object the program frees,
+ * and nearly all of them have no observer: the tests that say so stay in
+ * this leaf, which keeps no register and builds no frame, and the work for
+ * an object that may be observed is out of line. */
+static void scr_dispose_observers(void *object) {
+  bool observed = scr_weak_maybe_key(object) || scr_record_link_count != 0;
+  if (!observed && scr_record_source_count) {
+    size_t bit = scr_record_source_filter_bit(object);
+    observed = (scr_record_source_filter[bit >> 6] & (UINT64_C(1) << (bit & 63))) != 0;
+  }
+#ifdef SCR_JS_OBJECT_MODEL
+  observed = observed || scr_js_buffer_ops != NULL;
+#endif
+  if (__builtin_expect(observed, 0)) scr_dispose_observed(object);
 }
 
 #ifdef SCR_JS_OBJECT_MODEL

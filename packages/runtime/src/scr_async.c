@@ -6222,7 +6222,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   st->ready = 0;
   st->cap_ms = -1;
   /* Quiescent before the poll phase: the turn's scheduled cycle collection. */
-  if (st->phase == SCR_NODE_IO_PREPARE) scr_cyc_collect_scheduled();
+  if (st->phase == SCR_NODE_IO_PREPARE) scr_cyc_collect_turn();
   bool kids = scr_loop_children != NULL && scr_loop_children->pending();
   bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
   bool kids_failed = scr_loop_children != NULL && scr_loop_children->failed_pending();
@@ -6554,12 +6554,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     }
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
-    /* Quiescent between turns (microtasks drained, nothing running):
-     * collect any cycles the turn left behind. One SCHEDULED pass — almost
-     * always a nursery one, sized to the turn's own garbage. A full sweep
-     * here would walk the whole live heap every turn, which is precisely
-     * what the generations exist to avoid. No-op on an empty buffer. */
-    scr_cyc_collect_scheduled();
+    /* Quiescent between turns (microtasks drained, nothing running): the
+     * turn's collection decision. A turn is not a measure of garbage, so
+     * the nursery waits for the release path's rules, for its candidates
+     * to age, or for the loop's idle moment (scr_cyc_collect_turn); a full
+     * sweep here would walk the whole live heap every turn, which is
+     * precisely what the generations exist to avoid. */
+    scr_cyc_collect_turn();
     /* Completed callback-style worker jobs are delivered on the main
      * runtime thread. A worker may have finished while synchronous user code
      * occupied that thread. Deliver exactly one completion per checkpoint:

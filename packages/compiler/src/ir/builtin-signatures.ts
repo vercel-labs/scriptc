@@ -326,12 +326,22 @@ function buildLibFnSignatures() {
      * pointer test, false for equal keys boxed elsewhere. Guards fast paths
      * whose fallback handles every other value. The key is a literal. */
     "dyn.typedRefKeyIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** A capsule boxed by this program from this class or from a class below
+     * it: key pointer tests only, false for equal keys boxed elsewhere and
+     * for a capsule boxed from a class above it. Its instance then has the
+     * class's layout prefix (narrowed-class-chains.ts). The key is a literal. */
+    "dyn.typedRefKeyIn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.classIs": { argTypes: [DYN, STRING], result: BOOL },
     /** A generated class table's indexed dispatch: the receiver's class key
      * folded to the case it selects, or -1 for a value that is not a capsule
      * or whose key is shorter than four bytes. The table switches on it and
      * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
-    "dyn.classHash": { argTypes: [DYN], result: F64 },
+    /** A generated class table's dispatch over the module's class key table
+     * (IrModule.classKeys): the index in that list of the class whose key
+     * the receiver's capsule carries, or -1 for a value that is no capsule
+     * and for a capsule of a class the list does not hold. The table
+     * switches on it and keeps its exact key guards. */
+    "dyn.classKeySlot": { argTypes: [DYN], result: F64 },
     /** The index of a table of class values (`dyn.classIs` branches: `x
      * instanceof C`, `new C()` and static members of an untyped
      * constructor): a function value's signature key folded to one of

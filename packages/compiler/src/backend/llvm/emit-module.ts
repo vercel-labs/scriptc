@@ -91,6 +91,7 @@ import {
 } from "./cpu-dispatch.js";
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
+import { CLASS_KEY_LEN_MIX } from "../../ir/class-key-index.js";
 import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
 import {
   type FunctionLayout,
@@ -339,6 +340,81 @@ function partitionGroupLines(functions: readonly IrFunction[]): string[] {
 
 /** Ends the group of the definitions that follow. */
 const PARTITION_GROUP_END = "; scriptc-group";
+
+/** `i32 @<table>_find(ptr key, i32 len)`: the slot of the class key table
+ * (emitter.classKeySlots) whose key has these bytes, or -1. It answers for
+ * a capsule whose class key lives outside the table (boxed by the runtime
+ * or by another compilation unit); its caller has checked that the key
+ * holds eight bytes or more. A switch on the key's length and last four
+ * bytes selects the slots to compare, most often one, and
+ * each is compared by its length and then its bytes, a word at a time:
+ * what scr_dyn_typed_ref_is compares. Written only for a module with a site
+ * that calls it (emitter.needsClassKeyFind). */
+function classKeyFind(emitter: LlEmitter): string[] {
+  const symbol = emitter.classKeysSymbol!;
+  // A little-endian word of a key's bytes, as the emitted loads read it.
+  const word = (bytes: Uint8Array, at: number, size: number): bigint => {
+    let value = 0n;
+    for (let i = size - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[at + i]!);
+    return value;
+  };
+  const byHash = new Map<number, { bytes: Uint8Array; slot: number }[]>();
+  for (const [key, slot] of emitter.classKeySlots) {
+    const bytes = Buffer.from(key, "utf8");
+    const tail = Number(word(bytes, bytes.length - 4, 4));
+    const hash = (Math.imul(bytes.length, CLASS_KEY_LEN_MIX) + tail) & 0x7fffffff;
+    const ofHash = byHash.get(hash);
+    if (ofHash) ofHash.push({ bytes, slot });
+    else byHash.set(hash, [{ bytes, slot }]);
+  }
+  const groups = [...byHash];
+  const lines = [
+    `define internal i32 @${symbol}_find(ptr %key, i32 %len) noinline {`,
+    `entry:`,
+    `  %tail.at = sub i32 %len, 4`,
+    `  %tail.ptr = getelementptr inbounds i8, ptr %key, i32 %tail.at`,
+    `  %tail = load i32, ptr %tail.ptr, align 1`,
+    `  %mixed = mul i32 %len, ${CLASS_KEY_LEN_MIX}`,
+    `  %sum = add i32 %mixed, %tail`,
+    `  %hash = and i32 %sum, 2147483647`,
+    `  switch i32 %hash, label %miss [`,
+    ...groups.map(([hash], group) => `    i32 ${hash}, label %h${group}.0`),
+    `  ]`,
+  ];
+  groups.forEach(([, candidates], group) => {
+    candidates.forEach(({ bytes, slot }, index) => {
+      const at = `h${group}.${index}`;
+      const next = index + 1 < candidates.length ? `h${group}.${index + 1}` : "miss";
+      // Whole words from the key's start, and its last eight bytes.
+      const offsets: number[] = [];
+      for (let offset = 0; offset + 8 <= bytes.length; offset += 8) offsets.push(offset);
+      if (bytes.length % 8 !== 0) offsets.push(bytes.length - 8);
+      lines.push(
+        `${at}:`,
+        `  %${at}.len = icmp eq i32 %len, ${bytes.length}`,
+        `  br i1 %${at}.len, label %${at}.bytes, label %${next}`,
+        `${at}.bytes:`,
+      );
+      let all = "true";
+      offsets.forEach((offset, n) => {
+        lines.push(
+          `  %${at}.p${n} = getelementptr inbounds i8, ptr %key, i32 ${offset}`,
+          `  %${at}.w${n} = load i64, ptr %${at}.p${n}, align 1`,
+          `  %${at}.e${n} = icmp eq i64 %${at}.w${n}, ${word(bytes, offset, 8)}`,
+          `  %${at}.a${n} = and i1 ${all}, %${at}.e${n}`,
+        );
+        all = `%${at}.a${n}`;
+      });
+      lines.push(
+        `  br i1 ${all}, label %${at}.hit, label %${next}`,
+        `${at}.hit:`,
+        `  ret i32 ${slot}`,
+      );
+    });
+  });
+  lines.push(`miss:`, `  ret i32 -1`, `}`);
+  return lines;
+}
 
 /** Written before the entry module's top-level code (its `%init.<n>`). The
  * LLVM helper gives that function and the chain that follows it a partition
@@ -1297,6 +1373,19 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (emitter.templateStringsInstances.size > 0) out.push(``);
+  if (emitter.classKeysSymbol !== null) {
+    // The class key table (emitter.classKeySlots): one slot per class, its
+    // key NUL-terminated and padded with NULs to the module's slot size.
+    const keys = [...emitter.classKeySlots.keys()];
+    const size = emitter.classKeySlotBytes;
+    const bytes = keys
+      .map((key) => llStrBytes(key) + "\\00".repeat(size - Buffer.byteLength(key, "utf8") - 1))
+      .join("");
+    out.push(
+      `@${emitter.classKeysSymbol} = internal constant [${keys.length * size} x i8] c"${bytes}"`,
+      ``,
+    );
+  }
   for (const [text, c] of emitter.cstrs) {
     // NUL-terminated byte-array constants for scr_jb_puts and indentation.
     out.push(`@${c.sym} = internal constant [${c.len + 1} x i8] c"${llStrBytes(text)}"`);
@@ -1985,6 +2074,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
       "scriptc: TypeError: record has no key (typed slot — no undefined is representable)\n",
     );
   }
+  if (emitter.classKeysSymbol !== null && emitter.needsClassKeyFind)
+    defs.push(...classKeyFind(emitter), ``);
   if (emitter.needsRetainBox) {
     // scr_box_retain is a static inline (increment-unless-immortal);
     // emitted once with internal linkage, like the record retains.

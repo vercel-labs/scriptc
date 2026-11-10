@@ -24,6 +24,7 @@ import {
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
 import { InternalCompilerError } from "../../errors.js";
+import { classKeySlotBytes } from "../../ir/class-key-index.js";
 import { serializeModuleParts } from "../../ir/serialize.js";
 import { createHash } from "node:crypto";
 import {
@@ -1760,6 +1761,18 @@ export class LlEmitter {
   /** Interned NUL-terminated C-string constants (scr_jb_puts labels, the
    * stringify indent text): UTF-8 text → { symbol, byte length }. */
   readonly cstrs = new Map<string, { sym: string; len: number }>();
+  /** The module's class key table (IrModule.classKeys): the type keys of
+   * the classes the program boxes, in class pre-order, each in a slot of
+   * classKeySlotBytes bytes of one constant. Key text → slot index.
+   * cstr answers a table key's slot, so every site that boxes a class and
+   * every site that tests a capsule's key name the same address. */
+  readonly classKeySlots: ReadonlyMap<string, number>;
+  /** The bytes of one slot of this module's table (ir/class-key-index.ts
+   * classKeySlotBytes): a power of two that holds the module's longest key. */
+  readonly classKeySlotBytes: number;
+  /** The table's symbol, named by its keys; null when the module lists no
+   * class, and then no table is written. */
+  readonly classKeysSymbol: string | null;
   /** Interned ScrMapOps descriptors (scr_map.h): initializer → symbol. */
   readonly mapOpsConsts = new Map<string, string>();
   /** Element data of the numeric array literals that become static tables
@@ -1799,6 +1812,11 @@ export class LlEmitter {
   needsBadTag = false;
   needsBadKey = false;
   needsRetainBox = false;
+  /** A class table's discriminant (`dyn.classKeySlot`) calls the class key
+   * table's lookup function (emit-module.ts classKeyFind). It is written
+   * only then: a program that boxes classes and dispatches on none pays no
+   * code for it. */
+  needsClassKeyFind = false;
   /** Inline RC fast-path helpers requested by call sites (shapes.ts); null
    * when inline RC is off. */
   readonly rcHelpers: Set<string> | null;
@@ -2498,6 +2516,15 @@ export class LlEmitter {
     previousIndex?: IrNodeIndex,
   ) {
     this.targetOptions = options;
+    // The table's symbol is the first content symbol every emitter of the
+    // module takes, so the emitters of its function ranges name it alike.
+    const classKeys = (mod.classKeys ?? []).map((className) =>
+      typeKey({ kind: "object", className }),
+    );
+    this.classKeySlotBytes = classKeySlotBytes(classKeys);
+    this.classKeySlots = new Map(classKeys.map((key, slot) => [key, slot]));
+    this.classKeysSymbol =
+      classKeys.length > 0 ? this.contentSymbol("sc_class_keys_", classKeys.join("\0")) : null;
     this.journal = journal;
     this.journaled =
       journal !== null ||
@@ -2965,6 +2992,15 @@ export class LlEmitter {
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
       classSubtypes: (name) => this.classSubtypes(name),
+      classKeyTable: () =>
+        this.classKeysSymbol === null
+          ? null
+          : {
+              symbol: this.classKeysSymbol,
+              count: this.classKeySlots.size,
+              slotBytes: this.classKeySlotBytes,
+            },
+      classKeyRun: (names) => this.classKeyRun(names),
       classHolders: (name) => this.classHolders(name),
       classMembership: (B, object, staticClassName, className) =>
         emitClassMembership(
@@ -4360,6 +4396,8 @@ export class LlEmitter {
   /** Interned NUL-terminated C-string constant (the scr_jb_puts /
    * stringify-indent currency) — `@`-ref, first-use order. */
   cstr(text: string): string {
+    const slot = this.classKeySlots.get(text);
+    if (slot !== undefined) return this.classKeyRef(slot);
     let c = this.cstrs.get(text);
     if (!c) {
       c = { sym: this.contentSymbol("sc_cs_", text), len: Buffer.byteLength(text, "utf8") };
@@ -4367,6 +4405,34 @@ export class LlEmitter {
     }
     this.journal?.entry("cstr", text, c);
     return `@${c.sym}`;
+  }
+
+  /** The address of a slot of the class key table: a constant expression,
+   * usable wherever a constant's `@`-ref is. */
+  classKeyRef(slot: number): string {
+    return `getelementptr inbounds (i8, ptr @${this.classKeysSymbol}, i64 ${slot * this.classKeySlotBytes})`;
+  }
+
+  /** The slots of the table's classes among `classNames`, which are a
+   * class and the classes below it: one run, since the table is in class
+   * pre-order. Null when the table holds none of them. A key pointer in
+   * the table and outside the run is none of them: a class the table
+   * lacks has a key constant of its own, of another text. */
+  classKeyRun(classNames: readonly string[]): { first: number; count: number } | null {
+    let first = Infinity,
+      last = -1,
+      found = 0;
+    for (const className of classNames) {
+      const slot = this.classKeySlots.get(typeKey({ kind: "object", className }));
+      if (slot === undefined) continue;
+      found++;
+      first = Math.min(first, slot);
+      last = Math.max(last, slot);
+    }
+    if (found === 0) return null;
+    // A list that is not one hierarchy's would leave a gap: no run then.
+    if (last - first + 1 !== found) return null;
+    return { first, count: found };
   }
 
   /** The method-id slot for a constant method name (methodIdSlots). */
@@ -7121,6 +7187,7 @@ export class LlEmitter {
         needsBadTag: this.needsBadTag,
         needsBadKey: this.needsBadKey,
         needsRetainBox: this.needsRetainBox,
+        needsClassKeyFind: this.needsClassKeyFind,
       },
       publishedNamesSym: this.publishedNamesSym,
       rcHelpers: this.rcHelpers === null ? [] : [...this.rcHelpers],
@@ -7160,6 +7227,7 @@ export class LlEmitter {
     this.needsBadTag ||= flags.needsBadTag;
     this.needsBadKey ||= flags.needsBadKey;
     this.needsRetainBox ||= flags.needsRetainBox;
+    this.needsClassKeyFind ||= flags.needsClassKeyFind;
     this.publishedNamesSym ??= chunk.publishedNamesSym;
     if (this.rcHelpers !== null) for (const key of chunk.rcHelpers) this.rcHelpers.add(key);
     for (const name of chunk.immortalValues) this.immortalValues.add(name);

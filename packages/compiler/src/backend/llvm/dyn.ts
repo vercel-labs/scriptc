@@ -311,6 +311,12 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
+  /** The module's class key table (emitter.classKeySlots): its symbol, its
+   * number of slots and the bytes of one slot, or null without one. */
+  classKeyTable?(): { symbol: string; count: number; slotBytes: number } | null;
+  /** The table's run of slots for a class and the classes below it
+   * (emitter.classKeyRun). */
+  classKeyRun?(classNames: readonly string[]): { first: number; count: number } | null;
   /** The classes outside `classSubtypes(className)` that an instance of
    * `className` can be statically typed as: its ancestors (emitter.ts
    * classHolders), nearest first. */
@@ -2259,22 +2265,118 @@ export class LlDyn {
     return view;
   }
 
+  /** Whether `%d` is a capsule boxed under one of `types`. A capsule boxed
+   * by this program carries its key constant itself, so one load and a
+   * pointer test per key answer for it. Only a capsule with another key
+   * pointer (boxed by the runtime or by another compilation unit) has its
+   * name compared, and a value that is no capsule compares nothing. */
   private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
+    if (types.length === 0) return "false";
     this.host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
-    let matched = "false";
-    for (const type of types) {
-      const key = typeKey(type);
-      const next = B.tmp();
-      B.line(
-        `${next} = call zeroext i1 @scr_dyn_typed_ref_is(ptr %d, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
-      );
-      if (matched === "false") matched = next;
-      else {
-        const either = B.tmp();
-        B.line(`${either} = or i1 ${matched}, ${next}`);
-        matched = either;
-      }
+    const keys = types.map((type) => typeKey(type));
+    const either = (tests: readonly string[]): string =>
+      tests.reduce((any, test) => {
+        const or = B.tmp();
+        B.line(`${or} = or i1 ${any}, ${test}`);
+        return or;
+      });
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i1`);
+    B.line(`store i1 false, ptr ${slot}`);
+    const present = B.tmp();
+    const inspect = B.newLabel("dc.keys.inspect");
+    const capsule = B.newLabel("dc.keys.capsule");
+    const names = B.newLabel("dc.keys.names");
+    const done = B.newLabel("dc.keys.done");
+    B.line(`${present} = icmp ne ptr %d, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const typed = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    B.condBr(typed, capsule, done);
+    B.startBlock(capsule);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    // The module's class key table holds the keys of the classes the
+    // program boxes, in class pre-order, in slots of one size: a class and
+    // the classes below it are one run of slots, so one subtraction and
+    // one unsigned compare answer for all of them, whatever their number.
+    // A test that names no class of the table reads no table: its keys are
+    // constants of their own, and the code it would add to every checked
+    // conversion of the program is paid by programs that never test a class.
+    const moduleTable = this.host.classKeyTable?.() ?? null;
+    const table =
+      moduleTable !== null &&
+      types.some(
+        (type) => type.kind === "object" && this.host.classKeyRun!([type.className]) !== null,
+      )
+        ? moduleTable
+        : null;
+    const classNames = types.every((type) => type.kind === "object")
+      ? types.map((type) => (type as IrType & { kind: "object" }).className)
+      : null;
+    const run = table !== null && classNames !== null ? this.host.classKeyRun!(classNames) : null;
+    // The key pointer's distance from the table: below the table's size
+    // for a capsule this program boxed from one of the table's classes.
+    const distance = B.tmp();
+    if (table !== null) {
+      const keyAt = B.tmp();
+      B.line(`${keyAt} = ptrtoint ptr ${keyPtr} to ${this.S}`);
+      B.line(`${distance} = sub ${this.S} ${keyAt}, ptrtoint (ptr @${table.symbol} to ${this.S})`);
     }
+    const tests: string[] = [];
+    if (run !== null) {
+      const fromRun = B.tmp(),
+        hit = B.tmp();
+      B.line(`${fromRun} = sub ${this.S} ${distance}, ${run.first * table!.slotBytes}`);
+      B.line(`${hit} = icmp ult ${this.S} ${fromRun}, ${run.count * table!.slotBytes}`);
+      tests.push(hit);
+    }
+    for (const type of types) {
+      // The run answers for its classes; every other key is compared by
+      // its own address. The class is read through the narrowed type: the
+      // compiler refuses to build a read through an asserted record of a
+      // value with several arms (SC1090), and it builds itself.
+      if (run !== null && type.kind === "object" && this.host.classKeyRun!([type.className]))
+        continue;
+      const hit = B.tmp();
+      B.line(`${hit} = icmp eq ptr ${keyPtr}, ${this.host.cstr(typeKey(type))}`);
+      tests.push(hit);
+    }
+    const same = either(tests);
+    B.line(`store i1 true, ptr ${slot}`);
+    if (table === null) B.condBr(same, done, names);
+    else {
+      // A key pointer inside the table that matched no test above names
+      // another class of the table: its text is none of these keys', so the
+      // name comparisons below would all answer false.
+      const elsewhere = B.newLabel("dc.keys.elsewhere");
+      B.condBr(same, done, elsewhere);
+      B.startBlock(elsewhere);
+      const inside = B.tmp();
+      B.line(`store i1 false, ptr ${slot}`);
+      B.line(`${inside} = icmp ult ${this.S} ${distance}, ${table.count * table.slotBytes}`);
+      B.condBr(inside, done, names);
+    }
+    B.startBlock(names);
+    const named = either(
+      keys.map((key) => {
+        const hit = B.tmp();
+        B.line(
+          `${hit} = call zeroext i1 @scr_dyn_typed_ref_is(ptr %d, ptr ${this.host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
+        );
+        return hit;
+      }),
+    );
+    B.line(`store i1 ${named}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(done);
+    const matched = B.tmp();
+    B.line(`${matched} = load i1, ptr ${slot}`);
     return matched;
   }
 

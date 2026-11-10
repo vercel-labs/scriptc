@@ -12,7 +12,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
-import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
+import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType, typeKey } from "../../ir/ir.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
@@ -27,7 +27,11 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
-import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
+import {
+  CLASS_KEY_LEN_MIX,
+  CLASS_KEY_PREFIX,
+  CLASS_VALUE_SLOT_MIX,
+} from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
@@ -36,6 +40,38 @@ import { RECORD_SOURCES_GATE } from "./alloc.js";
 
 /** ScrDyn.v.typed_ref.type_key_len: the low 27 bits of its bit-field word. */
 const TYPE_KEY_LEN_MASK = (1 << 27) - 1;
+
+/** The most classes below a class whose keys `dyn.typedRefKeyIn` compares
+ * in line, one pointer test each. A capsule boxed from a class of a larger
+ * tree fails the test unless its key is the class's own, and the caller's
+ * other arm answers it: the test is a proof, never the answer for a value
+ * it rejects. */
+const MAX_CLASS_KEYS_BELOW = 8;
+
+/** The keys of the classes strictly below the class `key` names, or none
+ * when there are more than MAX_CLASS_KEYS_BELOW of them (or the module has
+ * no such class, so nothing boxes that key). Their instances start with the
+ * class's own layout. */
+function classKeysBelow(host: LlvmEmitterContext, key: string): string[] {
+  const className = key.startsWith("object:") ? key.slice("object:".length) : null;
+  const target = className === null ? undefined : host.classMeta.get(className);
+  if (target === undefined) return [];
+  // The physical layout tree, not the membership intervals: a generic
+  // family's members answer one class test with different layouts.
+  const below: string[] = [];
+  for (const meta of host.classMeta.values())
+    if (target.pre < meta.pre && meta.pre <= target.post)
+      below.push(typeKey({ kind: "object", className: meta.def.name }));
+  return below.length > MAX_CLASS_KEYS_BELOW ? [] : below;
+}
+
+/** A key's first eight bytes as a little-endian word, masked to the bytes
+ * of CLASS_KEY_PREFIX, and the word those bytes are in a class key. */
+const CLASS_KEY_PREFIX_MASK = (1n << BigInt(8 * CLASS_KEY_PREFIX.length)) - 1n;
+const CLASS_KEY_PREFIX_WORD = [...CLASS_KEY_PREFIX].reduceRight(
+  (word, char) => (word << 8n) | BigInt(char.charCodeAt(0)),
+  0n,
+);
 
 export function emitAssertInspectLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -560,10 +596,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return value;
   }
-  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
+  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs" || e.fn === "dyn.typedRefKeyIn") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
-    if (e.fn === "dyn.typedRefKeyIs" && literal === null)
-      throw new InternalCompilerError("llvm emitter bug: dyn.typedRefKeyIs needs a literal key");
+    if (e.fn !== "dyn.typedRefIs" && literal === null)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} needs a literal key`);
     // A literal brand cannot replace the receiver while being evaluated.
     // Generated class dispatch uses these probes repeatedly on one local.
     const value = literal !== null ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
@@ -597,8 +633,29 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       );
       B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
       B.line(`${same} = icmp eq ptr ${keyPtr}, ${host.cstr(literal)}`);
-      if (e.fn === "dyn.typedRefKeyIs") {
+      const below = e.fn === "dyn.typedRefKeyIn" ? classKeysBelow(host, literal) : [];
+      if (e.fn === "dyn.typedRefKeyIs" || (e.fn === "dyn.typedRefKeyIn" && below.length === 0)) {
         B.line(`store i1 ${same}, ptr ${slot}`);
+        B.br(done);
+      } else if (e.fn === "dyn.typedRefKeyIn") {
+        // The class's own key answers first; the keys of the classes below
+        // it are compared only for a capsule boxed from another class.
+        const rest = B.newLabel("brand.below");
+        B.line(`store i1 true, ptr ${slot}`);
+        B.condBr(same, done, rest);
+        B.startBlock(rest);
+        let any: string | undefined;
+        for (const key of below) {
+          const hit = B.tmp();
+          B.line(`${hit} = icmp eq ptr ${keyPtr}, ${host.cstr(key)}`);
+          if (any === undefined) any = hit;
+          else {
+            const either = B.tmp();
+            B.line(`${either} = or i1 ${any}, ${hit}`);
+            any = either;
+          }
+        }
+        B.line(`store i1 ${any!}, ptr ${slot}`);
         B.br(done);
       } else {
         const compare = B.newLabel("brand.compare");
@@ -688,68 +745,100 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${result} = load i1, ptr ${slot}`);
     return { name: result, type: e.type };
   }
-  if (e.fn === "dyn.classHash") {
-    // A generated class table's discriminant: the switch dispatches on the
-    // length and last four bytes of the capsule's class key, the fields a
-    // class branch's own key test compares, so the table's branches (each
-    // still guarded by its own key test) are reached without walking the
-    // chain. A value that is not a capsule, a capsule without a key, and a
-    // key shorter than the four bytes this reads answer -1, which no case
-    // matches, and the switch's fallthrough takes the statements after it;
-    // no branch of the table can match such a value either.
+  if (e.fn === "dyn.classKeySlot") {
+    // A generated class table's discriminant over the module's class key
+    // table: the slot of the capsule's key. A capsule this program boxed
+    // carries a slot's address, so its slot is its key pointer's distance
+    // from the table. A capsule whose key lives elsewhere (boxed by the
+    // runtime or by another compilation unit) has its key compared with
+    // each slot's, by length and bytes: what the branches' own key tests
+    // compare. A value that is no capsule, and a key no slot holds, answer
+    // -1, which no case matches.
+    const symbol = host.classKeysSymbol;
+    if (symbol === null)
+      throw new InternalCompilerError(
+        "llvm emitter bug: dyn.classKeySlot without a class key table",
+      );
+    const count = host.classKeySlots.size;
+    const slotBytes = host.classKeySlotBytes;
+    const S = host.sizeType;
     const value = host.emitReadReceiver(e.args[0]!);
     const slot = B.slot();
     B.entryAllocas.push(`${slot} = alloca i32`);
     B.line(`store i32 -1, ptr ${slot}`);
     const present = B.tmp();
-    const inspect = B.newLabel("class.hash.inspect");
-    const hashed = B.newLabel("class.hash.hashed");
-    const done = B.newLabel("class.hash.done");
+    const inspect = B.newLabel("class.slot.inspect");
+    const capsule = B.newLabel("class.slot.capsule");
+    const inside = B.newLabel("class.slot.inside");
+    const outside = B.newLabel("class.slot.outside");
+    const scan = B.newLabel("class.slot.scan");
+    const same = B.newLabel("class.slot.same");
+    const done = B.newLabel("class.slot.done");
     B.line(`${present} = icmp ne ptr ${value.name}, null`);
     B.condBr(present, inspect, done);
     B.startBlock(inspect);
     const kind = host.dynKind(value.name);
+    const typed = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    B.condBr(typed, capsule, done);
+    B.startBlock(capsule);
     const keySlot = B.tmp(),
-      keyPtr = B.tmp();
+      keyPtr = B.tmp(),
+      keyAt = B.tmp(),
+      distance = B.tmp(),
+      within = B.tmp();
     B.line(
       `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
     );
     B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    B.line(`${keyAt} = ptrtoint ptr ${keyPtr} to ${S}`);
+    B.line(`${distance} = sub ${S} ${keyAt}, ptrtoint (ptr @${symbol} to ${S})`);
+    B.line(`${within} = icmp ult ${S} ${distance}, ${count * slotBytes}`);
+    B.condBr(within, inside, outside);
+    B.startBlock(inside);
+    const index = B.tmp();
+    B.line(`${index} = udiv ${S} ${distance}, ${slotBytes}`);
+    let index32 = index;
+    if (S === "i64") {
+      index32 = B.tmp();
+      B.line(`${index32} = trunc i64 ${index} to i32`);
+    }
+    B.line(`store i32 ${index32}, ptr ${slot}`);
+    B.br(done);
+    B.startBlock(outside);
     const lenSlot = B.tmp(),
       lenWord = B.tmp(),
-      len = B.tmp();
+      len = B.tmp(),
+      hasKey = B.tmp(),
+      sized = B.tmp(),
+      comparable = B.tmp();
     B.line(
       `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
     );
     B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
     B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
-    const typed = B.tmp(),
-      hasKey = B.tmp(),
-      long = B.tmp(),
-      isCapsule = B.tmp(),
-      hashable = B.tmp();
-    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
     B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
-    B.line(`${long} = icmp sge i32 ${len}, 4`);
-    B.line(`${isCapsule} = and i1 ${typed}, ${hasKey}`);
-    B.line(`${hashable} = and i1 ${isCapsule}, ${long}`);
-    B.condBr(hashable, hashed, done);
-    B.startBlock(hashed);
-    const tailAt = B.tmp(),
-      tailStart = B.tmp(),
-      tailPtr = B.tmp(),
-      tail = B.tmp(),
-      folded = B.tmp(),
-      sum = B.tmp(),
-      masked = B.tmp();
-    B.line(`${tailAt} = sub i32 ${len}, 4`);
-    B.line(`${tailStart} = sext i32 ${tailAt} to i64`);
-    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${tailStart}`);
-    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
-    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
-    B.line(`${sum} = add i32 ${folded}, ${tail}`);
-    B.line(`${masked} = and i32 ${sum}, 2147483647`);
-    B.line(`store i32 ${masked}, ptr ${slot}`);
+    // Every key of the table is `object:` and a class name: eight bytes
+    // or more. A record's, an array's or a collection's capsule is done
+    // here, on its key's first bytes.
+    B.line(`${sized} = icmp sge i32 ${len}, ${CLASS_KEY_PREFIX.length + 1}`);
+    B.line(`${comparable} = and i1 ${hasKey}, ${sized}`);
+    B.condBr(comparable, scan, done);
+    B.startBlock(scan);
+    const head = B.tmp(),
+      prefix = B.tmp(),
+      classKey = B.tmp();
+    B.line(`${head} = load i64, ptr ${keyPtr}, align 1`);
+    B.line(`${prefix} = and i64 ${head}, ${CLASS_KEY_PREFIX_MASK}`);
+    B.line(`${classKey} = icmp eq i64 ${prefix}, ${CLASS_KEY_PREFIX_WORD}`);
+    B.condBr(classKey, same, done);
+    B.startBlock(same);
+    // A class key that lives outside the table: the table's lookup by the
+    // key's length and bytes (emit-module.ts classKeyFind).
+    const found = B.tmp();
+    host.needsClassKeyFind = true;
+    B.line(`${found} = call i32 @${symbol}_find(ptr ${keyPtr}, i32 ${len})`);
+    B.line(`store i32 ${found}, ptr ${slot}`);
     B.br(done);
     B.startBlock(done);
     const selector = B.tmp();
@@ -763,7 +852,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         name: selector,
         type: "i32",
         signed: true,
-        range: { min: -1, max: 2147483647 },
+        range: { min: -1, max: count - 1 },
       },
     };
   }

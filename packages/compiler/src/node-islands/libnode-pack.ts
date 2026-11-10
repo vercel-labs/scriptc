@@ -216,8 +216,11 @@ function findInstalled(name: string, from: string): string | null {
   }
 }
 
-function resolveNextToCompiler(name: string): string | null {
-  const dir = islandBuildHost().compilerPackage(name);
+function resolveNextToCompiler(
+  name: string,
+  compilerPackage: (name: string) => string | null,
+): string | null {
+  const dir = compilerPackage(name);
   // An unbuilt workspace package is not a pack.
   return dir !== null && existsSync(join(dir, "manifest.json")) ? dir : null;
 }
@@ -227,14 +230,21 @@ function resolveNextToCompiler(name: string): string | null {
 export function findInstalledLibnodePack(options: {
   targetName: string;
   projectDir: string;
+  /** Where a package installed as a dependency of the compiler is; the
+   * island build host's answer (host.ts) by default. A caller that runs
+   * before the host is installed (CLI startup, startup-cache.ts) names it. */
+  compilerPackage?: ((name: string) => string | null) | undefined;
   /** Test hook for the compiler-relative lookup. */
   resolveInstalled?: ((name: string) => string | null) | undefined;
 }): string | null {
   const packageName = libnodePackPackage(options.targetName);
   if (packageName === null) return null;
+  const compilerPackage = options.compilerPackage ?? islandBuildHost().compilerPackage;
   return (
     findInstalled(packageName, options.projectDir) ??
-    (options.resolveInstalled ?? resolveNextToCompiler)(packageName)
+    (options.resolveInstalled ?? ((name) => resolveNextToCompiler(name, compilerPackage)))(
+      packageName,
+    )
   );
 }
 

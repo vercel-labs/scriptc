@@ -251,13 +251,16 @@ export function nodeIslandPackHintFor(target: string, use?: { file: string; api:
  * directory (named by --libnode or SCRIPTC_LIBNODE, or the installed pack
  * found from `projectDir`), and a digest of the pack's manifest.json. A pack
  * upgraded in place, removed, or replaced by another installed pack changes
- * it. Undefined when no pack is named or installed. */
+ * it. Undefined when no pack is named or installed. `compilerPackage` finds
+ * a pack installed beside the compiler, for a caller that runs before the
+ * island build host is installed (findInstalledLibnodePack). */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
   projectDir: string = process.cwd(),
+  compilerPackage?: (name: string) => string | null,
 ): string | undefined {
-  return libnodeCacheKeyFor(libnodeTarget(env), option, env, projectDir);
+  return libnodeCacheKeyFor(libnodeTarget(env), option, env, projectDir, compilerPackage);
 }
 
 /** libnodeCacheKey for a build that emits for the native target `target`
@@ -267,13 +270,14 @@ export function libnodeCacheKeyFor(
   option: string | undefined,
   env: NodeJS.ProcessEnv,
   projectDir: string,
+  compilerPackage?: (name: string) => string | null,
 ): string | undefined {
   const fromEnv = env["SCRIPTC_LIBNODE"];
   const explicit = option !== undefined && option !== "beside" ? option : fromEnv;
   const source =
     explicit !== undefined && explicit !== ""
       ? explicit
-      : findInstalledLibnodePack({ targetName: target, projectDir });
+      : findInstalledLibnodePack({ targetName: target, projectDir, compilerPackage });
   if (source === undefined || source === null) return option === undefined ? undefined : option;
   let manifest = "none";
   if (isAbsolute(source)) {

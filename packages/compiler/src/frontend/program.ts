@@ -57,6 +57,7 @@ import {
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
 import {
+  isInstalledPackagePath,
   isNodeModulesPath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
@@ -662,7 +663,7 @@ function fileDialects7(host: ts.Ts7Host): (fileName: string) => FileDialect | nu
     return dialect;
   };
   return (fileName) => {
-    if (isNodeModulesPath(fileName)) return null;
+    if (isInstalledPackagePath(fileName)) return null;
     const directory = dirname(fileName);
     let dialect = byDirectory.get(directory);
     if (dialect === undefined) {
@@ -1048,7 +1049,7 @@ function typesAsProject7(
   const ambient = ambientDtsPath();
   const overrides = overridesDtsPath();
   for (const name of program.getSourceFileNames()) {
-    if (isNodeModulesPath(name) || isBundledLibraryFile(program, name)) continue;
+    if (isInstalledPackagePath(name) || isBundledLibraryFile(program, name)) continue;
     const path = tsgoPath(name);
     if (path === ambient || path === overrides || isFallbackDtsPath(name)) continue;
     const sf = program.getSourceFile(name);
@@ -1447,14 +1448,18 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
-  // skipLibCheck is FORCED with @types/node in the program: checking a
-  // third-party lib's internals against OUR lib choice (es2025, no dyn) is
-  // not scriptc's fence and drowns real diagnostics in hundreds of
-  // .d.ts-internal errors. Fence discipline never depended on it: the
-  // lowerer checks provenance and forms at every use site.
-  let options: ts.Ts7CompilerOptions = nodeTypes
-    ? { ...config.options, skipLibCheck: true }
-    : { ...config.options };
+  // skipLibCheck is FORCED for every program: checking a third-party lib's
+  // internals against OUR lib choice (es2025, no dyn, and the bundled Node
+  // declarations when the project has no @types/node) is not scriptc's
+  // fence and drowns real diagnostics in hundreds of .d.ts-internal
+  // errors. An error inside an INSTALLED package's declarations (glob's
+  // `NodeJS.Platform`, say) must not fail that package's island build —
+  // its own tsconfig checks it, and our reduced ambient cannot declare
+  // every type name a published .d.ts spells. Uses of those types in
+  // program code stay checked, as under tsc. Fence discipline never
+  // depended on it: the lowerer checks provenance and forms at every use
+  // site.
+  let options: ts.Ts7CompilerOptions = { ...config.options, skipLibCheck: true };
   // Opted-in packages' shipped JavaScript must be TYPE-INCLUDED (not just
   // resolved): otherwise it types as an implicit-any module (TS7016) and
   // nothing infers. It joins as program roots (entryPackageProgramRoots7),
@@ -2260,7 +2265,7 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
   const out: string[] = [];
   for (const sf of program.getImplementationSourceFiles()) {
     const name = sf.fileName.split("\\").join("/");
-    if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
+    if (isInstalledPackagePath(name) || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     if (
       packages.some(
@@ -6727,7 +6732,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
         sf.fileName !== ambient &&
         !sf.isDeclarationFile &&
         !sf.fileName.endsWith(".json") &&
-        (!isNodeModulesPath(sf.fileName) ||
+        (!isInstalledPackagePath(sf.fileName) ||
           entryPackageFile(sf.fileName) ||
           npmStaticPackageOfPath(sf.fileName) !== null) &&
         !unselectedPackageJsFile(sf.fileName),

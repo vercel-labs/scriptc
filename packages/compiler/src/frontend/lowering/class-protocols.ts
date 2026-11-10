@@ -47,6 +47,9 @@ export class ClassProtocols {
   /** The untyped island values stored out of the analysis' sight
    * (noteIslandEscapes). */
   private readonly islandEscapes: ts.Expression[] = [];
+  /** The program interfaces that extend a builtin Error
+   * (markErrorInterfaces). */
+  private readonly errorInterfaces = new Set<ts.Symbol>();
   /** The object types markReceivedView has answered for, so a type that
    * names itself in a member (`interface Node { next?: Node }`) ends. */
   private readonly receivedTypes = new Set<ts.Type>();
@@ -103,7 +106,12 @@ export class ClassProtocols {
     // walk ends (markIslandView).
     const islands = activeNodeIslands();
     const sites: ts.Node[] = [];
+    // The interfaces with an `extends` clause: those that reach a builtin
+    // Error are marked once the walk ends (markErrorInterfaces).
+    const extended: ts.InterfaceDeclaration[] = [];
     const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.heritageClauses !== undefined)
+        extended.push(node);
       if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
         const name = propertyNameText(node.name);
         if (name !== null) accessorNames.add(name);
@@ -178,9 +186,80 @@ export class ClassProtocols {
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
+    this.markErrorInterfaces(extended, protocols);
     if (islands !== null) this.markIslandSites(sites, islands, add);
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Marks the program interfaces that extend a builtin Error (`interface
+   * Failure extends Error { status?: number }`). Such a type has two kinds
+   * of values: an error object, which is an instance of a class the
+   * runtime owns, and a plain object that has the members (an object
+   * literal typed by the interface, a parsed value asserted to it). No
+   * record layout holds the first: a copy of an error is no longer an
+   * instance of its class, has lost its stack and lists the record's
+   * fields as its keys. So every value of the type is a live checked view,
+   * as for an interface a program class implements: an error keeps its
+   * identity and answers its members itself, and a plain object is the
+   * object it is.
+   *
+   * The flow marking below reaches the same answer only where it sees an
+   * error flow into the interface and the program observe it. An error
+   * asserted to the interface out of an `unknown` slot (a `catch` binding)
+   * has no such flow, so the interface is marked by its declaration. Only
+   * the interface's own symbol is marked: the lib's Error stays the class
+   * it is. */
+  private markErrorInterfaces(
+    extended: readonly ts.InterfaceDeclaration[],
+    protocols: Set<ts.Symbol>,
+  ): void {
+    for (const declaration of extended) {
+      const symbol = attempt(() => this.checker.getSymbolAtLocation(declaration.name));
+      if (symbol === undefined || this.errorInterfaces.has(symbol)) continue;
+      const type = attempt(() => this.checker.getDeclaredTypeOfSymbol(symbol));
+      if (type === undefined || !this.extendsBuiltinError(type, 0)) continue;
+      protocols.add(symbol);
+      this.errorInterfaces.add(symbol);
+    }
+  }
+
+  /** Whether the program declares an interface that extends a builtin
+   * Error (markErrorInterfaces). Answered from the index the lowering
+   * built: a program whose lowering never asked it (one refused before a
+   * type was mapped) holds no value of such an interface, and the answer
+   * does not walk the program. */
+  declaresErrorInterface(): boolean {
+    return this.implemented !== null && this.errorInterfaces.size > 0;
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    this.index();
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.errorInterfaces.has(symbol);
+  }
+
+  /** Whether a program interface reaches a builtin Error through its
+   * `extends` clauses. */
+  private extendsBuiltinError(type: ts.Type, depth: number): boolean {
+    if (depth > 8) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface()) return false;
+    const symbol = target.getSymbol();
+    if (
+      symbol === undefined ||
+      !symbol.declarations.every(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    )
+      return false;
+    const bases = attempt(() => this.checker.getBaseTypes(target)) ?? [];
+    return bases.some(
+      (base) => this.isBuiltinError(base) || this.extendsBuiltinError(base, depth + 1),
+    );
   }
 
   /** Judges the nodes of the program an island value can pass through

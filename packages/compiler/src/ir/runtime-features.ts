@@ -1842,6 +1842,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** The prototype read of a class test's walk, `value instanceof C` of an
+   * untyped value (scr_dyn_class_test.c, a unit of its own so scr_json.c
+   * keeps its layout). */
+  classTestPrototype: rule({ fns: ["dyn.classTestPrototype"] }),
   /** `delete` of a key a record's type does not declare, removed from the
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
@@ -2086,6 +2090,17 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_record_source_get.c). A unit of its own so a program that only
    * casts records keeps its base runtime objects byte for byte. */
   recordSourceGet: rule({ fns: ["record.sourceGet", "record.sourceHasKey"] }),
+  /** `join` on an array whose element type is `string`: the backend calls
+   * the typed entry (scr_arr_join_str.c), which joins a hole-free string
+   * array in two passes and hands every other array to scr_arr_join. A unit
+   * of its own so a program that joins no string array links nothing of it. */
+  arrJoinStr: rule({
+    expr: (node, _tables) =>
+      node.kind === "arrIntrinsic" &&
+      node.method === "join" &&
+      node.receiver.type.kind === "array" &&
+      node.receiver.type.elem.kind === "string",
+  }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
    * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
    * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
@@ -2517,6 +2532,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     processExtras: false,
     qs: false,
     recordSourceGet: false,
+    arrJoinStr: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
@@ -2547,6 +2563,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    classTestPrototype: false,
     recordSourceDelete: false,
     recordViewFrozen: false,
     dynBuffer: false,

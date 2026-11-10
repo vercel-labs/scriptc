@@ -1,12 +1,19 @@
-import { describe, expect, test } from "vitest";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "vitest";
+import { compile, deserializeModule } from "../../index.js";
 import {
   BOOL,
   DYN,
   type IrExpr,
+  type IrFunction,
+  type IrModule,
   type IrRecordShape,
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { isPlainDescriptorMap, isPlainObjectLiteral, lowerBytesIntegrity } from "./lower-calls.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -140,4 +147,121 @@ test("a descriptor map is plain only when every descriptor in it is plain", () =
   expect(isPlainDescriptorMap(map(variable), getRecord)).toBe(false);
   expect(isPlainDescriptorMap(dynFrom(record("dyn")), getRecord)).toBe(false);
   expect(isPlainDescriptorMap(variable, getRecord)).toBe(false);
+});
+
+/* `this.#f(args)` where `#f` is a private FIELD that holds a function, in a
+ * JavaScript class's method. The method has two bodies: the one a call on a
+ * receiver of the class's type enters, and the receiver-independent one a
+ * method VALUE runs (a computed name, a detached method, an island's call),
+ * whose `this` is a checked-dynamic value. Both read the field off the
+ * instance; the second after the private name's brand check. */
+const dirs: string[] = [];
+afterAll(async () => {
+  for (const dir of dirs) await rm(dir, { recursive: true, force: true });
+});
+
+async function lowerProgram(source: string): Promise<IrModule> {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "scriptc-calls-")));
+  dirs.push(dir);
+  const entry = join(dir, "main.mjs");
+  await writeFile(entry, source);
+  const outPath = join(dir, "main.ir.json");
+  const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  return deserializeModule(await readFile(outPath, "utf8"));
+}
+
+function expressions(fn: IrFunction): IrExpr[] {
+  const found: IrExpr[] = [];
+  everyStmtList(fn.body, {
+    stmt: () => true,
+    expr: (e) => {
+      found.push(e);
+      return true;
+    },
+  });
+  return found;
+}
+
+/** The calls of the value `this.#load` holds in `fn`. Their callee is named
+ * as V8 names it in "is not a function": a private name is a bracketed key. */
+function privateFieldCalls(fn: IrFunction): (IrExpr & { kind: "dynCall" })[] {
+  return expressions(fn).filter(
+    (e): e is IrExpr & { kind: "dynCall" } =>
+      e.kind === "dynCall" && e.calleeName === "this[#load]",
+  );
+}
+
+const PRIVATE_FIELD_CALL = `class Reader {
+  #load = (key) => this.label + key;
+  #twice(text) {
+    return text + text;
+  }
+  constructor(label) {
+    this.label = label;
+  }
+  read() {
+    return this.#twice(this.#load("text"));
+  }
+}
+const reader = new Reader("a");
+for (const name of ["read"]) console.log(reader[name]());
+console.log(reader.read());
+`;
+
+describe("a private field's function in call position", () => {
+  test("is the field of the brand-checked receiver when `this` is a checked-dynamic value", async () => {
+    const mod = await lowerProgram(PRIVATE_FIELD_CALL);
+    // The receiver-independent body of `read`: its `this` is dyn.this.
+    const untyped = mod.functions.filter(
+      (fn) =>
+        expressions(fn).some((e) => e.kind === "libCall" && e.fn === "dyn.this") &&
+        JSON.stringify(fn.body).includes("this[#load]"),
+    );
+    expect(untyped).toHaveLength(1);
+    const body = untyped[0]!;
+    const calls = privateFieldCalls(body);
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    // The callee is the field's value, read off the instance.
+    expect(call.callee.kind).toBe("fieldGet");
+    expect(call.callee.kind === "fieldGet" ? call.callee.field : null).toBe("#load");
+    expect(call.callee.kind === "fieldGet" ? call.callee.obj.type.kind : null).toBe("object");
+    // The instance is the receiver after the private name's brand check: a
+    // value that is no instance throws there, as under Node.
+    const brandChecks = expressions(body).filter(
+      (e) => e.kind === "call" && /^%private\.read:.*:#load$/.test(e.callee),
+    );
+    expect(brandChecks).toHaveLength(1);
+    const helper = mod.functions.find(
+      (fn) => brandChecks[0]!.kind === "call" && fn.name === brandChecks[0]!.callee,
+    );
+    expect(helper?.body.length).toBeGreaterThan(0);
+    // The function is called with the receiver as `this`.
+    expect(call.receiver?.type.kind).toBe("dyn");
+    // Nothing asks the receiver for a property spelled like the private
+    // name: a plain object holding one is not an instance.
+    const byName = expressions(body).filter(
+      (e) =>
+        (e.kind === "dynInvoke" && e.method === "#load") ||
+        (e.kind === "dynKeyGet" && e.key.kind === "strLit" && e.key.value === "#load"),
+    );
+    expect(byName).toEqual([]);
+  });
+
+  test("stays the field of the typed receiver in the method's own body", async () => {
+    const mod = await lowerProgram(PRIVATE_FIELD_CALL);
+    const typed = mod.functions.filter(
+      (fn) => fn.params[0]?.name === "this" && privateFieldCalls(fn).length > 0,
+    );
+    expect(typed).toHaveLength(1);
+    const call = privateFieldCalls(typed[0]!)[0]!;
+    expect(call.callee.kind).toBe("fieldGet");
+    expect(call.callee.kind === "fieldGet" ? call.callee.field : null).toBe("#load");
+    // No brand check: the receiver's type is the class.
+    expect(
+      expressions(typed[0]!).some((e) => e.kind === "call" && e.callee.startsWith("%private.")),
+    ).toBe(false);
+  });
 });

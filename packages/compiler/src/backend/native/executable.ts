@@ -190,6 +190,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
   // The kept-source read a record width copy emits (scr_record_source_get.c).
   unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
+  // The join of an array of strings (scr_arr_join_str.c).
+  unit((u) => u.opts.arrJoinStr === true, "scr_arr_join_str.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
@@ -428,6 +430,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
   // Reflect.getPrototypeOf's primitive-target check.
   unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // The prototype read of a class test's walk.
+  unit((u) => u.opts.classTestPrototype === true, "scr_dyn_class_test.c"),
   // `delete` of a key a record's type does not declare.
   unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
   // Record views of types whose values may also be frozen.

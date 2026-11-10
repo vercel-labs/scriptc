@@ -458,6 +458,17 @@ export function locateDiagnostic(
 ): LocatedDiagnostic {
   const start = locator.position(diag.loc.file, diag.loc.start);
   const end = locator.position(diag.loc.file, diag.loc.end);
+  // What a source shadow inserted into the diagnostic's lines is not part
+  // of the columns: they are the file's as written (ScrDiagnostic.inserted).
+  for (const [at, length] of diag.inserted ?? []) {
+    for (const [pos, offset] of [
+      [start, diag.loc.start],
+      [end, diag.loc.end],
+    ] as const) {
+      const lineStart = offset - (pos.column - 1);
+      if (at >= lineStart && at < offset) pos.column -= Math.min(length, offset - at);
+    }
+  }
   return {
     code: diag.code,
     category: categoryOf(diag),

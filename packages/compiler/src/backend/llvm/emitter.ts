@@ -522,6 +522,7 @@ import {
   fieldAliasMetadata,
   isStackUnionSource,
 } from "./receivers.js";
+import { emitClassMembership } from "./narrow-guards.js";
 import { findLoopCallees } from "./loop-callees.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
@@ -2964,6 +2965,16 @@ export class LlEmitter {
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
       classSubtypes: (name) => this.classSubtypes(name),
+      classHolders: (name) => this.classHolders(name),
+      classMembership: (B, object, staticClassName, className) =>
+        emitClassMembership(
+          this,
+          object,
+          staticClassName,
+          className,
+          `a ${staticClassName} capsule holds a ${className}`,
+          B,
+        ),
       classValueSubtypes: (name) => {
         // A classval may name a class with no lowering at all: a JS
         // instance field initializer's per-evaluation class expression
@@ -5769,6 +5780,35 @@ export class LlEmitter {
       .map((meta) => meta.def.name);
   }
 
+  private readonly classHoldersByName = new Map<string, readonly string[]>();
+
+  /** The classes a value that is a `name` can be statically typed as
+   * without being typed as `name` or one of its subtypes: every class
+   * outside `name`'s membership whose own membership shares a class with
+   * it (the ancestors, and the families along them), nearest first. A
+   * capsule boxed at one of them may hold an instance of `name`
+   * (dyn.ts typedRefBranch). Classes rooted at Error are left out: their
+   * instances become dynamic values as errors, never as capsules. */
+  private classHolders(name: string): readonly string[] {
+    const known = this.classHoldersByName.get(name);
+    if (known !== undefined) return known;
+    const own = classMembershipIntervals(this.classMeta, this.classMetaOf(name).def.name);
+    const holders = [...this.classMeta.values()]
+      .filter(
+        (meta) =>
+          meta.root.def.name !== "%Error" &&
+          isDynTypedRefType({ kind: "object", className: meta.def.name }) &&
+          !own.some((range) => range.pre <= meta.pre && meta.pre <= range.post) &&
+          classMembershipIntervals(this.classMeta, meta.def.name).some((held) =>
+            own.some((range) => held.pre <= range.post && range.pre <= held.post),
+          ),
+      )
+      .sort((a, b) => b.pre - a.pre)
+      .map((meta) => meta.def.name);
+    this.classHoldersByName.set(name, holders);
+    return holders;
+  }
+
   classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);
     if (!meta) throw new InternalCompilerError(`llvm emitter bug: unknown class ${className}`);
@@ -5880,9 +5920,9 @@ export class LlEmitter {
   }
 
   /** The dynamic class's preorder number (borrowed object; the static class
-   * names the struct spelling and where the number is, classPreLines). */
-  loadVtPre(objName: string, staticClassName: string): string {
-    const B = this.B;
+   * names the struct spelling and where the number is, classPreLines),
+   * loaded in `B`: the function body being emitted, or a helper's own. */
+  loadVtPre(objName: string, staticClassName: string, B: BlockBuilder = this.B): string {
     const pre = B.tmp();
     const meta = this.classMetaOf(staticClassName);
     for (const line of classPreLines(

@@ -58,8 +58,14 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
-import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
+import { mangleClassHeldTest, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
+import {
+  collectionKeyAccess,
+  decodeBorrowedKeyIn,
+  encodeCollectionKeyIn,
+  releaseKeyTemporary,
+} from "./string-union-keys.js";
 import { llvmCommentText } from "./common.js";
 import { JS_BITS } from "./jsval-encoding.js";
 import {
@@ -68,7 +74,6 @@ import {
   llFieldType,
   loadStructField,
   mapFlagsOffset,
-  mapKeyAccess,
   mapKeyParamType,
   releaseSym,
   traceAdapter,
@@ -306,6 +311,19 @@ export interface DynHost extends WalkerHost {
   dynPromiseAdapter(t: IrType): string;
   isErrorClass(className: string): boolean;
   classSubtypes(className: string): readonly string[];
+  /** The classes outside `classSubtypes(className)` that an instance of
+   * `className` can be statically typed as: its ancestors (emitter.ts
+   * classHolders), nearest first. */
+  classHolders(className: string): readonly string[];
+  /** The i1 test, appended to `B`, that the borrowed instance `object`,
+   * statically a `staticClassName`, is a `className`: the test an
+   * `instanceOf` expression emits (narrow-guards.ts emitClassMembership). */
+  classMembership(
+    B: BlockBuilder,
+    object: string,
+    staticClassName: string,
+    className: string,
+  ): string;
   /** The strict subclasses whose class-value constructor takes the same
    * arguments as `className`'s (classValueAbiEquals): the class values a
    * checked `classval` slot accepts besides its own class. */
@@ -642,6 +660,8 @@ export class LlDyn {
   /** A typed capsule whose type is one of `arms` is that arm: branch to
    * `hits[tag]` for the first arm whose own capsule test `%d` passes
    * (typedRefMatches, the test the arm's matcher and builder start with),
+   * and then for the first class arm an ancestor's capsule holds an
+   * instance of (heldInstanceBranch),
    * before any arm reads a member through a view. The capsule holds a
    * native value of the arm's type, and the arm's builder unboxes it: one
    * object, no copy. An arm with a literal guard is taken only when the
@@ -685,6 +705,16 @@ export class LlDyn {
           other,
         );
       } else B.condBr(this.typedRefMatches(B, arm), hits[tag]!, next);
+      B.startBlock(next);
+    }
+    // No arm's own capsule: a capsule of an ancestor of a class arm is that
+    // arm when the instance it holds is of the arm's class.
+    for (const tag of arms) {
+      const arm = def.arms[tag]!;
+      const holders = this.capsuleHolders(arm);
+      if (arm.kind !== "object" || holders.length === 0) continue;
+      const next = B.newLabel("du.held.n");
+      this.heldInstanceBranch(B, arm.className, holders, hits[tag]!, next);
       B.startBlock(next);
     }
     B.br(other);
@@ -1015,7 +1045,16 @@ export class LlDyn {
       // records/arrays inside unions, rather than a detached dyn snapshot.
       const B = new BlockBuilder();
       B.line(`%value = ${unpack}`);
-      if (
+      // A string-key union's collection stores key strings for its unit
+      // arms (string-union-keys.ts): the slot is decoded before it is boxed
+      // and encoded after it is unboxed.
+      const storesKeyStrings = role === "key" && this.host.nullableUnions.stringKey(type) !== null;
+      if (storesKeyStrings) {
+        const decoded = decodeBorrowedKeyIn(B, this.host, type, "%value");
+        B.line(`%result = call ptr @${this.toDynHelper(type)}(${ty} ${decoded.value})`);
+        // The string of an escaped key is a temporary: the box holds its own.
+        if (decoded.temporary !== null) releaseKeyTemporary(B, this.host, decoded.temporary);
+      } else if (
         type.kind === "union" &&
         this.host.unionsById.get(type.unionId)?.arms.some(streamTypedRefEligible)
       ) {
@@ -1038,6 +1077,36 @@ export class LlDyn {
         B.render(),
         `}`,
         "",
+      );
+      if (storesKeyStrings) {
+        const U = new BlockBuilder();
+        U.line(`%value = call ptr @${unbox}(ptr %d, ptr null)`);
+        // The slot is owned: an escaped key (+1) takes the place of the
+        // unboxed string (+1), which is released.
+        const key = encodeCollectionKeyIn(U, this.host, type, "%value");
+        if (key.temporary !== null) {
+          this.host.declare(`declare void @scr_str_release(ptr)`);
+          const swapped = U.tmp();
+          U.line(`${swapped} = icmp ne ptr ${key.temporary}, null`);
+          const drop = U.newLabel("ukey.swap"),
+            done = U.newLabel("ukey.slot");
+          U.condBr(swapped, drop, done);
+          U.startBlock(drop);
+          U.line(`call void @scr_str_release(ptr %value)`);
+          U.br(done);
+          U.startBlock(done);
+        }
+        U.line(`%result = ptrtoint ptr ${key.stored} to i64`);
+        U.terminate("ret i64 %result");
+        this.defs.push(
+          `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
+          U.render(),
+          `}`,
+          "",
+        );
+        return;
+      }
+      this.defs.push(
         `define internal i64 @${name}_${role}_unbox(ptr %d) ${FN_ATTRS} {`,
         `  %value = call ${ty === "i1" ? "zeroext i1" : ty} @${unbox}(ptr %d, ptr null)`,
         `  %result = ${pack}`,
@@ -1742,7 +1811,7 @@ export class LlDyn {
     const valueKeeps = valueType !== null && this.entryKeepsReferences(valueType);
     const valueCheck =
       valueType === null ? null : this.dynCheckHelper(valueType, valueKeeps, valueKeeps);
-    const kAcc = mapKeyAccess(keyType);
+    const kAcc = collectionKeyAccess(host, keyType);
     const vAcc = valueType === null ? "f64" : elemAccess(valueType);
     const kTy = mapKeyParamType(kAcc);
     const vTy = vAcc === "f64" ? "double" : vAcc === "bool" ? "i1" : "ptr";
@@ -1840,7 +1909,11 @@ export class LlDyn {
       }
       // The key is borrowed (the storage retains what it keeps); the value
       // moves in.
-      B.line(`call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${k}, ${vTy} ${v})`);
+      const storedKey = encodeCollectionKeyIn(B, host, keyType, k);
+      B.line(
+        `call void @scr_map_set_${kAcc}_${vAcc}(ptr ${built}, ${kTy} ${storedKey.stored}, ${vTy} ${v})`,
+      );
+      if (storedKey.temporary !== null) releaseKeyTemporary(B, host, storedKey.temporary);
       drop(keyType, k);
     });
     // The collection must still be, entry for entry, what was checked: a
@@ -2043,7 +2116,14 @@ export class LlDyn {
 
   /** Native subclass capsules also satisfy a checked base-class slot.
    * Class layouts share their base prefix, so unboxing retains the same
-   * pointer and virtual dispatch still uses the object's original vtable. */
+   * pointer and virtual dispatch still uses the object's original vtable.
+   *
+   * A capsule carries the class its value was statically typed as where it
+   * became a dynamic value, which can be an ancestor of the instance's own
+   * class: a `Sub` returned through the `Root` arm of a union is boxed as a
+   * `Root`. Such a capsule satisfies a slot of `Sub` exactly when the
+   * instance it holds is a `Sub`, the answer `instanceof` gives: where this
+   * test refuses a capsule, a class slot goes on to heldInstanceBranch. */
   private typedRefMatches(B: BlockBuilder, t: IrType): string {
     return this.typedRefMatchesAny(
       B,
@@ -2051,6 +2131,78 @@ export class LlDyn {
         ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
         : [t],
     );
+  }
+
+  /** The ancestors of the class `t` (classHolders): the classes whose
+   * capsule can hold an instance of `t` although typedRefMatches refuses
+   * it. Empty for any other type and for a class without ancestors. */
+  private capsuleHolders(t: IrType): readonly string[] {
+    return isDynTypedRefType(t) ? this.host.classHolders(t.className) : [];
+  }
+
+  /** In a block where `%d` is a capsule typedRefMatches refused for the
+   * class `className`: branch to `yes` when it is a capsule of one of
+   * `holders` (capsuleHolders, not empty) whose instance is a
+   * `className`, else to `no`. The matcher, the builder and a union's
+   * capsule-first selection of an arm all continue here, so they give one
+   * answer. Only a capsule that no key test accepted comes here, a value
+   * that until now was refused: a value that converted by its key, and one
+   * that is no capsule, run none of this, and the test is a call so that
+   * their paths keep their code. */
+  private heldInstanceBranch(
+    B: BlockBuilder,
+    className: string,
+    holders: readonly string[],
+    yes: string,
+    no: string,
+  ): void {
+    const held = B.tmp();
+    B.line(`${held} = call zeroext i1 @${this.heldInstanceTest(className, holders)}(ptr %d)`);
+    B.condBr(held, yes, no);
+  }
+
+  private readonly heldInstanceTests = new Map<string, string>();
+
+  /** `sc_dh_<class>(ptr d) -> i1`: the capsule `d` is one of `holders`
+   * (ancestors of `className`) and holds an instance of `className`.
+   *
+   * The instance's class is read from the instance, with the test
+   * `instanceof` makes, and only once the capsule's key names a class whose
+   * layout holds it. A capsule has one key: an ancestor's capsule that
+   * holds another class is no other ancestor's.
+   *
+   * Named after the class and built only inside the definition that first
+   * asks for it, the test needs no entry in the emit journal. */
+  private heldInstanceTest(className: string, holders: readonly string[]): string {
+    const existing = this.heldInstanceTests.get(className);
+    if (existing !== undefined) return existing;
+    const name = mangleClassHeldTest(className);
+    this.heldInstanceTests.set(className, name);
+    const host = this.host;
+    host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is(ptr, ptr, ${this.S})`);
+    const B = new BlockBuilder();
+    for (const holder of holders) {
+      const key = typeKey({ kind: "object", className: holder });
+      const keyed = B.tmp();
+      B.line(
+        `${keyed} = call zeroext i1 @scr_dyn_typed_ref_is(ptr %d, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")})`,
+      );
+      const held = B.newLabel("dh.is");
+      const next = B.newLabel("dh.key");
+      B.condBr(keyed, held, next);
+      B.startBlock(held);
+      const instance = this.payloadOf(B, "%d", "ptr");
+      B.terminate(`ret i1 ${host.classMembership(B, instance, holder, className)}`);
+      B.startBlock(next);
+    }
+    B.terminate(`ret i1 false`);
+    this.defs.push(
+      `define internal zeroext i1 @${name}(ptr %d) noinline cold ${FN_ATTRS} { ; holds ${typeKey({ kind: "object", className })}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    return name;
   }
 
   /** `scr_dyn_record_view(d, sources, n, key, key_len, new)` for
@@ -2174,10 +2326,20 @@ export class LlDyn {
       const lPlain = B.newLabel("dm.tr.plain");
       B.condBr(capsule, lCapsule, lPlain);
       B.startBlock(lCapsule);
-      // A class target matches only capsules of that class (tested above):
+      // A class target matches only capsules of that class (tested above)
+      // and capsules of an ancestor that hold an instance of it:
       // a materialized view is a plain object, which never carries a class
       // brand, so materializing one cannot change the answer.
       if (preserveRefs || (t.kind === "object" && t.className !== "%Error")) {
+        const holders = this.capsuleHolders(t);
+        if (t.kind === "object" && holders.length > 0) {
+          const lHeld = B.newLabel("dm.tr.held");
+          const lOther = B.newLabel("dm.tr.other");
+          this.heldInstanceBranch(B, t.className, holders, lHeld, lOther);
+          B.startBlock(lHeld);
+          B.terminate(`ret i1 true`);
+          B.startBlock(lOther);
+        }
         B.terminate(`ret i1 false`);
       } else {
         const materialized = B.tmp();
@@ -3356,6 +3518,7 @@ export class LlDyn {
       }
       if (isDynTypedRefType(t)) this.exactClassCapsule(B, t);
       const matched = this.typedRefMatches(B, t);
+      const holders = this.capsuleHolders(t);
       const lRef = B.newLabel("dc.tr");
       const lNext = B.newLabel("dc.nt");
       B.condBr(matched, lRef, lNext);
@@ -3404,6 +3567,13 @@ export class LlDyn {
         const plain = B.newLabel("dc.identity.plain");
         B.condBr(capsule, reject, plain);
         B.startBlock(reject);
+        if (t.kind === "object" && holders.length > 0) {
+          // An ancestor's capsule that holds an instance of the class is
+          // that instance: unboxed like the class's own capsule.
+          const other = B.newLabel("dc.identity.other");
+          this.heldInstanceBranch(B, t.className, holders, lRef, other);
+          B.startBlock(other);
+        }
         B.line(
           `call void @scr_dyn_check_fail(ptr %path, ptr ${host.cstr("reference with its original layout")}, ptr %d)`,
         );
@@ -3424,6 +3594,13 @@ export class LlDyn {
         const lPlain = B.newLabel("dc.tr.plain");
         B.condBr(capsule, lCapsule, lPlain);
         B.startBlock(lCapsule);
+        if (t.kind === "object" && holders.length > 0) {
+          // An ancestor's capsule that holds an instance of the class is
+          // that instance: unboxed like the class's own capsule.
+          const other = B.newLabel("dc.tr.other");
+          this.heldInstanceBranch(B, t.className, holders, lRef, other);
+          B.startBlock(other);
+        }
         const cached = B.tmp();
         B.line(
           `${cached} = call ptr @scr_dyn_typed_ref_cached_cast(ptr %d, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")})`,

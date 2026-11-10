@@ -181,6 +181,10 @@ export class NullableUnions {
   readonly retainWrappers = new Map<string, string>();
   /** Some nullable union encodes `null` with NULLABLE_NULL. */
   readonly usesNullSentinel: boolean = false;
+  /** Some Map or Set is keyed by a string-key union (stringKey): the
+   * module defines the two key strings its unit arms are stored as
+   * (string-union-keys.ts). */
+  readonly usesUnitKeys: boolean;
   /** The shape union whose release and trace helpers each shape union
    * uses: the first one over the same record arms; likewise for class
    * unions over the same classes. */
@@ -205,8 +209,9 @@ export class NullableUnions {
     for (const cls of mod.classes ?? []) if (!cls.runtime) emitted.add(cls.name);
     const records = new Set<string>();
     for (const shape of mod.records ?? []) records.add(shape.id);
-    const boxed = boxedUnionIds(mod, nodes);
+    const { boxed, stringKeys } = boxedUnionIds(mod, nodes);
     for (const id of kept) boxed.add(id);
+    this.usesUnitKeys = [...stringKeys].some((id) => !boxed.has(id));
     // Shape unions stay out of library builds (their host ABI marshals
     // boxes) and of programs with lifetime regions (whose walks report a
     // reference slot by its type's release entry point).
@@ -277,6 +282,16 @@ export class NullableUnions {
   single(unionId: string): NullableUnion | null {
     const nullable = this.byId.get(unionId);
     return nullable?.repr === "single" ? nullable : null;
+  }
+
+  /** The union of a string and one or two unit arms whose values are the
+   * string pointer: as the key of a Map or the element of a Set it is
+   * stored as a string key (string-union-keys.ts). Null for every other
+   * type, and for such a union that stays a box. */
+  stringKey(type: IrType): NullableUnion | null {
+    if (type.kind !== "union") return null;
+    const nullable = this.byId.get(type.unionId);
+    return nullable?.repr === "single" && nullable.arm.kind === "string" ? nullable : null;
   }
 
   /** The shape-union form only. */
@@ -519,24 +534,36 @@ function classUnion(def: IrUnionDef, classes: ClassForest): ClassUnion | null {
  * union boxed: a function keys by its identity root (SCR_MAP_KEY_CLOSURE).
  * A promise arm keeps it boxed too: a promise keys by the identity cell its
  * adapter boxes share (SCR_MAP_KEY_PROMISE), which the payload pointer does
- * not carry. Library builds keep such unions boxed, except unions of
- * records alone. */
-function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
+ * not carry. A union of a string and unit arms is the other exception: the
+ * collection stores string keys, with a key string for each unit arm
+ * (string-union-keys.ts), so the union keeps its pointer representation;
+ * `stringKeys` names the ones that key a collection. Library builds keep
+ * such unions boxed, except unions of records alone. */
+function boxedUnionIds(
+  mod: IrModule,
+  nodes?: IrNodeIndex,
+): { boxed: Set<string>; stringKeys: Set<string> } {
   const boxed = new Set<string>();
+  const stringKeys = new Set<string>();
   // Only the module's union definitions consult the result.
-  if (!mod.unions?.length) return boxed;
+  if (!mod.unions?.length) return { boxed, stringKeys };
   const identityKeys = new Set<string>();
-  for (const def of mod.unions)
+  const stringKeyUnions = new Set<string>();
+  for (const def of mod.unions) {
     if (mod.lib === undefined ? identityKeyUnion(def) : recordsOnly(def)) identityKeys.add(def.id);
+    else if (mod.lib === undefined && stringKeyUnion(def)) stringKeyUnions.add(def.id);
+  }
   const mark = (t: IrType): void => {
-    if (t.kind === "union" && !identityKeys.has(t.unionId)) boxed.add(t.unionId);
+    if (t.kind !== "union" || identityKeys.has(t.unionId)) return;
+    if (stringKeyUnions.has(t.unionId)) stringKeys.add(t.unionId);
+    else boxed.add(t.unionId);
   };
   if (nodes !== undefined) {
     for (const t of nodes.types) {
       if (t.kind === "map") mark(t.key);
       else if (t.kind === "set") mark(t.elem);
     }
-    return boxed;
+    return { boxed, stringKeys };
   }
   everyModuleNode(mod, {
     expr: () => true,
@@ -547,7 +574,22 @@ function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
       return true;
     },
   });
-  return boxed;
+  return { boxed, stringKeys };
+}
+
+/** One string arm beside an undefined arm, a null arm or both (the
+ * nullableShape of a string). */
+function stringKeyUnion(def: IrUnionDef): boolean {
+  let strings = 0,
+    undefinedArms = 0,
+    nullArms = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "undefinedT") undefinedArms++;
+    else if (arm.kind === "nullT") nullArms++;
+    else if (arm.kind === "string") strings++;
+    else return false;
+  }
+  return strings === 1 && undefinedArms <= 1 && nullArms <= 1 && undefinedArms + nullArms >= 1;
 }
 
 function recordsOnly(def: IrUnionDef): boolean {

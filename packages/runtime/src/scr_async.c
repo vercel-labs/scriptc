@@ -1892,9 +1892,11 @@ void scr_clear_interval(double handle) {
 /* ── immediates (Node's check phase) ──────────────────────────────────
  * setImmediate callbacks run once per loop turn, AFTER due timers, in
  * FIFO order — and immediates queued while the phase runs wait for the
- * NEXT turn (the phase snapshots its end index). The queue is an
- * append-only array with a head cursor; clearImmediate NULLs the slot in
- * place (order and indices stay stable mid-phase). An immediate's id comes
+ * NEXT turn (the phase snapshots its end index). The queue is an array
+ * with a head cursor that is appended to; clearImmediate NULLs the slot in
+ * place (order and indices stay stable mid-phase), and the loop reuses the
+ * fired and cleared slots between phases (scr_loop_run_pass). An
+ * immediate's id comes
  * from the sequence timers use, so its number never names a timeout:
  * clearTimeout of an Immediate is a no-op, like Node. */
 typedef struct {
@@ -1929,8 +1931,13 @@ double scr_set_immediate(ScrClosure *cb) {
   return (double)id;
 }
 
+/* The queued, uncleared immediate of this id, searched from the newest: a
+ * turn that queues an immediate and clears it, many times over (a debounce
+ * re-armed at every event), finds each at the queue's end. Searched from
+ * the oldest, each clear walked the slots of all those cleared before it
+ * in the turn. */
 static ScrImmediate *scr_immediate_find(unsigned long id) {
-  for (size_t i = scr_immediates_head; i < scr_nimmediates; i++) {
+  for (size_t i = scr_nimmediates; i-- > scr_immediates_head;) {
     if (scr_immediates[i].id == id && scr_immediates[i].cb != NULL) return &scr_immediates[i];
   }
   return NULL;
@@ -7051,6 +7058,21 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * drained checkpoint. */
     bool check_ran = false;
     if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
+      /* The slots of the immediates that ran are reused first. An earlier
+       * phase left one pending whenever a callback queued the next, as a
+       * chain of immediates does at every turn; once the fired part is at
+       * least as long as the pending tail, the tail moves to the front, in
+       * its order (a slot moves at most once per slot fired), and the slots
+       * it leaves are cleared. Here and not at the phase's end, which a
+       * callback that throws never reaches: a chain whose callbacks all
+       * throw would grow the array by a slot for each of them. */
+      if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
+        size_t pending = scr_nimmediates - scr_immediates_head;
+        memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
+        memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
+        scr_nimmediates = pending;
+        scr_immediates_head = 0;
+      }
       size_t end = scr_nimmediates;
 #ifdef SCR_NODE_ISLANDS
       scr_check_end = end; /* a switch inside this phase finishes it first */
@@ -7088,26 +7110,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_NODE_ISLANDS
       scr_check_end = 0;
 #endif
-      /* Fully drained: reset the cursor so the array reuses its slots. */
-      if (scr_immediates_head == scr_nimmediates) {
-        scr_immediates_head = 0;
-        scr_nimmediates = 0;
-      } else if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
-        /* Not drained: a callback queued the next immediate, as a chain of
-         * them does at every turn, so the queue is never empty here and the
-         * reset above never runs: the array would grow by a slot for every
-         * immediate the program ever queues. Once the fired part is at least
-         * as long as the pending tail, the tail moves to the front (a slot
-         * moves at most once per slot fired). The slots it leaves are
-         * cleared: a phase that still holds an end index skips a cleared
-         * slot as it skips a fired one. */
-        size_t pending = scr_nimmediates - scr_immediates_head;
-        memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
-        memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
-        scr_nimmediates = pending;
-        scr_immediates_head = 0;
-      }
       check_ran = true;
+    }
+    /* No immediate is pending: every slot is fired or cleared, and the
+     * queue starts over at its first slot. In every turn and not only after
+     * a phase, which runs only while an immediate is pending: a turn that
+     * queues immediates and clears them all (a debounce that a timer or a
+     * socket drives) has none, and would grow the array by a slot for every
+     * immediate the program ever queues. */
+    if (scr_pending_immediates == 0) {
+      scr_immediates_head = 0;
+      scr_nimmediates = 0;
+#ifdef SCR_NODE_ISLANDS
+      scr_check_end = 0; /* nothing is left of a phase that a throw ended either */
+#endif
     }
     /* The next poll phase opens once this iteration's check phase ran (or
      * had nothing to run). A check phase deferred for pending microtasks

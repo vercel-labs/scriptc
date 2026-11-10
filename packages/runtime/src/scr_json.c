@@ -577,6 +577,24 @@ void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s) {
   else scr_jb_put_json_chars(b, s->data, s->len, true);
 }
 
+/* A finished document larger than every one before it on this thread: the
+ * size class for the next buffer, and the lazy ASCII proof. A finished
+ * document is handed over unscanned, so the builder pays nothing for a text
+ * that is only written out. Whether its bytes are all ASCII is proven by
+ * the first .length read of it instead, by the proof installed here: only a
+ * program that finishes a document links it. This is the place because it
+ * is off the steady path and still runs before any document that could be
+ * asked: the hint starts at 64 bytes and only grows, so a thread's first
+ * document of more than 64 bytes comes through here, and a shorter text is
+ * counted directly and never asks (scr_str_utf16_len). Out of line, so the
+ * many functions that finish a document inline carry one jump for both; it
+ * hands the document through, so the steady path saves nothing around it. */
+static __attribute__((noinline, cold)) ScrStr *scr_jb_hint_grow(ScrStr *s) {
+  scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
+  __atomic_store_n(&scr_str_lazy_ascii, scr_str_prove_ascii, __ATOMIC_RELAXED);
+  return s;
+}
+
 ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   free(b->seen);
   b->seen = NULL;
@@ -588,8 +606,8 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   s->data[b->len] = '\0';
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
-  if (s->cap > scr_jb_hint) scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
   scr_jb_init(b);
+  if (s->cap > scr_jb_hint) return scr_jb_hint_grow(s);
   return s;
 }
 
@@ -21913,6 +21931,10 @@ _Static_assert(sizeof(void *) != 8 || (sizeof(ScrWeakEntry) == 64 && offsetof(Sc
 
 struct ScrWeakMap {
   size_t rc; ScrWeakEntry *entries; bool is_set;
+  /* How many walks of `entries` are in progress (scr_weak_map_trace): while
+   * it is not zero the list belongs to the walk (see scr_weak_remove). On
+   * 64-bit targets it fills what was padding. */
+  uint32_t walks;
   /* The WeakMap or WeakSet inside the Node island that holds this
    * collection's entries keyed by island objects (+1; NULL until the first
    * such entry, so always NULL in a program without islands):
@@ -21933,6 +21955,12 @@ struct ScrWeakMap {
 #define SCR_WEAK_HELD UINT32_C(0x80000000)
 /* ...and has not decided yet that the entry is alive. */
 #define SCR_WEAK_PENDING UINT32_C(0x20000000)
+/* The entry ended while its collection's list was being walked: it is out
+ * of both indexes and waits in the list for the collection's free
+ * (scr_weak_remove). A hold of scr_weak_promise_cells keeps a count in its
+ * mark only while scr_weak_judge runs, which ends nothing until its counts
+ * are back at zero, so the bit is free there too. */
+#define SCR_WEAK_ENDED UINT32_C(0x08000000)
 /* Weak observers borrow key identities. Values are traced strong edges of
  * their collection; an entry whose value keeps its own key alive is ended by
  * scr_weak_judge ("entries whose value keeps their key alive").
@@ -22099,24 +22127,63 @@ static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
   if (entry->next) entry->next->prev = entry->prev;
   if (entry->prev) entry->prev->next = entry->next;
   else owner->entries = entry->next;
-  scr_weak_unlink(entry);
+  /* An entry that ended under a walk left the indexes then, and the walk
+   * gave up the collection's count of its value. */
+  bool ended = (entry->mark & SCR_WEAK_ENDED) != 0;
+  if (!ended) scr_weak_unlink(entry);
   ScrDyn *value = entry->value;
   free(entry);
   /* Unlink before release: releasing a value can dispose another key. */
-  if (!collected) scr_dyn_release(value);
+  if (!collected && !ended) scr_dyn_release(value);
 }
 
+/* Ends an entry: its key died, or the program deleted it.
+ *
+ * INVARIANT: while a walk of a collection's entries is in progress
+ * (`walks`, scr_weak_map_trace), the list belongs to the walk. No entry
+ * leaves the list or is freed, and no value of the list is released, by
+ * anything but the walk and the collection's free that follows it.
+ *
+ * The walk that matters is the collector's generic destroy
+ * (scr_xg_destroy, the cross-generation drain of a restricted pass, which
+ * frees a collection older than the garbage that held it): it traces the
+ * collection with a visitor that releases each value, then calls the
+ * collection's free. Releasing a value can free any key (the value of an
+ * entry may hold the last reference to that entry's own key, or to the key
+ * of an entry the walk has passed or has yet to reach, in this collection
+ * or in one being walked further up the stack), and a freed key reports
+ * here through the dispose hook. Removing the entry at that moment would
+ * free it under the walk's cursor and release a value the walk has already
+ * released, or will. So the entry only leaves the two indexes, which must
+ * not keep an address that is about to be handed out again; it stays in
+ * the list with its value, the walk gives up the value's count when it
+ * gets there (or already has), and scr_weak_map_gcfree frees the entry.
+ * Only a visitor that releases what it visits can end an entry during a
+ * walk (the collector's analysis and scr_weak_judge free nothing and run
+ * no program code), so a walk that ended entries is always followed by
+ * the collection's free. */
 static void scr_weak_remove(ScrWeakEntry *entry) {
-  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(entry->owner)) == SCR_CYC_DOOMED);
+  ScrWeakMap *owner = entry->owner;
+  if (owner->walks) {
+    scr_weak_unlink(entry);
+    entry->mark |= SCR_WEAK_ENDED;
+    return;
+  }
+  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(owner)) == SCR_CYC_DOOMED);
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  ScrWeakMap *map = ptr;
+  /* The list is the walk's until it returns (scr_weak_remove): a visitor
+   * that releases the values can free keys of this very list. */
+  map->walks++;
   /* A value whose count the analysis took is not this collection's child
    * while the analysis runs: its walks must see the same children each
    * time they trace the collection, whatever was decided in between. */
-  for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
+  for (ScrWeakEntry *entry = map->entries; entry; entry = entry->next)
     if (!(entry->mark & SCR_WEAK_HELD)) visit(entry->value, ctx);
-  if (((ScrWeakMap *)ptr)->island) visit(((ScrWeakMap *)ptr)->island, ctx);
+  if (map->island) visit(map->island, ctx);
+  map->walks--;
 }
 
 static void scr_weak_map_gcfree(void *ptr) {

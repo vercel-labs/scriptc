@@ -82,6 +82,7 @@ import {
 } from "./class-method-values.js";
 import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
 import { METHODS_INTACT_PREFIX, isClassCallback, methodsIntactMember } from "./class-callbacks.js";
@@ -495,7 +496,7 @@ export function classInstanceOf(
                 localId: "candidate",
                 value: {
                   kind: "libCall",
-                  fn: "dyn.getPrototypeForIdentity",
+                  fn: "dyn.classTestPrototype",
                   args: [candidate],
                   type: DYN,
                   loc,
@@ -1709,6 +1710,9 @@ export class ClassDynamicDispatch {
   private readonly instanceTests = new Map<string, Set<string>>();
   private readonly jsonPrototypes = new Set<string>();
   private serializesClasses = false;
+  /** Whether the program can delete an error's own `stack`
+   * (mayDeleteOwnStack); undefined until a class asks. */
+  private deletesOwnStack: boolean | undefined;
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
   /** Whether a read through prototypeHelper can pass it an instance. The
@@ -1722,7 +1726,7 @@ export class ClassDynamicDispatch {
   /** The prototype reads of identity walks, by libCall, and the classes
    * each one answers for boxed instances. */
   private readonly prototypeIdentityHelpers = new Map<
-    "dyn.getPrototype" | "dyn.getPrototypeForIdentity",
+    "dyn.getPrototype" | "dyn.classTestPrototype",
     { fn: IrFunction; classes: Set<string> }
   >();
   /** `value instanceof Error` through Error.prototype: boxed instances of
@@ -2196,15 +2200,21 @@ export class ClassDynamicDispatch {
             ? receiver
             : { kind: "downcast", value: receiver, type: { kind: "object", className }, loc },
         );
+        // A class without prototype data of its own (a generic class below
+        // a class that has it) has a prototype made from its nearest
+        // ancestor's. Object.prototype is no answer for it: a view cannot
+        // be given Object.prototype, so building one threw, and `value
+        // instanceof Error` builds one.
         const returned: IrStmt = {
           kind: "return",
-          value: prototype ?? {
-            kind: "libCall",
-            fn: "dyn.getPrototype",
-            args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
-            type: DYN,
-            loc,
-          },
+          value: prototype ??
+            this.inheritedPrototype(lowerer, info, loc) ?? {
+              kind: "libCall",
+              fn: "dyn.getPrototype",
+              args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
           loc,
         };
         if (info === plan.capsule)
@@ -2670,7 +2680,7 @@ export class ClassDynamicDispatch {
         }
         if (
           expr.kind === "libCall" &&
-          (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.getPrototypeForIdentity") &&
+          (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.classTestPrototype") &&
           expr.args[0]?.kind !== "dynObjLit"
         ) {
           if (expr.prototypeIdentityOnly) {
@@ -4210,10 +4220,13 @@ export class ClassDynamicDispatch {
       // receiver. Fields added while bodies lower (the property bag and the
       // attribute words) have compiler names, which take every receiver.
       const plans = this.propertyReceivers(lowerer, true);
+      // The own properties an Error keeps in native slots: `stack`, and
+      // `cause` for a read.
+      const errorSlot = dispatch.name === "stack" || (dispatch.name === "cause" && !dispatch.write);
       const anyReceiver =
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         dispatch.name === "constructor" ||
-        dispatch.name === "stack";
+        errorSlot;
       const skips = (plan: PropertyReceiver): boolean =>
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
@@ -4223,7 +4236,7 @@ export class ClassDynamicDispatch {
           !findGenericMethodOn(lowerer, plan.info, dispatch.name) &&
           dispatch.name !== "constructor" &&
           !plan.info.fields.has(dispatch.name) &&
-          !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !(errorSlot && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
           !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
           !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
       const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
@@ -4914,6 +4927,86 @@ export class ClassDynamicDispatch {
       },
       { kind: "return", value: varRef(globalId, DYN, loc), loc },
     ];
+  }
+
+  /** The prototype of an instance of a class that has no prototype data of
+   * its own (a generic class) below a class that has it: one object per
+   * class, created from the nearest ancestor's prototype data on first use
+   * and named like the class, so a view of the instance inherits what the
+   * ancestors' prototypes hold and prints its class's name. Null when no
+   * ancestor has prototype data that can be named without a receiver. */
+  private inheritedPrototype(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrExpr | null {
+    const name = `%prototype.inherited.${info.def.name}`;
+    if (lowerer.liftedFnNamed(name) === undefined) {
+      let base: IrExpr | null = null;
+      for (let at = info.base; !base && at; at = at.base)
+        base = classPrototypeData(lowerer, at, loc);
+      if (!base) return null;
+      const globalId = `%g.${name}`;
+      const readyId = `${globalId}.ready`;
+      lowerer.shareHelper(name);
+      lowerer.globalsList.push(
+        { id: globalId, name: `${info.def.name}.prototype.inherited`, type: DYN, mutable: true },
+        {
+          id: readyId,
+          name: `${info.def.name}.prototype.inherited.ready`,
+          type: BOOL,
+          mutable: true,
+        },
+      );
+      const value = varRef(globalId, DYN, loc);
+      lowerer.liftedFns.push({
+        name,
+        params: [],
+        returnType: DYN,
+        locals: [],
+        loc,
+        speculativeDispatch: true,
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+            then: [
+              {
+                kind: "assign",
+                localId: globalId,
+                value: { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc },
+                loc,
+              },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.nameClassPrototype",
+                  args: [
+                    value,
+                    {
+                      kind: "strLit",
+                      value: info.def.jsName ?? info.def.name,
+                      type: STRING,
+                      loc,
+                    },
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "assign",
+                localId: readyId,
+                value: { kind: "boolLit", value: true, type: BOOL, loc },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          { kind: "return", value, loc },
+        ],
+      });
+    }
+    return { kind: "call", callee: name, args: [], type: DYN, loc };
   }
 
   private readPropertyBag(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
@@ -6683,6 +6776,40 @@ export class ClassDynamicDispatch {
     ];
   }
 
+  /** Whether the program can delete an error's own `stack`: it holds a
+   * `delete` of a member named `stack` or of a key it computes, or names
+   * `deleteProperty`. Every error is created with an own `stack`, which
+   * shadows a `stack` accessor its class declares until it is deleted
+   * (`delete this.stack` in the constructor exposes the accessor pair). The
+   * instance keeps no mark of the deletion, so a class that declares the
+   * accessor answers a read by name through it only in a program that can
+   * delete, and with the instance's stack in every other program. Asked
+   * only for such a class, and once. */
+  private mayDeleteOwnStack(lowerer: Lowerer): boolean {
+    if (this.deletesOwnStack !== undefined) return this.deletesOwnStack;
+    let deletes = false;
+    for (const sf of lowerer.program.getImplementationSourceFiles()) {
+      if (deletes) break;
+      if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "delete")) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isDeleteExpression(node)) {
+          const target = withoutParenthesesTypeWrappers(node.expression);
+          if (ts.isPropertyAccessExpression(target)) {
+            if (target.name.text === "stack") deletes = true;
+          } else if (ts.isElementAccessExpression(target)) {
+            const key = withoutParenthesesTypeWrappers(target.argumentExpression);
+            if (!ts.isStringLiteralLike(key) || key.text === "stack") deletes = true;
+          }
+        } else if (ts.isPropertyAccessExpression(node) && node.name.text === "deleteProperty") {
+          deletes = true;
+        }
+        return undefined;
+      });
+    }
+    this.deletesOwnStack = deletes;
+    return deletes;
+  }
+
   private propertyBody(
     lowerer: Lowerer,
     dispatch: PropertyDispatch,
@@ -6802,14 +6929,16 @@ export class ClassDynamicDispatch {
     }
     // An Error's own `stack`: a string is the native error's stack, which
     // typed reads share; any other value is kept with the instance's own
-    // properties, which a read checks first. A class whose chain declares
-    // a `stack` accessor answers through it (the accessor code below).
+    // properties, which a read checks first. A `stack` accessor a class in
+    // the chain declares is a prototype member the instance's own `stack`
+    // shadows, so it answers only in a program that can delete the own one
+    // (the accessor code below).
     if (
       name === "stack" &&
       !info.fields.has(name) &&
       lowerer.isSubclassOf(info.def.name, "%Error") &&
-      !findMethodOn(lowerer, info, "get:stack") &&
-      !findMethodOn(lowerer, info, "set:stack")
+      ((!findMethodOn(lowerer, info, "get:stack") && !findMethodOn(lowerer, info, "set:stack")) ||
+        !this.mayDeleteOwnStack(lowerer))
     ) {
       const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
       const error = lowerer.upcastTo(receiver, "%Error");
@@ -6897,6 +7026,46 @@ export class ClassDynamicDispatch {
               { kind: "libCall", fn: "error.stack", args: [error], type: STRING, loc },
               DYN,
             ),
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
+    // An Error's own `cause`: the constructor's `{ cause }` option is kept
+    // by the native error, where typed reads find it; a value the program
+    // wrote by name is kept with the instance's own properties, which a
+    // read checks first. A write keeps the bag, and a class that declares
+    // `cause` answers with its field.
+    if (
+      name === "cause" &&
+      !write &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: {
+              kind: "libCall",
+              fn: "error.cause",
+              args: [lowerer.upcastTo(receiver, "%Error")],
+              type: DYN,
+              loc,
+            },
             type: DYN,
             loc,
           },

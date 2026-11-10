@@ -985,7 +985,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   }
   // `value.#m(...)` on a checked-dynamic value (`this` in a JavaScript
   // class's receiver-independent method): the private method of the
-  // brand-checked receiver.
+  // brand-checked receiver, or the value its private field holds.
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     ts.isPrivateIdentifier(expr.expression.name) &&
@@ -993,7 +993,9 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const staticPrivate = lowerStaticPrivateCall(lowerer, expr, expr.expression);
     if (staticPrivate) return staticPrivate;
-    const privateCall = lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression);
+    const privateCall =
+      lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression) ??
+      lowerCheckedPrivateFieldCall(lowerer, expr, expr.expression);
     if (privateCall) return privateCall;
   }
 
@@ -12644,6 +12646,112 @@ function lowerObjLitGenericMethodCall(
   return { kind: "call", callee: instance.name, args, type: instance.returnType, loc };
 }
 
+/** A FUNC-, nullable-FUNC-, or DYN-typed class FIELD in call position:
+ * `this.cb()` — the ctor-assigned callback field (countdown.js's shape).
+ * The call is an ordinary call through the field's VALUE — read and, when
+ * necessary, check-narrow the callable arm, then callValue; checked-dynamic
+ * fields use the dynCall boundary. The receiver is the one the field's
+ * target names (fieldTarget): the object itself, or the brand-checked
+ * receiver of a private field on a checked-dynamic value. Null for every
+ * other field type: the caller's fences take it. */
+function lowerFieldValueCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  fieldType: IrType,
+): IrExpr | null {
+  const callableType =
+    fieldType.kind === "func"
+      ? fieldType
+      : fieldType.kind === "union"
+        ? (() => {
+            const arms = lowerer.unions.get(fieldType.unionId)?.arms ?? [];
+            const funcs = arms.filter((arm): boolean => arm.kind === "func");
+            const func = funcs[0];
+            return funcs.length === 1 &&
+              func?.kind === "func" &&
+              arms.every((arm) => arm.kind === "func" || isUnitType(arm))
+              ? func
+              : null;
+          })()
+        : null;
+  if (callableType === null && fieldType.kind !== "dyn") return null;
+  const target = lowerer.fieldTarget(access);
+  if (!target) return null;
+  const loc = locOf(call);
+  const receiverLocal = lowerer.declareHiddenLocal("%callReceiver", target.obj.type);
+  const init: IrStmt = { kind: "varDecl", localId: receiverLocal.id, init: target.obj, loc };
+  target.obj = { kind: "varRef", localId: receiverLocal.id, type: receiverLocal.type, loc };
+  const receiver: { receiver?: IrExpr } = {};
+  if (!lowerer.receiverFreeCallbackFields.has(access.name.text))
+    receiver.receiver = lowerer.coerceToExpected(target.obj, DYN);
+  const finish = (result: IrExpr): IrExpr => ({
+    kind: "seqExpr",
+    stmts: [init],
+    result,
+    type: result.type,
+    loc,
+  });
+  let callee = target ? lowerer.fieldGetExpr(target, locOf(access), access) : null;
+  if (callee?.type.kind === "union" && callableType !== null) {
+    // Calling a cleared callback field throws Node's call TypeError.
+    const inPlace = checkedArmExtraction(
+      lowerer,
+      callee,
+      lowerer.armTag(callee.type.unionId, callableType),
+      callableType,
+      () => `${ts.getTextOfNode(access)} is not a function`,
+    );
+    const helper = inPlace
+      ? null
+      : lowerer.narrowedArmHelper(callee.type.unionId, callableType, locOf(access));
+    if (inPlace) callee = inPlace;
+    else if (helper !== null) {
+      callee = lowerer.checkedNarrowCall(helper, callee, callableType, locOf(access));
+    }
+  }
+  if (callee?.type.kind === "func") {
+    if (
+      ((callee.type.rest === true && callee.type.restAbi === undefined) ||
+        call.arguments.nodes.length > callee.type.params.length) &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      lowerer.dynConvertible(callee.type)
+    ) {
+      const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
+      const spread = lowerSpreadArgsCall(lowerer, call, boxed, loc);
+      if (spread?.kind === "dynCall") return finish({ ...spread, ...receiver });
+      const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+      return finish({
+        kind: "dynCall",
+        callee: boxed,
+        ...receiver,
+        calleeName: v8CalleeText(access),
+        args,
+        type: DYN,
+        loc,
+      });
+    }
+    const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
+    return finish({ kind: "callValue", callee, ...receiver, args, type: callee.type.ret, loc });
+  }
+  if (callee?.type.kind === "dyn") {
+    if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) {
+      lowerer.unsupported("SC1090", call, "spread arguments in calls through 'unknown' values");
+    }
+    const args = call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
+    return finish({
+      kind: "dynCall",
+      callee,
+      ...receiver,
+      calleeName: v8CalleeText(access),
+      args,
+      type: DYN,
+      loc,
+    });
+  }
+  return null;
+}
+
 /** `obj.method(args)` — whole-program devirtualization decides the form:
  * a method some strict subclass of the receiver's STATIC class overrides
  * must dispatch on the dynamic class (`virtualCall`, through the vtable);
@@ -12823,106 +12931,11 @@ export function lowerObjectMethodCall(
     if (gfound)
       return lowerClassGenericMethodCall(lowerer, call, access, info, gfound, lowerReceiver());
   }
-  // A FUNC-, nullable-FUNC-, or DYN-typed FIELD in call position:
-  // `this.cb()` — the ctor-assigned callback field (countdown.js's
-  // shape). The call is an ordinary call through the field's VALUE —
-  // read and, when necessary, check-narrow the callable arm, then
-  // callValue; checked-dynamic fields use the dynCall boundary. Every
-  // other field type falls through to the fences.
+  // A field in call position (`this.cb()`): the call of the field's value.
   if (info && !found) {
     const fieldType = info.fields.get(access.name.text);
-    const callableType =
-      fieldType?.kind === "func"
-        ? fieldType
-        : fieldType?.kind === "union"
-          ? (() => {
-              const arms = lowerer.unions.get(fieldType.unionId)?.arms ?? [];
-              const funcs = arms.filter((arm): boolean => arm.kind === "func");
-              const func = funcs[0];
-              return funcs.length === 1 &&
-                func?.kind === "func" &&
-                arms.every((arm) => arm.kind === "func" || isUnitType(arm))
-                ? func
-                : null;
-            })()
-          : null;
-    if (fieldType && (callableType !== null || fieldType.kind === "dyn")) {
-      const target = lowerer.fieldTarget(access);
-      if (!target) return null;
-      const loc = locOf(call);
-      const receiverLocal = lowerer.declareHiddenLocal("%callReceiver", target.obj.type);
-      const init: IrStmt = { kind: "varDecl", localId: receiverLocal.id, init: target.obj, loc };
-      target.obj = { kind: "varRef", localId: receiverLocal.id, type: receiverLocal.type, loc };
-      const receiver: { receiver?: IrExpr } = {};
-      if (!lowerer.receiverFreeCallbackFields.has(access.name.text))
-        receiver.receiver = lowerer.coerceToExpected(target.obj, DYN);
-      const finish = (result: IrExpr): IrExpr => ({
-        kind: "seqExpr",
-        stmts: [init],
-        result,
-        type: result.type,
-        loc,
-      });
-      let callee = target ? lowerer.fieldGetExpr(target, locOf(access), access) : null;
-      if (callee?.type.kind === "union" && callableType !== null) {
-        // Calling a cleared callback field throws Node's call TypeError.
-        const inPlace = checkedArmExtraction(
-          lowerer,
-          callee,
-          lowerer.armTag(callee.type.unionId, callableType),
-          callableType,
-          () => `${ts.getTextOfNode(access)} is not a function`,
-        );
-        const helper = inPlace
-          ? null
-          : lowerer.narrowedArmHelper(callee.type.unionId, callableType, locOf(access));
-        if (inPlace) callee = inPlace;
-        else if (helper !== null) {
-          callee = lowerer.checkedNarrowCall(helper, callee, callableType, locOf(access));
-        }
-      }
-      if (callee?.type.kind === "func") {
-        if (
-          ((callee.type.rest === true && callee.type.restAbi === undefined) ||
-            call.arguments.nodes.length > callee.type.params.length) &&
-          isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-          lowerer.dynConvertible(callee.type)
-        ) {
-          const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
-          const spread = lowerSpreadArgsCall(lowerer, call, boxed, loc);
-          if (spread?.kind === "dynCall") return finish({ ...spread, ...receiver });
-          const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
-          return finish({
-            kind: "dynCall",
-            callee: boxed,
-            ...receiver,
-            calleeName: v8CalleeText(access),
-            args,
-            type: DYN,
-            loc,
-          });
-        }
-        const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-        return finish({ kind: "callValue", callee, ...receiver, args, type: callee.type.ret, loc });
-      }
-      if (callee?.type.kind === "dyn") {
-        if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) {
-          lowerer.unsupported("SC1090", call, "spread arguments in calls through 'unknown' values");
-        }
-        const args = call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
-        return finish({
-          kind: "dynCall",
-          callee,
-          ...receiver,
-          calleeName: v8CalleeText(access),
-          args,
-          type: DYN,
-          loc,
-        });
-      }
-    }
+    if (fieldType) return lowerFieldValueCall(lowerer, call, access, fieldType);
     if (
-      !fieldType &&
       isJsSourceFile(ts.getSourceFileOfNode(call)) &&
       !info.def.runtime &&
       !info.builtinError &&
@@ -14087,6 +14100,27 @@ function lowerCheckedPrivateMethodCall(
   const receiver = checkedPrivateMethodReceiver(lowerer, owner, name, value, loc);
   const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
   return { kind: "call", callee, args: [receiver, ...args], type: found.sig.ret, loc };
+}
+
+/** `value.#f(args)` where `value` lowers to a checked-dynamic value and the
+ * declaration-level class whose body declares `#f` declares it as a field:
+ * the call of the field's value, read off the brand-checked receiver, as
+ * the call on a receiver of the class's type is (lowerFieldValueCall). A
+ * value that is no instance of the class throws Node's TypeError for a
+ * missing private member; it is never asked for a property named `#f`.
+ * Null for any other private member call. */
+function lowerCheckedPrivateFieldCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (!ts.isPrivateIdentifier(access.name) || lowerer.chainBlocked(access, call)) return null;
+  const owner = privateNameClass(lowerer, access.name);
+  const fieldType = owner?.fields.get(access.name.text);
+  if (!fieldType) return null;
+  const probed = tryLowerExpression(lowerer, access.expression);
+  if (!probed || !checkedDynamicOperand(probed)) return null;
+  return lowerFieldValueCall(lowerer, call, access, fieldType);
 }
 
 /** A checked-dynamic value, or the dynamic value under a checked extraction. */

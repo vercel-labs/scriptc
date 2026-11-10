@@ -239,8 +239,8 @@
       "signature": "bad-title 500 Internal Server Error"
     },
     "island:hono": {
-      "category": "build",
-      "signature": "SC0001"
+      "category": "exit",
+      "signature": "exit 1, Node 0: Uncaught TypeError: Illegal invocation"
     }
   },
   "npm/hono-zod-validator": {
@@ -249,8 +249,8 @@
       "signature": "POST /books 500 Internal Server Error"
     },
     "island:hono": {
-      "category": "build",
-      "signature": "SC0001"
+      "category": "exit",
+      "signature": "exit 1, Node 0: Error: for-in over this checked-dynamic kind is not supported yet"
     }
   },
   "npm/hot-shots-buffered": {

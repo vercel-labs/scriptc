@@ -9623,13 +9623,14 @@ export class Lowerer {
         declarationOf: (symbol) => symbol.valueDeclaration,
         bytesElemOf: (receiver) => {
           const t = mappedOrNull(receiver);
-          if (t?.kind === "bytes") return t.elem;
-          // A `number[]` receiver answers undefined for an index past its
-          // end just as a typed array does, so its reads are candidates
-          // too; an f64 element may hold a genuine NaN, which the
-          // analysis tracks.
-          if (t?.kind === "array" && t.elem.kind === "f64") return "f64";
-          return null;
+          return t?.kind === "bytes" ? t.elem : null;
+        },
+        // TypeScript `number[]` reads keep the optional-read lowering they
+        // already have (runtime-optional-locals.ts).
+        isJsNumberArray: (receiver) => {
+          if (!isJsSourceFile(ts.getSourceFileOfNode(receiver))) return false;
+          const t = mappedOrNull(receiver);
+          return t?.kind === "array" && t.elem.kind === "f64";
         },
         isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",

@@ -3701,10 +3701,7 @@ export function lowerIntrinsicProperty(
     // its checker spelling, on the paths above, which lower them in place.
     if (receiver.type.kind === "union" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const arms = lowerer.unions.get(receiver.type.unionId)?.arms ?? [];
-      if (
-        arms.length > 1 &&
-        arms.every((arm) => arm.kind === "array" || arm.kind === "bytes")
-      )
+      if (arms.length > 1 && arms.every((arm) => arm.kind === "array" || arm.kind === "bytes"))
         return perArmUnionRead(
           lowerer,
           expr,
@@ -4895,14 +4892,15 @@ function unionValueRead(
             };
       }
     }
-    // A union of arrays, strings and typed arrays (`Model[] | ModelRef[]`,
-    // `string[] | Buffer[]`, a documented `Array.<number>` argument that a
-    // caller may pass as an `Int32Array`): every arm answers its own
-    // length, so the read dispatches on the tag. Node's `.length` is a
-    // number for all of them, and no arm can be absent here (a unit arm
-    // would have to throw on this read, which the checker's narrowing
-    // already excludes).
-    if (def.arms.length > 1 && def.arms.every((arm) => arm.kind === "array" || arm.kind === "string")) {
+    // A union of arrays and strings (`Model[] | ModelRef[]`,
+    // `string[] | Buffer[]`): every arm answers its own length, so the
+    // read dispatches on the tag. Node's `.length` is a number for both,
+    // and no arm can be absent here (a unit arm would have to throw on
+    // this read, which the checker's narrowing already excludes).
+    if (
+      def.arms.length > 1 &&
+      def.arms.every((arm) => arm.kind === "array" || arm.kind === "string")
+    ) {
       return perArmUnionRead(
         lowerer,
         expr,

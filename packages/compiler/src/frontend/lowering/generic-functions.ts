@@ -3393,9 +3393,7 @@ function documentedSequenceBinding(
   let argument: IrType | null;
   try {
     declared = lowerer.mapTypeOf(lowerer.typeOf(param.name));
-    argument = lowerer.mapTypeOf(
-      lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)),
-    );
+    argument = lowerer.mapTypeOf(lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)));
   } catch (e) {
     // Probing a JavaScript call site never fails the build: a type the
     // mapper refuses keeps the checked-dynamic slot.

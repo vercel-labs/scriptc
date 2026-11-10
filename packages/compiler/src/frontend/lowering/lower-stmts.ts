@@ -1750,7 +1750,11 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
  * list.slice()`). Element reads, element writes and `length` then dispatch
  * on the arm the value holds instead of taking every one through the
  * checked-dynamic representation. Null when any write could store something
- * else, since the union must hold every stored value. */
+ * else, since the union must hold every stored value: a write the union
+ * does not model (a compound assignment, an increment, a destructuring
+ * assignment, a `for`-`in`/`of` target, of the binding or of an element),
+ * or an element that the binding's own element writes and
+ * `push`/`unshift`/`splice`/`fill` calls store and an arm cannot hold. */
 function jsVarWriteType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | null {
   const decl = nameNode.parent;
   if (
@@ -1766,14 +1770,44 @@ function jsVarWriteType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   // A read that can run before the first store sees undefined, which a
   // sequence union cannot hold.
   if (symbol === undefined || !lowerer.storedBeforeReadVars.has(symbol)) return null;
+  // Every declaration is a bare `var` name (a function declaration or an
+  // expando assignment of the same symbol stores a value no write shows).
+  if (
+    !(symbol.declarations ?? []).every(
+      (d) =>
+        ts.isVariableDeclaration(d) &&
+        ts.isIdentifier(d.name) &&
+        d.initializer === undefined &&
+        d.type === undefined &&
+        !(d.parent !== undefined && storesByLoop(d.parent)),
+    )
+  )
+    return null;
   let scope: ts.Node = decl;
   for (let p: ts.Node | undefined = decl.parent; p !== undefined; p = p.parent)
     if (ts.isSourceFile(p) || (ts.isFunctionLike(p) && p.body !== undefined)) {
       scope = p;
       break;
     }
+  // Probing a JavaScript write never fails the build: a type the mapper
+  // refuses is a write the union cannot model.
+  const mapped = (node: ts.Expression): IrType | null => {
+    try {
+      return lowerer.mapTypeOf(lowerer.typeOf(node));
+    } catch (e) {
+      if (e instanceof PoisonError) return null;
+      throw e;
+    }
+  };
   const arms: IrType[] = [];
+  /** The values element writes and mutating calls store through the
+   * binding (null for a call that stores none). */
+  const elements: { value: ts.Expression | null; method: string | null }[] = [];
   let valid = true;
+  // A use only a single storage answers: a union of sequences lowers its
+  // element reads and writes by a numeric index and its `length` read, and
+  // not its methods, other properties or `for`-`in` keys.
+  let singleStorageUse = false;
   const addArms = (written: IrType | null): void => {
     const list =
       written?.kind === "union"
@@ -1787,34 +1821,195 @@ function jsVarWriteType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
     }
     for (const arm of list) if (!arms.some((other) => typeEquals(other, arm))) arms.push(arm);
   };
-  const namesBinding = (left: ts.Node): boolean => {
-    if (ts.isIdentifier(left)) return lowerer.checker.getSymbolAtLocation(left) === symbol;
-    if (!ts.isArrayBindingPattern(left) && !ts.isObjectBindingPattern(left)) return false;
-    return boundIdentifiersOf(left).some(
-      (name) => lowerer.checker.getSymbolAtLocation(name) === symbol,
-    );
+  const outermost = (node: ts.Node): ts.Node => {
+    let n = node;
+    while (ts.isParenthesizedExpression(n.parent) && n.parent.expression === n) n = n.parent;
+    return n;
   };
   ts.walkPreorder(scope, (node) => {
     if (!valid) return "stop";
-    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
-      let left = node.left;
-      while (ts.isParenthesizedExpression(left)) left = left.expression;
-      if (namesBinding(left)) {
-        // A compound assignment reads the value it rewrites; a narrowing
-        // store the union does not model leaves the binding dynamic.
-        if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) valid = false;
-        else addArms(lowerer.mapTypeOf(lowerer.typeOf(node.right)));
-      }
-    } else if (
-      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-      ts.isIdentifier(node.operand) &&
-      lowerer.checker.getSymbolAtLocation(node.operand) === symbol
-    )
+    if (!ts.isIdentifier(node) || node.text !== nameNode.text) return undefined;
+    if (ts.isVariableDeclaration(node.parent) && node.parent.name === node) return undefined;
+    // A shorthand property's name (`({ P } = o)`) refers to the binding
+    // through the shorthand-value symbol.
+    const shorthand = ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node;
+    const referenced = shorthand
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(node.parent)
+      : lowerer.checker.getSymbolAtLocation(node);
+    if (referenced !== symbol) return undefined;
+    const target = outermost(node);
+    const parent = target.parent;
+    if (parent === undefined) return undefined;
+    if (jsDestructuringTarget(target) || storesByLoop(target) || updatesInPlace(target)) {
       valid = false;
+      return undefined;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.left === target &&
+      ts.isAssignmentOperator(parent.operatorToken.kind)
+    ) {
+      // A compound assignment reads the value it rewrites; a narrowing
+      // store the union does not model leaves the binding dynamic.
+      if (parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken) valid = false;
+      else addArms(mapped(parent.right));
+      return undefined;
+    }
+    if (ts.isForInStatement(parent) && parent.expression === target) singleStorageUse = true;
+    // `P[i] = v`: a store into the value's own elements. A compound or
+    // increment store, a destructuring store and a loop head's store are
+    // left to the dynamic representation, which performs every one.
+    if (ts.isElementAccessExpression(parent) && parent.expression === target) {
+      if (mapped(parent.argumentExpression)?.kind !== "f64") singleStorageUse = true;
+      const access = outermost(parent);
+      const user = access.parent;
+      if (jsDestructuringTarget(access) || storesByLoop(access) || updatesInPlace(access))
+        valid = false;
+      else if (
+        user !== undefined &&
+        ts.isBinaryExpression(user) &&
+        user.left === access &&
+        ts.isAssignmentOperator(user.operatorToken.kind)
+      ) {
+        if (user.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+          elements.push({ value: user.right, method: null });
+        else valid = false;
+      }
+      return undefined;
+    }
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === target &&
+      (parent.name.text !== "length" || jsWriteTarget(outermost(parent)))
+    )
+      singleStorageUse = true;
+    // `P.push(v)` and the other calls that store their arguments.
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === target &&
+      STORING_SEQUENCE_METHODS.has(parent.name.text)
+    ) {
+      const call = outermost(parent).parent;
+      if (
+        call !== undefined &&
+        ts.isCallExpression(call) &&
+        outermost(call.expression) === outermost(parent)
+      ) {
+        const method = parent.name.text;
+        const args = call.arguments.nodes;
+        const stored =
+          method === "fill" ? args.slice(0, 1) : method === "splice" ? args.slice(2) : args;
+        for (const value of stored) {
+          if (ts.isSpreadElement(value)) valid = false;
+          else elements.push({ value, method });
+        }
+        if (stored.length === 0) elements.push({ value: null, method });
+      }
+    }
     return undefined;
   });
-  if (!valid || arms.length === 0) return null;
+  if (!valid || arms.length === 0 || (arms.length > 1 && singleStorageUse)) return null;
+  for (const { value, method } of elements) {
+    const written = value === null ? null : mapped(value);
+    for (const arm of arms) {
+      // A typed array converts what it stores to a number, and has no
+      // `push`, `unshift` or `splice` (Node's TypeError is the dynamic tier's).
+      if (arm.kind === "bytes") {
+        if (method !== null && method !== "fill") return null;
+        if (value !== null && written?.kind !== "f64") return null;
+        continue;
+      }
+      if (arm.kind !== "array") return null;
+      if (value === null || arm.elem.kind === "dyn") continue;
+      if (written === null || !typeEquals(written, arm.elem)) return null;
+    }
+  }
   return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
+}
+
+/** Array and typed-array methods that store their arguments as elements. */
+const STORING_SEQUENCE_METHODS: ReadonlySet<string> = new Set([
+  "push",
+  "unshift",
+  "splice",
+  "fill",
+]);
+
+/** `node` is a target of a destructuring assignment (`[a, node] = xs`,
+ * `({ k: node } = o)`, `[node = d] = xs`, `for ([node] of pairs)`). */
+function jsDestructuringTarget(node: ts.Node): boolean {
+  let n: ts.Node = node;
+  let nested = false;
+  for (;;) {
+    const p = n.parent;
+    if (p === undefined) return false;
+    if (ts.isParenthesizedExpression(p)) {
+      n = p;
+      continue;
+    }
+    if (
+      ts.isArrayLiteralExpression(p) ||
+      ts.isObjectLiteralExpression(p) ||
+      ts.isShorthandPropertyAssignment(p) ||
+      ts.isSpreadElement(p) ||
+      ts.isSpreadAssignment(p) ||
+      (ts.isPropertyAssignment(p) && p.initializer === n)
+    ) {
+      nested = true;
+      n = p;
+      continue;
+    }
+    const assigns =
+      ts.isBinaryExpression(p) &&
+      p.left === n &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    // A default (`[node = d]`, `{ k: node = d }`) stands where an element does.
+    const element = p.parent;
+    if (
+      assigns &&
+      element !== undefined &&
+      (ts.isArrayLiteralExpression(element) ||
+        (ts.isPropertyAssignment(element) && element.initializer === p))
+    ) {
+      n = p;
+      continue;
+    }
+    if (!nested) return false;
+    return assigns || storesByLoop(n);
+  }
+}
+
+/** `node` is stored by an assignment of any kind, an increment, a
+ * destructuring assignment or a `for`-`in`/`of` head. */
+function jsWriteTarget(node: ts.Node): boolean {
+  const p = node.parent;
+  return (
+    (p !== undefined &&
+      ts.isBinaryExpression(p) &&
+      p.left === node &&
+      ts.isAssignmentOperator(p.operatorToken.kind)) ||
+    updatesInPlace(node) ||
+    storesByLoop(node) ||
+    jsDestructuringTarget(node)
+  );
+}
+
+/** `node` is the target a `for`-`in` or `for`-`of` head stores (`for (node of xs)`). */
+function storesByLoop(node: ts.Node): boolean {
+  const p = node.parent;
+  return (
+    p !== undefined && (ts.isForOfStatement(p) || ts.isForInStatement(p)) && p.initializer === node
+  );
+}
+
+/** `node++`, `--node` and the like. */
+function updatesInPlace(node: ts.Node): boolean {
+  const p = node.parent;
+  return (
+    p !== undefined &&
+    (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p)) &&
+    (p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken)
+  );
 }
 
 /** `var` declarations hoist to their FUNCTION: the binding exists across

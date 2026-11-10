@@ -3430,9 +3430,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
   const receiverType: IrType | null = receiverIr;
   const jsSequenceReceiver =
     jsSource &&
-    (receiverType === null ||
-      receiverType.kind === "array" ||
-      receiverType.kind === "union");
+    (receiverType === null || receiverType.kind === "array" || receiverType.kind === "union");
   if ((indexedArms !== null && !jsSource) || jsSequenceReceiver) {
     let recv = lowerer.lowerExpr(target.expression);
     if (recv.type.kind === "dyn" && receiverIr !== null)

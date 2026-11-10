@@ -53,8 +53,12 @@ interface Binding {
   exported: boolean;
   /** A JavaScript `var` asked about despite a loose (implicit `any`) type:
    * every one of its declarations is a bare name with no initializer and no
-   * annotation, so the binding's type is entirely up to its writes. */
+   * annotation outside a `for`-`in`/`of` head, so the binding's type is
+   * entirely up to its writes. */
   loose: boolean;
+  /** Some declaration's type excludes undefined, so the read-before-store
+   * question for `early` applies to the binding. */
+  typed: boolean;
 }
 
 /** What the read-before-store analysis found. */
@@ -137,20 +141,26 @@ export function analyzeVarReads(
           // reads are the only thing to analyze: a binding whose every read
           // follows a store never shows its unassigned state, and its writes
           // can then decide its type.
+          // A `for (var k in o)` or `for (var v of xs)` head stores its
+          // binding only on a pass, and from no write the type could see.
           const loose =
             js &&
             !lexical &&
             declaration.initializer === undefined &&
             declaration.type === undefined &&
-            ts.isIdentifier(declaration.name);
+            ts.isIdentifier(declaration.name) &&
+            !ts.isForInStatement(node.parent) &&
+            !ts.isForOfStatement(node.parent);
+          const typed = excludesUndefined(lowerer, name);
           const binding = bindings.get(symbol);
-          if (!loose && !excludesUndefined(lowerer, name)) {
+          if (!loose && !typed) {
             // A typed declaration of the same name disqualifies a loose one.
             if (binding) binding.loose = false;
             continue;
           }
           if (binding) {
             if (!loose) binding.loose = false;
+            if (typed) binding.typed = true;
             binding.names.push(name);
           } else
             bindings.set(symbol, {
@@ -166,6 +176,7 @@ export function analyzeVarReads(
                 : {}),
               exported,
               loose,
+              typed,
             });
           names.add(name.text);
         }
@@ -199,7 +210,7 @@ export function analyzeVarReads(
         // An untyped `var`: only its storage matters, so ask the stronger
         // question whether every read runs after a store, which follows a
         // statement that stores in both branches of an `if`/`else` (the
-        // single settle point above does not). A reader in another module
+        // single settle point below does not). A reader in another module
         // rules it out entirely.
         const stores = new StoreAnalysis(new Set(references), neverReturns);
         const early = references.find(
@@ -210,8 +221,10 @@ export function analyzeVarReads(
         );
         if (early === undefined && !binding.exported && !references.some(isExportedName))
           stored.add(symbol);
-        continue;
       }
+      // A binding whose declarations are all loose has no declared type the
+      // early read could contradict.
+      if (!binding.typed) continue;
       const settle = analysis.settleIndex(binding.scope, symbol);
       const early =
         references.find(
@@ -226,7 +239,10 @@ export function analyzeVarReads(
         (binding.exported || references.some(isExportedName))
           ? binding.names[0]
           : undefined);
-      if (early) out.set(symbol, early);
+      if (early) {
+        out.set(symbol, early);
+        stored.delete(symbol);
+      }
     }
   }
   return { early: out, storedBeforeRead: stored };

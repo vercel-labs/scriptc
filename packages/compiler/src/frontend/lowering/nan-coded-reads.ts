@@ -46,6 +46,11 @@ export interface NanCodedHost {
   declarationOf(symbol: ts.Symbol): ts.Node | undefined;
   /** The element kind of a typed-array receiver, or null. */
   bytesElemOf(receiver: ts.Expression): IrBytesElem | null;
+  /** The receiver is a `number[]` of a JavaScript source. Its reads past
+   * the end answer undefined like a typed array's, so they are candidates;
+   * nothing else this analysis knows about typed arrays (a fixed length, a
+   * store that converts undefined to NaN) holds for it. */
+  isJsNumberArray(receiver: ts.Expression): boolean;
   /** The read is a keyed read of a record's `number` index signature,
    * which answers undefined for a missing key. */
   isNumberRecordRead(read: ts.ElementAccessExpression): boolean;
@@ -306,6 +311,7 @@ export class NanCodedReads {
     const candidates = new Map<ts.ElementAccessExpression, IrBytesElem>();
     for (const sf of this.files) {
       if (sf.isDeclarationFile) continue;
+      const js = isJsSourceFile(sf);
       ts.walkPreorder(sf, (node) => {
         if (ts.isIdentifier(node)) {
           const list = this.names.get(node.text);
@@ -314,10 +320,16 @@ export class NanCodedReads {
           return;
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
-          // A record's number values may hold a genuine NaN, like f64 elements.
-          const elem =
-            this.host.bytesElemOf(node.expression) ??
-            (this.host.isNumberRecordRead(node) ? "f64" : null);
+          // A record's number values may hold a genuine NaN, like f64
+          // elements. A JavaScript source contributes only its `number[]`
+          // reads: its typed-array and record reads lower through the
+          // dynamic key path, never to the plain number a candidate needs.
+          const elem = js
+            ? this.host.isJsNumberArray(node.expression)
+              ? "f64"
+              : null
+            : (this.host.bytesElemOf(node.expression) ??
+              (this.host.isNumberRecordRead(node) ? "f64" : null));
           if (elem) candidates.set(node, elem);
         }
       });
@@ -409,7 +421,7 @@ export class NanCodedReads {
     return symbol;
   }
 
-  /** An element read (never a write target) of a TypeScript file. */
+  /** An element read that is never a write target. */
   private isReadCandidate(read: ts.ElementAccessExpression): boolean {
     if (read.questionDotToken) return false;
     let n: ts.Node = read;

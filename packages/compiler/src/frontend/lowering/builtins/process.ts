@@ -1027,6 +1027,17 @@ export function processDataMemberValue(
       return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
     case "features":
       return { kind: "libCall", fn: "process.features", args: [], type: DYN, loc };
+    case "stdin":
+    case "stdout":
+    case "stderr":
+      // The process module exports the global's stream objects, so a
+      // binding taken off it reads the value the spelled property reads.
+      return processStreamValue(
+        lowerer,
+        member,
+        isJsSourceFile(ts.getSourceFileOfNode(binding)),
+        loc,
+      );
     default:
       return null;
   }
@@ -1101,6 +1112,54 @@ export const PROCESS_FEATURES: readonly (readonly [name: string, value: boolean]
   ["quic", false],
   ["typescript", false],
 ];
+
+/** The three streams Node exposes both as properties of the process global
+ * and as members of the node:process module object (module.exports IS the
+ * global process object, so `import { stdin } from "node:process"` binds
+ * the same value `process.stdin` reads). */
+export type ProcessStreamMember = "stdin" | "stdout" | "stderr";
+
+function isProcessStreamMember(member: string | null): member is ProcessStreamMember {
+  return member === "stdin" || member === "stdout" || member === "stderr";
+}
+
+/** The process stream an expression NAMES: `process.stdin` or the same
+ * member through a node:process import binding (the named import, or its
+ * destructured-require twin). Null for any other expression, including a
+ * local that happens to share the name. */
+export function processStreamMemberOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): ProcessStreamMember | null {
+  const expr = withoutParenthesesTypeWrappers(node);
+  if (ts.isPropertyAccessExpression(expr)) {
+    const member = lowerer.stdlibGlobalMember(expr, "process");
+    return isProcessStreamMember(member) ? member : null;
+  }
+  if (!ts.isIdentifier(expr)) return null;
+  const binding = lowerer.builtinImportOf(expr);
+  return binding?.module === "process" && isProcessStreamMember(binding.member)
+    ? binding.member
+    : null;
+}
+
+/** The VALUE of a process stream. A TypeScript source reads the
+ * descriptor scalar (`process.stdout` into a `NodeJS.WritableStream`
+ * slot); stdin is the checked-dynamic handle the runtime boxes either
+ * way, and a JavaScript source reads the runtime stream object for all
+ * three, so member and identity probes answer what Node's object does. */
+function processStreamValue(
+  lowerer: Lowerer,
+  member: ProcessStreamMember,
+  js: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  if (member === "stdin" || js) {
+    const fd = member === "stdin" ? 0 : member === "stdout" ? 1 : 2;
+    return { kind: "libCall", fn: "process.stdio", args: [numLit(fd, loc)], type: DYN, loc };
+  }
+  return { kind: "numLit", value: member === "stdout" ? 1 : 2, type: PROCSTREAM_T, loc };
+}
 
 export function lowerProcessProperty(
   lowerer: Lowerer,
@@ -1382,20 +1441,8 @@ export function lowerProcessProperty(
   // procStream scalar, minted as the stream's fd. Member reads
   // (`process.stdout.isTTY`, `.write(...)`) never reach here — their
   // OUTER expressions dispatch first.
-  if (
-    member === "stdin" ||
-    ((member === "stdout" || member === "stderr") && isJsSourceFile(ts.getSourceFileOfNode(expr)))
-  ) {
-    return {
-      kind: "libCall",
-      fn: "process.stdio",
-      args: [numLit(member === "stdin" ? 0 : member === "stdout" ? 1 : 2, loc)],
-      type: DYN,
-      loc,
-    };
-  }
-  if (member === "stdout" || member === "stderr") {
-    return { kind: "numLit", value: member === "stdout" ? 1 : 2, type: PROCSTREAM_T, loc };
+  if (isProcessStreamMember(member)) {
+    return processStreamValue(lowerer, member, isJsSourceFile(ts.getSourceFileOfNode(expr)), loc);
   }
   // Other members: type errors under the fallback declarations; with
   // @types/node they typecheck and fall through to stdlibMemberFence

@@ -48,9 +48,11 @@ import {
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
+  builtinSuppliesMethod,
   classValueRef,
   findGenericMethodOn,
   findGenericStaticOn,
+  findImplementationOn,
   findMethodOn,
   findStaticOn,
   genericOverrideBelow,
@@ -401,7 +403,9 @@ const PRIMITIVE_KINDS = new Set<string>([
 /** A declared conversion method, own or inherited. */
 function conversionMethod(lowerer: Lowerer, info: ClassInfo, method: ConversionMethod): boolean {
   if (info.fields.has(method)) return false;
-  const found = findMethodOn(lowerer, info, method);
+  // An abstract declaration emits no prototype member: the conversion calls
+  // the implementation above it, or the default when no class has one.
+  const found = findImplementationOn(lowerer, info, method);
   return !!found && !found.declarer.builtinError;
 }
 
@@ -7154,6 +7158,13 @@ export class ClassDynamicDispatch {
       }
       if (!field && !accessor && info.decl) {
         const declared = findMethodOn(lowerer, info, name);
+        // An abstract declaration emits no prototype function, so it has no
+        // value of its own: an instance of a class below reads that class's
+        // implementation (the nearest arm answers), and an instance with no
+        // implementation below reads the nearest concrete declaration above
+        // (or undefined when no class declares one), as JavaScript's
+        // prototype chain does.
+        const abstractHere = declared?.sig.abstract === true;
         // Untyped dispatch considers native classes that may never reach
         // this lookup. Libraries cannot expose fibers or promises through
         // those speculative branches. Direct typed references still reach
@@ -7180,8 +7191,14 @@ export class ClassDynamicDispatch {
             genericOverrideBelow(info, name))
         )
           return fence();
-        const method = classMethodValue(lowerer, info.decl, info, name, loc);
-        if (method && canConvertToDyn(method.type, getRecord, getUnion)) {
+        // An abstract declaration's slot holds no implementation: the value
+        // of a receiver whose class declares it that way is whatever the
+        // prototype chain answers above, walked past the abstract
+        // re-declarations that emit no member (null when none answers).
+        const method = abstractHere
+          ? this.inheritedMethodValue(lowerer, info.decl, info, name, loc)
+          : classMethodValue(lowerer, info.decl, info, name, loc);
+        if (abstractHere || (method && canConvertToDyn(method.type, getRecord, getUnion))) {
           // A capsule may have the base ABI even when its native object is
           // a subclass (for example an inherited iterator returning this).
           // Select the method declaration at extraction, before detaching it.
@@ -7190,7 +7207,11 @@ export class ClassDynamicDispatch {
               candidate !== info &&
               lowerer.classCanBeConstructed(candidate) &&
               lowerer.isSubclassOf(candidate.def.name, info.def.name) &&
-              (candidate.methods.has(name) || candidate.genericMethods?.has(name)),
+              (candidate.methods.has(name) || candidate.genericMethods?.has(name)) &&
+              // An abstract re-declaration adds no prototype member: an
+              // instance of that class reads the arm below it, or the
+              // fallback above, exactly as this branch would.
+              findMethodOn(lowerer, candidate, name)?.sig.abstract !== true,
           );
           overrides.sort((a, b) =>
             lowerer.isSubclassOf(a.def.name, b.def.name)
@@ -7262,11 +7283,30 @@ export class ClassDynamicDispatch {
               loc,
             });
           }
-          body.push({
-            kind: "return",
-            value: { kind: "dynFrom", value: method, type: DYN, loc },
-            loc,
-          });
+          if (method && !canConvertToDyn(method.type, getRecord, getUnion)) body.push(...fence());
+          else if (
+            !method &&
+            !INHERITED_OBJECT_METHODS.has(name) &&
+            builtinSuppliesMethod(lowerer, declared!.declarer, name)
+          )
+            // No program class implements it, but a built-in above the
+            // abstract re-declaration does (Date.prototype.getTime under
+            // `extends Date`): its function is not undefined, and this
+            // lookup has no value for it.
+            body.push(...fence());
+          else
+            body.push({
+              kind: "return",
+              value: method
+                ? { kind: "dynFrom", value: method, type: DYN, loc }
+                : INHERITED_OBJECT_METHODS.has(name)
+                  ? // No class in the chain implements an abstractly
+                    // re-declared Object.prototype method: the chain ends at
+                    // Object.prototype, which answers its own function.
+                    objectPrototypeMethod(name, loc)
+                  : dynUndefinedExpr(loc),
+              loc,
+            });
           return body;
         }
       }
@@ -7292,13 +7332,7 @@ export class ClassDynamicDispatch {
                 kind: "ternary",
                 cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
                 then: own,
-                else_: {
-                  kind: "libCall",
-                  fn: "dyn.builtinMethod",
-                  args: [{ kind: "strLit", value: "Object", type: STRING, loc }, key],
-                  type: DYN,
-                  loc,
-                },
+                else_: objectPrototypeMethod(name, loc),
                 type: DYN,
                 loc,
               },
@@ -7451,6 +7485,29 @@ export class ClassDynamicDispatch {
           loc,
         };
     return [store, { kind: "return", value: null, loc }];
+  }
+
+  /** The value `name` has on `info`'s prototype chain above `info`: abstract
+   * declarations emit no prototype member, so the walk passes them the way
+   * the chain does. Null when no class above `info` implements the member,
+   * which the chain answers with undefined. */
+  private inheritedMethodValue(
+    lowerer: Lowerer,
+    blame: ts.Node,
+    info: ClassInfo,
+    name: string,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    for (let current: ClassInfo | null = info.base; current;) {
+      const declared = findMethodOn(lowerer, current, name);
+      const generic = declared ? null : findGenericMethodOn(lowerer, current, name);
+      const declarer = declared?.declarer ?? generic?.declarer ?? null;
+      if (!declarer) return null;
+      if (declared?.sig.abstract !== true)
+        return classMethodValue(lowerer, blame, declarer, name, loc);
+      current = declarer.base;
+    }
+    return null;
   }
 
   /** EventEmitter.prototype's introspection and bookkeeping members on an
@@ -7734,7 +7791,25 @@ export class ClassDynamicDispatch {
         });
       return fence();
     }
-    const methodInfo = findMethodOn(lowerer, info, method);
+    const nearest = findMethodOn(lowerer, info, method);
+    // An abstract declaration with no implementation below the receiver's
+    // class emits no prototype member: the call reaches the implementation
+    // above it directly, the way the prototype chain does.
+    const inherited =
+      nearest?.sig.abstract === true && !lowerer.overrideBelow(info, method)
+        ? findImplementationOn(lowerer, nearest.declarer.base, method)
+        : null;
+    // No program class implements it, but a built-in above the abstract
+    // re-declaration does (Date.prototype.getTime under `extends Date`):
+    // the call reaches that function, which this dispatch does not lower.
+    if (
+      nearest?.sig.abstract === true &&
+      !inherited &&
+      !lowerer.overrideBelow(info, method) &&
+      builtinSuppliesMethod(lowerer, nearest.declarer, method)
+    )
+      return fence();
+    const methodInfo = inherited ?? nearest;
     if (this.asyncFree && (methodInfo?.sig.gen || methodInfo?.sig.async)) {
       return [
         {
@@ -7781,7 +7856,9 @@ export class ClassDynamicDispatch {
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;
-      virtual = lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true;
+      virtual =
+        inherited === null &&
+        (lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true);
     } else if (
       generic?.info.implicitParams &&
       generic.declarer.decl &&
@@ -7998,6 +8075,20 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "hasOwnProperty",
   "propertyIsEnumerable",
 ]);
+
+/** The interned value `Object.prototype.<name>` reads. */
+function objectPrototypeMethod(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethod",
+    args: [
+      { kind: "strLit", value: "Object", type: STRING, loc },
+      { kind: "strLit", value: name, type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
 
 /** Whether a class or one of its bases has a heritage evaluated at run
  * time, whose prototype chain may reach Error.prototype. */

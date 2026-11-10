@@ -638,19 +638,15 @@ export function lowerBytesNew(
   ) {
     const args = expr.arguments?.nodes ?? [];
     // `new ArrayBuffer(len, { maxByteLength })` is a resizable, growable or
-    // detachable buffer (t262-dc C2). Only a JavaScript source may build
-    // one: the TypeScript surface keeps the fixed-length refusal.
-    const options =
-      args.length === 2 &&
-      !args.some(ts.isSpreadElement) &&
-      isJsSourceFile(ts.getSourceFileOfNode(expr))
-        ? args[1]
-        : undefined;
+    // detachable buffer (t262-dc C2). The option is part of the standard
+    // library's typed surface (lib.es2024.arraybuffer/sharedmemory), so a
+    // TypeScript source builds one exactly as a JavaScript source does.
+    const options = args.length === 2 && !args.some(ts.isSpreadElement) ? args[1] : undefined;
     if (args.length > (options ? 2 : 1) || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
         "resizable ArrayBuffer construction",
         expr,
-        "fixed-length ArrayBuffers accept a byte length; resizable storage is not supported yet",
+        "the supported forms are new ArrayBuffer(byteLength) and new ArrayBuffer(byteLength, { maxByteLength })",
       );
     }
     const length = args[0]

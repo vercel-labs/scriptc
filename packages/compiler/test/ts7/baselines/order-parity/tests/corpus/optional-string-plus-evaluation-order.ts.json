@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-string-plus-evaluation-order.ts"
+ ],
+ "diags": []
+}

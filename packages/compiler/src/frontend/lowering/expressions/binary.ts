@@ -2831,14 +2831,25 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // operand values. This matters for `take()[0] + 1` and for two reads
     // with observable getters/calls.
     const prefix: IrStmt[] = [];
-    const stable = (operand: IrExpr): IrExpr => {
-      if (isSafeToRepeat(operand) || isSafeToDiscard(operand)) return operand;
+    const repeatable = (operand: IrExpr): boolean =>
+      isSafeToRepeat(operand) || isSafeToDiscard(operand);
+    const hoist = (operand: IrExpr): IrExpr => {
       const tmp = lowerer.declareHiddenLocal("%plus", operand.type);
       prefix.push({ kind: "varDecl", localId: tmp.id, init: operand, loc });
       return varRef(tmp.id, operand.type, loc);
     };
-    const stableLeft = stable(left);
-    const stableRight = stable(right);
+    // The prefix runs before the result reads an operand left in place, so
+    // a hoisted right operand would run before a left operand that reads a
+    // variable or a field: `local + (local = "x")` must read `local` first.
+    // Only a literal cannot observe what the right operand does.
+    const literal = (operand: IrExpr): boolean =>
+      operand.kind === "strLit" ||
+      operand.kind === "numLit" ||
+      operand.kind === "boolLit" ||
+      operand.kind === "unitLit";
+    const stableLeft =
+      repeatable(left) && (repeatable(right) || literal(left)) ? left : hoist(left);
+    const stableRight = repeatable(right) ? right : hoist(right);
     const leftString = lowerer.ensureString(stableLeft, expr.left);
     const rightString = lowerer.ensureString(stableRight, expr.right);
     const concat: IrExpr = {

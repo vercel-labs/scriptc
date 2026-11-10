@@ -7366,6 +7366,22 @@ export class Lowerer {
     return list.some((site) => start <= site.pos && site.end <= node.end);
   }
 
+  /** Whether preflight admitted the checker diagnostic `code` at exactly
+   * this node's own span. `opinionAt` answers for a site anywhere in the
+   * node the query names, which suits a view whose path applies to the
+   * outermost expression; a discarded construct's site can also sit inside a
+   * node whose own value IS consumed, so that query must name the node the
+   * diagnostic was reported on. */
+  opinionAtNode(node: ts.Node, code: number): boolean {
+    if (this.admittedOpinions.length === 0) return false;
+    const file = ts.getSourceFileOfNode(node).fileName;
+    const start = ts.tokenStartOfNode(node);
+    const hit = this.admittedOpinionSites();
+    const list = hit.get(`${file}\0${code}`);
+    if (list === undefined) return false;
+    return list.some((site) => site.pos === start && site.end === node.end);
+  }
+
   /** Whether `name` is a name only the project's libraries declare, in a
    * TypeScript source: preflight admitted its "cannot find name" error
    * (program.ts, projectLibraryName), so the project's own tsc resolves it

@@ -4,7 +4,7 @@ import { BOOL, DYN, STRING, type IrExpr, type IrLocal, type IrStmt } from "../..
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { classMemberNameOf, classValueRef, type ClassInfo } from "./lower-classes.js";
-import { classPrototypeData } from "./class-prototypes.js";
+import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 
 export function hasRuntimeStatics(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base) {
@@ -82,6 +82,52 @@ export function initializeRuntimeStatics(
       loc,
     },
   ];
+  if (info.constructorReflected) {
+    // Node's own-key order on a constructor is length, name, prototype,
+    // then the declared statics. dyn.classInherit seeds length and name;
+    // the prototype takes the non-writable, non-enumerable,
+    // non-configurable slot between them and the members the loop below
+    // defines (t262-da A2). The slot exposes the complete prototype view:
+    // its own `constructor` and every declared method and accessor, in
+    // declaration order, since a reflective program reads the descriptor's
+    // value as the class's prototype.
+    const prototype = reflectClassPrototype(lowerer, info, loc, receiver);
+    if (prototype !== null) {
+      const field = (key: string, v: IrExpr): { key: IrExpr; value: IrExpr } => ({
+        key: { kind: "strLit", value: key, type: STRING, loc },
+        value: v,
+      });
+      const no = lowerer.coerceToExpected({ kind: "boolLit", value: false, type: BOOL, loc }, DYN);
+      statements.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.defineProperty",
+          args: [
+            boxed,
+            lowerer.coerceToExpected(
+              { kind: "strLit", value: "prototype", type: STRING, loc },
+              DYN,
+            ),
+            {
+              kind: "dynObjLit",
+              fields: [
+                field("value", prototype),
+                field("writable", no),
+                field("enumerable", no),
+                field("configurable", no),
+              ],
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        },
+        loc,
+      });
+    }
+  }
   const previousThis = lowerer.ctx.thisLocal;
   try {
     const members = [...(info.runtimeStatics ?? []), ...(info.runtimePrototypeMembers ?? [])];

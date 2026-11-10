@@ -5134,11 +5134,16 @@ export class LlEmitter {
     // only from a loop's entry-range version (loop-entry-versions.ts).
     // Debug builds keep the call.
     if (this.debug === null && (this.loopCallees.has(callee) || loopEntryInlines(this, callee))) {
-      const comment = line.indexOf(" ; ");
-      line =
-        comment < 0
-          ? `${line} alwaysinline`
-          : `${line.slice(0, comment)} alwaysinline${line.slice(comment)}`;
+      line = withCallAttribute(line, "alwaysinline");
+    } else if (this.debug === null && this.entryChainCall(callee)) {
+      // The entry chain: `main` calls %main, %main calls each file
+      // initializer, and a file initializer calls a program function once.
+      // Without the attribute LLVM inlines each link into the next level and
+      // re-runs the function simplification passes on the merged body there,
+      // optimizing the top-level code and everything inlined into it once per
+      // level (up to four times). Every link here runs once per process, so
+      // keeping it out of line costs no run time.
+      line = withCallAttribute(line, "noinline");
     }
     if (!this.unwindAbi.has(callee) || this.currentCoro !== null || B.isTerminated()) {
       B.line(line);
@@ -5162,6 +5167,17 @@ export class LlEmitter {
     this.inLandingPad = false;
     B.startBlock(ok);
     return true;
+  }
+
+  /** Whether a direct call of `callee` from the function being emitted is a
+   * link of the entry chain: %main calls each file initializer, and a file
+   * initializer calls a program function that executes once per process
+   * (outside any loop). The chain's first link, `main` to %main, is emitted
+   * by the module writer (emit-module.ts). */
+  private entryChainCall(callee: string): boolean {
+    if (!this.fnByName.has(callee)) return false;
+    if (this.currentFunctionName === this.mod.entry) return callee.startsWith("%init.");
+    return this.currentFunctionName.startsWith("%init.") && this.loopDepth === 0;
   }
 
   /** Whether emitUnwind runs for a landing pad, whose unwind goes on with
@@ -9987,6 +10003,14 @@ export function adoptingAwaitOf(value: IrExpr | null): ExprOf<"awaitExpr"> | nul
     stmt: () => true,
   });
   return found;
+}
+
+/** `line`, a call statement, with the call-site attribute `attribute` after
+ * its operands and before a trailing comment. */
+function withCallAttribute(line: string, attribute: string): string {
+  const comment = line.indexOf(" ; ");
+  const end = comment < 0 ? line.length : comment;
+  return `${line.slice(0, end)} ${attribute}${line.slice(end)}`;
 }
 
 /** Adds `key` to `into` when it lacks it. */

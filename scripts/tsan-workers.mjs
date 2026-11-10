@@ -27,12 +27,59 @@ import {
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { programDefines } from "../tests/harness/define-directive.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const corpus = join(root, "tests", "corpus");
 const suppressions = join(root, "tests", "harness", "tsan.supp");
 /** The exit status ThreadSanitizer gives a process that reported a race. */
 const raceStatus = 66;
+
+/** The directive head of a corpus program: its first two lines, the same head the differential harness reads. */
+export function directiveHead(source) {
+  return source.split("\n", 2);
+}
+
+/** Why the lane does not build this program, or null when it does. `host` defaults to this machine.
+ * Intl forms need the Linux x64 ICU pack; other hosts refuse them (SC3002), so they are skipped there
+ * the way the differential harness skips them. Other header directives (`// @env`, `// @exit`, the Node
+ * oracle flags) do not change the build, so the lane leaves them to the differential suite. */
+export function skipReason(source, host = { platform: process.platform, arch: process.arch }) {
+  // A Node island program loads Node from a libnode pack, which is not built with ThreadSanitizer.
+  if (/^\/\/ @requires-libnode\s*$/m.test(source)) {
+    return "loads Node from a libnode pack, which is not built with ThreadSanitizer";
+  }
+  // WebAssembly traps (an out-of-bounds access, a stack overflow) arrive as signals unless the runtime is
+  // built for AddressSanitizer, which checks explicitly (SCR_WASM_ASAN in scr_wasm.c). ThreadSanitizer's own
+  // handler reports such a signal as fatal.
+  if (/\bWebAssembly\b/.test(source)) {
+    return "WebAssembly traps arrive as signals under ThreadSanitizer";
+  }
+  if (
+    directiveHead(source).some((line) => /^\/\/ @requires-icu\s*$/.test(line)) &&
+    !(host.platform === "linux" && host.arch === "x64")
+  ) {
+    return "Intl forms need the Linux x64 ICU runtime pack; other hosts refuse them (SC3002)";
+  }
+  return null;
+}
+
+/** Extra `scriptc build` arguments the differential harness would pass for this program: `// @define`
+ * lines become `--define=process.env.NAME=<json>`, and `// @optimization: speed` selects that posture. */
+export function buildArguments(source) {
+  const head = directiveHead(source);
+  const args = [];
+  if (head.some((line) => /^\/\/ @optimization:\s*speed\s*$/.test(line))) {
+    args.push("--optimization=speed");
+  }
+  const defines = programDefines(head);
+  if (defines !== null) {
+    for (const [key, value] of Object.entries(defines.define)) {
+      args.push(`--define=${key}=${JSON.stringify(value)}`);
+    }
+  }
+  return args;
+}
 
 /** Corpus programs that import worker_threads and need nothing this lane does not provide. */
 export function workerPrograms() {
@@ -43,12 +90,7 @@ export function workerPrograms() {
     if (!file.endsWith(".ts") || !existsSync(file)) continue;
     const source = readFileSync(file, "utf8");
     if (!/["'](?:node:)?worker_threads["']/.test(source)) continue;
-    // A Node island program loads Node from a libnode pack, which is not built with ThreadSanitizer.
-    if (/^\/\/ @requires-libnode\s*$/m.test(source)) continue;
-    // WebAssembly traps (an out-of-bounds access, a stack overflow) arrive as signals unless the runtime is
-    // built for AddressSanitizer, which checks explicitly (SCR_WASM_ASAN in scr_wasm.c). ThreadSanitizer's own
-    // handler reports such a signal as fatal.
-    if (/\bWebAssembly\b/.test(source)) continue;
+    if (skipReason(source) !== null) continue;
     programs.push(file);
   }
   return programs;
@@ -174,6 +216,7 @@ async function main() {
           join(root, "packages", "cli", "dist", "main.js"),
           "build",
           item.program,
+          ...buildArguments(readFileSync(item.program, "utf8")),
           "--sanitize",
           "-o",
           binary,

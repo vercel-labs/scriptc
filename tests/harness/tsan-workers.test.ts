@@ -3,7 +3,13 @@ import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 // @ts-expect-error -- a plain script without declarations
-import { shimSource, verdict, workerPrograms } from "../../scripts/tsan-workers.mjs";
+import {
+  buildArguments,
+  shimSource,
+  skipReason,
+  verdict,
+  workerPrograms,
+} from "../../scripts/tsan-workers.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -17,6 +23,29 @@ test("the lane covers the corpus programs that use worker threads", () => {
     // Programs that take hardware traps on purpose cannot run under ThreadSanitizer.
     expect(source).not.toMatch(/\bWebAssembly\b/);
   }
+});
+
+test("the lane builds a program with the header directives that change the build", () => {
+  const defined = readFileSync(`${root}/tests/corpus/define-node-env/main.ts`, "utf8");
+  expect(buildArguments(defined)).toEqual([
+    '--define=process.env.NODE_ENV="production"',
+    '--define=process.env.SCRIPTC_FEATURE="on"',
+  ]);
+  expect(
+    buildArguments('// @optimization: speed\n// @define: process.env.NODE_ENV="production"\n'),
+  ).toEqual(["--optimization=speed", '--define=process.env.NODE_ENV="production"']);
+  // Oracle-only directives are not build flags.
+  expect(buildArguments("// @env: TZ=UTC\n// @exit: 1\n")).toEqual([]);
+  expect(workerPrograms().some((program) => program.endsWith("define-node-env/main.ts"))).toBe(
+    true,
+  );
+});
+
+test("Intl worker programs are skipped only where the runtime pack has no ICU", () => {
+  const source = readFileSync(`${root}/tests/corpus/intl-worker-first-use.ts`, "utf8");
+  expect(skipReason(source, { platform: "linux", arch: "x64" })).toBeNull();
+  expect(skipReason(source, { platform: "darwin", arch: "arm64" })).toMatch(/ICU/);
+  expect(skipReason(source, { platform: "linux", arch: "arm64" })).toMatch(/ICU/);
 });
 
 test("the shim swaps the sanitizer and instruments the program's IR", () => {

@@ -254,7 +254,12 @@ import {
   primitiveConversionCallback,
 } from "./lower-exprs.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
-import { nullishLiteral, nullishReadTypeError, throwAfterEach } from "./primitive-throws.js";
+import {
+  nullishLiteral,
+  nullishReadTypeError,
+  throwAfterEach,
+  throwTypeError,
+} from "./primitive-throws.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import {
   boxedHandleReceiver,
@@ -2354,11 +2359,17 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         if (found.declarer.builtinError)
           return errorToStringCall(lowerer, lowerer.lowerExpr(expr.expression.expression));
         const virtual = lowerer.overrideBelow(info, memberName);
+        // An abstract declaration has no prototype function, so a direct
+        // call with nothing below the static class to implement it reads
+        // `undefined` and throws Node's TypeError (abstractMethodCall).
         if (found.sig.abstract === true && !virtual) {
-          lowerer.unsupported(
-            "SC1090",
+          return abstractMethodCall(
+            lowerer,
             expr,
-            `calls of the abstract method '${memberName}' with no concrete implementation below the receiver's static class`,
+            expr.expression,
+            found.sig.ret,
+            lowerer.lowerExpr(expr.expression.expression),
+            locOf(expr),
           );
         }
         if (virtual) lowerer.noteVirtualEdge(info, memberName);
@@ -13074,16 +13085,13 @@ export function lowerObjectMethodCall(
   }
   // An ABSTRACT nearest declaration with no concrete override below the
   // static class: no implementation exists for a direct call to target.
-  // Unreachable in a program that constructs anything of this type (tsc
-  // makes instantiable subclasses implement, and their declarations flip
-  // overrideBelow) — reaching here means the receiver can only be a
-  // non-value (`null!`); the fence is the honest answer.
+  // In a program that constructs an instance (tsc makes instantiable
+  // subclasses implement, and their declarations flip overrideBelow) the
+  // call is a virtual dispatch; here the callee reads `undefined` off the
+  // prototype, exactly as JavaScript's prototype has no member for the
+  // declaration.
   if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      `calls of the abstract method '${method}' with no concrete implementation below the receiver's static class`,
-    );
+    return abstractMethodCall(lowerer, call, access, found.sig.ret, lowerReceiver(), locOf(call));
   }
   // The static receiver's nearest declaration is an override adapted to
   // the inherited ABI, and nothing below overrides it: call its body
@@ -13152,6 +13160,43 @@ export function lowerObjectMethodCall(
     type: found.sig.ret,
     loc: locOf(call),
   });
+}
+
+/** A direct call of an abstract method with no implementation below the
+ * receiver's static class — `this.count()` inside the abstract class, or a
+ * base-typed receiver in a program that constructs no subclass.
+ *
+ * An abstract declaration emits no prototype function, so in JavaScript the
+ * callee reads `undefined`. The receiver and the arguments that were WRITTEN
+ * evaluate first, in source order (JavaScript's ArgumentListEvaluation), and
+ * the call then throws Node's "<callee> is not a function" TypeError. The
+ * abstract signature's defaults never run: no function exists to fill them. */
+function abstractMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: ts.Node,
+  ret: IrType,
+  receiver: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const effects: IrExpr[] = [receiver];
+  const args = call.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    // The spread packs (and drains) the written arguments; a non-iterable
+    // spread throws Node's TypeError here, before the call.
+    effects.push(lowerer.completeArgs(args, [{ type: DYN, mode: "dynRest" }], loc, call)[0]!);
+  } else {
+    for (const arg of args) effects.push(lowerer.lowerExpr(arg));
+  }
+  return throwAfterEach(
+    effects,
+    throwTypeError(
+      { kind: "strLit", value: `${v8CalleeText(callee)} is not a function`, type: STRING, loc },
+      ret,
+      loc,
+    ),
+    loc,
+  );
 }
 
 /** A method TypeScript proves callable on every arm of an unrelated class

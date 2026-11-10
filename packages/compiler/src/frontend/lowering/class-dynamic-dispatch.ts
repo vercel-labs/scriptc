@@ -7154,6 +7154,13 @@ export class ClassDynamicDispatch {
       }
       if (!field && !accessor && info.decl) {
         const declared = findMethodOn(lowerer, info, name);
+        // An abstract declaration emits no prototype function, so it has no
+        // value of its own: an instance of a class below reads that class's
+        // implementation (the nearest arm answers), and an instance with no
+        // implementation below reads the nearest concrete declaration above
+        // (or undefined when no class declares one), as JavaScript's
+        // prototype chain does.
+        const abstractHere = declared?.sig.abstract === true;
         // Untyped dispatch considers native classes that may never reach
         // this lookup. Libraries cannot expose fibers or promises through
         // those speculative branches. Direct typed references still reach
@@ -7180,8 +7187,14 @@ export class ClassDynamicDispatch {
             genericOverrideBelow(info, name))
         )
           return fence();
-        const method = classMethodValue(lowerer, info.decl, info, name, loc);
-        if (method && canConvertToDyn(method.type, getRecord, getUnion)) {
+        // An abstract declaration's slot holds no implementation: the value
+        // of a receiver whose class declares it that way is whatever the
+        // prototype chain answers above, walked past the abstract
+        // re-declarations that emit no member (null when none answers).
+        const method = abstractHere
+          ? this.inheritedMethodValue(lowerer, info.decl, info, name, loc)
+          : classMethodValue(lowerer, info.decl, info, name, loc);
+        if (abstractHere || (method && canConvertToDyn(method.type, getRecord, getUnion))) {
           // A capsule may have the base ABI even when its native object is
           // a subclass (for example an inherited iterator returning this).
           // Select the method declaration at extraction, before detaching it.
@@ -7190,7 +7203,11 @@ export class ClassDynamicDispatch {
               candidate !== info &&
               lowerer.classCanBeConstructed(candidate) &&
               lowerer.isSubclassOf(candidate.def.name, info.def.name) &&
-              (candidate.methods.has(name) || candidate.genericMethods?.has(name)),
+              (candidate.methods.has(name) || candidate.genericMethods?.has(name)) &&
+              // An abstract re-declaration adds no prototype member: an
+              // instance of that class reads the arm below it, or the
+              // fallback above, exactly as this branch would.
+              findMethodOn(lowerer, candidate, name)?.sig.abstract !== true,
           );
           overrides.sort((a, b) =>
             lowerer.isSubclassOf(a.def.name, b.def.name)
@@ -7262,11 +7279,15 @@ export class ClassDynamicDispatch {
               loc,
             });
           }
-          body.push({
-            kind: "return",
-            value: { kind: "dynFrom", value: method, type: DYN, loc },
-            loc,
-          });
+          if (method && !canConvertToDyn(method.type, getRecord, getUnion)) body.push(...fence());
+          else
+            body.push({
+              kind: "return",
+              value: method
+                ? { kind: "dynFrom", value: method, type: DYN, loc }
+                : dynUndefinedExpr(loc),
+              loc,
+            });
           return body;
         }
       }
@@ -7451,6 +7472,29 @@ export class ClassDynamicDispatch {
           loc,
         };
     return [store, { kind: "return", value: null, loc }];
+  }
+
+  /** The value `name` has on `info`'s prototype chain above `info`: abstract
+   * declarations emit no prototype member, so the walk passes them the way
+   * the chain does. Null when no class above `info` implements the member,
+   * which the chain answers with undefined. */
+  private inheritedMethodValue(
+    lowerer: Lowerer,
+    blame: ts.Node,
+    info: ClassInfo,
+    name: string,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    for (let current: ClassInfo | null = info.base; current;) {
+      const declared = findMethodOn(lowerer, current, name);
+      const generic = declared ? null : findGenericMethodOn(lowerer, current, name);
+      const declarer = declared?.declarer ?? generic?.declarer ?? null;
+      if (!declarer) return null;
+      if (declared?.sig.abstract !== true)
+        return classMethodValue(lowerer, blame, declarer, name, loc);
+      current = declarer.base;
+    }
+    return null;
   }
 
   /** EventEmitter.prototype's introspection and bookkeeping members on an

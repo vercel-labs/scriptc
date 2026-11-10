@@ -853,6 +853,21 @@ test.each(["3062-runtime-optional-record-guards.ts", "3063-runtime-optional-clas
   },
 );
 
+test("abstract methods without implementations below a receiver stay static", () => {
+  // A direct call with no concrete override below the receiver's static
+  // class lowers to Node's "<callee> is not a function" TypeError, and an
+  // untyped lookup selects the nearest implementation or reads undefined:
+  // neither defers (the class dynamic dispatch's per-class branches used to
+  // ask an abstract declaration for a method value).
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/abstract-methods-without-implementations.ts"),
+  );
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+});
+
 test("coverage preserves function-local class capture environments", () => {
   const { coverage } = analyze(join(repoRoot, "tests/corpus/local-class-unknown.ts"));
   expect(coverage.preflightFailed).toBe(false);

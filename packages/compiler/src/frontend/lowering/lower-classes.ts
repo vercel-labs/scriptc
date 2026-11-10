@@ -13112,7 +13112,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:
-          "native ArrayBuffer construction supports fixed-length storage; resizable buffers remain unsupported",
+          "construct it directly: new ArrayBuffer(byteLength, { maxByteLength }) — a constructor held as a value has no lowering",
         Proxy: "native Proxy construction requires checked-native plain targets and handlers",
         Function:
           "runtime code generation cannot be compiled ahead of time (the eval stance) — write the function",

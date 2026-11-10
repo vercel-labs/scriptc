@@ -227,7 +227,12 @@ export function nodeIslandPackHint(
   use?: { file: string; api: string },
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const target = libnodeTarget(env);
+  return nodeIslandPackHintFor(libnodeTarget(env), use);
+}
+
+/** nodeIslandPackHint for a build that emits for the native target `target`
+ * (see libnodeRecordFor). */
+export function nodeIslandPackHintFor(target: string, use?: { file: string; api: string }): string {
   const pack = libnodePackPackage(target);
   const install =
     pack === null

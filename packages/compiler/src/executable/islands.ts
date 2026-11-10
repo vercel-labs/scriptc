@@ -24,7 +24,11 @@ import {
 } from "../diagnostics/diagnostic.js";
 import type { IrModule } from "../ir/ir.js";
 import { moduleRuntimeFeatures } from "../ir/runtime-features.js";
-import { libnodeProbePack, libnodeRecordFor } from "../node-islands/libnode.js";
+import {
+  libnodeProbePack,
+  libnodeRecordFor,
+  nodeIslandPackHintFor,
+} from "../node-islands/libnode.js";
 import { planNodeIslandLoads } from "../node-islands/load-plan.js";
 import { placeNodeIslandModules, readNodeIslandModules } from "../node-islands/modules.js";
 import { finalizeDeferredIslands } from "../node-islands/snapshot.js";
@@ -37,6 +41,10 @@ export interface IslandBuildRequest {
   /** The native target the build emits for, whose libnode pack it records
    * (libnode.ts); asked only of a program that calls into Node. */
   target: () => string;
+  /** The first place the program reached into Node
+   * (PreparedExecutableModule.nodeIslandUse), which SC8005's hint names
+   * when no pack can be recorded. */
+  nodeIslandUse?: { file: string; api: string };
 }
 
 export type FinishedIslands =
@@ -65,9 +73,17 @@ export function finishNodeIslands(
     return { ok: true };
   }
   if (outputKind === "exe") {
-    const recorded = libnodeRecordFor(request.target(), libnode, outPath, process.env, projectDir);
+    const target = request.target();
+    const recorded = libnodeRecordFor(target, libnode, outPath, process.env, projectDir);
     if (typeof recorded === "string")
-      return { ok: false, diagnostic: nodeIslandNodeDiag(recorded, entryPath) };
+      return {
+        ok: false,
+        diagnostic: nodeIslandNodeDiag(
+          recorded,
+          entryPath,
+          nodeIslandPackHintFor(target, request.nodeIslandUse),
+        ),
+      };
     mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
     // Deferred island modules (scope-B NI-7): probed in the same pack.
     finalizeDeferredIslands(mod, entryPath, libnodeProbePack(libnode, process.env, projectDir));

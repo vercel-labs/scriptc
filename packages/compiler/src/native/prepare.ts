@@ -599,6 +599,7 @@ export function prepareNativeExecutable(
       outPath: options.outPath,
       libnode: options.libnode,
       target: () => toolchain.target.name,
+      ...(prepared.nodeIslandUse !== undefined ? { nodeIslandUse: prepared.nodeIslandUse } : {}),
     });
     if (!islands.ok) {
       const failed: CompileFailure = {

@@ -1315,6 +1315,7 @@ async function prepareExecutableInput(
     outPath: opts.outPath,
     libnode: opts.libnode,
     target: () => libnodeTarget(process.env),
+    ...(prepared.nodeIslandUse !== undefined ? { nodeIslandUse: prepared.nodeIslandUse } : {}),
   });
   if (!islands.ok) return { ok: false, diagnostics: [islands.diagnostic], sourceTexts };
   const nodeIslandModuleData = islands.moduleData;

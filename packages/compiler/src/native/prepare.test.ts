@@ -5,10 +5,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   LINUX_ARM64_GNU_TARGET,
@@ -20,6 +21,7 @@ import { loadProgram, loadProgramWithServices } from "../frontend/program-node.j
 import { FrontendServices } from "../frontend/services.js";
 import { Ts7Api, ts7Executable } from "../frontend/ts7/rpc-api.js";
 import { deserializeModule } from "../ir/serialize.js";
+import { libnodePackPackage } from "../node-islands/libnode-pack.js";
 import { NativeCache, partsDigest } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -530,6 +532,45 @@ test("an executable with a Node island needs a libnode pack", () => {
   expect(result.ok).toBe(false);
   if (result.ok) return;
   expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  // The hint is the Node-hosted driver's: the use, then this target's
+  // install line.
+  const target = fixtureToolchain().target.name;
+  const hint = result.diagnostics[0]!.hint ?? "";
+  expect(hint).toContain(`${basename(f.entry)} uses `);
+  const pack = libnodePackPackage(target);
+  expect(hint).toContain(
+    pack === null ? "packages/libnode-common/build-pack.mjs" : `npm i ${pack}@`,
+  );
+});
+
+test("SC8005 from the native driver names a @scriptc/node call", () => {
+  // The program the libnode opt-in smoke test builds without a pack.
+  vi.stubEnv("SCRIPTC_LIBNODE", "");
+  const f = fixture();
+  mkdirSync(join(f.root, "node_modules", "@scriptc"), { recursive: true });
+  symlinkSync(
+    join(import.meta.dirname, "../../../node"),
+    join(f.root, "node_modules", "@scriptc", "node"),
+  );
+  writeFileSync(join(f.root, "island.cjs"), 'exports.answer = () => "native";\n');
+  writeFileSync(
+    f.entry,
+    'import { callSync } from "@scriptc/node";\n' +
+      'console.log(callSync<string>("./island.cjs", "answer"));\n',
+  );
+  const result = prepareNativeExecutable(
+    f.entry,
+    { ...f.options, outputKind: "exe" },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes, libraryNpmStatic, options) =>
+      runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options),
+    f.cache,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  expect(result.diagnostics[0]!.hint).toContain("main.ts uses callSync (@scriptc/node)");
 });
 
 test("a cached island build is reused only while its libnode pack is unchanged", () => {

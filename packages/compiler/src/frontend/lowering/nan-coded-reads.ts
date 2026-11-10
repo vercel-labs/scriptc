@@ -305,7 +305,7 @@ export class NanCodedReads {
     this.analyzed = true;
     const candidates = new Map<ts.ElementAccessExpression, IrBytesElem>();
     for (const sf of this.files) {
-      if (isJsSourceFile(sf) || sf.isDeclarationFile) continue;
+      if (sf.isDeclarationFile) continue;
       ts.walkPreorder(sf, (node) => {
         if (ts.isIdentifier(node)) {
           const list = this.names.get(node.text);

@@ -51,17 +51,31 @@ interface Binding {
   lexical?: { scope: ts.Node; checked: boolean };
   /** Other modules can read the binding. */
   exported: boolean;
+  /** A JavaScript `var` asked about despite a loose (implicit `any`) type:
+   * every one of its declarations is a bare name with no initializer and no
+   * annotation, so the binding's type is entirely up to its writes. */
+  loose: boolean;
 }
 
-/** The bindings code can read before their first store, each with the
- * reference that can run that early (its declared name when the reader is
- * another module). */
-export function earlyReadVarSymbols(
+/** What the read-before-store analysis found. */
+export interface VarReadAnalysis {
+  /** The bindings code can read before their first store, each with the
+   * reference that can run that early (its declared name when the reader is
+   * another module). */
+  early: Map<ts.Symbol, ts.Identifier>;
+  /** JavaScript `var`s every read of which runs after an unconditional
+   * store, whatever their declared type (an unannotated one has `any`):
+   * the binding is never observed in its unassigned state. */
+  storedBeforeRead: Set<ts.Symbol>;
+}
+
+export function analyzeVarReads(
   lowerer: Lowerer,
   sourceFiles: readonly ts.SourceFile[],
-): Map<ts.Symbol, ts.Identifier> {
+): VarReadAnalysis {
   const checker = lowerer.checker;
   const out = new Map<ts.Symbol, ts.Identifier>();
+  const stored = new Set<ts.Symbol>();
   const neverReturns = (call: ts.CallExpression): boolean => {
     try {
       return (lowerer.typeOf(call).flags & ts.TypeFlags.Never) !== 0;
@@ -117,10 +131,28 @@ export function earlyReadVarSymbols(
         }
         for (const name of boundIdentifiersOf(declaration.name)) {
           const symbol = checker.getSymbolAtLocation(name);
-          if (symbol === undefined || !excludesUndefined(lowerer, name)) continue;
+          if (symbol === undefined) continue;
+          // An unannotated JavaScript `var` with no initializer (`var P, S;`,
+          // later stored per branch) is typed `any` by the checker, so its
+          // reads are the only thing to analyze: a binding whose every read
+          // follows a store never shows its unassigned state, and its writes
+          // can then decide its type.
+          const loose =
+            js &&
+            !lexical &&
+            declaration.initializer === undefined &&
+            declaration.type === undefined &&
+            ts.isIdentifier(declaration.name);
           const binding = bindings.get(symbol);
-          if (binding) binding.names.push(name);
-          else
+          if (!loose && !excludesUndefined(lowerer, name)) {
+            // A typed declaration of the same name disqualifies a loose one.
+            if (binding) binding.loose = false;
+            continue;
+          }
+          if (binding) {
+            if (!loose) binding.loose = false;
+            binding.names.push(name);
+          } else
             bindings.set(symbol, {
               scope: hoistingScopeOf(node),
               names: [name],
@@ -133,6 +165,7 @@ export function earlyReadVarSymbols(
                   }
                 : {}),
               exported,
+              loose,
             });
           names.add(name.text);
         }
@@ -162,6 +195,23 @@ export function earlyReadVarSymbols(
         if (early) out.set(symbol, early);
         continue;
       }
+      if (binding.loose) {
+        // An untyped `var`: only its storage matters, so ask the stronger
+        // question whether every read runs after a store, which follows a
+        // statement that stores in both branches of an `if`/`else` (the
+        // single settle point above does not). A reader in another module
+        // rules it out entirely.
+        const stores = new StoreAnalysis(new Set(references), neverReturns);
+        const early = references.find(
+          (ref) =>
+            !binding.names.includes(ref) &&
+            !isPlainWriteTarget(ref) &&
+            !analysis.lexicalSettles(binding.scope, stores, false, ref),
+        );
+        if (early === undefined && !binding.exported && !references.some(isExportedName))
+          stored.add(symbol);
+        continue;
+      }
       const settle = analysis.settleIndex(binding.scope, symbol);
       const early =
         references.find(
@@ -179,7 +229,7 @@ export function earlyReadVarSymbols(
       if (early) out.set(symbol, early);
     }
   }
-  return out;
+  return { early: out, storedBeforeRead: stored };
 }
 
 /** The function body or source file a `var` hoists to. */

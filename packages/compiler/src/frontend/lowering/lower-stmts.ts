@@ -1739,7 +1739,82 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   )
     return DYN;
   // A binding readable before its first store holds undefined until then.
-  return lowerer.runtimeOptionalBindingType(nameNode, type);
+  const settled = lowerer.runtimeOptionalBindingType(nameNode, type);
+  return settled.kind === "dyn" ? (jsVarWriteType(lowerer, nameNode) ?? settled) : settled;
+}
+
+/** The static type of an unannotated JavaScript `var` that every read sees
+ * stored (storedBeforeReadVars) and whose every write stores an array or a
+ * typed array: the union of the written sequence types, which is what the
+ * binding holds (`var P, S; if (typed) P = new Int32Array(...); else P =
+ * list.slice()`). Element reads, element writes and `length` then dispatch
+ * on the arm the value holds instead of taking every one through the
+ * checked-dynamic representation. Null when any write could store something
+ * else, since the union must hold every stored value. */
+function jsVarWriteType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | null {
+  const decl = nameNode.parent;
+  if (
+    !ts.isVariableDeclaration(decl) ||
+    decl.name !== nameNode ||
+    decl.initializer !== undefined ||
+    decl.type !== undefined ||
+    !isVarDeclared(decl) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(decl))
+  )
+    return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+  // A read that can run before the first store sees undefined, which a
+  // sequence union cannot hold.
+  if (symbol === undefined || !lowerer.storedBeforeReadVars.has(symbol)) return null;
+  let scope: ts.Node = decl;
+  for (let p: ts.Node | undefined = decl.parent; p !== undefined; p = p.parent)
+    if (ts.isSourceFile(p) || (ts.isFunctionLike(p) && p.body !== undefined)) {
+      scope = p;
+      break;
+    }
+  const arms: IrType[] = [];
+  let valid = true;
+  const addArms = (written: IrType | null): void => {
+    const list =
+      written?.kind === "union"
+        ? (lowerer.unions.get(written.unionId)?.arms ?? [])
+        : written === null
+          ? []
+          : [written];
+    if (list.length === 0 || !list.every((arm) => arm.kind === "array" || arm.kind === "bytes")) {
+      valid = false;
+      return;
+    }
+    for (const arm of list) if (!arms.some((other) => typeEquals(other, arm))) arms.push(arm);
+  };
+  const namesBinding = (left: ts.Node): boolean => {
+    if (ts.isIdentifier(left)) return lowerer.checker.getSymbolAtLocation(left) === symbol;
+    if (!ts.isArrayBindingPattern(left) && !ts.isObjectBindingPattern(left)) return false;
+    return boundIdentifiersOf(left).some(
+      (name) => lowerer.checker.getSymbolAtLocation(name) === symbol,
+    );
+  };
+  ts.walkPreorder(scope, (node) => {
+    if (!valid) return "stop";
+    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+      let left = node.left;
+      while (ts.isParenthesizedExpression(left)) left = left.expression;
+      if (namesBinding(left)) {
+        // A compound assignment reads the value it rewrites; a narrowing
+        // store the union does not model leaves the binding dynamic.
+        if (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) valid = false;
+        else addArms(lowerer.mapTypeOf(lowerer.typeOf(node.right)));
+      }
+    } else if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      ts.isIdentifier(node.operand) &&
+      lowerer.checker.getSymbolAtLocation(node.operand) === symbol
+    )
+      valid = false;
+    return undefined;
+  });
+  if (!valid || arms.length === 0) return null;
+  return arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
 /** `var` declarations hoist to their FUNCTION: the binding exists across

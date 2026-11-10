@@ -3039,6 +3039,9 @@ export function implicitAnyParamSymbolsOf(
   if (bodyReadsArguments(decl)) return null;
   let hasImplicitParams = false;
   const overlayTyped = shapeOverlayAnnotated(decl);
+  // Only an npm-static package monomorphizes; user JavaScript keeps the
+  // checked-dynamic boundary the declaration always had.
+  const monoFile = implicitMonoFile(ts.getSourceFileOfNode(decl));
   const out = decl.parameters.nodes.map((param): ts.Symbol | null => {
     if (!ts.isIdentifier(param.name)) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
@@ -3050,14 +3053,37 @@ export function implicitAnyParamSymbolsOf(
     const broadFunction = lowerer.checker.typeToString(t) === "Function";
     const broadArray = lowerer.checkerAnyArrayType(t);
     const broadPromise = broadPromiseParam(lowerer, t);
-    const declaredKind = classParams ? lowerer.mapTypeOf(t)?.kind : undefined;
+    // A documented array or typed array (`Array.<number>`, `Int32Array`, …)
+    // accepts either storage at a JavaScript boundary: jsOpenObjectType
+    // widens it to a checked-dynamic slot because a caller may pass a typed
+    // array where the declaration says `Array` (and the reverse). Inside an
+    // npm-static package every call site's argument type IS known, so the
+    // slot binds like an implicit type parameter instead: each instance
+    // keeps the call's own storage and lowers element reads and writes
+    // statically, rather than boxing every element through the dynamic
+    // tier. A VALUE reference keeps the checked fallback instance
+    // (implicitDefaultInstance), exactly as for an untyped parameter.
+    let declaredKind: IrType["kind"] | undefined;
+    if (classParams) {
+      declaredKind = lowerer.mapTypeOf(t)?.kind;
+    } else if (monoFile) {
+      // Probing a JS declaration never fails the build: a type the mapper
+      // refuses is a type this slot does not bind, not a body error.
+      try {
+        declaredKind = lowerer.mapTypeOf(t)?.kind;
+      } catch (e) {
+        if (!(e instanceof PoisonError)) throw e;
+      }
+    }
     const classParam = classParams && (declaredKind === "object" || declaredKind === "array");
+    const documentedSequence = declaredKind === "array" || declaredKind === "bytes";
     if (
       (t.flags & ts.TypeFlags.Any) === 0 &&
       !broadFunction &&
       !broadArray &&
       !broadPromise &&
-      !classParam
+      !classParam &&
+      !documentedSequence
     )
       return null;
     const sym = lowerer.checker.getSymbolAtLocation(param.name);
@@ -3350,6 +3376,42 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
   return null;
 }
 
+/** The static container a documented array/typed-array parameter takes at
+ * one call site (implicitAnyParamSymbolsOf's documentedSequence case).
+ * The argument's checker type must itself be a union of the two storages
+ * the JavaScript boundary admits (`number[] | Int32Array<ArrayBuffer>`,
+ * what an evolving `var P;` written in both feature-test branches
+ * answers): the value already carries a tag naming its storage, so the
+ * bind is a retag, not a claim about a value whose declaration might lie.
+ * Any other argument keeps the checked-dynamic slot. */
+function documentedSequenceBinding(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+  arg: ts.Expression,
+): IrType | null {
+  let declared: IrType | null;
+  let argument: IrType | null;
+  try {
+    declared = lowerer.mapTypeOf(lowerer.typeOf(param.name));
+    argument = lowerer.mapTypeOf(
+      lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)),
+    );
+  } catch (e) {
+    // Probing a JavaScript call site never fails the build: a type the
+    // mapper refuses keeps the checked-dynamic slot.
+    if (e instanceof PoisonError) return null;
+    throw e;
+  }
+  if (declared?.kind !== "array" && declared?.kind !== "bytes") return null;
+  if (argument?.kind !== "union") return null;
+  const arms = lowerer.unions.get(argument.unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  return arms.every((arm) => arm.kind === "array" || arm.kind === "bytes") &&
+    arms.some((arm) => arm.kind === "bytes")
+    ? argument
+    : null;
+}
+
 /** The instance a CALL of an implicit-any function-like names: each
  * bindable implicit param takes the call's WIDENED argument checker type
  * when it maps statically (DYN otherwise — today's slot), typed params
@@ -3397,6 +3459,20 @@ export function implicitCallInstance(
     if (arg && !ts.isSpreadElement(arg)) {
       const stored = storedImplicitArgumentType(lowerer, arg);
       if (stored?.kind === "dyn") {
+        // The slot is documented array/typed array: the declaration
+        // already promises a container, and the checker names which one
+        // this call passes even when the value itself sits in a
+        // checked-dynamic local. Bind that container — the call lowering
+        // converts the checked value (tag-checked) and both containers
+        // convert by reference, so writes through the parameter reach the
+        // caller's storage. Any other stored checked value keeps the
+        // checked-dynamic slot.
+        const sequence = documentedSequenceBinding(lowerer, param, arg);
+        if (sequence) {
+          argTypes.set(sym, lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)));
+          shapes.push({ type: sequence, mode: "required" });
+          return;
+        }
         bound = DYN;
         argTypes.set(sym, lowerer.checker.getUnknownType());
         shapes.push({ type: bound, mode: "required" });
@@ -3420,6 +3496,25 @@ export function implicitCallInstance(
         argTypes.set(sym, lowerer.typeOf(arg));
         shapes.push({ type: stored, mode: "required" });
         return;
+      }
+      // The same for a represented union of sequences (`number[] |
+      // Int32Array`, the value an enclosing implicit instance bound to a
+      // documented array parameter): the checker still spells the
+      // parameter the JSDoc way, and binding that spelling would convert
+      // the argument arm by arm into a copy — writes through the
+      // parameter would not reach the caller's storage. The parameter
+      // takes the union the argument holds, and each operation on it
+      // dispatches on the arm.
+      if (stored?.kind === "union") {
+        const storedArms = lowerer.unions.get(stored.unionId)?.arms ?? [];
+        if (
+          storedArms.length > 0 &&
+          storedArms.every((arm) => arm.kind === "array" || arm.kind === "bytes")
+        ) {
+          argTypes.set(sym, lowerer.typeOf(arg));
+          shapes.push({ type: stored, mode: "required" });
+          return;
+        }
       }
       if (stored?.kind === "func") {
         // The lowered closure may have an inferred JS destructuring

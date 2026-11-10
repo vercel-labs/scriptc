@@ -17845,8 +17845,14 @@ export class Lowerer {
     return unionRetagMappable(this, fromId, toId);
   }
 
-  narrowedRetagHelper(node: ts.Node, fromId: string, toId: string, loc: SrcLoc): string | null {
-    return narrowedRetagHelper(this, node, fromId, toId, loc);
+  narrowedRetagHelper(
+    node: ts.Node,
+    fromId: string,
+    toId: string,
+    loc: SrcLoc,
+    alsoStored?: ReadonlySet<number>,
+  ): string | null {
+    return narrowedRetagHelper(this, node, fromId, toId, loc, alsoStored);
   }
 
   strandedUnitTrap(expr: IrExpr, expected: IrType, loc: SrcLoc): IrExpr | null {

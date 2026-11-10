@@ -27,6 +27,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { boundedNode } from "../may-throw.js";
 import {
   ALLOCATIONS,
   FRESH_ARRAY_METHODS,
@@ -197,15 +198,137 @@ export function storeTarget(target: IrExpr | undefined): string | null {
   return null;
 }
 
+/** How `source` answers for each expression kind:
+ * - "allocation": the expression allocates its value (ALLOCATIONS);
+ * - "some": some of its nodes produce a value that they or a callee
+ *   allocated, and `source` decides which;
+ * - "none": `source` does not follow it.
+ *
+ * Every kind is listed, so a new expression kind does not compile until it
+ * is classified here. "none" is no proof that a kind never yields an object
+ * of the group: it records the kinds this analysis has not followed so far.
+ * What keeps them sound is `calleesClean`, whose default is the safe one:
+ * an operation that can run code of the program (anything boundedNode in
+ * may-throw.ts does not list) ends leak-freedom, so a "none" kind in a
+ * leak-free function yields what the runtime allocated on the heap or what
+ * was reachable before. */
+export const SOURCE_KINDS: Record<IrExpr["kind"], "allocation" | "some" | "none"> = {
+  numLit: "none",
+  strLit: "none",
+  moduleNsRef: "none",
+  boolLit: "none",
+  unitLit: "none",
+  varRef: "none",
+  bin: "none",
+  unary: "none",
+  incDec: "none",
+  fieldIncDec: "none",
+  assignExpr: "none",
+  toBool: "none",
+  logical: "none",
+  strConcat: "none",
+  strEq: "none",
+  strCmp: "none",
+  toString: "none",
+  ternary: "none",
+  nullish: "none",
+  orDefault: "none",
+  optChain: "none",
+  chainRecv: "none",
+  strIntrinsic: "some",
+  regexLit: "none",
+  templateStrings: "none",
+  regexIntrinsic: "none",
+  arrayLit: "allocation",
+  arrayNewLen: "allocation",
+  arrayGet: "none",
+  arrayHas: "none",
+  arrayState: "none",
+  constCell: "none",
+  arrIntrinsic: "some",
+  bytesNew: "none",
+  bytesIntrinsic: "none",
+  mapNew: "allocation",
+  mapIntrinsic: "none",
+  setNew: "allocation",
+  setIntrinsic: "none",
+  call: "some",
+  ffiCall: "none",
+  closure: "allocation",
+  callValue: "some",
+  viewOf: "none",
+  viewSource: "none",
+  selfRef: "none",
+  yieldExpr: "none",
+  genResume: "none",
+  awaitExpr: "none",
+  awaitUnionExpr: "none",
+  newPromise: "none",
+  promiseWithResolvers: "none",
+  new: "allocation",
+  classRef: "none",
+  newValue: "none",
+  instanceOfValue: "none",
+  upcast: "none",
+  promiseVoidWiden: "none",
+  downcast: "none",
+  instanceOf: "none",
+  virtualCall: "some",
+  fieldGet: "none",
+  recordLit: "allocation",
+  recordClone: "allocation",
+  recordGet: "none",
+  recordKeyGet: "none",
+  dynFrom: "none",
+  dynCall: "none",
+  dynInvoke: "none",
+  dynArrLit: "none",
+  dynObjLit: "none",
+  dynTest: "none",
+  dynKeyGet: "none",
+  dynHasKey: "none",
+  dynScalarEq: "none",
+  seqExpr: "none",
+  dynDestrCheck: "none",
+  dynIterN: "none",
+  recordOvfKeys: "none",
+  recordOvfHas: "none",
+  recordNullProto: "none",
+  recordHas: "none",
+  fieldAbsent: "none",
+  unionWrap: "none",
+  unionRetype: "none",
+  unionFuncEq: "none",
+  caughtTest: "none",
+  caughtNarrow: "none",
+  caughtCheck: "none",
+  caughtToDyn: "none",
+  unionNarrow: "none",
+  unionDisc: "none",
+  unionKeyGet: "none",
+  unionIsTag: "none",
+  unionEq: "none",
+  intrinsic: "none",
+  libCall: "some",
+  jsonStringify: "none",
+  dynCheck: "some",
+};
+
 /** An expression that produces a value it allocates (a group member). */
 export function source(e: Node): boolean {
   if (!isExpr(e)) return false;
   if (ALLOCATIONS.has(e.kind)) return true;
+  if (SOURCE_KINDS[e.kind] === "none") return false;
   if (e.kind === "arrIntrinsic") return FRESH_ARRAY_METHODS.has(e.method);
   if (e.kind === "strIntrinsic") return e.method === "split";
   if (e.kind === "libCall") return e.fn === "json.parse";
   if (e.kind === "dynCheck") return e.value.kind === "libCall" && e.value.fn === "json.parse";
-  if (e.kind === "call" || e.kind === "callValue") return refType(e.type);
+  // A call's reference result may be an object the callee allocated, so
+  // the caller answers for where it goes. That holds for a virtual call
+  // too: its targets may be fresh, and what they return then lives in the
+  // caller's group.
+  if (e.kind === "call" || e.kind === "callValue" || e.kind === "virtualCall")
+    return refType(e.type);
   return false;
 }
 
@@ -288,6 +411,134 @@ const SPREAD_METHODS = new Set(["pushSpread", "unshiftSpread", "concatSpread"]);
  * receiver holds. */
 const COLLECTION_COPIES = new Set(["clone", "keySet", "valueSet", "toArray"]);
 
+/** What a private array may be the receiver of (privateArrays). */
+const PRIVATE_ARRAY_METHODS = new Set(["push", "length", "join"]);
+
+/** The locals of `fn` that hold an array no other code can reach: unboxed
+ * locals of the function itself (no parameter, capture or module binding),
+ * declared with an empty array literal of strings, numbers or booleans, and mentioned
+ * nowhere else in the function except as the receiver of `push`, `length`
+ * and `join`. The local is never read as a value, assigned, captured or
+ * passed on, so the array has no second reference and no dynamic view.
+ *
+ * Mentions are counted over the raw node records, whatever their shape, so
+ * that a mention this function does not know (a capture list, a new node
+ * kind) disqualifies the local instead of being missed. */
+type PrivateArrays = Map<IrFunction, ReadonlySet<string>>;
+function privateArrays(fn: IrFunction, privateArraysOf: PrivateArrays): ReadonlySet<string> {
+  const known = privateArraysOf.get(fn);
+  if (known !== undefined) return known;
+  // The function's own unboxed locals: a module binding (`%g.…`) is shared
+  // with every function, and a boxed local with the closures that capture it.
+  const own = new Set<string>();
+  for (const local of fn.locals)
+    if (local.boxed !== true && !local.id.startsWith("%")) own.add(local.id);
+  for (const param of fn.params) own.delete(param.localId);
+  for (const capture of fn.captures ?? []) own.delete(capture.localId);
+  // The mentions the rule allows, per candidate local.
+  const allowed = new Map<string, number>();
+  forEachNode(fn.body, (node) => {
+    if (node.kind === "varDecl" && own.has(node.localId)) {
+      const init = node.init;
+      if (
+        init !== null &&
+        init.kind === "arrayLit" &&
+        init.elems.length === 0 &&
+        (init.spreads === undefined || init.spreads.length === 0) &&
+        init.type.kind === "array" &&
+        quietElement(init.type.elem)
+      )
+        allowed.set(node.localId, (allowed.get(node.localId) ?? 0) + 1);
+    }
+  });
+  if (allowed.size > 0) {
+    forEachNode(fn.body, (node, parent) => {
+      if (
+        node.kind === "varRef" &&
+        allowed.has(node.localId) &&
+        parent !== undefined &&
+        parent.kind === "arrIntrinsic" &&
+        same(parent.receiver, node) &&
+        PRIVATE_ARRAY_METHODS.has(parent.method)
+      )
+        allowed.set(node.localId, allowed.get(node.localId)! + 1);
+    });
+    const mentions = new Map<string, number>();
+    const count = (value: unknown): void => {
+      if (typeof value === "string") {
+        if (allowed.has(value)) mentions.set(value, (mentions.get(value) ?? 0) + 1);
+      } else if (Array.isArray(value)) {
+        for (const item of value) count(item);
+      } else if (value !== null && typeof value === "object") {
+        for (const key in value) {
+          if (key !== "loc" && key !== "type") count((value as Record<string, unknown>)[key]);
+        }
+      }
+    };
+    count(fn.body);
+    for (const [id, n] of allowed) if (mentions.get(id) !== n) allowed.delete(id);
+  }
+  const found: ReadonlySet<string> = new Set(allowed.keys());
+  privateArraysOf.set(fn, found);
+  return found;
+}
+
+/** Element types whose `join` text the runtime writes itself. */
+function quietElement(type: IrType): boolean {
+  return type.kind === "string" || type.kind === "f64" || type.kind === "bool";
+}
+
+/** Operations outside may-throw.ts's bounded list that still cannot run
+ * code of the program, for the operand types and receivers named here.
+ * This list is the arena analysis's own: the bounded list also promises
+ * that an operation cannot block and steers the stack checks, so it is not
+ * the place to widen.
+ *
+ * - `recordOvfKeys` lowers to `scr_map_keys_js_order` (scr_map.c): it
+ *   walks the overflow map's entries and retains each key string into a
+ *   fresh `string[]`. Keys are strings; nothing is converted or called.
+ * - `recordKeyGet` of the overflow map alone with a static result
+ *   (keyedRecordReadInto in expr-records.ts): a number or boolean value is
+ *   one `scr_map_get_str_f64` / `scr_map_get_str_bool` lookup and a copy;
+ *   any other value is a string-keyed entry lookup, a retain of the stored
+ *   reference and, for a union result, a wrap of it; a miss stores the
+ *   undefined arm or NaN, or traps. Reads that also cover declared fields
+ *   and reads with a dynamic result stay unlisted: they pass through
+ *   record views and conversions to dynamic values not proven here.
+ * - `join` on a private array (privateArrays) of strings, numbers or
+ *   booleans with a string separator lowers to `scr_arr_join`
+ *   (scr_array.c), which copies string bytes and formats numbers and
+ *   booleans itself, or for string elements to `scr_arr_join_str`
+ *   (scr_arr_join_str.c), which copies a hole-free string array and hands
+ *   any other to `scr_arr_join`. The one path into program code is the string
+ *   conversion of a foreign element (SCR_ARR_FOREIGN), and such an element
+ *   is only ever stored by `scr_arr_set_foreign`, through a dynamic view of
+ *   the array or a stream bridge. A private array has neither: its only
+ *   reference is the local, and the local is only a receiver of `push`
+ *   (typed elements), `length` and `join`. A `string[]` that came from
+ *   anywhere else may hold a foreign element, so `join` on it stays
+ *   unlisted. */
+function quietOperation(
+  node: Node,
+  fn: IrFunction | null,
+  privateArraysOf: PrivateArrays,
+): boolean {
+  if (node.kind === "recordOvfKeys") return true;
+  if (node.kind === "recordKeyGet") return node.overflowOnly === true && node.type.kind !== "dyn";
+  if (node.kind === "arrIntrinsic" && node.method === "join") {
+    const receiver = node.receiver;
+    return (
+      fn !== null &&
+      receiver.kind === "varRef" &&
+      receiver.type.kind === "array" &&
+      quietElement(receiver.type.elem) &&
+      node.args.every((a) => a.type.kind === "string") &&
+      privateArrays(fn, privateArraysOf).has(receiver.localId)
+    );
+  }
+  return false;
+}
+
 /** Array intrinsics that call their function-typed arguments natively. */
 const CALLBACK_INTRINSICS = new Set(["sortDense", "sortValues"]);
 const callbackArg = (child: Node, parent: Node | undefined): boolean =>
@@ -360,7 +611,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         note(callers, ctor);
         note(referrers, ctor);
       } else if (node.kind === "closure") note(referrers, node.fnName);
-      if (source(node) && node.kind !== "call") directAlloc.add(fn.name);
+      // A call allocates through its targets (the edges noted above).
+      if (source(node) && node.kind !== "call" && node.kind !== "virtualCall")
+        directAlloc.add(fn.name);
     });
   }
   /** Runs `step` on the functions named, and again on the referrers of each
@@ -394,6 +647,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   // Callback parameters (see below), and the function being analyzed.
   const callbacks = new Map<string, Set<number>>();
   let current: IrFunction | null = null;
+  // Each function's private arrays (see privateArrays), found once per
+  // analysis: the analysis owns the cache, not a weak collection.
+  const privateArraysOf: PrivateArrays = new Map();
   // While finding roots: a value passed to the function's own callback
   // parameter leaves the frame (its callers' callbacks are unknown here).
   let framePass = false;
@@ -813,7 +1069,23 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     )
       return false;
     if (node.kind === "new") return leakFree.has(`%${node.className}.constructor`);
-    return true;
+    // Resuming a generator (`for...of`, `next()`, a spread, `yield*`) runs
+    // its body with the arena of the function that drives it as the
+    // allocation target, and no edge the analysis follows leads there: what
+    // the body keeps past the resumption would be dropped with the arena.
+    if (node.kind === "genResume") return false;
+    // `JSON.parse(text)` and the checked cast of its value are sources the
+    // analysis follows itself, and neither runs code of the program: a
+    // reviver is a library call of its own, and a checked cast admits plain
+    // data only.
+    if (node.kind === "dynCheck" || (node.kind === "libCall" && node.fn === "json.parse"))
+      return true;
+    // Every other operation is clean only when it cannot run code of the
+    // program. An emitter's listeners, a Promise executor, a replacer, a
+    // `toJSON` or a `toString` the runtime calls run with this function's
+    // arena as the allocation target, like a generator's body, and what
+    // they keep would be dropped with it.
+    return boundedNode(node) || quietOperation(node, current, privateArraysOf);
   };
   /** The values `e` can produce, through casts and conditionals. */
   const leaves = (e: Node, out: Node[] = []): Node[] => {
@@ -828,7 +1100,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   /** A source whose value is a new group member (a call result only when
    * the callee is fresh). */
   const memberSource = (u: Node): boolean =>
-    source(u) && u.kind !== "callValue" && (u.kind !== "call" || fresh.has(u.callee));
+    source(u) &&
+    u.kind !== "callValue" &&
+    u.kind !== "virtualCall" &&
+    (u.kind !== "call" || fresh.has(u.callee));
   /** What analyze reads of `fn` that no summary changes: the values bound
    * to each local, the stores into locals' graphs, and the locals that are
    * not closed (see analyze). */

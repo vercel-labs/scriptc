@@ -10,6 +10,7 @@ import {
   type IrFunction,
   type IrModule,
   type IrLibFn,
+  type IrType,
   type IrStmt,
 } from "./ir.js";
 import {
@@ -121,6 +122,42 @@ describe("runtime feature snapshots", () => {
     const probe = module();
     probe.functions[0]!.body.push(call("record.sourceHasKey"));
     expect(moduleRuntimeFeatures(probe).recordSourceGet).toBe(true);
+  });
+
+  test("gates the string join unit on a join whose receiver holds strings", () => {
+    const join = (elem: IrType): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "join",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(elem), loc },
+        args: [{ kind: "strLit", value: ",", type: STRING, loc }],
+        type: STRING,
+        loc,
+      },
+    });
+    const mod = module();
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Numbers and booleans join through scr_arr_join alone.
+    mod.functions[0]!.body.push(join({ kind: "f64" }), join(BOOL));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    // Another method of a string array is not a join.
+    mod.functions[0]!.body.push({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver: { kind: "varRef", localId: "parts", type: arrayOf(STRING), loc },
+        args: [],
+        type: { kind: "f64" },
+        loc,
+      },
+    });
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(false);
+    mod.functions[0]!.body.push(join(STRING));
+    expect(moduleRuntimeFeatures(mod).arrJoinStr).toBe(true);
   });
 
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
@@ -1015,5 +1052,39 @@ describe("runtime feature snapshots", () => {
       childProcess: true,
       childErrorEvent: false,
     });
+  });
+
+  test("links the adoption unit for a typed slot's flagged conversion, not for a boxed function", () => {
+    const names = arrayOf(STRING);
+    const takesNames: IrType = { kind: "func", params: [names], ret: VOID };
+    const links = (flagged: boolean): boolean => {
+      const mod = module();
+      mod.functions[0]!.locals.push(
+        { id: "fn", name: "fn", mutable: false, type: takesNames },
+        { id: "source", name: "source", mutable: false, type: DYN },
+      );
+      // A function boxed for untyped code: its thunk converts the caller's
+      // array and keeps the copy, so it does not ask for the unit.
+      const boxed: IrExpr = {
+        kind: "dynFrom",
+        type: DYN,
+        loc,
+        value: { kind: "varRef", localId: "fn", type: takesNames, loc },
+      };
+      const check: IrExpr & { kind: "dynCheck" } = {
+        kind: "dynCheck",
+        type: names,
+        loc,
+        value: { kind: "varRef", localId: "source", type: DYN, loc },
+      };
+      if (flagged) check.shared = true;
+      mod.functions[0]!.body.push(
+        { kind: "exprStmt", loc, expr: boxed },
+        { kind: "exprStmt", loc, expr: check },
+      );
+      return moduleRuntimeFeatures(mod).declAdopt;
+    };
+    expect(links(true)).toBe(true);
+    expect(links(false)).toBe(false);
   });
 });

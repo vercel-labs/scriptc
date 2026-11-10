@@ -59,6 +59,7 @@ import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
+import { withInsertedSpans } from "../frontend/js-void-initializers.js";
 
 export interface PreparedExecutableModule {
   ok: true;
@@ -77,10 +78,25 @@ export interface PreparedExecutableModule {
   nodeIslandUse?: { file: string; api: string };
 }
 
+/** prepareRounds, with each diagnostic and warning on a line a source shadow
+ * wrote into (frontend/js-void-initializers.ts) carrying what was inserted,
+ * so it is reported at its column in the file as written. */
+export function prepareExecutableModule(
+  ...args: Parameters<typeof prepareRounds>
+): PreparedExecutableModule | CompileFailure {
+  const result = prepareRounds(...args);
+  if (!result.ok) {
+    const diagnostics = withInsertedSpans(result.diagnostics, result.sourceTexts);
+    return diagnostics === result.diagnostics ? result : { ...result, diagnostics };
+  }
+  result.warnings = withInsertedSpans(result.warnings, result.sourceTexts);
+  return result;
+}
+
 /** Release the parser/checker before native object generation begins.
  * `unitStore` keeps the lowered units of this build for the next one
  * (unit-reuse.ts). */
-export function prepareExecutableModule(
+function prepareRounds(
   entryPath: string,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,
@@ -374,7 +390,16 @@ export function prepareExecutableModule(
       if (checked.contracts) lowered.module.contracts = checked.contracts;
       contractWarnings = checked.warnings;
     }
-    if (retryFences) {
+    // The sure rule reads every compiling build, a fence retry's included
+    // (`retryFences` only stops the report rule from running twice): a
+    // package can meet a fence that surely fires only once a package it
+    // requires is an island, and that island may itself be the growth of
+    // this rule. A retry that did not look would compile that throw into a
+    // program that stops when it starts, while a build that held the same
+    // island from its first round (a mark, a replayed decision) islands
+    // the importer: the decision must be the same set either way. Every
+    // step adds a package, so the retries end.
+    {
       const growth = growthOf();
       fenceGrown =
         growth === null

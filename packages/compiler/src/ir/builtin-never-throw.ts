@@ -102,4 +102,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_source_has_key asks the record's kept view whether it holds
   // an own key: no accessor runs, and a record without a view answers false.
   "record.sourceHasKey",
+  // scr_record_reflects_static probes the kept-source table and the live
+  // capsule table for the record's address: it reads no property.
+  "record.reflectsStatic",
 ]);

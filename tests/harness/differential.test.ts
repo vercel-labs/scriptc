@@ -201,6 +201,14 @@ function icuAvailable(): boolean {
   return process.platform === "linux" && process.arch === "x64";
 }
 
+/** `// @skip-darwin` in the directive head: the Node oracle itself does not
+ * finish on macOS (it aborts while exiting), so there is no reference
+ * output to compare a compiled program against. The program still runs on
+ * every other platform. A program states the abort in its own comment. */
+function skipsDarwin(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @skip-darwin\s*$/.test(l));
+}
+
 /** `// @normalize-pid` in the directive head: Node's process warnings
  * ("(node:<pid>) [DEP0040] ...") are compared with the pid replaced on both
  * sides — for island programs, where Node itself prints the warning in the
@@ -510,6 +518,7 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
       // required in the Linux CI lanes (libnode.ts), else skipped without one.
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      if (skipsDarwin(file) && process.platform === "darwin") skip();
       const [nodeRes, nativeRes] = await Promise.all([
         runStep(`${rel}: node oracle`, (track) => runNode(file, track)),
         compileAndRun(rel, file),

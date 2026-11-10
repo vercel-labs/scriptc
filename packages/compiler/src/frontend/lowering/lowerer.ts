@@ -116,6 +116,7 @@ import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-stati
 import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
 import { unloweredModuleMemberValue } from "./node-value-reads.js";
 import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
@@ -131,6 +132,7 @@ import {
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
+import { sharedDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -141,6 +143,7 @@ import {
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
@@ -262,6 +265,7 @@ import {
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
 import type { Defines } from "../defines.js";
+import { programImportsNodeApi } from "../node-api-import.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -1629,7 +1633,7 @@ export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
  * evaluates (ScrDiagnostic.moduleInit). */
 function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
-    if (!d.loc.file.includes("/node_modules/")) continue;
+    if (!isInstalledPackagePath(d.loc.file)) continue;
     // A fence without a source position belongs to synthesized code, such
     // as the global object's lookup (global-values.ts), which runs when the
     // program calls it, not when the module evaluates.
@@ -4538,6 +4542,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
@@ -4675,8 +4682,8 @@ export class Lowerer {
    * (memberCallReceivers), computed on first use. */
   memberReceivers: MemberCallReceivers | undefined = undefined;
   /** Whether the program imports @scriptc/node (programImportsNodeApi), so
-   * a checked-dynamic value may be a Node island value; computed on first
-   * use. */
+   * a checked-dynamic value may be a Node island value and code the build
+   * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
@@ -4794,6 +4801,10 @@ export class Lowerer {
   /** Whether the program contains the built-in undici package
    * (fetch-dispatcher.ts), found on first use. */
   undiciPackageInProgram: boolean | null = null;
+  /** Whether the program writes or deletes an environment variable through
+   * a name that is not a literal (constant-conditions.ts), found on first
+   * use. */
+  computedEnvironmentWrite: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -5260,6 +5271,12 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
@@ -6001,6 +6018,9 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // Asked only where no unit is recorded: a build that reuses units leaves
+    // the conditions `--define` decides to the run (constant-conditions.ts).
+    "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -6074,6 +6094,8 @@ export class Lowerer {
     "computedGlobalReads",
     "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
     "nodeObjectValueReads",
     "namesWebStreamClass",
@@ -7195,6 +7217,7 @@ export class Lowerer {
             (clause) =>
               clause.token === ts.SyntaxKind.ExtendsKeyword &&
               clause.types.nodes.some((base) => {
+                if (!ts.isExpressionWithTypeArguments(base)) return false;
                 const expression = base.expression;
                 if (ts.isCallExpression(expression)) return true;
                 if (ts.isIdentifier(expression) && this.isStdlibGlobal(expression, expression.text))
@@ -7381,6 +7404,17 @@ export class Lowerer {
    * longer followed (class-protocols.ts, noteIslandEscapes). */
   islandEscapeSites(): readonly ts.Expression[] {
     return this.facts.classProtocols().islandEscapeSites();
+  }
+
+  /** Whether the program declares an interface that extends a builtin Error
+   * (class-protocols.ts, markErrorInterfaces). */
+  declaresErrorInterface(): boolean {
+    return this.facts.classProtocols().declaresErrorInterface();
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    return this.facts.classProtocols().errorInterface(type);
   }
 
   /** Whether `expr` holds a value a Node island made, by its origin
@@ -15284,6 +15318,15 @@ export class Lowerer {
     return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
   }
 
+  /** Whether code of the program can run in Node.js: the build has an
+   * island set, or a source file imports @scriptc/node. Known before any
+   * unit lowers, which usesNodeIsland is not. */
+  mayRunInNode(): boolean {
+    return (
+      this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
+    );
+  }
+
   /** The IR type of a type's canonical form (canon-map.ts), or null when
    * the form is irreducible, unbound, only the checked dynamic, or holds a
    * union that mapped to the checked dynamic (such a slot is dynamic in
@@ -17133,7 +17176,7 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
+        return sharedDynConversion(this, expr, expected, expr.loc);
       }
       return expr;
     }
@@ -17394,6 +17437,8 @@ export class Lowerer {
         if (w) return w;
         const asserted = assertedConversion(this, expr, expected);
         if (asserted) return asserted;
+        const errorRecord = this.errorIntoRecord(expr, expected);
+        if (errorRecord) return errorRecord;
         // A UNIT (null/undefined) flowing into a plain non-nullable slot
         // the checker approved (`null!` casts, non-strict assignments):
         // the stranded-source stance (divergence 38) without a union in
@@ -17903,7 +17948,23 @@ export class Lowerer {
     }
   }
 
+  /** coerceIntoTyped, with the one exception to a typed slot keeping one
+   * object with the dynamic value it takes (sharedDynConversion): a value
+   * the program types itself and the compiler holds dynamically, such as an
+   * evolving empty array that takes another element type later, keeps the
+   * copy. Adoption would hold the source to the slot's type, a claim the
+   * program makes only for a value it left untyped. */
   coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    const out = this.coerceIntoTyped(node, expr, expected, payloadSite);
+    if (out.kind !== "dynCheck" || out.shared !== true) return out;
+    const untyped = (ts.TypeFlags.Any | ts.TypeFlags.Unknown) as number;
+    if ((this.typeOf(node).flags & untyped) !== 0) return out;
+    const copied = { ...out };
+    delete copied.shared;
+    return copied;
+  }
+
+  coerceIntoTyped(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const kind = expr.type.kind;
       if (
@@ -18350,10 +18411,10 @@ export class Lowerer {
   lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
-      // An adapting promise changes identity, while the Error boundary
-      // snapshots mutable fields. Neither is a live collection reference.
+      // The Error boundary snapshots mutable fields, so its copy is no live
+      // collection reference. A promise's adapter is one: it shares the
+      // promise's identity, which the collection hashes and compares.
       const copiesReference = (type: IrType): boolean =>
-        (type.kind === "promise" && type.inner.kind !== "dyn") ||
         (type.kind === "object" &&
           (RUNTIME_ERROR_CLASSES.has(type.className) ||
             this.isSubclassOf(type.className, "%Error"))) ||
@@ -18361,7 +18422,7 @@ export class Lowerer {
           (this.unions.get(type.unionId)?.arms.some(copiesReference) ?? false));
       if (value.kind === "dynFrom" && copiesReference(value.value.type)) {
         this.noLowering(
-          "collection slot conversion requiring an Error snapshot or promise adapter",
+          "collection slot conversion requiring an Error snapshot",
           node,
           "use a collection with the original reference type; checked collection slots require identity-preserving conversions",
         );
@@ -20185,6 +20246,35 @@ export class Lowerer {
     return findMethodOn(this, info, name);
   }
 
+  /** An error handed to a record type (`advice(err)` where the parameter is
+   * `{ message?: string; tag?: string }`): the record is read off the
+   * error's checked-dynamic view, each member as JavaScript reads it from
+   * the error and checked at the member's type. An error class has no field
+   * copy (objToRecordPlan declines the members the runtime holds), so the
+   * pair had no conversion and was refused. Asked only where every other
+   * conversion declined, so a pair that converted keeps its route.
+   *
+   * A record that names `stack` keeps the refusal: the view of a program
+   * subclass's instance does not answer `stack` to the record's member read
+   * (it would read as absent), and a slot typed by a builtin error class can
+   * hold such an instance. */
+  private errorIntoRecord(expr: IrExpr, expected: IrType): IrExpr | null {
+    if (expr.type.kind !== "object" || expected.kind !== "record") return null;
+    if (!this.isErrorRootedClass(expr.type.className) || !this.dynConvertible(expr.type))
+      return null;
+    if (this.shapes.get(expected.shapeId)?.fields.some((field) => field.name === "stack"))
+      return null;
+    if (
+      !canDynCheckTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return null;
+    return this.coerceToExpected(this.coerceToExpected(expr, DYN), expected);
+  }
+
   /** A class whose root is the runtime's %Error (builtin errors and their
    * program subclasses). */
   isErrorRootedClass(className: string): boolean {
@@ -21690,7 +21780,7 @@ export class Lowerer {
 
   readonly isNpmFile = (sf: ts.SourceFile): boolean =>
     sf.isDeclarationFile &&
-    (sf.fileName.includes("/node_modules/") || workspacePackageOfPath(sf.fileName) !== null) &&
+    (isInstalledPackagePath(sf.fileName) || workspacePackageOfPath(sf.fileName) !== null) &&
     !this.isStdlibFile(sf) &&
     // A bundled copy's forwarder to a package shim types compiled code.
     !isBundledShimForwarder(sf.fileName);

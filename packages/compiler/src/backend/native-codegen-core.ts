@@ -112,6 +112,84 @@ export class NativeCodegenError extends Error {
   }
 }
 
+/** The error a failed helper invocation rejects with: the fields
+ * `execFile`/`execFileSync` attach. A build on the JavaScript host throws one
+ * itself, and so does the native host, so both report a helper failure the
+ * same way. */
+export interface NativeHelperFailure {
+  message: string;
+  /** The exit status: `execFile` attaches it as `code`, `execFileSync` as
+   * `status`. */
+  code?: number | string;
+  status?: number | null;
+  signal?: string | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+export function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How the child ended. A helper killed by a signal prints nothing at all, so
+ * the signal is the only description of the failure it leaves behind. */
+function helperEnding(failure: NativeHelperFailure): string {
+  if (typeof failure.code === "number") return `exit status ${failure.code}`;
+  if (typeof failure.status === "number") return `exit status ${failure.status}`;
+  if (typeof failure.signal === "string" && failure.signal !== "")
+    return `signal ${failure.signal}`;
+  return "";
+}
+
+/** The command line the error names, without the output it appends after it. */
+function helperCommand(failure: NativeHelperFailure): string {
+  const newline = failure.message.indexOf("\n");
+  return newline === -1 ? failure.message : failure.message.slice(0, newline);
+}
+
+/** How much of the helper's own output a failure message carries. */
+const MAX_HELPER_FAILURE_OUTPUT = 2000;
+
+/** The message a helper failure reports: its structured diagnostic when it
+ * wrote one, else how it ended and what it printed. A killed helper leaves an
+ * unqualified "Command failed: <args>" from Node, so the ending is what makes
+ * the diagnostic actionable (a SIGKILL of a whole-module emit, say). */
+export function nativeHelperFailureMessage(failure: NativeHelperFailure): {
+  code?: string;
+  message: string;
+} {
+  const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
+  const parsed = parseJsonObject(stderr.trim());
+  if (typeof parsed?.["message"] === "string") {
+    return {
+      ...(typeof parsed["code"] === "string" ? { code: parsed["code"] } : {}),
+      message: parsed["message"],
+    };
+  }
+  // The helper did not report one of its structured diagnostics, so the child's
+  // exit status, signal and output are all the evidence there is: a loader,
+  // allocation or abort message names a cause that the command line alone does
+  // not. The diagnostic goes to stderr; stdout only carries a profile report,
+  // which a failing helper may still have written before it ended.
+  const printed = (
+    stderr.trim() !== "" ? stderr : typeof failure.stdout === "string" ? failure.stdout : ""
+  ).trim();
+  const ending = helperEnding(failure);
+  const status = ending === "" ? "" : ` (${ending})`;
+  const output =
+    printed === ""
+      ? ""
+      : `: ${printed.slice(0, MAX_HELPER_FAILURE_OUTPUT)}${printed.length > MAX_HELPER_FAILURE_OUTPUT ? "…" : ""}`;
+  return { message: `${helperCommand(failure)}${status}${output}` };
+}
+
 export interface NativeCodegenVersion {
   ok: true;
   protocol_version: string;

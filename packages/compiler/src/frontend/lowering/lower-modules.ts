@@ -6,6 +6,7 @@ import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
 import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
+import { extendsElementOf } from "../heritage-elements.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -18,6 +19,7 @@ import { InternalCompilerError } from "../../errors.js";
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
@@ -38,6 +40,7 @@ import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
 import {
+  assignmentChainValueOf,
   canonicalBuiltinModule,
   cjsChainedExportValueOf,
   cjsExportAssignmentOf,
@@ -659,9 +662,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     const previousSink = lowerer.diagSink;
     const deferred: import("../../diagnostics/diagnostic.js").ScrDiagnostic[] = [];
     lowerer.diagSink = deferred;
-    const expression = decl.heritageClauses!.nodes.find(
-      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )!.types.nodes[0]!.expression;
+    const expression = extendsElementOf(decl)!.expression;
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
     try {
@@ -1603,6 +1604,9 @@ function jsDynHoldableInitializer(
 ): boolean {
   if (init === undefined) return true;
   if (isNativeProxyInitializer(lowerer, init)) return true;
+  // The cast the file-system shadow serves for `var v = void 0`
+  // (js-void-initializers.ts) holds undefined, as the identifier below does.
+  if (isVoidLiteralCast(init)) return true;
   let e: ts.Expression = init;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (checkedGlobalReference(lowerer, e)) return true;
@@ -2650,8 +2654,15 @@ export function collectGlobals(
       const names = boundIdentifiersOf(decl.name);
       // `var x = module.exports = <value>`: x and module.exports take the
       // SAME value at this statement, so the declaration's storage is
-      // classified from the export value the chain assigns.
-      const declValue = cjsChainedExportValueOf(decl) ?? decl.initializer;
+      // classified from the export value the chain assigns. In a JavaScript
+      // file the same holds for every chain of plain assignments (`var list
+      // = Holder.list = []`, the spelling a module whose exports are one of
+      // its functions is normalized to): the binding holds the chain's value.
+      const declValue =
+        cjsChainedExportValueOf(decl) ??
+        (decl.initializer !== undefined && isJsSourceFile(sf)
+          ? assignmentChainValueOf(decl.initializer)
+          : decl.initializer);
       // Localized failure: a degradable type failure at a module global
       // degrades that type and the same name registers again
       // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
@@ -3762,9 +3773,10 @@ export function lowerFileInit(
     if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
       header.push(...sharedModuleRegistrations(lowerer));
     // A module that reads builtin globals through the global object, by
-    // computed names or through a sloppy-mode function's `this`, installs
-    // the program's lookup before its body runs.
-    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0, sf));
+    // computed names or through a sloppy-mode function's `this`, or that
+    // stores the global object as a value, installs the program's lookup
+    // before its body runs.
+    if (installsGlobalValues(lowerer, sf)) header.push(...globalValuesInstall(lowerer, loc0, sf));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

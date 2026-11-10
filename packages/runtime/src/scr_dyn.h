@@ -485,6 +485,9 @@ const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
  * TypeError before anything changes. */
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule);
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
+/* The same for a conversion without an assertion: all of `source` becomes
+ * one object with the value built from it, or nothing changes. */
+void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending
@@ -1001,7 +1004,8 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
- * plain data properties by an ordinary write, others by their descriptor. */
+ * plain data properties by an ordinary write; the others, and an own
+ * `__proto__`, which an ordinary write would not store, by their descriptor. */
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry);
 /* Literal discriminator tests used before selecting a typed record layout.
  * Missing fields and different primitive kinds never match. Borrowed args. */
@@ -1079,8 +1083,8 @@ static inline bool scr_dyn_own_symbol_prop(const ScrDyn *object, const ScrDyn *k
 static inline void scr_dyn_copy_prop_at(ScrDyn *target, const ScrDyn *source, size_t i) {
   if (source->v.obj.layout) {
     ScrDynProp prop = scr_dyn_obj_prop_at(source, i);
-    ScrDynEntry entry = {(char *)prop.key, prop.key_len, prop.value, NULL, NULL,
-                         false, false, false, true, true, true};
+    ScrDynEntry entry = {.key = (char *)prop.key, .key_len = prop.key_len, .value = prop.value,
+                         .writable = true, .enumerable = true, .configurable = true};
     scr_dyn_copy_entry(target, source, &entry);
     return;
   }
@@ -1444,6 +1448,11 @@ ScrDyn *scr_dyn_obj_create_with_properties(ScrDyn *prototype, ScrDyn *descriptor
 /* The same, where each descriptor may be any object (scr_dyn_descriptor_snapshot). */
 ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *descriptors);
 ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object);
+/* The prototype read of a class test's walk (scr_dyn_class_test.c, a gated
+ * unit): answers for every value, null where no program class's prototype
+ * can be on the chain, and scr_dyn_get_prototype_for_identity's answer for
+ * the values that have a chain. */
+ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
@@ -1590,6 +1599,11 @@ void scr_dyn_typed_ref_bind_record(ScrDyn *d, const ScrDynTypedRecordOps *ops);
 void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *names,
                             const size_t *lens, size_t count);
 bool scr_record_source_has(const void *rec);
+/* Whether the record answers reflection from its declared fields alone: no
+ * kept source, no link to a wider source (looked for when `may_link`), and
+ * no live capsule with a view, a prototype or symbol-keyed members of its
+ * own (scr_json.c). */
+bool scr_record_reflects_static(const void *rec, bool may_link);
 /* A conversion of a native record into a narrower record type links the
  * copy to its source when the source has properties the copy's type does
  * not declare (scr_json.c): `source` moves in and is released with the
@@ -1638,6 +1652,41 @@ ScrStr *scr_dyn_typed_ref_class_tag(const ScrDyn *d);
 /* Attach the bag and prototype hooks of a capsule of a bag-tracked class
  * instance (idempotent). */
 void scr_dyn_typed_ref_bind_bag_class(ScrDyn *d, const ScrDynTypedBagClassOps *ops);
+/* A native stream seen as `unknown`, filled in by the stream unit with its
+ * first stream and NULL before. A capsule whose snapshot adapter is `view`
+ * itself holds a stream whose view is exactly the object `view` builds, so
+ * a question about one member of it needs no view.
+ *   get:    scr_typed_ref_stream_get, the read of one member.
+ *   has:    scr_typed_ref_stream_has, `in` and Reflect.has.
+ *   member: what the view of `stream` holds under `key`: 0 nothing, 1 a
+ *           data property (its value +1 in *value when `value` is not
+ *           NULL), 2 a method, -1 when only the view can say.
+ * The two questions are reached through the record and named by the stream
+ * unit alone, so a program without a stream links neither: all it carries
+ * is the comparison with `view`.
+ * One record for the process, not one per thread: the functions are the
+ * same for every thread, and a capsule that is no stream then pays one
+ * comparison with `view` and no thread-local read. The fields are atomic
+ * because every thread that makes its first stream while they are still
+ * NULL stores the same addresses; `view` goes in last, so a thread that
+ * reads it set reads the others set. */
+typedef struct ScrStreamRefHooks {
+  ScrDyn *(*_Atomic view)(void *stream);
+  ScrDyn *(*_Atomic get)(const ScrDyn *capsule, const ScrStr *key);
+  int (*_Atomic has)(const ScrDyn *capsule, const ScrStr *key);
+  int (*_Atomic member)(void *stream, const char *key, size_t key_len, ScrDyn **value);
+} ScrStreamRefHooks;
+extern ScrStreamRefHooks scr_stream_ref_hooks;
+/* ScrStreamRefHooks.get: what the view of live stream capsule `capsule`
+ * answers a read of `key`, which is no name of Object.prototype: +1, or
+ * NULL when the read needs the view. */
+ScrDyn *scr_typed_ref_stream_get(const ScrDyn *capsule, const ScrStr *key);
+/* ScrStreamRefHooks.has: whether the view of live stream capsule `capsule`
+ * holds `key`, as its own data property or as a method it inherits: 1 or
+ * 0, or -1 when the view must answer. */
+int scr_typed_ref_stream_has(const ScrDyn *capsule, const ScrStr *key);
+/* scr_stream_dyn_view as a capsule's snapshot adapter. */
+ScrDyn *scr_stream_ref_view(void *stream);
 /* The method `key` that a call on a bag-tracked class instance capsule
  * reads from its view, +1, when an ordinary data property answers it: an
  * own one (a declared field's value from its native slot, or another bag
@@ -1817,10 +1866,13 @@ extern SCR_TL void (*scr_weak_dispose_hook)(void *);
 #endif
 void scr_weak_dispose(void *object);
 /* The for-of-over-dyn pack accessors (the emitted index loop drives them
- * over a scr_dyn_iter_pack result, which is ARR by construction).
- * scr_dyn_arr_len answers 0 for non-ARR kinds; scr_dyn_arr_at answers the
- * undefined singleton past the end (both never throw). scr_dyn_arr_at is
- * +1. */
+ * over a scr_dyn_iter_pack result, which is ARR by construction), and the
+ * element read of a computed-read helper: an integer index below the length
+ * reads the element. They answer for an ARR and for a live array capsule
+ * (the receiver scr_dyn_index_get answers; its elements come back in the
+ * keyed read's boxing, a hole through its plain view). scr_dyn_arr_len
+ * answers 0 for every other kind; scr_dyn_arr_at answers the undefined
+ * singleton for every other kind and past the end. scr_dyn_arr_at is +1. */
 double scr_dyn_arr_len(const ScrDyn *d);
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i);
 ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key);
@@ -1907,6 +1959,12 @@ bool scr_dyn_is_error_prototype(const ScrDyn *d);
  * non-object kinds throw Node's catchable TypeErrors (strict-mode
  * wording). All three operands BORROWED (the value is retained in). */
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* The same write at a site whose name is known only at run time, tried
+ * first for a receiver of kind OBJ: true when the member was assigned to a
+ * plain record (layout mode, no prototype object, extensible) through its
+ * layout; false, with nothing done and nothing thrown, when the site must
+ * call scr_dyn_key_set. All three operands BORROWED. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value);
 /* A property DEFINITION (a member of a JavaScript object literal, dynObjLit):
  * it creates or updates the own data property and never runs an inherited
  * accessor, so a `__proto__` member is an ordinary own member instead of

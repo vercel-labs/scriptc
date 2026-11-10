@@ -948,7 +948,10 @@ function staticContainer(type: IrType): boolean {
   return type.kind === "array" || type.kind === "set" || type.kind === "bytes";
 }
 
-function boundedNode(rec: IrExpr | IrStmt): boolean {
+/** Whether `rec` itself (not its operands) is such an operation. The arena
+ * analysis (llvm/region-groups.ts) asks the same question: an operation
+ * that can reenter scriptc code runs it with the caller's arena open. */
+export function boundedNode(rec: IrExpr | IrStmt): boolean {
   if (BOUNDED_KINDS.has(rec.kind)) return true;
   switch (rec.kind) {
     case "arrIntrinsic":

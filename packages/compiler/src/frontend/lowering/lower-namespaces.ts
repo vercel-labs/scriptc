@@ -51,6 +51,7 @@ import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.
 import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { nodeGlobalKind } from "./node-values.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** True when this module declaration produces NO runtime construct at all:
  * ambient (`declare namespace/module`, `declare global`, string-named
@@ -473,6 +474,17 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
     : null;
 }
 
+/** True when a namespace receiver is more than a reference to a binding
+ * (`ns`, `A.B.C`): an expression whose value is a module's namespace, such
+ * as `await import("./m")`. Evaluating it is part of the access (the
+ * dynamic import evaluates the module there). */
+export function nsReceiverEvaluates(receiver: ts.Expression): boolean {
+  let e = withoutParenthesesTypeWrappers(receiver);
+  while (ts.isPropertyAccessExpression(e) && e.questionDotToken === undefined)
+    e = withoutParenthesesTypeWrappers(e.expression);
+  return !ts.isIdentifier(e);
+}
+
 /** The member identifier of a qualified namespace reference, when `access`
  * reads a member declared in a lowered (or type-only) namespace block —
  * or an EXPORT of a program module read through its namespace-import
@@ -487,9 +499,15 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
 export function nsMemberIdentOf(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
+  /** The caller evaluates the receiver itself (nsReceiverEvaluates). */
+  receiverEvaluated = false,
 ): ts.Identifier | null {
   if (access.questionDotToken !== undefined) return null;
   if (!ts.isIdentifier(access.name)) return null;
+  // The member's name alone stands for the whole access only when
+  // evaluating the receiver does nothing: `(await import("./m")).f` loads
+  // the module before it reads `f`.
+  if (!receiverEvaluated && nsReceiverEvaluates(access.expression)) return null;
   const memberSym = lowerer.checker.getSymbolAtLocation(access.name);
   if (!memberSym) return null;
   // A CommonJS module's namespace has the names Node's lexer detects, with

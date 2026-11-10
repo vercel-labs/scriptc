@@ -577,6 +577,24 @@ void scr_jb_put_json_str(ScrJsonBuf *b, const ScrStr *s) {
   else scr_jb_put_json_chars(b, s->data, s->len, true);
 }
 
+/* A finished document larger than every one before it on this thread: the
+ * size class for the next buffer, and the lazy ASCII proof. A finished
+ * document is handed over unscanned, so the builder pays nothing for a text
+ * that is only written out. Whether its bytes are all ASCII is proven by
+ * the first .length read of it instead, by the proof installed here: only a
+ * program that finishes a document links it. This is the place because it
+ * is off the steady path and still runs before any document that could be
+ * asked: the hint starts at 64 bytes and only grows, so a thread's first
+ * document of more than 64 bytes comes through here, and a shorter text is
+ * counted directly and never asks (scr_str_utf16_len). Out of line, so the
+ * many functions that finish a document inline carry one jump for both; it
+ * hands the document through, so the steady path saves nothing around it. */
+static __attribute__((noinline, cold)) ScrStr *scr_jb_hint_grow(ScrStr *s) {
+  scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
+  __atomic_store_n(&scr_str_lazy_ascii, scr_str_prove_ascii, __ATOMIC_RELAXED);
+  return s;
+}
+
 ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   free(b->seen);
   b->seen = NULL;
@@ -588,8 +606,8 @@ ScrStr *scr_jb_finish(ScrJsonBuf *b) {
   s->data[b->len] = '\0';
   /* Remember the size class for the next buffer (bounded so one giant
    * document cannot pin big allocations forever). */
-  if (s->cap > scr_jb_hint) scr_jb_hint = s->cap < (1 << 16) ? s->cap : (1 << 16);
   scr_jb_init(b);
+  if (s->cap > scr_jb_hint) return scr_jb_hint_grow(s);
   return s;
 }
 
@@ -2480,13 +2498,43 @@ ScrDyn *scr_dyn_map_seed_entry(const ScrDyn *entry) {
   return scr_dyn_retain((ScrDyn *)entry);
 }
 
+/* Whether `d` is a live array capsule whose elements the two accessors below
+ * answer: the receiver scr_dyn_index_get answers. A class, record or bag
+ * capsule has no array hooks, and a program with event-reference hooks
+ * asks them for a member before the array's own. */
+static inline bool scr_dyn_arr_is_capsule(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF && !scr_event_ref_hooks && scr_dyn_typed_ref_array_ops(d);
+}
+
+/* scr_dyn_arr_at for a value that is no checked array, kept out of line so
+ * the checked array's read pays one tail call for it and nothing else. A
+ * live array capsule answers the element at an index below its length in
+ * the boxing the keyed read gives it (scr_dyn_typed_ref_element; an array
+ * without slot states holds a value at every such index). A hole has no
+ * element of its own: the capsule's plain view reads it, through the
+ * prototype chain. */
+static __attribute__((noinline)) ScrDyn *scr_dyn_arr_at_other(const ScrDyn *d, double i) {
+  if (!scr_dyn_arr_is_capsule(d)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrArr *arr = d->v.typed_ref.ptr;
+  if (!(i >= 0 && i < (double)arr->len)) return scr_dyn_retain(scr_dyn_undefined());
+  size_t index = (size_t)i;
+  if (!scr_arr_has_states(arr)) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
+  ScrDyn *element = scr_dyn_typed_ref_element(d, index);
+  if (element) return element;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+  ScrDyn *result = view->kind == SCR_DYN_ARR ? scr_dyn_arr_at(view, (double)index)
+                                              : scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_release(view);
+  return result;
+}
+
 double scr_dyn_arr_len(const ScrDyn *d) {
-  return d->kind == SCR_DYN_ARR ? (double)d->v.arr.len : 0;
+  if (d->kind == SCR_DYN_ARR) return (double)d->v.arr.len;
+  return scr_dyn_arr_is_capsule(d) ? (double)((const ScrArr *)d->v.typed_ref.ptr)->len : 0;
 }
 ScrDyn *scr_dyn_arr_at(const ScrDyn *d, double i) {
-  if (d->kind != SCR_DYN_ARR || i < 0 || i >= (double)scr_dyn_arr_length(d)) {
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
+  if (d->kind != SCR_DYN_ARR) return scr_dyn_arr_at_other(d, i);
+  if (i < 0 || i >= (double)scr_dyn_arr_length(d)) return scr_dyn_retain(scr_dyn_undefined());
   if (scr_dyn_arr_has_index(d, (size_t)i)) return scr_dyn_retain(d->v.arr.items[(size_t)i]);
   char text[32];
   int length = snprintf(text, sizeof text, "%zu", (size_t)i);
@@ -5205,7 +5253,10 @@ ScrDyn *scr_dyn_class_view_unavailable(void *ptr) {
 
 void scr_dyn_copy_entry(ScrDyn *target, const ScrDyn *source, const ScrDynEntry *entry) {
   ScrStr *key = scr_str_new(entry->key, entry->key_len);
-  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable) {
+  /* An ordinary write of `__proto__` is Object.prototype's setter, which
+   * stores no property: the copy of an own one is a definition. */
+  bool proto = entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0;
+  if (!entry->accessor && entry->writable && entry->enumerable && entry->configurable && !proto) {
     scr_dyn_key_set(target, key, entry->value);
   } else {
     /* Properties defined through a view keep their attributes. */
@@ -5871,6 +5922,64 @@ static bool scr_typed_ref_plain_array(const ScrDyn *d) {
   return !x || (x->prop_len == 0 && !x->metadata && !x->cls);
 }
 
+ScrStreamRefHooks scr_stream_ref_hooks = { NULL, NULL, NULL, NULL };
+
+/* Whether capsule `d`, which has a snapshot adapter, holds a native stream
+ * that answers member questions without its view: the adapter is the stream
+ * unit's. This is all a capsule of another kind pays, and all a program
+ * without a stream carries: the questions are the record's. A capsule with
+ * no adapter would match the empty record, so only a caller that goes on to
+ * call the adapter may ask this way. */
+static inline bool scr_typed_ref_adapted_stream(const ScrDyn *d) {
+  return d->v.typed_ref.materialize == scr_stream_ref_hooks.view;
+}
+
+/* The same for a capsule that may have no adapter: before the unit's first
+ * stream the record is empty and such a capsule is no stream. The record is
+ * read once, so the test holds while another thread fills it in, and the
+ * comparison comes first: it alone turns a capsule of another kind away. */
+static inline bool scr_typed_ref_stream(const ScrDyn *d) {
+  return __builtin_expect(scr_typed_ref_adapted_stream(d), 0) && d->v.typed_ref.materialize;
+}
+
+/* What the view of live stream capsule `d` holds under `key`, which is no
+ * name of Object.prototype, as ScrStreamRefHooks.member answers it, without
+ * building the view: a view holds 25 method closures and becomes the
+ * capsule's, which then builds it again for every later question. -1 when
+ * the view must answer: `d` has a view, a prototype or symbols of its own. */
+static inline int scr_typed_ref_stream_member(const ScrDyn *d, const ScrStr *key, ScrDyn **value) {
+  int (*member_of)(void *, const char *, size_t, ScrDyn **) = scr_stream_ref_hooks.member;
+  if (!member_of || !scr_typed_ref_plain(d)) return -1;
+  int member = member_of(d->v.typed_ref.ptr, key->data, key->len, value);
+  /* A name the view holds nowhere is Object.prototype's to answer once the
+   * program has made that a value and put the name on it. */
+  if (member == 0 && scr_builtin_object_prototype &&
+      scr_dyn_property_owner(scr_builtin_object_prototype, key->data, key->len))
+    return -1;
+  return member;
+}
+
+/* scr_typed_ref_unowned_get of a stream capsule, for a `key` that is no
+ * name of Object.prototype. Only the stream unit names this function and
+ * the next one (it puts them in scr_stream_ref_hooks), so the linker keeps
+ * them for a program with a stream and for no other. Both are built for
+ * size: what a question costs is the name lookup in the stream unit. */
+SCR_COLD ScrDyn *scr_typed_ref_stream_get(const ScrDyn *d, const ScrStr *key) {
+  ScrDyn *value = NULL;
+  int member = scr_typed_ref_stream_member(d, key, &value);
+  if (member == 0) return scr_dyn_retain(scr_dyn_undefined());
+  return member == 1 ? value : NULL;
+}
+
+/* Whether the view of live stream capsule `d` holds `key`, as its own data
+ * property or as a method it inherits: 1 or 0, or -1 when the view must
+ * answer. */
+SCR_COLD int scr_typed_ref_stream_has(const ScrDyn *d, const ScrStr *key) {
+  if (scr_dyn_object_proto_name(key)) return -1;
+  int member = scr_typed_ref_stream_member(d, key, NULL);
+  return member < 0 ? -1 : member != 0;
+}
+
 /* What the snapshot of live capsule `d` would answer for a read of `key`,
  * which names no present field or element of it: +1, or NULL when the read
  * needs the snapshot. */
@@ -5878,7 +5987,9 @@ static ScrDyn *scr_typed_ref_unowned_get(const ScrDyn *d, const ScrStr *key) {
   if (scr_dyn_object_proto_name(key)) return NULL;
   if (d->v.typed_ref.record)
     return scr_typed_ref_plain_record(d) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
-  if (!scr_typed_ref_plain_array(d) || key->len == 0) return NULL;
+  /* Of the capsules that reach this line, only a stream's has an answer. */
+  if (!scr_typed_ref_plain_array(d) || key->len == 0)
+    return scr_typed_ref_stream(d) ? scr_stream_ref_hooks.get(d, key) : NULL;
   /* An identifier: indexes and numeric names have their own answers. */
   unsigned char first = (unsigned char)key->data[0];
   if (first != '$' && first != '_' && !((first | 0x20) >= 'a' && (first | 0x20) <= 'z')) return NULL;
@@ -14051,6 +14162,12 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
       size_t field;
       return scr_typed_ref_record_field(record, key, &field) && record->has(v->v.typed_ref.ptr, field);
     }
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
+      int has = scr_stream_ref_hooks.has(v, key);
+      if (has >= 0) return has != 0;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     bool out = scr_dyn_has_key(materialized, key);
     scr_dyn_release(materialized);
@@ -14178,6 +14295,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (record) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
       return scr_dyn_has_key(v, key) || scr_dyn_object_proto_name(key);
+    }
+    /* A stream's view holds its data properties and inherits its methods.
+     * The capsule has an adapter: the line after this asks it. */
+    if (scr_typed_ref_adapted_stream(v)) {
+      int has = scr_stream_ref_hooks.has(v, key);
+      if (has >= 0) return has != 0;
     }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
@@ -14453,6 +14576,74 @@ void scr_dyn_arr_named_put(ScrDyn *arr, const char *key, size_t key_len, ScrDyn 
     arr->v.arr.properties = scr_dyn_new_obj();
   }
   scr_dyn_obj_set(arr->v.arr.properties, key, key_len, value);
+}
+
+/* A member assigned by name to a plain record: an ordinary object in layout
+ * mode that takes new members and has no prototype object of its own. Such
+ * an assignment needs nothing scr_dyn_object_key_set decides. Every own
+ * property of a layout is a writable data property; the receiver's chain is
+ * Object.prototype alone (or nothing), whose only member an assignment can
+ * reach is the `__proto__` accessor, since its mutation is fenced; and the
+ * five names an Error's checked view keeps in sync (scr_error_sync_slots,
+ * the `stack` attribute) are left to the general path while a thread has
+ * any such view. So the name is looked up at most once: a member the
+ * layout's most recent transition appends (every record a decoder fills
+ * with the same names in the same order after the first) is stored after
+ * one comparison of the name, a member the record already holds is
+ * replaced, and any other name follows or creates its transition. A
+ * transition out of a layout exists only for a name the layout does not
+ * hold, so following one needs no lookup of the record's own members.
+ * False, with nothing done, for every other receiver and name, and for a
+ * layout that cannot grow. Nothing here throws. Borrows key and value. The
+ * expectations keep the record's path, and the small helpers it calls, in
+ * line. */
+static inline __attribute__((always_inline)) bool scr_dyn_plain_record_assign(
+    ScrDyn *recv, const ScrStr *key, ScrDyn *value) {
+  const ScrLayout *layout = recv->v.obj.layout;
+  if (__builtin_expect(!layout || recv->prototype || recv->non_extensible, 0)) return false;
+  size_t length = key->len;
+  if (__builtin_expect(scr_errdyn_slots != 0, 0)) {
+    const char *name = key->data;
+    if ((length == 4 && (memcmp(name, "name", 4) == 0 || memcmp(name, "code", 4) == 0)) ||
+        (length == 5 && (memcmp(name, "cause", 5) == 0 || memcmp(name, "stack", 5) == 0)) ||
+        (length == 7 && memcmp(name, "message", 7) == 0))
+      return false;
+  }
+#ifdef SCR_JS_OBJECT_MODEL
+  if (__builtin_expect(length == 9 && memcmp(key->data, "__proto__", 9) == 0, 0)) return false;
+#endif
+  const ScrLayout *next = layout->last_child;
+  if (__builtin_expect(
+          !next || !scr_layout_key_is(&next->keys[next->count - 1], key->data, length), 0)) {
+    uint32_t slot = scr_layout_find(layout, key->data, length);
+    if (slot != UINT32_MAX) {
+      scr_dyn_region_store(recv, value);
+      ScrDyn *old = recv->v.obj.slots[slot];
+      recv->v.obj.slots[slot] = scr_dyn_retain(value);
+      scr_dyn_release(old);
+      return true;
+    }
+    next = scr_layout_add(layout, key->data, length);
+    if (!next) return false;
+  }
+  scr_dyn_region_store(recv, value);
+  scr_dyn_obj_layout_push(recv, next, scr_dyn_retain(value));
+  return true;
+}
+
+/* The entry of a write site under a run-time name (the compiler's
+ * backend/llvm/js-ic.ts emitNamedSet), for a receiver the site found to be
+ * an ordinary object (SCR_DYN_OBJ). True when the member was assigned to a
+ * plain record. False, with nothing done and nothing thrown, when the
+ * assignment is scr_dyn_key_set's to decide, which the site then calls:
+ * the two fenced prototypes, and every receiver and name
+ * scr_dyn_plain_record_assign leaves. Only such a site calls it, so a
+ * program without one links none of the record's path and scr_dyn_key_set
+ * stays what every other caller had. Borrows all three operands. */
+bool scr_dyn_key_set_record(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  if (__builtin_expect(recv == scr_builtin_object_prototype || recv == scr_builtin_error_prototype, 0))
+    return false;
+  return scr_dyn_plain_record_assign(recv, key, value);
 }
 
 void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
@@ -21740,6 +21931,10 @@ _Static_assert(sizeof(void *) != 8 || (sizeof(ScrWeakEntry) == 64 && offsetof(Sc
 
 struct ScrWeakMap {
   size_t rc; ScrWeakEntry *entries; bool is_set;
+  /* How many walks of `entries` are in progress (scr_weak_map_trace): while
+   * it is not zero the list belongs to the walk (see scr_weak_remove). On
+   * 64-bit targets it fills what was padding. */
+  uint32_t walks;
   /* The WeakMap or WeakSet inside the Node island that holds this
    * collection's entries keyed by island objects (+1; NULL until the first
    * such entry, so always NULL in a program without islands):
@@ -21760,6 +21955,12 @@ struct ScrWeakMap {
 #define SCR_WEAK_HELD UINT32_C(0x80000000)
 /* ...and has not decided yet that the entry is alive. */
 #define SCR_WEAK_PENDING UINT32_C(0x20000000)
+/* The entry ended while its collection's list was being walked: it is out
+ * of both indexes and waits in the list for the collection's free
+ * (scr_weak_remove). A hold of scr_weak_promise_cells keeps a count in its
+ * mark only while scr_weak_judge runs, which ends nothing until its counts
+ * are back at zero, so the bit is free there too. */
+#define SCR_WEAK_ENDED UINT32_C(0x08000000)
 /* Weak observers borrow key identities. Values are traced strong edges of
  * their collection; an entry whose value keeps its own key alive is ended by
  * scr_weak_judge ("entries whose value keeps their key alive").
@@ -21926,24 +22127,63 @@ static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
   if (entry->next) entry->next->prev = entry->prev;
   if (entry->prev) entry->prev->next = entry->next;
   else owner->entries = entry->next;
-  scr_weak_unlink(entry);
+  /* An entry that ended under a walk left the indexes then, and the walk
+   * gave up the collection's count of its value. */
+  bool ended = (entry->mark & SCR_WEAK_ENDED) != 0;
+  if (!ended) scr_weak_unlink(entry);
   ScrDyn *value = entry->value;
   free(entry);
   /* Unlink before release: releasing a value can dispose another key. */
-  if (!collected) scr_dyn_release(value);
+  if (!collected && !ended) scr_dyn_release(value);
 }
 
+/* Ends an entry: its key died, or the program deleted it.
+ *
+ * INVARIANT: while a walk of a collection's entries is in progress
+ * (`walks`, scr_weak_map_trace), the list belongs to the walk. No entry
+ * leaves the list or is freed, and no value of the list is released, by
+ * anything but the walk and the collection's free that follows it.
+ *
+ * The walk that matters is the collector's generic destroy
+ * (scr_xg_destroy, the cross-generation drain of a restricted pass, which
+ * frees a collection older than the garbage that held it): it traces the
+ * collection with a visitor that releases each value, then calls the
+ * collection's free. Releasing a value can free any key (the value of an
+ * entry may hold the last reference to that entry's own key, or to the key
+ * of an entry the walk has passed or has yet to reach, in this collection
+ * or in one being walked further up the stack), and a freed key reports
+ * here through the dispose hook. Removing the entry at that moment would
+ * free it under the walk's cursor and release a value the walk has already
+ * released, or will. So the entry only leaves the two indexes, which must
+ * not keep an address that is about to be handed out again; it stays in
+ * the list with its value, the walk gives up the value's count when it
+ * gets there (or already has), and scr_weak_map_gcfree frees the entry.
+ * Only a visitor that releases what it visits can end an entry during a
+ * walk (the collector's analysis and scr_weak_judge free nothing and run
+ * no program code), so a walk that ended entries is always followed by
+ * the collection's free. */
 static void scr_weak_remove(ScrWeakEntry *entry) {
-  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(entry->owner)) == SCR_CYC_DOOMED);
+  ScrWeakMap *owner = entry->owner;
+  if (owner->walks) {
+    scr_weak_unlink(entry);
+    entry->mark |= SCR_WEAK_ENDED;
+    return;
+  }
+  scr_weak_remove_impl(entry, scr_cyc_color(scr_cyc_hdr(owner)) == SCR_CYC_DOOMED);
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
+  ScrWeakMap *map = ptr;
+  /* The list is the walk's until it returns (scr_weak_remove): a visitor
+   * that releases the values can free keys of this very list. */
+  map->walks++;
   /* A value whose count the analysis took is not this collection's child
    * while the analysis runs: its walks must see the same children each
    * time they trace the collection, whatever was decided in between. */
-  for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
+  for (ScrWeakEntry *entry = map->entries; entry; entry = entry->next)
     if (!(entry->mark & SCR_WEAK_HELD)) visit(entry->value, ctx);
-  if (((ScrWeakMap *)ptr)->island) visit(((ScrWeakMap *)ptr)->island, ctx);
+  if (map->island) visit(map->island, ctx);
+  map->walks--;
 }
 
 static void scr_weak_map_gcfree(void *ptr) {
@@ -22239,6 +22479,52 @@ static inline bool scr_weak_black(void *obj) {
   return scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_BLACK;
 }
 
+/* The emitted types that are traced only for scr_weak_judge (the compiler's
+ * computeCyclic: a weak-collection key type, or a type that reaches one,
+ * that is on no cycle of counted references). The collector can free
+ * nothing through them, so their descriptors name scr_cyc_no_children and
+ * their objects are SCR_CYC_ACYCLIC: no release nominates one and no pass
+ * walks into one. The analysis must still follow what they hold, so the
+ * program object lists each such descriptor with its trace function and
+ * defines scr_weak_traces, overriding this weak, empty default (as it
+ * overrides scr_stdout_buffering, scr_console.c). The table's layout is in
+ * scr_json.h. */
+__attribute__((weak)) const ScrWeakTraces scr_weak_traces = {0, NULL};
+/* scr_weak_traces by registry id, filled as one run of the analysis meets
+ * the ids (NULL: not looked up yet) and freed at its end, so a thread that
+ * exits leaves none. */
+static SCR_TL ScrTraceFn *scr_weak_trace_of;
+static SCR_TL uint32_t scr_weak_trace_ids;
+
+/* The trace the analysis follows for `type` (the registry's entry of an
+ * object's header): the one scr_weak_traces lists for it, or its own. A
+ * descriptor gets its id on its first allocation and keeps it, so the
+ * answer for an id never changes within a run. Every type is asked, not
+ * only the ones whose own trace is scr_cyc_no_children: naming that
+ * function here would move it in the symbol table of every executable. */
+static ScrTraceFn scr_weak_trace_lookup(const ScrCycType *type) {
+  uint32_t id = type->id;
+  if (id >= scr_weak_trace_ids) {
+    uint32_t ids = id + 64 - id % 64;
+    ScrTraceFn *grown = realloc(scr_weak_trace_of, ids * sizeof *grown);
+    if (!grown) scr_json_oom();
+    memset(grown + scr_weak_trace_ids, 0, (ids - scr_weak_trace_ids) * sizeof *grown);
+    scr_weak_trace_of = grown;
+    scr_weak_trace_ids = ids;
+  }
+  ScrTraceFn trace = scr_weak_trace_of[id];
+  if (trace) return trace;
+  trace = type->trace;
+  for (uint64_t i = 0; i < scr_weak_traces.count; i++) {
+    const ScrWeakTraceEntry *entry = &scr_weak_traces.entries[i];
+    if (__atomic_load_n(&entry->type->id, __ATOMIC_ACQUIRE) == id) {
+      trace = entry->trace;
+      break;
+    }
+  }
+  return scr_weak_trace_of[id] = trace;
+}
+
 /* The references the walk follows out of `obj`: the ones the collector
  * traces, and the promise of a boxed promise. The collector leaves that
  * edge alone (scr_dyn_trace_v: the box releases its promise itself), but a
@@ -22248,7 +22534,9 @@ static inline bool scr_weak_black(void *obj) {
  * The box holds one count of its promise for as long as it is a box, so
  * every walk of the analysis sees the same edge. */
 static inline void scr_weak_trace(void *obj, const ScrCycType *type, ScrTraceVisit visit) {
-  type->trace(obj, visit, NULL);
+  /* A type traced only for this analysis has its trace in scr_weak_traces. */
+  ScrTraceFn trace = scr_weak_traces.count ? scr_weak_trace_lookup(type) : type->trace;
+  trace(obj, visit, NULL);
   if (type->kind == SCR_CYC_KIND_DYN && ((ScrDyn *)obj)->kind == SCR_DYN_PROMISE)
     visit(((ScrDyn *)obj)->v.promise, NULL);
 }
@@ -22499,6 +22787,9 @@ static size_t scr_weak_judge(ScrWeakVec *pend, size_t room, size_t pursuit, size
   }
   scr_weak_vec_free(&scr_weak_grayed);
   scr_weak_vec_free(&scr_weak_work);
+  free(scr_weak_trace_of);
+  scr_weak_trace_of = NULL;
+  scr_weak_trace_ids = 0;
   /* Unlink before release: releasing a value can dispose another key, and
    * with it entries of this list. */
   for (size_t i = 0; i < dead.n; i++) {
@@ -24283,4 +24574,43 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void) {
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
   return scr_async_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
          key->v.symbol.value == scr_async_iterator_symbol->v.symbol.value;
+}
+
+/* Whether native record `rec` answers reflection from its declared fields
+ * alone: its prototype is Object.prototype and its own keys are its present
+ * fields in its shape's order, with no symbol-keyed member. False when the
+ * record kept a source (or is a record view), when it is a copy linked to a
+ * wider source, and when a live capsule of it holds anything of its own: a
+ * view the program may have given a prototype or a member, or symbol-keyed
+ * properties. Those live in the capsule and are found again for as long as
+ * it lives, because boxing the record answers that capsule
+ * (scr_dyn_typed_ref_new). A false answer only sends the caller to the
+ * answer reflection gives. Three table probes by the record's address, each
+ * skipped while its table is empty; nothing is read from the record.
+ *
+ * Only programs that ask an own-key question about a typed record reference
+ * this (own-key-lists.ts), and the linker drops it from every other
+ * program, whose bytes it must not move. The compiler lays this unit's
+ * tables out in the order its functions first name them, taking the
+ * exported functions first, in source order, and the static ones after. So
+ * the probes sit in a static function that the unit's last exported
+ * function alone calls: every table is already placed when it is compiled,
+ * and the layout of the unit is what it was without the two. */
+static bool scr_record_reflects_static_probe(const void *rec, bool may_link) {
+  if (scr_record_source_count && scr_record_source_slot(rec) != NULL) return false;
+  if (may_link && scr_record_link_count && scr_record_link_find(rec) != NULL) return false;
+  if (!scr_typed_ref_count) return true;
+  size_t mask = scr_typed_ref_capacity - 1;
+  for (size_t slot = scr_typed_ref_bucket((void *)rec); scr_typed_ref_slots[slot];
+       slot = (slot + 1) & mask) {
+    const ScrDyn *capsule = scr_typed_ref_slots[slot];
+    if (capsule->v.typed_ref.ptr == rec && !scr_typed_ref_plain(capsule)) return false;
+  }
+  return true;
+}
+
+/* `may_link` is false for a record of a type the program narrows nothing
+ * into: such a record is never a linked copy, and that probe is skipped. */
+bool scr_record_reflects_static(const void *rec, bool may_link) {
+  return scr_record_reflects_static_probe(rec, may_link);
 }

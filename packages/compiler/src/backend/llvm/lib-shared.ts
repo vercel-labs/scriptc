@@ -883,6 +883,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.circular": "scr_insp_circular",
   // Undeclared source properties kept beside a checked record (scr_json.c).
   "record.sourceHas": "scr_record_source_has",
+  "record.reflectsStatic": "scr_record_reflects_static",
   "record.sourceGet": "scr_record_source_get",
   "record.sourceHasKey": "scr_record_source_has_key",
   // scr_record_source_delete.c, a gated unit.
@@ -2001,7 +2002,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.nameClassPrototype": "scr_dyn_name_class_prototype",
   "dyn.objCreateWithProperties": "scr_dyn_obj_create_with_properties",
   "dyn.getPrototype": "scr_dyn_get_prototype",
-  "dyn.getPrototypeForIdentity": "scr_dyn_get_prototype_for_identity",
+  "dyn.classTestPrototype": "scr_dyn_class_test_prototype",
   "dyn.setPrototype": "scr_dyn_set_prototype",
   "dyn.getOwnPropertyNames": "scr_dyn_get_own_property_names",
   "dyn.ownKeys": "scr_dyn_own_keys",

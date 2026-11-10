@@ -77,6 +77,7 @@ import {
   lowerRecordMemberDelete,
 } from "./expressions/erased-delete.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
+import { conditionRunsNothing, constantCondition } from "./constant-conditions.js";
 import {
   builtinPolyfillGuard,
   isBuiltinPolyfillEarlyExit,
@@ -101,6 +102,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import {
   PROCESS_STREAM_VALUE_MEMBERS,
@@ -252,6 +254,7 @@ import {
 } from "./lower-namespaces.js";
 import { fenceReadonlyExpandoWrite } from "./lower-expando.js";
 import { lowerFunduleMemberDecl } from "./lower-fundule.js";
+import { lowerOwnKeyListScope } from "./own-key-lists.js";
 import {
   type ForOfIterProjection,
   lowerForOfArrayIter,
@@ -906,6 +909,16 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
       const stmt = stmts[i]!;
       entry.index = i;
       if (unreachable && skipsWhenUnreachable(stmt)) continue;
+      // A key list of a typed record that the statements after it only
+      // count and compare with names takes those statements with it
+      // (own-key-lists.ts).
+      if (inFunction && ts.isVariableStatement(stmt)) {
+        const ownKeyList = lowerOwnKeyListScope(lowerer, stmts, i);
+        if (ownKeyList !== null) {
+          for (const lowered of ownKeyList) out.push(lowered);
+          break;
+        }
+      }
       if (inFunction && isAbruptStatement(stmt)) unreachable = true;
       // A guard that always leaves in front of a polyfill of a built-in
       // member (`if (Array.prototype.flat) return;`).
@@ -2192,15 +2205,29 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // A global-detection condition (static-typeof.ts) folds; its untaken
     // arm is code Node never runs and does not lower, unless it declares a
     // hoisted binding.
-    const decided = polyfill?.value ?? staticCondition(lowerer, test);
+    const detected = polyfill?.value ?? staticCondition(lowerer, test);
+    // Nor does the untaken arm of a constant condition
+    // (constant-conditions.ts): the statement is its taken arm, after the
+    // test when the test can throw (a `const` read before its declaration).
+    const constant = detected === null ? constantCondition(lowerer, test) : null;
+    const decided = detected ?? constant;
     if (decided !== null) {
       const taken = decided ? stmt.thenStatement : stmt.elseStatement;
       const untaken = decided ? stmt.elseStatement : stmt.thenStatement;
       if (untaken === undefined || !declaresHoistedBinding(untaken)) {
         const arm = taken === undefined ? [] : lowerer.lowerScopedBlock(taken);
-        const folded: IrStmt = decided
-          ? { kind: "if", cond, then: arm, else_: null, loc: locOf(stmt) }
-          : { kind: "if", cond, then: [], else_: arm, loc: locOf(stmt) };
+        const folded: IrStmt =
+          constant !== null
+            ? {
+                kind: "block",
+                body: conditionRunsNothing(lowerer, test, cond)
+                  ? arm
+                  : [{ kind: "exprStmt", expr: cond, loc: locOf(test) }, ...arm],
+                loc: locOf(stmt),
+              }
+            : decided
+              ? { kind: "if", cond, then: arm, else_: null, loc: locOf(stmt) }
+              : { kind: "if", cond, then: [], else_: arm, loc: locOf(stmt) };
         return leading ? { kind: "block", body: [leading, folded], loc: locOf(stmt) } : folded;
       }
     }
@@ -8836,16 +8863,38 @@ function declaratorLeadingText(decl: ts.VariableDeclaration): string | null {
 }
 
 export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  return (
-    !!statement &&
-    ts.sourceTextRangeMatches(
-      ts.getSourceFileOfNode(decl),
-      statement.pos,
-      ts.tokenStartOfNode(decl),
-      /@type\b/,
-      ts.LEADING_SPAN,
-    )
+  const list = decl.parent;
+  const statement = list?.parent;
+  if (!statement) return false;
+  const source = ts.getSourceFileOfNode(decl);
+  // An earlier declarator's cast of `void <literal>` (the spelling the
+  // file-system shadow serves for `var v = void 0`, js-void-initializers.ts)
+  // types that initializer: its comment is not an annotation of the
+  // declarators after it.
+  let from = statement.pos;
+  if (ts.isVariableDeclarationList(list) && list.declarations.nodes[0] !== decl) {
+    for (const earlier of list.declarations.nodes) {
+      if (earlier === decl) break;
+      if (!isVoidLiteralCast(earlier.initializer)) continue;
+      if (
+        ts.sourceTextRangeMatches(
+          source,
+          from,
+          ts.tokenStartOfNode(earlier),
+          /@type\b/,
+          ts.LEADING_SPAN,
+        )
+      )
+        return true;
+      from = earlier.end;
+    }
+  }
+  return ts.sourceTextRangeMatches(
+    source,
+    from,
+    ts.tokenStartOfNode(decl),
+    /@type\b/,
+    ts.LEADING_SPAN,
   );
 }
 

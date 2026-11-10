@@ -49,10 +49,13 @@ import { writeTextParts } from "../text-parts.js";
 
 import {
   NativeCodegenError,
+  nativeHelperFailureMessage,
   nativePartitionPaths,
+  parseJsonObject,
   validateNativeCodegenVersion as validateHelperVersion,
   type NativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeHelperFailure,
 } from "./native-codegen-core.js";
 export {
   NATIVE_CODEGEN_PROTOCOL_VERSION,
@@ -139,73 +142,6 @@ export async function writeLlvmSource(
   await writeTextParts(path, llvm, mode);
 }
 
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The error `execFile` rejects with when the helper does not exit zero. */
-interface HelperFailure {
-  message: string;
-  code?: number | string;
-  signal?: string | null;
-  stdout?: string;
-  stderr?: string;
-}
-
-/** How the child ended. A helper killed by a signal prints nothing at all, so
- * the signal is the only description of the failure it leaves behind. */
-function helperEnding(failure: HelperFailure): string {
-  if (typeof failure.code === "number") return `exit status ${failure.code}`;
-  if (typeof failure.signal === "string" && failure.signal !== "")
-    return `signal ${failure.signal}`;
-  return "";
-}
-
-/** The command line `execFile` names, without the output it appends after it. */
-function helperCommand(failure: HelperFailure): string {
-  const newline = failure.message.indexOf("\n");
-  return newline === -1 ? failure.message : failure.message.slice(0, newline);
-}
-
-/** How much of the helper's own output a failure message carries. */
-const MAX_HELPER_FAILURE_OUTPUT = 2000;
-
-function helperFailureMessage(failure: HelperFailure): {
-  code?: string;
-  message: string;
-} {
-  const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-  const parsed = parseJsonObject(stderr.trim());
-  if (typeof parsed?.["message"] === "string") {
-    return {
-      ...(typeof parsed["code"] === "string" ? { code: parsed["code"] } : {}),
-      message: parsed["message"],
-    };
-  }
-  // The helper did not report one of its structured diagnostics, so the child's
-  // exit status, signal and output are all the evidence there is: a loader,
-  // allocation or abort message names a cause that the command line alone does
-  // not. The diagnostic goes to stderr; stdout only carries a profile report,
-  // which a failing helper may still have written before it ended.
-  const printed = (
-    stderr.trim() !== "" ? stderr : typeof failure.stdout === "string" ? failure.stdout : ""
-  ).trim();
-  const ending = helperEnding(failure);
-  const status = ending === "" ? "" : ` (${ending})`;
-  const output =
-    printed === ""
-      ? ""
-      : `: ${printed.slice(0, MAX_HELPER_FAILURE_OUTPUT)}${printed.length > MAX_HELPER_FAILURE_OUTPUT ? "…" : ""}`;
-  return { message: `${helperCommand(failure)}${status}${output}` };
-}
-
 async function invoke(
   binaryPath: string,
   args: string[],
@@ -217,7 +153,7 @@ async function invoke(
       windowsHide: true,
     });
   } catch (error) {
-    const parsed = helperFailureMessage(error as HelperFailure);
+    const parsed = nativeHelperFailureMessage(error as NativeHelperFailure);
     throw new NativeCodegenError(
       "SC3004",
       `LLVM native helper failed${parsed.code === undefined ? "" : ` (${parsed.code})`}: ${parsed.message}`,

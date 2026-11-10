@@ -853,7 +853,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
-  "dyn.getPrototypeForIdentity",
+  "dyn.classTestPrototype",
   "dyn.setPrototype",
   // ES2025 Set compositions run the set-like protocol: reading and calling
   // `size`/`has`/`keys` can throw, and so can a user `has` or iterator.

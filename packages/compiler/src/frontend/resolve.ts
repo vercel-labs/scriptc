@@ -1,7 +1,6 @@
 /* scriptc's OWN module resolver — the bounded reimplementation of the three
- * ts.resolve* entry points the program lifecycle leans on, for the TS7 world
- * (typescript@7.0.2 ships no client-side resolution API at all). Pure
- * strings and node:fs — no AST, checker, or enum objects from either
+ * ts.resolve* entry points the program lifecycle leans on, for the TS7 world.
+ * Pure strings and node:fs — no AST, checker, or enum objects from either
  * TypeScript world cross this module, so both lanes may share it.
  *
  * The contract is PARITY with typescript@5.9.3's answers under scriptc's
@@ -16,6 +15,7 @@
  * and these tables are wrong — that is what the suite is for. */
 
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { compilerOwnedFileName } from "./dts-paths.js";
 import {
   isNpmStaticPackage,
   npmStaticActive,
@@ -1255,4 +1255,15 @@ export function clearResolveCaches(): void {
  * isExternalLibraryImport test 5.9.3 answers on resolutions). */
 export function isNodeModulesPath(path: string): boolean {
   return isAbsolute(path) && normalizeResolvedPath(path).split("/").includes("node_modules");
+}
+
+/** True when `path` is an installed package's file: under a node_modules
+ * directory and not a file scriptc itself ships. The shipped declarations
+ * (the ambient files and the node-fallback modules) and the package shims
+ * are compiler-owned program code wherever scriptc is installed, so an
+ * install under a project's node_modules must not make them read as a
+ * package's code (program.ts's preflight walk, decl-origin.ts's package
+ * attribution, the npm scans). */
+export function isInstalledPackagePath(path: string): boolean {
+  return isNodeModulesPath(path) && compilerOwnedFileName(path) === null;
 }

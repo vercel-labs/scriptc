@@ -19,6 +19,7 @@ import {
   RECORD_KEPT_GATE,
   RECORD_SOURCES_GATE,
   WEAK_KEYS_GATE,
+  type WeakTrace,
 } from "./alloc.js";
 import { youngNurseryRequested } from "../young-nursery.js";
 import { llvmBytes as llBytes, wtf8Bytes } from "../literals.js";
@@ -140,7 +141,7 @@ import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
 import { versionUnionArmLoops } from "../../ir/union-arm-loops.js";
-import { unitSafeFunctions } from "./string-unit-versions.js";
+import { unitSafeFunctions, type UnitSafeFunctions } from "./string-unit-versions.js";
 import { stringScanInline } from "./string-reads.js";
 import {
   findInt32Abis,
@@ -459,6 +460,7 @@ import {
   elemAccess,
   boxNewCall,
   boxReleaseSym,
+  computeCyclic,
   computeTraced,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
@@ -520,6 +522,7 @@ import {
   fieldAliasMetadata,
   isStackUnionSource,
 } from "./receivers.js";
+import { emitClassMembership } from "./narrow-guards.js";
 import { findLoopCallees } from "./loop-callees.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
@@ -2057,6 +2060,9 @@ export class LlEmitter {
   readonly recordCloneShapes = new Set<string>();
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** The types traced only for the weak analysis whose trace visits
+   * something (ShapeHost.weakOnly): the entries of scr_weak_traces. */
+  readonly weakTraces: WeakTrace[] = [];
   /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
    * zero-initialized ScrJsIc per site (scr_js.h). */
   jsIcSiteCount = 0;
@@ -2829,6 +2835,12 @@ export class LlEmitter {
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
     const traced = computeTraced(mod, dynamicStores, cycleMutability);
+    // The shapes the collector must nominate and walk when weak-collection
+    // keys give more of them the header (ShapeHost.weakOnly). A library
+    // keeps every traced type the collector's: scr_weak_traces is the
+    // executable's.
+    const cyclic =
+      mod.lib === undefined ? computeCyclic(mod, dynamicStores, cycleMutability) : null;
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     // A shape union's value is whichever record it holds, and the collector
@@ -2885,6 +2897,16 @@ export class LlEmitter {
       cycleBufOffset: this.cycleBufOffset,
       tracedShapes: this.tracedShapes,
       tracedUnions: this.tracedUnions,
+      ...(cyclic !== null
+        ? {
+            weakOnly: {
+              cyclic,
+              trace: (type: string, trace: string) => {
+                this.weakTraces.push({ type, trace });
+              },
+            },
+          }
+        : {}),
       nullableUnions: this.nullableUnions,
       inlineUnions: this.inlineUnions,
       unionNoneRef: () => this.unionNoneRef(),
@@ -2931,6 +2953,9 @@ export class LlEmitter {
       checkedCollectionNew: (type) => checkedCollectionNewCall(this, type),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
+      // A library's archive carries a fixed runtime selection without the
+      // adoption unit (libraryArchiveFeatures): its conversions keep the copy.
+      declAdopt: () => this.runtimeFeatures.declAdopt && this.mod.lib === undefined,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",
       classRootOf: (name) => this.classMeta.get(name)?.root.def.name,
@@ -2940,6 +2965,16 @@ export class LlEmitter {
         return meta !== undefined && programLifetimeClass(this.shapeHost, meta);
       },
       classSubtypes: (name) => this.classSubtypes(name),
+      classHolders: (name) => this.classHolders(name),
+      classMembership: (B, object, staticClassName, className) =>
+        emitClassMembership(
+          this,
+          object,
+          staticClassName,
+          className,
+          `a ${staticClassName} capsule holds a ${className}`,
+          B,
+        ),
       classValueSubtypes: (name) => {
         // A classval may name a class with no lowering at all: a JS
         // instance field initializer's per-evaluation class expression
@@ -5745,6 +5780,35 @@ export class LlEmitter {
       .map((meta) => meta.def.name);
   }
 
+  private readonly classHoldersByName = new Map<string, readonly string[]>();
+
+  /** The classes a value that is a `name` can be statically typed as
+   * without being typed as `name` or one of its subtypes: every class
+   * outside `name`'s membership whose own membership shares a class with
+   * it (the ancestors, and the families along them), nearest first. A
+   * capsule boxed at one of them may hold an instance of `name`
+   * (dyn.ts typedRefBranch). Classes rooted at Error are left out: their
+   * instances become dynamic values as errors, never as capsules. */
+  private classHolders(name: string): readonly string[] {
+    const known = this.classHoldersByName.get(name);
+    if (known !== undefined) return known;
+    const own = classMembershipIntervals(this.classMeta, this.classMetaOf(name).def.name);
+    const holders = [...this.classMeta.values()]
+      .filter(
+        (meta) =>
+          meta.root.def.name !== "%Error" &&
+          isDynTypedRefType({ kind: "object", className: meta.def.name }) &&
+          !own.some((range) => range.pre <= meta.pre && meta.pre <= range.post) &&
+          classMembershipIntervals(this.classMeta, meta.def.name).some((held) =>
+            own.some((range) => held.pre <= range.post && range.pre <= held.post),
+          ),
+      )
+      .sort((a, b) => b.pre - a.pre)
+      .map((meta) => meta.def.name);
+    this.classHoldersByName.set(name, holders);
+    return holders;
+  }
+
   classMetaOf(className: string): LlClassMeta {
     const meta = this.classMeta.get(className);
     if (!meta) throw new InternalCompilerError(`llvm emitter bug: unknown class ${className}`);
@@ -5856,9 +5920,9 @@ export class LlEmitter {
   }
 
   /** The dynamic class's preorder number (borrowed object; the static class
-   * names the struct spelling and where the number is, classPreLines). */
-  loadVtPre(objName: string, staticClassName: string): string {
-    const B = this.B;
+   * names the struct spelling and where the number is, classPreLines),
+   * loaded in `B`: the function body being emitted, or a helper's own. */
+  loadVtPre(objName: string, staticClassName: string, B: BlockBuilder = this.B): string {
     const pre = B.tmp();
     const meta = this.classMetaOf(staticClassName);
     for (const line of classPreLines(
@@ -6409,10 +6473,10 @@ export class LlEmitter {
     );
   }
 
-  private unitSafe: ReadonlySet<string> | null | undefined;
+  private unitSafe: UnitSafeFunctions | null | undefined;
   /** The functions a loop over a string's UTF-16 units may call, or null
    * where emitted reads do not use the runtime's scan receiver. */
-  private unitSafeFunctions(): ReadonlySet<string> | null {
+  private unitSafeFunctions(): UnitSafeFunctions | null {
     if (this.unitSafe === undefined)
       this.unitSafe = stringScanInline(this) ? unitSafeFunctions(this.mod) : null;
     return this.unitSafe;
@@ -9976,6 +10040,7 @@ for (const op of [
   "dyn.recordNameTable",
   "dyn.jsonParseHelper",
   "dyn.dynCheckHelper",
+  "dyn.dynCheckAdoptingHelper",
   "dyn.toDynHelper",
   "dyn.promiseDynAdapterHelper",
   "dyn.dynFuncThunkHelper",

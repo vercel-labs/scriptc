@@ -29,7 +29,7 @@ import {
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import { isCheckedJsSourceFile, isJsSourceFile } from "../program.js";
-import { isNodeModulesPath } from "../resolve.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import type { DynamicSlot, Lowerer } from "./lowerer.js";
 
 export interface HotDynamicFunction {
@@ -320,7 +320,7 @@ export function scanDynamicTier(lowerer: Lowerer, module: IrModule): DynamicTier
     // `%caught.*` helpers test caught values, and `%init.*` is a module's top
     // level: none is a function to name.
     if (fn.tier !== "dynamic" || GENERATED.test(fn.name)) continue;
-    if (isNodeModulesPath(fn.loc.file)) {
+    if (isInstalledPackagePath(fn.loc.file)) {
       const name = packageOf(fn.loc.file);
       packages.set(name, (packages.get(name) ?? 0) + 1);
       continue;

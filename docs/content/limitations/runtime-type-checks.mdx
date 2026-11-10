@@ -53,6 +53,11 @@ Any other value throws a `TypeError`, such as `expected null | undefined at $, g
 Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.
 `SC6004` reports calls that pass such an instance to a function that casts it.
 
+A value typed by an interface that extends `Error` is an error object or a plain object that has the members.
+Handing it to a slot typed by an `Error` class (a parameter, a binding, a return, a member or an element) checks that it is an error and throws a `TypeError` for the plain object, where Node.js reads the members.
+`SC6004` reports those sites too.
+Inside a generic function or class it reports a value whose type is a type parameter that a call or a `new` expression binds to such an interface, whether the parameter's type is the type parameter itself or holds it, as in `list: T[]`.
+
 A Promise converted from `unknown` to a typed result validates its fulfilled value.
 A mismatch rejects with a `TypeError`.
 Rejection reasons and reference equality are preserved across conversions.

@@ -126,6 +126,7 @@ export interface EarlyExecutableNativeFeatures {
   dynCollections?: boolean;
   dynIntegrityQueries?: boolean;
   reflectProtoTarget?: boolean;
+  classTestPrototype?: boolean;
   recordSourceDelete?: boolean;
   recordViewFrozen?: boolean;
   genBind?: boolean;
@@ -133,6 +134,9 @@ export interface EarlyExecutableNativeFeatures {
   /** The kept-source read of a record-to-record conversion:
    * scr_record_source_get.c. Absent (false) otherwise. */
   recordSourceGet?: boolean;
+  /** A join of an array of strings: scr_arr_join_str.c. Absent (false)
+   * otherwise. */
+  arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;

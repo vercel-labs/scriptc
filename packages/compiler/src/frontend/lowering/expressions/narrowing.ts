@@ -19,6 +19,7 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   VOID,
+  adoptsAtTypedSlot,
   arrayOf,
   canDynCheckTo,
   isDynTypedRefType,
@@ -32,11 +33,13 @@ import { isJsSourceFile, isNodeTypesPath, locOf } from "../../program.js";
 import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
+import { conditionRunsNothing, constantCondition } from "../constant-conditions.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
 import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import {
   isOptionalProcessStreamProperty,
+  isTerminalStreamMember,
   isOptionalProcessVersionsRead,
 } from "../builtins/process.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
@@ -144,6 +147,15 @@ export function lowerTernary(
     // effects, so dropping the condition read loses nothing.
     if (cond.kind === "boolLit") {
       return lowerer.lowerExprExpecting(cond.value ? expr.whenTrue : expr.whenFalse, expected);
+    }
+    // A constant condition that runs nothing (constant-conditions.ts)
+    // selects its arm the same way: the expression is the selected arm, as
+    // if that arm stood alone. One that can throw (a `const` read before
+    // its declaration) keeps both arms: a sequence that ran the condition
+    // first would be a temporary the two-armed form does not have.
+    const constant = constantCondition(lowerer, expr.condition);
+    if (constant !== null && conditionRunsNothing(lowerer, expr.condition, cond)) {
+      return lowerer.lowerExprExpecting(constant ? expr.whenTrue : expr.whenFalse, expected);
     }
     if (expected) {
       // Construct fresh literals in their actual destination. Joining
@@ -755,6 +767,17 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       lowerer.isStdlibMember(node)
     )
       return expr;
+    // The same members in TypeScript, read off a stream value that is
+    // dynamic (`process.stdin?.isTTY`, `const input = process.stdin;
+    // input.isTTY`): the declared boolean or number is the value on a
+    // terminal, and off one the property does not exist. The read keeps
+    // the undefined arm and validates the kind, as the plain read of a
+    // standard stream does (lowerProcessStreamProperty).
+    if (ts.isPropertyAccessExpression(node) && isTerminalStreamMember(lowerer, node)) {
+      const declared = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(node)));
+      if (declared && (declared.kind === "bool" || declared.kind === "f64"))
+        return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(declared));
+    }
     // The live value is authoritative even when checker flow calls it
     // never. Two flows reach here: a null-initialized JS field that later
     // receives an object, and a failed type predicate whose type is
@@ -1254,8 +1277,9 @@ function checkedStaleArm(
 
 /** V8's spelling of a callee in "is not a function": a string-literal
  * element key reads as a property name (`o["a"]` is `o.a`), other keys
- * keep their brackets, parentheses and type syntax disappear (`!`, `as`,
- * `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
+ * keep their brackets, a private name reads as a bracketed key
+ * (`this.#f` is `this[#f]`), parentheses and type syntax disappear (`!`,
+ * `as`, `satisfies`, `<T>` assertions), and a call result reads `f(...)`. */
 export function v8CalleeText(node: ts.Node): string {
   // Type syntax is type-only: the running JavaScript has no trace of it.
   if (
@@ -1277,7 +1301,9 @@ export function v8CalleeText(node: ts.Node): string {
       : `${object}[${ts.getTextOfNode(key)}]`;
   }
   if (ts.isPropertyAccessExpression(node) && !node.questionDotToken)
-    return `${v8CalleeText(node.expression)}.${node.name.text}`;
+    return ts.isPrivateIdentifier(node.name)
+      ? `${v8CalleeText(node.expression)}[${node.name.text}]`
+      : `${v8CalleeText(node.expression)}.${node.name.text}`;
   return ts.getTextOfNode(node);
 }
 
@@ -2441,6 +2467,48 @@ function checkedDynCast(
     return adoptingCast(lowerer, inner, target, locOf(expr), "dyn.adoptShared");
   }
   return { kind: "dynCheck", value: inner, type: target, loc: locOf(expr) };
+}
+
+/** The checked conversion of a dynamic value where a typed slot takes it
+ * without an assertion: an annotated binding, an argument, a stored field
+ * or element, a returned value. JavaScript keeps one object there, so the
+ * record or array built from a value another holder may still reference
+ * keeps one identity with it, as the assertion form does (adoptingCast):
+ * a write through either name reaches the other, and the typed value boxes
+ * back to the object it came from. A value nothing else can hold converts
+ * outright. The node stays a `dynCheck` (its `shared` flag asks the backend
+ * for the adoption), so every consumer that reads or rebuilds a checked
+ * conversion sees the node it always saw; one that rebuilds it without the
+ * flag keeps the copy. The flag is set only for a target the backend has a
+ * live capsule for and whose adoption loses nothing (adoptsAtTypedSlot):
+ * the flag links the adoption unit, so it stands on a conversion only where
+ * an adoption is emitted. A target that can hold a record without fields
+ * (the empty literal's arm of a union) keeps the copy: that record has no
+ * place for its source's properties, which the source's other names still
+ * read. */
+export function sharedDynConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  target: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const adopts = adoptsAtTypedSlot(
+    target,
+    (id) => lowerer.shapes.get(id),
+    (id) => lowerer.unions.get(id),
+  );
+  if (!adopts || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
+  return { kind: "dynCheck", value, shared: true, type: target, loc };
+}
+
+/** A dynamic value no other holder can reference when it converts: parsed
+ * text, a literal built in place, or a typed value boxed for the
+ * conversion (a capsule of a native value has nothing to adopt). */
+function unsharedDynValue(value: IrExpr): boolean {
+  if (value.kind === "libCall") return value.fn === "json.parse";
+  if (value.kind === "awaitExpr")
+    return value.value.kind === "libCall" && value.value.fn === "fetch.responseJson";
+  return value.kind === "dynFrom" || value.kind === "dynObjLit" || value.kind === "dynArrLit";
 }
 
 /** Whether `target` keeps undeclared keys in an overflow map, the one

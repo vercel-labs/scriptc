@@ -918,6 +918,20 @@ interface RuntimeFeatureRule {
 /** Gives every rule in the table one type. */
 const rule = (r: RuntimeFeatureRule): RuntimeFeatureRule => r;
 
+/** The live capsule an adoption boxes a value of type `type` as, for the
+ * rules that read what a module boxes: the backend builds it where it
+ * emits the adoption (a `dynCheck` with `shared`), so no `dynFrom` in the
+ * module stands for it. */
+function adoptionCapsule(type: IrType, loc: IrExpr["loc"]): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: { kind: "varRef", localId: "%adopted", type, loc },
+    liveRef: true,
+    type: { kind: "dyn" },
+    loc,
+  };
+}
+
 /** Whether the module holds a runtimeFence that stands for a deferred
  * diagnostic: the statement the backend throws through the reporter. A
  * library's fences keep the plain throw (emit-statements.ts), so a library
@@ -1800,12 +1814,15 @@ const RUNTIME_FEATURE_RULES = {
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
   handleProps: rule({ fns: ["handle.propsInstall", "handle.propsGrant"] }),
-  /** The declaration-typed boundary's adoption (scr_decl_adopt.c): its
-   * casts, and closures boxed in a boundary program, which adopt their
-   * arguments. */
+  /** Adoption (scr_decl_adopt.c): a dynamic object or array converted to a
+   * record or array becomes a live capsule of the converted value. Linked
+   * by the declaration-typed boundary's casts (and its boxed closures,
+   * which adopt their arguments) and by every checked conversion at a typed
+   * slot that shares its source. */
   declAdopt: rule({
     fns: ["dyn.declAdopt", "dyn.adoptShared", "dyn.adoptable"],
     initial: (mod) => mod.declBoundary === true,
+    expr: (node) => node.kind === "dynCheck" && node.shared === true,
   }),
   // Checked conversions into package-declared types name the declaration
   // in their TypeError (scr_type_origin.c).
@@ -1825,6 +1842,10 @@ const RUNTIME_FEATURE_RULES = {
   /** Reflect.getPrototypeOf's primitive-target check (scr_dyn_reflect_proto.c,
    * a unit of its own so scr_json.c keeps its layout). */
   reflectProtoTarget: rule({ fns: ["dyn.reflectGetPrototypeTarget"] }),
+  /** The prototype read of a class test's walk, `value instanceof C` of an
+   * untyped value (scr_dyn_class_test.c, a unit of its own so scr_json.c
+   * keeps its layout). */
+  classTestPrototype: rule({ fns: ["dyn.classTestPrototype"] }),
   /** `delete` of a key a record's type does not declare, removed from the
    * record's kept source (scr_record_source_delete.c, a unit of its own so
    * scr_json.c keeps its layout). */
@@ -2069,6 +2090,17 @@ const RUNTIME_FEATURE_RULES = {
    * (scr_record_source_get.c). A unit of its own so a program that only
    * casts records keeps its base runtime objects byte for byte. */
   recordSourceGet: rule({ fns: ["record.sourceGet", "record.sourceHasKey"] }),
+  /** `join` on an array whose element type is `string`: the backend calls
+   * the typed entry (scr_arr_join_str.c), which joins a hole-free string
+   * array in two passes and hands every other array to scr_arr_join. A unit
+   * of its own so a program that joins no string array links nothing of it. */
+  arrJoinStr: rule({
+    expr: (node, _tables) =>
+      node.kind === "arrIntrinsic" &&
+      node.method === "join" &&
+      node.receiver.type.kind === "array" &&
+      node.receiver.type.elem.kind === "string",
+  }),
   /** scr_url_legacy.c lowercases and normalizes hostnames with the regex
    * unit's libunicode, the WHATWG URL host parser runs UTS #46 through
    * scr_idna.c (which links with the regex unit), NODE_DEBUG matching in
@@ -2500,6 +2532,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     processExtras: false,
     qs: false,
     recordSourceGet: false,
+    arrJoinStr: false,
     regex: false,
     searchParams: false,
     urlIdna: false,
@@ -2530,6 +2563,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynCollections: false,
     dynIntegrityQueries: false,
     reflectProtoTarget: false,
+    classTestPrototype: false,
     recordSourceDelete: false,
     recordViewFrozen: false,
     dynBuffer: false,
@@ -2602,7 +2636,7 @@ function scanRuntimeFeatures(
       unions: new Map((mod.unions ?? []).map((u) => [u.id, u])),
       classes: new Map((mod.classes ?? []).map((c) => [c.name, c])),
     });
-  const expr = (node: IrExpr): boolean => {
+  const visit = (node: IrExpr): boolean => {
     for (let i = 0; i < scans.length; i++) scans[i]!.scan.expr(node);
     if (node.kind === "libCall") {
       const fn = node.fn;
@@ -2616,6 +2650,14 @@ function scanRuntimeFeatures(
         if (!features[name] && ruleOf(name).expr!(node, typeTables)) features[name] = true;
     }
     return keepGoing();
+  };
+  const expr = (node: IrExpr): boolean => {
+    if (!visit(node)) return false;
+    // A typed slot's adoption boxes the converted value as a live capsule
+    // the module holds no `dynFrom` for: the rules read it as one.
+    if (node.kind === "dynCheck" && node.shared === true)
+      return visit(adoptionCapsule(node.type, node.loc));
+    return true;
   };
   const type = (node: IrType): boolean => {
     for (const name of FEATURES_BY_TYPE.get(node.kind) ?? []) features[name] = true;

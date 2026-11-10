@@ -9,7 +9,7 @@
  * removing one changes nothing here. */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import ts from "typescript";
+import ts from "typescript5";
 import { expect, test } from "vitest";
 import { REQUIRED_LINK_FEATURES } from "../../packages/compiler/src/backend/native-link-info-core.js";
 

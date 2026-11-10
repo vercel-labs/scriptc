@@ -52,6 +52,7 @@ import {
   shapeKeyOrders,
   typeKey,
   canBoxFuncIntoDyn,
+  classJsName,
 } from "../../ir/ir.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -4269,10 +4270,13 @@ function directCallableInspect(lowerer: Lowerer, node: ts.Expression, loc: SrcLo
   if (cls) {
     if (cls.builtinError) {
       // Node's Error constructors are native functions, not classes.
-      return strLit(`[Function: ${cls.def.name.replace(/^%/, "")}]`, loc);
+      return strLit(`[Function: ${classJsName(cls.def)}]`, loc);
     }
-    const base = cls.base ? ` extends ${cls.base.def.name.replace(/^%/, "")}` : "";
-    return strLit(`[class ${cls.def.name}${base}]`, loc);
+    // The JavaScript names, as the class object prints them: a class
+    // declared inside a function has a scoped internal name.
+    const baseName = cls.base ? classJsName(cls.base.def) : "";
+    const base = baseName ? ` extends ${baseName}` : "";
+    return strLit(`[class ${classJsName(cls.def) || "(anonymous)"}${base}]`, loc);
   }
   const decl = sym.declarations[0];
   if (!decl) return null;

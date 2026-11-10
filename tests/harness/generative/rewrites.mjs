@@ -11,7 +11,7 @@
  * output (a stack trace that names a file) is not a valid test of scriptc;
  * the lane detects both and skips the variant.
  */
-import ts from "typescript";
+import ts from "typescript5";
 
 const K = ts.SyntaxKind;
 

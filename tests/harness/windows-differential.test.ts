@@ -51,7 +51,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";

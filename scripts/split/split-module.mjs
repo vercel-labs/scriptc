@@ -49,7 +49,7 @@ const flag = (name) => {
   return i >= 0 ? flags[i + 1] : undefined;
 };
 // --repo runs on another checkout (a temporary worktree); --tools names the
-// checkout whose node_modules supply typescript.
+// checkout whose node_modules supply typescript5.
 const repo = resolve(flag("--repo") ?? config.repo ?? process.cwd());
 // Every read and write stays inside the checkout, or for the manifest, the
 // config's directory (confine.mjs).
@@ -59,7 +59,7 @@ const configFiles = confine(dirname(resolve(configPath)));
 config.manifest = resolve(dirname(resolve(configPath)), flag("--manifest") ?? config.manifest);
 const toolsDir = resolve(flag("--tools") ?? config.repo ?? process.cwd());
 const require = createRequire(join(toolsDir, "package.json"));
-const ts = require("typescript");
+const ts = require("typescript5");
 const modulePath = join(repo, config.module);
 const moduleDir = dirname(modulePath);
 

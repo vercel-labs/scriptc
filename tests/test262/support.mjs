@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load, JSON_SCHEMA } from "js-yaml";
-import ts from "typescript";
+import ts from "typescript5";
 
 export const directory = fileURLToPath(new URL(".", import.meta.url));
 export const vendorRoot = join(directory, "vendor");

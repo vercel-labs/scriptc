@@ -8646,6 +8646,50 @@ export function findImplementationOn(
   return null;
 }
 
+/** The Object.prototype methods every class instance inherits. */
+const OBJECT_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
+  "toString",
+  "toLocaleString",
+  "valueOf",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+]);
+
+/** True when a built-in supplies `name` above `declarer`'s abstract
+ * re-declaration: Object.prototype for every class, or a member of the
+ * built-in class the chain extends (Array, Date, EventEmitter, ...). When
+ * no program class implements the method (findImplementationOn is null),
+ * the prototype chain still reaches that built-in's function, so a call
+ * does not throw. */
+export function builtinSuppliesMethod(
+  lowerer: Lowerer,
+  declarer: ClassInfo,
+  name: string,
+): boolean {
+  if (OBJECT_PROTOTYPE_METHODS.has(name)) return true;
+  const seen = new Set<ts.Node>();
+  for (let cls: ts.Node | undefined = declarer.decl ?? undefined; cls && !seen.has(cls);) {
+    seen.add(cls);
+    if (!ts.isClassLikeDeclaration(cls)) return false;
+    const base = cls.heritageClauses?.nodes.find(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )?.types.nodes[0];
+    if (!base) return false;
+    // The nearest declaration of `name` above `cls`: a built-in's, or a
+    // program class's abstract re-declaration, whose own base is next.
+    const prop = lowerer.checker.getPropertyOfType(lowerer.checker.getTypeAtLocation(base), name);
+    if (!prop) return false;
+    if (lowerer.isStdlibSymbol(prop)) return true;
+    cls = prop.declarations.find((d) => d.parent && ts.isClassLikeDeclaration(d.parent))?.parent;
+  }
+  return false;
+}
+
 /** True when `sub` is a STRICT descendant of `sup` in the class graph. */
 export function isSubclassOf(lowerer: Lowerer, sub: string, sup: string): boolean {
   if (sub === sup) return false;

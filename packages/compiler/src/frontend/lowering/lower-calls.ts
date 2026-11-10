@@ -280,6 +280,7 @@ import {
 } from "./lower-server.js";
 import {
   EMITTER_API_MEMBERS,
+  builtinSuppliesMethod,
   exactClassOfReceiver,
   exactInstanceClassOf,
   findGenericMethodOn,
@@ -2367,6 +2368,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           ? findImplementationOn(lowerer, nearest.declarer.base, memberName)
           : nearest;
       if (info && nearest && !found) {
+        if (builtinSuppliesMethod(lowerer, nearest.declarer, memberName))
+          refuseBuiltinBehindAbstract(lowerer, expr, memberName);
         return abstractMethodCall(
           lowerer,
           expr,
@@ -13099,6 +13102,8 @@ export function lowerObjectMethodCall(
       ? findImplementationOn(lowerer, found.declarer.base, method)
       : found;
   if (!target) {
+    if (builtinSuppliesMethod(lowerer, found.declarer, method))
+      refuseBuiltinBehindAbstract(lowerer, call, method);
     return abstractMethodCall(lowerer, call, access, found.sig.ret, lowerReceiver(), locOf(call));
   }
   if (target !== found && isClassCallback(lowerer, target.declarer, method)) {
@@ -13217,6 +13222,24 @@ function abstractMethodCall(
       loc,
     ),
     loc,
+  );
+}
+
+/** A direct call through an abstract re-declaration that no program class
+ * implements, of a method a built-in supplies above it (Object.prototype's
+ * `toString`, `Array.prototype.join` under `extends Array`). The prototype
+ * chain reaches the built-in's function, which the built-in call lowerings
+ * do not answer for a name the class declares: the call is refused rather
+ * than throwing a TypeError Node does not throw. */
+function refuseBuiltinBehindAbstract(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  method: string,
+): never {
+  return lowerer.unsupported(
+    "SC1090",
+    call,
+    `calls of the built-in method '${method}' through an abstract re-declaration that no class implements`,
   );
 }
 

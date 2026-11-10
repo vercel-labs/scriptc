@@ -48,6 +48,7 @@ import {
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
+  builtinSuppliesMethod,
   classValueRef,
   findGenericMethodOn,
   findGenericStaticOn,
@@ -7283,6 +7284,16 @@ export class ClassDynamicDispatch {
             });
           }
           if (method && !canConvertToDyn(method.type, getRecord, getUnion)) body.push(...fence());
+          else if (
+            !method &&
+            !INHERITED_OBJECT_METHODS.has(name) &&
+            builtinSuppliesMethod(lowerer, declared!.declarer, name)
+          )
+            // No program class implements it, but a built-in above the
+            // abstract re-declaration does (Date.prototype.getTime under
+            // `extends Date`): its function is not undefined, and this
+            // lookup has no value for it.
+            body.push(...fence());
           else
             body.push({
               kind: "return",
@@ -7788,6 +7799,16 @@ export class ClassDynamicDispatch {
       nearest?.sig.abstract === true && !lowerer.overrideBelow(info, method)
         ? findImplementationOn(lowerer, nearest.declarer.base, method)
         : null;
+    // No program class implements it, but a built-in above the abstract
+    // re-declaration does (Date.prototype.getTime under `extends Date`):
+    // the call reaches that function, which this dispatch does not lower.
+    if (
+      nearest?.sig.abstract === true &&
+      !inherited &&
+      !lowerer.overrideBelow(info, method) &&
+      builtinSuppliesMethod(lowerer, nearest.declarer, method)
+    )
+      return fence();
     const methodInfo = inherited ?? nearest;
     if (this.asyncFree && (methodInfo?.sig.gen || methodInfo?.sig.async)) {
       return [

@@ -20,6 +20,7 @@ import type {
   TypeFailureFamily,
   TypeFailureSlot,
 } from "../../diagnostics/diagnostic.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import * as ts from "../ts7/adapter.js";
 
 /** Families a checked-dynamic slot can hold (design §3.7). The others
@@ -155,7 +156,7 @@ export function typeFailureSlot(node: ts.Node): { slot: TypeFailureSlot; name: s
 function programTypeScript(node: ts.Node): boolean {
   const sf = ts.getSourceFileOfNode(node);
   const file = sf.fileName;
-  if (file.includes("/node_modules/")) return false;
+  if (isInstalledPackagePath(file)) return false;
   if (sf.isDeclarationFile) return false;
   return !/\.(?:[cm]?js|jsx)$/.test(file);
 }

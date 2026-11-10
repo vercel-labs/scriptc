@@ -752,6 +752,11 @@ jobs:
           target: wasm32-wasi
           helper: "false"
       - run: pnpm build
+      # The command phase builds Node island programs with the native compiler
+      # and runs them against Node; they load Node from a libnode pack, and
+      # fail rather than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode
+        if: matrix.phase == 'commands'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}

@@ -143,6 +143,7 @@ import {
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
@@ -1632,7 +1633,7 @@ export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
  * evaluates (ScrDiagnostic.moduleInit). */
 function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
-    if (!d.loc.file.includes("/node_modules/")) continue;
+    if (!isInstalledPackagePath(d.loc.file)) continue;
     // A fence without a source position belongs to synthesized code, such
     // as the global object's lookup (global-values.ts), which runs when the
     // program calls it, not when the module evaluates.
@@ -21779,7 +21780,7 @@ export class Lowerer {
 
   readonly isNpmFile = (sf: ts.SourceFile): boolean =>
     sf.isDeclarationFile &&
-    (sf.fileName.includes("/node_modules/") || workspacePackageOfPath(sf.fileName) !== null) &&
+    (isInstalledPackagePath(sf.fileName) || workspacePackageOfPath(sf.fileName) !== null) &&
     !this.isStdlibFile(sf) &&
     // A bundled copy's forwarder to a package shim types compiled code.
     !isBundledShimForwarder(sf.fileName);

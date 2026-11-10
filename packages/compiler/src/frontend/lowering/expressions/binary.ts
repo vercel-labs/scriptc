@@ -87,7 +87,7 @@ import {
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
-import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { throwTypeError } from "../primitive-throws.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
@@ -1800,6 +1800,24 @@ function lowerBigIntOperandOperator(
   return { kind: "dynCheck", value, type: BIGINT_T, loc };
 }
 
+/** The value a chained JavaScript assignment holds in a temporary: the RHS's
+ * own value, except that a unit-typed RHS (`null`, `undefined`) or a void
+ * expression becomes the checked-dynamic null/undefined. A local cannot hold
+ * a bare unit type, and the assignment still yields exactly what was
+ * written. */
+function heldAssignValue(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const raw = lowerer.lowerExpr(node);
+  if (raw.type.kind === "void")
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: raw, loc: raw.loc }],
+      result: dynUndefinedExpr(raw.loc),
+      type: DYN,
+      loc: raw.loc,
+    };
+  return isUnitType(raw.type) ? lowerer.coerceInto(node, raw, DYN) : raw;
+}
+
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
   fenceConsoleMutation(lowerer, expr);
   const loc = locOf(expr);
@@ -2163,7 +2181,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         const stmts: IrStmt[] = [];
         const overrides: { node: ts.Expression; value: IrExpr }[] = [];
         const hold = (node: ts.Expression, name: string): IrExpr => {
-          const value = lowerer.lowerExpr(node);
+          const value = heldAssignValue(lowerer, node);
           const local = lowerer.declareHiddenLocal(name, value.type);
           stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
           const held = varRef(local.id, value.type, value.loc);

@@ -91,7 +91,10 @@ function deferredProject(scriptc: unknown, env: [string, string | null][], url: 
       { kind: "strLit", value: "" },
     ],
   };
-  const mod = { functions: [{ body: [call] }], globals: [] } as unknown as IrModule;
+  const mod = {
+    functions: [{ body: [{ kind: "exprStmt", expr: call }] }],
+    globals: [],
+  } as unknown as IrModule;
   const probe: ProbeOutput = {
     results: [
       {
@@ -220,7 +223,10 @@ function sharingProject(
       { kind: "strLit", value: "" },
     ],
   }));
-  const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+  const mod = {
+    functions: [{ body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
+    globals: [],
+  } as unknown as IrModule;
   const record = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
   const probe: ProbeOutput = {
     results: [
@@ -340,7 +346,10 @@ describe("the effects of a file that modules share", () => {
       ],
     });
     const calls = [load(first), load(second)];
-    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const mod = {
+      functions: [{ body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
+      globals: [],
+    } as unknown as IrModule;
     const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
     const probe: ProbeOutput = {
       results: [
@@ -513,7 +522,10 @@ describe("the loads a snapshot was recorded after", () => {
         { kind: "strLit", value: "" },
       ],
     }));
-    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const mod = {
+      functions: [{ body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
+      globals: [],
+    } as unknown as IrModule;
     const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
     const distinct = [...paths.keys()];
     const probe: ProbeOutput = {
@@ -640,7 +652,10 @@ describe('the keys of a "lazy" load that read an input', () => {
         { kind: "strLit", value: "" },
       ],
     };
-    const mod = { functions: [{ body: [call] }], globals: [] } as unknown as IrModule;
+    const mod = {
+      functions: [{ body: [{ kind: "exprStmt", expr: call }] }],
+      globals: [],
+    } as unknown as IrModule;
     const host = "build-host-7c21";
     const probe: ProbeOutput = {
       results: [
@@ -715,7 +730,10 @@ describe("state an earlier load wrote", () => {
       ],
     });
     const calls = [load(ga), load(gb)];
-    const mod = { functions: [{ body: calls }], globals: [] } as unknown as IrModule;
+    const mod = {
+      functions: [{ body: calls.map((call) => ({ kind: "exprStmt", expr: call })) }],
+      globals: [],
+    } as unknown as IrModule;
     const secret = "sk-live-0123456789";
     const empty = { inputs: [], volatile: [], effects: [], mutations: [], env: [], tty: [] };
     const probe: ProbeOutput = {

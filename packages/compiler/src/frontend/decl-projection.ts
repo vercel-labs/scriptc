@@ -34,6 +34,7 @@
 import * as ts from "./ts7/adapter.js";
 import { withoutParenthesesNonNullAwait } from "./outer-expressions.js";
 import { declarationSelector, originAt } from "./lowering/decl-origin.js";
+import { isInstalledPackagePath } from "./resolve.js";
 
 /** Per user file, the origin (lowering/decl-origin.ts) of each boundary
  * cast in source order: the package declaration the cast's type comes
@@ -145,8 +146,11 @@ function isPackageDeclarationFile(sf: ts.SourceFile | undefined): boolean {
   const f = sf.fileName.split("\\").join("/");
   // The TypeScript standard library ships inside node_modules too.
   if (/(^|\/)lib(\.[\w.-]+)?\.d\.ts$/.test(f) || f.startsWith("bundled:")) return false;
+  // scriptc's shipped declarations are compiler-owned code wherever scriptc
+  // is installed; an install under node_modules does not make them a
+  // package's declarations.
+  if (!isInstalledPackagePath(sf.fileName)) return false;
   return (
-    f.includes("/node_modules/") &&
     !f.includes("/node_modules/@types/node/") &&
     !f.includes("/node_modules/typescript/") &&
     !f.includes("/node_modules/@typescript/")
@@ -229,7 +233,10 @@ function declaredInUserFile(symbol: ts.Symbol | undefined): boolean {
     decls.length > 0 &&
     decls.every((d) => {
       const sf = ts.getSourceFileOfNode(d);
-      return !sf.isDeclarationFile && !sf.fileName.split("\\").join("/").includes("/node_modules/");
+      // scriptc's package shims are compiler-owned program code, wherever
+      // scriptc is installed: an install under node_modules does not make
+      // their declarations a package's.
+      return !sf.isDeclarationFile && !isInstalledPackagePath(sf.fileName);
     })
   );
 }

@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
-// @ts-expect-error -- a plain script without declarations
 import {
   buildArguments,
+  runEnvironment,
   shimSource,
   skipReason,
   verdict,
@@ -14,7 +15,7 @@ import {
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
 test("the lane covers the corpus programs that use worker threads", () => {
-  const programs = workerPrograms() as string[];
+  const programs = workerPrograms();
   expect(programs.length).toBeGreaterThan(50);
   for (const program of programs) {
     expect(existsSync(program), program).toBe(true);
@@ -25,8 +26,9 @@ test("the lane covers the corpus programs that use worker threads", () => {
   }
 });
 
-test("the lane builds a program with the header directives that change the build", () => {
-  const defined = readFileSync(`${root}/tests/corpus/define-node-env/main.ts`, "utf8");
+test("the lane passes header directives that affect the build or run environment", () => {
+  const definedPath = join(root, "tests", "corpus", "define-node-env", "main.ts");
+  const defined = readFileSync(definedPath, "utf8");
   expect(buildArguments(defined)).toEqual([
     '--define=process.env.NODE_ENV="production"',
     '--define=process.env.SCRIPTC_FEATURE="on"',
@@ -34,22 +36,30 @@ test("the lane builds a program with the header directives that change the build
   expect(
     buildArguments('// @optimization: speed\n// @define: process.env.NODE_ENV="production"\n'),
   ).toEqual(["--optimization=speed", '--define=process.env.NODE_ENV="production"']);
-  // Oracle-only directives are not build flags.
+  // Runtime-only directives are not build flags.
   expect(buildArguments("// @env: TZ=UTC\n// @exit: 1\n")).toEqual([]);
-  expect(workerPrograms().some((program) => program.endsWith("define-node-env/main.ts"))).toBe(
-    true,
-  );
+  expect(workerPrograms()).toContain(definedPath);
+
+  const intl = readFileSync(join(root, "tests", "corpus", "intl-worker-first-use.ts"), "utf8");
+  expect(
+    runEnvironment(intl, { LC_ALL: "C.UTF-8", TSAN_OPTIONS: "halt_on_error=1" }),
+  ).toMatchObject({
+    TZ: "UTC",
+    LC_ALL: "en_US.UTF-8",
+    SCRIPTC_TEST_ENV: "from-harness",
+    TSAN_OPTIONS: expect.stringContaining("halt_on_error=0:exitcode=66"),
+  });
 });
 
 test("Intl worker programs are skipped only where the runtime pack has no ICU", () => {
-  const source = readFileSync(`${root}/tests/corpus/intl-worker-first-use.ts`, "utf8");
+  const source = readFileSync(join(root, "tests", "corpus", "intl-worker-first-use.ts"), "utf8");
   expect(skipReason(source, { platform: "linux", arch: "x64" })).toBeNull();
   expect(skipReason(source, { platform: "darwin", arch: "arm64" })).toMatch(/ICU/);
   expect(skipReason(source, { platform: "linux", arch: "arm64" })).toMatch(/ICU/);
 });
 
 test("the shim swaps the sanitizer and instruments the program's IR", () => {
-  const shim = shimSource("/usr/bin/clang") as string;
+  const shim = shimSource("/usr/bin/clang");
   expect(shim).toContain("-fsanitize=address) a=-fsanitize=thread");
   expect(shim).toContain("s/sanitize_address/sanitize_thread/g");
   expect(shim).toContain('"/usr/bin/clang" "$@"');

@@ -9441,6 +9441,26 @@ function lowerHttpResMethodCall(
       loc,
     };
   }
+  if (name === "setHeaders") {
+    // Node returns the response; the statement form needs no value.
+    requireStatementPosition(lowerer, call, "res.setHeaders(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `setHeaders with ${args.length} arguments`,
+        call,
+        "the supported form is setHeaders(headers) with a Headers or a Map",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const headers = lowerer.lowerExpr(args[0]!);
+    return {
+      kind: "libCall",
+      fn: "http.resSetHeaders",
+      args: [receiver, lowerer.coerceToExpected(headers, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "appendHeader") {
     requireStatementPosition(lowerer, call, "res.appendHeader(...)");
     if (args.length !== 2) {

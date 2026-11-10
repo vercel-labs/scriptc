@@ -1494,6 +1494,70 @@ void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDy
   scr_dyn_release(value);
 }
 
+/* setHeaders(headers): setHeader for each entry of a Headers or a Map, in
+ * iteration order. Node collects the set-cookie entries (a Headers yields
+ * one per cookie) and sets them last as one array. */
+typedef struct {
+  ScrHttpRes *res;
+  ScrDyn *cookies; /* +1 once a set-cookie entry was seen */
+} ScrHttpSetHeaders;
+
+static void scr_http_res_set_headers_entry(ScrHttpSetHeaders *s, ScrStr *name /*borrowed*/,
+                                           ScrDyn *value /*borrowed*/) {
+  if (scr_exc_pending()) return;
+  if (name->len != 10 || memcmp(name->data, "set-cookie", 10) != 0) {
+    scr_http_res_set_header_dyn(s->res, name, value);
+    return;
+  }
+  if (s->cookies == NULL) s->cookies = scr_dyn_new_arr();
+  ScrDyn *plain = scr_http_header_value_plain(value);
+  if (plain->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < plain->v.arr.len; i++)
+      scr_dyn_arr_push(s->cookies, scr_dyn_retain(plain->v.arr.items[i]));
+    scr_dyn_release(plain);
+  } else {
+    scr_dyn_arr_push(s->cookies, plain);
+  }
+}
+
+static void scr_http_res_set_headers_pair(void *ctx, ScrStr *name, ScrStr *value) {
+  ScrDyn *boxed = scr_dyn_new_str(value);
+  scr_http_res_set_headers_entry(ctx, name, boxed);
+  scr_dyn_release(boxed);
+}
+
+bool scr_fetch_headers_each(const ScrDyn *value,
+                            void (*visit)(void *ctx, ScrStr *name, ScrStr *value), void *ctx);
+
+void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/) {
+  if (!scr_http_res_headers_unsent(r, "set")) return;
+  ScrHttpSetHeaders s = {r, NULL};
+  if (!scr_fetch_headers_each(headers, &scr_http_res_set_headers_pair, &s)) {
+    if (headers->kind != SCR_DYN_HANDLE || headers->v.handle.tag != SCR_DYNH_MAP) {
+      scr_dyn_arg_type_fail("headers", "an instance of Headers or Map", headers);
+      return;
+    }
+    ScrMap *map = headers->v.handle.ptr;
+    for (size_t i = 0; i < map->nentries && !scr_exc_pending(); i++) {
+      if (!scr_map_entry_live(map, i)) continue;
+      ScrDyn *key = scr_map_dyn_key(map, (double)i);
+      ScrDyn *value = scr_map_dyn_value(map, (double)i);
+      if (key->kind == SCR_DYN_STR) scr_http_res_set_headers_entry(&s, key->v.str, value);
+      else scr_http_res_dyn_name_fail(r, key, "set");
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+    }
+  }
+  if (s.cookies != NULL) {
+    if (!scr_exc_pending()) {
+      ScrStr *name = scr_str_new("set-cookie", 10);
+      scr_http_res_set_header_dyn(r, name, s.cookies);
+      scr_str_release(name);
+    }
+    scr_dyn_release(s.cookies);
+  }
+}
+
 /* appendHeader(name, value): an absent header is set as given; an existing
  * one becomes an array holding its values followed by the new ones. */
 void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDyn *raw /*borrowed*/) {

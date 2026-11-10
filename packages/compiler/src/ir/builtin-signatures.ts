@@ -2389,6 +2389,7 @@ function buildLibFnSignatures() {
     /** setHeader / appendHeader with a number, string or array value; the
      * stored value keeps its type for getHeader/getHeaders. MAY THROW. */
     "http.resSetHeaderDyn": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
+    "http.resSetHeaders": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resAppendHeader": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
     "http.resWriteHead": { argTypes: [HTTPRES_T, F64], result: VOID },
     "http.resWriteHeadN": {

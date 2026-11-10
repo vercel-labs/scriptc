@@ -1747,6 +1747,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",
   "http.resSetHeaderDyn": "scr_http_res_set_header_dyn",
+  "http.resSetHeaders": "scr_http_res_set_headers",
   "http.resAppendHeader": "scr_http_res_append_header_dyn",
   "http.resGetHeaderDyn": "scr_http_res_get_header_dyn",
   "http.resGetHeaderNames": "scr_http_res_get_header_names",

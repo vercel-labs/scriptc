@@ -240,10 +240,41 @@ function isReadlineUiTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   });
 }
 
+/** The process stream `node` names directly — `process.stdin`,
+ * `process.stdout` or `process.stderr` through the global's member read
+ * (stdlibGlobalMember's aliases included), the same member off the
+ * builtin module's namespace (`require("node:process").stdin`, an
+ * `import * as` binding's member), or a builtin import binding of it:
+ * `import { stdin } from "node:process"` — the @clack/prompts spelling —
+ * and its CommonJS twins (`const { stdin } = require("node:process")`,
+ * `const stdin = require("node:process").stdin`) resolve the same
+ * binding table. Null for every other expression; a destructured
+ * `const { stdin } = process` binding keeps its own declaration fence. */
+function stdioMemberOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): "stdin" | "stdout" | "stderr" | null {
+  const imported = ts.isPropertyAccessExpression(node)
+    ? lowerer.builtinMemberOf(node)
+    : ts.isIdentifier(node)
+      ? builtinImportOf(lowerer, node)
+      : null;
+  if (
+    imported?.module === "process" &&
+    (imported.member === "stdin" || imported.member === "stdout" || imported.member === "stderr")
+  ) {
+    return imported.member;
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    const member = lowerer.stdlibGlobalMember(node, "process");
+    return member === "stdin" || member === "stdout" || member === "stderr" ? member : null;
+  }
+  return null;
+}
+
 /** The process.stdout/stderr target (1/2) of `node`, or 0. */
 function processOutputOf(lowerer: Lowerer, node: ts.Expression): 0 | 1 | 2 {
-  if (!ts.isPropertyAccessExpression(node)) return 0;
-  const member = lowerer.stdlibGlobalMember(node, "process");
+  const member = stdioMemberOf(lowerer, node);
   return member === "stdout" ? 1 : member === "stderr" ? 2 : 0;
 }
 
@@ -953,9 +984,7 @@ function lowerEmitKeypressEvents(lowerer: Lowerer, expr: ts.CallExpression, loc:
   const stmts: IrStmt[] = [];
   const streamNode = args[0]!;
   let stream: IrExpr | null = null;
-  const stdin =
-    ts.isPropertyAccessExpression(streamNode) &&
-    lowerer.stdlibGlobalMember(streamNode, "process") === "stdin";
+  const stdin = stdioMemberOf(lowerer, streamNode) === "stdin";
   if (!stdin) {
     stream = lowerer.lowerExpr(streamNode);
     const info =
@@ -1113,8 +1142,7 @@ export function lowerReadlineCursorCall(
   // the stream
   const streamNode = args[0]!;
   let target: "stdout" | "stderr" | "none" | IrExpr;
-  const proc =
-    ts.isPropertyAccessExpression(streamNode) && lowerer.stdlibGlobalMember(streamNode, "process");
+  const proc = stdioMemberOf(lowerer, streamNode);
   if (proc === "stdout" || proc === "stderr") {
     target = proc;
   } else if (isNullish(streamNode)) {
@@ -1270,10 +1298,7 @@ function streamFromDyn(lowerer: Lowerer, node: ts.Expression, output: boolean): 
 
 /** The interface's input: process.stdin (null) or a readable stream. */
 function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
-  if (
-    ts.isPropertyAccessExpression(node) &&
-    lowerer.stdlibGlobalMember(node, "process") === "stdin"
-  ) {
+  if (stdioMemberOf(lowerer, node) === "stdin") {
     return null;
   }
   const v = streamFromDyn(lowerer, node, false);

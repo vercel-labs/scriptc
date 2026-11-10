@@ -16,7 +16,7 @@
  */
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
-import { isNodeModulesPath } from "../resolve.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import {
   errorInterfaceToClassDivergenceDiag,
   islandValueCopyDivergenceDiag,
@@ -52,7 +52,9 @@ export function scanDivergences(
 ): ScrDiagnostic[] {
   const own = files.filter(
     (sf) =>
-      !sf.isDeclarationFile && !sf.fileName.endsWith(".json") && !isNodeModulesPath(sf.fileName),
+      !sf.isDeclarationFile &&
+      !sf.fileName.endsWith(".json") &&
+      !isInstalledPackagePath(sf.fileName),
   );
   const out: ScrDiagnostic[] = [];
   const checker = lowerer.checker;

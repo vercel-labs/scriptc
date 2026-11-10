@@ -57,6 +57,7 @@ import {
   unsupportedDiag,
 } from "../diagnostics/diagnostic.js";
 import {
+  isInstalledPackagePath,
   isNodeModulesPath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
@@ -662,7 +663,7 @@ function fileDialects7(host: ts.Ts7Host): (fileName: string) => FileDialect | nu
     return dialect;
   };
   return (fileName) => {
-    if (isNodeModulesPath(fileName)) return null;
+    if (isInstalledPackagePath(fileName)) return null;
     const directory = dirname(fileName);
     let dialect = byDirectory.get(directory);
     if (dialect === undefined) {
@@ -1048,7 +1049,7 @@ function typesAsProject7(
   const ambient = ambientDtsPath();
   const overrides = overridesDtsPath();
   for (const name of program.getSourceFileNames()) {
-    if (isNodeModulesPath(name) || isBundledLibraryFile(program, name)) continue;
+    if (isInstalledPackagePath(name) || isBundledLibraryFile(program, name)) continue;
     const path = tsgoPath(name);
     if (path === ambient || path === overrides || isFallbackDtsPath(name)) continue;
     const sf = program.getSourceFile(name);
@@ -2264,7 +2265,7 @@ function declBoundaryUserFiles(program: ts.Program, packages: readonly string[])
   const out: string[] = [];
   for (const sf of program.getImplementationSourceFiles()) {
     const name = sf.fileName.split("\\").join("/");
-    if (name.includes("/node_modules/") || !/\.[mc]?tsx?$/.test(name)) continue;
+    if (isInstalledPackagePath(name) || !/\.[mc]?tsx?$/.test(name)) continue;
     if (name.endsWith(".tsx")) continue; // JSX files: not projected yet
     if (
       packages.some(
@@ -6731,7 +6732,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
         sf.fileName !== ambient &&
         !sf.isDeclarationFile &&
         !sf.fileName.endsWith(".json") &&
-        (!isNodeModulesPath(sf.fileName) ||
+        (!isInstalledPackagePath(sf.fileName) ||
           entryPackageFile(sf.fileName) ||
           npmStaticPackageOfPath(sf.fileName) !== null) &&
         !unselectedPackageJsFile(sf.fileName),
@@ -7992,10 +7993,11 @@ function preflightGate7(load: LoadResult): PreflightGate {
    * executable token and never lies inside a comment. The comment spans are
    * collected once per SourceFile and found by binary search: a dependency
    * can document many setters, and scanning the file's text for every
-   * diagnostic would be quadratic. The cache is keyed by SourceFile
+   * diagnostic would be quadratic. The memo is keyed by SourceFile
    * identity, not file name, because the JSX snapshot and the lowered
-   * program carry one file name with different offsets. */
-  const commentSpans = new WeakMap<ts.SourceFile, readonly (readonly [number, number])[]>();
+   * program carry one file name with different offsets; it lives only for
+   * this gate's diagnostics, so a plain Map is enough. */
+  const commentSpans = new Map<ts.SourceFile, readonly (readonly [number, number])[]>();
   const blockCommentSpansOf = (sf: ts.SourceFile): readonly (readonly [number, number])[] => {
     let spans = commentSpans.get(sf);
     if (spans !== undefined) return spans;

@@ -97,3 +97,46 @@ try {
 } catch (error) {
   console.log(show(error as Printable));
 }
+
+// Fields and conversions through an interface that a plain class and Error
+// subclasses both implement, and a generic toString call.
+class Pair {
+  name: string;
+  message: string;
+  constructor(name: string, message: string) {
+    this.name = name;
+    this.message = message;
+  }
+  toString(): string {
+    return `Pair(${this.name})`;
+  }
+}
+interface Described {
+  name: string;
+  message: string;
+  toString(): string;
+}
+class FirstError extends Error {}
+class SecondError extends FirstError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecondError";
+  }
+}
+class WrappedTypeError extends TypeError {
+  override toString(): string {
+    return "wrapped " + super.toString();
+  }
+}
+const described: Described[] = [
+  new Pair("p", "q"),
+  new FirstError("first"),
+  new SecondError("second"),
+  new WrappedTypeError("third"),
+];
+for (const value of described)
+  console.log(value.name, "|", value.message, "|", value.toString(), "|", `${value}`, "|", String(value));
+function generic<T extends { toString(): string }>(value: T): string {
+  return value.toString();
+}
+console.log(generic(new SecondError("generic")), generic(new Pair("r", "s")));

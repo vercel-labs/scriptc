@@ -251,6 +251,7 @@ void scr_http_res_flush_headers(ScrHttpRes *r);
 void scr_http_res_cork(ScrHttpRes *r);
 void scr_http_res_uncork(ScrHttpRes *r);
 double scr_http_res_writable_corked(ScrHttpRes *r);
+double scr_http_res_writable_length(ScrHttpRes *r);
 double scr_http_res_writable_high_water_mark(ScrHttpRes *r);
 bool scr_http_res_writable_object_mode(ScrHttpRes *r);
 bool scr_http_res_destroyed_flag(ScrHttpRes *r);

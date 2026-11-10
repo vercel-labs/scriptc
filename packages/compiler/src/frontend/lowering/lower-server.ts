@@ -4904,6 +4904,14 @@ export function lowerServerProperty(
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
     return { kind: "libCall", fn: "http.resWritableCorked", args: [receiver], type: F64, loc };
   }
+  if (
+    recvKind === "httpRes" &&
+    lowerer.isStdlibMember(expr) &&
+    expr.name.text === "writableLength"
+  ) {
+    const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+    return { kind: "libCall", fn: "http.resWritableLength", args: [receiver], type: F64, loc };
+  }
   if (recvKind === "httpRes" && lowerer.isStdlibMember(expr) && expr.name.text === "statusCode") {
     // 200 until assigned — Node's fresh-response default; the assignment
     // twin lives in lowerHttpResPropertyAssignment.

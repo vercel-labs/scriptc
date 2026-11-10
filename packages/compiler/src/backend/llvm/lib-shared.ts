@@ -1771,6 +1771,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.resCork": "scr_http_res_cork",
   "http.resUncork": "scr_http_res_uncork",
   "http.resWritableCorked": "scr_http_res_writable_corked",
+  "http.resWritableLength": "scr_http_res_writable_length",
   "http.resWritableHighWaterMark": "scr_http_res_writable_high_water_mark",
   "http.resWritableObjectMode": "scr_http_res_writable_object_mode",
   "http.resDestroy": "scr_http_res_destroy",

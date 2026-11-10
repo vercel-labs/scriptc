@@ -1052,6 +1052,11 @@ struct ScrHttpRes {
   char *cork_buf;
   size_t cork_len, cork_cap;
   bool cork_wrote; /* a write() ran while corked: the flush sends a held head */
+  /* res.writableLength: the chunk framing Node counts for the write that
+   * sends the head (its size line and both CRLFs go to the socket with the
+   * head; later corked chunks wait unframed). */
+  size_t wl_framing;
+  bool autocorked; /* the cork is write()'s own, not res.cork() */
   /* A write while corked commits the head (headersSent, Node's implicit
    * header) and holds its bytes here until the flush sends them first;
    * writeHead holds them here until the first write(), end() or
@@ -1966,6 +1971,10 @@ static void scr_http_cork_buffer(char **buf, size_t *held_len, size_t *held_cap,
 static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
   if (r->finished) return;
   if (r->corked > 0) {
+    /* Node's socket holds this chunk framed unless res.cork() is buffering
+     * chunks of a message whose head already went to the socket. */
+    bool head_pending = !r->head_sent || (r->held_head_len > 0 && !r->cork_wrote);
+    bool user_corked = r->corked > (r->autocorked ? 1 : 0);
     r->cork_wrote = true;
     /* Node's write_() builds the implicit head even while corked */
     if (!r->head_sent && r->h2_stream == NULL) {
@@ -1976,6 +1985,11 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
       r->held_head_cap = held.cap;
     }
     if (scr_exc_pending()) return;
+    if (r->chunked && len > 0 && r->h2_stream == NULL && (head_pending || !user_corked)) {
+      size_t digits = 1;
+      for (size_t n = len; n >= 16; n >>= 4) digits++;
+      r->wl_framing += digits + 4;
+    }
     scr_http_cork_buffer(&r->cork_buf, &r->cork_len, &r->cork_cap, data, len);
     return;
   }
@@ -2000,6 +2014,7 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
  * tick go out as one chunk. */
 static void scr_http_res_autocork_nt(ScrClosure *cb) {
   ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
+  r->autocorked = false;
   if (r->corked > 0) scr_http_res_uncork(r);
   scr_http_res_release(r);
 }
@@ -2007,6 +2022,7 @@ static void scr_http_res_autocork_nt(ScrClosure *cb) {
 static void scr_http_res_autocork(ScrHttpRes *r) {
   if (r->finished || r->h2_stream != NULL || r->sock == NULL || r->corked > 0) return;
   r->corked++;
+  r->autocorked = true;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_res_autocork_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
@@ -2079,6 +2095,15 @@ void scr_http_res_uncork(ScrHttpRes *r) {
 
 double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
 
+/* res.writableLength: the bytes held for the socket. Node counts the head a
+ * write committed and the chunks waiting for the uncork (its own write()
+ * corks until the next tick), so the value is nonzero between a write and
+ * the flush and zero otherwise. */
+double scr_http_res_writable_length(ScrHttpRes *r) {
+  if (r->finished) return 0;
+  return (double)((r->cork_wrote ? r->held_head_len : 0) + r->cork_len + r->wl_framing);
+}
+
 /* res.writableHighWaterMark and res.writableObjectMode: Node's default
  * high-water mark of a byte stream (getDefaultHighWaterMark(), 64 KiB
  * since Node 22) and false. createServer's highWaterMark option, which
@@ -2129,6 +2154,8 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
    * uncork() with no write while corked sends nothing. */
   bool wrote = r->cork_wrote;
   r->cork_wrote = false;
+  r->wl_framing = 0;
+  r->autocorked = false;
   if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) return;
   char *held = r->cork_buf;
   size_t held_len = r->cork_len;
@@ -7860,6 +7887,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
     return scr_dyn_new_handle(r->req_ref, SCR_DYNH_HTTP_REQ);
   }
   if (strcmp(key, "writableCorked") == 0) return scr_dyn_new_num(scr_http_res_writable_corked(r));
+  if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_res_writable_length(r));
   if (strcmp(key, "writableFinished") == 0) return scr_dyn_new_bool(scr_http_res_writable_finished(r));
   if (strcmp(key, "writableHighWaterMark") == 0) return scr_dyn_new_num(scr_http_res_writable_high_water_mark(r));
   if (strcmp(key, "writableObjectMode") == 0) return scr_dyn_new_bool(scr_http_res_writable_object_mode(r));
@@ -7867,7 +7895,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);
   {
     static const char *const known[] = { "chunkedEncoding", "sendDate",
-      "strictContentLength", "writableLength", "writableNeedDrain",
+      "strictContentLength", "writableNeedDrain",
       "errored", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("ServerResponse", key, NULL);

@@ -111,6 +111,7 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly writableLength: number;
     readonly writableHighWaterMark: number;
     readonly writableObjectMode: boolean;
     readonly destroyed: boolean;

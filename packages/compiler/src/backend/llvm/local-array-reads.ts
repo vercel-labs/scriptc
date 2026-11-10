@@ -1,5 +1,6 @@
 import {
   isRefCounted,
+  isUnitType,
   typeEquals,
   type IrExpr,
   type IrFunction,
@@ -8,6 +9,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
+import { InternalCompilerError } from "../../errors.js";
 import { emitInlineArrayGet, inlineFieldTail } from "./inline-arrays.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
@@ -16,6 +18,7 @@ import { ReferenceEffects } from "./reference-effects.js";
 import { SCR_ARR_FIELD, loadArrCount, scrArrStateAt } from "./common.js";
 import { indexInteger } from "./integer-values.js";
 import { READ_FALLBACK } from "./dense-array-access.js";
+import { emitPointerRetype, pointerRetypeSteps } from "./pointer-retype.js";
 import { compactRefLoadLines } from "./classes.js";
 
 /** The dense slot load of a reference read from an array of type
@@ -37,6 +40,11 @@ export interface LocalArrayRead {
    * owned copies retain and release through the union's NULL-tolerant
    * entry points. */
   nullableElement?: boolean;
+  /** The element is the source union's plain pointer and `type` another
+   * nullable-pointer union (`(C | null)[]` read as `C | null | undefined`):
+   * the loaded pointer maps directly (pointer-retype.ts), so the guard and
+   * the element read stay one lookup. */
+  retype?: { fromId: string; unionId: string; tags: readonly number[] };
 }
 
 /** Whether a union is held as its reference arm's plain pointer
@@ -59,12 +67,53 @@ interface ArrayReadShape {
   presentTag: number;
   missingTag: number;
   nullableElement?: boolean;
+  retype?: { fromId: string; unionId: string; tags: readonly number[] };
 }
 
 /** f64 and bool elements copy their slot bits into the box payload. They
  * have no owner, so every lifetime proof for them is trivially satisfied. */
 function isScalarElement(element: IrType): boolean {
   return element.kind === "f64" || element.kind === "bool";
+}
+
+/** A call to a lifted `%union.retag` helper whose whole body is one
+ * unionRetype of its parameter: the conversion shares the element pointer
+ * and only maps its unit encoding. */
+function retagConversion(
+  fn: IrFunction | undefined,
+  call: IrExpr,
+): { fromId: string; unionId: string; tags: readonly number[] } | null {
+  if (!fn || fn.async || fn.generator || fn.captures || fn.classCaptures) return null;
+  if (fn.params.length !== 1 || fn.body.length !== 1 || fn.locals.length !== 1) return null;
+  const param = fn.params[0]!,
+    local = fn.locals[0]!;
+  if (local.id !== param.localId || local.boxed || local.tdz) return null;
+  const ret = fn.body[0]!;
+  if (ret.kind !== "return" || !ret.value || ret.value.kind !== "unionRetype") return null;
+  const retype = ret.value;
+  if (retype.value.kind !== "varRef" || retype.value.localId !== param.localId) return null;
+  if (param.type.kind !== "union" || retype.fromId !== param.type.unionId) return null;
+  if (!typeEquals(retype.type, call.type)) return null;
+  return { fromId: retype.fromId, unionId: retype.unionId, tags: retype.tags };
+}
+
+/** Every listed source arm keeps its tag and type in the target and the
+ * reference arm is among them, so the conversion can only have to map unit
+ * encodings (pointerRetypeSteps). */
+function directPointerRetype(
+  retype: { fromId: string; unionId: string; tags: readonly number[] },
+  unions: ReadonlyMap<string, IrUnionDef>,
+): boolean {
+  const fromArms = unions.get(retype.fromId)?.arms,
+    toArms = unions.get(retype.unionId)?.arms;
+  if (!fromArms || !toArms) return false;
+  for (const tag of retype.tags) {
+    const arm = fromArms[tag],
+      target = toArms[tag];
+    if (!arm || !target || !typeEquals(arm, target)) return false;
+  }
+  const refTag = fromArms.findIndex((arm) => !isUnitType(arm));
+  return refTag >= 0 && retype.tags.includes(refTag);
 }
 
 /** Recognize the state-test/read pair shared by helpers and lowered loops.
@@ -74,6 +123,7 @@ function inlineArrayRead(
   value: IrExpr,
   unions: ReadonlyMap<string, IrUnionDef>,
   nullable?: NullablePointerUnion,
+  functions?: ReadonlyMap<string, IrFunction>,
 ): LocalArrayRead | null {
   if (value.kind !== "ternary" || value.type.kind !== "union") return null;
   const { cond, then, else_: missing } = value;
@@ -90,12 +140,15 @@ function inlineArrayRead(
   )
     return null;
   // A `T | undefined` element is read as it is (arrayValueRead adds no wrap).
+  const retagCall = then.kind === "call" && then.args.length === 1 ? then : null;
   const elementRead =
     then.kind === "unionWrap" && then.unionId === value.type.unionId
       ? then.value
       : then.kind === "arrayGet" && typeEquals(then.type, value.type)
         ? then
-        : null;
+        : retagCall && retagCall.args[0]!.kind === "arrayGet"
+          ? retagCall.args[0]!
+          : null;
   if (elementRead?.kind !== "arrayGet") return null;
   const sameOperand = (left: IrExpr, right: IrExpr): boolean =>
     (left.kind === "varRef" && right.kind === "varRef" && left.localId === right.localId) ||
@@ -111,9 +164,36 @@ function inlineArrayRead(
   )
     return null;
   const arms = unions.get(value.type.unionId)?.arms;
-  if (!arms || arms.length !== 2) return null;
+  if (!arms) return null;
   const missingTag = arms.findIndex((arm) => arm.kind === "undefinedT");
   if (missingTag < 0 || missing.tag !== missingTag) return null;
+  if (retagCall && then !== elementRead) {
+    // `arrayState(a, i) === 1 ? %union.retag(arrayGet(a, i)) : undefined`:
+    // the slot holds the source union's plain pointer, which converts into
+    // the result union by mapping its unit encoding (pointer-retype.ts).
+    const element = array.type.elem;
+    const retype = retagConversion(functions?.get(retagCall.callee), retagCall);
+    if (
+      !retype ||
+      !typeEquals(retagCall.type, value.type) ||
+      element.kind !== "union" ||
+      element.unionId !== retype.fromId ||
+      nullable?.(retype.fromId) !== true ||
+      nullable?.(retype.unionId) !== true ||
+      !directPointerRetype(retype, unions)
+    )
+      return null;
+    return {
+      type: value.type,
+      element,
+      presentTag: arms.findIndex((arm) => !isUnitType(arm)),
+      missingTag,
+      array,
+      index,
+      retype,
+    };
+  }
+  if (arms.length !== 2) return null;
   if (then === elementRead) {
     // The slots hold the union itself: only its plain-pointer form (NULL is
     // undefined) shares the element encoding of the reference-arm reads.
@@ -148,6 +228,7 @@ function arrayReadShape(
   fn: IrFunction,
   unions: ReadonlyMap<string, IrUnionDef>,
   nullable?: NullablePointerUnion,
+  functions?: ReadonlyMap<string, IrFunction>,
 ): ArrayReadShape | null {
   if (
     fn.async ||
@@ -162,7 +243,7 @@ function arrayReadShape(
     return null;
   const ret = fn.body[0]!;
   if (ret.kind !== "return" || !ret.value) return null;
-  const read = inlineArrayRead(ret.value, unions, nullable);
+  const read = inlineArrayRead(ret.value, unions, nullable, functions);
   if (
     !read ||
     !typeEquals(read.type, fn.returnType) ||
@@ -178,6 +259,7 @@ function arrayReadShape(
     presentTag: read.presentTag,
     missingTag: read.missingTag,
     ...(read.nullableElement ? { nullableElement: true } : {}),
+    ...(read.retype ? { retype: read.retype } : {}),
   };
 }
 
@@ -188,18 +270,19 @@ export class OptionalArrayReads {
   private readonly shapes = new Map<string, ArrayReadShape>();
 
   constructor(
-    functions: ReadonlyMap<string, IrFunction>,
+    private readonly functions: ReadonlyMap<string, IrFunction>,
     private readonly unions: ReadonlyMap<string, IrUnionDef>,
     private readonly nullable?: NullablePointerUnion,
   ) {
     for (const fn of functions.values()) {
-      const shape = arrayReadShape(fn, unions, nullable);
+      const shape = arrayReadShape(fn, unions, nullable, functions);
       if (shape) this.shapes.set(fn.name, shape);
     }
   }
 
   get(call: IrExpr): LocalArrayRead | null {
-    if (call.kind === "ternary") return inlineArrayRead(call, this.unions, this.nullable);
+    if (call.kind === "ternary")
+      return inlineArrayRead(call, this.unions, this.nullable, this.functions);
     if (call.kind !== "call" || call.args.length !== 2) return null;
     const shape = this.shapes.get(call.callee);
     if (!shape || !typeEquals(shape.type, call.type)) return null;
@@ -720,10 +803,32 @@ export function emitLocalArrayRead(
     const slow = B.newLabel("local.array.slow"),
       no = B.newLabel("local.array.missing"),
       join = B.newLabel("local.array.join");
+    // A retag read stores the source union's slots under the result
+    // union's encoding: the conversion is a select per differing unit arm.
+    let convert = (value: string): string => value;
+    if (read.retype) {
+      const from = host.nullableUnions.get(read.retype.fromId),
+        fromArms = host.unionsById.get(read.retype.fromId)?.arms,
+        toArms = host.unionsById.get(read.retype.unionId)?.arms;
+      const steps =
+        from && fromArms && toArms
+          ? pointerRetypeSteps(from, nullable, fromArms, toArms, read.retype.tags)
+          : null;
+      if (!steps)
+        throw new InternalCompilerError(
+          `llvm emitter bug: retype read ${read.retype.fromId} into ${read.retype.unionId}`,
+        );
+      convert = (value) => emitPointerRetype(B, value, steps);
+    }
     // A slot of a nullable-union array may hold NULL even when present.
-    const owned = read.nullableElement ? read.type : read.element;
+    const owned = read.nullableElement || read.retype ? read.type : read.element;
     const store = (value: string): void => {
-      B.line(`store ptr ${read.borrow ? value : host.retainFrame(value, owned)}, ptr ${localSlot}`);
+      const converted = convert(value);
+      B.line(
+        `store ptr ${
+          read.borrow ? converted : host.retainFrame(converted, owned)
+        }, ptr ${localSlot}`,
+      );
     };
     if (inline)
       emitDenseReferenceArrayRead(
@@ -741,14 +846,32 @@ export function emitLocalArrayRead(
     else B.br(slow);
     B.startBlock(slow);
     const present = B.newLabel("local.array.slow.value");
-    host.declare("declare ptr @scr_arr_peek_ref(ptr, double) memory(read)");
-    const value = B.tmp(),
-      found = B.tmp();
-    B.line(`${value} = call ptr @scr_arr_peek_ref(ptr ${array.name}, double ${index.name})`);
-    B.line(`${found} = icmp ne ptr ${value}, null`);
-    B.condBr(found, present, no);
-    B.startBlock(present);
-    store(value);
+    if (read.retype) {
+      // A present NULL is the source union's `null` arm, which the peek's
+      // NULL cannot be told from a hole: read the state, then the slot.
+      const state = B.tmp(),
+        found = B.tmp();
+      host.declare(`declare double @scr_arr_state(ptr, double)`);
+      B.line(
+        `${state} = call double @scr_arr_state(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+      );
+      B.line(`${found} = fcmp oeq double ${state}, 1.0`);
+      B.condBr(found, present, no);
+      B.startBlock(present);
+      const value = B.tmp();
+      host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
+      B.line(`${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})`);
+      store(value);
+    } else {
+      host.declare("declare ptr @scr_arr_peek_ref(ptr, double) memory(read)");
+      const value = B.tmp(),
+        found = B.tmp();
+      B.line(`${value} = call ptr @scr_arr_peek_ref(ptr ${array.name}, double ${index.name})`);
+      B.line(`${found} = icmp ne ptr ${value}, null`);
+      B.condBr(found, present, no);
+      B.startBlock(present);
+      store(value);
+    }
     B.br(join);
     B.startBlock(no);
     B.line(

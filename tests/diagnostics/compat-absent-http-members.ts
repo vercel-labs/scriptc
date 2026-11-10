@@ -16,11 +16,9 @@ agent.destroy();
 const server = http.createServer((request, response) => {
   // IncomingMessage: the abort signal.
   console.log(request.signal.aborted);
-  // OutgoingMessage: several headers at once, an arbitrary 1xx response,
-  // and the state and event behind write()'s result.
-  response.setHeaders(new Map([["x-a", "1"]]));
+  // OutgoingMessage: an arbitrary 1xx response and the event behind
+  // write()'s result.
   response.writeInformation(103, { link: "</a.css>; rel=preload" });
-  console.log(response.writableLength);
   response.on("drain", () => {});
   response.end();
 });
@@ -28,9 +26,11 @@ console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
 server.on("dropRequest", () => {});
 await server[Symbol.asyncDispose]();
 
-// ClientRequest: the header-count limit of the response.
+// ClientRequest: the header-count limit of the response, and the bytes the
+// request holds for its socket (a response's writableLength compiles).
 const request = http.request({ host: "127.0.0.1", port: 1 });
 console.log(request.maxHeadersCount);
+console.log(request.writableLength);
 request.destroy();
 
 // The module: the proxy configuration read from the environment.

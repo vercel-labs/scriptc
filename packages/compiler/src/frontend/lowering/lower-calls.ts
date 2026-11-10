@@ -283,6 +283,7 @@ import {
   exactClassOfReceiver,
   exactInstanceClassOf,
   findGenericMethodOn,
+  findImplementationOn,
   lowerClassGenericMethodCall,
   lowerStaticMethodCall,
   lowerStaticSuperCall,
@@ -2354,24 +2355,30 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const receiverType = lowerer.mapTypeOf(lowerer.typeOf(expr.expression.expression));
     if (receiverType?.kind === "object") {
       const info = lowerer.classes.get(receiverType.className);
-      const found = info ? lowerer.findMethodOn(info, memberName) : null;
+      const nearest = info ? lowerer.findMethodOn(info, memberName) : null;
+      const virtual = info && nearest ? lowerer.overrideBelow(info, memberName) : false;
+      // An abstract declaration has no prototype function, so a direct call
+      // with nothing below the static class to implement it reaches the
+      // nearest implementation above the abstract re-declaration, or reads
+      // `undefined` and throws Node's TypeError (abstractMethodCall) when no
+      // class in the chain implements it.
+      const found =
+        nearest?.sig.abstract === true && !virtual
+          ? findImplementationOn(lowerer, nearest.declarer.base, memberName)
+          : nearest;
+      if (info && nearest && !found) {
+        return abstractMethodCall(
+          lowerer,
+          expr,
+          expr.expression,
+          nearest.sig.ret,
+          lowerer.lowerExpr(expr.expression.expression),
+          locOf(expr),
+        );
+      }
       if (info && found) {
         if (found.declarer.builtinError)
           return errorToStringCall(lowerer, lowerer.lowerExpr(expr.expression.expression));
-        const virtual = lowerer.overrideBelow(info, memberName);
-        // An abstract declaration has no prototype function, so a direct
-        // call with nothing below the static class to implement it reads
-        // `undefined` and throws Node's TypeError (abstractMethodCall).
-        if (found.sig.abstract === true && !virtual) {
-          return abstractMethodCall(
-            lowerer,
-            expr,
-            expr.expression,
-            found.sig.ret,
-            lowerer.lowerExpr(expr.expression.expression),
-            locOf(expr),
-          );
-        }
         if (virtual) lowerer.noteVirtualEdge(info, memberName);
         else lowerer.noteEdge(`%${found.declarer.def.name}.${memberName}`);
         const receiver = lowerer.lowerExpr(expr.expression.expression);
@@ -13080,45 +13087,59 @@ export function lowerObjectMethodCall(
       loc,
     };
   }
-  if (found.declarer.builtinError) {
-    return errorToStringCall(lowerer, lowerReceiver());
-  }
   // An ABSTRACT nearest declaration with no concrete override below the
-  // static class: no implementation exists for a direct call to target.
-  // In a program that constructs an instance (tsc makes instantiable
-  // subclasses implement, and their declarations flip overrideBelow) the
-  // call is a virtual dispatch; here the callee reads `undefined` off the
-  // prototype, exactly as JavaScript's prototype has no member for the
-  // declaration.
-  if (found.sig.abstract === true && !lowerer.overrideBelow(info, method)) {
+  // static class. In a program that constructs an instance (tsc makes
+  // instantiable subclasses implement, and their declarations flip
+  // overrideBelow) the call is a virtual dispatch. Here the abstract
+  // declaration emits no prototype member, so the callee is the nearest
+  // implementation above it, or `undefined` when no class in the chain
+  // implements the method.
+  const target =
+    found.sig.abstract === true && !lowerer.overrideBelow(info, method)
+      ? findImplementationOn(lowerer, found.declarer.base, method)
+      : found;
+  if (!target) {
     return abstractMethodCall(lowerer, call, access, found.sig.ret, lowerReceiver(), locOf(call));
+  }
+  if (target !== found && isClassCallback(lowerer, target.declarer, method)) {
+    // The inherited implementation's slot is read or replaced as a value
+    // somewhere in the program, so its callers keep the dynamic call,
+    // which this receiver's abstract re-declaration has no slot to make.
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `calls of '${method}' through an abstract re-declaration whose inherited implementation is also used as a prototype value`,
+    );
+  }
+  if (target.declarer.builtinError) {
+    return errorToStringCall(lowerer, lowerReceiver());
   }
   // The static receiver's nearest declaration is an override adapted to
   // the inherited ABI, and nothing below overrides it: call its body
   // directly under its declared signature (exact parameters and result).
   // The slot function stays reachable; it lifts the body.
-  const adapted = found.declarer.returnAdapters?.get(method);
+  const adapted = target.declarer.returnAdapters?.get(method);
   // A TypeScript override's own entry answers its declared result. A
   // JavaScript body's result is inferred, so its callers keep the slot.
-  const declarerDecl = found.declarer.decl;
+  const declarerDecl = target.declarer.decl;
   if (
     adapted &&
     !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl))) &&
     !lowerer.overrideBelow(info, method)
   ) {
-    lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
+    lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);
     const receiver = lowerReceiver();
     const args = lowerer.completeArgs(call.arguments.nodes, adapted.params, locOf(call), call);
     return {
       kind: "call",
-      callee: `%${found.declarer.def.name}.${method}$own`,
-      args: [lowerer.upcastTo(receiver, found.declarer.def.name), ...args],
+      callee: `%${target.declarer.def.name}.${method}$own`,
+      args: [lowerer.upcastTo(receiver, target.declarer.def.name), ...args],
       type: adapted.ret,
       loc: locOf(call),
     };
   }
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
-  else lowerer.noteEdge(`%${found.declarer.def.name}.${method}`);
+  else lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);
   const receiver = lowerReceiver();
   // The nearest declaration is an override with FEWER parameters than the
   // slot, and a subclass overrides it again: the call was checked against
@@ -13128,9 +13149,9 @@ export function lowerObjectMethodCall(
   // that cannot hold it has nothing to pass.
   const slotParams =
     adapted &&
-    adapted.params.length < found.sig.params.length &&
+    adapted.params.length < target.sig.params.length &&
     !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl)))
-      ? found.sig.params.map((p, i): ParamShape => {
+      ? target.sig.params.map((p, i): ParamShape => {
           if (i < adapted.params.length) return p;
           if (p.mode === "omittable") return p;
           if (omittedArgFor(lowerer, p.type, locOf(call)) === null)
@@ -13141,7 +13162,7 @@ export function lowerObjectMethodCall(
             );
           return { type: p.type, mode: "omittable" };
         })
-      : found.sig.params;
+      : target.sig.params;
   const args = lowerer.completeArgs(call.arguments.nodes, slotParams, locOf(call), call);
   if (lowerer.overrideBelow(info, method)) {
     return reconcileOverloadReturn(lowerer, call, {
@@ -13149,15 +13170,15 @@ export function lowerObjectMethodCall(
       className: info.def.name,
       method,
       args: [lowerer.upcastTo(receiver, info.def.name), ...args],
-      type: found.sig.ret,
+      type: target.sig.ret,
       loc: locOf(call),
     });
   }
   return reconcileOverloadReturn(lowerer, call, {
     kind: "call",
-    callee: `%${found.declarer.def.name}.${method}`,
-    args: [lowerer.upcastTo(receiver, found.declarer.def.name), ...args],
-    type: found.sig.ret,
+    callee: `%${target.declarer.def.name}.${method}`,
+    args: [lowerer.upcastTo(receiver, target.declarer.def.name), ...args],
+    type: target.sig.ret,
     loc: locOf(call),
   });
 }

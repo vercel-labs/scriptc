@@ -51,6 +51,7 @@ import {
   classValueRef,
   findGenericMethodOn,
   findGenericStaticOn,
+  findImplementationOn,
   findMethodOn,
   findStaticOn,
   genericOverrideBelow,
@@ -401,7 +402,9 @@ const PRIMITIVE_KINDS = new Set<string>([
 /** A declared conversion method, own or inherited. */
 function conversionMethod(lowerer: Lowerer, info: ClassInfo, method: ConversionMethod): boolean {
   if (info.fields.has(method)) return false;
-  const found = findMethodOn(lowerer, info, method);
+  // An abstract declaration emits no prototype member: the conversion calls
+  // the implementation above it, or the default when no class has one.
+  const found = findImplementationOn(lowerer, info, method);
   return !!found && !found.declarer.builtinError;
 }
 
@@ -7285,7 +7288,12 @@ export class ClassDynamicDispatch {
               kind: "return",
               value: method
                 ? { kind: "dynFrom", value: method, type: DYN, loc }
-                : dynUndefinedExpr(loc),
+                : INHERITED_OBJECT_METHODS.has(name)
+                  ? // No class in the chain implements an abstractly
+                    // re-declared Object.prototype method: the chain ends at
+                    // Object.prototype, which answers its own function.
+                    objectPrototypeMethod(name, loc)
+                  : dynUndefinedExpr(loc),
               loc,
             });
           return body;
@@ -7313,13 +7321,7 @@ export class ClassDynamicDispatch {
                 kind: "ternary",
                 cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
                 then: own,
-                else_: {
-                  kind: "libCall",
-                  fn: "dyn.builtinMethod",
-                  args: [{ kind: "strLit", value: "Object", type: STRING, loc }, key],
-                  type: DYN,
-                  loc,
-                },
+                else_: objectPrototypeMethod(name, loc),
                 type: DYN,
                 loc,
               },
@@ -7778,7 +7780,15 @@ export class ClassDynamicDispatch {
         });
       return fence();
     }
-    const methodInfo = findMethodOn(lowerer, info, method);
+    const nearest = findMethodOn(lowerer, info, method);
+    // An abstract declaration with no implementation below the receiver's
+    // class emits no prototype member: the call reaches the implementation
+    // above it directly, the way the prototype chain does.
+    const inherited =
+      nearest?.sig.abstract === true && !lowerer.overrideBelow(info, method)
+        ? findImplementationOn(lowerer, nearest.declarer.base, method)
+        : null;
+    const methodInfo = inherited ?? nearest;
     if (this.asyncFree && (methodInfo?.sig.gen || methodInfo?.sig.async)) {
       return [
         {
@@ -7825,7 +7835,9 @@ export class ClassDynamicDispatch {
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;
-      virtual = lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true;
+      virtual =
+        inherited === null &&
+        (lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true);
     } else if (
       generic?.info.implicitParams &&
       generic.declarer.decl &&
@@ -8042,6 +8054,20 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "hasOwnProperty",
   "propertyIsEnumerable",
 ]);
+
+/** The interned value `Object.prototype.<name>` reads. */
+function objectPrototypeMethod(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethod",
+    args: [
+      { kind: "strLit", value: "Object", type: STRING, loc },
+      { kind: "strLit", value: name, type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
 
 /** Whether a class or one of its bases has a heritage evaluated at run
  * time, whose prototype chain may reach Error.prototype. */

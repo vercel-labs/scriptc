@@ -149,3 +149,67 @@ for (const [label, value, key] of chain) {
     typeof member === "function" ? (member as () => string)() : "absent",
   );
 }
+
+// A direct call through an abstract re-declaration with nothing below it
+// reaches the nearest implementation above, through every spelling, with
+// the implementation's own parameter defaults.
+class Sign {
+  mark = "sign";
+
+  text(prefix: string = "default"): string {
+    return `${prefix}:${this.mark}`;
+  }
+}
+
+abstract class Blank extends Sign {
+  abstract text(prefix?: string): string;
+
+  both(): string {
+    return `${this.text()} ${this["text"]("own")}`;
+  }
+}
+
+abstract class Blanker extends Blank {
+  abstract text(prefix?: string): string;
+}
+
+const blank = new (Blank as any)() as Blank;
+const blanker = new (Blanker as any)() as Blanker;
+console.log(blank.text(), blank["text"]("element"), blank.both());
+console.log(blanker.text("deeper"), blanker.both());
+const untypedBlank: any = blank;
+console.log(untypedBlank.text("untyped"), typeof read(blank, "text"));
+
+// Object.prototype's methods re-declared abstractly: the chain ends at
+// Object.prototype, so the untyped reads answer its functions and the
+// conversions use its default. An abstract toString on an Error subclass
+// leaves Error.prototype.toString in charge.
+abstract class Shown {
+  abstract toString(): string;
+  abstract valueOf(): number;
+  abstract hasOwnProperty(key: PropertyKey): boolean;
+}
+
+const shown: any = new (Shown as any)();
+console.log(typeof shown.toString, typeof shown.valueOf, typeof shown.hasOwnProperty);
+console.log(shown.hasOwnProperty("toString"), shown.valueOf() === shown);
+console.log(String(shown), `${shown}`);
+
+class Banner {
+  toString(): string {
+    return "banner";
+  }
+}
+
+abstract class Muted extends Banner {
+  abstract toString(): string;
+}
+
+console.log(String(new (Muted as any)()), `${new (Muted as any)() as unknown}`);
+
+abstract class Faulty extends Error {
+  abstract toString(): string;
+}
+
+const faulty = new (Faulty as any)("boom") as Faulty;
+console.log(faulty.toString(), faulty["toString"](), String(faulty as unknown));

@@ -8627,6 +8627,25 @@ export function findMethodOn(
   return null;
 }
 
+/** The nearest declaration of `name` at or above `info` that has a body.
+ * An abstract declaration emits no prototype member, so JavaScript's
+ * prototype chain walks past it to the implementation above; null when no
+ * class in the chain implements the method. */
+export function findImplementationOn(
+  lowerer: Lowerer,
+  info: ClassInfo | null,
+  name: string,
+): ReturnType<typeof findMethodOn> {
+  for (
+    let found = findMethodOn(lowerer, info, name);
+    found;
+    found = findMethodOn(lowerer, found.declarer.base, name)
+  ) {
+    if (found.sig.abstract !== true) return found;
+  }
+  return null;
+}
+
 /** True when `sub` is a STRICT descendant of `sup` in the class graph. */
 export function isSubclassOf(lowerer: Lowerer, sub: string, sup: string): boolean {
   if (sub === sup) return false;

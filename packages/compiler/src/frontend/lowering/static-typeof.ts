@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { isJsSourceFile } from "../program.js";
 import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { hostGlobalNameOfIdentifier } from "./host-globals.js";
@@ -24,9 +25,16 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   // tested (cjs-exports-object.ts), not an undeclared name.
   if (isUnresolvedCjsExports(lowerer, e)) return null;
   // A name nothing declares is undeclared at run time unless Node's global
-  // object has or inherits it (`navigator`, `toString`).
+  // object has or inherits it (`navigator`, `toString`). In a JavaScript
+  // source there is one more answer: the program itself can give the global
+  // object that property (`globalThis.feature = …`, here or in another
+  // module), so `typeof feature` follows the write and no constant folds.
+  // The comparison lowers through the global object's read instead
+  // (typeof.ts), which answers without reading the name.
   if (lowerer.checker.getSymbolAtLocation(e) === undefined)
-    return undeclaredGlobalTypeof(e.text) ?? "undefined";
+    return isJsSourceFile(ts.getSourceFileOfNode(e))
+      ? null
+      : (undeclaredGlobalTypeof(e.text) ?? "undefined");
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
   // A name the program declares ambiently but nothing defines (`declare

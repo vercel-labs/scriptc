@@ -82,3 +82,23 @@ console.log(new Pixel(7).value, typeof Pixel);
 console.log(typeof toString, typeof hasOwnProperty, typeof propertyIsEnumerable);
 globalThis.propertyIsEnumerable = "own";
 console.log(typeof propertyIsEnumerable, typeof toString);
+
+// A feature-detection guard asks about the global object's property, not
+// about the name's absence: after the write, every typeof comparison below
+// sees the value Node sees.
+globalThis.Adapter = function Adapter() {
+  return "adapter";
+};
+if (typeof Adapter === "function") console.log("adapter present");
+else console.log("adapter missing");
+if (typeof Adapter !== "undefined") console.log("adapter defined");
+else console.log("adapter absent");
+if (!(typeof Adapter === "undefined")) console.log("adapter negated present");
+console.log(typeof Adapter === "function" && Adapter() === "adapter");
+console.log(typeof Adapter === "function" ? "guard took then" : "guard took else");
+// The minified form (esbuild's `typeof x < "u"` undefined test) is the same
+// runtime question.
+console.log(typeof Adapter < "u", typeof NothingWritten < "u");
+// A name no one wrote still answers "undefined".
+if (typeof NothingWritten === "function") console.log("wrong");
+else console.log("nothing written stays missing");

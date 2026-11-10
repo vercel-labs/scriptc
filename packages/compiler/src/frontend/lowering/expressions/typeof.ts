@@ -643,26 +643,42 @@ export function lowerDynTypeofTest(
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
-    // `typeof undeclared === "..."` in a JavaScript source, or of a name
-    // only a library of the project's `lib` declares: nothing defines the
-    // name, so Node answers "undefined" without ever reading it — the
-    // test is that constant's comparison, never a read (a read throws).
+    // `typeof undeclared === "..."` in a JavaScript source is a runtime
+    // question: the program can have created the global object's own
+    // property of that name (`globalThis.X = ...`, in this module or
+    // another) and Node's answer follows it, so a folded constant would pick
+    // the wrong branch of a feature-detection guard. lowerTypeofExpr answers
+    // through the global object without reading the name (an absent one
+    // answers "undefined" instead of throwing), so compare that value.
+    // A name only a library of the project's `lib` declares in a TypeScript
+    // source cannot be written that way: Node answers "undefined" without
+    // ever reading it — the test is that constant's comparison, never a read
+    // (a read throws).
     {
       let operand = a.expression;
       while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
       if (
         ts.isIdentifier(operand) &&
-        (isJsSourceFile(ts.getSourceFileOfNode(operand)) ||
-          lowerer.projectLibraryNameAt(operand)) &&
         lowerer.resolveValueSymbol(operand) === null &&
         !isUnresolvedCjsExports(lowerer, operand)
-      )
-        return {
-          kind: "boolLit",
-          value: (b.text === "undefined") !== negated,
-          type: BOOL,
-          loc,
-        };
+      ) {
+        if (isJsSourceFile(ts.getSourceFileOfNode(operand)))
+          return {
+            kind: "strEq",
+            negated,
+            left: lowerTypeofExpr(lowerer, a, loc),
+            right: { kind: "strLit", value: b.text, type: STRING, loc },
+            type: BOOL,
+            loc,
+          };
+        if (lowerer.projectLibraryNameAt(operand))
+          return {
+            kind: "boolLit",
+            value: (b.text === "undefined") !== negated,
+            type: BOOL,
+            loc,
+          };
+      }
       // `typeof localStorage === "undefined"`: a global the declarations
       // type and Node 24 does not define, or a CommonJS binding in an ES
       // module. Node answers "undefined" without reading it, and a read

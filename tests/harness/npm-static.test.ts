@@ -1777,6 +1777,29 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test("a stored sequence keeps its own storage through documented and inferred parameters", async () => {
+    const entry = join(pilotRoot, "sequence-pool-cli.ts");
+    const binary = await buildStatic(entry, ["sequence-pool"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    // The typed-array fill and the plain-array fill share one `var`, and the
+    // mixing loops read and write it through both parameter shapes.
+    expect(nodeRes.stdout.toString()).toBe(
+      [
+        "typed=true head=27,15,203,147,12 checksum=9418",
+        "typed=true head=71,69,203,147,12 checksum=32304",
+        "typed=false head=27,15,203,147,12 checksum=9418",
+        "typed=false head=71,69,203,147,12 checksum=32304",
+        "",
+      ].join("\n"),
+    );
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  });
+
   test.for([
     ["purebarrel", "purebarrel-cli.ts"],
     ["statefulbarrel", "statefulbarrel-cli.ts"],

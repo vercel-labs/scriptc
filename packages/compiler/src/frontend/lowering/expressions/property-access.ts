@@ -3037,6 +3037,17 @@ export function lowerIntrinsicProperty(
   let kind = neverTaintedJsType(lowerer, expr.expression, lowerer.typeOf(expr.expression))
     ? undefined
     : lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind;
+  // A receiver whose checker type maps to nothing — a closure-captured
+  // `any` whose storage is a statically typed local (`P.length` on the
+  // variable an enclosing implicit instance bound to a documented array
+  // parameter) — still answers `.length` at the type its value holds: the
+  // arm dispatch below reads it from the union of sequences.
+  if (kind === undefined && expr.name.text === "length") {
+    const value = tryLowerExpression(lowerer, expr.expression)?.type;
+    const arms = value?.kind === "union" ? (lowerer.unions.get(value.unionId)?.arms ?? []) : [];
+    if (arms.length > 1 && arms.every((arm) => arm.kind === "array" || arm.kind === "bytes"))
+      kind = "array";
+  }
   // A checker-`any[]` receiver (the readonly-array Array.isArray quirk)
   // whose VALUE lowers to a real static array (maybeNarrow's isArray
   // bridge): `.length` and friends ride the array path on the lowered
@@ -3680,6 +3691,43 @@ export function lowerIntrinsicProperty(
         locOf(expr.expression),
       );
       if (view) return unionArmsLength(lowerer, view, locOf(expr));
+    }
+
+    // A receiver the checker reads as one array but the VALUE holds as a
+    // union of sequences (`P.length` for a JS function's parameter bound
+    // per call site to `number[] | Int32Array`, the lowered type of an
+    // evolving-any `var`): each arm answers its own length, read from the
+    // arm the value holds. A typed source already meets these unions in
+    // its checker spelling, on the paths above, which lower them in place.
+    if (receiver.type.kind === "union" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const arms = lowerer.unions.get(receiver.type.unionId)?.arms ?? [];
+      if (arms.length > 1 && arms.every((arm) => arm.kind === "array" || arm.kind === "bytes"))
+        return perArmUnionRead(
+          lowerer,
+          expr,
+          receiver.type.unionId,
+          receiver,
+          F64,
+          "%unionLength",
+          (arm, _tag, ref) =>
+            arm.kind === "bytes"
+              ? {
+                  kind: "bytesIntrinsic",
+                  method: "length",
+                  receiver: ref,
+                  args: [],
+                  type: F64,
+                  loc: locOf(expr),
+                }
+              : {
+                  kind: "arrIntrinsic",
+                  method: "length",
+                  receiver: ref,
+                  args: [],
+                  type: F64,
+                  loc: locOf(expr),
+                },
+        );
     }
 
     // A CHECKED-DYNAMIC value behind an array-typed checker spelling

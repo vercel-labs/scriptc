@@ -288,7 +288,7 @@ import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
 import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
-import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { analyzeVarReads } from "./var-hoisting.js";
 import { type ClassHierarchy, classHierarchyOf } from "./construction-reads.js";
 import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
 import { enumNumberReadMayMiss } from "./lower-enums.js";
@@ -3662,6 +3662,10 @@ export class Lowerer {
    * that code can read before their first store (var-hoisting.ts): their
    * storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
+  /** Unannotated JavaScript `var`s every read of which follows a store
+   * (var-hoisting.ts): nothing can observe them unassigned, so their writes
+   * may decide their type (jsVarWriteType). */
+  readonly storedBeforeReadVars = new Set<ts.Symbol>();
   /** Enums whose object some code uses as a value (enum-objects.ts), by
    * symbol and by their first and last declarations. Filled before the
    * globals are collected. */
@@ -5746,6 +5750,7 @@ export class Lowerer {
       checkedTable("emitterComputedPatterns", () => this.emitterComputedPatterns.length),
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
+      checkedTable("storedBeforeReadVars", () => this.storedBeforeReadVars.size),
       checkedTable("enumObjects", () => this.enumObjects.size),
       checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
@@ -9620,6 +9625,13 @@ export class Lowerer {
           const t = mappedOrNull(receiver);
           return t?.kind === "bytes" ? t.elem : null;
         },
+        // TypeScript `number[]` reads keep the optional-read lowering they
+        // already have (runtime-optional-locals.ts).
+        isJsNumberArray: (receiver) => {
+          if (!isJsSourceFile(ts.getSourceFileOfNode(receiver))) return false;
+          const t = mappedOrNull(receiver);
+          return t?.kind === "array" && t.elem.kind === "f64";
+        },
         isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",
         isString: (node) => mappedOrNull(node)?.kind === "string",
@@ -12460,7 +12472,8 @@ export class Lowerer {
     };
     // A `var` or an uninitialized `let` that code can read before its first
     // store holds undefined there, whatever its declared type.
-    for (const [symbol, read] of earlyReadVarSymbols(this, sourceFiles)) {
+    const varReads = analyzeVarReads(this, sourceFiles);
+    for (const [symbol, read] of varReads.early) {
       // Text codec bindings keep their own presence-checked storage.
       const declaration = symbol.valueDeclaration;
       const mapped =
@@ -12481,6 +12494,9 @@ export class Lowerer {
       const global = this.globalsBySymbol.get(symbol);
       if (global?.tdz && this.uninitializedLexicalGlobals.has(global.id)) delete global.tdz;
     }
+    // An unannotated JavaScript `var` these reads never see unassigned may
+    // take a type derived from its writes (jsVarWriteType).
+    for (const symbol of varReads.storedBeforeRead) this.storedBeforeReadVars.add(symbol);
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
     // changed (SiteDependencies). When such a pass changes nothing, a full

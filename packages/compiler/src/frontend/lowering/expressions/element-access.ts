@@ -534,6 +534,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (receiver?.type.kind === "union") {
       const present = lowerer.stripUndefinedArm(receiver.type);
       if (present.kind === "array" || present.kind === "bytes") receiverIr = present;
+      // A union of sequences the VALUE holds while the checker still names
+      // one (`any` for a closure-captured `var`): each arm answers its own
+      // element read, dispatched on the tag.
+      else if (indexedUnionArms(lowerer, receiver.type) !== null) receiverIr = receiver.type;
     }
   }
   // A readonly tuple union under Array.isArray is checker-typed as an
@@ -562,9 +566,19 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
 
   // An element read of a union of typed arrays and number arrays: each
-  // arm's own read, dispatched on the tag (indexed-unions.ts).
+  // arm's own read, dispatched on the tag (indexed-unions.ts). In a
+  // JavaScript source the checker spells the receiver the way its JSDoc
+  // declares it (`Array.<number>`, `Int32Array`) while the value holds the
+  // union the calling function's argument bound: the arm dispatch asks the
+  // lowered VALUE what storage it holds, so a JS sequence receiver takes
+  // this path even when the checker names one storage only.
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(expr));
   const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
-  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  const jsSequenceReceiver =
+    jsSource &&
+    receiverIr !== null &&
+    (receiverIr.kind === "array" || receiverIr.kind === "bytes" || receiverIr.kind === "union");
+  if (receiverIr !== null && ((indexedArms !== null && !jsSource) || jsSequenceReceiver)) {
     let recv = lowerer.lowerExpr(expr.expression);
     if (recv.type.kind === "dyn") recv = lowerer.coerceInto(expr.expression, recv, receiverIr);
     const arms = indexedUnionArms(lowerer, recv.type);
@@ -3406,11 +3420,21 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
     }
   }
   // An element write into a union of typed arrays and number arrays
-  // (indexed-unions.ts).
+  // (indexed-unions.ts). As for the read above, a JS sequence receiver
+  // takes this path on the storage the VALUE holds, even when its checker
+  // spelling names one only (`Array.<number>` for an argument bound to a
+  // typed array, or the reverse) or names none at all (a captured `var`).
+  const jsSource = isJsSourceFile(ts.getSourceFileOfNode(expr));
   const indexedArms = receiverIr ? indexedUnionArms(lowerer, receiverIr) : null;
-  if (indexedArms && receiverIr && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+  // A bytes receiver returned above, so only these remain.
+  const receiverType: IrType | null = receiverIr;
+  const jsSequenceReceiver =
+    jsSource &&
+    (receiverType === null || receiverType.kind === "array" || receiverType.kind === "union");
+  if ((indexedArms !== null && !jsSource) || jsSequenceReceiver) {
     let recv = lowerer.lowerExpr(target.expression);
-    if (recv.type.kind === "dyn") recv = lowerer.coerceInto(target.expression, recv, receiverIr);
+    if (recv.type.kind === "dyn" && receiverIr !== null)
+      recv = lowerer.coerceInto(target.expression, recv, receiverIr);
     const arms = indexedUnionArms(lowerer, recv.type);
     if (arms) {
       const index = lowerOptionalNumber(

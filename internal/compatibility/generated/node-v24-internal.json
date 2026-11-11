@@ -19768,6 +19768,7 @@
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
           "tests/corpus/crypto-checked-arguments.cjs",
+          "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
@@ -19805,6 +19806,7 @@
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/x509-key-usage.ts",
           "tests/fixtures/node-types/cipher.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
@@ -21908,10 +21910,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.constants",
         "tests": [
-          "tests/corpus/compat-crypto-catalogs.ts"
+          "tests/corpus/compat-crypto-catalogs.ts",
+          "tests/corpus/crypto-constants-object.ts",
+          "tests/fixtures/node-types/crypto-constants-object.ts"
         ]
       },
       "anchorSource": "ancestor"

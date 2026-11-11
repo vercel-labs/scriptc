@@ -752,6 +752,9 @@ function publicDetail(tier) {
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
     }
+    if (source === "compiler-feature:crypto.constants") {
+      return "Each crypto.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
+    }
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";
     }

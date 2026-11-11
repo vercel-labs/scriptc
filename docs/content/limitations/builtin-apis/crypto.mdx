@@ -12,6 +12,7 @@
   `getCipherInfo` answers Node's info for every cipher OpenSSL names, including the ones without a native implementation.
   `getCipherInfo` options whose class defines `keyLength` or `ivLength` throw a coded SC2020 error.
   The result is Node's object; the SIV ciphers and the SM4 GCM, CCM, and XTS ciphers have no `nid`, and reading it where the declared `CipherInfo` type gives `number` throws a TypeError.
+  `crypto.constants` members and their module-level copies read as Node's values, and the constants object itself is one runtime value whose keys, key order, and identity match Node's.
   Cipheriv and Decipheriv values are also Transforms: they can be written, piped into, used as `pipeline()` stages, read, iterated with `for await`, and listened to, and their stream properties read as in Node; written chunks go through `update()`, and the end pushes `final()` or reports its error through `'error'`.
   Through `unknown` and `any` slots and untyped JavaScript, in a program that uses streams, their stream properties and their `on`, `once`, `off`, `pipe`, `unpipe`, `read`, `pause`, `resume`, `setEncoding`, `write`, `end`, `destroy`, `cork`, and `uncork` members work; `write` and `end` take no encoding or callback there, and the other stream members throw a coded SC2020 error.
   Hash, Hmac, Cipheriv, and Decipheriv streams count a written string's bytes in `writableLength`, where Node counts the string's length.

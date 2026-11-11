@@ -12222,8 +12222,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Each crypto.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.",
         "verification": "test-backed"
       }
     },

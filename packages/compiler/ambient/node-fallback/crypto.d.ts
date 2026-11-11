@@ -1045,8 +1045,9 @@ declare module "crypto" {
   export function getHashes(): string[];
   export function getCurves(): string[];
   /* Node v24 crypto.constants, literal-typed (the Http2Constants
-   * stance). Every ACCESS bakes as its literal at lowering; the object
-   * itself never materializes (bare crypto.constants value uses fence). */
+   * stance). Every ACCESS bakes as its literal at lowering; a program
+   * that reads the object whole gets the module's singleton record,
+   * built from the same table. */
   export interface CryptoConstants {
     readonly OPENSSL_VERSION_NUMBER: 810549392;
     readonly SSL_OP_ALL: 2147485776;

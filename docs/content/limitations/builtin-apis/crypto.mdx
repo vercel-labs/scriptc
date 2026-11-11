@@ -27,6 +27,8 @@
   A call on a DiffieHellman value whose arguments no @types/node overload accepts, or whose output encoding is typed `any`, is refused at compile time, as are its `Object.prototype` methods; other property reads, and property writes, throw a coded SC2020 error.
   `Object.keys()` and `in` do not see a DiffieHellman's own `verifyError` property, and `JSON.stringify()` and `instanceof` are refused.
   After `createDiffieHellman(primeLength)` throws `Invalid DH parameters`, the next OpenSSL error Node throws can list the failed generation's errors in `opensslErrorStack`; errors in a compiled binary list only their own.
+  The error for key material that no decoder accepts has Node's `library`, `reason`, and `opensslErrorStack`, whose last entry is the reported error.
+  When a PEM body begins with a valid structure and fails further in, the entries OpenSSL lists before that last one are missing, and a malformed public key or DER input is reported as `ERR_OSSL_UNSUPPORTED` where Node reports the ASN.1 parser's own code.
   `crypto.diffieHellman` computes ECDH and X25519 secrets from EC and X25519 keys, given as KeyObjects or in any form `createPrivateKey` and `createPublicKey` read, with Node's errors; DH keys have no KeyObjects here, and the `DiffieHellman` and `DiffieHellmanGroup` constructors are not available.
   `checkPrime`, `checkPrimeSync`, `generatePrime`, and `generatePrimeSync` support bigint, ArrayBuffer, typed-array, Buffer, and DataView values and the `checks`, `safe`, `add`, `rem`, and `bigint` options on native targets, with Node's errors; the callback forms compute before they return and call back in a later macrotask.
   Candidates and sizes longer than 262144 bits throw a coded SC2020 error, and wasm32-wasi builds are refused.
@@ -46,7 +48,7 @@
   `publicKey`, `verify()`, and `checkPrivateKey()` are refused in wasm32-wasi builds, and an Ed25519 certificate's `verify()` needs the `ed25519` literal like the other Ed25519 operations.
   Own-key walks over a certificate (`Object.keys()`, `Object.entries()`, spread, `for...in`, and `hasOwnProperty`) are refused, since Node keeps its fields as prototype getters.
   `JSON.stringify()` and `console.log()` of a certificate, a certificate stored in an `unknown` or `any` slot, and its methods on a union-typed value are also refused.
-  Sign and Verify values accumulate `update()` data and are not writable streams.
+  Sign and Verify values are Writable streams: `write()` accumulates data as `update()` does, `end()` finishes the stream, and `pipe()` can pipe into one; they have no Readable side, as in Node.
   Private keys export encrypted (`cipher`, `passphrase`) with aes-128, aes-192, and aes-256 in CBC and ECB modes and with des-ede3-cbc, PKCS#8 as PBES2 with PBKDF2-HMAC-SHA256 and PKCS#1 and SEC1 as traditional PEM, and the ciphers OpenSSL refuses for a form throw its errors; a cipher option can also be an OID; other ciphers Node encrypts with throw a coded SC2020 error.
   Encrypted private keys import with a `passphrase` from PBES2 with HMAC-SHA PRFs and the CBC and ECB ciphers, and from traditional PEM with the CBC ciphers, with Node's errors for a missing or wrong passphrase; other schemes and ciphers throw a coded SC2020 error once a passphrase is given.
   The other key types (`dsa`, `ed448`, `x448`, and the rest) and wasm32-wasi builds throw a coded SC2020 error or are refused.

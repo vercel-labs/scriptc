@@ -12,13 +12,16 @@ import {
   VOID,
 } from "../ir/ir.js";
 import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-mutability.js";
+import { weakKeyUnits } from "./weak-keys.js";
 
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
  * and arms can hold (collections flattened into their element, key and
  * value types). Closures, checked values, class values, caught values and
  * promises are INTRINSIC: they can reach anything, so a unit holding one is
- * on a potential cycle. Strings never are.
+ * on a potential cycle. So is a unit whose values are keys of a WeakMap or
+ * WeakSet: the entry's value can reference anything (weak-keys.ts). Strings
+ * never are.
  *
  * An edge is IMMUTABLE when it can only be stored while its owner is still
  * under construction (cycle-mutability.ts derives this from the IR): such an
@@ -45,8 +48,45 @@ export function computeTraced(
   return { shapes, unions };
 }
 
+/** The shapes that can be on a cycle of counted references in a program
+ * that makes weak-collection entries: the ones the analysis traces without
+ * the weak-key marks. Each shape answers for itself here: an object holds
+ * what its own class declares, whatever its hierarchy shares a header for.
+ * null for a program without a weak collection, where nothing is asked
+ * twice.
+ *
+ * A shape with the collector header that is not among them has it ONLY
+ * because values are keys of WeakMap or WeakSet entries (or because its
+ * hierarchy or union shares a layout). It reaches no closure, checked
+ * value, promise or mutable type cycle, so none of its objects is on a
+ * cycle of counted references and nothing below one is: the collector can
+ * free nothing by nominating one or by walking into it. The only cycle it
+ * can be on runs through a weak entry (key, entry, value, key), which the
+ * collector does not see by its own rule (the collection traces the value
+ * as its own child); the weak analysis ends it (scr_json.c,
+ * scr_weak_judge) and is the one reader of these types' traces. The
+ * backend therefore gives such a shape a trace function, and everything
+ * else of a type without cycle-capable children (llvm/shapes.ts
+ * ShapeHost.weakOnly). */
+export function computeCyclic(
+  mod: IrModule,
+  stores?: DynamicFieldStores,
+  precomputed?: CycleMutability,
+): ReadonlySet<string> | null {
+  if (mod.weakKeys === undefined) return null;
+  return analyzeCycles(mod, false, stores, precomputed, false).cyclic;
+}
+
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
+export type IntrinsicKind =
+  | "func"
+  | "dyn"
+  | "jsval"
+  | "classval"
+  | "promise"
+  | "caught"
+  /** The unit's values are keys of weak-collection entries (`field` is empty). */
+  | "weakKey";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -96,8 +136,14 @@ function analyzeCycles(
   labels: boolean,
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
+  /** Whether weak-collection keys are intrinsic (computeCyclic asks for the
+   * answer without them). */
+  weakMarks = true,
 ): {
   shapes: Set<string>;
+  /** The shapes that are traced themselves, before a hierarchy shares the
+   * answer of one member. */
+  cyclic: Set<string>;
   unions: Set<string>;
   explain: (key: string) => CycleExplanation | null;
 } {
@@ -129,28 +175,61 @@ function analyzeCycles(
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
   const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
+  // What an instance holds beyond its declared fields. `fields` repeats the
+  // base chain's declared fields in every subclass; these references are not
+  // declared, so a class takes them from its whole base chain: an instance of
+  // a stream class or of a program subclass of the emitter owns listeners
+  // exactly as an emitter does, and a slot typed as that subclass must lead
+  // to them — otherwise the slot's owner goes untraced and a listener that
+  // captures it closes a cycle the collector never sees.
+  type ClassDef = (typeof classes)[number];
+  type Field = { name: string; type: IrType };
+  const classesByName = new Map(classes.map((c) => [c.name, c] as const));
+  const undeclared = new Map<string, Field[]>();
+  const undeclaredFields = (start: ClassDef): Field[] => {
+    // Resolved from the nearest answered ancestor down, without recursion
+    // (hierarchies can be thousands deep).
+    const chain: ClassDef[] = [];
+    const onChain = new Set<string>();
+    let inherited: Field[] = [];
+    let c: ClassDef | undefined = start;
+    while (c !== undefined && !onChain.has(c.name)) {
+      const known = undeclared.get(c.name);
+      if (known !== undefined) {
+        inherited = known;
+        break;
+      }
+      chain.push(c);
+      onChain.add(c.name);
+      c = c.base === undefined ? undefined : classesByName.get(c.base);
+    }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const c = chain[i]!;
+      const own: Field[] = [];
+      if (c.name === RUNTIME_EMITTER_CLASS)
+        own.push({ name: "<listeners>", type: funcOf([], VOID) });
+      // The EventTarget state owns listener values and the target's own
+      // capsule; an Event owns its target and detail.
+      if (c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS)
+        own.push({ name: "<engine>", type: DYN });
+      if (c.localCaptures !== undefined)
+        own.push({ name: "<class>", type: { kind: "classval", className: c.name } });
+      // An instance of a class that extends Array holds its elements.
+      if (c.arrayElem !== undefined)
+        own.push({ name: "<elements>", type: { kind: "array", elem: c.arrayElem } });
+      inherited =
+        own.length === 0
+          ? inherited
+          : [...own, ...inherited.filter((field) => !own.some((o) => o.name === field.name))];
+      undeclared.set(c.name, inherited);
+    }
+    return inherited;
+  };
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
       unit: unitOfClass(c.name),
-      fields: [
-        ...c.fields,
-        ...(c.name === RUNTIME_EMITTER_CLASS
-          ? [{ name: "<listeners>", type: funcOf([], VOID) }]
-          : []),
-        // The EventTarget state owns listener values and the target's own
-        // capsule; an Event owns its target and detail.
-        ...(c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS
-          ? [{ name: "<engine>", type: DYN }]
-          : []),
-        ...(c.localCaptures !== undefined
-          ? [{ name: "<class>", type: { kind: "classval" as const, className: c.name } }]
-          : []),
-        // An instance of a class that extends Array holds its elements.
-        ...(c.arrayElem !== undefined
-          ? [{ name: "<elements>", type: { kind: "array" as const, elem: c.arrayElem } }]
-          : []),
-      ],
+      fields: [...c.fields, ...undeclaredFields(c)],
     })),
     ...(mod.records ?? []).map((r) => ({
       key: `record:${r.id}`,
@@ -217,6 +296,29 @@ function analyzeCycles(
     for (const kid of children.get(name)!) {
       sub.edges.set(subtreeOf(kid)!, false);
       sub.labels?.set(subtreeOf(kid)!, { kind: "subclass", className: kid });
+    }
+  }
+  // A weak-collection key holds its entry's value. A key of class type can
+  // be an instance of any class in the subtree.
+  const weakKeys = weakMarks ? weakKeyUnits(mod) : null;
+  if (weakKeys !== null) {
+    const mark = (n: Node | undefined): void => {
+      if (n === undefined || n.intrinsic) return;
+      n.intrinsic = true;
+      if (n.labels !== null) n.intrinsicField = { field: "", holds: "weakKey" };
+    };
+    for (const unit of weakKeys) {
+      if (!unit.startsWith("object:")) {
+        mark(shapes.get(unit));
+        continue;
+      }
+      const subtree = [unit.slice("object:".length)];
+      while (subtree.length > 0) {
+        const name = subtree.pop()!;
+        if (!programLifetime(name)) mark(shapes.get(`object:${name}`));
+        const kids = children.get(name);
+        if (kids) subtree.push(...kids);
+      }
     }
   }
   // Each field/arm is an OR of intrinsic capability and referenced nodes.
@@ -366,7 +468,12 @@ function analyzeCycles(
   // Header presence is uniform across a hierarchy: a unit is traced iff any
   // member class is.
   const tracedUnits = new Set<string>();
-  for (const s of shapeDefs) if (shapes.get(s.key)!.traced) tracedUnits.add(s.unit);
+  const cyclic = new Set<string>();
+  for (const s of shapeDefs)
+    if (shapes.get(s.key)!.traced) {
+      tracedUnits.add(s.unit);
+      cyclic.add(s.key);
+    }
   const tracedShapes = new Set(shapeDefs.filter((s) => tracedUnits.has(s.unit)).map((s) => s.key));
   const tracedUnions = new Set([...unions].filter(([, n]) => n.traced).map(([id]) => id));
 
@@ -498,5 +605,5 @@ function analyzeCycles(
     }
     return null;
   };
-  return { shapes: tracedShapes, unions: tracedUnions, explain };
+  return { shapes: tracedShapes, cyclic, unions: tracedUnions, explain };
 }

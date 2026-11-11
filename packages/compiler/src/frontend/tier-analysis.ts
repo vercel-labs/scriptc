@@ -260,7 +260,6 @@ const TYPE_CODES = new Set([
   "SC2008",
   "SC2009",
   "SC2011",
-  "SC1063",
   "SC1100",
   "SC1101",
 ]);
@@ -274,8 +273,10 @@ const MODULE_CODES = new Set([
   "SC2013",
 ]);
 /** Runtime code generation (`eval`, `new Function`): excluded by policy,
- * since the dynamic tier compiles ahead of time (DESIGN.md §12 class X). */
-const EXCLUDED_CODES = new Set(["SC2010"]);
+ * since the dynamic tier compiles ahead of time (DESIGN.md §12 class X).
+ * A type over the type walk's step limit (SC2016) ends the build in every
+ * tier: the lenient mapping of the same type would take as long. */
+const EXCLUDED_CODES = new Set(["SC2010", "SC2016"]);
 const EXCLUDED_SURFACE = /^'(?:new Function|Function|eval)'/;
 
 /** Refusals and fences that name a static-tier gap. Type errors,

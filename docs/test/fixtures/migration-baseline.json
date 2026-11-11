@@ -565,6 +565,10 @@
         "id": "process-arguments-and-errors"
       },
       {
+        "text": "Defined environment variables",
+        "id": "defined-environment-variables"
+      },
+      {
         "text": "Embedded JavaScript engine",
         "id": "embedded-javascript-engine"
       },

@@ -86,7 +86,13 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
   const published = facts.published !== undefined ? facts.published : computePublishedTypes(mod);
   const lifetime = new Set(mod.contracts?.programLifetime ?? []);
   const bases = new Set(defs.flatMap((d) => (d.base === undefined ? [] : [d.base])));
-  const slots = collectTypeSlots(mod);
+  // The slots and functions that mention each class, found in one walk of
+  // the module when the first class asks. Asking every slot about every
+  // class instead is a walk of the module per class: 30 s of the compiler's
+  // own build. A module none of whose classes gets that far is not walked.
+  const reach = new MentionedClasses(unions);
+  let index: MentionIndex | null = null;
+  const mentioned = (): MentionIndex => (index ??= indexMentions(mod, reach));
 
   for (const def of defs) {
     if (def.runtime === true) continue;
@@ -117,7 +123,7 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     // Reference fields must be written by the constructor alone: a node
     // that can be rewired after construction can gain a second owner.
     for (const field of def.fields) {
-      if (!mentions(field.type, name, unions)) continue;
+      if (!reach.mentions(field.type, name)) continue;
       if (immutable?.classField(name, field.name) !== true)
         reject(`field ${field.name} is written after construction`);
     }
@@ -137,8 +143,7 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     }
 
     // ── Analysis A: every type in the module that mentions the class ────
-    for (const slot of slots) {
-      if (!mentions(slot.type, name, unions)) continue;
+    for (const slot of mentioned().slots.get(name) ?? []) {
       const shape = treeShape(slot.type, name, unions);
       if (shape === null) {
         reject(`${slot.where} holds it in a type that is neither the class nor null or it`);
@@ -157,8 +162,11 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     }
 
     // ── Analysis B: whole-program linear use ───────────────────────────
-    const check = new LinearUse(name, unions, functions, facts);
-    for (const fn of mod.functions) check.function(fn);
+    // A function none of whose slots mentions the class has no tree local,
+    // no tree result and no expression that holds a node, which is where
+    // the linear-use check of a function returns before it looks further.
+    const check = new LinearUse(name, reach, functions, facts);
+    for (const fn of mentioned().functions.get(name) ?? []) check.function(fn);
     for (const why of check.reasons()) reject(why);
     finish();
     if (classes.has(name)) for (const move of check.moves()) moves.add(move);
@@ -221,45 +229,107 @@ function unionIdOf(type: IrType): string {
   return type.kind === "union" ? type.unionId : "";
 }
 
-/** Whether a value of this type can lead to an instance of `name`: directly,
- * through a union arm, or through a container, closure or generator slot. */
-export function mentions(
-  type: IrType,
-  name: string,
-  unions: ReadonlyMap<string, IrUnionDef>,
-): boolean {
-  switch (type.kind) {
-    case "object":
-    case "classval":
-      return type.className === name;
-    case "union": {
-      const arms = unions.get(type.unionId)?.arms;
-      return arms !== undefined && arms.some((arm) => mentions(arm, name, unions));
-    }
-    case "array":
-      return mentions(type.elem, name, unions);
-    case "map":
-      return mentions(type.key, name, unions) || mentions(type.value, name, unions);
-    case "set":
-      return mentions(type.elem, name, unions);
-    case "promise":
-      return mentions(type.inner, name, unions);
-    case "func":
-      return (
-        type.params.some((param) => mentions(param, name, unions)) ||
-        mentions(type.ret, name, unions)
-      );
-    case "generator":
-      return (
-        mentions(type.yieldT, name, unions) ||
-        mentions(type.retT, name, unions) ||
-        mentions(type.nextT, name, unions)
-      );
-    case "record":
-      return false;
-    default:
-      return false;
+const NO_CLASSES: ReadonlySet<string> = new Set();
+
+/** The classes a value of a type can lead to: directly, through a union
+ * arm, or through a container, closure or generator slot. A record is not
+ * looked into: its fields are slots of their own. A union's answer is kept
+ * by its id and a class's by its name, so most types cost a lookup.
+ *
+ * A union can reach itself through a container (`type Json = string |
+ * Json[]`). The walk of a union does not enter a union it is already inside,
+ * which is being collected by the same walk. What it then returns for an
+ * inner union lacks whatever the enclosing union adds, so such an answer is
+ * not kept: only the union the walk started from, or one whose walk met no
+ * union it was inside, is complete.
+ *
+ * Every question the planner asks about a type goes through one instance,
+ * so no walk of a type is left that could follow such a union forever. */
+class MentionedClasses {
+  private readonly ofUnion = new Map<string, ReadonlySet<string>>();
+  private readonly ofClass = new Map<string, ReadonlySet<string>>();
+  /** The unions the current walk is inside. */
+  private readonly inside = new Set<string>();
+  /** How often a walk skipped a union it was inside. */
+  private skipped = 0;
+
+  constructor(private readonly unions: ReadonlyMap<string, IrUnionDef>) {}
+
+  /** Whether a value of this type can lead to an instance of `name`. */
+  mentions(type: IrType, name: string): boolean {
+    if (type.kind === "object" || type.kind === "classval") return type.className === name;
+    return this.of(type).has(name);
   }
+
+  of(type: IrType): ReadonlySet<string> {
+    switch (type.kind) {
+      case "object":
+      case "classval": {
+        let only = this.ofClass.get(type.className);
+        if (only === undefined) {
+          only = new Set([type.className]);
+          this.ofClass.set(type.className, only);
+        }
+        return only;
+      }
+      case "union": {
+        const known = this.ofUnion.get(type.unionId);
+        if (known !== undefined) return known;
+        if (this.inside.has(type.unionId)) {
+          this.skipped++;
+          return NO_CLASSES;
+        }
+        const arms = this.unions.get(type.unionId)?.arms;
+        if (arms === undefined) {
+          this.ofUnion.set(type.unionId, NO_CLASSES);
+          return NO_CLASSES;
+        }
+        const outermost = this.inside.size === 0;
+        const skippedBefore = this.skipped;
+        this.inside.add(type.unionId);
+        const found = this.ofAll(arms);
+        this.inside.delete(type.unionId);
+        if (outermost || this.skipped === skippedBefore) this.ofUnion.set(type.unionId, found);
+        return found;
+      }
+      case "array":
+        return this.of(type.elem);
+      case "map":
+        return eitherClasses(this.of(type.key), this.of(type.value));
+      case "set":
+        return this.of(type.elem);
+      case "promise":
+        return this.of(type.inner);
+      case "func":
+        return eitherClasses(this.ofAll(type.params), this.of(type.ret));
+      case "generator":
+        return eitherClasses(
+          eitherClasses(this.of(type.yieldT), this.of(type.retT)),
+          this.of(type.nextT),
+        );
+      default:
+        return NO_CLASSES;
+    }
+  }
+
+  private ofAll(types: readonly IrType[]): ReadonlySet<string> {
+    let found = NO_CLASSES;
+    for (const type of types) found = eitherClasses(found, this.of(type));
+    return found;
+  }
+}
+
+/** The classes of both sets, as one of them when the other adds nothing. */
+function eitherClasses(a: ReadonlySet<string>, b: ReadonlySet<string>): ReadonlySet<string> {
+  if (b.size === 0 || a === b) return a;
+  if (a.size === 0) return b;
+  let grown: Set<string> | null = null;
+  for (const name of b) {
+    if (a.has(name)) continue;
+    grown ??= new Set(a);
+    grown.add(name);
+  }
+  return grown ?? a;
 }
 
 /** Whether `this` leaves the constructor for anywhere but a field of the
@@ -291,7 +361,7 @@ class LinearUse {
 
   constructor(
     private readonly cls: string,
-    private readonly unions: ReadonlyMap<string, IrUnionDef>,
+    private readonly reach: MentionedClasses,
     private readonly functions: ReadonlyMap<string, IrFunction>,
     private readonly facts: TreeClassFacts,
   ) {}
@@ -313,7 +383,7 @@ class LinearUse {
   }
 
   private tree(type: IrType): boolean {
-    return mentions(type, this.cls, this.unions);
+    return this.reach.mentions(type, this.cls);
   }
 
   function(fn: IrFunction): void {
@@ -716,53 +786,85 @@ function isExpr(node: IrExpr | IrStmt): node is IrExpr {
   return !STATEMENT_KINDS.has(node.kind);
 }
 
-/** Every typed slot of the module, with where it sits. Root types only:
- * `mentions` looks through the containers itself. */
-function collectTypeSlots(mod: IrModule): TypeSlot[] {
-  const slots: TypeSlot[] = [];
-  const add = (type: IrType, where: string, slot: TypeSlot["slot"], owner?: string): void => {
-    slots.push(owner === undefined ? { type, where, slot } : { type, where, slot, owner });
+/** What mentions each class: its typed slots with where they sit, in module
+ * order, and the functions that hold one of them, in module order. Root
+ * types only: `MentionedClasses` looks through the containers itself. */
+interface MentionIndex {
+  slots: ReadonlyMap<string, readonly TypeSlot[]>;
+  functions: ReadonlyMap<string, readonly IrFunction[]>;
+}
+
+function indexMentions(mod: IrModule, classes: MentionedClasses): MentionIndex {
+  const slots = new Map<string, TypeSlot[]>();
+  const functions = new Map<string, IrFunction[]>();
+  let holder: IrFunction | null = null;
+  // `where` arrives in parts and is joined only for a slot that mentions a
+  // class: most of a module's slots are expressions that mention none.
+  const add: AddSlot = (type, subject, role, detail, slot, owner) => {
+    const names = classes.of(type);
+    if (names.size === 0) return;
+    const where = subject + role + detail;
+    const entry: TypeSlot =
+      owner === undefined ? { type, where, slot } : { type, where, slot, owner };
+    for (const name of names) {
+      const list = slots.get(name);
+      if (list === undefined) slots.set(name, [entry]);
+      else list.push(entry);
+      if (holder === null) continue;
+      const holders = functions.get(name);
+      if (holders === undefined) functions.set(name, [holder]);
+      else if (holders[holders.length - 1] !== holder) holders.push(holder);
+    }
   };
   for (const fn of mod.functions) {
-    for (const param of fn.params) add(param.type, `${fn.name} parameter ${param.name}`, "param");
-    add(fn.returnType, `${fn.name} result`, "result");
-    for (const local of fn.locals) add(local.type, `${fn.name} local ${local.name}`, "local");
+    holder = fn;
+    for (const param of fn.params) add(param.type, fn.name, " parameter ", param.name, "param");
+    add(fn.returnType, fn.name, " result", "", "result");
+    for (const local of fn.locals) add(local.type, fn.name, " local ", local.name, "local");
     for (const capture of fn.captures ?? [])
-      add(capture.type, `${fn.name} capture ${capture.name}`, "capture");
+      add(capture.type, fn.name, " capture ", capture.name, "capture");
     for (const capture of fn.classCaptures ?? [])
-      add(capture.type, `${fn.name} class capture ${capture.name}`, "capture");
+      add(capture.type, fn.name, " class capture ", capture.name, "capture");
     if (fn.generator !== undefined) {
-      add(fn.generator.yieldT, `${fn.name} yield`, "capture");
-      add(fn.generator.nextT, `${fn.name} next`, "capture");
-      add(fn.generator.resultType, `${fn.name} generator result`, "capture");
+      add(fn.generator.yieldT, fn.name, " yield", "", "capture");
+      add(fn.generator.nextT, fn.name, " next", "", "capture");
+      add(fn.generator.resultType, fn.name, " generator result", "", "capture");
     }
-    for (const stmt of fn.body) exprSlots(stmt, `${fn.name}`, add);
+    for (const stmt of fn.body) exprSlots(stmt, fn.name, add);
   }
+  holder = null;
   for (const def of mod.classes ?? []) {
     for (const field of def.fields)
-      add(field.type, `${def.name} field ${field.name}`, "classField", def.name);
+      add(field.type, def.name, " field ", field.name, "classField", def.name);
     for (const capture of def.localCaptures ?? [])
-      add(capture.type, `${def.name} capture ${capture.name}`, "capture");
-    if (def.arrayElem !== undefined) add(def.arrayElem, `${def.name} element`, "capture");
+      add(capture.type, def.name, " capture ", capture.name, "capture");
+    if (def.arrayElem !== undefined) add(def.arrayElem, def.name, " element", "", "capture");
   }
   for (const record of mod.records ?? [])
     for (const field of record.fields)
-      add(field.type, `record ${record.id} field ${field.name}`, "recordField");
-  for (const global of mod.globals ?? []) add(global.type, `global ${global.name}`, "global");
+      add(field.type, `record ${record.id}`, " field ", field.name, "recordField");
+  for (const global of mod.globals ?? []) add(global.type, "global ", global.name, "", "global");
   for (const union of mod.unions ?? [])
-    for (const arm of union.arms) add(arm, `union ${union.id}`, "expr");
-  return slots;
+    for (const arm of union.arms) add(arm, "union ", union.id, "", "expr");
+  return { slots, functions };
 }
+
+/** Records one slot: its type, the three parts of where it sits, its kind,
+ * and the class declaring a classField slot. */
+type AddSlot = (
+  type: IrType,
+  subject: string,
+  role: string,
+  detail: string,
+  slot: TypeSlot["slot"],
+  owner?: string,
+) => void;
 
 /** Expression types inside a statement, which must stay in the in-flight
  * forms (the class itself or `C | null`). */
-function exprSlots(
-  stmt: IrStmt,
-  where: string,
-  add: (type: IrType, where: string, slot: TypeSlot["slot"]) => void,
-): boolean {
+function exprSlots(stmt: IrStmt, where: string, add: AddSlot): boolean {
   const expr = (e: IrExpr): boolean => {
-    add(e.type, `${where} expression ${e.kind}`, "expr");
+    add(e.type, where, " expression ", e.kind, "expr");
     return everyExprChild(e, expr, stmtVisitor);
   };
   const stmtVisitor = (s: IrStmt): boolean => everyStmtChild(s, expr, stmtVisitor);

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { placeLongestFirst } from "../tests/harness/shard-balance.mjs";
 
 // Case-sharded harnesses run in every job without Vitest file sharding.
 export const effectFiles = ["tests/harness/effect.test.ts", "tests/harness/effect4.test.ts"];
@@ -24,12 +25,28 @@ export const isolatedFiles = [
 ];
 // Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
 // skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
-// its own vitest process.
+// its own vitest process. Every file that calls skipUnownedTest belongs here:
+// vitest's --shard would give the whole file to one shard, which then skips
+// the tests the other shards own.
 export const caseShardedSideFiles = [
   ["npm static", "tests/harness/npm-static.test.ts"],
   ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["three.js library", "tests/harness/three-library.test.ts"],
+  ["program host reuse parity", "tests/harness/ts7-host-reuse-parity.test.ts"],
 ];
+/** The cost table of a suite that splits its own tests: `<suite>-costs.json` beside the test file. */
+export function caseCostsPath(file) {
+  return file.replace(/\.test\.ts$/, "-costs.json");
+}
+// Milliseconds each of those suites' tests takes on a CI runner, per flavor
+// and test name, from the same logs (scripts/ci-test-costs.mjs refreshes
+// them). The suite balances its tests with the same table.
+export const caseCosts = Object.fromEntries(
+  caseShardedSideFiles.map(([, file]) => [
+    file,
+    JSON.parse(readFileSync(new URL("../" + caseCostsPath(file), import.meta.url), "utf8")),
+  ]),
+);
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
@@ -55,12 +72,14 @@ export const memoryHeavyFiles = {
 };
 
 // The sanitized self-hosting native-frontend build needs most of a 16 GB
-// runner by itself: its clang compile of the whole frontend under ASan takes
-// 10.5 GB beside a 3.8 GB compile in Node. Beside a shard's corpus workers an
-// OOM killed it intermittently (SIGKILL at 670-740 s, empty stderr, every test
-// skipped). The sanitized Linux suite runs these three files in the
+// runner by itself: its clang compile of the whole frontend under ASan runs
+// one clang per core, the largest of them 5.1 GB, beside a compile in Node
+// that holds 6.5 to 7.4 GB. Beside a shard's corpus workers an OOM killed it
+// intermittently (SIGKILL at 670-740 s, empty stderr, every test skipped).
+// The sanitized Linux suite runs these three files in the
 // native_frontend_san jobs (.github/workflows/ci.yml), one file per job with
-// one worker and no corpus. The plain suite and the macOS shards keep them in
+// one worker and no corpus, on two of the runner's cores: four clangs at once
+// no longer fit. The plain suite and the macOS shards keep them in
 // the shard side queue, where the compiler's peak fits (macOS has no
 // LeakSanitizer and runs these files one at a time beside the corpus).
 export const nativeFrontendFiles = [
@@ -74,17 +93,24 @@ export function dedicatedFiles(flavor, platform = process.platform) {
   return flavor === "san" && platform === "linux" ? nativeFrontendFiles : [];
 }
 
-// The shard (1-based) of each measured side-queue file and isolated suite:
-// longest first to the shard with the least work so far, counting about a
-// second per file for vitest to import it. Ties go to the highest shard, so the
-// longest files start from the last shard while the cost-balanced corpus and
-// three.js cases (tests/harness/shard.ts) place their longest from the first.
-// An isolated suite or memory-heavy file without a measurement weighs as much
-// as the median measured file. Memory-heavy files are placed after the others,
-// each on the shard with the least memory-heavy work so far and, among those,
-// the least work. Files without a
-// measurement are left to vitest's --shard, which splits them by count.
-export function sideOwners(flavor, count, platform = process.platform) {
+// The side queue of every shard, planned as one load per shard in measured
+// milliseconds. The suites that split their own tests come first, the one with
+// the longest test first: each starts from the load the suites before it left
+// (`starts`, which its shard processes receive as SCRIPTC_TEST_SHARD_LOADS),
+// and places its tests longest first on the shard with the least so far
+// (tests/harness/shard-balance.mjs; the planner places the measured tests as
+// the suite will). The measured side-queue files and isolated suites follow by
+// the same rule, counting about a second per file for vitest to import it; an
+// isolated suite or memory-heavy file without a measurement weighs as much as
+// the median measured file. So the longest tests of different suites land on
+// different shards, and a test longer than an even share holds a shard's side
+// queue alone. Memory-heavy files are placed before the other files, each on
+// the shard with the least memory-heavy work so far and, among those, the
+// least work, so the files that follow level the shards around them. Files
+// without a measurement are left to vitest's --shard, which splits them by
+// count. `owners` is the shard (1-based) of each whole file, and `loads` the
+// planned milliseconds of each shard.
+export function sidePlan(flavor, count, platform = process.platform) {
   const costs = testCosts[flavor];
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
@@ -96,17 +122,28 @@ export function sideOwners(flavor, count, platform = process.platform) {
   const files = [
     ...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]),
   ].filter((file) => !dedicated.has(file) && !(file in memoryHeavyFiles));
-  files.sort((a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0));
   const loads = new Array(count).fill(0);
   const memory = new Array(count).fill(0);
-  const owners = new Map();
-  for (const file of files) {
-    let lightest = count - 1;
-    for (let shard = count - 2; shard >= 0; shard--)
-      if (loads[shard] < loads[lightest]) lightest = shard;
-    loads[lightest] += weight(file);
-    owners.set(file, lightest + 1);
+  const starts = new Map();
+  const longest = (file) => Math.max(0, ...Object.values(caseCosts[file][flavor]));
+  const suites = caseShardedSideFiles
+    .map(([, file]) => file)
+    .sort((a, b) => longest(b) - longest(a) || (a < b ? -1 : a > b ? 1 : 0));
+  // What the plan puts on each shard: [file, test or undefined, milliseconds].
+  const placed = Array.from({ length: count }, () => []);
+  for (const file of suites) {
+    starts.set(
+      file,
+      loads.map((load) => Math.round(load)),
+    );
+    const tests = Object.entries(caseCosts[file][flavor]).map(([key, cost]) => ({
+      key,
+      weight: Math.max(1, cost),
+    }));
+    const slices = placeLongestFirst(tests, loads);
+    for (const { key, weight } of tests) placed[slices.get(key)].push([file, key, weight]);
   }
+  const owners = new Map();
   for (const file of heavy) {
     let lightest = count - 1;
     for (let shard = count - 2; shard >= 0; shard--)
@@ -118,8 +155,21 @@ export function sideOwners(flavor, count, platform = process.platform) {
     memory[lightest] += memoryHeavyFiles[file];
     loads[lightest] += weight(file);
     owners.set(file, lightest + 1);
+    placed[lightest].push([file, undefined, weight(file)]);
   }
-  return owners;
+  for (const [file, shard] of placeLongestFirst(
+    files.map((file) => ({ key: file, weight: weight(file) })),
+    loads,
+  )) {
+    owners.set(file, shard + 1);
+    placed[shard].push([file, undefined, weight(file)]);
+  }
+  return { owners, starts, loads, placed };
+}
+
+/** The shard (1-based) of each measured side-queue file and isolated suite. */
+export function sideOwners(flavor, count, platform = process.platform) {
+  return sidePlan(flavor, count, platform).owners;
 }
 
 // Pull requests and pushes to main run the full suite on Linux. Pull requests
@@ -140,7 +190,9 @@ export const darwinFiles = [
   "packages/compiler/test/native-codegen-integration.test.ts",
   "packages/compiler/test/source-debugging.test.ts",
   "packages/runtime-darwin-arm64/test/archive.test.ts",
+  "packages/runtime/src/scr_alloc.test.ts",
   "packages/runtime/test/string.test.ts",
+  "tests/harness/executable-hardening.test.ts",
   "tests/harness/ffi-callback-pool.test.ts",
   "tests/harness/ffi-catalog.test.ts",
   "tests/harness/ffi-frameworks.test.ts",
@@ -224,7 +276,7 @@ export function ciTestPlan({
       ],
     };
   }
-  const owners = sideOwners(flavor, count, platform);
+  const { owners, starts } = sidePlan(flavor, count, platform);
   const dedicated = dedicatedFiles(flavor, platform);
   const isolated = new Set(isolatedFiles.map(([, file]) => file));
   const balanced = [...owners]
@@ -256,7 +308,15 @@ export function ciTestPlan({
       side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
   }
   for (const [name, file] of caseShardedSideFiles)
-    side.push({ name, args: ["test", file], env: { ...env, SCRIPTC_TEST_WORKERS: "1" } });
+    side.push({
+      name,
+      args: ["test", file],
+      env: {
+        ...env,
+        SCRIPTC_TEST_WORKERS: "1",
+        SCRIPTC_TEST_SHARD_LOADS: starts.get(file).join(","),
+      },
+    });
   // Frontend coverage and cache invalidation do not consume sanitizer state.
   if (flavor === "plain") {
     side.push({
@@ -290,4 +350,29 @@ export function ciTestPlan({
     },
     side,
   };
+}
+
+// node scripts/ci-test-plan.mjs [shards] [platform] prints the planned side queue of every shard: its minutes, and
+// with --items what the plan puts there.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
+  const count = Number(args[0] ?? 20);
+  const minutes = (ms) => (ms / 60_000).toFixed(1);
+  for (const flavor of ["plain", "san"]) {
+    const { loads, placed } = sidePlan(flavor, count, args[1] ?? "linux");
+    const mean = loads.reduce((sum, load) => sum + load, 0) / count;
+    console.log(
+      `${flavor}: planned side queue, minutes per shard (mean ${minutes(mean)}, longest ${minutes(Math.max(...loads))})`,
+    );
+    loads.forEach((load, shard) => {
+      console.log(
+        `  ${String(shard + 1).padStart(2)}  ${minutes(load).padStart(5)}  ${placed[shard].length} items`,
+      );
+      if (process.argv.includes("--items"))
+        for (const [file, test, ms] of placed[shard].toSorted((a, b) => b[2] - a[2]))
+          console.log(
+            `        ${minutes(ms).padStart(5)}  ${file}${test === undefined ? "" : ` > ${test}`}`,
+          );
+    });
+  }
 }

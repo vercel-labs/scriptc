@@ -4,6 +4,7 @@
 #define SCR_INSPECT_H
 
 #include "scr_bytes.h"
+#include "scr_bigint.h"
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
  * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
@@ -21,6 +22,11 @@
  * indentation. Empty composites and depth placeholders never touch the
  * stack (the frontend emits their literals directly). */
 ScrStr *scr_insp_f64(double x);   /* JS ToString, except -0 → "-0" */
+/* formatBigInt: the decimal digits and the trailing n (+1). */
+ScrStr *scr_insp_bigint(ScrBigInt *value);
+/* ctx.numericSeparator for the renders that follow; answers the previous
+ * value so a wrapper can restore it. */
+bool scr_insp_numeric_separator(bool enabled);
 /* ctx.maxStringLength for the renders that follow; answers the previous
  * value so a wrapper can restore it. */
 double scr_insp_max_string_length(double value);
@@ -78,6 +84,7 @@ typedef struct ScrInspFormatOptions {
   double compact; /* -1 for false */
   bool sorted;
   double max_array_length; /* Infinity for null */
+  bool numeric_separator;
   double max_string_length; /* Infinity for null */
   /* Whether an accessor property's getter runs: 0 the labels only,
    * 1 every getter, 2 the getters without a setter, 3 the getters with
@@ -256,7 +263,16 @@ ScrStr *scr_fs_validated_path(const ScrDyn *value, const char *name);
 ScrDyn *scr_fs_option_get(const ScrDyn *options, const char *name);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
+void scr_fs_write_file_flags_bytes(ScrStr *path, const ScrBytes *data, double mode,
+                                   double exclusive);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);
+/* The two-argument writes and the { mode, flag } write over a checked data
+ * argument (string or Buffer/TypedArray/DataView): the string arm keeps the
+ * plain write of its own shape, the view arm writes the bytes it covers. */
+void scr_fs_write_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_append_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
+                                  double exclusive);
 
 /* fs/promises readFile(path) [no encoding]: the same read behind an
  * already-settled promise — failure REJECTS (catchable at the await). */

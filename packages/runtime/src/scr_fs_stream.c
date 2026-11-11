@@ -10,7 +10,12 @@
  * start, end, then the Readable/Writable options (highWaterMark,
  * encoding, emitClose, autoClose as autoDestroy). flags and mode are
  * checked when the open runs, so their errors arrive as 'error' events,
- * as in Node. */
+ * as in Node.
+ *
+ * The SCR_FS_STREAM_SIGNAL build adds the `signal` option: a program whose
+ * stream options can hold one links that build and the event-target unit,
+ * and every other program keeps this object byte for byte (its engine
+ * refuses a signal that reaches it). */
 #include "scr_runtime.h"
 
 #include <errno.h>
@@ -405,6 +410,16 @@ static void scr_fss_construct(ScrClosure *cb, ScrStream *s) {
     scr_stream_construct_done(s, NULL);
     return;
   }
+#ifdef SCR_FS_STREAM_SIGNAL
+  /* A signal that was already aborted destroyed the stream before this
+   * ran, and _destroy closed the descriptor the stream was given: Node's
+   * _construct then calls open without a path and the stream, destroyed,
+   * drops that error. */
+  if (f->cpath == NULL) {
+    scr_stream_construct_done(s, NULL);
+    return;
+  }
+#endif
   int bits = scr_fs_stream_flags(f->flags, f->readable ? "r" : "w");
   double mode = 0;
   if (bits >= 0) scr_fs_stream_mode(f->mode, &mode);
@@ -498,7 +513,7 @@ static bool scr_fss_integer(const ScrDyn *v, const char *name) {
 }
 
 static void scr_fss_unsupported(const char *msg) {
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, strlen(msg));
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, strlen(msg), "SC2020");
 }
 
 /* The options record after getOptions: a +1 object (an empty one for
@@ -529,6 +544,9 @@ static ScrDyn *scr_fss_engine_options(const ScrDyn *o, bool readable) {
   ScrDyn *e = scr_dyn_new_obj();
   for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
     if (!readable && strcmp(keys[i], "encoding") == 0) continue;
+#ifdef SCR_FS_STREAM_SIGNAL
+    if (strcmp(keys[i], "signal") == 0) continue; /* scr_fss_new applies it */
+#endif
     ScrDyn *v = scr_fss_get(o, keys[i]);
     if (v && v->kind != SCR_DYN_UNDEF) scr_dyn_obj_set(e, keys[i], strlen(keys[i]), v);
     else if (v) scr_dyn_release(v);
@@ -576,9 +594,47 @@ static bool scr_fss_refuse_overrides(const ScrDyn *o) {
   return true;
 }
 
+#ifdef SCR_FS_STREAM_SIGNAL
+/* getOptions' `if (options.signal !== undefined) validateAbortSignal(
+ * options.signal, 'options.signal')`: null, a primitive and an object
+ * without an `aborted` member throw ERR_INVALID_ARG_TYPE. */
+static bool scr_fss_signal_valid(const ScrDyn *o) {
+  ScrDyn *signal = scr_fss_get(o, "signal");
+  if (signal == NULL) return true;
+  ScrDyn *aborted = NULL;
+  if (signal->kind == SCR_DYN_OBJ) {
+    ScrDyn *v = scr_dyn_obj_get(signal, "aborted", 7);
+    aborted = v ? scr_dyn_retain(v) : NULL;
+  } else if (signal->kind == SCR_DYN_HANDLE) {
+    ScrStr *k = scr_str_new("aborted", 7);
+    aborted = scr_dyn_handle_key_get(signal, k);
+    scr_str_release(k);
+  }
+  bool valid = aborted != NULL || signal->kind == SCR_DYN_UNDEF;
+  if (!valid) scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+  if (aborted) scr_dyn_release(aborted);
+  scr_dyn_release(signal);
+  return valid;
+}
+
+/* The options record in getOptions' order: the options value and its
+ * encoding, the signal, then the fd or the path. */
+static ScrDyn *scr_fss_checked_options(const ScrDyn *path, const ScrDyn *opts_in) {
+  if (!scr_fs_stream_opts_valid(NULL, opts_in)) return NULL;
+  ScrDyn *o = scr_fss_options(opts_in);
+  if (scr_fss_signal_valid(o) && (path == NULL || scr_fs_stream_opts_valid(path, opts_in))) return o;
+  scr_dyn_release(o);
+  return NULL;
+}
+#endif
+
 static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool readable,
                               int owner_fd, void *owner, const ScrFsStreamOwnerOps *owner_ops) {
+#ifdef SCR_FS_STREAM_SIGNAL
+  ScrDyn *o = scr_fss_checked_options(owner ? NULL : path, opts_in);
+#else
   ScrDyn *o = scr_fs_stream_opts_valid(owner ? NULL : path, opts_in) ? scr_fss_options(opts_in) : NULL;
+#endif
   if (!o) {
     /* The owner moves in, so a refused stream releases it too. */
     if (owner) owner_ops->release(owner);
@@ -685,6 +741,24 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
     scr_stream_set_writev_concat(s);
   }
   scr_stream_set_destroy(s, scr_fss_hook((void *)&scr_fss_destroy), &scr_fss_destroy);
+#ifdef SCR_FS_STREAM_SIGNAL
+  {
+    /* Readable's and Writable's `if (options.signal) addAbortSignal(
+     * options.signal, this)`, which runs before construct(): a signal that
+     * is already aborted destroys the stream here, _destroy runs at once
+     * (closing a descriptor the stream was given), and the open below
+     * still happens, as in Node. */
+    ScrDyn *signal = scr_fss_get(o, "signal");
+    ScrStream *same = scr_stream_add_abort_signal(s, signal, true, &scr_events_add_abort_listener);
+    if (signal) scr_dyn_release(signal);
+    if (same == NULL) {
+      scr_stream_release(s);
+      s = NULL;
+      goto fail;
+    }
+    scr_stream_release(same);
+  }
+#endif
   scr_stream_construct(s, scr_fss_hook((void *)&scr_fss_construct), &scr_fss_construct);
   if (unknown_encoding) {
     /* Node's constructor has already scheduled _construct when
@@ -800,7 +874,14 @@ void scr_fs_stream_close_cb(ScrStream *s, ScrClosure *cb) {
  * whichever exists. Borrows both; +1 or NULL. */
 static ScrError *scr_fss_aggregate(ScrError *inner, ScrError *outer) {
   if (inner && outer && inner != outer) {
+#ifdef SCR_FS_STREAM_SIGNAL
+    /* An abort before a failed open is the common way here.
+     * scr_dyn_new_str takes its own reference; the default build's extra
+     * one is kept there only so that object stays byte for byte. */
+    ScrDyn *message = scr_dyn_new_str(outer->message);
+#else
     ScrDyn *message = scr_dyn_new_str(scr_str_retain(outer->message));
+#endif
     ScrError *agg = scr_aggregate_new(message, scr_dyn_undefined());
     scr_dyn_release(message);
     if (agg == NULL) return scr_error_retain(outer);

@@ -4,6 +4,10 @@ import { lowerEsmInitsWithParser, rewriteBundlerCjsWithParser } from "./npm-stat
 import { isBundlerCjsCandidate } from "./npm-static-rewrite-syntax.js";
 import { normalizeCjsFunctionExports } from "./npm-static-cjs-exports-alias.js";
 import {
+  mayHoldCjsExportsAccessor,
+  normalizeCjsExportsAccessor,
+} from "./npm-static-cjs-exports-accessor.js";
+import {
   mayBundleChunks,
   splitBundledChunks,
   type BundledChunkSplit,
@@ -18,11 +22,19 @@ import {
   mayHoldNamespaceDefault,
   rewriteNamespaceDefaults,
 } from "./npm-static-namespace-defaults.js";
+import {
+  castVoidInitializers,
+  mayHoldVoidInitializer,
+  type VoidInitializerCasts,
+} from "./js-void-initializers.js";
 import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-tsc-helpers.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
+import { mayReadDefine, resolveDefinedBranches } from "./define-branches.js";
+import type { Defines } from "./defines.js";
 import type { SourceFile } from "./ts7/ast-types.js";
+import type { ComptimeLimits } from "./comptime.js";
 import type { Ladder } from "./npm-static-ladder.js";
 
 /** Whether the source can contain `word` as a keyword or identifier: it
@@ -31,10 +43,16 @@ function spells(source: string, word: string): boolean {
   return source.includes(word) || source.includes("\\u");
 }
 
-/** Evaluate an isolated, self-contained TypeScript callback under a finite
- * budget. Hosts supply execution; shared lowering owns capture checks and
- * verifies the returned value before baking it into the program. */
-export type ComptimeEvaluator = (source: string, timeoutMs: number) => unknown;
+/** Evaluate an isolated, self-contained TypeScript callback within limits
+ * (createComptimeEvaluator; `siblings` are the other callbacks of its source
+ * file). Hosts supply the TypeScript and evaluator executables; shared
+ * lowering owns capture checks and verifies the returned value before baking
+ * it into the program. */
+export type ComptimeEvaluator = (
+  source: string,
+  limits: ComptimeLimits,
+  siblings?: readonly string[],
+) => unknown;
 
 /** A Node host keeps its process-specific resolver settings and hooks. Native
  * clients use the filesystem resolver when no host adapter is supplied. */
@@ -105,12 +123,12 @@ export class FrontendServices {
   parse(path: string, source: string, kind: Ts7SourceKind): SourceFile {
     return this.sourceParser().parse(path, source, kind);
   }
-  evaluateComptime(source: string, timeoutMs: number): unknown {
+  evaluateComptime(source: string, limits: ComptimeLimits, siblings?: readonly string[]): unknown {
     this.ensureOpen();
     const evaluate = this.comptimeEvaluator;
     if (evaluate === undefined)
       throw new Error("this compiler host does not provide compile-time evaluation");
-    return evaluate(source, timeoutMs);
+    return evaluate(source, limits, siblings);
   }
   /** Let every program host serve up to `loads` loads (reuseProgramHosts). */
   reuseProgramHosts(loads: number): void {
@@ -174,6 +192,14 @@ export class FrontendServices {
     if (!source.includes("module.exports")) return null;
     return normalizeCjsFunctionExports(this.parse(path, source, "js"));
   }
+  /** A CommonJS module that installs an accessor as its export object,
+   * respelled as the whole-export assignment of the getter's value (null:
+   * none). */
+  cjsExportsAccessor(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldCjsExportsAccessor(source)) return null;
+    return normalizeCjsExportsAccessor(this.parse(path, source, "js"));
+  }
   /** A package module with tsc's interop bindings of builtin modules
    * unwrapped to plain requires (null: none). */
   tscBuiltinImports(source: string, path: string): string | null {
@@ -210,6 +236,21 @@ export class FrontendServices {
     return rewriteBuiltinAliasRequires(this.parse(path, source, "js"), (specifier) =>
       builtinPackageAliasFor(path, specifier),
     );
+  }
+  /** A JavaScript module with the `void <literal>` initializers of its
+   * unannotated `var` and `let` declarators served as casts to the open
+   * type, and the spans the casts inserted (null: none). */
+  voidInitializerCasts(source: string, path: string): VoidInitializerCasts | null {
+    this.ensureOpen();
+    if (!mayHoldVoidInitializer(source)) return null;
+    return castVoidInitializers(this.parse(path, source, path.endsWith("x") ? "jsx" : "js"));
+  }
+  /** A JavaScript module with the `if` statements `--define` decides
+   * resolved to their taken branches (null: none). */
+  definedBranches(source: string, path: string, defines: Defines): string | null {
+    this.ensureOpen();
+    if (!mayReadDefine(source, defines)) return null;
+    return resolveDefinedBranches(this.parse(path, source, "js"), defines);
   }
   /** A CommonJS module that names its export object through a variable
    * (`var ip = exports`), its member accesses respelled through `exports`

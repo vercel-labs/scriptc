@@ -91,7 +91,7 @@ bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name) {
   ScrDyn *value;
   if (options->kind == SCR_DYN_TYPED_REF) {
     /* A compiled record or class instance: its own fields, else its view. */
-    value = scr_dyn_typed_ref_key_get(options, name);
+    value = scr_dyn_typed_ref_own_get(options, name);
     if (!value && !scr_exc_pending()) {
       ScrDyn *view = scr_dyn_typed_ref_materialize(options);
       if (!view) return false;
@@ -863,13 +863,30 @@ static bool scr_bytes_copy_kinds(ScrBytesElem dst, ScrBytesElem src) {
   return true;
 }
 
+/* Uint8ClampedArray's store of an integer: every integer element kind fits
+ * an int64_t, and an integer has no fraction to round. */
+static inline uint8_t scr_bytes_clamp_integer(int64_t value) {
+  return value > 255 ? 255 : value > 0 ? (uint8_t)value : 0;
+}
+
 /* One loop per (source kind, destination kind) pair. The source element is
- * read in its own type and the destination stored in its own type, through
- * the same conversions scr_bytes_write_numbers applies to a double, so the
- * values are the ones the two-loop block conversion produced, and no
+ * read in its own type and the destination stored in its own type, so no
  * double-width scratch is written and read back between them. Loads and
  * stores are constant-width memcpy, so a view at an unaligned byteOffset and
- * external storage need no alignment promise. */
+ * external storage need no alignment promise.
+ *
+ * A float source converts as scr_bytes_write_numbers converts a double:
+ * ToUint32 truncated to the destination's width, or Uint8ClampedArray's
+ * round-half-to-even clamp.
+ *
+ * An integer source needs neither. Its element is already an integer in
+ * [-2^31, 2^32), so ToUint32 of it is the value modulo 2^32 and the store is
+ * that modulo the destination's width: exactly C's conversion of the source
+ * integer to the unsigned type of that width (C11 6.3.1.3p2), which is also
+ * the two's-complement bit pattern of the signed kinds. A Uint8ClampedArray
+ * destination clamps the integer to 0..255; there is no fraction to round.
+ * Float destinations convert the integer as before: every source value is
+ * exact as a double. */
 #define SCR_PAIR(dst_type, dst_value) \
   { \
     for (size_t i = 0; i < count; i++) { \
@@ -880,22 +897,23 @@ static bool scr_bytes_copy_kinds(ScrBytesElem dst, ScrBytesElem src) {
     } \
     return; \
   }
-#define SCR_DESTS(value) \
+#define SCR_WRAP_NUMBER(type, value) ((type)scr_numeric_to_u32(value))
+#define SCR_CLAMP_NUMBER(value) ((uint8_t)scr_bytes_to_u8_clamp(value))
+#define SCR_WRAP_INTEGER(type, value) ((type)(value))
+#define SCR_CLAMP_INTEGER(value) scr_bytes_clamp_integer(value)
+#define SCR_DESTS(value, WRAP, CLAMP) \
   switch (dest_elem) { \
     case SCR_BYTES_U8: \
-      SCR_PAIR(uint8_t, (uint8_t)scr_numeric_to_u32(value)); \
     case SCR_BYTES_I8: \
-      SCR_PAIR(uint8_t, (uint8_t)scr_numeric_to_u32(value)); \
+      SCR_PAIR(uint8_t, WRAP(uint8_t, value)); \
     case SCR_BYTES_U8C: \
-      SCR_PAIR(uint8_t, (uint8_t)scr_bytes_to_u8_clamp(value)); \
+      SCR_PAIR(uint8_t, CLAMP(value)); \
     case SCR_BYTES_U16: \
-      SCR_PAIR(uint16_t, (uint16_t)scr_numeric_to_u32(value)); \
     case SCR_BYTES_I16: \
-      SCR_PAIR(uint16_t, (uint16_t)scr_numeric_to_u32(value)); \
+      SCR_PAIR(uint16_t, WRAP(uint16_t, value)); \
     case SCR_BYTES_U32: \
-      SCR_PAIR(uint32_t, scr_numeric_to_u32(value)); \
     case SCR_BYTES_I32: \
-      SCR_PAIR(uint32_t, scr_numeric_to_u32(value)); \
+      SCR_PAIR(uint32_t, WRAP(uint32_t, value)); \
     case SCR_BYTES_F16: \
       SCR_PAIR(uint16_t, scr_f16_from_f64(value)); \
     case SCR_BYTES_F32: \
@@ -905,6 +923,8 @@ static bool scr_bytes_copy_kinds(ScrBytesElem dst, ScrBytesElem src) {
     default: \
       scr_trap("scriptc: numeric conversion of a BigInt typed array\n"); \
   }
+#define SCR_INTEGER_DESTS SCR_DESTS(value, SCR_WRAP_INTEGER, SCR_CLAMP_INTEGER)
+#define SCR_NUMBER_DESTS(value) SCR_DESTS(value, SCR_WRAP_NUMBER, SCR_CLAMP_NUMBER)
 /* Caller guarantees disjoint spans, or snapshots the source before entry. */
 static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
                                     const uint8_t *src, ScrBytesElem src_elem, size_t count) {
@@ -917,39 +937,39 @@ static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
     case SCR_BYTES_U8:
     case SCR_BYTES_U8C: {
       typedef uint8_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_I8: {
       typedef int8_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_U16: {
       typedef uint16_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_I16: {
       typedef int16_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_U32: {
       typedef uint32_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_I32: {
       typedef int32_t src_type;
-      SCR_DESTS(value);
+      SCR_INTEGER_DESTS;
     }
     case SCR_BYTES_F16: {
       typedef uint16_t src_type;
-      SCR_DESTS(scr_f16_to_f64(value));
+      SCR_NUMBER_DESTS(scr_f16_to_f64(value));
     }
     case SCR_BYTES_F32: {
       typedef float src_type;
-      SCR_DESTS(value);
+      SCR_NUMBER_DESTS(value);
     }
     case SCR_BYTES_F64: {
       typedef double src_type;
-      SCR_DESTS(value);
+      SCR_NUMBER_DESTS(value);
     }
 #ifdef SCR_JS_OBJECT_MODEL
     case SCR_BYTES_I64:
@@ -958,7 +978,13 @@ static void scr_bytes_convert_span(uint8_t *dst, ScrBytesElem dest_elem,
 #endif
   }
 }
+#undef SCR_NUMBER_DESTS
+#undef SCR_INTEGER_DESTS
 #undef SCR_DESTS
+#undef SCR_CLAMP_INTEGER
+#undef SCR_WRAP_INTEGER
+#undef SCR_CLAMP_NUMBER
+#undef SCR_WRAP_NUMBER
 #undef SCR_PAIR
 
 #ifdef SCR_JS_OBJECT_MODEL
@@ -1214,7 +1240,7 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
  * prototype/iterator keep a catchable refusal instead of losing hooks. */
 static bool scr_bytes_source_refusal(void) {
   static const char msg[] = "typed-array conversion of an opaque reference is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -5100,4 +5126,30 @@ double scr_bytes_compare_chk(const ScrBytes *src, const ScrDyn *target,
   /* Every slot validated or defaulted above; nargs 4 revalidates the
    * now-known-good numbers (a no-op) and keeps one comparison core. */
   return scr_bytes_compare(src, t, 4, tsv, tev, ssv, sev);
+}
+
+/* One streaming step through the decoder above: decoder.write over the chunk
+ * and the packed state that follows it, from a single walk of pending+chunk.
+ * process.stdin's setEncoding (scr_events.c) threads the state across reads
+ * through this, keeping the encoding and the state as values it never
+ * unpacks. Kept at the end of the unit so the functions before it keep their
+ * constant-pool numbering. */
+ScrStr *scr_strdec_stream_write(const ScrStr *enc, const ScrBytes *chunk, double *pending) {
+  SCR_BYTES_SNAPSHOT(chunk);
+  double hold = 0;
+  ScrStr *text = scr_strdec_step(enc, *pending, chunk, true, &hold);
+  *pending = hold;
+  return text;
+}
+
+/* scr_bytes.h. At the end of the unit for the same reason: only the Node
+ * island handle unit calls it, so no other program links it. */
+bool scr_bytes_storage_movable(const ScrBytes *owner) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrJsBufferOps *ops = scr_js_buffer_ops;
+  return ops != NULL && (ops->owner_resizable(owner) || ops->owner_detached(owner));
+#else
+  (void)owner;
+  return false;
+#endif
 }

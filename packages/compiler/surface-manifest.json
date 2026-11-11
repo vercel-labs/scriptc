@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.9",
+  "compilerVersion": "0.4.11",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -133,14 +133,6 @@
       "status": "unsupported",
       "code": "SC1062",
       "note": "bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives"
-    },
-    {
-      "id": "diagnostic.sc1063",
-      "kind": "diagnostic-fence",
-      "name": "this use of a catch binding",
-      "status": "unsupported",
-      "code": "SC1063",
-      "note": "a catch binding is typed by what was thrown — narrow before reading: 'if (e instanceof Error)' (then .name/.message), 'typeof e === \"string\"/\"number\"/\"boolean\"', or rethrow with 'throw e'; String(e) and `${e}` also compile ('Error: msg' for Error payloads — Node's String(), which has no stack), so 'e instanceof Error ? e.message : String(e)' works as-is"
     },
     {
       "id": "diagnostic.sc1070",
@@ -301,6 +293,13 @@
       "code": "SC2014"
     },
     {
+      "id": "diagnostic.sc2015",
+      "kind": "diagnostic-fence",
+      "name": "an empty array literal used at an element type that was not decided where it is written",
+      "status": "unsupported",
+      "code": "SC2015"
+    },
+    {
       "id": "diagnostic.sc2020",
       "kind": "diagnostic-fence",
       "name": "standard-library or @types/node surface with no lowering",
@@ -441,7 +440,7 @@
       "name": "child_process.execFile",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
+      "note": "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice"
     },
     {
       "id": "node-builtin.child_process.execFileSync",
@@ -1774,12 +1773,37 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.module.constants",
+      "kind": "node-builtin",
+      "name": "module.constants",
+      "status": "static",
+      "note": "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED"
+    },
+    {
       "id": "node-builtin.module.createRequire",
       "kind": "node-builtin",
       "name": "module.createRequire",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered shape is a const binding (or a proven stable top-level let/var) over createRequire(import.meta.url) (or __filename) whose require calls take STATIC string literals — builtins, project modules (including #imports), relative .json documents and natively compiled npm packages resolve at build time; dynamic specifiers cannot exist in a compiled binary's fixed module graph"
+    },
+    {
+      "id": "node-builtin.module.enableCompileCache",
+      "kind": "node-builtin",
+      "name": "module.enableCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.flushCompileCache",
+      "kind": "node-builtin",
+      "name": "module.flushCompileCache",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.module.getCompileCacheDir",
+      "kind": "node-builtin",
+      "name": "module.getCompileCacheDir",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.isBuiltin",
@@ -2438,11 +2462,18 @@
       "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
+      "id": "node-builtin.process.features",
+      "kind": "node-builtin",
+      "name": "process.features",
+      "status": "static",
+      "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
+    },
+    {
       "id": "node-builtin.process.getBuiltinModule",
       "kind": "node-builtin",
       "name": "process.getBuiltinModule",
       "status": "static",
-      "note": "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020"
+      "note": "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules"
     },
     {
       "id": "node-builtin.process.getegid",
@@ -2697,6 +2728,43 @@
       "id": "node-builtin.readline.promises.createInterface",
       "kind": "node-builtin",
       "name": "readline/promises.createInterface",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea",
+      "kind": "node-builtin",
+      "name": "node:sea",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
+      "id": "node-builtin.sea.getAsset",
+      "kind": "node-builtin",
+      "name": "sea.getAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetAsBlob",
+      "kind": "node-builtin",
+      "name": "sea.getAssetAsBlob",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getAssetKeys",
+      "kind": "node-builtin",
+      "name": "sea.getAssetKeys",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.getRawAsset",
+      "kind": "node-builtin",
+      "name": "sea.getRawAsset",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.sea.isSea",
+      "kind": "node-builtin",
+      "name": "sea.isSea",
       "status": "static"
     },
     {
@@ -3332,6 +3400,13 @@
       "name": "worker_threads",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.worker_threads.SHARE_ENV",
+      "kind": "node-builtin",
+      "name": "worker_threads.SHARE_ENV",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.worker_threads.Worker",
@@ -4959,9 +5034,8 @@
       "id": "stdlib.headers.entries",
       "kind": "stdlib",
       "name": "Headers.entries",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.forEach",
@@ -4995,9 +5069,8 @@
       "id": "stdlib.headers.keys",
       "kind": "stdlib",
       "name": "Headers.keys",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.set",
@@ -5010,17 +5083,15 @@
       "id": "stdlib.headers.symbol.iterator",
       "kind": "stdlib",
       "name": "Headers.[Symbol.iterator]",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not expose an engine-free iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.headers.values",
       "kind": "stdlib",
       "name": "Headers.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; native Headers iteration does not yet expose a static iterator handle"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: liveness, mutation, state-machine; differential evidence: fixture:static-headers-iteration"
     },
     {
       "id": "stdlib.map.clear",

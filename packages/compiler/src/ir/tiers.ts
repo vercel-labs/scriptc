@@ -42,6 +42,7 @@
  * Serialization. Since IR version 17 (stage S3) serialized IR carries
  * `tier` like any other function field. */
 import type { IrExpr, IrFunction, SrcLoc } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { everyStmtList, type IrVisitor } from "./traverse.js";
 
 export type IrTier = "static" | "dynamic";
@@ -52,7 +53,7 @@ export function functionTier(fn: IrFunction): IrTier {
 
 /** `js.*` builtins that convert at the boundary instead of operating on a
  * dynamic value. */
-const JS_BOUNDARY: ReadonlySet<string> = new Set([
+const JS_BOUNDARY: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "js.fromDyn",
   "js.toDyn",
   "js.fromF64",
@@ -64,14 +65,16 @@ const JS_BOUNDARY: ReadonlySet<string> = new Set([
 
 /** `dyn.*` builtins that only inspect a dynamic value's kind: the tag test
  * half of a dynamic-to-static conversion. */
-const DYN_KIND_TESTS: ReadonlySet<string> = new Set([
+const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classValueHash",
   "dyn.classIs",
   "dyn.nativeSetIs",
   "dyn.nativeMapIs",
   "dyn.nativeUrlIs",
+  "dyn.nativeSearchParamsIs",
   "dyn.nativeDateIs",
   "dyn.nativeDateHandleIs",
   "dyn.nativeRegexIs",

@@ -1,5 +1,7 @@
 /* typeof expressions and the typeof tests they lower to. */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
+import { isUnresolvedCjsExports } from "../cjs-exports-object.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   BOOL,
@@ -17,6 +19,8 @@ import { processHasIpc } from "../builtins/process.js";
 import { lowerPerfHooksTypeof } from "../builtins/performance.js";
 import { isNodeModuleValue } from "../lower-node-module.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
+import { builtinModuleMemberCensus } from "../builtin-module-members.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { STRING_INDEX_METHODS, builtinModuleConstOf, stdlibGlobalNameOf } from "../surfaces.js";
 import {
   constructorGlobalTypeof,
@@ -25,7 +29,8 @@ import {
   lowerPromiseThenPresence,
   operandPairs,
   runtimeOptionalStorageOperand,
-  typeofAnswer,
+  hasCallSlot,
+  typeofAnswerOf,
 } from "../lower-exprs.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { isJsSourceFile, isNodeEsmFile } from "../../program.js";
@@ -33,14 +38,20 @@ import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import {
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
-  isTemporalGlobalRoot,
+  isNodeUndefinedGlobalRoot,
+  nodeUndefinedGlobalProperty,
 } from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
+import { nodeValueTypeof } from "../node-value-reads.js";
+import { nodeModuleMemberKind } from "../node-values.js";
+import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
+import { undeclaredGlobalTypeof } from "../global-object-names.js";
+import { programMayWriteGlobalName } from "../global-object-writes.js";
+import { staticTypeofAnswer } from "../static-typeof.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   // typeof is a READ, not a use: Node has these constructors, so the answer is
@@ -74,27 +85,78 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   }
   if (lowerer.isStdlibGlobal(expr.expression, "fetch"))
     return { kind: "strLit", value: "function", type: STRING, loc };
-  // `__dirname` / `__filename` in a JavaScript ES module, where Node never
-  // defines them: typeof answers "undefined" instead of throwing.
+  // A CommonJS module binding (`require`, `module`, `exports`, `__dirname`,
+  // `__filename`) in a JavaScript ES module, where Node never defines them:
+  // typeof answers "undefined" instead of throwing, and a feature test for
+  // CommonJS takes Node's branch.
+  if (commonJsBindingInEsModule(lowerer, expr.expression))
+    return { kind: "strLit", value: "undefined", type: STRING, loc };
+  // `require` in an ES module of ANY file kind (the test above covers
+  // JavaScript sources only): Node defines no `require` binding there, so
+  // typeof answers "undefined" instead of throwing.
   {
     let operand = expr.expression;
     while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
     if (
       ts.isIdentifier(operand) &&
-      (operand.text === "__dirname" || operand.text === "__filename") &&
-      lowerer.isStdlibGlobal(operand, operand.text)
-    ) {
-      const sf = ts.getSourceFileOfNode(operand);
-      if (isNodeEsmFile(sf, lowerer.program) && !/\.tsx?$/.test(sf.fileName))
-        return { kind: "strLit", value: "undefined", type: STRING, loc };
-    }
+      operand.text === "require" &&
+      lowerer.isStdlibGlobal(operand, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(operand), lowerer.program)
+    )
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
   }
   if (isNavigatorGlobal(lowerer, expr.expression))
     return { kind: "strLit", value: "object", type: STRING, loc };
   const performance = lowerPerfHooksTypeof(lowerer, expr.expression);
   if (performance) return performance;
+  // `typeof globalThis.module`, `typeof global.require`: the CommonJS module
+  // bindings are not properties of the global object in any module, so the
+  // answer is "undefined" (asked before the module-object rule below, which
+  // goes by the declared type of `module`).
+  {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    if (
+      ts.isPropertyAccessExpression(operand) &&
+      !operand.questionDotToken &&
+      COMMONJS_MODULE_BINDINGS.has(operand.name.text) &&
+      stdlibGlobalNameOf(lowerer, operand.expression) === "globalThis"
+    )
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };
+  }
+  // A builtin module namespace: the census says whether the CommonJS
+  // exports value is callable (node:assert, node:events, node:module,
+  // node:test); an ESM namespace object is always "object". A namespace
+  // whose runtime shape is not known statically (a parameter, an untraced
+  // call result) answers either. Asked before the class-alias arm below,
+  // which spells a namespace import of a callable module (node:events) as
+  // the class it exports.
+  {
+    const shape = lowerer.builtinNamespaceShapeOf(expr.expression);
+    if (shape !== null) {
+      if (shape.flavor === "unknown")
+        lowerer.unsupported(
+          "SC1090",
+          expr.expression,
+          'typeof a builtin module namespace whose runtime shape is not known statically (an ES module namespace answers "object"; the CommonJS exports object of a callable module answers "function"; bind the namespace where it is imported or required)',
+        );
+      const census = builtinModuleMemberCensus(shape.module);
+      if (census !== null)
+        return reflectOverNamespaceExpr(
+          lowerer,
+          expr.expression,
+          {
+            kind: "strLit",
+            value: shape.flavor === "cjs" && census.callable ? "function" : "object",
+            type: STRING,
+            loc,
+          },
+          loc,
+        );
+    }
   }
   // `typeof EventEmitter`, `typeof zlib.Gzip`, `typeof C` over a
   // builtin class alias.
@@ -102,8 +164,8 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     return { kind: "strLit", value: "function", type: STRING, loc };
   }
   // The Buffer constructor and its aliases (`const B = globalThis.Buffer`,
-  // `(globalThis as { Buffer?: B }).Buffer`): a value read of an alias is an
-  // identity token, so its typeof is decided here.
+  // `(globalThis as { Buffer?: B }).Buffer`): decided here, without
+  // reading the value.
   if (stdlibGlobalNameOf(lowerer, expr.expression) === "Buffer") {
     return { kind: "strLit", value: "function", type: STRING, loc };
   }
@@ -140,9 +202,8 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   }
   // `typeof queueMicrotask` / `typeof DOMException` on a STDLIB global
   // whose declared type is callable or constructable: folds to
-  // "function" BEFORE the operand lowers — the identity-token story
-  // (JS files) deliberately represents these values as strings, and
-  // the TS-file fence would name a value the program never needs; an
+  // "function" BEFORE the operand lowers — the TS-file fence would name
+  // a value the program never needs, and an
   // identifier read has no side effects to preserve. Node's answer for
   // every function and constructor global is "function" (the harness's
   // `typeof queueMicrotask === 'function'` probes). Shadowing locals
@@ -164,27 +225,37 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
       decls.some(isBuiltinModuleValueDecl) &&
       decls.every((decl) => builtinModuleExportParent(decl) !== undefined)
     ) {
+      // What the export is in the pinned Node decides where the census
+      // describes the module (node-values.ts): the declarations type
+      // `snapshot` of node:test as callable, and Node has an object there.
+      const member = lowerer.builtinMemberOf(tested);
+      const kind = member === null ? undefined : nodeModuleMemberKind(member.module, member.member);
       const t = lowerer.typeOf(tested);
       if (
-        lowerer.checker.getCallSignatures(t).length > 0 ||
-        lowerer.checker.getConstructSignatures(t).length > 0
+        kind !== undefined && kind !== null
+          ? kind.kind === "function"
+          : lowerer.checker.getCallSignatures(t).length > 0 ||
+            lowerer.checker.getConstructSignatures(t).length > 0
       ) {
         return { kind: "strLit", value: "function", type: STRING, loc };
       }
     }
   }
   // `typeof globalThis.AbortSignal` / `typeof Headers`: Node 24's Web
-  // platform constructor globals are functions. JavaScript sources
-  // represent such a value as an identity token, and the fallback
+  // platform constructor globals are functions. The fallback
   // declarations type some (AbortSignal) without a construct signature,
-  // so neither the operand nor the type can answer; the read has no
+  // so the type cannot answer; the read has no
   // effects.
-  // `typeof globalThis.<temporal>`: the global object has no such
-  // property in Node 24.
+  // `typeof globalThis.<temporal>`, `typeof globalThis.localStorage`: the
+  // global object has no such property in Node 24.
   if (
     ts.isPropertyAccessExpression(tested) &&
-    tested.name.text === TEMPORAL_GLOBAL &&
-    stdlibGlobalNameOf(lowerer, tested.expression) === "globalThis"
+    !tested.questionDotToken &&
+    stdlibGlobalNameOf(lowerer, tested.expression) === "globalThis" &&
+    // The CommonJS module bindings are not properties of the global object
+    // either (`typeof globalThis.require` is "undefined" in every module).
+    (nodeUndefinedGlobalProperty(lowerer, tested) ||
+      COMMONJS_MODULE_BINDINGS.has(stdlibGlobalNameOf(lowerer, tested) ?? ""))
   ) {
     return { kind: "strLit", value: "undefined", type: STRING, loc };
   }
@@ -192,8 +263,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     return { kind: "strLit", value: "function", type: STRING, loc };
   // `typeof global.setTimeout` / `typeof globalThis.queueMicrotask`: a
   // callable standard-library global read through the global object
-  // answers like its bare spelling (JavaScript sources represent the
-  // value as an identity token, so the operand cannot answer).
+  // answers like its bare spelling, without reading the value.
   if (ts.isPropertyAccessExpression(tested) && !tested.questionDotToken) {
     const name = stdlibGlobalNameOf(lowerer, tested);
     if (name !== null && name !== "globalThis") {
@@ -222,14 +292,52 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         return { kind: "strLit", value: "function", type: STRING, loc };
     }
   }
-  if (ts.isIdentifier(tested)) {
+  // `typeof exports` in a CommonJS module that assigns no member of it: the
+  // module's exports object answers below (cjs-exports-object.ts), not the
+  // undeclared-name fold.
+  if (ts.isIdentifier(tested) && !isUnresolvedCjsExports(lowerer, tested)) {
     const sym = lowerer.checker.getSymbolAtLocation(tested);
     if (!sym) {
-      return { kind: "strLit", value: "undefined", type: STRING, loc };
+      // A name no declaration binds: Node's answer for a name its global
+      // object has or inherits (`toString`), else "undefined". In a `.js`
+      // source the global object's own property of that name, when the
+      // program created one, answers first — and only a name the program
+      // writes on the global object somewhere can have one (the census of
+      // global-object-writes.ts), so every other name keeps the constant.
+      const inherited = undeclaredGlobalTypeof(tested.text);
+      const fallback: IrExpr = {
+        kind: "strLit",
+        value: inherited ?? "undefined",
+        type: STRING,
+        loc,
+      };
+      if (
+        !isJsSourceFile(ts.getSourceFileOfNode(tested)) ||
+        !programMayWriteGlobalName(lowerer, tested.text, tested)
+      )
+        return fallback;
+      const name: IrExpr = { kind: "strLit", value: tested.text, type: STRING, loc };
+      const own: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [{ kind: "libCall", fn: "global.bindingValue", args: [name], type: DYN, loc }],
+        type: STRING,
+        loc,
+      };
+      if (inherited === null) return own;
+      return {
+        kind: "ternary",
+        cond: { kind: "libCall", fn: "global.bindingHas", args: [name], type: BOOL, loc },
+        then: own,
+        else_: fallback,
+        type: STRING,
+        loc,
+      };
     }
-    // Node 24 defines no temporal global: typeof answers "undefined"
-    // without reading it, like any undeclared name.
-    if (isTemporalGlobalRoot(lowerer, tested, sym)) {
+    // A declared global Node 24 does not define (the temporal global,
+    // localStorage): typeof answers "undefined" without reading it, like
+    // any undeclared name.
+    if (isNodeUndefinedGlobalRoot(lowerer, tested, sym)) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
     // A name the program declares ambiently but nothing defines
@@ -244,23 +352,34 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     }
     // `const { inspect } = require("util")` / `import { inspect } from
     // "node:util"`: a binding of a builtin module's exported function,
-    // class or object. JavaScript sources represent such a value without
-    // its own lowering as an identity token (a string), so the operand's
-    // representation cannot answer. Node's answer follows the export's
-    // kind, and the binding read has no effects.
+    // class or object. Node's answer follows the export's kind, and the
+    // binding read has no effects, so a value with no lowering of its own
+    // is not read.
     const imported = isJsSourceFile(ts.getSourceFileOfNode(tested))
       ? lowerer.builtinImportOf(tested)
       : null;
     if (imported && builtinModuleConstOf(lowerer, imported.module, imported.member) === undefined) {
-      const t = lowerer.typeOf(tested);
-      if (
-        lowerer.checker.getCallSignatures(t).length > 0 ||
-        lowerer.checker.getConstructSignatures(t).length > 0
-      ) {
-        return { kind: "strLit", value: "function", type: STRING, loc };
-      }
-      if ((t.flags & ts.TypeFlags.Object) !== 0) {
-        return { kind: "strLit", value: "object", type: STRING, loc };
+      // What the export is in the pinned Node (node-values.ts) decides; the
+      // declaration's type answers only for a module the census does not
+      // describe (it types `snapshot` of node:test as callable, and Node
+      // has an object there).
+      const kind = nodeModuleMemberKind(imported.module, imported.member);
+      if (kind !== undefined && kind !== null) {
+        if (kind.kind === "function")
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        if (kind.type === "object" || kind.type === "symbol")
+          return { kind: "strLit", value: kind.type, type: STRING, loc };
+      } else {
+        const t = lowerer.typeOf(tested);
+        if (
+          lowerer.checker.getCallSignatures(t).length > 0 ||
+          lowerer.checker.getConstructSignatures(t).length > 0
+        ) {
+          return { kind: "strLit", value: "function", type: STRING, loc };
+        }
+        if ((t.flags & ts.TypeFlags.Object) !== 0) {
+          return { kind: "strLit", value: "object", type: STRING, loc };
+        }
       }
     }
     if (lowerer.isStdlibSymbol(sym)) {
@@ -272,6 +391,17 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         return { kind: "strLit", value: "function", type: STRING, loc };
       }
     }
+  }
+  // A Node value native code has no value for, in a JavaScript source: its
+  // read is refused by name, and `typeof` needs no value. Node's answer is
+  // in the census of the pinned Node (`typeof SHARE_ENV` is "symbol",
+  // `typeof process.finalization` is "object"). Asked only when the
+  // operand's own lowering refuses, so a value that lowers answers for
+  // itself.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const answer = nodeValueTypeof(lowerer, tested);
+    if (answer !== null && tryLowerExpression(lowerer, tested) === null)
+      return { kind: "strLit", value: answer, type: STRING, loc };
   }
   // A known static result type fixes typeof's answer, but its producer
   // still evaluates: calls, getters, and checked reads can have effects
@@ -311,11 +441,15 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     undefinedT: "undefined",
     nullT: "object",
   };
-  // An f64 handle (a readline Interface, a Timeout) is an object.
+  // An f64 handle (a readline Interface, a Timeout) is an object, and a
+  // value called through a `%call` slot (a function with members, a callable
+  // class instance) is a function.
   const folded =
     operand.type.kind === "f64" && isF64HandleTyped(lowerer, expr.expression)
       ? "object"
-      : FOLD[operand.type.kind];
+      : hasCallSlot(lowerer, operand.type)
+        ? "function"
+        : FOLD[operand.type.kind];
   if (folded) {
     const result: IrExpr = { kind: "strLit", value: folded, type: STRING, loc };
     return isSafeToDiscard(operand)
@@ -343,7 +477,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   }
   if (operand.type.kind === "union" && isSafeToRepeat(operand)) {
     const def = lowerer.unions.get(operand.type.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (def && answers && answers.every((s): s is string => s !== null)) {
       const groups = new Map<string, number[]>();
       answers.forEach((s, i) => groups.set(s, [...(groups.get(s) ?? []), i]));
@@ -481,6 +615,22 @@ export function lowerErrorCodeTypeofTest(
   return null;
 }
 
+/** Whether `operand` names a CommonJS module binding in a JavaScript ES
+ * module, which has none: Node passes them to a CommonJS module's wrapper
+ * only. A .ts/.tsx file keeps them (identifiers.ts): TypeScript projects are
+ * commonly built as CommonJS. */
+function commonJsBindingInEsModule(lowerer: Lowerer, operand: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    !ts.isIdentifier(operand) ||
+    !COMMONJS_MODULE_BINDINGS.has(operand.text) ||
+    !lowerer.isStdlibGlobal(operand, operand.text)
+  )
+    return false;
+  const sf = ts.getSourceFileOfNode(operand);
+  return isNodeEsmFile(sf, lowerer.program) && !/\.tsx?$/.test(sf.fileName);
+}
+
 /** `typeof v === "lit"` / `typeof v !== "lit"` where v is `unknown`-typed
  * (dyn): the runtime kind test over the dyn node's tag. Only the kinds a
  * later read can bridge narrow ("string"/"number"/"boolean") plus
@@ -501,16 +651,69 @@ export function lowerDynTypeofTest(
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
-    // `typeof undeclared === "..."` in a JavaScript source: nothing declares
-    // the name, so Node answers "undefined" without ever reading it — the
-    // test is that constant's comparison, never a read (a read throws).
+    // `typeof undeclared === "..."` in a JavaScript source is a runtime
+    // question only when the program can have created the global object's
+    // own property of that name (`globalThis.X = ...`, in this module or
+    // another): Node's answer follows the write, so a folded constant would
+    // pick the wrong branch of a feature-detection guard. lowerTypeofExpr
+    // answers through the global object without reading the name (an absent
+    // one answers "undefined" instead of throwing), so compare that value.
+    // A name the program never writes on the global object is absent at
+    // every point, and the comparison stays the constant.
+    // A name only a library of the project's `lib` declares in a TypeScript
+    // source cannot be written that way either: Node answers "undefined"
+    // without ever reading it — the test is that constant's comparison,
+    // never a read (a read throws).
     {
       let operand = a.expression;
       while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
       if (
         ts.isIdentifier(operand) &&
-        isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
-        lowerer.resolveValueSymbol(operand) === null
+        lowerer.resolveValueSymbol(operand) === null &&
+        !isUnresolvedCjsExports(lowerer, operand)
+      ) {
+        if (
+          isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
+          programMayWriteGlobalName(lowerer, operand.text, operand)
+        )
+          return {
+            kind: "strEq",
+            negated,
+            left: lowerTypeofExpr(lowerer, a, loc),
+            right: { kind: "strLit", value: b.text, type: STRING, loc },
+            type: BOOL,
+            loc,
+          };
+        if (
+          isJsSourceFile(ts.getSourceFileOfNode(operand)) ||
+          lowerer.projectLibraryNameAt(operand)
+        )
+          return {
+            kind: "boolLit",
+            // The same answer the value form gives for this name (Node's
+            // inherited member, or "undefined"), never a read.
+            value: (b.text === (staticTypeofAnswer(lowerer, operand) ?? "undefined")) !== negated,
+            type: BOOL,
+            loc,
+          };
+      }
+      // `typeof localStorage === "undefined"`: a global the declarations
+      // type and Node 24 does not define, or a CommonJS binding in an ES
+      // module. Node answers "undefined" without reading it, and a read
+      // throws ReferenceError (lowerTypeofExpr folds the bare `typeof` the
+      // same way).
+      if (
+        commonJsBindingInEsModule(lowerer, operand) ||
+        (ts.isIdentifier(operand) &&
+          isNodeUndefinedGlobalRoot(
+            lowerer,
+            operand,
+            lowerer.checker.getSymbolAtLocation(operand),
+          )) ||
+        (ts.isPropertyAccessExpression(operand) &&
+          !operand.questionDotToken &&
+          stdlibGlobalNameOf(lowerer, operand.expression) === "globalThis" &&
+          nodeUndefinedGlobalProperty(lowerer, operand))
       )
         return {
           kind: "boolLit",
@@ -532,16 +735,12 @@ export function lowerDynTypeofTest(
       // a missing key answers undefined and the guard goes false,
       // Node-exact — never the checked cast (validating T here would
       // throw on exactly the values the guard exists to reject).
-      const unparen = (e: ts.Expression): ts.Expression => {
-        while (ts.isParenthesizedExpression(e)) e = e.expression;
-        return e;
-      };
       let keyed: IrExpr | null = null;
-      const pn = unparen(a.expression);
+      const pn = withoutParentheses(a.expression);
       if (ts.isPropertyAccessExpression(pn) && !pn.questionDotToken && ts.isIdentifier(pn.name)) {
-        const recv = unparen(pn.expression);
+        const recv = withoutParentheses(pn.expression);
         if (ts.isAsExpression(recv) || ts.isTypeAssertion(recv)) {
-          const inner = unparen(recv.expression);
+          const inner = withoutParentheses(recv.expression);
           const obj = tryLowerExpression(lowerer, inner);
           if (obj?.type.kind === "dyn") {
             keyed = {

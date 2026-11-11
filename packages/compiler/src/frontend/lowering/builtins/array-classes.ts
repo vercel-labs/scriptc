@@ -7,9 +7,9 @@
  * construction and `instanceof` view the array as the class object
  * (arrayClassView). */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { stripTypeWrappers } from "../typed-arguments.js";
 import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
@@ -631,7 +631,7 @@ export function lowerWithArraySpecies(
   const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "array") return lower();
   const local = lowerer.declareHiddenLocal("%speciesReceiver", receiver.type);
-  const key = stripTypeWrappers(access.expression);
+  const key = withoutParenthesesTypeWrappers(access.expression);
   lowerer.stagedArguments.set(key, { localId: local.id, type: receiver.type });
   let result: IrExpr | null;
   try {

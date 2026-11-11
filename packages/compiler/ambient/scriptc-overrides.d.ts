@@ -17,7 +17,59 @@ interface String {
   at(index: number): string;
 }
 
+/* The first pair of overloads matches a numeric enum's object and nothing
+ * else. `keyof typeof E` names the members only, while the object also
+ * holds each numeric member's reverse entry (the member's name under its
+ * value), which the enum's number index signature describes: such a type
+ * has number-keyed values (`V` is not unknown) and neither a numeric key
+ * nor `string` in `keyof T`. For it the parameter type is `T`, and the
+ * result adds the signature's value type to `T[keyof T]`, as tsc's own
+ * library types it.
+ * For every other argument the parameter type is `never`, so the call
+ * resolves to the second pair, unchanged. A call no overload accepts (an
+ * `unknown` argument in JavaScript) reports against the first candidate,
+ * so the first pair's result is the second pair's plus the reverse entries,
+ * which are `never` for anything but an enum: the same type either way. */
 interface ObjectConstructor {
+  values<T extends object>(
+    o: T &
+      (T extends { readonly [index: number]: infer V }
+        ? unknown extends V
+          ? never
+          : [Extract<keyof T, number | `${number}`>] extends [never]
+            ? string extends keyof T
+              ? never
+              : unknown
+            : never
+        : never),
+  ): Array<
+    | (keyof T extends never ? unknown : T[keyof T])
+    | (T extends { readonly [index: number]: infer V } ? (unknown extends V ? never : V) : never)
+  >;
+  entries<T extends object>(
+    o: T &
+      (T extends { readonly [index: number]: infer V }
+        ? unknown extends V
+          ? never
+          : [Extract<keyof T, number | `${number}`>] extends [never]
+            ? string extends keyof T
+              ? never
+              : unknown
+            : never
+        : never),
+  ): Array<
+    [
+      string,
+      (
+        | (keyof T extends never ? unknown : T[keyof T])
+        | (T extends { readonly [index: number]: infer V }
+            ? unknown extends V
+              ? never
+              : V
+            : never)
+      ),
+    ]
+  >;
   values<T extends object>(o: T): Array<keyof T extends never ? unknown : T[keyof T]>;
   entries<T extends object>(o: T): Array<[string, keyof T extends never ? unknown : T[keyof T]]>;
 }
@@ -78,6 +130,30 @@ interface PromiseConstructor {
         : (value: T) => void;
     reject: (reason: unknown extends T ? unknown : Error) => void;
   };
+}
+
+/* process.stdout and process.stderr have the color methods only while the
+ * descriptor is a terminal: a piped or redirected stream is a socket or a
+ * file stream without them, so `out.getColorDepth?.(env)` is undefined
+ * there. The declarations call the methods required; here they are what
+ * they are, optional, so the optional call's type admits undefined. A plain
+ * call still resolves; the project's own type world decides whether it is
+ * an error. The first block is for the fallback declarations
+ * (__scriptcTerminalStream there), the second for @types/node, whose
+ * process streams are NodeJS.WriteStream. getWindowSize stays as declared:
+ * an optional pair has no compiled form yet. */
+declare namespace __scriptcTerminalStream {
+  interface World {
+    lowering: true;
+  }
+}
+declare namespace NodeJS {
+  interface WriteStream {
+    getColorDepth?(env?: object): number;
+    hasColors?(count?: number): boolean;
+    hasColors?(env?: object): boolean;
+    hasColors?(count: number, env?: object): boolean;
+  }
 }
 
 /* Carriers of the types the lowerer gives untyped JavaScript collections

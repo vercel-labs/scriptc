@@ -416,6 +416,16 @@ export function lowerArrayConstructor(
     const contextual = lowerer.checker.getContextualType(expr);
     if (contextual) result = lowerer.mapTypeOf(contextual);
   }
+  // A destination that holds the array as one checked-dynamic value (an
+  // `unknown[]` slot, or `any[]` where localized failure gave it that
+  // layout): the constructor builds an array of untyped elements, and the
+  // slot takes it as the value it is.
+  if (
+    result?.kind === "dyn" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    fillArgumentOfReceiver(expr) === null
+  )
+    result = arrayOf(DYN);
   // `Array(n).fill(v)`: the checker types the length-constructed array as
   // any[], but fill gives every element v's type.
   if (result?.kind !== "array") {
@@ -854,7 +864,7 @@ export function lowerCheckedArrayFrom(
 
 export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Array.from";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
     try {
@@ -970,7 +980,7 @@ export function lowerArrayFromCall(
     !args.some(ts.isSpreadElement)
   ) {
     const name = "%builtin.Array.fromDirect";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    if (lowerer.liftedFnNamed(name) === undefined) {
       const context = newFnCtx(false, null, null, DYN);
       lowerer.fnStack.push(context);
       try {

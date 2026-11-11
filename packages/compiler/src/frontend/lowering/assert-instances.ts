@@ -13,9 +13,9 @@
  * lowers like the module function, with the options attached at compile
  * time. Other uses of the class are refused with SC2020. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { IrExpr, IrLibFn, IrStmt, SrcLoc } from "../../ir/ir.js";
 import { transformExpr } from "../../ir/traverse.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import type { Lowerer } from "./lowerer.js";
 
 export interface AssertInstanceOptions {
@@ -94,7 +94,7 @@ export const ASSERT_FAILURE_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
  * `assert.Assert` through a module binding. */
 export function isAssertClassNew(lowerer: Lowerer, expr: ts.Expression): boolean {
   if (!ts.isNewExpression(expr)) return false;
-  const callee = stripTypeCasts(expr.expression);
+  const callee = withoutParenthesesTypeWrappers(expr.expression);
   const builtin = ts.isIdentifier(callee)
     ? lowerer.builtinImportOf(callee)
     : ts.isPropertyAccessExpression(callee)
@@ -114,14 +114,14 @@ export function literalAssertOptions(expr: ts.NewExpression): AssertInstanceOpti
   const options: AssertInstanceOptions = { strict: true, diff: "simple", skipPrototype: false };
   if (args.length === 0) return options;
   if (args.length > 1) return null;
-  const arg = stripTypeCasts(args[0]!);
+  const arg = withoutParenthesesTypeWrappers(args[0]!);
   if (ts.isIdentifier(arg) && arg.text === "undefined") return options;
   if (!ts.isObjectLiteralExpression(arg)) return null;
   for (const prop of arg.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
-    const value = stripTypeCasts(prop.initializer);
+    const value = withoutParenthesesTypeWrappers(prop.initializer);
     const flag =
       value.kind === ts.SyntaxKind.TrueKeyword
         ? true
@@ -155,7 +155,7 @@ export function staticAssertInstanceDecl(
   const cached = lowerer.assertInstances.get(decl);
   if (cached !== undefined) return cached;
   let result: AssertInstanceOptions | null = null;
-  const value = stripTypeCasts(init);
+  const value = withoutParenthesesTypeWrappers(init);
   if (
     ts.isNewExpression(value) &&
     isAssertClassNew(lowerer, value) &&

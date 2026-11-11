@@ -288,8 +288,7 @@ function hasEsmSyntax(sf: ts.SourceFile): boolean {
   for (const stmt of sf.statements.nodes) {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) return true;
     if (ts.isExportAssignment(stmt)) return true;
-    const head = sf.text.slice(ts.tokenStartOfNode(stmt), ts.tokenStartOfNode(stmt) + 7);
-    if (head === "export ") return true;
+    if (ts.sourceTextRangeMatches(sf, ts.tokenStartOfNode(stmt), stmt.end, /^export /)) return true;
   }
   return false;
 }
@@ -945,7 +944,7 @@ class ModuleScanner {
     } else if (ts.isIdentifier(node)) {
       this.visitIdentifier(node);
     } else if (ts.isNumericLiteral(node)) {
-      const text = this.sf.text.slice(ts.tokenStartOfNode(node), node.end);
+      const text = ts.getTextOfNode(node);
       if (/^0[0-9]+$/.test(text) && !this.isStrict(node))
         this.add("R2.4", "sloppy-mode", "a legacy octal literal", node);
     } else if (ts.isPropertyAccessExpression(node)) {

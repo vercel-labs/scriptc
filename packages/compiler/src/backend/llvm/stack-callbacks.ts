@@ -18,12 +18,19 @@ export class StackCallbacks {
 
   emit(host: LlvmEmitterContext, value: IrExpr): LlValue | null {
     if (value.kind !== "closure" || value.captures.length > 32) return null;
-    const bytes = (6 + value.captures.length) * (host.sizeType === "i64" ? 8 : 4);
+    // An environment that holds values has one more word, its descriptor,
+    // which nothing reads here: this closure is never traced or destroyed.
+    const layout = value.adapts === true ? null : host.valueCaptures.layout(value.fnName);
+    const words = 6 + value.captures.length + (layout === null ? 0 : 2);
+    const bytes = words * 8;
     if (bytes > this.remaining || !this.eligible(value.fnName)) return null;
     this.remaining -= bytes;
     const B = host.B;
     const closure = B.slot();
-    B.entryAllocas.push(`${closure} = alloca { %ScrClosure, [${value.captures.length} x ptr] }`);
+    const boxes = layout?.boxes ?? value.captures.length;
+    B.entryAllocas.push(
+      `${closure} = alloca ${layout === null ? `{ %ScrClosure, [${boxes} x ptr] }` : host.environmentType(layout)}`,
+    );
     B.line(`store %ScrClosure zeroinitializer, ptr ${closure}`);
     B.line(`store ${host.sizeType} -1, ptr ${closure}`);
     const fn = B.tmp();
@@ -31,7 +38,7 @@ export class StackCallbacks {
     B.line(`store ptr @${host.callTarget(value.fnName)}, ptr ${fn}`);
     const count = B.tmp();
     B.line(`${count} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 0, i32 2`);
-    B.line(`store ${host.sizeType} ${value.captures.length}, ptr ${count}`);
+    B.line(`store ${host.sizeType} ${boxes}, ptr ${count}`);
     const target = this.functions.get(value.fnName);
     const functionKind = target ? host.closureFunctionKind(target) : 0;
     if (functionKind !== 0) {
@@ -39,7 +46,19 @@ export class StackCallbacks {
       B.line(`${kind} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 0, i32 4`);
       B.line(`store i32 ${functionKind}, ptr ${kind}`);
     }
-    value.captures.forEach((localId, index) => {
+    // The closure's own `length` (IrExpr closure.length) is not recorded
+    // here: reading it boxes the function value, which an invocation-only
+    // consumer never does, and a header that stores its own address would
+    // keep LLVM from dissolving the allocation.
+    value.captures.forEach((localId, capture) => {
+      const place = layout?.slots[capture];
+      if (place !== undefined && place.kind !== "box") {
+        // The binding keeps its value for the statement: the environment
+        // borrows it.
+        host.storeEnvironmentValue(layout!, closure, capture, localId, false, value.loc);
+        return;
+      }
+      const index = place?.index ?? capture;
       const box = host.retainBox(host.captureBox(localId));
       const caps = B.tmp();
       const slot = B.tmp();

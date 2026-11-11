@@ -18,6 +18,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
@@ -141,7 +142,7 @@ export function lowerWrapperNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
  * `constructor` property (the interned closures `x === String` compares). */
 export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
   return (["String", "Number", "Boolean"] as const).map((name) =>
-    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc, true), DYN),
+    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc), DYN),
   );
 }
 
@@ -151,7 +152,7 @@ export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
  * compare). Until they know the slot, a wrapper reaching one refuses: each
  * dynamic argument passes through wrapper.guard, which throws the
  * not-supported Error when the value's own data graph holds a wrapper. */
-export const GUARDED_CONSUMERS: ReadonlySet<string> = new Set([
+export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "json.stringifyValue",
   "json.stringifyReplacer",
   "util.isDeepStrictEqual",

@@ -40,12 +40,13 @@ import {
   type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
+import { codegenServerName } from "../backend/codegen-server.js";
 import {
   NativeCodegenError,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
-import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
+import { llvmRefusalDiags } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { analyzeWithFrontend } from "../frontend/analysis.js";
@@ -61,8 +62,9 @@ import {
 } from "../library/prepare.js";
 import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
-import type { NativeToolchain } from "./toolchain.js";
-import { evaluateNativeComptime } from "./comptime.js";
+import { compilerInstalledPackage, type NativeToolchain } from "./toolchain.js";
+import { setIslandBuildHost } from "../node-islands/host.js";
+import { createComptimeEvaluator } from "../frontend/comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
@@ -81,6 +83,7 @@ import {
   prepareNativeExecutable,
   prepareNativeLibrary,
 } from "./prepare.js";
+import { usesLoweredProgram } from "../executable/lowered.js";
 import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
@@ -159,9 +162,20 @@ function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | u
   };
 }
 
+/** What a build reports beside its result. */
+interface NativeCompileSink {
+  warnings: ScrDiagnostic[];
+  sources: Map<string, string>;
+  /** The Node islands the build ran (CompileWarnings.islands). */
+  islands?: { packages: string[]; modules: string[] };
+}
+
 /** Shared frontend semantics with native processes for code generation and linking. */
 export class NativeCompiler {
   private readonly frontend: FrontendFactory;
+  /** The shared code generation server this build's helper commands run on,
+   * or null when the build runs the helper as its own process. */
+  private readonly codegenServer: string | null;
 
   constructor(
     readonly toolchain: NativeToolchain,
@@ -170,17 +184,36 @@ export class NativeCompiler {
      * build on this machine shares, even one whose build cache starts empty. */
     private readonly state: NativeCache | null = null,
   ) {
+    this.codegenServer = codegenServerName(
+      toolchain.helperExecutable,
+      toolchain.compilerVersion,
+      toolchain.target.llvmTriple,
+    );
+    // Island builds (executable/islands.ts) find the libnode pack installed
+    // with this compiler and build their probe host from its runtime sources.
+    setIslandBuildHost({
+      compilerPackage: (name) => compilerInstalledPackage(toolchain, name),
+      runtimeSources: () =>
+        toolchain.runtimeSourceRoot === undefined ? null : join(toolchain.runtimeSourceRoot, "src"),
+    });
     const evaluator = toolchain.comptimeExecutable;
+    const evaluateComptime =
+      evaluator === undefined
+        ? undefined
+        : createComptimeEvaluator(toolchain.ts7Executable, () => {
+            if (!existsSync(evaluator))
+              throw new Error(
+                `the compile-time evaluator ${evaluator} is missing; reinstall scriptc`,
+              );
+            return evaluator;
+          });
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
         npmStatic,
         externalTypes,
-        evaluator === undefined
-          ? undefined
-          : (source, timeout) =>
-              evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
+        evaluateComptime,
         libraryNpmStatic,
         options,
       );
@@ -293,6 +326,7 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      server: this.codegenServer,
       ...this.helperVerification(),
     };
     let key: string | null = null;
@@ -451,20 +485,21 @@ export class NativeCompiler {
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
-    const sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> } = {
-      warnings: [],
-      sources: new Map(),
-    };
+    const sink: NativeCompileSink = { warnings: [], sources: new Map() };
     const result = this.compileWithWarnings(entry, options, sink);
-    // Divergence warnings ride a successful result (never a failure).
-    if (!result.ok || sink.warnings.length === 0) return result;
-    return { ...result, warnings: sink.warnings, sourceTexts: sink.sources };
+    // Divergence warnings and the islands the build ran ride a successful
+    // result (never a failure).
+    if (!result.ok) return result;
+    const islands = sink.islands === undefined ? {} : { islands: sink.islands };
+    if (sink.warnings.length === 0)
+      return sink.islands === undefined ? result : { ...result, ...islands };
+    return { ...result, ...islands, warnings: sink.warnings, sourceTexts: sink.sources };
   }
 
   private compileWithWarnings(
     entry: string,
     options: CompileRequestOptions,
-    sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> },
+    sink: NativeCompileSink,
   ): CompileRequestResult {
     const timing = compilationTiming();
     const toolchain = this.toolchain;
@@ -517,9 +552,10 @@ export class NativeCompiler {
       }
       const exclusions = nativeFrontendExclusions(entry, options);
       // An unchanged build keeps what the last build of the same inputs left
-      // in place (native/unchanged.ts), before the frontend reads a source.
+      // in place (native/unchanged.ts), before the frontend reads a source. A
+      // build that writes or reads a lowered program always runs.
       const unchangedKey =
-        outputKind === "exe"
+        outputKind === "exe" && !usesLoweredProgram(options)
           ? unchangedBuildKey({
               entry,
               options,
@@ -571,6 +607,7 @@ export class NativeCompiler {
         sink.warnings = prepared.warnings;
         sink.sources = sourceTexts;
       }
+      if (prepared.islands !== undefined) sink.islands = prepared.islands;
       mkdirSync(dirname(output), { recursive: true });
       stage = mkdtempSync(join(dirname(output), ".scriptc-native-"));
       const stagedOutput = join(stage, basename(output));
@@ -825,8 +862,15 @@ export class NativeCompiler {
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       // A build that found divergence warnings lowers again (their sources
-      // are not part of the record), so it records nothing.
-      if (unchangedKey !== null && probes !== null && sink.warnings.length === 0) {
+      // are not part of the record), so it records nothing. Neither does a
+      // program that calls into Node: its libnode pack is not an input the
+      // record observes (the frontend cache entry checks it, prepare.ts).
+      if (
+        unchangedKey !== null &&
+        probes !== null &&
+        sink.warnings.length === 0 &&
+        features.nodeIsland !== true
+      ) {
         // The pack's artifacts are this executable's link inputs and run-time
         // data; a pack edited in place changes them, and only their
         // identities tell.
@@ -874,7 +918,7 @@ export class NativeCompiler {
       // Keep subclass reads at the catch boundary, where the thrown object
       // retains its class identity and source location.
       if (error instanceof LlvmUnsupportedError)
-        return { ok: false, diagnostics: [llvmRefusalDiag(error, entry)], sourceTexts };
+        return { ok: false, diagnostics: llvmRefusalDiags(error, entry), sourceTexts };
       if (error instanceof NativeCodegenError)
         return {
           ok: false,
@@ -1035,7 +1079,7 @@ export class NativeCompiler {
       if (error instanceof LlvmUnsupportedError)
         return {
           ok: false,
-          diagnostics: [llvmRefusalDiag(error, options.profilePath)],
+          diagnostics: llvmRefusalDiags(error, options.profilePath),
           sourceTexts,
         };
       if (error instanceof NativeCodegenError)

@@ -310,3 +310,128 @@ for (const { name, source, checkJs, ts } of CHECKER_OPINION_TWINS) {
     else expect(kept.some((message) => message.includes(checkJs))).toBe(true);
   });
 }
+
+const DISCARDED_VOID_NEGATION = `function register() {
+  console.log("registered");
+}
+!register();`;
+
+test("JavaScript drops the diagnostic of a discarded negation of a void call", () => {
+  expect(
+    diagnostics(
+      DISCARDED_VOID_NEGATION,
+      'import * as library from "./library.js"; console.log(library);',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript file keeps the void-negation diagnostic", () => {
+  // TS1345 is a `checkedJs: "enforce"` row: a project that asked tsc to check
+  // its JavaScript keeps the refusal (named here by the code's triage row).
+  const kept = diagnostics(
+    `// @ts-check\n${DISCARDED_VOID_NEGATION}`,
+    'import * as library from "./library.js"; console.log(library);',
+  );
+  expect(kept.some((d) => d.message.includes("truthiness"))).toBe(true);
+});
+
+test("TypeScript keeps the diagnostic of a discarded negation of a void call", () => {
+  const kept = diagnostics(
+    DISCARDED_VOID_NEGATION,
+    'import * as library from "./library.js"; console.log(library);',
+    "ts",
+  ).map((d) => d.message);
+  expect(kept.some((message) => message.includes("cannot be tested for truthiness"))).toBe(true);
+});
+
+test("a negation whose boolean is consumed keeps the named refusal", () => {
+  // Only statement-position `!voidCall();` is admitted: a consumed boolean
+  // needs a runtime value for an operand the checker types `void`, which a
+  // callback typed that way can still fill at run time.
+  const result = diagnostics(
+    'function register() { console.log("registered"); }\nexport const ok = !register();',
+    'import { ok } from "./library.js"; console.log(ok);',
+  );
+  expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+/* The triage rows' descriptions (tsc-codes.ts, TRIAGE_ROWS) must state what
+ * Node does with the construct being refused, so the user can tell an invalid
+ * dependency from a missing lowering. These tests read the diagnostics a real
+ * preflight produces, not the table's source text. */
+function refusal(source: string, extension = "js") {
+  const kept = diagnostics(
+    source,
+    'import * as library from "./library.js"; console.log(library);',
+    extension,
+  );
+  expect(kept).toHaveLength(1);
+  const [diagnostic] = kept;
+  expect(diagnostic!.code).toBe("SC1090");
+  return diagnostic!;
+}
+
+test("a class declaration assignment names the mutable outer binding", () => {
+  const kept = refusal("class Value {}\nValue = class Replacement {};\nexport { Value };");
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("outer binding is mutable");
+  expect(kept.hint).toContain("named class expression's inner binding");
+  expect(kept.hint).not.toContain("read-only");
+});
+
+test("a named class expression's inner binding names the immutable inner binding", () => {
+  const kept = refusal(
+    "const Outer = class Inner { static reset() { Inner = null; } };\nexport { Outer };",
+  );
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("named class expression's inner binding");
+});
+
+test("a function declaration assignment names the mutable binding", () => {
+  const kept = refusal("function value() { return 1; }\nvalue = () => 2;\nexport { value };");
+  expect(kept.message).toContain("assigning to a function binding");
+  expect(kept.hint).toContain("binding is mutable");
+  expect(kept.hint).not.toContain("in strict mode and modules");
+});
+
+test("a named function expression's inner binding names the immutable binding", () => {
+  const kept = refusal(
+    "const outer = function inner() { inner = () => 1; return inner(); };\nexport { outer };",
+  );
+  expect(kept.message).toContain("assigning to a function binding");
+  expect(kept.hint).toContain("named function expression's inner binding");
+});
+
+test("a value missing declared properties is not described as a Set argument", () => {
+  // TS2739 is an ordinary structural error: the annotation requires three
+  // properties and the value supplies one. Nothing here is set-like.
+  const kept = refusal(
+    '// @ts-check\n/** @type {{ first: string, second: string, third: string }} */\nexport const value = { first: "one" };',
+  );
+  expect(kept.message).toContain("a value lacking a required property of its declared type");
+  expect(kept.hint).toContain("Node checks no declared type");
+  expect(`${kept.message} ${kept.hint}`).not.toContain("set-like");
+  expect(`${kept.message} ${kept.hint}`).not.toContain("'has'");
+});
+
+test.for(["/\\1/", "/(a)\\2/", "/\\8/", "/(a)\\12/", "/[\\1]/"])(
+  "JavaScript admits a regex decimal escape without its group outside Unicode mode: %s",
+  (literal) => {
+    expect(diagnostics(`export const pattern = ${literal};`, 'import "./library.js";')).toEqual([]);
+  },
+);
+
+test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
+  "a Unicode-mode regex keeps the missing-group error: %s",
+  (literal) => {
+    const result = diagnostics(`export const pattern = ${literal};`, 'import "./library.js";');
+    expect(result.some((d) => d.code === "SC0001" && d.message.includes("backreference"))).toBe(
+      true,
+    );
+  },
+);
+
+test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
+  const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
+  expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
+});

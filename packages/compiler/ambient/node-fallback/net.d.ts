@@ -176,20 +176,29 @@ declare module "net" {
     dropMaxConnection: boolean | undefined;
     /* cb(null, count) on the next tick. */
     getConnections(callback: (error: Error | null, count: number) => void): Server;
-    /* Node answers the server itself (`return this` chaining). */
-    listen(port: number, callback?: () => void): Server;
+    /* Node answers the server itself (`return this` chaining). An
+     * undefined port is an arbitrary unused one; a string is the port
+     * when it reads as a number (`process.env.PORT || 3000`) and a
+     * Unix-socket path otherwise. */
+    listen(port?: number | string, callback?: () => void): Server;
     /* No port: an arbitrary unused one. */
     listen(callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
-     * spelling). */
-    listen(port: number, host: string, callback?: () => void): Server;
+     * spelling); an undefined host is every interface. */
+    listen(port?: number | string, host?: string, callback?: () => void): Server;
     /* A Unix-socket server; the socket file is removed when it closes. */
     listen(path: string, callback?: () => void): Server;
-    /* The explicit-interface bind: host is an IP literal (absent = the
-     * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and reusePort
-     * requests kernel connection distribution where Node supports it. */
+    /* The explicit-interface bind: host is an IP literal (absent or
+     * undefined = the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY
+     * and reusePort requests kernel connection distribution where Node
+     * supports it. */
     listen(
-      options: { port: number; host?: string; ipv6Only?: boolean; reusePort?: boolean },
+      options: {
+        port: number | undefined;
+        host?: string | undefined;
+        ipv6Only?: boolean;
+        reusePort?: boolean;
+      },
       callback?: () => void,
     ): Server;
     close(callback?: () => void): void;
@@ -199,7 +208,9 @@ declare module "net" {
     address(): import("node:dgram").AddressInfo;
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
-    on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    on(event: "connection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: the socket after its handshake */
+    on(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     on(
       event: "tlsClientError",
@@ -245,7 +256,8 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
-    once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    once(event: "connection", listener: (socket: Socket) => void): void;
+    once(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     once(
       event: "tlsClientError",
@@ -265,15 +277,32 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* The EventEmitter meta event: fires with the event name before a
+     * listener joins any of the server's lists. */
+    on(event: "newListener", listener: (event: string) => void): void;
+    addListener(event: "newListener", listener: (event: string) => void): void;
+    once(event: "newListener", listener: (event: string) => void): void;
     /* off / removeListener: the LAST listener standing for the same
-     * function leaves that event's list (Node's EventEmitter order). The
-     * server registries that keep a removable list: error, close,
-     * listening, connection/secureConnection, timeout, and drop. */
+     * function leaves that event's list (Node's EventEmitter order). */
     off(event: "error", listener: (err: Error) => void): void;
     off(event: "close" | "listening", listener: () => void): void;
     off(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     off(event: "timeout", listener: (socket: Socket) => void): void;
     off(event: "drop", listener: (data?: DropArgument) => void): void;
+    off(event: "newListener", listener: (event: string) => void): void;
+    off(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    off(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    off(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    off(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
     removeListener(event: "error", listener: (err: Error) => void): void;
     removeListener(event: "close" | "listening", listener: () => void): void;
     removeListener(
@@ -282,6 +311,39 @@ declare module "net" {
     ): void;
     removeListener(event: "timeout", listener: (socket: Socket) => void): void;
     removeListener(event: "drop", listener: (data?: DropArgument) => void): void;
+    removeListener(event: "newListener", listener: (event: string) => void): void;
+    removeListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    removeListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    removeListener(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    removeListener(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    /* The event's listeners in registration order, each the function the
+     * program registered (Node's identity semantics), typed by the event's
+     * listener shape. */
+    listeners(event: "error"): ((err: Error) => void)[];
+    listeners(event: "close" | "listening"): (() => void)[];
+    listeners(event: "connection" | "secureConnection"): ((socket: Socket) => void)[];
+    listeners(event: "timeout"): ((socket: Socket) => void)[];
+    listeners(event: "drop"): ((data?: DropArgument) => void)[];
+    listeners(event: "newListener"): ((event: string) => void)[];
+    listeners(
+      event: "tlsClientError",
+    ): ((err: Error, tlsSocket: import("tls").TLSSocket) => void)[];
+    listeners(event: "clientError"): ((err: Error, socket: Socket) => void)[];
+    listeners(
+      event: "upgrade" | "connect",
+    ): ((req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void)[];
+    listeners(
+      event: "request" | "checkContinue" | "checkExpectation",
+    ): ((req: import("http").IncomingMessage, res: import("http").ServerResponse) => void)[];
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {

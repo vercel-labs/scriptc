@@ -1,0 +1,10 @@
+- **Class index signatures:** A class may declare `[key: string]: any` or `[key: string]: unknown`.
+  The signature takes no storage: a name the class does not declare is an own property of the instance, absent until something assigns it, as in Node.js.
+  Reads, assignments, computed keys, `in`, `Object.keys`, `JSON.stringify` and untyped views of the instance see the same property.
+  An instance lists its declared fields before the added properties, as Node.js does when every added property is written after the fields exist.
+  A class that could write one earlier is refused: a field initializer of the class or of a base class that mentions `this` or calls a function, or a base class constructor that calls a function or hands the instance out while a class below it declares fields.
+  Assign such a field in the constructor instead.
+  A signature with another value type or a number key is refused.
+  A subclass of such a class cannot declare instance fields of its own; declare them in the class that has the signature, or assign them through it.
+  Assigning a declared field through a computed key checks the value against the field's type and throws a `TypeError` on a mismatch, where Node.js stores the value.
+  Compound assignment, `++`, `--`, `delete` and method calls on a name the signature admits, and object spread of the instance, are refused.

@@ -10,6 +10,9 @@
  * registration), and the process-warning channel (emitWarning + the
  * 'warning' listeners + Node's stderr report). */
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -82,7 +85,7 @@ static ScrDyn *scr_als_option(ScrDyn *options, const char *key, size_t key_len) 
     snprintf(message, sizeof message,
              "AsyncLocalStorage options whose class declares '%s' are not supported yet", key);
     scr_str_release(name);
-    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
     return NULL;
   }
   ScrDyn *key_value = scr_dyn_new_str(name);
@@ -368,6 +371,40 @@ static void scr_rej_remove(ScrRejListener *list, size_t *n, ScrDyn *fn) {
   }
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* A program with Node islands has one list of listeners for these events.
+ * Until Node is loaded it is the registries of this unit. Once Node is
+ * loaded it is Node's `process` (scr_node_island_events.c):
+ * scr_process_events_to_node moves the listeners there in their order, and
+ * from then on every registration, removal and prepend below goes to
+ * `process`, and errors, rejections and warnings are raised through it.
+ * The move waits for a dispatch of this unit that is in progress (Node
+ * started inside a listener): that dispatch finishes over the lists it
+ * began with. */
+static SCR_TL bool scr_pe_node = false;
+static SCR_TL bool scr_pe_wanted = false;
+static SCR_TL unsigned scr_pe_dispatching = 0;
+static void scr_pe_move_all(void);
+
+/* process.on (0), once (1), prependListener (2), removeListener (3),
+ * prependOnceListener (4) on Node's `process`; false while this unit's
+ * registries are the list. */
+static bool scr_pe_listen(int mode, const char *event, ScrDyn *fn) {
+  if (!scr_pe_node) return false;
+  scr_ni_process_listen(mode, event, fn);
+  return true;
+}
+#define SCR_PE_ENTER() (scr_pe_dispatching++)
+#define SCR_PE_LEAVE()                                           \
+  do {                                                           \
+    if (--scr_pe_dispatching == 0 && scr_pe_wanted) scr_pe_move_all(); \
+  } while (0)
+#else
+#define scr_pe_listen(mode, event, fn) false
+#define SCR_PE_ENTER() ((void)0)
+#define SCR_PE_LEAVE() ((void)0)
+#endif
+
 /* The hooks arm exactly while their registry is non-empty: Node with
  * every listener removed (off, or once-consumed) reverts to the default
  * report/silence, and the report loop consults the hook per promise. */
@@ -376,11 +413,15 @@ static void scr_urj_sync_hook(void) {
 }
 
 static void scr_rjh_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* Node tracks the handled rejections */
+#endif
   scr_rjh_notify_fn = scr_nrjh > 0 ? scr_rjh_dispatch : NULL;
 }
 
 void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "unhandledRejection", fn)) return;
   static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
@@ -391,12 +432,14 @@ void scr_process_on_unhandled_rejection(ScrDyn *fn, bool once) {
 }
 
 void scr_process_off_unhandled_rejection(ScrDyn *fn) {
+  if (scr_pe_listen(3, "unhandledRejection", fn)) return;
   scr_rej_remove(scr_urj_listeners, &scr_nurj, fn);
   scr_urj_sync_hook();
 }
 
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "rejectionHandled", fn)) return;
   static SCR_TL bool teardown_armed = false;
   if (!teardown_armed) {
     teardown_armed = true;
@@ -407,6 +450,7 @@ void scr_process_on_rejection_handled(ScrDyn *fn, bool once) {
 }
 
 void scr_process_off_rejection_handled(ScrDyn *fn) {
+  if (scr_pe_listen(3, "rejectionHandled", fn)) return;
   scr_rej_remove(scr_rjh_listeners, &scr_nrjh, fn);
   scr_rjh_sync_hook();
 }
@@ -454,6 +498,9 @@ static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
 
 static void scr_uncaught_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* the hook raises through Node's process */
+#endif
   scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1]) ? scr_uncaught_dispatch : NULL;
 }
 
@@ -467,8 +514,11 @@ static void scr_uncaught_teardown(void) {
   scr_uncaught_sync_hook();
 }
 
+#define SCR_UNCAUGHT_EVENT(monitor) ((monitor) ? "uncaughtExceptionMonitor" : "uncaughtException")
+
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, SCR_UNCAUGHT_EVENT(monitor), fn)) return;
   static SCR_TL bool armed = false;
   if (!armed) { armed = true; scr_atexit(scr_uncaught_teardown); }
   size_t k = monitor ? 1 : 0;
@@ -483,6 +533,12 @@ void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
  * then moves to the front, so the two share one registration; a refused
  * listener (a non-function) left the list alone and nothing moves. */
 void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) {
+    if (scr_rej_check_listener(fn)) scr_ni_process_listen(2, SCR_UNCAUGHT_EVENT(monitor), fn);
+    return;
+  }
+#endif
   size_t k = monitor ? 1 : 0;
   size_t before = scr_uncaught_n[k];
   scr_process_on_uncaught_exception(fn, false, monitor);
@@ -496,6 +552,7 @@ void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor) {
 
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(3, SCR_UNCAUGHT_EVENT(monitor), fn)) return;
   size_t k = monitor ? 1 : 0;
   scr_rej_remove(scr_uncaught_ls[k], &scr_uncaught_n[k], fn);
   scr_uncaught_sync_hook();
@@ -595,6 +652,7 @@ static int scr_uncaught_dispatch(bool from_promise) {
     }
     error = wrapped;
   }
+  SCR_PE_ENTER();
   const char *origin = from_promise ? "unhandledRejection" : "uncaughtException";
   ScrStr *text = scr_str_new(origin, strlen(origin));
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
@@ -605,8 +663,27 @@ static int scr_uncaught_dispatch(bool from_promise) {
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
+#ifdef SCR_WORKERS
+  /* A worker reports an uncaught error to its parent through this hook
+   * (scr_exc_print_uncaught), which the main context never has. */
+  bool fatal = !ok && scr_context_report_error == NULL;
+#else
+  bool fatal = !ok;
+#endif
+  if (fatal) {
+    /* A listener itself threw: Node leaves through its fatal exit (status
+     * 7), which emits no 'exit' event and runs nothing else. The report
+     * and the exit are the ones a throwing 'exit' listener takes
+     * (scr_run_exit_listeners). */
+    scr_caught_release(caught);
+    scr_exc_print_uncaught();
+    scr_stdout_settle();
+    fflush(stdout);
+    _Exit(7);
+  }
   if (ok && !handled) scr_rethrow(caught);
   scr_caught_release(caught);
+  SCR_PE_LEAVE();
   return !ok ? -1 : handled ? 1 : 0;
 }
 
@@ -620,10 +697,12 @@ static bool scr_urj_dispatch(ScrPromise *p) {
   ScrDyn *reason = scr_promise_reason_dyn(p);
   ScrDyn *boxed = scr_dyn_new_promise(p);
   ScrDyn *args[2] = {reason, boxed};
+  SCR_PE_ENTER();
   bool ok = scr_rej_fire(&scr_urj_listeners, &scr_nurj, args, 2);
   scr_dyn_release(reason);
   scr_dyn_release(boxed);
   scr_urj_sync_hook();
+  SCR_PE_LEAVE();
   return ok;
 }
 
@@ -631,9 +710,11 @@ static bool scr_urj_dispatch(ScrPromise *p) {
  * throw propagates as a pending exception through the attach site. */
 static void scr_rjh_dispatch(ScrPromise *p) {
   ScrDyn *boxed = scr_dyn_new_promise(p);
+  SCR_PE_ENTER();
   (void)scr_rej_fire(&scr_rjh_listeners, &scr_nrjh, &boxed, 1);
   scr_dyn_release(boxed);
   scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
 }
 
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
@@ -659,48 +740,114 @@ ScrPromise *scr_immediate_promise(void) {
 
 /* ── .then/.catch/.finally over dyn promises (scr_dyn_invoke's promise
  * arm and the dc tracePromise reactions) ──────────────────────────────
- * One reaction fiber per registration: it awaits src (the settled-await
- * microtask hop keeps JS's ordering — reactions never run synchronously
- * inside settle), runs the checked-dynamic tree handler, and settles dst. A handler
- * returning a dyn promise is ADOPTED (awaited in a loop, like JS's
- * resolve). Non-callable handlers pass the settlement through (JS's
- * PromisePrototypeThen over non-function reactions). The fiber's own
- * promise is dropped unobserved — the entry consumes every exception
- * into dst, so it can never reject. */
+ * One native reaction per registration (scr_promise_react): its job runs
+ * on the loop's stack one microtask turn after src settles (reactions
+ * never run synchronously inside settle), in the AsyncLocalStorage context
+ * of the registration, calls the checked-dynamic tree handler, and settles
+ * dst. A handler returning a dyn promise is ADOPTED (the resolution
+ * procedure, scr_promise_resolve_dyn). Non-callable handlers pass the
+ * settlement through (JS's PromisePrototypeThen over non-function
+ * reactions). The job consumes every exception into dst. Nothing here
+ * suspends in the middle, so no reaction takes a fiber. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_DYN_REACTIONS_ROOTED 1
+#endif
+#endif
+
+/* The collector does not trace a reaction's context, so one that never
+ * runs on a cycle through its handler stays allocated, as the parked fiber
+ * it replaces did. The sanitizer lane keeps the pending contexts on a list
+ * rooted in a global (their first member), so the leak check sees them
+ * reachable, as it saw that fiber's stack. The count audit takes one that
+ * is left when the loop has nothing more to run as that fiber never
+ * resumed (scr_dyn_reactions_pending). */
+#ifdef SCR_RC_AUDIT
+#define SCR_DYN_PENDING_COUNT(n) (scr_dyn_reactions_pending += (n))
+#else
+#define SCR_DYN_PENDING_COUNT(n) ((void)0)
+#endif
+#ifdef SCR_DYN_REACTIONS_ROOTED
+typedef struct ScrDynPending {
+  struct ScrDynPending *next, **previous;
+} ScrDynPending;
+static SCR_TL ScrDynPending *scr_dyn_pending = NULL;
+static void scr_dyn_pending_link(ScrDynPending *p) {
+  p->next = scr_dyn_pending;
+  p->previous = &scr_dyn_pending;
+  if (scr_dyn_pending) scr_dyn_pending->previous = &p->next;
+  scr_dyn_pending = p;
+}
+static void scr_dyn_pending_unlink(ScrDynPending *p) {
+  *p->previous = p->next;
+  if (p->next) p->next->previous = p->previous;
+}
+#define SCR_DYN_PENDING ScrDynPending pending;
+#define SCR_DYN_PENDING_LINK(pack) (scr_dyn_pending_link(&(pack)->pending), SCR_DYN_PENDING_COUNT(1))
+#define SCR_DYN_PENDING_UNLINK(pack) (scr_dyn_pending_unlink(&(pack)->pending), SCR_DYN_PENDING_COUNT(-1))
+#else
+#define SCR_DYN_PENDING
+#define SCR_DYN_PENDING_LINK(pack) SCR_DYN_PENDING_COUNT(1)
+#define SCR_DYN_PENDING_UNLINK(pack) SCR_DYN_PENDING_COUNT(-1)
+#endif
+
 typedef struct {
-  ScrPromise *src, *dst; /* owned */
+  SCR_DYN_PENDING
+  ScrPromise *dst;           /* owned */
   ScrDyn *onf, *onr, *onfin; /* owned or NULL */
+  ScrAlsCtx *als;            /* the registration's context, owned or NULL */
 } ScrDynThenPack;
 
+/* The wait of a finally callback's result. It does not own the promise it
+ * waits on: that promise owns the reaction, and a reference back would
+ * keep both alive when the promise never settles. */
 typedef struct {
-  ScrPromise *src, *dst;
-  ScrDyn *result;
+  SCR_DYN_PENDING
+  ScrPromise *src, *dst; /* owned */
 } ScrDynFinallyPack;
 
-static void scr_dyn_finally_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynFinallyPack *pack = opaque;
-  ScrDyn *result = scr_await_dyn(pack->result->v.promise);
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The promise a finally callback's result stands for has settled: its
+ * rejection replaces the original settlement, anything else passes the
+ * original on. */
+static void scr_dyn_finally_react(void *ctx, ScrPromise *settled) {
+  ScrDynFinallyPack *pack = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
   if (scr_exc_pending()) scr_promise_reject_pending(pack->dst);
   else scr_promise_adapt_copy(pack->dst, pack->src);
-  scr_dyn_release(result);
-  scr_dyn_release(pack->result);
+}
+
+static void scr_dyn_finally_drop(void *ctx) {
+  ScrDynFinallyPack *pack = ctx;
+  SCR_DYN_PENDING_UNLINK(pack);
   scr_promise_release(pack->src);
   scr_promise_release(pack->dst);
   free(pack);
 }
 
-static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
-  (void)self;
-  ScrDynThenPack *a = (ScrDynThenPack *)ap;
-  ScrDyn *v = scr_await_dyn(a->src);
+static const ScrPromiseReaction scr_dyn_finally_reaction = { scr_dyn_finally_react,
+                                                             scr_dyn_finally_drop };
+
+SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src) = NULL;
+
+static void scr_dyn_then_drop(void *ctx);
+
+/* The reaction's steps. Inlined into both callers, so that the reaction
+ * job stays one function in a program without tests. */
+static inline __attribute__((always_inline)) void scr_dyn_then_steps(ScrDynThenPack *a,
+                                                                     ScrPromise *src) {
+  scr_promise_settled_now(src); /* observes; a rejection re-throws */
   bool rejected = scr_exc_pending();
   ScrCaught *c = rejected ? scr_exc_take() : NULL;
+  ScrDyn *v = rejected ? NULL : scr_dyn_promise_payload(src);
   ScrDyn *handler = a->onfin ? a->onfin : (rejected ? a->onr : a->onf);
   if (handler != NULL && scr_dyn_is_callable(handler)) {
     ScrDyn *arg = NULL;
     if (a->onfin == NULL) arg = rejected ? scr_caught_to_dyn(c) : scr_dyn_retain(v);
+    ScrAlsCtx *outer = scr_als_dispatch_enter(a->als);
     ScrDyn *r = scr_dyn_call(handler, arg ? &arg : NULL, arg ? 1 : 0, "handler");
+    scr_als_dispatch_leave(outer);
     scr_dyn_release(arg);
     if (r == NULL) {
       /* The handler threw: dst rejects with that. */
@@ -718,11 +865,11 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
       ScrPromise *passthrough = scr_promise_new();
       ScrDynFinallyPack *pack = malloc(sizeof *pack);
       if (!pack) scr_ad_oom();
-      pack->src = scr_promise_retain(a->src);
+      pack->src = scr_promise_retain(src);
       pack->dst = scr_promise_retain(passthrough);
-      pack->result = r;
-      ScrPromise *waiter = scr_async_spawn_after(r->v.promise, scr_dyn_finally_entry, pack);
-      scr_promise_release(waiter);
+      SCR_DYN_PENDING_LINK(pack);
+      scr_promise_react_unmarked(r->v.promise, &scr_dyn_finally_reaction, pack);
+      scr_dyn_release(r);
       scr_promise_resolve_dyn(a->dst, scr_dyn_new_promise(passthrough));
       scr_promise_release(passthrough);
     } else {
@@ -736,70 +883,125 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
   }
   scr_caught_release(c);
   scr_dyn_release(v);
-  scr_promise_release(a->src);
+}
+
+#ifndef __wasi__
+/* The steps on a fiber of their own (scr_dyn_then_spawn): the fiber holds
+ * the source and a context of its own, because the reaction's context goes
+ * with the reaction when its job returns, and the handler may still be
+ * waiting then. */
+typedef struct {
+  ScrDynThenPack *pack; /* owned */
+  ScrPromise *src;      /* owned */
+} ScrDynThenFiber;
+
+static void scr_dyn_then_fiber_entry(ScrFiber *self, void *argpack) {
+  (void)self;
+  ScrDynThenFiber *job = argpack;
+  scr_dyn_then_steps(job->pack, job->src);
+  scr_dyn_then_drop(job->pack);
+  scr_promise_release(job->src);
+  free(job);
+}
+
+/* Referenced by the test unit alone, so that a program without tests links
+ * neither this copy nor the fiber machinery it starts. */
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src) {
+  ScrDynThenPack *a = ctx;
+  ScrDynThenFiber *job = malloc(sizeof *job);
+  ScrDynThenPack *own = malloc(sizeof *own);
+  if (!job || !own) scr_ad_oom();
+  own->dst = scr_promise_retain(a->dst);
+  own->onf = a->onf ? scr_dyn_retain(a->onf) : NULL;
+  own->onr = a->onr ? scr_dyn_retain(a->onr) : NULL;
+  own->onfin = a->onfin ? scr_dyn_retain(a->onfin) : NULL;
+  own->als = a->als ? scr_als_ctx_retain(a->als) : NULL;
+  SCR_DYN_PENDING_LINK(own);
+  job->pack = own;
+  job->src = scr_promise_retain(src);
+  scr_promise_release(scr_async_spawn(scr_dyn_then_fiber_entry, job));
+}
+#endif
+
+static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
+  if (scr_dyn_reaction_spawn != NULL) {
+    scr_dyn_reaction_spawn(ctx, src);
+    return;
+  }
+  scr_dyn_then_steps(ctx, src);
+}
+
+static void scr_dyn_then_drop(void *ctx) {
+  ScrDynThenPack *a = ctx;
+  SCR_DYN_PENDING_UNLINK(a);
   scr_promise_release(a->dst);
   scr_dyn_release(a->onf);
   scr_dyn_release(a->onr);
   scr_dyn_release(a->onfin);
+  scr_als_ctx_release(a->als);
   free(a);
 }
 
+static const ScrPromiseReaction scr_dyn_then_reaction = { scr_dyn_then_react, scr_dyn_then_drop };
+
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
   /* A rejection HANDLER marks the source handled at attach (Node's
-   * moment; the reaction fiber's await re-marks harmlessly) — this is
-   * also what lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' immediately at the attach point. */
+   * moment), which also lets a .catch inside an 'unhandledRejection'
+   * listener fire 'rejectionHandled' at the attach point. Without one the
+   * reaction's own steps observe the source in their turn. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();
-  a->src = scr_promise_retain(src);
   a->dst = scr_promise_new();
   a->onf = onf ? scr_dyn_retain(onf) : NULL;
   a->onr = onr ? scr_dyn_retain(onr) : NULL;
   a->onfin = onfin ? scr_dyn_retain(onfin) : NULL;
+  a->als = scr_als_capture();
   ScrDyn *boxed = scr_dyn_new_promise(a->dst);
-  ScrPromise *waiter = scr_async_spawn_after(src, scr_dyn_then_entry, a);
-  scr_promise_release(waiter); /* the entry never rejects; nobody awaits it */
+  SCR_DYN_PENDING_LINK(a);
+  scr_promise_react_unmarked(src, &scr_dyn_then_reaction, a);
   return boxed;
 }
-typedef struct {
-  ScrPromise *destination;
-  ScrDyn *value;
-} ScrDynResolvePack;
 
-static void scr_dyn_resolve_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynResolvePack *pack = opaque;
-#ifndef __wasi__
-  /* Promise resolution schedules a job before attaching its reaction. */
-  scr_await_hop();
-#endif
-  ScrDyn *value = scr_await_dyn(pack->value->v.promise);
-  if (scr_exc_pending()) scr_promise_reject_pending(pack->destination);
-  else scr_promise_resolve_dyn(pack->destination, value);
-  scr_dyn_release(pack->value);
-  scr_promise_release(pack->destination);
-  free(pack);
+/* The promise a resolution adopts has settled: a fulfilment resolves the
+ * destination in turn, a rejection rejects it with the same reason. */
+static void scr_dyn_adopt_react(void *ctx, ScrPromise *settled) {
+  ScrPromise *destination = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
+  if (scr_exc_pending()) scr_promise_reject_pending(destination);
+  else scr_promise_resolve_dyn(destination, scr_dyn_promise_payload(settled));
 }
 
-#ifdef __wasi__
-static void scr_dyn_resolve_job(ScrClosure *closure) {
-  ScrPromise *destination = scr_box_get_ref(closure->caps[0]);
-  ScrDyn *value = scr_box_get_ref(closure->caps[1]);
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = destination;
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn_after(value->v.promise, scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
+static void scr_dyn_adopt_drop(void *ctx) { scr_promise_release(ctx); }
+
+static const ScrPromiseReaction scr_dyn_adopt_reaction = { scr_dyn_adopt_react, scr_dyn_adopt_drop };
+
+/* The job that calls the adopted promise's `then`: the reaction above
+ * subscribes in this turn, with a reference of its own on the destination
+ * (the job's goes with the job). */
+static void scr_dyn_adopt_subscribe(void *ctx, ScrPromise *adopted) {
+  scr_promise_react_unmarked(adopted, &scr_dyn_adopt_reaction, scr_promise_retain(ctx));
 }
-#endif
+
+static const ScrPromiseReaction scr_dyn_adopt_job = { scr_dyn_adopt_subscribe, scr_dyn_adopt_drop };
 
 /* The destination is borrowed; value moves in. An async function may
  * return a native promise hidden behind any/unknown without an explicit
- * await, so its completion must use resolution rather than fulfillment. */
+ * await, so its completion must use resolution rather than fulfillment.
+ * A promise is adopted as JavaScript does it: one job calls its `then`
+ * (scr_promise_react_next), whose reaction settles the destination one
+ * turn after the promise settles, so two turns after a settled one. */
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
   if (value->kind != SCR_DYN_PROMISE) {
+#ifdef SCR_NODE_ISLANDS
+    /* An island object may be a thenable (scr_dyn_thenable_function): the
+     * resolution adopts it, as it adopts a promise. */
+    if (scr_ni_dyn_handle(value)) {
+      scr_dyn_promise_resolve_with(destination, value);
+      scr_dyn_release(value);
+      return;
+    }
+#endif
     scr_promise_fulfill_ref(destination, value, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     return;
   }
@@ -810,21 +1012,120 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
     scr_dyn_release(value);
     return;
   }
-#ifdef __wasi__
-  ScrClosure *job = scr_closure_new((void *)scr_dyn_resolve_job, 2);
-  job->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
-  scr_box_set_ref(job->caps[0], scr_promise_retain(destination));
-  job->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-  scr_box_set_ref(job->caps[1], value);
-  scr_queue_microtask(job);
-#else
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = scr_promise_retain(destination);
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn(scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
-#endif
+  scr_promise_react_next(value->v.promise, &scr_dyn_adopt_job, scr_promise_retain(destination));
+  scr_dyn_release(value);
+}
+
+/* ── new Promise(executor) of a checked-dynamic value ─────────────────
+ * The resolve function of such a promise runs the resolution procedure
+ * (scr_promise_resolve_dyn): a promise it is given is adopted. From then on
+ * the promise is resolved although it is still pending, so the executor's
+ * resolve, its reject and its throw no longer change it. Both closures
+ * share one box (scr_async.c's layout: caps[0] holds the promise); a
+ * resolution that leaves the promise pending points the box at a settled
+ * promise nobody observes, which every later call finds settled. */
+static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
+  if (!scr_promise_is_pending(p)) {
+    scr_dyn_release(value);
+  } else {
+    scr_promise_resolve_dyn(p, value); /* moves value in */
+    if (scr_promise_is_pending(p)) {
+      ScrPromise *resolved = scr_promise_new();
+      scr_promise_fulfill_void(resolved);
+      scr_box_set_ref(self->caps[0], resolved);
+    }
+  }
+  scr_promise_release(p);
+}
+
+/* The resolve closure of `p` (+1). `reject`, the promise's reject closure
+ * or NULL, is borrowed and joins the resolve closure's box. */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject) {
+  ScrClosure *resolve = scr_closure_new((void *)&scr_resolve_dyn_thunk, 1);
+  ScrBox *target = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+  scr_box_set_ref(target, scr_promise_retain(p));
+  resolve->caps[0] = target;
+  if (reject != NULL) {
+    scr_box_release(reject->caps[0]);
+    reject->caps[0] = scr_box_retain(target);
+  }
+  return resolve;
+}
+
+/* Runs the executor of `p` with the closures scr_make_resolve_dyn paired
+ * (`reject` NULL for a one-parameter executor). Borrows `p` and `exec`; the
+ * closures move into the call. A throw rejects the promise unless the
+ * executor resolved it first. */
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject) {
+  ScrBox *target = scr_box_retain(resolve->caps[0]);
+  if (reject != NULL)
+    ((void (*)(ScrClosure *, ScrClosure *, ScrClosure *))exec->fn)(exec, resolve, reject);
+  else ((void (*)(ScrClosure *, ScrClosure *))exec->fn)(exec, resolve);
+  if (scr_exc_pending()) {
+    ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
+    if (now == p) scr_promise_reject_pending(p);
+    else scr_exc_clear();
+    scr_promise_release(now);
+  }
+  scr_box_release(target);
+}
+
+/* ── new Promise(executor) of a typed value, resolved with a promise ───
+ * The typed half of the same procedure. A typed promise's resolve function
+ * is the closure scr_make_resolve / scr_make_resolve_fn built, which
+ * fulfils. Where the static type of a value it is given has a promise arm,
+ * emitted code tests the arm and hands the promise here, so the value
+ * itself is never asked.
+ *
+ * The promise is adopted as JavaScript does it: one job calls its `then`
+ * (scr_promise_race_join: the reaction runs one turn after the source
+ * settles, copies a fulfilment and a rejection alike, and marks the source
+ * handled), so the target settles two turns after an already settled
+ * source. From the call on the target is resolved although it is still
+ * pending: the box both closures share points at a settled promise nobody
+ * observes, exactly as scr_resolve_dyn_thunk leaves it. */
+static void scr_resolve_adopt_job(ScrClosure *job) {
+  ScrPromise *target = (ScrPromise *)scr_box_get_ref(job->caps[0]);
+  ScrPromise *source = (ScrPromise *)scr_box_get_ref(job->caps[1]);
+  scr_promise_race_join(target, source, scr_promise_adapt_copy);
+  scr_promise_release(source);
+  scr_promise_release(target);
+}
+
+/* The reject closure of the same promise joins the resolve closure's box
+ * (scr_make_resolve_dyn does this for the pair it builds). Borrows both. */
+void scr_resolve_join(ScrClosure *resolve, ScrClosure *reject) {
+  scr_box_release(reject->caps[0]);
+  reject->caps[0] = scr_box_retain(resolve->caps[0]);
+}
+
+/* `resolve(source)`: `resolve` is a typed promise's resolve closure and
+ * `source` a promise of the same payload type. Borrows both. */
+void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
+  ScrBox *box = resolve->caps[0];
+  ScrPromise *p = (ScrPromise *)scr_box_get_ref(box);
+  if (scr_promise_is_pending(p)) {
+    if (source == p) {
+      static const char message[] = "Chaining cycle detected for promise #<Promise>";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      scr_promise_reject_pending(p);
+    } else {
+      ScrClosure *job = scr_closure_new((void *)&scr_resolve_adopt_job, 2);
+      job->caps[0] =
+          scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+      scr_box_set_ref(job->caps[0], scr_promise_retain(p));
+      job->caps[1] =
+          scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
+      scr_box_set_ref(job->caps[1], scr_promise_retain(source));
+      scr_queue_microtask(job);
+      ScrPromise *resolved = scr_promise_new();
+      scr_promise_fulfill_void(resolved);
+      scr_box_set_ref(box, resolved);
+    }
+  }
+  scr_promise_release(p);
 }
 
 /* `await v` where v is a CHECKED-DYNAMIC value: a dyn promise adopts
@@ -872,6 +1173,14 @@ ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
 static SCR_TL ScrDyn **scr_warn_listeners = NULL;
 static SCR_TL size_t scr_nwarn = 0, scr_warn_cap = 0;
 
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
+
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function (defined below). */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+#endif
+
 static void scr_warn_teardown(void) {
   for (size_t i = 0; i < scr_nwarn; i++) scr_dyn_release(scr_warn_listeners[i]);
   free(scr_warn_listeners);
@@ -885,7 +1194,9 @@ void scr_process_on_warning(ScrDyn *fn) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, strlen(msg), "ERR_INVALID_ARG_TYPE");
     return;
   }
+  if (scr_pe_listen(0, "warning", fn)) return;
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
   if (scr_nwarn == scr_warn_cap) {
     scr_warn_cap = scr_warn_cap ? scr_warn_cap * 2 : 4;
     scr_warn_listeners = realloc(scr_warn_listeners, scr_warn_cap * sizeof *scr_warn_listeners);
@@ -899,6 +1210,7 @@ void scr_process_on_warning(ScrDyn *fn) {
 }
 
 void scr_process_off_warning(ScrDyn *fn) {
+  if (scr_pe_listen(3, "warning", fn)) return;
   for (size_t i = 0; i < scr_nwarn; i++) {
     ScrDyn *l = scr_warn_listeners[i];
     bool same = l == fn || (l->kind == SCR_DYN_FUNC && fn->kind == SCR_DYN_FUNC &&
@@ -957,7 +1269,7 @@ static ScrDyn *scr_warning_field(const ScrDyn *w, const char *key, size_t key_le
   if (w->kind == SCR_DYN_TYPED_REF) {
     /* The reference's own answer, else its materialized view's. */
     ScrStr *name = scr_str_new(key, key_len);
-    ScrDyn *value = scr_dyn_typed_ref_key_get(w, name);
+    ScrDyn *value = scr_dyn_typed_ref_own_get(w, name);
     scr_str_release(name);
     if (value || scr_exc_pending()) return value;
     ScrDyn *view = scr_dyn_typed_ref_materialize(w);
@@ -992,9 +1304,36 @@ static bool scr_warning_is_deprecation(const ScrDyn *w) {
   return deprecation;
 }
 
+/* NODE_NO_WARNINGS=1: Node reads it once at startup (a value whose first
+ * character is "1") and leaves out its default report, while 'warning'
+ * listeners still run. The process's own environment table is not the
+ * program's `process.env`, so an assignment at run time changes nothing
+ * here, as in Node. */
+static bool scr_warnings_silenced(void) {
+  const char *value = getenv("NODE_NO_WARNINGS");
+  return value != NULL && value[0] == '1';
+}
+
 /* The default stderr report + dispatch over a built warning dyn node.
  * Borrowed. A listener throw propagates (the dc publish stance). */
 static void scr_warning_dispatch(ScrDyn *w) {
+#ifdef SCR_NODE_ISLANDS
+  /* Node's `process` holds the listeners, Node's own report first among
+   * them: it prints what the report below prints, under the same rule for
+   * deprecations (process.noDeprecation, which the emit carries over). */
+  if (scr_pe_node) {
+    /* The V8 error the warning crosses as holds its name, message and
+     * stack; the report also prints its code and its detail. */
+    ScrDyn *code = scr_warning_field(w, "code", 4);
+    ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+    if (!scr_exc_pending())
+      (void)scr_ni_warning(w, code, detail,
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+    scr_dyn_release(code);
+    scr_dyn_release(detail);
+    return;
+  }
+#endif
   /* "(node:pid) [CODE] Name: message" + "\n<detail>" — Node's
    * onWarning report, written as ONE console.error line (so the global
    * console's group indentation applies to each of its lines). Node
@@ -1002,6 +1341,7 @@ static void scr_warning_dispatch(ScrDyn *w) {
    * and skips deprecations while process.noDeprecation is set. */
   bool deprecation = scr_warning_is_deprecation(w);
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
+  if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
@@ -1049,12 +1389,85 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_console_error(1, &line);
   scr_str_release(line.v.s);
 listeners:
+  SCR_PE_ENTER();
   for (size_t i = 0; i < scr_nwarn; i++) {
     ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &w, 1, "listener");
-    if (r == NULL) return; /* pending exception propagates */
+    if (r == NULL) {
+      SCR_PE_LEAVE();
+      return; /* pending exception propagates */
+    }
     scr_dyn_release(r);
   }
+  SCR_PE_LEAVE();
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* One registry's listeners onto Node's `process`, in their order. `front`:
+ * the move was deferred, and island code may have registered listeners of
+ * its own meanwhile; the native ones are older, so they go ahead of those
+ * (prepended last to first). */
+static void scr_pe_move(ScrRejListener **list, size_t *n, size_t *cap, const char *event,
+                        bool front) {
+  ScrRejListener *moved = *list;
+  size_t count = *n;
+  *list = NULL;
+  *n = *cap = 0;
+  for (size_t k = 0; k < count; k++) {
+    size_t i = front ? count - 1 - k : k;
+    int mode = front ? (moved[i].once ? 4 : 2) : (moved[i].once ? 1 : 0);
+    scr_ni_process_listen(mode, event, moved[i].fn);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_rej_release(&moved[i]);
+  }
+  free(moved);
+}
+
+static void scr_pe_move_all(void) {
+  bool front = scr_pe_wanted;
+  scr_pe_wanted = false;
+  scr_pe_node = true;
+  /* A deferred move runs as a dispatch ends, which may leave an exception
+   * pending (what a listener threw, or the error nobody handled): it is
+   * set aside for the registrations and pending again afterwards. */
+  ScrCaught *pending = scr_exc_pending() ? scr_exc_take() : NULL;
+  scr_pe_move(&scr_uncaught_ls[1], &scr_uncaught_n[1], &scr_uncaught_cap[1],
+              SCR_UNCAUGHT_EVENT(true), front);
+  scr_pe_move(&scr_uncaught_ls[0], &scr_uncaught_n[0], &scr_uncaught_cap[0],
+              SCR_UNCAUGHT_EVENT(false), front);
+  scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection", front);
+  scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled", front);
+  ScrDyn **warn = scr_warn_listeners;
+  size_t nwarn = scr_nwarn;
+  scr_warn_listeners = NULL;
+  scr_nwarn = scr_warn_cap = 0;
+  for (size_t k = 0; k < nwarn; k++) {
+    size_t i = front ? nwarn - 1 - k : k;
+    scr_ni_process_listen(front ? 2 : 0, "warning", warn[i]);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_dyn_release(warn[i]);
+  }
+  free(warn);
+  /* The runtime's errors, rejections and warnings are raised through Node
+   * from here on; units that report warnings by themselves while no
+   * listener exists route them through the dispatch above. */
+  scr_uncaught_exception_hook = scr_ni_uncaught;
+  scr_urj_deliver_fn = NULL;
+  scr_urj_node_fn = scr_ni_promise_unhandled;
+  scr_rjh_notify_fn = scr_ni_promise_handled;
+  scr_warning_emit_hook = scr_emit_warning;
+  if (pending != NULL) {
+    scr_rethrow(pending);
+    scr_caught_release(pending);
+  }
+}
+
+/* Node is loaded (scr_node_island.c, on the main thread). */
+void scr_process_events_to_node(void) {
+  if (scr_pe_node) return;
+  if (scr_pe_dispatching > 0) scr_pe_wanted = true;
+  else scr_pe_move_all();
+}
+#endif
 
 /* A string warning with a type and an optional code, as
  * process.emitWarning(message, type, code) builds it. Borrows; +1. */
@@ -1069,13 +1482,39 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+/* The EventEmitter leak warning: MaxListenersExceededWarning with the
+ * `emitter`, `type` and `count` own properties Node's _addListener sets,
+ * in that order. `type` is the event name VALUE (a symbol stays a symbol),
+ * and `emitter` is an identity-bearing value of the emitter, so a listener
+ * comparing it with the emitter it registered on sees one object. Borrows
+ * every argument. */
+static void scr_emit_leak_warning(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("MaxListenersExceededWarning", sizeof "MaxListenersExceededWarning" - 1);
+  e->name_present = true;
+  ScrDyn *w = scr_dyn_from_error(e);
+  /* The values move in (scr_error_set_prop takes the reference). */
+  scr_error_set_prop(e, "emitter", 7, scr_dyn_retain(emitter));
+  scr_error_set_prop(e, "type", 4, scr_dyn_retain(type));
+  scr_error_set_prop(e, "count", 5, scr_dyn_new_num(count));
 #ifdef SCR_WARNING_REPLACE
-/* The program's process.emitWarning replacement, or NULL while the
- * property holds Node's own function. Compiled only into the
- * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
- * link: every other executable keeps the plain warning paths. */
-static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+  if (scr_emit_warning_override != NULL) {
+    /* _addListener calls process.emitWarning(warning), so a replacement
+     * receives the warning object itself. */
+    ScrDyn *r = scr_dyn_call(scr_emit_warning_override, &w, 1, "process.emitWarning");
+    scr_dyn_release(r);
+  } else
+#endif
+    scr_warning_dispatch(w);
+  scr_dyn_release(w);
+  scr_error_release(e);
+}
 
+#ifdef SCR_WARNING_REPLACE
+/* Compiled only into the SCR_WARNING_REPLACE variant, which programs
+ * assigning process.emitWarning link: every other executable keeps the
+ * plain warning paths. */
 static void scr_emit_warning_override_teardown(void) {
   scr_dyn_release(scr_emit_warning_override);
   scr_emit_warning_override = NULL;
@@ -1089,6 +1528,7 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
   /* Units that report their own warnings without a listener route them
    * here once a replacement exists. */
   scr_warning_emit_hook = scr_emit_warning;
+  scr_warning_leak_hook = scr_emit_leak_warning;
 }
 
 /* A runtime-built warning while a replacement is installed: Node's modules
@@ -1639,6 +2079,27 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * instances read through `reader`, the compiled property dispatch (no
  * reader: their own fields only). */
 ScrDyn *scr_dyn_thenable_function(const ScrDyn *value, const ScrDyn *reader) {
+#ifdef SCR_NODE_ISLANDS
+  /* An island object or function: V8 reads its `then`, and a callable one
+   * makes it a thenable like any other. The thenable job calls it in Node
+   * with the island value as `this` and the native resolving functions
+   * (scr_dyn_call calls an island function with the ambient receiver), so
+   * every resolution adopts it: Promise.resolve, a combinator's entry, an
+   * async function's return, an executor's resolve, and the operand of
+   * `await` (scr_node_island_adopt_thenable). A worker thread holds island
+   * values too: its read of `then` is routed to the island's thread like
+   * every read, and its thenable job rejects by name, because the resolving
+   * functions it would pass are this thread's and cannot cross
+   * (ERR_SCRIPTC_ISLAND_WORKER_VALUE). Answering "not a thenable" there
+   * would fulfil with the thenable itself, where Node adopts it. */
+  if (scr_ni_dyn_handle(value)) {
+    if (scr_ni_dyn_ops == NULL) return NULL;
+    ScrDyn *island_then = scr_ni_dyn_ops->get_str((ScrDyn *)value, "then", 4);
+    if (island_then != NULL && scr_dyn_is_callable(island_then)) return island_then;
+    scr_dyn_release(island_then);
+    return NULL;
+  }
+#endif
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_FUNC && value->kind != SCR_DYN_PROXY &&
       value->kind != SCR_DYN_TYPED_REF)
     return NULL;

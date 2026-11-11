@@ -11,7 +11,12 @@ import {
   type IrStmt,
   type IrType,
 } from "../../ir/ir.js";
-import { emitLlvmModule, emitLlvmModuleSource, LlEmitter } from "./emitter.js";
+import {
+  emitLlvmModule,
+  emitLlvmModuleSource,
+  LlEmitter,
+  UNWIND_CHAIN_MIN_VALUES,
+} from "./emitter.js";
 import { INLINE_STR_RELEASES_PER_FUNCTION } from "./shapes.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
@@ -129,8 +134,9 @@ test("the shared indexed-read helpers carry an inline hint", () => {
 test("bodies holding thousands of capture boxes compile unoptimized with boxes in memory", () => {
   const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
   const read = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
-  // A declaring body with `count` boxed bindings, and a closure body that
-  // receives `count` of them through its environment.
+  // A declaring body with `count` boxed bindings, each rebound so that it
+  // keeps its box, and a closure body that receives `count` of them
+  // through its environment.
   const declaring = (name: string, count: number): IrFunction => {
     const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
     return {
@@ -140,6 +146,7 @@ test("bodies holding thousands of capture boxes compile unoptimized with boxes i
       locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
       body: [
         ...ids.map((id, i): IrStmt => ({ kind: "varDecl", localId: id, init: number(i), loc })),
+        ...ids.map((id, i): IrStmt => ({ kind: "assign", localId: id, value: number(i), loc })),
         { kind: "return", value: read(ids[count - 1]!), loc },
       ],
       loc,
@@ -189,6 +196,65 @@ test("throwing-call count does not multiply identical scope cleanup", () => {
     expect(small.match(release)?.length).toBeGreaterThan(0);
     expect(large.match(release)?.length).toBe(small.match(release)?.length);
   }
+});
+
+/** `work` assigns the concatenation of `terms` calls of a function that can
+ * throw and returns a string: each call is a throw site, and each result
+ * stays alive until the statement ends. */
+function concatenationModule(terms: number): IrModule {
+  const made = (): IrExpr => ({ kind: "call", callee: "made", args: [], type: STRING, loc });
+  let sum = made();
+  for (let i = 1; i < terms; i++)
+    sum = { kind: "strConcat", left: sum, right: made(), type: STRING, loc };
+  const module = moduleFor([{ kind: "assign", localId: "later", value: sum, loc }]);
+  return {
+    ...module,
+    functions: [
+      ...module.functions,
+      {
+        name: "made",
+        params: [],
+        returnType: STRING,
+        locals: [],
+        body: [{ kind: "throw", value: literal("oops"), loc }],
+        loc,
+      },
+    ],
+  };
+}
+function workBody(llvm: string): string {
+  const start = llvm.split("\n").findIndex((line) => /^define .*\{ ; work$/.test(line));
+  const lines = llvm.split("\n").slice(start);
+  return lines.slice(0, lines.indexOf("}") + 1).join("\n");
+}
+const stringReleases = (body: string): number =>
+  body.match(/call void @scr_str_release\(ptr/g)?.length ?? 0;
+
+test("a statement's throw sites share the releases of the values it holds", () => {
+  // Under the limit every throw site releases its values in its own block.
+  const few = workBody(emitLlvmModule(concatenationModule(UNWIND_CHAIN_MIN_VALUES / 2)));
+  expect(few).not.toMatch(/^exc\.release\d+:$/m);
+  // Past it, a site that holds one more value adds one block that releases
+  // that value and continues with the blocks of the values before it.
+  const sizes = [2, 4, 8].map((factor) => factor * UNWIND_CHAIN_MIN_VALUES);
+  const [small, medium, large] = sizes.map((terms) =>
+    workBody(emitLlvmModule(concatenationModule(terms))),
+  );
+  const blocks = [...large!.matchAll(/^exc\.release\d+:\n((?:  [^\n]*\n)+)/gm)];
+  expect(blocks.length).toBeGreaterThan(sizes[2]! - UNWIND_CHAIN_MIN_VALUES - 2);
+  for (const block of blocks) {
+    const lines = block[1]!.trimEnd().split("\n");
+    expect(stringReleases(block[1]!)).toBe(1);
+    // LLVM must not merge the call with the ordinary path's releases.
+    expect(block[1]!).toMatch(/call void @scr_str_release\(ptr %t\d+\)(?: nounwind)? nomerge\n/);
+    expect(lines.at(-1)).toMatch(/^  br label %exc\.(?:release|cleanup)\d+$/);
+  }
+  // The releases grow with the values held, not with their square: twice
+  // the values add about twice the releases (written out at every site,
+  // they added four times as many, thousands here).
+  const growth = stringReleases(large!) - stringReleases(medium!);
+  expect(growth).toBeGreaterThan(0);
+  expect(growth).toBeLessThan(3 * (stringReleases(medium!) - stringReleases(small!)));
 });
 
 test("detached exit defines the runtime opt-in symbol only when requested", () => {
@@ -543,6 +609,30 @@ test("class constructor probes test the function tag and borrow across a literal
   );
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
   expect(computed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+});
+
+test("a class-value table's index folds the function's signature key inline", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const index: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classValueHash",
+    args: [ref(dyn), { kind: "numLit", value: 5, type: { kind: "f64" }, loc: receiverLoc }],
+    type: { kind: "f64" },
+    loc: receiverLoc,
+  };
+  const text = work(index, dyn);
+  // The receiver is borrowed, only a function value is inspected, and the
+  // key is the signature literal: its length and last four bytes.
+  expect(text).not.toContain("call ptr @scr_dyn_retain_v(");
+  expect(text).toMatch(/icmp eq i32 %t\d+, 8\b/);
+  expect(text).toContain("; ->v.fn.sig");
+  expect(text).toContain("@strlen(ptr");
+  expect(text).toMatch(/mul i32 %t\d+, -1640531535\b/);
+  // The slot: the folded word's high five bits after the second multiply.
+  expect(text).toMatch(/mul i32 %t\d+, -2048144789\b/);
+  expect(text).toMatch(/lshr i32 %t\d+, 27\b/);
+  expect(text).toContain("store i32 -1, ptr");
+  expect(text).not.toContain("@scr_dyn_class_is_key(");
 });
 
 test("class brand probes compare the program's key constant before the key text", () => {

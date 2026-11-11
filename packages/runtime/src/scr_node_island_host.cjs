@@ -14,11 +14,44 @@
  * them in-process under Node: both must produce the same results, errors
  * and messages. Outcomes are "R<json>" (returned; "R" alone is undefined)
  * or "T<json>" (threw), the encoding of scr_node_bridge.h. */
-const { createRequire, isBuiltin, registerHooks } = require("node:module");
+const {
+  createRequire,
+  enableCompileCache,
+  flushCompileCache,
+  getCompileCacheDir,
+  isBuiltin,
+  registerHooks,
+} = require("node:module");
 const { constants: osConstants } = require("node:os");
 const timers = require("node:timers");
 
 const nativeHost = globalThis.__scriptcNodeIslandHost;
+
+// Node's module compile cache, before any module of the program loads. The
+// directory is one the runtime made and vouches for (scr_node_island.c,
+// "Node's compile cache"); it passes none when NODE_COMPILE_CACHE names the
+// user's own, which Node has enabled by now, or when there is to be no
+// cache. Node writes the entries of the modules a run compiled when it
+// stops, and the runtime writes them when native code calls process.exit();
+// a program that is only ever ended by a signal reaches neither, so they are
+// also written once, a second after the start, when a program that is still
+// running has its start behind it, by a timer that keeps no program alive.
+const compileCache = globalThis.__scriptcNodeIslandCompileCache;
+delete globalThis.__scriptcNodeIslandCompileCache;
+if (typeof compileCache === "string") enableCompileCache(compileCache);
+if (getCompileCacheDir() !== undefined) timers.setTimeout(() => flushCompileCache(), 1000).unref();
+
+// The process state the program already has (scr_node_island.c prefixes
+// this script with it): process.argv is the program's own, so island code
+// that parses the command line reads the arguments the program was started
+// with, and a Node that starts during the exit sequence is exiting too
+// (process.nextTick drops its callbacks, as it does in an 'exit' listener).
+const programProcess = globalThis.__scriptcNodeIslandProcess;
+delete globalThis.__scriptcNodeIslandProcess;
+if (programProcess !== undefined) {
+  process.argv = programProcess.argv;
+  if (programProcess.exiting) process._exiting = true;
+}
 
 // The program's island module tree (scr_node_island.c prefixes this script
 // with its root, then the bridge removes the global): modules resolve only
@@ -44,6 +77,9 @@ if (typeof islandRoot === "string" && islandRoot !== "/") {
       return result;
     },
   });
+  // Registered after the guard, so it answers first: what the program's
+  // load plan holds is a file of the tree (scr_node_island_hooks.cjs).
+  scriptcLoadPlan(root, islandRoot);
 }
 
 // Error classes that cross as copies, at their scr_error.h kind index.
@@ -138,8 +174,29 @@ function isThenable(value) {
   );
 }
 
+// Errors by which Node says it did not find a file, thrown while a call's
+// module loaded, before its function ran. The runtime may put back files
+// the installed module tree lost and repeat such a call (scr_node_island.c,
+// "What a start does"); once the function has run, a call is never
+// repeated.
+const loadFailures = new WeakSet();
+const MISSING_FILE_CODES = new Set(["MODULE_NOT_FOUND", "ERR_MODULE_NOT_FOUND", "ENOENT"]);
+
+function loadedFunction(file, specifier, name) {
+  try {
+    return exportedFunction(file, specifier, name);
+  } catch (error) {
+    try {
+      if (error instanceof Error && MISSING_FILE_CODES.has(error.code)) loadFailures.add(error);
+    } catch {
+      // An error whose code cannot be read is not one of Node's.
+    }
+    throw error;
+  }
+}
+
 function invokeSync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   const result = Reflect.apply(fn, namespace, args);
   if (isThenable(result)) {
     // The promise is dropped: its rejection must not end the process.
@@ -152,7 +209,7 @@ function invokeSync(file, specifier, name, args) {
 }
 
 async function invokeAsync(file, specifier, name, args) {
-  const { fn, namespace } = exportedFunction(file, specifier, name);
+  const { fn, namespace } = loadedFunction(file, specifier, name);
   return await Reflect.apply(fn, namespace, args);
 }
 
@@ -177,6 +234,7 @@ function thrownCopy(error) {
   if (error instanceof Error) {
     const copy = { kind: errorKind(error), message: String(error.message) };
     if (typeof error.code === "string") copy.code = error.code;
+    if (loadFailures.has(error)) copy.load = true;
     return `T${JSON.stringify({ error: copy })}`;
   }
   let text;
@@ -283,10 +341,178 @@ const INTRINSIC_CLASSES = {
   AggregateError,
 };
 const collectionSyncs = new WeakMap();
+
+// ── twins (scr_node_bridge.h SCR_NVF_TWIN) ───────────────────────────────
+// A native object of a platform class whose receivers here test its brand
+// (fetch, addEventListener's `signal`, AbortSignal.any, events.once and
+// timers/promises all refuse anything but a real AbortSignal) crosses as a
+// real object of this realm's class: its twin. One twin per native object
+// while either side holds it, and the native object again when the twin
+// crosses back. Each class says how to make a twin, how the twin takes its
+// native object's state when it becomes that object's representative
+// (`start`), and what the native side tells it afterwards (`tell`).
+// `native` reads a property of the native object (`get`), calls one of
+// its methods (`invoke`) and tells it what changed here (`tell`).
+//
+// The other way, an object of such a class made here that reaches native
+// code is adopted: a native object stands for it there, and this object is
+// that native object's representative (`adopt` says how it keeps the native
+// object in step). twinPrototypes tells the bridge which objects those are.
+const TWIN_GET = 16;
+const TWIN_INVOKE = 17;
+const TWIN_TELL = 18;
+const twinStates = new WeakMap(); // twin -> { cls, native, adopted }
+
+function twinNative(op) {
+  return {
+    get: (key) => op(TWIN_GET, key),
+    invoke: (method, ...args) => op(TWIN_INVOKE, method, ...args),
+    tell: (event, value) => op(TWIN_TELL, event, value),
+  };
+}
+const nodeAbort = AbortController.prototype.abort;
+// The controller of each AbortSignal twin: it aborts the twin when the
+// native signal aborts, and it is the twin of the native AbortController.
+const twinControllers = new WeakMap();
+
+// A reason that cannot cross reaches the twin as the error that says so.
+function nativeReason(native) {
+  try {
+    return native.get("reason");
+  } catch (error) {
+    return error;
+  }
+}
+
+const twinClasses = {
+  AbortSignal: {
+    prototype: AbortSignal.prototype,
+    make() {
+      const controller = new AbortController();
+      twinControllers.set(controller.signal, controller);
+      return controller.signal;
+    },
+    start(signal, native) {
+      if (native.get("aborted")) this.tell.abort(signal, nativeReason(native));
+    },
+    // A signal made here reached native code, where a native signal now
+    // stands for it. That one aborts when this one does: through a signal
+    // of the bootstrap's that follows this one, so this signal's own
+    // listeners are the island's only and run before the native ones.
+    adopt(signal, native) {
+      if (signal.aborted) {
+        native.tell("abort", signal.reason);
+        return;
+      }
+      const follower = AbortSignal.any([signal]);
+      follower.addEventListener("abort", () => native.tell("abort", follower.reason), {
+        once: true,
+      });
+    },
+    tell: {
+      // The native signal aborted: before its own 'abort' listeners run,
+      // so both sides answer `aborted` and `reason` alike in every listener.
+      abort(signal, reason) {
+        Reflect.apply(nodeAbort, twinControllers.get(signal), [reason]);
+      },
+    },
+  },
+  AbortController: {
+    // The controller of the native signal's twin. Its abort() aborts the
+    // native signal, which aborts the twin (tell.abort), so the two sides
+    // change together whichever side aborts.
+    make(native) {
+      const controller = twinControllers.get(native.get("signal"));
+      Object.defineProperty(controller, "abort", {
+        value: function abort(reason = undefined) {
+          if (this !== controller) return Reflect.apply(nodeAbort, this, arguments);
+          native.invoke("abort", reason);
+        },
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+      return controller;
+    },
+    start() {},
+    tell: {},
+  },
+};
+
+// Values the bridge pairs one to one with runtime objects (byte views and
+// symbols), answered by intrinsics captured before island code runs. A
+// symbol is [kind, text]: 0 unique (its description), 1 unique without a
+// description, 2 registered (its Symbol.for key), 3 well-known (its name on
+// Symbol), the numbering of SCR_NODE_SYMBOL_*.
+const symbolFor = Symbol.for;
+const symbolKeyFor = Symbol.keyFor;
+// Own-property probes of an island object: the intrinsics, never the
+// object's own methods, which may be shadowed or absent (a null-prototype
+// object).
+const objectHasOwn = Object.hasOwn;
+const propertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+const wellKnownNames = new Map();
+const wellKnownSymbols = new Map();
+for (const name of Object.getOwnPropertyNames(Symbol)) {
+  if (typeof Symbol[name] !== "symbol") continue;
+  wellKnownNames.set(Symbol[name], name);
+  wellKnownSymbols.set(name, Symbol[name]);
+}
 const islandHelpers = {
+  makeTwin(name, op) {
+    const cls = twinClasses[name];
+    const native = twinNative(op);
+    const twin = cls.make(native);
+    twinStates.set(twin, { cls, native, adopted: false });
+    return twin;
+  },
+  // An object made here became the representative of the native object
+  // that adopts it.
+  adoptTwin(name, twin, op) {
+    twinStates.set(twin, { cls: twinClasses[name], native: twinNative(op), adopted: true });
+  },
+  startTwin(twin) {
+    const state = twinStates.get(twin);
+    if (state === undefined) return;
+    if (state.adopted) state.cls.adopt(twin, state.native);
+    else state.cls.start(twin, state.native);
+  },
+  // The class that adopts `value`, by its prototype, or undefined. A value
+  // that a native object adopted since its handle was made (the same
+  // object twice in one argument list) answers itself: it crosses back as
+  // that native object.
+  twinClassOf(value) {
+    if (twinStates.has(value)) return value;
+    const prototype = Object.getPrototypeOf(value);
+    for (const name of Object.keys(twinClasses)) {
+      const cls = twinClasses[name];
+      if (cls.adopt !== undefined && cls.prototype === prototype) return name;
+    }
+    return undefined;
+  },
+  twinReady(twin) {
+    return twinStates.has(twin);
+  },
+  tellTwin(name, event, twin, value) {
+    twinClasses[name].tell[event](twin, value);
+  },
+  bufferPrototype: Buffer.prototype,
+  symbolInfo(symbol) {
+    const key = symbolKeyFor(symbol);
+    if (key !== undefined) return [2, key];
+    const name = wellKnownNames.get(symbol);
+    if (name !== undefined) return [3, name];
+    const description = symbol.description;
+    return description === undefined ? [1, ""] : [0, description];
+  },
+  symbolOf(kind, text) {
+    return kind === 2 ? symbolFor(text) : wellKnownSymbols.get(text);
+  },
   isInstance(value, name) {
-    const C = INTRINSIC_CLASSES[name];
-    return C !== undefined && value instanceof C;
+    // The error classes by their intrinsics; any other standard class by
+    // the global of that name (Array, Map, Date, …).
+    const C = INTRINSIC_CLASSES[name] ?? globalThis[name];
+    return typeof C === "function" && value instanceof C;
   },
   subclass(Base, name, ctor, fields, methods, getters, setters) {
     const C = {
@@ -310,6 +536,11 @@ const islandHelpers = {
         return box.self;
       },
     }[name];
+    // The class's length is its constructor's (the native function reports
+    // the length Node gives the declaration); without one it is 0, as for
+    // a derived class's implicit constructor.
+    if (typeof ctor === "function")
+      Object.defineProperty(C, "length", { value: ctor.length, configurable: true });
     Object.setPrototypeOf(C, Base);
     const proto = Object.create(Base.prototype, {
       constructor: { value: C, writable: true, configurable: true },
@@ -433,6 +664,86 @@ const islandHelpers = {
   promisify(fn) {
     return require("node:util").promisify(fn);
   },
+  // ── process events: one registry ──────────────────────────────────────
+  // Once Node is loaded, `process` is the registry of the events Node raises
+  // itself (uncaughtException and its monitor, unhandledRejection,
+  // rejectionHandled, warning): the program's native listeners are
+  // registered here as the functions they are, and the runtime raises its
+  // own errors, rejections and warnings through the entries below
+  // (scr_node_island_events.c), so one list orders the listeners of both
+  // sides and Node's own rules decide what each event does.
+  processListen(mode, event, listener) {
+    if (mode === 0) process.on(event, listener);
+    else if (mode === 1) process.once(event, listener);
+    else if (mode === 2) process.prependListener(event, listener);
+    else if (mode === 4) process.prependOnceListener(event, listener);
+    else process.removeListener(event, listener);
+  },
+  // An error native code let escape, as Node handles one of its own: the
+  // monitors, then the capture callback or the listeners. false: nobody
+  // handled it and the runtime reports it; a throw is the listener's own
+  // error, which ends the process.
+  processUncaught(error, fromPromise) {
+    const handled = process._fatalException(error, fromPromise) !== false;
+    if (handled && jobs > 0) handledInJob = true;
+    return handled;
+  },
+  // A rejected native promise nobody handles: crossing gave it its V8
+  // promise, which rejects without a handler, and Node's own tracking does
+  // the rest (unhandledRejection, the --unhandled-rejections mode).
+  processRejected(_promise) {},
+  // Native code attached a handler to a native promise V8 tracks: its V8
+  // promise is handled too (rejectionHandled, when Node already reported it).
+  processHandled(promise) {
+    Promise.prototype.then.call(promise, undefined, () => {});
+  },
+  // A warning native code emitted, as process.emitWarning's own tick emits
+  // it: Node's listener prints it, then the program's listeners run. The
+  // V8 error a native warning crosses as has its name, message and stack;
+  // its code and detail, which Node's report prints, come beside it. While
+  // native code has process.noDeprecation set, Node's report reads it as set
+  // for this warning, and finds its own value again afterwards.
+  processWarning(warning, noDeprecation, code, detail) {
+    if (warning !== null && typeof warning === "object") {
+      if (typeof code === "string" && warning.code === undefined) warning.code = code;
+      if (typeof detail === "string" && warning.detail === undefined) warning.detail = detail;
+    }
+    if (!noDeprecation || process.noDeprecation) {
+      process.emit("warning", warning);
+      return;
+    }
+    const own = Object.getOwnPropertyDescriptor(process, "noDeprecation");
+    process.noDeprecation = true;
+    try {
+      process.emit("warning", warning);
+    } finally {
+      if (own === undefined) delete process.noDeprecation;
+      else Object.defineProperty(process, "noDeprecation", own);
+    }
+  },
+  // process.exitCode is Node's property once Node is loaded: the runtime
+  // writes it here and reads it back. An unset code (undefined or null) is
+  // null, which is not 0.
+  processExitCode(set, code) {
+    if (set) process.exitCode = code;
+    const current = process.exitCode;
+    return current === undefined || current === null ? null : Number(current);
+  },
+  // The program changed directory with its own system call. Node caches
+  // process.cwd() until its own process.chdir runs: changing to "." keeps
+  // the directory and drops the cached answer.
+  processChdir() {
+    process.chdir(".");
+  },
+  // The V8 error a native error crosses as (scr_ni_error_link).
+  same(value) {
+    return value;
+  },
+  // clearTimeout (0), clearInterval (1) or clearImmediate (2) of an island
+  // value the program holds: Node's own function.
+  clearTimer(which, timer) {
+    clearFunctions[which](timer);
+  },
 };
 
 // Island imports of modules the program shares resolve to their native
@@ -442,7 +753,14 @@ let sharedModules = null;
 function load(path, esm) {
   if (path === "scriptc:toPrimitive") return toPrimitive;
   if (path === "scriptc:spread") return (value) => [...value];
+  if (path === "scriptc:clone") return (value) => structuredClone(value);
+  if (path === "scriptc:objectTag") return (value) => Object.prototype.toString.call(value);
+  if (path === "scriptc:hasOwn") return (object, key) => objectHasOwn(object, key);
+  if (path === "scriptc:isEnumerable")
+    return (object, key) => propertyIsEnumerable.call(object, key);
   if (path === "scriptc:island-helpers") return islandHelpers;
+  // The runtime's process.exit(): the compile cache's new entries.
+  if (path === "scriptc:flushCompileCache") return flushCompileCache();
   // A built-in module's name, with or without the node: prefix.
   if (isBuiltin(path)) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
@@ -473,17 +791,48 @@ const JOB_IMMEDIATE = 4;
 const handles = new Map();
 let nextHandle = 1;
 
+// A runtime job that let an error escape which the uncaughtException
+// listeners then handled (islandHelpers.processUncaught, called by the
+// runtime before `run` returns) ends as a JavaScript callback that threw
+// does: with a throw, so Node's tick, timer and immediate loops go on
+// exactly as after a handled error of their own (the rest of the tick queue
+// waits for the next callback, the next timer of the list runs before the
+// ticks the listener queued). HANDLED is that throw; process._fatalException
+// below answers that it was handled without raising anything.
+const HANDLED = new Error("scriptc: a handled runtime error");
+let jobs = 0;
+let handledInJob = false;
+
+function runJob(kind, token) {
+  jobs++;
+  try {
+    nativeHost.run(kind, token);
+  } finally {
+    jobs--;
+  }
+  if (handledInJob) {
+    handledInJob = false;
+    throw HANDLED;
+  }
+}
+
+const nodeFatalException = process._fatalException;
+process._fatalException = function (error) {
+  if (error === HANDLED) return true;
+  return Reflect.apply(nodeFatalException, this, arguments);
+};
+
 function onTick(token) {
-  nativeHost.run(JOB_TICK, token);
+  runJob(JOB_TICK, token);
 }
 
 function onTimer(token) {
-  nativeHost.run(JOB_TIMER, token);
+  runJob(JOB_TIMER, token);
 }
 
 function onImmediate(handle, token) {
   handles.delete(handle);
-  nativeHost.run(JOB_IMMEDIATE, token);
+  runJob(JOB_IMMEDIATE, token);
 }
 
 function setTimer(delay, repeat, ref, token) {
@@ -546,6 +895,52 @@ function nextTick(token) {
   process.nextTick(onTick, token);
 }
 
+// ── timers across the boundary ───────────────────────────────────────────
+// A timer or immediate the program created is a number in island code, as
+// it is in the program: its id, which starts at 2^52 in a program with
+// islands, a range Node's own timer ids (async ids) do not reach. Node's
+// clear functions accept such a number and clear the program's handle of that
+// kind through the runtime's own clear (scr_loop_hosted_run in scr_async.c,
+// whose job kinds these are), so the runtime releases its callback and its
+// count of live timers stays right; a clear of the other kind's number finds
+// nothing to clear, as in Node. Every other value is Node's to clear.
+const TIMER_ID_BASE = 2 ** 52;
+const JOB_CLEAR_TIMER = 16;
+const JOB_CLEAR_IMMEDIATE = 16 | 8;
+
+function programTimerId(value) {
+  if (typeof value !== "number" && typeof value !== "string") return 0;
+  const id = typeof value === "string" ? Number(value) : value;
+  return Number.isInteger(id) && id > TIMER_ID_BASE && id < 2 * TIMER_ID_BASE ? id : 0;
+}
+
+function clearProgramTimer(job, id) {
+  const offset = id - TIMER_ID_BASE;
+  nativeHost.run(job | (Math.floor(offset / 2 ** 32) << 8), offset >>> 0);
+}
+
+function clearFunction(name, job) {
+  const nodeClear = timers[name];
+  // The wrapper has the name and length of the Node function it replaces.
+  const clear = {
+    [name](timer) {
+      const id = programTimerId(timer);
+      if (id !== 0) return clearProgramTimer(job, id);
+      return Reflect.apply(nodeClear, this, arguments);
+    },
+  }[name];
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+  timers[name] = clear;
+  if (descriptor !== undefined)
+    Object.defineProperty(globalThis, name, { ...descriptor, value: clear });
+  return clear;
+}
+const clearFunctions = [
+  clearFunction("clearTimeout", JOB_CLEAR_TIMER),
+  clearFunction("clearInterval", JOB_CLEAR_TIMER),
+  clearFunction("clearImmediate", JOB_CLEAR_IMMEDIATE),
+];
+
 // ── process state (scope-B NI-3) ─────────────────────────────────────────
 // Signal and 'exit' listeners of island code join the runtime's registries
 // at their registration position, so one registry orders both sides and
@@ -558,6 +953,17 @@ function nextTick(token) {
 
 const EVENT_SIGNAL = 1;
 const EVENT_EXIT = 2;
+// Not a process event: from a tick of its own, the runtime asks for the
+// rest of the current turn before it decides its unhandled rejections
+// (scr_async.c, scr_hosted_deciding_tick). Node's tick callback, the
+// function Node runs after every callback, runs the tick queue and the
+// microtasks to exhaustion and then decides Node's rejections, so the
+// runtime decides where Node does. A throw from a tick leaves `emit`
+// through MakeCallback as an uncaught exception, so the runtime hears
+// JOB_TURN only when the turn ran to its end.
+const EVENT_TURN = 3;
+const JOB_TURN = 5;
+const runNextTicks = process._tickCallback;
 const signalNames = new Set(Object.keys(osConstants.signals));
 const islandListeners = [];
 let nextListener = 1;
@@ -652,6 +1058,15 @@ processMethods.prependListener = function prependListener(event, listener) {
 };
 
 function emit(kind, id, name, arg) {
+  if (kind === EVENT_TURN) {
+    runNextTicks();
+    nativeHost.run(JOB_TURN, 0);
+    return;
+  }
+  // The runtime's exit sequence began (it announces it with listener 0
+  // before the first 'exit' listener of either side): process._exiting is
+  // true from here on, as in Node, so process.nextTick drops its callbacks.
+  if (kind === EVENT_EXIT) process._exiting = true;
   const entry = islandListeners.find((e) => e.id === id);
   if (entry === undefined) return;
   // The registered function: the listener itself, or its once wrapper,
@@ -728,4 +1143,8 @@ globalThis.__scriptcNodeIsland = {
   emit,
   load,
   sharedPush,
+  // The prototypes of the classes whose objects native code adopts.
+  twinPrototypes: Object.values(twinClasses)
+    .filter((cls) => cls.adopt !== undefined)
+    .map((cls) => cls.prototype),
 };

@@ -115,6 +115,10 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
  * liveness test, `sweep` runs at every net sweep top. */
 void scr_net_set_proto_sweep(bool (*pending)(void), void (*sweep)(void));
 void scr_net_fire_err(ScrNetLs *l, ScrStr *msg); /* unhandled => exit(1) */
+/* Node's system error (errno, code, syscall and the address, port or
+ * hostname) for a failure message of this unit's shape; NULL for any other
+ * message, +1 otherwise. */
+ScrError *scr_net_system_error(ScrStr *msg);
 
 ScrNetServer *scr_net_server_retain(ScrNetServer *s);
 void scr_net_server_release(ScrNetServer *s);
@@ -209,8 +213,30 @@ enum {
   SCR_NET_OFF_CONNECTION = 4,
   SCR_NET_OFF_TIMEOUT = 5,
   SCR_NET_OFF_DROP = 6,
+  SCR_NET_OFF_NEW_LISTENER = 7,
+  SCR_NET_OFF_CLIENT_ERROR = 8,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+/* server.listeners(event): a +1 closure array of the event's listeners in
+ * registration order, each the function value the program registered
+ * (Node's identity semantics). `kind` selects the list (SCR_NET_OFF_*). */
+ScrArr *scr_net_server_listeners(ScrNetServer *s, double kind);
+/* The list-order +1 array behind every listeners() entry point (net lists
+ * and the http lists in scr_http.c). */
+ScrArr *scr_net_ls_closure_array(ScrNetLs *l);
+/* EventEmitter removal: the LAST entry standing for the same function
+ * (through any adapter) leaves the list — Node's removeListener order. */
+void scr_net_ls_remove_last(ScrNetLs *l, ScrClosure *cb /*borrowed*/);
+/* server.on('newListener', cb): Node's meta event, fired with the event
+ * name BEFORE a listener joins its list. */
+void scr_net_server_on_new_listener(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn,
+                                    bool once);
+void scr_net_new_listener_thunk0(ScrClosure *cb, ScrStr *name);
+void scr_net_new_listener_thunk1(ScrClosure *cb, ScrStr *name);
+/* The add-time notify the registration entry points run (scr_http.c's
+ * server handlers included). No-op when no 'newListener' listener is
+ * registered. */
+void scr_net_server_notify_new_listener(ScrNetServer *s, const char *event);
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 /* 'secureConnection' — the deferred-connection list (TLS handshake
  * timing); released unread on a server without deferral (a plain net

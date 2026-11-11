@@ -1,9 +1,11 @@
-/* Checked narrowing for `.filter` with a written type predicate.
+/* Checked narrowing for `.filter`, `.find` and `.findLast` with a written
+ * type predicate.
  *
  * A written predicate (`(p): p is Cat => ...`, or a guard function passed
- * as a value) is an assertion TypeScript does not check, so the filter loop
- * keeps the receiver's element type and the result converts to the
- * predicate's type afterwards, element by element:
+ * as a value) is an assertion TypeScript does not check. At run time it is
+ * an ordinary boolean callback, so the loop keeps the receiver's element
+ * type and the result converts to the predicate's type afterwards, element
+ * by element:
  *
  *   - a union element to one of its arms, or to a union of some of its
  *     arms, by its tag;
@@ -15,7 +17,12 @@
  *
  * Each conversion throws the catchable TypeError of a checked extraction
  * when a kept element is not of the predicate's type, which is when the
- * predicate returned true for a value it does not describe. */
+ * predicate returned true for a value it does not describe.
+ *
+ * `.filter` answers a new array, and its elements may be rebuilt in the
+ * predicate's layout. `.find` and `.findLast` answer the element itself, so
+ * they take only the conversions that hand the same value on
+ * (checkedValueNarrowing). */
 import { varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -33,6 +40,7 @@ import { checkedClassAssertion } from "../class-assertions.js";
 import { buildArrayConversion } from "../coercions/builders.js";
 import type { Lowerer } from "../lowerer.js";
 import { keyedHelperName } from "../stable-names.js";
+import { PREDICATE_HELPER } from "../width-lift.js";
 import { typeKey } from "../../type-mapper.js";
 
 /** The interned helper converting a `from[]` filter result to `to[]`, or
@@ -72,15 +80,58 @@ export function checkedFilterNarrowing(
   return name;
 }
 
+/** The interned helper converting the one element `.find` or `.findLast`
+ * answers to `to`, the type a written predicate claims for it, or null.
+ *
+ * The search answers the element itself: `found === list[1]`, a Map keyed
+ * by the found value and a write through it all reach the object the array
+ * holds. So the conversion must hand the same value on, and a pair whose
+ * conversion would build another record (rebuildsElement) has none here:
+ * the caller keeps its refusal. */
+export function checkedValueNarrowing(
+  lowerer: Lowerer,
+  from: IrType,
+  to: IrType,
+  typeText: string,
+  loc: SrcLoc,
+): string | null {
+  if (rebuildsElement(lowerer, from, to)) return null;
+  return elementHelper(lowerer, from, to, loc, typeText);
+}
+
+/** Whether a checked conversion of `from` to `to` (conversionBody) can
+ * answer a value other than its input: a record rebuilt field by field or
+ * through the checked widening, or a checked-dynamic value materialized as
+ * a record, a tuple or an array. A union arm converts that way only into a
+ * record target: by its own fields when it holds every field the target
+ * names, and through the widening when the target is no arm at all. An arm
+ * that lacks a target field never converts; it throws when the predicate
+ * accepted it. The answer may be yes for a pair the conversion refuses. */
+function rebuildsElement(lowerer: Lowerer, from: IrType, to: IrType): boolean {
+  if (typeEquals(from, to)) return false;
+  const built = to.kind === "record" || to.kind === "array";
+  if (from.kind === "dyn") return built;
+  if (from.kind === "record") return to.kind === "record";
+  if (from.kind !== "union" || to.kind !== "record") return false;
+  const arms = lowerer.unions.get(from.unionId)?.arms ?? [];
+  if (!arms.some((arm) => typeEquals(arm, to))) return true;
+  const target = lowerer.shapes.get(to.shapeId);
+  return arms.some((arm) => {
+    if (arm.kind !== "record" || typeEquals(arm, to)) return false;
+    const source = lowerer.shapes.get(arm.shapeId);
+    if (!source || !target) return true;
+    return target.fields.every((field) => source.fields.some((own) => own.name === field.name));
+  });
+}
+
 /** The fields a written predicate's record target declares that the
  * receiver's record element has no slot for, or null when there are none
  * (or when the pair is not a plain record narrowing).
  *
- * An element narrowed when it was STORED (`const messages: { role: string }[]
- * = [wider, ...]` copies each wider object into the element's layout) lost
- * those fields before the filter ran: the predicate cannot make them real,
- * so the narrowing stays refused with this reason instead of a generic
- * missing-conversion report. */
+ * A member the element lacks has no slot to copy, and the checked widening
+ * (width-lift.ts) covers only pairs whose element fields are target fields
+ * with equal types; a pair it declines stays refused with this reason instead
+ * of a generic missing-conversion report. */
 export function supersetGuardFields(
   lowerer: Lowerer,
   from: IrType,
@@ -119,7 +170,7 @@ function elementHelper(
     lowerer.coercions.planning.delete(key);
   }
   if (body === null) return null;
-  const name = keyedHelperName(lowerer, "%narrow.checked", key);
+  const name = keyedHelperName(lowerer, PREDICATE_HELPER, key);
   lowerer.valueHelpers.set(key, name);
   lowerer.liftedFns.push({
     name,
@@ -168,6 +219,7 @@ function conversionBody(
   to: IrType,
   typeText: string,
   loc: SrcLoc,
+  fromUnionArm = false,
 ): IrStmt[] | null {
   if (typeEquals(from, to)) return [{ kind: "return", value: input, loc }];
   if (from.kind === "dyn")
@@ -194,8 +246,17 @@ function conversionBody(
     // `textSignature` and a `type`): the target's members are a subset of
     // the source's, each read and converted, and the copy keeps the
     // source's keys in the source's order. A member the source lacks has
-    // no slot to read, so it stays refused.
-    if (target.fields.length > source.fields.length) return null;
+    // no slot to read, so a field-list copy cannot hold it — the checked
+    // widening can (width-lift.ts): the element crosses as a live capsule
+    // and the target is checked against it, which reads the properties the
+    // element kept beside its declared fields (a width copy's source, a
+    // checked record's source note) and throws the catchable TypeError of
+    // a checked extraction when it genuinely lacks one.
+    if (target.fields.length > source.fields.length) {
+      const lift = fromUnionArm ? null : lowerer.checkedWidthLift(from, to);
+      if (lift === null) return null;
+      return [{ kind: "return", value: lowerer.applyWidthLift(lift, input, to, loc), loc }];
+    }
     const fields: { name: string; value: IrExpr }[] = [];
     for (const field of target.fields) {
       const own = source.fields.find((f) => f.name === field.name);
@@ -297,7 +358,11 @@ function unionConversion(
         type: arm,
         loc,
       };
-      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc);
+      // An ARM's conversion never takes the checked widening: the arm and
+      // the target may share every field's storage type while their
+      // discriminants differ (a `kind: "image"` arm has no `window`), and
+      // an arm the target cannot be read from keeps its tag-checked throw.
+      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc, true);
       if (converted === null) continue;
       recordArmConversions++;
       body.push({

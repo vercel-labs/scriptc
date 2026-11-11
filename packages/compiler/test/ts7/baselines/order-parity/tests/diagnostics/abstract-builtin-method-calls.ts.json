@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/abstract-builtin-method-calls.ts"
+ ],
+ "diags": []
+}

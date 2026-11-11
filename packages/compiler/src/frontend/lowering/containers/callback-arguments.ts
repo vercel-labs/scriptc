@@ -3,6 +3,7 @@ import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isThisParameter } from "../call-signatures.js";
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { primitiveElement } from "../array-values.js";
 import { varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
@@ -40,6 +41,100 @@ export function requireProducedArrayElement(
   }
 }
 
+/** Whether the callback handed to an array method declares a rest
+ * parameter. Such a callback lowers to a variadic closure, and a native
+ * helper calls it with exactly the parameters it declares, so a call it
+ * takes cannot ride the native tables. */
+function arrayCallbackDeclaresRest(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const callback = call.arguments.nodes[0];
+  if (callback === undefined || ts.isSpreadElement(callback)) return false;
+  return lowerer.checker.getCallSignatures(lowerer.typeOf(callback)).some((signature) => {
+    const params = signature.declaration?.parameters?.nodes ?? [];
+    return params.some((param) => ts.isParameter(param) && param.dotDotDotToken !== undefined);
+  });
+}
+
+/** Whether `callback` names a constant that holds, under a declared type
+ * with fewer parameters, a function that observes every argument (a rest
+ * parameter, or `arguments`): `const one: (v: object) => number = counted`.
+ * The constant holds an adapter that a native loop would call with the
+ * declared parameters, and that is the original function again once it is
+ * boxed, so the view calls the original with every argument the method
+ * passes, as it did when these lists were checked-dynamic arrays. A
+ * function that reaches the method any other way under such a type (a
+ * parameter, a field) is not known here; the store check refuses it
+ * (variadic-functions.ts). */
+function namesVariadicConstant(lowerer: Lowerer, callback: ts.Expression): boolean {
+  let node = callback;
+  for (let hops = 0; hops < 8 && ts.isIdentifier(node); hops++) {
+    let declarations: readonly ts.Node[];
+    try {
+      declarations = lowerer.resolveValueSymbol(node)?.declarations ?? [];
+    } catch {
+      return false;
+    }
+    const declaration = declarations.length === 1 ? declarations[0]! : undefined;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+      declaration.initializer === undefined
+    )
+      return false;
+    node = declaration.initializer;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (callbackTakesEveryArgument(lowerer, node)) return true;
+  }
+  return false;
+}
+
+/** Whether the callback handed to an array method is one a native helper's
+ * loop cannot call, so that a list which has a checked-dynamic view runs
+ * the method there, where the callback is called as any function value is.
+ * The loop calls a closure of fixed arity with typed arguments. It does not
+ * take a callback with a rest parameter (above, and a function value whose
+ * compiled type keeps one), a constant that holds such a function under a
+ * type with fewer parameters (namesVariadicConstant), a generator function (its results have no array
+ * element kind), a function held as `any`, or a standard-library function,
+ * whose compiled value takes one input type (`Number` as a value takes a
+ * string). A standard-library function is known by its type, whose call
+ * signature the library declares, not by how the call spells it: it is
+ * the same value through a binding (`const toNumber = Number`), a property,
+ * a parameter or an import. `String` and `Boolean` written as the globals
+ * have loops of their own (lowerArrayCallback). In a JavaScript source a
+ * function value is checked-dynamic already and lowerArrayCallback adapts
+ * it at that boundary, so only the rest parameter counts there. */
+export function arrayCallbackNeedsDynamicView(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  if (arrayCallbackDeclaresRest(lowerer, call)) return true;
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) return false;
+  let callback = call.arguments.nodes[0];
+  if (callback === undefined || ts.isSpreadElement(callback)) return false;
+  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
+  if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    return callback.asteriskToken !== undefined;
+  if (
+    ts.isIdentifier(callback) &&
+    (callback.text === "String" || callback.text === "Boolean") &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(callback) ?? undefined)
+  )
+    return false;
+  if (namesVariadicConstant(lowerer, callback)) return true;
+  const checkerType = lowerer.typeOf(callback);
+  if ((checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  if (
+    lowerer.checker
+      .getCallSignatures(checkerType)
+      .some(
+        (signature) =>
+          signature.declaration !== undefined &&
+          lowerer.isStdlibFile(ts.getSourceFileOfNode(signature.declaration)),
+      )
+  )
+    return true;
+  const type = lowerer.mapTypeOf(checkerType);
+  return type?.kind === "func" && type.rest === true;
+}
+
 /** A callback's `(value, index, array)` positions count from its first
  * data parameter: TypeScript declares an explicit `this` parameter
  * first, and it is not one of them. */
@@ -64,6 +159,10 @@ export function lowerArrayCallback(
   arrT: IrType,
   bindUntyped = false,
   expectedReturn?: IrType,
+  /** The caller checks the callback's arity itself (requireFixedArityCallback)
+   * because one of its paths boxes the callback as a checked-dynamic
+   * function, which any function can be. */
+  checksArity = false,
 ): {
   fnArg: IrExpr & { type: IrType & { kind: "func" } };
   arity: number;
@@ -126,6 +225,21 @@ export function lowerArrayCallback(
       if (!ts.isIdentifier(p.name) || p.type || p.initializer || p.dotDotDotToken) continue;
       const t = lowerer.checker.getTypeAtLocation(p.name);
       if ((t.flags & ts.TypeFlags.Any) !== 0 && !lowerer.chainNarrowedType.has(p.name)) {
+        lowerer.chainNarrowedType.set(p.name, lowerer.checker.getUnknownType());
+        overridden.push(p.name);
+      }
+    }
+  }
+
+  // A parameter registered to take the helper's checked-dynamic value as it
+  // is (open-enumerations.ts) is declared `unknown` for this lowering, like
+  // the untyped parameters above.
+  if (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)) {
+    for (const p of callbackDataParams(argNode)) {
+      if (!ts.isIdentifier(p.name) || p.type || p.initializer || p.dotDotDotToken) continue;
+      if (lowerer.chainNarrowedType.has(p.name)) continue;
+      const symbol = lowerer.checker.getSymbolAtLocation(p.name);
+      if (symbol && lowerer.runtimeOptionalBindingTypes.get(symbol)?.kind === "dyn") {
         lowerer.chainNarrowedType.set(p.name, lowerer.checker.getUnknownType());
         overridden.push(p.name);
       }
@@ -238,7 +352,13 @@ export function lowerArrayCallback(
   }
   let fnArg: IrExpr;
   try {
-    fnArg = lowerer.lowerExpr(argNode);
+    // A literal callback takes the helper's argument types as its own
+    // parameter types and converts at entry, where a callback value is
+    // adapted to them below.
+    fnArg =
+      ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode)
+        ? lowerer.lowerWithSlot(argNode, argNode, { params: full, ret: null, passesAll: false })
+        : lowerer.lowerExpr(argNode);
   } finally {
     for (const n of overridden) lowerer.chainNarrowedType.delete(n);
     for (const { node, previous } of patterns) {
@@ -253,6 +373,18 @@ export function lowerArrayCallback(
     if (previousReturn === undefined) lowerer.contextualFunctionReturns.delete(argNode);
     else lowerer.contextualFunctionReturns.set(argNode, previousReturn);
   }
+  // A Node island's function arrives as its typed view at the slot the
+  // checker spelled, which names the arguments JavaScript passes this
+  // callback. The helper passes them in its own layout of (value, index,
+  // array), so the view is taken at that layout, argument for argument.
+  if (fnArg.type.kind === "func" && fnArg.type.params.length <= full.length) {
+    const view = lowerer.islandFunctionViewAt(
+      fnArg,
+      argNode,
+      funcOf(full.slice(0, fnArg.type.params.length), expectedReturn ?? fnArg.type.ret),
+    );
+    if (view !== null) fnArg = view;
+  }
   const rawType = fnArg.type;
   // A callback can accept a wider parameter type than the array supplies
   // (a reusable predicate over a union is common). Its closure still has
@@ -266,7 +398,10 @@ export function lowerArrayCallback(
       (signatures[0]
         ? lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(signatures[0]))
         : null);
-    if (ret && ret.kind !== "void") fnArg = lowerer.coerceToExpected(fnArg, funcOf(full, ret));
+    // A checked-dynamic function whose signature answers nothing
+    // (`names.forEach(console.log)`) takes every position the helper
+    // passes, as the JavaScript function does: value, index and array.
+    if (ret) fnArg = lowerer.coerceToExpected(fnArg, funcOf(full, ret));
   }
   if (
     fnArg.type.kind === "func" &&
@@ -313,14 +448,50 @@ export function lowerArrayCallback(
     fnArg.type.params.length > full.length ||
     !fnArg.type.params.every((p, i) => typeEquals(p, full[i]!))
   ) {
+    // A function whose parameters past the element cannot hold what the
+    // method passes there (`items.map(format)` with `format(item, options?)`):
+    // JavaScript would hand it the index as its options. Name the position
+    // and the rewrite instead of the function's type.
+    if (fnArg.type.kind === "func" && fnArg.type.params.length <= full.length) {
+      const params = fnArg.type.params;
+      const at = params.findIndex((p, i) => i >= lead.length && !typeEquals(p, full[i]!));
+      if (at >= 0)
+        lowerer.unsupported(
+          "SC1090",
+          argNode,
+          `an array-method callback whose parameter ${at + 1} is '${lowerer.fmt(params[at]!)}' where the method passes ${at === lead.length ? "the index" : "the array"} (JavaScript calls the callback with the element, its index and the array, so the function would receive that value; pass a function that takes only what it reads, such as '(value) => f(value)')`,
+        );
+    }
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
+  if (!checksArity) requireFixedArityCallback(lowerer, argNode, fnArg.type);
   return {
     fnArg: fnArg as IrExpr & { type: IrType & { kind: "func" } },
     arity: fnArg.type.params.length,
     unread: !readsParameter(argNode, lead.length - 1),
     rawType,
   };
+}
+
+/** A helper's loop calls its callback as a closure of fixed arity. A
+ * callback that takes a rest parameter, or whose whole signature is
+ * `arguments`, receives its arguments through a hidden array that only a
+ * call through the checked-dynamic function boundary fills, so the loop
+ * cannot call it: it would see none of the element, index and array that
+ * JavaScript passes. Refuse it by name before a helper is built for it; a
+ * helper whose callback type is not the callback's own fails validation as
+ * an internal error. */
+export function requireFixedArityCallback(
+  lowerer: Lowerer,
+  argNode: ts.Expression,
+  callback: IrType,
+): void {
+  if (callback.kind !== "func" || callback.rest !== true) return;
+  lowerer.unsupported(
+    "SC1090",
+    argNode,
+    "a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses)",
+  );
 }
 
 /** Whether a callback can observe its parameter at `index`: false for a

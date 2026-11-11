@@ -1,0 +1,2432 @@
+[
+ {
+  "file": "scr_array.c",
+  "function": "scr_arr_subclass_construct_dyn",
+  "message": "constructing this Array subclass with element arguments is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_array.c",
+  "function": "scr_arr_species_move",
+  "message": "an Array subclass's species result of another element type is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_assert.c",
+  "function": "scr_av_fail",
+  "message": "assert.fail with more than one argument through a function value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_async.c",
+  "function": "scr_gen_slot_transfer",
+  "message": "yield* completing with a value outside the delegating generator's return type is not supported",
+  "code": "SC1071"
+ },
+ {
+  "file": "scr_async.c",
+  "function": "scr_gen_delegate_done",
+  "message": "yield* of a generator that completes with undefined through a return type that cannot hold it is not supported",
+  "code": "SC1071"
+ },
+ {
+  "file": "scr_async.c",
+  "function": "scr_gen_delegate_start",
+  "message": "yield* into a started generator with a typed next channel is not supported (it would deliver undefined into a typed yield)",
+  "code": "SC1071"
+ },
+ {
+  "file": "scr_async.c",
+  "function": "scr_gen_delegate_forward",
+  "message": "yield* forwarding return(value) to a generator with a different return type whose finally block yields is not supported",
+  "code": "SC1071"
+ },
+ {
+  "file": "scr_async_dyn.c",
+  "function": "scr_als_option",
+  "message": "AsyncLocalStorage options whose class declares '%s' are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_blob.c",
+  "function": "scr_blob_source_list",
+  "message": "new Blob(sources) over this iterable has no lowering; pass an array",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_blob.c",
+  "function": "scr_blob_invoke",
+  "message": "Blob.%s() is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_builtin_values.c",
+  "function": "scr_bv_unsupported",
+  "message": "%s through a stored Buffer value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_builtin_values.c",
+  "function": "scr_bv_static_fence_call",
+  "message": "'%s.%s' as a function value (call it directly) is not supported yet [SC1090]",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_bytes.c",
+  "function": "scr_bytes_source_refusal",
+  "message": "typed-array conversion of an opaque reference is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes.c",
+  "function": "scr_text_decode_stream",
+  "message": "Streaming TextDecoder for this legacy encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes.c",
+  "function": "scr_strdec_encoding",
+  "message": "new StringDecoder with an encoding that is not a string has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_bytes_dyn_buffer_member",
+  "message": "' on a dynamic value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_proto_inspect",
+  "message": "Buffer.prototype.%s with an inspection context through a stored value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_proto_run",
+  "message": "Buffer.prototype.%s on a receiver that is not a Buffer is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_proto_run",
+  "message": "Buffer.prototype.%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_prototype_member",
+  "message": "Buffer.prototype members keyed by %s are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_prototype_member",
+  "message": "Buffer.prototype members keyed by %s are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_prototype_member",
+  "message": "Buffer.prototype.%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_refuse_option",
+  "message": "Filesystem callback option '%s' has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_read_buffer_option",
+  "message": "Filesystem callback option 'buffer' has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_invoke",
+  "message": "fs.glob stored as a value has no native lowering; call fs.glob directly",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_invoke",
+  "message": "fs.copyFile clone flags have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_invoke",
+  "message": "Recursive readdir and Dirent results have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_invoke",
+  "message": "Native filesystem callback fs.%s with these options has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_buffer_from_refusal",
+  "message": "Buffer.from %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_child.c",
+  "function": "scr_spawn_res_dyn_invoke",
+  "message": "spawnSync result methods through an 'unknown' value are not supported yet — narrow the value first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_child.c",
+  "function": "scr_spawn_refuse",
+  "message": " has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_child.c",
+  "function": "scr_child_dyn_invoke",
+  "message": "This ChildProcess method or event has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_unknown_encoding",
+  "message": "An output encoding that is a function or an instance of a class defining toString has no lowering; pass the encoding name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_stream_fence",
+  "message": "This Cipheriv and Decipheriv stream member has no lowering when called through an untyped value",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_stream_fence",
+  "message": "Cipheriv and Decipheriv stream members called through an untyped value have no lowering in a program that uses no streams",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_get",
+  "message": "Cipheriv and Decipheriv property reads have no lowering other than the stream properties; call update(), final(), setAAD(), setAutoPadding(), getAuthTag() or setAuthTag()",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_get",
+  "message": "Cipheriv and Decipheriv property reads through an untyped value have no lowering in a program that uses no streams",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_set",
+  "message": "Writing Cipheriv and Decipheriv properties has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher_info.c",
+  "function": "ci_get",
+  "message": "getCipherInfo options whose class defines keyLength or ivLength have no lowering; pass an object with those properties",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_method_call",
+  "message": "Calling %s through a stored value has no lowering; call it directly",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_retain",
+  "message": "Mutating the native console has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_get",
+  "message": "This stored console member has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_inst_get",
+  "message": "Stored Console instance methods have no lowering; call them on the instance",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_inst_get",
+  "message": "This Console instance member has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_inst_set",
+  "message": "Mutating a Console instance has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_inst_invoke",
+  "message": "Format strings through dynamic Console calls have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_inst_write",
+  "message": "This Console value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_dir_dyn",
+  "message": "console.dir of a Buffer has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_dir_hidden",
+  "message": "console.dir of a Buffer has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_table_own_value",
+  "message": "console.table rows with accessor properties have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_table",
+  "message": "console.table of this value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_table",
+  "message": "console.table of an Error value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_table",
+  "message": "console.table with a properties argument other than an array of strings has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_console_table",
+  "message": "console.table rows of this kind have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_crypto_args.h",
+  "function": "ca_throw_formatted",
+  "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_membership",
+  "message": "dgram.Socket.%s before bind() is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram_dyn.c",
+  "function": "scr_dgram_dynh_unsupported",
+  "message": "'dgram.Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram_dyn.c",
+  "function": "scr_dgram_dyn_bind_args",
+  "message": "the options-object form is not modeled",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram_dyn.c",
+  "function": "scr_dgram_dynh_invoke",
+  "message": "' on a dynamic dgram Socket is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_dispatch",
+  "message": "DiffieHellman's Object.prototype methods have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_get",
+  "message": "DiffieHellman property reads other than verifyError have no lowering; call generateKeys(), computeSecret(), getPrime(), getGenerator(), getPublicKey(), getPrivateKey(), setPublicKey() or setPrivateKey()",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_set",
+  "message": "Writing DiffieHellman properties has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dns_promises.c",
+  "function": "scr_dnsp_options",
+  "message": "dns.lookup hints are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_array_like.c",
+  "function": "al_iteration",
+  "message": "array-like iteration over one million entries is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_array_like.c",
+  "function": "al_refuse_primitive",
+  "message": " on a primitive receiver is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_class.c",
+  "function": "bc_emitter_init",
+  "message": "EventEmitter captureRejections on a constructor function is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_class.c",
+  "function": "bc_construct",
+  "message": "'%s' as the base of a constructor function (util.inherits or %s.call(this)) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_need",
+  "message": "stream method '%s' on an object without stream state is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_flush_inv",
+  "message": "_final on a constructor-function Transform is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_event_name",
+  "message": "symbol event names on a constructor-function stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_check_listener",
+  "message": "listeners other than functions on a constructor-function stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_emit",
+  "message": "emit('pipe') or emit('unpipe') with a value other than a stream on a constructor-function stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_emit",
+  "message": "emit('newListener') or emit('removeListener') with a name other than a string on a constructor-function stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_event",
+  "message": "listeners() and rawListeners() on a constructor-function stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_construct",
+  "message": "%s.call() on a receiver that does not inherit %s.prototype is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_construct",
+  "message": "%s.call() on a receiver that already has stream state is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_construct",
+  "message": "_final on a constructor-function Transform is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_pipe",
+  "message": "pipe destinations other than streams are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_pipe",
+  "message": "pipe into a constructor-function stream with its own write() or end() is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_method_call",
+  "message": "Readable.prototype.wrap on a constructor-function stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "scr_dyn_builtin_stream_unbox",
+  "message": "pipes into a constructor-function stream with its own write() or end() are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_fn_own.c",
+  "function": "scr_dyn_fn_own_set",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_handle_props.c",
+  "function": "hp_props_of_box",
+  "message": "own properties on a %s are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_handle_props.c",
+  "function": "hp_member_refusal",
+  "message": "%s the %s member '%.*s' is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_handle_props.c",
+  "function": "hp_integrity",
+  "message": "Object.freeze of a RegExp is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_handle_props.c",
+  "function": "hp_refuse",
+  "message": "%.*s of a Date, RegExp, Map, Set or buffer with added own properties is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_integrity.c",
+  "function": "scr_dyn_integrity_query_fence",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_throw_unsupported",
+  "message": "' on a dynamic value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_arr_length_unchanged",
+  "message": "Array method after an argument changes the receiver length is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_borrow_iteration",
+  "message": "array-like iteration over one million entries is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_array_proto_call",
+  "message": "Array.prototype method is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_invoke_impl",
+  "message": "checked array methods over an array with elements past its dense prefix are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_invoke_impl",
+  "message": "This checked array mutation over holes is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_invoke_impl",
+  "message": "Array.prototype.splice after an argument changes the receiver length is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": null,
+  "message": "calling the %s constructor%s through a stored value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": null,
+  "message": "calling '%s' through a stored value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": null,
+  "message": "constructing %s%s through a stored value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_define_props_pending",
+  "message": "Object.defineProperties with this value as the property map is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_define_props_internal",
+  "message": "Replacing compiled class prototype members has no native lowering [SC1090]",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_ecdh.c",
+  "function": "se_get",
+  "message": "ECDH property reads have no lowering; call generateKeys(), computeSecret(), getPublicKey(), getPrivateKey(), setPrivateKey() or setPublicKey()",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_ecdh.c",
+  "function": "se_set",
+  "message": "Writing ECDH properties has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_event_target.c",
+  "function": "scr_event_ref_set",
+  "message": "writing the inherited member '%.*s' through an untyped value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_event_target.c",
+  "function": "scr_tp_scheduler_wait_signal",
+  "message": "scheduler.wait with a signal while mock.timers mocks it has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events.c",
+  "function": "scr_stdio_refusal",
+  "message": "Native process stream %s has no lowering [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
+  "function": "scr_emitter_retain_v",
+  "message": "%s with a symbol event name is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
+  "function": "scr_ee_listener_mismatch",
+  "message": "' with typed arguments to a listener registered through an untyped value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
+  "function": "scr_ee_unhandled_error",
+  "message": "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
+  "function": "scr_emitter_listeners_dyn",
+  "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fetch.c",
+  "function": "scr_fetch_stream_new",
+  "message": "byte streams are not supported by static ReadableStream",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fetch.c",
+  "function": "sf_stream_invoke",
+  "message": "BYOB readers are not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_file_handle.c",
+  "function": "scr_file_handle_dyn_invoke",
+  "message": "FileHandle method calls through an 'unknown' value are not supported yet — narrow the value to FileHandle first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_cp.c",
+  "function": "scr_fs_cp_run",
+  "message": "fs.cp has no native lowering on Windows",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_cp.c",
+  "function": "cp_filter",
+  "message": "fs.cp filter promises that are still pending have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_path_value.c",
+  "function": "scr_value_fs_path",
+  "message": "A path given as bytes that are not UTF-8 text is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_path_value.c",
+  "function": "scr_value_fs_path",
+  "message": "A file descriptor passed through an untyped value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_stream.c",
+  "function": "scr_fss_refuse_overrides",
+  "message": "the fs stream option '%s' is not supported yet (it replaces the file implementation)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_stream.c",
+  "function": "scr_fss_refuse_overrides",
+  "message": "the fs stream option 'fs' is not supported yet (custom file system implementations)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_stream.c",
+  "function": "scr_fss_refuse_overrides",
+  "message": "the fs stream option 'windowsHandle' is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_stream.c",
+  "function": "scr_fss_new",
+  "message": "the WriteStream option 'encoding' is not supported yet (utf8, the default, is the write-side string encoding)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_glob.c",
+  "function": "scr_fs_glob",
+  "message": "fs.glob exclude functions with withFileTypes have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_glob.c",
+  "function": "scr_fs_glob_callback",
+  "message": "fs.glob callback Dirent results have no native lowering; use fs.globSync or fs/promises glob",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_grapheme.c",
+  "function": "scr_graphemes_invoke",
+  "message": "Intl.Segmenter locale negotiation is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_grapheme.c",
+  "function": "scr_graphemes_get",
+  "message": "stored Intl.Segmenter methods are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_req_set_encoding",
+  "message": "setEncoding('%s') is not supported yet (only 'utf8' here)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_res_informational_h1",
+  "message": "Http2ServerResponse.%s is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_res_on_prefinish",
+  "message": "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_dynh_unsupported",
+  "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_dynh_event_unsupported",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_dynh_res_invoke",
+  "message": "this argument shape is not modeled",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_req_opts_fence",
+  "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_settings_validate",
+  "message": "HTTP/2 customSettings are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_read",
+  "message": "reading '%s' from an %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dyn_refuse_call",
+  "message": "'%s' on an %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dynh_stream_invoke",
+  "message": "listening for '%s' on an Http2Stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http2.c",
+  "function": "scr_h2_dynh_session_invoke",
+  "message": "listening for '%s' on an Http2Session is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_colors_fence",
+  "message": " has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_buffer",
+  "message": " values is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_generator",
+  "message": "util.inspect of this iterator object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_inspect_member_call",
+  "message": "util.inspect.%s through the inspect function is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_custom",
+  "message": "util.inspect of this class instance's [util.inspect.custom] method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_dyn_func",
+  "message": "util.inspect of a class with static fields through unknown is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_dyn",
+  "message": " with customInspect: false is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_dyn",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_dyn",
+  "message": "util.inspect of a promise value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_fmt_s",
+  "message": "%s of a class instance whose class defines toString has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_fmt_s",
+  "message": "%s of objects with symbol-keyed members has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with a depth option that is not a number or null has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with this compact option has no lowering (compact must be false or a number)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with a breakLength option that is not a number has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with a sorted option that is not a boolean has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": "with this maxStringLength option has no lowering (maxStringLength must be a non-negative integer or null)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_format_read_options",
+  "message": " option has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "scr_insp_inspect",
+  "message": "with a depth argument that is not a number or null has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_table_cell",
+  "message": "console.table cells holding Error values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_table_cell",
+  "message": "console.table cells holding accessor properties have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_intl.c",
+  "function": "scr_icu_word_segmenter_invoke",
+  "message": "Intl.Segmenter locale negotiation is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_intl.c",
+  "function": "scr_icu_segmenter_get",
+  "message": "stored Intl.Segmenter methods are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_intl.c",
+  "function": "scr_icu_segments_get",
+  "message": "stored Intl.Segmenter methods are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_intl.c",
+  "function": "scr_intl_refuse",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_js_promise_generic.c",
+  "function": "scr_js_promise_generic_call",
+  "message": "Promise static is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_js_wrapper.c",
+  "function": "scr_js_wrapper_apply",
+  "message": " called through its function value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_js_wrapper.c",
+  "function": "scr_js_wrapper_to_object",
+  "message": "Object() of a bigint or symbol is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_js_wrapper.c",
+  "function": "scr_js_wrapper_refuse",
+  "message": " of a primitive wrapper object (new String/Number/Boolean or Object(primitive)) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_error_prototype_fence",
+  "message": "Error.prototype mutation is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_namespace_member_fence",
+  "message": "Replacing or deleting a Math, JSON or Reflect member is not supported",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_reflection_fence",
+  "message": "scriptc: Object.prototype reflection and mutation are not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_reflection_fence",
+  "message": "scriptc: class reflection through unknown is not supported",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_array_prototype_element_fence",
+  "message": "Elements on Array.prototype are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_symbol_get",
+  "message": "Native Symbol prototype member values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_error_ctor_call",
+  "message": "calling the %s constructor through a stored value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_error_prototype_constructor",
+  "message": "calling Error.prototype.constructor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_prototype_unsupported",
+  "message": " with this value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_get_prototype",
+  "message": "Object.getPrototypeOf on this value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_integrity_fence",
+  "message": " of an object held in an untyped value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_integrity_fence",
+  "message": " of an array held in an untyped value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_integrity_fence",
+  "message": " of a class instance held in an untyped value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_proxy_unsupported",
+  "message": " on a native Proxy is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_bytes_protocol_fence",
+  "message": " on a typed array, Buffer or DataView is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_view_unavailable",
+  "message": "class fields cannot be represented as checked-dynamic properties",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_typed_ref_string_view",
+  "message": "String conversion of a class instance whose class defines toString has no lowering where the value is untyped; convert the instance where its class is known",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_bytes_instanceof_at",
+  "message": "instanceof against this native constructor is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_bytes_construct",
+  "message": "Calling or constructing Buffer through a stored Buffer value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "dyn_bytes_method_value_call",
+  "message": "' through a method value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_bytes_key_get",
+  "message": "DataView's constructor through unknown is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_handle_key_set",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_descriptor_field_get",
+  "message": " from a class member of a property descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_descriptor_snapshot",
+  "message": " as a property descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_super",
+  "message": "Replacing a native class instance from its base constructor has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_symbol_receiver",
+  "message": "Symbol properties on this native value have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_builtin_iterator_checked",
+  "message": "Borrowing this native iterator factory has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_open_iterator",
+  "message": "Readable.from over an object whose iterator method is a generator method is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_iterator_read",
+  "message": "Reading this native iterator result has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_delete_property",
+  "message": "Reflect.deleteProperty on a compiled object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_fn_property_fence",
+  "message": "scriptc: overriding builtin function properties is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_define_property",
+  "message": "Object.defineProperty on a numeric property of a native array is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_define_property",
+  "message": "Object.defineProperty on an array index or length is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_get_own_property_descriptor",
+  "message": "Object.getOwnPropertyDescriptor on this value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_object_tag",
+  "message": "Object.prototype.toString of this iterator is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_object_tag",
+  "message": "Object.prototype.toString.call on this checked-dynamic kind is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_json_write",
+  "message": "JSON.stringify of an array with elements past its dense prefix is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_json_write",
+  "message": "JSON.stringify of a runtime handle is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_to_string",
+  "message": "joining an array with elements past its dense prefix is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_key_set",
+  "message": "Sparse array writes are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_key_delete",
+  "message": "delete on this checked-native receiver is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_json_revive",
+  "message": "JSON.parse reviver deleting array elements is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_function_constructor_call",
+  "message": "constructing functions from source text is not supported in static code",
+  "code": "SC2010"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_receiver",
+  "message": " on a callable that is not a function value is not supported",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_fn_inherited_to_string_call",
+  "message": "'Function.prototype.toString' on a dynamic value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_fn_get",
+  "message": "Function.prototype through a constructor value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_fn_get",
+  "message": "Native generator function prototypes have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_fn_get",
+  "message": "scriptc: class properties through unknown other than name and length are not supported",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": null,
+  "message": "structuredClone of cyclic values (the checked-dynamic tree cannot represent cycles) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_sc_clone",
+  "message": "structuredClone of cyclic values (the checked-dynamic tree cannot represent cycles) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_get_own_property_names",
+  "message": "Object.getOwnPropertyNames on this value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_get_own_property_descriptors",
+  "message": "Object.getOwnPropertyDescriptors on this value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_for_in_keys",
+  "message": "for-in over this checked-dynamic kind is not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_assign_prototype",
+  "message": "Replacing compiled class prototype members has no native lowering [SC1090]",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_has_own",
+  "message": "Own-property checks on this checked-dynamic kind are not supported yet",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_array_buffer_invoke",
+  "message": "ArrayBuffer method is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_weak_map_invoke",
+  "message": "WeakMap method has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_weak_map_get",
+  "message": "Weak collection method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_finalization_key",
+  "message": "FinalizationRegistry with symbol targets or tokens is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_finalization_key",
+  "message": "FinalizationRegistry with symbol targets or tokens is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_finalization_registry_get",
+  "message": "FinalizationRegistry method values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_native_set_get",
+  "message": "Native Set method values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_native_set_invoke",
+  "message": "Native Set method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_native_map_get",
+  "message": "Native Map method values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_native_map_invoke",
+  "message": "Native Map method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_freeze_data",
+  "message": "Object.freeze of this native value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_frozen_answer",
+  "message": "Object.isFrozen of this native value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_class_define_field",
+  "message": "' is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_error_capture_stack_trace",
+  "message": "Error.captureStackTrace on this object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_stats_constructor",
+  "message": "Calling the fs.Stats constructors has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_dir_dyn_invoke",
+  "message": "Dir method calls through an 'unknown' value are not supported yet — narrow the value to Dir first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_hash_dyn_unsupported",
+  "message": "Hash members other than update(), digest() and copy() have no lowering on an 'unknown' value; cast the value to Hash first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_hash_dyn_unsupported",
+  "message": "Hmac members other than update() and digest() have no lowering on an 'unknown' value; cast the value to Hmac first",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_hash_dyn_method_call",
+  "message": "Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_hash_copyable",
+  "message": "copy() of a Hash whose stream has flushed its digest has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_hash_is_hmac",
+  "message": "Stream use of a Hash or Hmac after its stream closed has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_cshake_param",
+  "message": "A digest option with NUL bytes in a view other than a Buffer has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_key_object_invoke",
+  "message": "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_native_date_invoke",
+  "message": "Native Date method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_message.c",
+  "function": "scr_message_encode_transfer",
+  "message": "Transfer lists with values other than MessagePorts are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_mime.c",
+  "function": "scr_mime_member_get",
+  "message": "'%s.prototype.%s' as a value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_unsupported",
+  "message": "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_sock_invoke",
+  "message": "' on a dynamic Socket is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_srv_unsupported",
+  "message": "'Server.prototype.%s' on a dynamic value is not supported yet%s%s",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_srv_invoke",
+  "message": "' on a dynamic Server is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_srv_invoke",
+  "message": "the options-object form on a dynamic value is not modeled (use listen(port[, host][, cb]))",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_node_builtin.c",
+  "function": "scr_global_get",
+  "message": " through a stored global object is not supported yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_node_builtin.c",
+  "function": "scr_process_builtin_unsupported",
+  "message": "' is not supported through process.getBuiltinModule yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_node_builtin.c",
+  "function": "scr_navigator_refuse",
+  "message": "' is part of the standard library types but has no scriptc lowering yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_node_island.c",
+  "function": "ni_async_main_thread",
+  "message": "asynchronous island calls from a worker thread are not supported; call the island synchronously (@scriptc/node callSync) from the worker [SC8012]",
+  "code": "SC8012"
+ },
+ {
+  "file": "scr_node_island_export.c",
+  "function": "scr_ni_host_shared_get",
+  "message": "scriptc: an array exported by a shared module cannot cross into a Node island yet",
+  "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_worker_await_refusal",
+  "message": "awaiting an island value from a worker thread is not supported; await it on the main thread, which owns the Node island [SC8012]",
+  "code": "SC8012"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_str_release_v",
+  "message": "scriptc: %s cannot cross into a Node island yet (scope-B NI-5 exports native values by reference)",
+  "code": "SC8010"
+ },
+ {
+  "file": "scr_node_island_handle.c",
+  "function": "nh_receiver",
+  "message": "scriptc: %s needs a Node island value",
+  "code": "SC8010"
+ },
+ {
+  "file": "scr_perf.c",
+  "function": "scr_perf_get_mark",
+  "message": "performance.measure with the '%.*s' Node timing milestone is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_not_supported",
+  "message": "'%s' is part of the standard library types but has no scriptc lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_stream_fence",
+  "message": "This Sign or Verify stream member has no lowering when called through an untyped value",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_stream_fence",
+  "message": "Sign and Verify stream members called through an untyped value have no lowering in a program that uses no streams",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_qs.c",
+  "function": "qs_decode_custom",
+  "message": "querystring.parse with a decodeURIComponent that answers a value that is not a string has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_qs.c",
+  "function": "scr_qs_separator",
+  "message": "querystring.stringify with a separator that is an object or a symbol has no lowering; pass a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_readline.c",
+  "function": "scr_rl_prompt_text",
+  "message": "a terminal readline prompt that is an object or a symbol has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_readline.c",
+  "function": "scr_rl_get_prompt",
+  "message": "rl.getPrompt() of a prompt that is not a string has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_readline.c",
+  "function": "scr_rl_cursor",
+  "message": "rl.cursor of an interface that is not a terminal has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_readline_tty.c",
+  "function": "scr_rl_cursor_pos",
+  "message": "rl.getCursorPos() with a prompt that is an object or a symbol has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_locale_case_unsupported",
+  "message": "String.prototype.toLocaleLowerCase with this locale argument is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_locale_case_unsupported",
+  "message": "String.prototype.toLocaleUpperCase with this locale argument is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_regex_new",
+  "message": "the regex 'd' flag (match indices) is not supported yet [SC1120]",
+  "code": "SC1120"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_native_regex_get",
+  "message": "Native RegExp method values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_native_regex_set",
+  "message": "Non-numeric RegExp.lastIndex values have no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_regex.c",
+  "function": "scr_native_regex_invoke",
+  "message": "Native RegExp method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_require.c",
+  "function": "req_refuse",
+  "message": "' with a computed specifier is not supported; require it with a string literal",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_next_str_fence",
+  "message": "for-await over a stream with an encoding set is not supported yet in typed code (chunks are Buffers here)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_next_chunk_impl",
+  "message": "concurrent for-await iteration of one stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_from_dyn_ex",
+  "message": "the Readable.from option '%.*s' is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_duplex_from_dyn",
+  "message": "Duplex.from over this body is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_parse_dyn_opts",
+  "message": "the stream option 'signal' is not supported yet (AbortSignal-driven destruction has no lowering)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_parse_dyn_opts",
+  "message": "a read/write/final option on a Transform is not supported yet (it would replace the transform composition)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_pump_caught",
+  "message": "a pipeline stage rejection that is not an Error object is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_pipe_dest_dyn_kind",
+  "message": "pipeline destinations that return a thenable other than a promise are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_value_consumer_fence",
+  "message": "%s over an object-mode stream value that is not a string or Buffer is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_rl_from_dyn",
+  "message": "createInterface with an input that is not a readable stream has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_rl_from_dyn",
+  "message": "createInterface with an output that is not a writable stream has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_read_str_fence",
+  "message": "read() on a stream with an encoding set is not supported yet (consume 'data' events, which deliver strings)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_read",
+  "message": "read() of an object-mode stream value that is not a Buffer is not supported yet in typed code (consume 'data' events or for await)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_handle",
+  "message": "Stream use of a value that is not a native stream has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_event_name",
+  "message": "event names other than strings on a native stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
+  "message": "Native stream method values with write encodings or callbacks have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
+  "message": "Native stream method values with close callbacks have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
+  "message": "Native stream method values with end encodings or callbacks have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_throw_web_stage",
+  "message": "pipeline stages that are untyped web streams are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_stage_returned_stream",
+  "message": "pipeline function stages that return a stream are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_su_foreign_refuse",
+  "message": "%s over a child process or process stdio stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_util_is_value",
+  "message": "%s over a value that is not a native stream or a primitive is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_ops.c",
+  "function": "op_unsupported",
+  "message": "%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_symbol.c",
+  "function": "scr_dyn_using_method",
+  "message": "disposing a class instance through a Disposable- or unknown-typed value has no lowering yet (declare the variable with the class type)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_text_codec_dyn.c",
+  "function": "scr_sdd_invoke",
+  "message": "StringDecoder.prototype.text is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_text_codec_dyn.c",
+  "function": "scr_sdd_get",
+  "message": "StringDecoder lastChar, lastNeed and lastTotal are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_server_reason",
+  "message": "a TLS handshake failure (mbedTLS error -0x%04X) without the reason OpenSSL gives is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_create_server_alpn",
+  "message": "a version range with neither TLSv1.2 nor TLSv1.3 has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_opt_fence",
+  "message": "' has no static lowering — ",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_pem_dyn",
+  "message": " holding an empty array has no static lowering — pass PEM material",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_pem_dyn",
+  "message": " with more than one array entry has no static lowering — one cert/key pair per server here",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_pem_from_dyn",
+  "message": " has no static lowering — pass PEM material (a string or a Buffer)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_opts_walk_ex",
+  "message": " without both cert and key has no static lowering — the supported options are { cert, key } (PEM strings or Buffers)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_of_server",
+  "message": "%s on a server that is not a tls or https server is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_server_add_context",
+  "message": "a servername with regular-expression groups or alternation has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_server_add_context",
+  "message": "a servername outside ASCII has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_wrap_socket",
+  "message": "a version range with neither TLSv1.2 nor TLSv1.3 has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_wrap_socket",
+  "message": "new tls.TLSSocket over a socket that is not connected, or is already wrapped, is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_connect_plain",
+  "message": "custom identity verification has no lowering — the runtime verifies against the servername/host",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_connect_plain",
+  "message": "tls.connect over a socket that is not connected, or is already wrapped, is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_sock_get_cipher",
+  "message": "tlsSocket.getCipher() for %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_dynh_invoke",
+  "message": "'TLSSocket.prototype.%s' on a dynamic value is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tty_colors.c",
+  "function": "scr_tty_refusal",
+  "message": "Native process stream %s has no lowering [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_url.c",
+  "function": "url_apply_component",
+  "message": "Native URL setter has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_url.c",
+  "function": "scr_native_url_invoke",
+  "message": "Native URL method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_url.c",
+  "function": "scr_url_to_http_options_dyn",
+  "message": "url.urlToHttpOptions of an object that is not a URL is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_url_legacy.c",
+  "function": "lu_proto_format",
+  "message": "Url.prototype.format on this receiver has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_url_legacy.c",
+  "function": "lu_proto_fenced",
+  "message": " has no lowering; use url.parse, url.format or url.resolve",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_callable.c",
+  "function": "scr_util_inherits",
+  "message": "util.inherits over class constructors has no lowering; declare the subclass with extends",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_callable.c",
+  "function": "scr_util_inherits_prototype",
+  "message": "util.inherits over class constructors has no lowering; declare the subclass with extends",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_callable.c",
+  "function": "scr_util_deprecate",
+  "message": "util.deprecate over class constructors has no lowering; deprecate a factory function instead",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_callable.c",
+  "function": "uc_callbackified_call",
+  "message": "util.callbackify callbacks that are Proxy values have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_compare.c",
+  "function": "util_deep_refused",
+  "message": " is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_promisify.c",
+  "function": "scr_util_promisify",
+  "message": "util.promisify over an untyped function with own properties (such as util.promisify.custom) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_style.c",
+  "function": "scr_util_style_text",
+  "message": "util.styleText over native custom streams is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_timing.c",
+  "function": "ut_set_ref",
+  "message": "util.throttle ref() and unref() after the throttled function is unreachable have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_timing.c",
+  "function": "ut_set_ref",
+  "message": "util.debounce ref() and unref() after the debounced function is unreachable have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_timing.c",
+  "function": "ut_function_arg",
+  "message": "util.%s over Proxy functions has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_timing.c",
+  "function": "ut_signal_option",
+  "message": "util.%s options.signal values that are not AbortSignal instances have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_wasm.c",
+  "function": "scr_wasm_absent",
+  "message": "WebAssembly.Memory(): shared memories are not supported yet (scriptc does not translate WebAssembly threads; see https://scriptc.dev/limitations)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_watch.c",
+  "function": "scr_watch_refuse_dir_names",
+  "message": "fs.watch of a directory with a listener that reads the filename has no lowering on macOS yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_webcrypto.c",
+  "function": "scr_wc_unsupported",
+  "message": "crypto.subtle.%s with %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_webstreams.c",
+  "function": "ws_readable_from",
+  "message": "ReadableStream.from of a function that is not iterable is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_transfer_list",
+  "message": "This postMessage transfer argument is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_view_invoke",
+  "message": "This Worker or MessagePort method is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_view_get",
+  "message": "worker.stderr without the stderr option is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_view_get",
+  "message": "worker.stdout without the stdout option is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_view_get",
+  "message": "worker.resourceLimits is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_broadcast_invoke",
+  "message": "This BroadcastChannel method is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_resource_limits",
+  "message": "resourceLimits in a worker is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_arguments",
+  "message": "Worker argv strings containing null bytes are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_stack_size",
+  "message": "Worker resourceLimits heap limits are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_new_options",
+  "message": "Worker option accessors are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_worker_events.c",
+  "function": "scr_worker_new_options",
+  "message": "This Worker constructor option is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib.c",
+  "function": "scr_zlib_base_options",
+  "message": "a zlib chunkSize above 4294967295 is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib.c",
+  "function": "scr_zlib_refuse_info",
+  "message": "the zlib option 'info' is not supported yet (it returns the engine object)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_check_unlowered",
+  "message": "objectMode streams are not supported yet (chunks are Buffers or utf8 strings)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_check_unlowered",
+  "message": "decodeStrings: false is not supported yet (chunks always decode to Buffers)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_check_unlowered",
+  "message": "the stream option 'signal' is not supported yet (AbortSignal-driven destruction has no lowering)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_check_unlowered",
+  "message": "the stream option 'defaultEncoding' is not supported yet (utf8, the default, is the write-side string encoding)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_check_unlowered",
+  "message": "the zlib stream option '%s' is not supported yet (it would replace the zlib transform)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_async.c",
+  "function": "scr_gen_delegate_fence",
+  "message": "",
+  "code": "SC1071"
+ },
+ {
+  "file": "scr_async_dyn.c",
+  "function": "scr_crypto_digest_call",
+  "message": "Unsupported WebCrypto digest algorithm or BufferSource",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_dyn.c",
+  "function": "scr_buffer_proto_unsupported",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_open",
+  "message": "Runtime numeric filesystem flags have no portable native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_schedule",
+  "message": "Filesystem callbacks require an executable event loop",
+  "code": "SC4005"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_stream_path",
+  "message": "Runtime numeric filesystem flags have no portable native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_child.c",
+  "function": "scr_child_bridge_readable",
+  "message": "ChildProcess standard streams require the native stream surface",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_child.c",
+  "function": "scr_child_bridge_writable",
+  "message": "ChildProcess standard streams require the native stream surface",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_cipher.c",
+  "function": "sc_unsupported_cipher",
+  "message": "' has no native implementation; the supported ciphers are aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1 and ofb modes and their wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20 and chacha20-poly1305",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
+  "function": "scr_table_fence",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_too_long",
+  "message": "DiffieHellman primes longer than 8192 bits have no native implementation",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_value_too_long",
+  "message": "DiffieHellman values longer than %zu bytes have no native implementation",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dh.c",
+  "function": "sd_prime_too_long",
+  "message": "%s longer than %d bits have no native implementation",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_builtin_stream.c",
+  "function": "bcs_unsupported",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_collections.c",
+  "function": "scr_dyn_collection_for_each",
+  "message": "collection forEach expected",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_collections.c",
+  "function": "scr_dyn_collection_construct",
+  "message": "keyed collection constructor expected",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_collections.c",
+  "function": "scr_dyn_set_values",
+  "message": "Set values expected",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "scr_dyn_array_proto_call",
+  "message": "Array.prototype.slice exceeds the native iteration limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_arr_flatten",
+  "message": "Array.prototype.flat exceeds the native iteration limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dyn_invoke.c",
+  "function": "dyn_builtin_fn_call",
+  "message": "Builtin timer functions require an executable event loop",
+  "code": "SC4005"
+ },
+ {
+  "file": "scr_ecdh.c",
+  "function": "se_unsupported_curve",
+  "message": "' has no native implementation; the supported curves are prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_fs_stream.c",
+  "function": "scr_fss_unsupported",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_glob.c",
+  "function": "scr_fs_glob",
+  "message": "fs.glob withFileTypes must be a literal true or false that matches the result type",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_grapheme.c",
+  "function": "scr_refusing_segmenter_invoke",
+  "message": "segment",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_inspect.c",
+  "function": "insp_fmt_fence",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_array_ctor_call",
+  "message": "Checked array construction exceeds the native allocation limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_bytes_instanceof_at",
+  "message": "Function has non-object prototype 'undefined' in instanceof check",
+  "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_throw_lowering_fence",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_class_base_prototype",
+  "message": "This constructor prototype has no native class lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_key_set",
+  "message": "Checked array growth exceeds the native allocation limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_sc_clone",
+  "message": "stack",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_apply_array_like",
+  "message": "Function.prototype.apply exceeds the native argument limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_ffi_fail",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_weak_set",
+  "message": "Weak collection keys of this native reference type have no weak lifetime lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_weak_map_invoke",
+  "message": "Weak collection keys of this native reference type have no weak lifetime lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_fs_statfs",
+  "message": "Filesystem capacity queries have no native WASI syscall",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_dir_callback_refused",
+  "message": "Filesystem callbacks require an executable event loop",
+  "code": "SC4005"
+ },
+ {
+  "file": "scr_lib.c",
+  "function": "scr_crypto_encoding_unlowered",
+  "message": "A digest with this output encoding returns a Buffer, which this call's string type cannot hold",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
+  "function": "sp_ed",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_shared.c",
+  "function": "scr_bytes_require_unshared",
+  "message": "Shared byte storage cannot expose an unmanaged native pointer",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dynopt_unsupported",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_on_dyn",
+  "message": "this stream event has no checked-dynamic listener adapter",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_unbox_dyn",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_unbox_dyn_stage",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_string.c",
+  "function": "scr_qs_escape_value",
+  "message": "querystring.escape of a function converts its source text, which a compiled binary does not keep",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_callable.c",
+  "function": "uc_fence",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_util_timing.c",
+  "function": "ut_fence",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_zlib_stream.c",
+  "function": "scr_zs_unsupported",
+  "message": "",
+  "code": "SC2020"
+ }
+]

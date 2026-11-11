@@ -80,9 +80,14 @@
       // pipeline.ts is the lowering driver and calls lowerToIr itself.
       // The lowering directory has its own block below, since its modules call
       // each other as values.
+      // `import { type T } from "m"` is not type-only: verbatimModuleSyntax
+      // emits it as `import {} from "m"`, which loads m, and a program scriptc
+      // compiles loads it as well. no-import-type-side-effects requires the
+      // erased form, `import type { T }`.
       "files": ["packages/compiler/src/frontend/**"],
       "excludeFiles": ["packages/compiler/src/frontend/lowering/**"],
       "rules": {
+        "typescript/no-import-type-side-effects": "error",
         "no-restricted-imports": [
           "error",
           {
@@ -109,6 +114,10 @@
                   "keyedHelperName",
                   "contentDigest",
                   "lowerToIr",
+                  // The member census (builtin-module-members.ts) imports
+                  // only its generated table, never the lowering graph:
+                  // program.ts links a builtin's named imports against it.
+                  "builtinModuleHasMember",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },
@@ -135,6 +144,45 @@
               {
                 "group": ["typescript5", "typescript5/**"],
                 "message": "typescript5 is restricted to the explicit parser islands; TypeScript AST worlds must not mix.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      // The frontend outside lowering calls these modules as values (the allow
+      // list above names their exports), so they must stay leaves. A lowering
+      // module they load reaches the lowering hub for every program that loads
+      // program.ts, and the frontend block cannot see it: it checks direct
+      // imports only.
+      "files": [
+        "packages/compiler/src/frontend/lowering/decl-origin.ts",
+        "packages/compiler/src/frontend/lowering/stable-names.ts",
+        "packages/compiler/src/frontend/lowering/unit-journal.ts",
+      ],
+      "rules": {
+        "typescript/no-import-type-side-effects": "error",
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/backend/*", "**/backend/**"],
+                "message": "frontend must not import backend; use the IR interface.",
+              },
+              {
+                "group": ["**/ir/validate", "**/ir/validate.*"],
+                "message": "frontend must not import IR validation; use the shared builtin and intrinsic signatures.",
+              },
+              {
+                "group": ["typescript5", "typescript5/**"],
+                "message": "typescript5 is restricted to the explicit parser islands; TypeScript AST worlds must not mix.",
+              },
+              {
+                "group": ["./*", "./**", "**/lowering/*", "**/lowering/**"],
+                "allowTypeImports": true,
+                "message": "the frontend outside lowering calls this module as a value, so it may import other lowering modules only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },
             ],
           },
@@ -282,11 +330,11 @@
       },
     },
     {
-      // Only strings and offsets cross these TypeScript 5 parser islands.
+      // Only strings and offsets cross these TypeScript 5 parser islands. The
+      // lowering fence here is the frontend block's, without its allow list.
       "files": [
         "packages/compiler/src/frontend/npm.ts",
         "packages/compiler/src/frontend/cjs-lexer.ts",
-        "packages/compiler/src/frontend/comptime-node.ts",
         "packages/compiler/src/frontend/ts7/world-check.ts",
         "packages/compiler/src/frontend/ts7/source-parser.test.ts",
         "packages/compiler/src/frontend/jsx-source.test.ts",
@@ -296,6 +344,7 @@
         "packages/compiler/src/node-islands/effect-gate.ts",
       ],
       "rules": {
+        "typescript/no-import-type-side-effects": "error",
         "no-restricted-imports": [
           "error",
           {
@@ -324,6 +373,8 @@
         "packages/compiler/src/frontend/lowering/**",
         "packages/compiler/src/backend/llvm/**",
         "packages/compiler/src/backend/immutability.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.test.ts",
+        "packages/compiler/src/backend/lazy-initializers.ts",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
         "packages/compiler/src/backend/stack-observations.test.ts",

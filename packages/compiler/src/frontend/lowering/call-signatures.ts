@@ -38,6 +38,7 @@ import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { funcSlotAdaptable, restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -58,13 +59,17 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * declareParams). `callDefault` is the compile-time default value for a
  * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
  * inherited from a JavaScript base method whose TypeScript override declares
- * a typed parameter: the prologue narrows the checked value to that type. */
+ * a typed parameter: the prologue narrows the checked value to that type.
+ * `slotType` is the ABI type of a function literal's parameter that the slot
+ * the literal is written into passes at another type (slotSignatureAdoption):
+ * the body binds `type`, converted from it at entry. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
   entryNarrow?: IrType;
+  slotType?: IrType;
   /** One flattened position of a fixed-tuple rest parameter
    * (restTupleShapes): the declaration's last parameter owns every shape
    * from its index on, and the body binds the tuple (declareParams). */
@@ -403,9 +408,9 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: "required" };
   }
-  const moduleNs = lowerer.moduleNsParamOverrides.get(param);
-  if (moduleNs !== undefined) {
-    return { type: moduleNs, mode: param.questionToken ? "omittable" : "required" };
+  const namespaceParam = lowerer.namespaceHandlerParamOverrides.get(param);
+  if (namespaceParam !== undefined) {
+    return { type: namespaceParam, mode: param.questionToken ? "omittable" : "required" };
   }
   if (!ts.isIdentifier(param.name)) {
     // A destructuring pattern parameter — `([label, value]) => ...`,
@@ -697,6 +702,14 @@ function defaultParameterShape(
     }
   }
   const bodyType = lowerer.stripUndefinedArm(raw);
+  // A parameter whose own type is `null` (`fallback = null` with no
+  // annotation): a null-typed binding is held in the `null | undefined`
+  // union everywhere else, and the body's binding is that union too. An
+  // omitted argument or undefined takes the default; null stays itself.
+  if (bodyType.kind === "nullT") {
+    const held = lowerer.withUndefinedArm(bodyType);
+    return { type: held, mode: "omittable", bodyType: held };
+  }
   lowerer.checkDefaultParamBodyType(param, bodyType);
   const abi =
     bodyType.kind === "union"
@@ -765,6 +778,39 @@ function lambdaSpellsCompletedAbi(
   if ((retTs.flags & ts.TypeFlags.Any) !== 0) return funcType.ret.kind === "dyn";
   const mappedRet = lowerer.mapTypeOf(retTs);
   return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
+}
+
+/** Whether `node` is the value of a property (or a method) of an object
+ * literal whose own contextual type is `any`. */
+function memberOfAnyLiteral(lowerer: Lowerer, node: ts.Node): boolean {
+  let member: ts.Node = node;
+  if (!ts.isMethodDeclaration(member)) {
+    while (member.parent !== undefined && ts.isParenthesizedExpression(member.parent))
+      member = member.parent;
+    const property = member.parent;
+    if (
+      property === undefined ||
+      !ts.isPropertyAssignment(property) ||
+      property.initializer !== member
+    )
+      return false;
+    member = property;
+  }
+  const literal = member.parent;
+  if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
+  const context = lowerer.checker.getContextualType(literal);
+  return context !== undefined && (context.flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** funcSlotAdaptable for a slot the checker types: calls through it pass
+ * its declared parameters (function-adapters.ts, THE RULE). */
+function declaredSlotAdaptable(
+  lowerer: Lowerer,
+  value: IrType & { kind: "func" },
+  slot: IrType & { kind: "func" },
+  blame: ts.Node,
+): boolean {
+  return lowerer.withDeclaredCallList(() => funcSlotAdaptable(lowerer, value, slot, locOf(blame)));
 }
 
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
@@ -843,6 +889,21 @@ export function requireExactArityValue(
   ) {
     return;
   }
+  // A member of an object literal that is itself written under an 'any'
+  // slot (an options record handed to an untyped function): the checker
+  // gives the member no contextual type, and the literal is a
+  // checked-dynamic object whose members box like the 'any' slot above.
+  if (
+    target === undefined &&
+    memberOfAnyLiteral(lowerer, contextual ?? blame) &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return;
+  }
   // An object-literal METHOD has no contextual type of its own: the
   // literal's contextual type names the member slot it fills. An
   // overloaded member's slot holds its erased function, which spells the
@@ -871,10 +932,12 @@ export function requireExactArityValue(
     // verbatim (a required narrower interface parameter where the method
     // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
     // coercion adapts the pair like any other function value.
+    // The slot is the member's declared type: calls through it pass its
+    // parameters (function-adapters.ts, THE RULE).
     if (
       slot?.kind === "func" &&
       funcType.kind === "func" &&
-      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+      declaredSlotAdaptable(lowerer, funcType, slot, blame)
     )
       return;
     // An UNCONTEXTUALIZED literal's own inferred type is what every later
@@ -936,10 +999,13 @@ export function requireExactArityValue(
   // undefined, JavaScript's surplus-argument rule) or a parameter pair the
   // adapter converts (a required narrower interface parameter against the
   // value's `Ctx | undefined` completed slot).
+  // The slot judged here is the checker's own type for the position, a
+  // declared one; the conversion at the site the value lands in decides
+  // again, for the slot it really has.
   if (
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
-    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
+    declaredSlotAdaptable(lowerer, funcType, mappedFn, blame)
   ) {
     return;
   }
@@ -1183,10 +1249,14 @@ export function lambdaSignature(
   // A parameterless function expression forwarding its `arguments`,
   // asserted to a fixed signature: that signature is its ABI.
   if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
-    const target = typedArgumentsTarget(lowerer, node);
+    const origin = { contextual: false };
+    const target = typedArgumentsTarget(lowerer, node, origin);
     if (target) {
       const shapes = typedArgumentsShapes(target);
       lowerer.typedArgumentsLambdas.add(node);
+      // Written into a declared slot, the function is a variadic function
+      // stored under that slot's signature (function-adapters.ts, THE RULE).
+      if (origin.contextual) lowerer.noteVariadicStore(node, target);
       return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
     }
   }
@@ -1461,7 +1531,11 @@ export function lambdaSignature(
       !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
-      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void)
+      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void) &&
+      !(
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+        finallyObservesResult(lowerer, node)
+      )
     ) {
       ret = VOID;
     }
@@ -1513,7 +1587,29 @@ function voidContextualSlot(
   const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
-    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
+    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0 &&
+    !finallyObservesResult(lowerer, node)
+  );
+}
+
+/** Whether `node` is the callback of a promise's `finally` and may return a
+ * promise or a thenable. The library types that callback `() => void`, but
+ * `finally` waits for what it returns and rejects with its rejection, so
+ * such a callback keeps its own result. One that returns a plain value is
+ * the discarded result the void slot describes. */
+function finallyObservesResult(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  const call = node.parent;
+  if (!ts.isCallExpression(call) || call.arguments.nodes[0] !== node) return false;
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access) || access.name.text !== "finally") return false;
+  if (!lowerer.isStdlibMember(access)) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(node);
+  return (
+    signature !== undefined &&
+    mayResolveThroughThen(lowerer, lowerer.checker.getReturnTypeOfSignature(signature))
   );
 }
 

@@ -27,7 +27,7 @@ import { ARRAY_METHODS } from "../surfaces.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { lowerDynDispatchMethodCall } from "../lower-calls.js";
+import { isValueListChain, lowerDynDispatchMethodCall } from "../lower-calls.js";
 import {
   arrayIndexPresent,
   arrayValueRead,
@@ -37,6 +37,8 @@ import {
   insertedValues,
   optionalElementValue,
   primitiveElement,
+  unionArmsView,
+  unionTupleJoin,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -55,7 +57,9 @@ import {
   lowerArrayFindLikeCall,
   lowerArrayFlatMapCall,
   lowerArrayReduceCall,
+  lowerTupleForEachCall,
   lowerTuplePredicateCall,
+  lowerTupleReduceCall,
 } from "./array-callbacks.js";
 import {
   lowerArraySpreadItems,
@@ -65,6 +69,7 @@ import {
 import { arrayLengthDeclaration } from "./array-iteration.js";
 import {
   lowerArrayCallback,
+  arrayCallbackNeedsDynamicView,
   callbackArrayElement,
   requireProducedArrayElement,
 } from "./callback-arguments.js";
@@ -441,6 +446,34 @@ function orderedSeparatorJoin(
   };
 }
 
+/** A rest-parameter callback cannot ride a native array helper: the helper
+ * passes only the parameters the callback declares, while the callback
+ * expects every argument the method passes. Nor can the other callbacks
+ * arrayCallbackNeedsDynamicView names. A list a method is handed runs on
+ * the list's checked-dynamic view instead, where the method calls the
+ * callback the way Node does, and answers what the method made there: a
+ * checked-dynamic value, checked where it is used, as these lists answered
+ * before they stayed native. Undefined when the callback is one the native
+ * loop calls, which keeps the native list, and when the view has no
+ * dispatch for the method (flatMap, findLastIndex, reduce, reduceRight and
+ * toSorted in TypeScript sources): the native lowering then serves the
+ * callback (a flatMap whose callback returns checked-dynamic values boxes
+ * it) or refuses it by name (requireFixedArityCallback). */
+function lowerRestCallbackOverProbedList(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  probe: IrExpr,
+): IrExpr | undefined {
+  if (
+    !arrayCallbackNeedsDynamicView(lowerer, call) ||
+    (!isJsSourceFile(ts.getSourceFileOfNode(access)) && !lowerer.isStdlibMember(access))
+  )
+    return undefined;
+  const view = lowerer.coerceInto(access.expression, probe, DYN);
+  return lowerDynDispatchMethodCall(lowerer, call, access, view, true) ?? undefined;
+}
+
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
  * `indexOf`/`includes`/`join`
  * lower to arrIntrinsic; the HOF family — `map`/`filter`/`forEach`/
@@ -475,6 +508,19 @@ const DYN_ELEMENT_METHODS = new Set([
   "toSpliced",
   "unshift",
   "with",
+]);
+
+/** Array methods that write the array they are called on. */
+const RECEIVER_WRITING_METHODS = new Set([
+  "copyWithin",
+  "fill",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "sort",
+  "splice",
+  "unshift",
 ]);
 
 export function lowerArrayMethodCall(
@@ -524,6 +570,8 @@ export function lowerArrayMethodCall(
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
       receiverIr = probe.type;
       probedUntyped = true;
     } else if (
@@ -556,11 +604,51 @@ export function lowerArrayMethodCall(
   // receiver.
   if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
     const probe = lowerer.lowerExpr(access.expression);
-    if (probe.type.kind === "array") receiverIr = probe.type;
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A checker array of checked-dynamic elements (`object[]`) maps to the
+  // checked-dynamic array, but a list nothing else can observe is a native
+  // vector of its values: Object.values over a checked-dynamic object whose
+  // result goes straight to an array method (consumesValueList), and the
+  // lists the methods below build from one. Ride the ordinary tables on the
+  // lowered element type, as the two probes above do. A value that lowers
+  // to the checked-dynamic array was claimed by the dyn receiver path
+  // before this one.
+  if (receiverIr?.kind === "dyn" && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+      receiverIr = probe.type;
+    }
+  }
+  // A list a chain of these methods made from Object.values is native
+  // whatever its element type (`Object.values(o).map((v) => v.n)` is a
+  // number[], which no probe above looks at), and it was a checked-dynamic
+  // array before the chain stayed native: it hands the same callbacks to
+  // its view.
+  if (
+    receiverIr?.kind === "array" &&
+    isValueListChain(access.expression) &&
+    arrayCallbackNeedsDynamicView(lowerer, call)
+  ) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") {
+      const checkedDynamic = lowerRestCallbackOverProbedList(lowerer, call, access, probe);
+      if (checkedDynamic !== undefined) return checkedDynamic;
+    }
   }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;
+    // A union of tuples whose elements all have one type (the values of an
+    // `as const` table): the method runs on the array the value converts
+    // to, as it does behind an assertion to that array type.
+    receiverIr = unionTupleJoin(lowerer, receiverIr) ?? receiverIr;
   }
   if (receiverIr?.kind !== "array") return null;
   if (!probedUntyped && !lowerer.isStdlibMember(access)) return null;
@@ -596,6 +684,26 @@ export function lowerArrayMethodCall(
         return lowerer.withExpressionOverride(access.expression, array, () =>
           lowerArrayMethodCall(lowerer, call, access),
         );
+      }
+      // A union of tuples and arrays that the checker reads as ONE array
+      // (unionArmsView): the method runs on the arm the value holds, in
+      // place. A method that writes its receiver has no single array to
+      // write and refuses.
+      const view = unionArmsView(
+        lowerer,
+        access.expression,
+        receiver,
+        receiverIr,
+        locOf(access.expression),
+      );
+      if (view) {
+        if (RECEIVER_WRITING_METHODS.has(name))
+          lowerer.unsupported(
+            "SC1090",
+            call,
+            `'.${name}()' on a union of tuples and arrays read as '${lowerer.fmt(receiverIr)}' (the call writes its receiver, and the value has no single array to write: narrow it to one arm first)`,
+          );
+        return lowerUnionArmsMethodCall(lowerer, call, access, view, receiverIr);
       }
     }
     if (receiver.type.kind === "record" && lowerer.shapes.get(receiver.type.shapeId)?.tuple) {
@@ -1631,6 +1739,10 @@ function lowerArrayFlatCall(
   while (remaining > 0) {
     const elem = currentType.elem;
     if (elem.kind !== "array" && elemCouldNest(elem)) {
+      // `(T | T[])[]`: one level decides each element by its arm, and the
+      // T[] it leaves has nothing further to flatten.
+      const mixed = flatValueOrArrayElements(lowerer, call, result, elem);
+      if (mixed !== null) return mixed;
       lowerer.noLowering(".flat over elements with runtime-dependent array shape", call);
     }
     if (elem.kind !== "array") break;
@@ -1657,6 +1769,202 @@ function lowerArrayFlatCall(
     };
   }
   return result;
+}
+
+/** `.flat()` over an array whose elements are each a T or a T[]
+ * (`(string | string[])[]`): the result is the T[] holding, in order, each
+ * T element and each element of each T[] element. Holes of the receiver and
+ * of the inner arrays are skipped, as Array.prototype.flat skips them. Null
+ * for any other element union, or when the checker's result is not that
+ * T[]. */
+function flatValueOrArrayElements(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+  elem: IrType,
+): IrExpr | null {
+  if (elem.kind !== "union" || receiver.type.kind !== "array") return null;
+  const arms = lowerer.unions.get(elem.unionId)?.arms;
+  if (arms?.length !== 2) return null;
+  const arrayArm = arms.find((arm) => arm.kind === "array");
+  const valueArm = arms.find((arm) => arm.kind !== "array");
+  if (
+    arrayArm?.kind !== "array" ||
+    valueArm === undefined ||
+    valueArm.kind === "dyn" ||
+    valueArm.kind === "void" ||
+    isUnitType(valueArm) ||
+    !typeEquals(arrayArm.elem, valueArm)
+  )
+    return null;
+  const outT = arrayOf(valueArm);
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (resultT === null || !typeEquals(resultT, outT)) return null;
+  const loc = locOf(call);
+  const arrT = receiver.type;
+  const readT = arrayValueType(lowerer, elem);
+  if (readT.kind !== "union") return null;
+  const arrayTag = lowerer.armTag(readT.unionId, arrayArm);
+  const valueTag = lowerer.armTag(readT.unionId, valueArm);
+  if (arrayTag < 0 || valueTag < 0) return null;
+  const key = `flatValueOrArray:${typeKey(arrT)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%arr.flatValueOrArray", key);
+    lowerer.arrHofHelpers.set(key, helper);
+    const a = varRef("a.0", arrT, loc);
+    const out = varRef("out.0", outT, loc);
+    const v = varRef("v.0", readT, loc);
+    const inner = varRef("in.0", arrayArm, loc);
+    const j = varRef("j.0", F64, loc);
+    const lengthOf = (arr: IrExpr): IrExpr => ({
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: arr,
+      args: [],
+      type: F64,
+      loc,
+    });
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "arrayLit", elems: [], type: outT, loc },
+        loc,
+      },
+      countedFor(loc, lengthOf(a), (i) => [
+        {
+          kind: "if",
+          cond: arrayIndexPresent(a, i, loc),
+          then: [
+            {
+              kind: "varDecl",
+              localId: "v.0",
+              init: arrayValueRead(lowerer, a, i, elem, loc),
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "unionIsTag",
+                unionId: readT.unionId,
+                tag: arrayTag,
+                negated: false,
+                value: v,
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "varDecl",
+                  localId: "in.0",
+                  init: {
+                    kind: "unionNarrow",
+                    unionId: readT.unionId,
+                    tag: arrayTag,
+                    value: v,
+                    type: arrayArm,
+                    loc,
+                  },
+                  loc,
+                },
+                {
+                  kind: "for",
+                  init: { kind: "varDecl", localId: "j.0", init: numLit(0, loc), loc },
+                  cond: { kind: "bin", op: "<", left: j, right: lengthOf(inner), type: BOOL, loc },
+                  update: {
+                    kind: "assign",
+                    localId: "j.0",
+                    value: { kind: "bin", op: "+", left: j, right: numLit(1, loc), type: F64, loc },
+                    loc,
+                  },
+                  body: [
+                    {
+                      kind: "if",
+                      cond: arrayIndexPresent(inner, j, loc),
+                      then: [
+                        {
+                          kind: "varDecl",
+                          localId: "w.0",
+                          init: arrayValueRead(lowerer, inner, j, valueArm, loc),
+                          loc,
+                        },
+                        arrayValueStore(
+                          lowerer,
+                          out,
+                          lengthOf(out),
+                          varRef("w.0", arrayValueType(lowerer, valueArm), loc),
+                          valueArm,
+                          loc,
+                        ),
+                      ],
+                      else_: null,
+                      loc,
+                    },
+                  ],
+                  loc,
+                },
+              ],
+              else_: [
+                {
+                  kind: "if",
+                  cond: {
+                    kind: "unionIsTag",
+                    unionId: readT.unionId,
+                    tag: valueTag,
+                    negated: false,
+                    value: v,
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    arrayValueStore(
+                      lowerer,
+                      out,
+                      lengthOf(out),
+                      {
+                        kind: "unionNarrow",
+                        unionId: readT.unionId,
+                        tag: valueTag,
+                        value: v,
+                        type: valueArm,
+                        loc,
+                      },
+                      valueArm,
+                      loc,
+                    ),
+                  ],
+                  else_: null,
+                  loc,
+                },
+              ],
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+      ]),
+      { kind: "return", value: out, loc },
+    ];
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "a.0", name: "a", type: arrT }],
+      returnType: outT,
+      locals: [
+        { id: "a.0", name: "a", type: arrT, mutable: false },
+        { id: "out.0", name: "out", type: outT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "j.0", name: "j", type: F64, mutable: true },
+        { id: "v.0", name: "v", type: readT, mutable: false },
+        { id: "in.0", name: "in", type: arrayArm, mutable: false },
+        { id: "w.0", name: "w", type: arrayValueType(lowerer, valueArm), mutable: false },
+      ],
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver], type: outT, loc };
 }
 
 /** `indexOf` and `includes` normally use the runtime's typed search helpers,
@@ -1710,11 +2018,14 @@ function lowerArraySearchValues(
 
   // Preserve the existing fast path for an ordinary, non-union needle. Its
   // runtime implementation already has exact primitive/reference equality.
+  // A promise is no such element: a conversion of it is another address
+  // with the same identity, which the search helper's `===` compares.
   if (
     method !== "lastIndexOf" &&
     call.arguments.nodes.length === 1 &&
     elem.kind !== "union" &&
     elem.kind !== "bigint" &&
+    elem.kind !== "promise" &&
     typeEquals(needle.type, elem)
   ) {
     return {
@@ -2201,6 +2512,114 @@ function arraySearchHelper(
   return name;
 }
 
+/** A method called on a union of tuples and arrays read as one array
+ * (unionArmsView): each arm runs its own lowering on the value itself, an
+ * array arm the array's method and a tuple arm the tuple's
+ * (lowerTupleReadMethodCall), which reads a position only when the call
+ * reaches it. So the call sees what its callback or its arguments write,
+ * as it does on one array or one tuple, and an array arm keeps its
+ * identity. The receiver is evaluated once, before the arguments; the
+ * arguments are lowered for each arm and evaluated in the arm the value
+ * holds. A method a tuple has no in-place lowering for refuses: reading a
+ * copy of the tuple instead would not show those writes. A call without a
+ * value (forEach) is taken as a statement only. */
+function lowerUnionArmsMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  view: IrExpr,
+  read: IrType & { kind: "array" },
+): IrExpr {
+  const loc = locOf(call);
+  const method = access.name.text;
+  const onArm = (arm: IrExpr): IrExpr => {
+    const lowered =
+      arm.type.kind === "array"
+        ? lowerer.withExpressionOverride(access.expression, arm, () =>
+            lowerArrayMethodCall(lowerer, call, access),
+          )
+        : lowerTupleReadMethodCall(lowerer, call, access, arm);
+    if (lowered) return lowered;
+    return lowerer.unsupported(
+      "SC1090",
+      call,
+      `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (a tuple has no '.${method}()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of)`,
+    );
+  };
+  if (view.type.kind !== "union") return onArm(view);
+  const unionId = view.type.unionId;
+  const arms = lowerer.unions.get(unionId)!.arms;
+  const stmts: IrStmt[] = [];
+  let held = view;
+  if (view.kind !== "varRef") {
+    const local = lowerer.declareHiddenLocal("%unionArmsReceiver", view.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: view, loc });
+    held = varRef(local.id, view.type, loc);
+  }
+  const answers = arms.map((arm, tag) =>
+    onArm({ kind: "unionNarrow", unionId, tag, value: held, type: arm, loc }),
+  );
+  // A call without a value (forEach) as a statement: the arm the value
+  // holds runs its call. As a value it has nothing an expression could
+  // choose by arm.
+  if (answers.every((answer) => answer.type.kind === "void")) {
+    let parent: ts.Node | undefined = call.parent;
+    while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    if (!parent || !ts.isExpressionStatement(parent))
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' used as a value (write the call as a statement, or narrow the value to one arm first)`,
+      );
+    let chosen: IrStmt = { kind: "exprStmt", expr: answers[answers.length - 1]!, loc };
+    for (let tag = answers.length - 2; tag >= 0; tag--) {
+      chosen = {
+        kind: "if",
+        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: held, type: BOOL, loc },
+        then: [{ kind: "exprStmt", expr: answers[tag]!, loc }],
+        else_: [chosen],
+        loc,
+      };
+    }
+    // The statement discards this expression's value; the calls ran above.
+    return {
+      kind: "seqExpr",
+      stmts: [...stmts, chosen],
+      result: boolLit(false, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  // One type for every arm's answer: the checker's result where the arms
+  // disagree (a tuple's `.find()` and an array's spell the same union).
+  let type = answers[0]!.type;
+  if (!answers.every((answer) => typeEquals(answer.type, type))) {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!declared || declared.kind === "void")
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `'.${method}()' on a union of tuples and arrays read as '${lowerer.fmt(read)}' (its arms answer values of different representations: narrow the value to one arm first)`,
+      );
+    type = declared;
+  }
+  const coerced = answers.map((answer) =>
+    typeEquals(answer.type, type) ? answer : lowerer.coerceInto(call, answer, type),
+  );
+  let result = coerced[coerced.length - 1]!;
+  for (let tag = coerced.length - 2; tag >= 0; tag--) {
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: held, type: BOOL, loc },
+      then: coerced[tag]!,
+      else_: result,
+      type,
+      loc,
+    };
+  }
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type, loc };
+}
+
 /** Tuple methods keep the original receiver alive through argument evaluation.
  * Callback methods read each position only when it is visited, so writes to
  * later positions through a captured alias are visible. A tuple cannot be
@@ -2221,13 +2640,17 @@ export function lowerTupleReadMethodCall(
     method === "findIndex" ||
     method === "some" ||
     method === "every";
+  const reduction = method === "reduce" || method === "reduceRight";
   if (
     method !== "slice" &&
     method !== "map" &&
     method !== "flatMap" &&
+    method !== "forEach" &&
+    method !== "flat" &&
     method !== "join" &&
     !search &&
-    !predicate
+    !predicate &&
+    !reduction
   )
     return null;
   if (!lowerer.isStdlibMember(access)) return null;
@@ -2406,6 +2829,78 @@ export function lowerTupleReadMethodCall(
     }
     return { kind: "call", callee: helper, args: [receiver, ...args], type: resultType, loc };
   }
+  if (method === "flat") {
+    // The positions are read when the call is made, as Array.prototype.flat
+    // reads its receiver: one array of the position values, flattened by
+    // the array method. A depth that is not a literal could run code
+    // between the receiver's evaluation and those reads, so it is refused.
+    const depth = call.arguments.nodes[0];
+    if (
+      call.arguments.nodes.length > 1 ||
+      (depth !== undefined &&
+        !ts.isNumericLiteral(depth) &&
+        !(
+          ts.isPrefixUnaryExpression(depth) &&
+          depth.operator === ts.SyntaxKind.MinusToken &&
+          ts.isNumericLiteral(depth.operand)
+        ))
+    ) {
+      lowerer.noLowering("tuple .flat with a depth that is not a number literal", call);
+    }
+    const local = lowerer.declareHiddenLocal("%tupleFlat", receiver.type);
+    const held = varRef(local.id, receiver.type, loc);
+    const values: IrExpr = {
+      kind: "arrayLit",
+      elems: fields.map((field) =>
+        lowerer.coerceInto(
+          access.expression,
+          {
+            kind: "recordGet",
+            obj: held,
+            shapeId: receiverIr.shapeId,
+            field: field.name,
+            type: field.type,
+            loc,
+          },
+          elem,
+        ),
+      ),
+      type: arrayOf(elem),
+      loc,
+    };
+    const flat = lowerer.withExpressionOverride(access.expression, values, () =>
+      lowerArrayFlatCall(lowerer, call, access, { kind: "array", elem }),
+    );
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result: flat,
+      type: flat.type,
+      loc,
+    };
+  }
+  if (reduction) {
+    if (
+      call.arguments.nodes.length < 1 ||
+      call.arguments.nodes.length > 2 ||
+      call.arguments.nodes.some(ts.isSpreadElement)
+    ) {
+      lowerer.noLowering(`tuple .${method} with ${call.arguments.nodes.length} arguments`, call);
+    }
+    const reducer = call.arguments.nodes[0]!;
+    if (
+      lowerer.checker
+        .getCallSignatures(lowerer.typeOf(reducer))
+        .some((signature) => signature.getParameters().length > 3)
+    ) {
+      lowerer.noLowering(
+        `tuple .${method} callback array parameter`,
+        reducer,
+        "capture the original tuple explicitly to preserve its identity",
+      );
+    }
+    return lowerTupleReduceCall(lowerer, call, method, receiver, elem, fields.map(read));
+  }
   if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `.${method} with ${call.arguments.nodes.length} arguments`,
@@ -2425,6 +2920,9 @@ export function lowerTupleReadMethodCall(
   }
   if (predicate) {
     return lowerTuplePredicateCall(lowerer, call, method, receiver, elem, fields.map(read));
+  }
+  if (method === "forEach") {
+    return lowerTupleForEachCall(lowerer, call, receiver, elem, fields.map(read));
   }
   const { fnArg, arity } = lowerArrayCallback(lowerer, callback, [elem], receiver.type);
   const ret = fnArg.type.ret;

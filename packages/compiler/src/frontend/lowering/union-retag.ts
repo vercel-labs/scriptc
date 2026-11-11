@@ -40,7 +40,14 @@ export type UnionRetagArm =
   | { kind: "trap" }
   | { kind: "direct"; route: UnionRetagRoute }
   | { kind: "discriminant"; field: string; fieldType: IrType; routes: UnionRetagRoute[] }
-  | { kind: "classRoute"; routes: readonly UnionClassRoute[] };
+  | { kind: "classRoute"; routes: readonly UnionClassRoute[] }
+  /** The arm's payload enters the destination union by the plan it has on
+   * its own (`lift` is the width plan of the arm's type into the union). */
+  | { kind: "own"; lift: WidthLift };
+
+/** A source arm's routes by the values of one discriminant field, planned
+ * for one conversion from the checker types of its site. */
+export type UnionSiteRoute = UnionRetagArm & { kind: "discriminant" };
 
 export interface RecordUnionWrapPlan {
   field: string;
@@ -137,6 +144,8 @@ export function planUnionRetag(
   widthLift: (src: IrType, dst: IrType) => WidthLift | null,
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
+  checkedLift?: (src: IrType, dst: IrType) => WidthLift | null,
+  siteRoutes?: ReadonlyMap<number, UnionSiteRoute>,
 ): UnionRetagArm[] | null {
   const result: UnionRetagArm[] = [];
   const target: IrType = { kind: "union", unionId: to.id };
@@ -195,7 +204,17 @@ export function planUnionRetag(
     // A checker-proven absent arm retains any exact representation, as
     // before. Otherwise the narrowing path needs no structural conversion.
     if (identity < 0 && trappable?.has(tag)) {
-      result.push({ kind: "trap" });
+      // An arm the assertion's own types exclude traps, unless the checked
+      // lane places it (an array arm claimed as the destination's tuple).
+      const checked =
+        checkedLift === undefined || source.kind !== "array"
+          ? null
+          : uniqueCheckedArm(to, source, checkedLift);
+      result.push(
+        checked === null || checked.lift.how !== "arrTuple"
+          ? { kind: "trap" }
+          : { kind: "direct", route: checked },
+      );
       continue;
     }
     if (useDiscriminant && discriminant && owners && source.kind === "record") {
@@ -230,12 +249,66 @@ export function planUnionRetag(
     // Unannotated unions retain the unique-width-arm rule. A discriminant
     // present on just one side cannot establish correspondence.
     const lift = widthLift(source, target);
-    if (!lift || lift.how !== "liftWrap") return null;
+    // A record that fits several arms of a discriminated destination has no
+    // unique arm, and alone it enters by the value of that discriminant
+    // (planRecordUnionLift). It does the same as an arm of a union that
+    // keeps no discriminant, or another one: a union with one arm that lacks
+    // the member, a record beside `undefined`. A value no route names throws
+    // the catchable TypeError there.
+    if (lift?.how === "discriminantRoute") {
+      result.push({ kind: "own", lift });
+      continue;
+    }
+    if (!lift || lift.how !== "liftWrap") {
+      // The CHECKED widening, for a conversion that would otherwise refuse
+      // (a narrowed `{ role: string }` arm into the wider record arm its
+      // predicate claimed): exactly one destination arm may accept it, and
+      // reaching that arm validates the payload before the value enters the
+      // union. It answers only when no destination arm accepts the source by
+      // ordinary width. A source that reaches an arm that way is not refused
+      // for want of a destination: the ordinary plan declined because several
+      // arms fit or another selection rule did, and resolving that with a
+      // route that throws would reject a value the arm it fits would hold.
+      const ordinaryArm = to.arms.some(
+        (arm) => !isUnitType(arm) && widthLift(source, arm) !== null,
+      );
+      const checked =
+        checkedLift === undefined || ordinaryArm ? null : uniqueCheckedArm(to, source, checkedLift);
+      if (checked === null) {
+        // The conversion's own routes (site-discriminant.ts), asked only
+        // for an arm no rule above places.
+        const routed = siteRoutes?.get(tag);
+        if (routed === undefined) return null;
+        result.push(routed);
+        continue;
+      }
+      result.push({ kind: "direct", route: checked });
+      continue;
+    }
     const inner = widthLift(source, lift.arm);
     if (!inner) return null;
     result.push({ kind: "direct", route: { tag: lift.tag, lift: inner, values: [] } });
   }
   return result;
+}
+
+/** The one destination arm the source can enter by the checked widening, or
+ * null when none or more than one can. Ambiguity is refused, like the
+ * unique-width-arm rule it stands beside: the value's layout alone cannot
+ * say which variant it is. */
+function uniqueCheckedArm(
+  to: IrUnionDef,
+  source: IrType,
+  checkedLift: (src: IrType, dst: IrType) => WidthLift | null,
+): UnionRetagRoute | null {
+  let found: UnionRetagRoute | null = null;
+  for (let tag = 0; tag < to.arms.length; tag++) {
+    const lift = checkedLift(source, to.arms[tag]!);
+    if (lift === null) continue;
+    if (found !== null) return null;
+    found = { tag, lift, values: [] };
+  }
+  return found;
 }
 
 function typeError(message: string, loc: SrcLoc): IrStmt {
@@ -476,6 +549,8 @@ export function buildUnionRetag(
           },
           loc,
         });
+      } else if (armPlan.kind === "own") {
+        statements.push({ kind: "return", value: applyLift(armPlan.lift, payload, toType), loc });
       } else if (armPlan.kind === "classRoute") {
         if (arm.kind !== "object")
           throw new InternalCompilerError("lowerer bug: class route on non-object arm");

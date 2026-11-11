@@ -1,27 +1,53 @@
 `console.log`, `info`, and `debug` write to stdout; `error` and `warn` write to stderr.
 They accept `unknown`, printing strings verbatim and other values through native `util.inspect`.
+Console methods never color their output on their own: where Node colors numbers, booleans and the values inside objects and arrays, on a color terminal or with `FORCE_COLOR` set, the executable prints them plain.
 Direct calls support global `console` and `node:console` imports.
 Console output, `util.format`, and `util.formatWithOptions` with a format string known only at run time, spread arguments, or an options object format their arguments at run time.
 There, `%s` of a function or of a class instance whose class defines `toString` throws `SC2020`.
 `util.inspect` with `colors`, with `showHidden`, with option values known only at run time, or in the `inspect(value, showHidden, depth, colors)` form renders the value's untyped view in the runtime with Node's styles.
 Colored output of errors, promises, regular expressions, `DataView`, `ArrayBuffer`, weak collections, iterators, and other native objects throws `SC2020`.
-Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` and `maxStringLength` (a non-negative integer or `null`), `getters` (a boolean, `'get'` or `'set'`), and `sorted` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
+Inspect options other than `depth`, `colors`, `customInspect`, `showHidden`, `compact` (a number or `false`), `breakLength`, `maxArrayLength` and `maxStringLength` (a non-negative integer or `null`), `getters` (a boolean, `'get'` or `'set'`), `sorted` (a boolean), and `numericSeparator` (a boolean) throw `SC2020` when they are set to a value other than Node's default.
 `util.inspect` calls `[util.inspect.custom]` methods of classes and objects with Node's depth, options, and `util.inspect` arguments, and `console.dir` and `customInspect: false` skip them.
 A class instance with such a method that is held as an untyped value throws `SC2020` when it is inspected, and a class whose subclasses declare the method without declaring it itself is refused.
 Under `showHidden` — the option, the boolean second argument, and `%o` — arrays print their hidden `[length]` entry, typed arrays their `[BYTES_PER_ELEMENT]`, `[length]`, `[byteLength]`, `[byteOffset]`, and `[buffer]` entries, `ArrayBuffer` and `DataView` their hidden byte fields, and objects their non-enumerable and symbol keys.
 Objects also list the properties they inherit from up to three user-defined prototype layers, nearest layer first.
 Values this runtime has no hidden view of — functions, errors, `RegExp`, weak collections, and `SharedArrayBuffer` (and views over one) — throw `SC2020` under `showHidden`, and `console.dir` renders the option through the value's checked-dynamic view, refusing the types that have no conversion to it.
-Stored global console values and detached output methods retain identity and accept ordinary arguments.
-Stored methods do not support format specifiers with substitution arguments.
-Other stored console APIs, custom `Console` instances, and console mutation are unsupported.
+`console` is one object and each of `console.log`, `info`, `debug`, `warn`, and `error` is one function, so both can be stored, passed, destructured, bound, compared, and called without a receiver.
+A stored method formats the arguments it is called with at run time, as `util.format` does, including format specifiers.
+A value the untyped inspector does not render, such as a `RegExp` or a promise, throws `SC2020` when a stored method prints it.
+`console` flows into a record type whose members it has, such as `interface Logger { log(...args: unknown[]): void; error(...args: unknown[]): void }`, and each member of the record is console's own function.
+The record is a separate value, so comparing it with `console` is refused, and a record type that declares `table`, `dir`, `time`, `trace`, or another member outside the five output methods is refused.
+`{ ...console }` copies console's own keys in Node's order.
+In TypeScript, keeping a console member other than the five output methods as a value, such as `const table = console.table`, is refused; `typeof console.table` and a truthiness test compile.
+Reached through an untyped value, those members answer a function whose call throws `SC2020`.
+`promise.catch(console.error)` is refused by the rule for `catch` handlers; `promise.then(undefined, console.error)` compiles.
+Replacing a console member, such as `console.log = capture`, is refused in TypeScript and throws `SC2020` through an untyped value, because direct console calls never read the member.
+`console` passed into a Node island is the island's own console; a console nested in an object that crosses into an island throws.
+Members of custom `Console` instances as values are unsupported.
 
 JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
-A replaced `write` method does not receive console's error-callback argument.
+The replacement can be assigned through a stored stream as well, such as `out.write = wrapper` where `out` is a `NodeJS.WriteStream` parameter holding `process.stdout`.
+`write` is the one member a process stream keeps: an assignment to another member, such as `process.stdout.isTTY = true`, compiles and throws an `SC2020` error when the statement runs, where Node stores the value.
+A program that holds `process.stdout` or `process.stderr` as a value shares the stream's `write` method with its Node islands: a replacement installed by either side sees the output of both, and either side can call or restore the method the other saved.
+In the islands of such a program `write` is an own accessor property of the two streams, so `Object.hasOwn(process.stdout, "write")` is `true` before any replacement.
+There, `Object.defineProperty(process.stdout, "write", …)` throws a `TypeError`, and `delete process.stdout.write` throws one in strict code and answers `false` otherwise, where Node would replace or remove the method.
+Writes that island code makes through the shared method do not pass through the island stream's own state, so its `writableLength`, `'drain'` event and `'error'` listeners do not reflect them.
+In any other program with islands, a `write` replacement that island code installs sees island output only.
+A worker thread's output does not pass through a `write` method replaced on the main thread.
 Input supports data/end/error/readable listeners, pause/resume, buffered reads with `read(size)` and `readableLength`, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
 An executable built with `--stdout-buffering` instead keeps stdout bytes in a 64 KiB buffer whenever stdout is not a terminal, so a pipe or file can receive a line later than the call that wrote it; the runtime settles the buffer when it fills, before a stderr write, when the event loop sleeps, before a blocking stdin read, before `process.kill`, on `process.exit`, on an uncaught error, and at exit, and output that a kill skips those paths for (such as `SIGKILL`) can be lost up to the buffer size.
 A terminal keeps one write per call.
 Because no write is ever queued, `writableLength` is 0, `writableNeedDrain` is false, `writableHighWaterMark` is 65536, and `'drain'` never fires, so drain listeners register silently and `events.once(process.stdout, "drain")` stays pending, as it does in Node when no write returned false.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.
+`getColorDepth` and `hasColors` exist on `process.stdout` and `process.stderr` only when the stream is a terminal, as in Node, so TypeScript refuses an assertion that the optional call answered, such as `process.stdout.getColorDepth?.() as number` or a trailing `!`, with `SC2020`; test the answer instead, as in `process.stdout.getColorDepth?.() ?? 1`.
+A call of either method with an environment that is an array, a `Map`, a `Set`, or a function builds with warning `SC6015` and throws an error that names `SC2020` when it runs on a terminal, and so does a call whose environment is an object literal with the single variable `TERM` set to `constructor` or `__proto__`.
+The build cannot see the same `TERM` value in the process's own environment or in an environment passed through a variable, so it prints no warning for it: the call throws the `SC2020` error on a terminal, where Node answers a member of `Object.prototype` instead of a color depth.
 A TypeScript `NodeJS.WritableStream` parameter that only receives `process.stdout` or `process.stderr` supports `write(string)`.
 When other streams flow into the same parameter, the process streams join them as `Writable` instances with the full writable surface.
+`process.stdout` and `process.stderr` also flow into a record type that declares only methods, such as `interface Sink { write(text: string): void }`.
+A call through the record runs the stream's current method with the stream as its receiver, so a program that replaces `process.stdout.write` reaches its replacement.
+The record is a separate value: it is not identical to the stream, and it exposes only the methods it declares.
+A record type that also declares a data member, such as `isTTY`, throws `SC2002`.
+An instance of a stream class such as `Writable` throws `SC2002` in a record type of methods as well.
+For those, pass an object literal that wraps the stream: `const sink: Sink = { write: (text: string) => { process.stdout.write(text); } }`.

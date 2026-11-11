@@ -1,26 +1,9 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
+import { isLoweredConsoleMember } from "./builtins/console.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
-
-function unparenthesized(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
-
-/** `e` without parentheses and type-only wrappers (as, satisfies, type
- * assertions, non-null assertions), which change no runtime value. */
-export function withoutTypeCasts(e: ts.Expression): ts.Expression {
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
 import {
   BOOL,
@@ -46,6 +29,7 @@ import {
 import { isJsSourceFile, isNodeTypesPath, requireSpecOf } from "../program.js";
 import { ZLIB_CONSTANTS } from "./zlib-constants.js";
 import { V8_MEMBER_REASON } from "../builtin-modules.js";
+import { globalObjectMember } from "./global-object-names.js";
 
 /** zlib stream instances: runtime Transform streams (scr_zlib_stream.c). */
 const ZLIB_STREAM: IrType = { kind: "object", className: "%Transform" };
@@ -234,6 +218,21 @@ export function fenceOrDropOptionKey(
   }
   // Dropped: Node's own ignore, byte-exact.
 }
+
+/** Array.prototype methods whose first argument is a callback they call
+ * with the elements. */
+export const ARRAY_CALLBACK_METHODS: ReadonlySet<string> = new Set([
+  "map",
+  "filter",
+  "forEach",
+  "some",
+  "every",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+]);
 
 /** http.request/http.get's documented option keys (Node v24 — the
  * `http.request(options)` and `net.socket.connect` tables); everything
@@ -579,6 +578,12 @@ export const SET_COMBINE_METHODS = new Set([
   "isSupersetOf",
   "isDisjointFrom",
 ]);
+
+/** The keyed-collection classes whose `prototype` reads, members and
+ * constructors have a checked-dynamic form (scr_dyn_collections.c). */
+export const DYN_COLLECTION_CLASSES = ["Set", "Map", "WeakMap", "WeakSet"] as const;
+
+export type DynCollectionClass = (typeof DYN_COLLECTION_CLASSES)[number];
 
 export type CompoundOp = "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
 
@@ -1235,7 +1240,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "fs.existsSync",
         params: [STRING],
         result: BOOL,
-        valueParams: exactValueParams(STRING),
+        // A Buffer or `any` path answers through the value form, so a stored
+        // function value passes its argument as given.
+        valueParams: exactValueParams(DYN),
+        valueFn: "fs.existsSyncValue",
       },
       mkdirSync: { fn: "fs.mkdirSync", params: [STRING], result: VOID },
       rmSync: { fn: "fs.rmSync", params: [STRING], result: VOID },
@@ -1475,12 +1483,27 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: exactValueParams(STRING, F64, F64),
       },
       // access' omitted mode and truncate's omitted len complete to 0 in
-      // lowerBuiltinModuleCall, like their sync spellings.
-      access: { fn: "fsp.access", params: [STRING, F64], result: { kind: "promise", inner: VOID } },
+      // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
+      // fixed (path plus one optional number), so they box as function values
+      // too: the bounded builtin namespace box serves them, and an omitted
+      // mode/len completes to the same 0 through the value adapter.
+      access: {
+        fn: "fsp.access",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
+      },
       truncate: {
         fn: "fsp.truncate",
         params: [STRING, F64],
         result: { kind: "promise", inner: VOID },
+        valueParams: [
+          { mode: "required", type: STRING },
+          { mode: "optional", type: F64, defaultValue: 0 },
+        ],
       },
       // String data; Uint8Array/Buffer data routes to fsp.appendFileBytes in
       // lowerBuiltinModuleCall.
@@ -2128,6 +2151,44 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // os.constants' groups, fs.constants and crypto.constants): bindings of
     // the module read it as a checked-dynamic value (builtinConstantsObject).
     constants: {},
+    // node:sea: a compiled program is not a Node single-executable
+    // application and holds no injected assets, so the module answers what
+    // Node answers outside one. isSea() is false; the asset readers check
+    // their arguments in lib/sea.js's order (getAsset's encoding when given,
+    // then the key) and throw ERR_NOT_IN_SINGLE_EXECUTABLE_APPLICATION. The
+    // rows are in Node's key order, which the module object reports.
+    sea: {
+      isSea: { fn: "sea.isSea", params: [], result: BOOL, valueParams: [] },
+      getAsset: {
+        fn: "sea.getAsset",
+        params: [STRING, STRING],
+        result: DYN,
+        defaults: [""],
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: STRING, defaultValue: "", name: "encoding" },
+        ],
+        valueOrder: [1, 0],
+        valueLength: 2,
+      },
+      getRawAsset: {
+        fn: "sea.getRawAsset",
+        params: [STRING],
+        result: DYN,
+        valueParams: [{ mode: "required", type: STRING, name: "key" }],
+      },
+      getAssetAsBlob: {
+        fn: "sea.getAssetAsBlob",
+        params: [STRING, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: STRING, name: "key" },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 2,
+      },
+      getAssetKeys: { fn: "sea.getAssetKeys", params: [], result: DYN, valueParams: [] },
+    },
     // node:readline: createInterface's options are entirely special-cased
     // (exactly { input: process.stdin, output?: process.stdout } — see
     // lowerBuiltinModuleCall); the entry carries the canonical shape. The
@@ -2187,6 +2248,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // (builtinFenceHintOf).
     v8: {
       getHeapStatistics: { fn: "process.memoryUsageTake", params: [], result: VOID },
+    },
+    // node:module's compile cache family (lowerCompileCacheCall in
+    // builtins/module-resolution.ts completes a call; these rows carry the
+    // function values). A compiled program loads no JavaScript to cache:
+    // enableCompileCache validates its argument as Node does and answers the
+    // DISABLED status, getCompileCacheDir answers undefined and
+    // flushCompileCache writes nothing. The module's other members keep
+    // their own lowerings (createRequire, isBuiltin, builtinModules,
+    // syncBuiltinESMExports).
+    module: {
+      enableCompileCache: {
+        fn: "module.compileCacheEnable",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 1,
+      },
+      getCompileCacheDir: {
+        fn: "module.compileCacheDir",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      flushCompileCache: {
+        fn: "module.compileCacheFlush",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
+        valueLength: 0,
+      },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.
@@ -2313,7 +2404,9 @@ export const BUILTIN_MODULE_CONSTS: Record<
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
   os: { EOL: "\n", devNull: "/dev/null" },
-  worker_threads: { isMainThread: true, threadId: 0 },
+  // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
+  // in the namespace inventory, and the worker lowering supplies the value.
+  worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
   cluster: { isPrimary: true, isMaster: true, isWorker: false },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
@@ -2357,6 +2450,10 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   fs: {
     // Inline numeric O_* flags use a target-neutral runtime entry point.
     openSync: ["fs.openNumericSync"],
+    // The Buffer path: the typed entry point for a statically typed one
+    // (fs.existsSyncBytes), and the value form when only the runtime knows
+    // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
+    existsSync: ["fs.existsSyncValue", "fs.existsSyncBytes"],
     // The Buffer form (no encoding), the fd forms (readFileSync(fd[,
     // "utf8"])), and the checked-dynamic encoding form.
     readFileSync: [
@@ -2378,18 +2475,36 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
-    // The bytes-data form and the { mode } options form.
-    // The bytes-data form, the { mode } options form, and the
-    // file-descriptor data form.
+    // The bytes-data form, the { mode } options form, the file-descriptor
+    // data form, and the { encoding, mode, flag } option-record forms over
+    // string and bytes data.
     writeFileSync: [
       "fs.writeFileSyncBytes",
+      "fs.writeFileSyncBytesFlags",
+      "fs.writeFileSyncData",
+      "fs.writeFileSyncDataFlags",
       "fs.writeFileModeSync",
       "fs.writeFileFlagsSync",
       "fs.writeFileSyncFd",
+      "fs.writeFileSyncFdData",
+      "fs.writeFileOptionsSync",
+      "fs.writeFileBytesOptionsSync",
+      "fs.writeFileDataOptionsSync",
     ],
-    appendFileSync: ["fs.appendFileSyncBytes"],
-    // The fs stream members (bytesRead/bytesWritten, pending, path, close).
+    // The data forms (bytes, and the checked argument whose type the call
+    // site did not pin down) and the { encoding, mode, flag } option-record
+    // forms over them.
+    appendFileSync: [
+      "fs.appendFileSyncBytes",
+      "fs.appendFileSyncData",
+      "fs.appendFileOptionsSync",
+      "fs.appendFileBytesOptionsSync",
+      "fs.appendFileDataOptionsSync",
+    ],
+    // The fs stream members (bytesRead/bytesWritten, pending, path, close),
+    // and the constructor's spelling for options that can hold a signal.
     createReadStream: [
+      "fs.createReadStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",
@@ -2398,6 +2513,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamCloseCb",
     ],
     createWriteStream: [
+      "fs.createWriteStreamSignal",
       "fs.fsStreamBytes",
       "fs.fsStreamPending",
       "fs.fsStreamPath",
@@ -2437,13 +2553,21 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode, flag } options forms.
-    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
+    // The string-data and Uint8Array/Buffer-data { mode, flag } options
+    // forms (and the Buffer-data two-argument write).
+    writeFile: [
+      "fsp.writeFileMode",
+      "fsp.writeFileFlags",
+      "fsp.writeFileBytes",
+      "fsp.writeFileBytesFlags",
+      "fsp.writeFileData",
+      "fsp.writeFileDataFlags",
+    ],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
-    // The Uint8Array/Buffer-data form.
-    appendFile: ["fsp.appendFileBytes"],
+    // The bytes-data form and the checked-data-argument form.
+    appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],
     // The options forms.
     rm: ["fsp.rmOpts", "fsp.rmRetry"],
   },
@@ -2925,7 +3049,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "process.builtinObject",
         "process.builtinUnsupported",
       ],
-      note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
+      note: "a literal id of a supported module answers its namespace; a computed id serves the path families, os, util/types, node:sea and current-thread worker_threads metadata, answers undefined for an id Node does not have, and throws SC2020 for Node's other modules",
     },
     {
       id: "node-builtin.process.versions",
@@ -2940,6 +3064,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "process.release",
       fns: ["process.release"],
       note: "the compatibility target's release metadata as one stable read-only object",
+    },
+    {
+      id: "node-builtin.process.features",
+      kind: "node-builtin",
+      name: "process.features",
+      fns: ["process.features"],
+      note: "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node",
     },
     {
       id: "node-builtin.process.chdir",
@@ -3164,6 +3295,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["os.constants"],
       note: "the platform's dlopen, errno, signals and priority groups; members a platform lacks read as undefined",
     },
+    // module.constants is a VALUE read too: the frozen null-prototype object
+    // that holds compileCacheStatus.
+    {
+      id: "node-builtin.module.constants",
+      kind: "node-builtin",
+      name: "module.constants",
+      fns: ["module.compileCacheConstants"],
+      note: "compileCacheStatus with Node's four values; a compiled program's enableCompileCache() answers DISABLED",
+    },
     // fs.constants as a value, and its members beyond the baked access-mode
     // bits: the target libc's null-prototype constants object.
     {
@@ -3240,6 +3380,7 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "rmdir",
   "unlink",
   "open",
+  "opendir",
   "close",
   "fstat",
   "ftruncate",
@@ -3267,6 +3408,22 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
 /** The `length` Node's filesystem callback functions carry
  * (`fs.readFile.length` is 3). The value adapter reports it through
  * Function.length; the direct call accepts the arguments it always did. */
@@ -3504,7 +3661,7 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   child_process: {
     execFile:
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
-      "maxBuffer is not enforced by the growing native capture; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
+      "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
     ...Object.fromEntries(
@@ -3556,7 +3713,14 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // at runtime through the dyn/handle machinery — the keyed-read claim
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
-  if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // The global console is such a receiver too, but a direct call of a
+  // member with no lowering (`console.trace()`) has nothing to dispatch
+  // to: it keeps this fence and its hint in both type worlds.
+  if (
+    lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn" &&
+    !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
+  )
+    return;
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;
@@ -3694,12 +3858,11 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   ) {
     hint =
       "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: the composed " +
-      'new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default ' +
-      "options, their default-locale forms (x.toLocaleString(), d.toLocaleString(), " +
-      "d.toLocaleTimeString()), and Intl.Segmenter with grapheme or word granularity; " +
-      "sentence segmentation, resolvedOptions, and the remaining Intl constructors remain " +
-      "unsupported";
+      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
+      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
+      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
+      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
+      "resolvedOptions, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +
@@ -3872,8 +4035,8 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // A cast of the global object (`(globalThis as { Buffer?: B }).Buffer`,
     // `(globalThis as any).Buffer`) changes only its static type: the
     // member is the global object's own.
-    const uncast = withoutTypeCasts(expr.expression);
-    if (uncast !== unparenthesized(expr.expression)) {
+    const uncast = withoutParenthesesTypeWrappers(expr.expression);
+    if (uncast !== withoutParentheses(expr.expression)) {
       if (!ts.isIdentifier(uncast) || stdlibGlobalNameOf(lowerer, uncast) !== "globalThis")
         return null;
       const member = lowerer.checker.getPropertyOfType(lowerer.typeOf(uncast), expr.name.text);
@@ -3886,13 +4049,51 @@ export function stdlibGlobalNameOf(lowerer: Lowerer, expr: ts.Expression): strin
     // member.
     const selected = staticallySelected(lowerer, expr.expression);
     const symbol =
-      selected === expr.expression || ts.isIdentifier(unparenthesized(expr.expression))
+      (selected === expr.expression || ts.isIdentifier(withoutParentheses(expr.expression))
         ? lowerer.checker.getSymbolAtLocation(expr.name)
-        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text);
+        : lowerer.checker.getPropertyOfType(lowerer.typeOf(selected), expr.name.text)) ??
+      // A spelling whose static type names no such member (`const host: any
+      // = globalThis; host.fetch`) is still the global object, as a cast of
+      // it is: the member is the global object's own.
+      globalObjectMember(lowerer, expr);
     if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
     return ts.symbolName(symbol) === "global" ? "globalThis" : ts.symbolName(symbol);
   }
   return null;
+}
+
+/** The name of a built-in global read directly from the global object
+ * (`globalThis.fetch`, `global.fetch`, through a binding of the global
+ * object too): the member's name node, which is an identifier whose symbol
+ * is the global's own, so everything that recognizes the bare name by text
+ * and provenance recognizes this node as well. `globalThis.fetch(…)` is
+ * then the call `fetch(…)` is, and `new globalThis.URL(…)` already takes
+ * its class this way. Null for an optional read, for a member that is no
+ * standard-library global (a script's own `var`), and for the global
+ * object's names for itself. */
+export function globalObjectMemberName(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): ts.Identifier | null {
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return null;
+  if (!ts.isIdentifier(expr.name)) return null;
+  // Most member reads have another receiver: decide those by spelling
+  // before asking the checker.
+  const receiver = withoutParenthesesTypeWrappers(expr.expression);
+  if (
+    ts.isIdentifier(receiver) &&
+    receiver.text !== "globalThis" &&
+    receiver.text !== "global" &&
+    lowerer.stdlibGlobalAliases.size === 0
+  )
+    return null;
+  if (!ts.isIdentifier(receiver) && !ts.isConditionalExpression(receiver)) return null;
+  if (lowerer.chainBlocked(expr)) return null;
+  if (stdlibGlobalNameOf(lowerer, expr.expression) !== "globalThis") return null;
+  const canonical = stdlibGlobalNameOf(lowerer, expr);
+  return canonical !== null && canonical !== "globalThis" && canonical === expr.name.text
+    ? expr.name
+    : null;
 }
 
 /** True iff `expr` denotes THE standard-library global `name` — name AND
@@ -4034,11 +4235,13 @@ export function stdlibGlobalAliasDecl(
  * the left operand of `||` (stdlibGlobalAliasNameOf's guard), or copies an
  * alias made that way. Such an alias carries the cast's static type. */
 function castGlobalAliasSource(lowerer: Lowerer, init: ts.Expression): boolean {
-  let source = unparenthesized(init);
+  let source = withoutParentheses(init);
   if (ts.isBinaryExpression(source) && source.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    source = unparenthesized(source.left);
+    source = withoutParentheses(source.left);
   if (ts.isPropertyAccessExpression(source))
-    return withoutTypeCasts(source.expression) !== unparenthesized(source.expression);
+    return (
+      withoutParenthesesTypeWrappers(source.expression) !== withoutParentheses(source.expression)
+    );
   if (ts.isIdentifier(source)) {
     const symbol = lowerer.checker.getSymbolAtLocation(source);
     return symbol !== undefined && lowerer.castGlobalAliases.has(symbol);

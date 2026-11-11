@@ -1,0 +1,27 @@
+name: ICU release archives
+description: Restore the cache of ICU's pinned release archives, read only
+runs:
+  using: composite
+  steps:
+    # ICU's release archives are read by every runtime pack build and by two
+    # tests (tests/harness/icu-data-filter.test.ts the data zip,
+    # packages/runtime/test/common-symbols.test.ts the sources). A job that
+    # does not build its pack through .github/actions/native-packages (the
+    # test jobs, which get the built pack as an artifact, and the mobile and
+    # Windows pack builds) used to download them from the release host on
+    # every run, and a host that answered 504 turned the job red. This
+    # restores the cache that native-packages saves, and saves nothing. The
+    # path list and the key are the same as there, because the path list is
+    # part of a cache's identity. A Windows runner restores the same cache
+    # through enableCrossOsArchive, and through restore-keys: its checkout
+    # may give icu-inputs.mjs other line endings and so another hash. Every
+    # reader verifies the archives against their pins and downloads through
+    # the build's retry helper when one is absent or does not match.
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz
+          node_modules/.cache/scriptc-icu-data/icu4c-*-data-bin-l.zip
+        key: icu-downloads-v1-${{ hashFiles('packages/runtime-pack-common/scripts/icu-inputs.mjs') }}
+        restore-keys: icu-downloads-v1-
+        enableCrossOsArchive: true

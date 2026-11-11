@@ -25,6 +25,7 @@ import { stdioIntoGeneralStream } from "../general-streams.js";
 import type { IrLibFn } from "../../../ir/builtin-signatures.js";
 import { voidizedCallback } from "../lower-server.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { processStreamMemberOf } from "./process.js";
 
 /** The ambient module declaring `d`, or null. */
 function ambientModuleOf(d: ts.Node): string | null {
@@ -150,7 +151,7 @@ function questionWithOptions(
   const type: IrType = { kind: "promise", inner: STRING };
   const queryType = query.dyn ? DYN : STRING;
   const name = `%rl.questionOptions${query.dyn ? "Dyn" : ""}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, type);
     lowerer.fnStack.push(context);
     try {
@@ -242,8 +243,7 @@ function isReadlineUiTyped(lowerer: Lowerer, node: ts.Expression): boolean {
 
 /** The process.stdout/stderr target (1/2) of `node`, or 0. */
 function processOutputOf(lowerer: Lowerer, node: ts.Expression): 0 | 1 | 2 {
-  if (!ts.isPropertyAccessExpression(node)) return 0;
-  const member = lowerer.stdlibGlobalMember(node, "process");
+  const member = processStreamMemberOf(lowerer, node);
   return member === "stdout" ? 1 : member === "stderr" ? 2 : 0;
 }
 
@@ -953,9 +953,7 @@ function lowerEmitKeypressEvents(lowerer: Lowerer, expr: ts.CallExpression, loc:
   const stmts: IrStmt[] = [];
   const streamNode = args[0]!;
   let stream: IrExpr | null = null;
-  const stdin =
-    ts.isPropertyAccessExpression(streamNode) &&
-    lowerer.stdlibGlobalMember(streamNode, "process") === "stdin";
+  const stdin = processStreamMemberOf(lowerer, streamNode) === "stdin";
   if (!stdin) {
     stream = lowerer.lowerExpr(streamNode);
     const info =
@@ -1113,8 +1111,7 @@ export function lowerReadlineCursorCall(
   // the stream
   const streamNode = args[0]!;
   let target: "stdout" | "stderr" | "none" | IrExpr;
-  const proc =
-    ts.isPropertyAccessExpression(streamNode) && lowerer.stdlibGlobalMember(streamNode, "process");
+  const proc = processStreamMemberOf(lowerer, streamNode);
   if (proc === "stdout" || proc === "stderr") {
     target = proc;
   } else if (isNullish(streamNode)) {
@@ -1270,12 +1267,10 @@ function streamFromDyn(lowerer: Lowerer, node: ts.Expression, output: boolean): 
 
 /** The interface's input: process.stdin (null) or a readable stream. */
 function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
-  if (
-    ts.isPropertyAccessExpression(node) &&
-    lowerer.stdlibGlobalMember(node, "process") === "stdin"
-  ) {
-    return null;
-  }
+  // The process stdin, spelled `process.stdin` or bound by an import from
+  // node:process (`const { stdin } = require("node:process")`): the
+  // interface reads the descriptor the runtime holds.
+  if (processStreamMemberOf(lowerer, node) === "stdin") return null;
   const v = streamFromDyn(lowerer, node, false);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   const sides = streamSidesOf(lowerer, info);
@@ -1382,6 +1377,15 @@ export function lowerReadlineCreateCall(
   // false drops it)
   let terminal = null as IrExpr | null; // set in setTerminal
   let terminalFalse = false;
+  // A `terminal` value that may be undefined (`boolean | undefined`): held
+  // as its union, decided once the output is known, because an undefined
+  // value takes the default an absent option takes.
+  let terminalOptional = null as {
+    localId: string;
+    unionId: string;
+    booleanTag: number;
+    undefinedTag: number;
+  } | null;
   const pre: IrStmt[] = [];
   // Only terminal interfaces call the completer. A checked-dynamic value
   // must be callable (Node's ERR_INVALID_ARG_VALUE, after the history
@@ -1399,10 +1403,29 @@ export function lowerReadlineCreateCall(
       return;
     }
     if (!(lowerer.typeOf(value).flags & ts.TypeFlags.BooleanLike)) {
-      lowerer.noLowering(
-        "the createInterface option 'terminal' with a value that is not a boolean",
-        value,
-      );
+      const optional = lowerer.lowerExpr(value);
+      const arms =
+        optional.type.kind === "union" ? lowerer.unions.get(optional.type.unionId)?.arms : null;
+      if (
+        optional.type.kind !== "union" ||
+        arms?.length !== 2 ||
+        !arms.some((arm) => arm.kind === "bool") ||
+        !arms.some((arm) => arm.kind === "undefinedT")
+      ) {
+        lowerer.noLowering(
+          "the createInterface option 'terminal' with a value that is not a boolean",
+          value,
+        );
+      }
+      const held = lowerer.declareHiddenLocal("%rlTerminalOption", optional.type);
+      pre.push({ kind: "varDecl", localId: held.id, init: optional, loc });
+      terminalOptional = {
+        localId: held.id,
+        unionId: optional.type.unionId,
+        booleanTag: lowerer.armTag(optional.type.unionId, BOOL),
+        undefinedTag: lowerer.armTag(optional.type.unionId, UNDEFINED_T),
+      };
+      return;
     }
     const local = lowerer.declareHiddenLocal("%rlTerminal", BOOL);
     pre.push({
@@ -1555,7 +1578,50 @@ export function lowerReadlineCreateCall(
   // Node's default for an output process stream is that stream's isTTY, so
   // a direct process.stderr output passes process.isTTY(2) as the value.
   let terminalMode: number | null;
-  if (terminal !== null) {
+  if (terminalOptional !== null) {
+    // Node reads an undefined `terminal` as an absent one: the output's
+    // isTTY when there is an output, otherwise not a terminal.
+    const optionT: IrType = { kind: "union", unionId: terminalOptional.unionId };
+    const option: IrExpr = {
+      kind: "varRef",
+      localId: terminalOptional.localId,
+      type: optionT,
+      loc,
+    };
+    const ttyFd =
+      output.kind === "stdout"
+        ? 1
+        : output.kind === "stream" && output.ttyFd !== undefined
+          ? output.ttyFd
+          : null;
+    terminalMode = 0;
+    terminal = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.undefinedTag,
+        negated: false,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      then:
+        ttyFd === null
+          ? boolLit(false, loc)
+          : { kind: "libCall", fn: "process.isTTY", args: [numLit(ttyFd, loc)], type: BOOL, loc },
+      else_: {
+        kind: "unionNarrow",
+        unionId: terminalOptional.unionId,
+        tag: terminalOptional.booleanTag,
+        value: option,
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  } else if (terminal !== null) {
     terminalMode = 0;
   } else if (terminalFalse) {
     terminalMode = null;

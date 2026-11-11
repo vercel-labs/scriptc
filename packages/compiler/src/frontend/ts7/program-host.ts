@@ -3,9 +3,9 @@ import { isBundledLibraryFile } from "../default-library.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Shared program lifecycle over the native TypeScript server API.
  *
- * 7.0.2 has no createProgram(roots, options): the model is
- * new API({cwd, fs}) -> updateSnapshot({openProjects: [tsconfig]}) ->
- * snapshot.getProject(...), strictly tsconfig-driven. scriptc's no-tsconfig /
+ * The client's server API is snapshot-based: new API({cwd, fs}) ->
+ * updateSnapshot({openProjects: [tsconfig]}) -> snapshot.getProject(...),
+ * strictly tsconfig-driven. scriptc's no-tsconfig /
  * extra-roots story (entry + ambient dts + fallback/overrides dts, forced
  * options) maps onto that through a SYNTHESIZED IN-MEMORY tsconfig: the
  * virtual-FS hooks serve one nonexistent tsconfig path whose "files" lists
@@ -44,6 +44,8 @@ import {
   trackedDirectoryExists,
   trackedFileExists,
   trackedReadFile,
+  trackedReadSource,
+  trackedWholeText,
   trackedRealpath,
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
@@ -233,7 +235,7 @@ export class Ts7Host {
       // A package file a project type patch edits (type-patches/layer.ts).
       const patched = typePatchedText(fileName);
       if (patched !== undefined) return stripSourceBom(patched);
-      const source = trackedReadFile(fileName);
+      const source = trackedReadSource(fileName);
       return source === null ? null : stripSourceBom(source);
     };
     this.api = createApi({
@@ -456,6 +458,8 @@ export class Ts7Program {
   /** A file's text as the host serves it, without fetching its syntax
    * tree (Ts7Host.sourceText). */
   getSourceText(fileName: string): string | null {
+    // The caller inspects the text itself.
+    trackedWholeText(fileName);
     return this.host.sourceText(fileName);
   }
 
@@ -483,7 +487,7 @@ export class Ts7Program {
   }
 
   /** Materializes every file of the program (5.9.3's getSourceFiles shape).
-   * 7.0.2 serves files one by one; the result is cached, so the full-program
+   * The program serves files one by one; the result is cached, so the full-program
    * sweeps (preflight's user-file scan) pay the transfer once. */
   getSourceFiles(): readonly SourceFile[] {
     this.snapshot.ensureActive();
@@ -611,7 +615,7 @@ export class Ts7Program {
   }
 }
 
-/** 5.9.3's getPreEmitDiagnostics, composed from 7.0.2's split surface (the
+/** 5.9.3's getPreEmitDiagnostics, composed from 7.1's split surface (the
  * package dropped the aggregate). Order mirrors 5.9.3: config, options/
  * program, global, syntactic, semantic.
  *

@@ -1,7 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, globSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
+  caseCosts,
+  caseCostsPath,
   ciTestPlan,
   corpusFiles,
   darwinCorpusFiles,
@@ -15,9 +18,11 @@ import {
   nativeFrontendFiles,
   sanitizedNodesJobEnv,
   sideOwners,
+  sidePlan,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
+import { parseShardLoads, parseShardSpec, skipUnownedTest } from "./shard.js";
 
 test.for([1, 3, 5, 10, 20])(
   "CI retains every suite with %i shards without mixing partition axes",
@@ -181,31 +186,130 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   expect(job.strategy.matrix.include.map((entry) => entry.file).sort()).toEqual(
     [...nativeFrontendFiles].sort(),
   );
-  expect(job.steps.at(-1)!.run).toBe("pnpm test ${{ matrix.file }}");
+  // Two cores: the sanitized build starts one clang per core, and four of them beside the
+  // compile in Node need more than the runner's 16 GB.
+  expect(job.steps.at(-1)!.run).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
   expect(jobs["test"]!.needs).toContain("native_frontend_san");
 });
 
-test("the side queue balances measured files across the twenty Linux shards", () => {
+test("the side queue is balanced across the twenty Linux shards by measured cost", () => {
   for (const flavor of ["plain", "san"] as const) {
-    const costs = testCosts[flavor] as Record<string, number>;
-    const owned = new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]);
-    // The sanitized native frontend builds run in their own Linux jobs.
-    if (flavor === "san") for (const file of nativeFrontendFiles) owned.delete(file);
-    const shards = Array.from({ length: 20 }, (_, index) => {
-      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor, platform: "linux" })
-        .side.slice(1)
-        .flatMap((task) => task.args.filter((arg) => owned.has(arg)));
-      return { files, load: files.reduce((sum, file) => sum + (costs[file] ?? 0) + 1000, 0) };
+    const { loads, placed, owners } = sidePlan(flavor, 20, "linux");
+    // The plan accounts for every whole file it owns and every measured test
+    // of the suites that split their own tests, each on one shard.
+    const items = placed.flatMap((shard) => shard.map(([file, test]) => `${file} > ${test}`));
+    expect(new Set(items).size).toBe(items.length);
+    expect(items.toSorted()).toEqual(
+      [
+        ...[...owners.keys()].map((file) => `${file} > undefined`),
+        ...caseShardedSideFiles.flatMap(([, file]) =>
+          Object.keys(caseCosts[file]![flavor]).map((test) => `${file} > ${test}`),
+        ),
+      ].toSorted(),
+    );
+    placed.forEach((shard, index) =>
+      expect(
+        shard.reduce((sum, [, , ms]) => sum + ms, 0),
+        `${flavor} ${index + 1}`,
+      ).toBe(loads[index]),
+    );
+    // No shard's side queue is planned past 1.3 times the mean, unless one
+    // test or file holds the shard alone but for a tenth of the mean: an item
+    // longer than an even share cannot be divided.
+    const mean = loads.reduce((sum, load) => sum + load, 0) / loads.length;
+    loads.forEach((load, index) => {
+      const longest = Math.max(...placed[index]!.map(([, , ms]) => ms));
+      if (load - longest > mean * 0.1)
+        expect(load, `${flavor} ${index + 1}`).toBeLessThanOrEqual(mean * 1.3);
     });
-    // A file heavier than an even share holds a shard alone; the shards
-    // sharing several files are within 10% of each other.
-    const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
-    expect(shared.length).toBeGreaterThan(10);
-    expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
-    // The longest file starts from the last shard, away from the longest
-    // corpus and three.js cases, which balance from the first.
-    const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
-    expect(shards[19]!.files).toContain(longest);
+    // The two longest items of the whole side queue, whichever suites or
+    // files they belong to, are on different shards.
+    const [first, second] = placed
+      .flatMap((shard, index) => shard.map(([, , ms]) => ({ ms, index })))
+      .sort((a, b) => b.ms - a.ms);
+    expect(first!.index).not.toBe(second!.index);
+  }
+});
+
+test.for([1, 3, 5, 10, 20])(
+  "every one of %i shards starts each self-splitting suite from the same planned loads",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const) {
+      const { starts } = sidePlan(flavor, count, "linux");
+      const plans = Array.from({ length: count }, (_, index) =>
+        ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" }),
+      );
+      for (const [name, file] of caseShardedSideFiles) {
+        const loads = plans.map(
+          (plan) => plan.side.find((task) => task.name === name)!.env.SCRIPTC_TEST_SHARD_LOADS,
+        );
+        expect(new Set(loads).size, file).toBe(1);
+        expect(parseShardLoads(count, loads[0]), file).toEqual(starts.get(file));
+      }
+      // Only those suites receive loads: the corpus and the other tasks
+      // balance from nothing, as they do outside CI.
+      for (const plan of plans)
+        for (const task of [plan.corpus, ...plan.side])
+          expect("SCRIPTC_TEST_SHARD_LOADS" in task.env, `${flavor} ${task.name}`).toBe(
+            caseShardedSideFiles.some(([name]) => name === task.name),
+          );
+    }
+  },
+);
+
+test.for([3, 10, 20])(
+  "the planned loads keep every test of a self-splitting suite on exactly one of %i shards",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const)
+      for (const [name, file] of caseShardedSideFiles) {
+        const costs = caseCosts[file]![flavor] as Record<string, number>;
+        // The measured tests, two the table does not know and a repeated title.
+        const names = [...Object.keys(costs), "unmeasured a", "unmeasured b", "unmeasured a"];
+        const shards = Array.from({ length: count }, (_, index) => {
+          const plan = ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" });
+          const env = plan.side.find((task) => task.name === name)!.env;
+          const suite = { tasks: [] as { name: string }[] };
+          suite.tasks = names.map((test) => ({ type: "test", name: test, suite }));
+          return suite.tasks
+            .filter((task) => {
+              let skipped = false;
+              skipUnownedTest(
+                { task, skip: () => (skipped = true) } as unknown as Parameters<
+                  typeof skipUnownedTest
+                >[0],
+                costs,
+                parseShardSpec(env.SCRIPTC_TEST_SHARD),
+                parseShardLoads(count, env.SCRIPTC_TEST_SHARD_LOADS),
+              );
+              return !skipped;
+            })
+            .map((task) => task.name);
+        });
+        expect(shards.flat().toSorted(), `${flavor} ${file}`).toEqual(names.toSorted());
+      }
+  },
+);
+
+test("every file that splits its own tests runs on every shard, with a cost table", () => {
+  const root = new URL("../../", import.meta.url);
+  const splitting = globSync(
+    ["tests/harness/**/*.test.ts", "packages/*/src/**/*.test.ts", "packages/*/test/**/*.test.ts"],
+    { cwd: fileURLToPath(root), exclude: (name) => name === "node_modules" },
+  )
+    .map((file) => file.replaceAll("\\", "/"))
+    .filter(
+      (file) =>
+        file !== "tests/harness/shard.test.ts" &&
+        file !== "tests/harness/ci-test-plan.test.ts" &&
+        readFileSync(new URL(file, root), "utf8").includes("skipUnownedTest("),
+    );
+  // vitest's --shard would hand such a file to one shard, which would skip
+  // the tests the others own: they would run nowhere.
+  expect(splitting.toSorted()).toEqual(caseShardedSideFiles.map(([, file]) => file).toSorted());
+  for (const [, file] of caseShardedSideFiles) {
+    expect(fileExclusions).toContain(file);
+    const table = JSON.parse(readFileSync(new URL(caseCostsPath(file), root), "utf8"));
+    expect(Object.keys(table).toSorted(), file).toEqual(["plain", "san"]);
   }
 });
 

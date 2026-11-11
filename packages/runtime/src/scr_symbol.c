@@ -12,6 +12,7 @@
  * always after scr_init registered the RC audit, so atexit's LIFO order
  * runs it before the audit and the audited string counts stay exact. */
 #include "scr_runtime.h"
+#include "scr_dir_private.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,11 +27,28 @@ struct ScrSym {
    * box retains the symbol and clears this when it is freed), shared by
    * every conversion of the symbol to a checked value. */
   ScrDyn *box;
+  /* A registered symbol's box, retained for the registry from the first
+   * conversion until the registry is torn down: the symbol lives that long
+   * anyway, so its conversions share one box instead of building and
+   * freeing one each. NULL for every other symbol. */
+  ScrDyn *reg_box;
 };
 
 ScrSym *scr_sym_retain(ScrSym *s) {
   if (s->rc != SIZE_MAX) s->rc++;
   return s;
+}
+
+/* The emitter unit's symbol-side entry points (scr_string.h): installed
+ * from a constructor so scr_events_emitter.c holds no reference to this
+ * unit, and the pointer itself lives in the always-linked string unit, so
+ * a program with symbols but no emitters references nothing from the
+ * emitter. */
+static const ScrSymEventOps scr_sym_event_ops_table = {
+  &scr_sym_retain, &scr_sym_release, &scr_dyn_new_symbol, &scr_sym_to_string,
+};
+__attribute__((constructor)) static void scr_sym_event_install(void) {
+  scr_sym_event_ops = &scr_sym_event_ops_table;
 }
 
 void scr_sym_release(ScrSym *s) {
@@ -55,6 +73,7 @@ ScrSym *scr_sym_new(ScrStr *desc) {
   s->reg_key = NULL;
   s->reg_next = NULL;
   s->box = NULL;
+  s->reg_box = NULL;
   return s;
 }
 
@@ -133,6 +152,11 @@ static void scr_sym_registry_cleanup(void) {
   g_sym_registry = NULL;
   while (s) {
     ScrSym *next = s->reg_next;
+    /* The registry's reference to the symbol's box (scr_dyn_new_symbol);
+     * the box holds the symbol, so the symbol outlives this release. */
+    ScrDyn *kept = s->reg_box;
+    s->reg_box = NULL;
+    scr_dyn_release(kept);
     scr_sym_release(s);
     s = next;
   }
@@ -171,9 +195,15 @@ static void scr_sym_release_box(ScrSym *s) {
 }
 
 ScrDyn *scr_dyn_new_symbol(ScrSym *value) {
+  if (value->reg_box) return scr_dyn_retain(value->reg_box);
   if (value->box) return scr_dyn_retain(value->box);
   ScrDyn *box = scr_dyn_symbol_ref(scr_sym_retain(value), scr_sym_release_box, scr_sym_to_string, scr_sym_desc);
   value->box = box;
+  /* A registered symbol lives until its thread exits, and so does its box:
+   * the registry keeps a reference (dropped by scr_sym_registry_cleanup),
+   * so a comparison against a `Symbol.for` constant does not build and
+   * free a box each time. */
+  if (value->reg_key) value->reg_box = scr_dyn_retain(box);
   return box;
 }
 
@@ -225,29 +255,51 @@ void scr_assert_eq_sym(ScrSym *a, ScrSym *b, bool negated, bool deep,
 /* Direct `globalThis[symbol]` accesses use the symbol-keyed properties of
  * the global object's box (scr_global_object), the storage every other
  * spelling of the global object reaches, so all of them see one property. */
+/* Node's global object has one symbol-keyed property of its own:
+ * Symbol.toStringTag, "global". It is made in that store, for the box that
+ * is current then, the first time a direct access names that symbol, so a
+ * program that replaces or deletes it reads its own change afterwards and a
+ * program that never names the symbol makes nothing. `key` is the access's
+ * key as a checked value: a symbol has one box while any is alive, and the
+ * installed tag symbol's box is kept alive, so identity tells the tag. */
+static SCR_TL ScrDyn *scr_global_tagged_box;
+
+static ScrDyn *scr_global_symbol_holder(ScrDyn *key) {
+  ScrDyn *global = scr_global_object();
+  if (scr_global_tagged_box != global && key == scr_dyn_to_string_tag_symbol()) {
+    scr_global_tagged_box = global;
+    ScrStr *text = scr_str_new("global", 6);
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_dyn_symbol_key_set(global, key, value);
+    scr_dyn_release(value);
+    scr_str_release(text);
+  }
+  return global;
+}
+
 ScrDyn *scr_dyn_global_symbol_get(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  ScrDyn *value = scr_dyn_symbol_key_get(scr_global_object(), k, false);
+  ScrDyn *value = scr_dyn_symbol_key_get(scr_global_symbol_holder(k), k, false);
   scr_dyn_release(k);
   return value;
 }
 
 void scr_dyn_global_symbol_set(ScrSym *key, ScrDyn *value) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  scr_dyn_symbol_key_set(scr_global_object(), k, value);
+  scr_dyn_symbol_key_set(scr_global_symbol_holder(k), k, value);
   scr_dyn_release(k);
 }
 
 bool scr_dyn_global_symbol_has(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  bool present = scr_dyn_has_own_computed(scr_global_object(), k);
+  bool present = scr_dyn_has_own_computed(scr_global_symbol_holder(k), k);
   scr_dyn_release(k);
   return present;
 }
 
 void scr_dyn_global_symbol_delete(ScrSym *key) {
   ScrDyn *k = scr_dyn_new_symbol(key);
-  scr_dyn_key_delete_computed(scr_global_object(), k, false);
+  scr_dyn_key_delete_computed(scr_global_symbol_holder(k), k, false);
   scr_dyn_release(k);
 }
 
@@ -362,6 +414,47 @@ void scr_dyn_dirent_finish(ScrDyn *obj) {
       scr_dyn_symbol_key_set(obj, scr_dirent_type_key, ent.value);
   }
 }
+
+#ifndef SCR_LIB
+/* The Dirent a callback read receives for an entry, in Node's shape.
+ * `name` is +1 and is consumed. */
+ScrDyn *scr_dir_dirent_dyn(ScrDir *d, ScrStr *name, double kind) {
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(name));
+  ScrStr *path = scr_dir_path(d);
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(path));
+  scr_str_release(path);
+  scr_dyn_obj_set(object, "%dtype", 6, scr_dyn_new_num(kind));
+  scr_dyn_dirent_finish(object);
+  scr_str_release(name);
+  return object;
+}
+
+/* dir.read(callback): the entry (or null at the end) arrives in a later
+ * turn of the loop; a closed Dir throws ERR_DIR_CLOSED now. */
+void scr_dir_read_callback(ScrDir *d, ScrDyn *callback) {
+  if (d->closed) {
+    scr_dir_closed();
+    return;
+  }
+  ScrDirOp *op = scr_dir_op_new(d, false);
+  op->callback = scr_dyn_retain(callback);
+  /* The entry is assigned when the call is made, not when its turn comes:
+   * every read takes its entry in call order, so a read that waits cannot
+   * be overtaken by a later one. */
+  ScrStr *name = NULL;
+  double kind = 0;
+  if (d->batch_pos < d->batch_len) {
+    op->buffered = true;
+    if (scr_dir_take(d, &name, &kind)) op->argument = scr_dir_dirent_dyn(d, name, kind);
+  } else if (!scr_dir_fill_batch(d) || scr_exc_pending()) {
+    op->error = scr_dir_error_dyn();
+  } else if (scr_dir_take(d, &name, &kind)) {
+    op->argument = scr_dir_dirent_dyn(d, name, kind);
+  }
+  scr_dir_push(op);
+}
+#endif /* SCR_LIB */
 
 /* The well-known symbol `Symbol.<name>` as a dyn key (+1). */
 static ScrDyn *scr_using_key(const char *name, size_t len) {

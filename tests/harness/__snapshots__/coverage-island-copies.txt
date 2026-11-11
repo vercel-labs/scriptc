@@ -1,0 +1,54 @@
+scriptc coverage tests/coverage-fixtures/island-copies/main.ts
+
+  statements analyzed   22
+  compile statically    22  (100%)
+    in dynamic tier     14  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    copy-kit  static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    marked  copy-kit@1.0.0 (marked by scriptc.packages)
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  fully static — all analyzed statements compile to native code.
+
+  differs from Node   6 sites (compiles; the native program can behave differently)
+      ×2  SC6007  asserting a value a Node island made as 'Dated' copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own object…
+          at tests/coverage-fixtures/island-copies/main.ts:13:15, tests/coverage-fixtures/island-copies/main.ts:15:16
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
+      ×1  SC6007  asserting a value a Node island made as 'number[]' copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's own obj…
+          at tests/coverage-fixtures/island-copies/main.ts:12:17
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
+      ×1  SC6007  storing a value a Node island made in a 'number[]' binding copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is the island's…
+          at tests/coverage-fixtures/island-copies/main.ts:16:7
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
+      ×1  SC6007  a Node island calling this callback with an object of its own for the 'Dated' parameter copies it into a native value (the checked conversion reads the declared members through the island's object): …
+          at tests/coverage-fixtures/island-copies/main.ts:17:8
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
+      ×1  SC6007  reading a key or a value of this 'Map<…>', when a Node island made it, copies it into a native value (the checked conversion reads the declared members through the island's object): under Node it is …
+          at tests/coverage-fixtures/island-copies/main.ts:20:16
+          hint: declare the type in the island package's declarations, which keeps the island's object as a live view, or write the copy where it happens ('structuredClone(value) as T') so that Node copies too
+
+  trusts unverified types   13 checked conversions on 7 claims (compiles; a value that contradicts its claimed type throws a TypeError at the conversion)
+      ×4  copy-kit@1.0.0 declares item() as unknown (index.d.ts:3): a Node island value the program reads as { a: number; at: Date | undefined }, number
+          at tests/coverage-fixtures/island-copies/main.ts:13:15, tests/coverage-fixtures/island-copies/main.ts:15:16, tests/coverage-fixtures/island-copies/main.ts:24:16 (+1 more)
+          fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch copy-kit 'item()' '<type>'
+      ×3  copy-kit@1.0.0 declares table() as Map<Dated, string> (index.d.ts:5): a Node island value
+          at tests/coverage-fixtures/island-copies/main.ts:21:62, tests/coverage-fixtures/island-copies/main.ts:30:41, tests/coverage-fixtures/island-copies/main.ts:46:32
+          fix: no selector reaches this declaration (it is generic, or the member comes from a mapped or inferred type), so its type is the one this program gives it: correct the type at the listed sites, or replace the declaration file with a "files" type patch ("scriptc": { "typePatches": { "copy-kit@^1.0.0": { "files": … } } } in package.json)
+      ×2  copy-kit@1.0.0 declares visit(f) (index.d.ts:4): the Node island calls a function the program passes it, typed ({ a: number; at: Date | undefined }) => void
+          at tests/coverage-fixtures/island-copies/main.ts:17:7, tests/coverage-fixtures/island-copies/main.ts:26:7
+          fix: if the declaration is wrong, patch it: scriptc types patch copy-kit 'visit(f)' '<type>' (a type that starts with | widens the declared one, as in '| undefined')
+      ×1  copy-kit@1.0.0 declares anyList() as any (index.d.ts:2): a Node island value the program reads as number[]
+          at tests/coverage-fixtures/island-copies/main.ts:16:25
+          fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch copy-kit 'anyList()' '<type>'
+      ×1  copy-kit@1.0.0 declares list() as unknown (index.d.ts:1): a Node island value the program reads as number[]
+          at tests/coverage-fixtures/island-copies/main.ts:12:17
+          fix: the declaration promises nothing, the program's own type is what is checked: check the value (typeof, in, a schema) before giving it that type, or give the declaration the type it really has: scriptc types patch copy-kit 'list()' '<type>'
+      ×1  a Node island value the program reads as number
+          at tests/coverage-fixtures/island-copies/main.ts:21:13
+          fix: check the island's value (typeof, in, a schema) before giving it this type, or declare the type it really has
+      ×1  parsed data the program reads as { a: number; at: Date | undefined }
+          at tests/coverage-fixtures/island-copies/main.ts:25:16
+          fix: validate the parsed data before giving it this type (a schema, or checks on an unknown value), or declare the type the data really has

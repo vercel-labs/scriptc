@@ -73,6 +73,29 @@ test("node-types: Headers, Request and Response members typed by undici-types ru
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a type derived from the undici-types Response class is the native handle", async () => {
+  const outDir = outDirFor("builtin-class-derived-types");
+  const entry = join(nodeTypesDir, "builtin-class-derived-types.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32"
+        ? "builtin-class-derived-types.exe"
+        : "builtin-class-derived-types",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: fetch's string | URL | Request input and a custom fetch cast to typeof fetch", async () => {
   const outDir = outDirFor("fetch-input-unions");
   const entry = join(nodeTypesDir, "fetch-input-unions.ts");
@@ -100,12 +123,29 @@ for (const [name, title] of [
     "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
   ],
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+  ["console-values", "console and its output methods as values under @types/node"],
   ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
   ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
   ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
   [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
+  [
+    "process-stream-member-writes",
+    "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
+  ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
+  ],
+  [
+    "child-held-exit-listeners",
+    "a function passed by name as an exit or close listener keeps its number code under @types/node",
   ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
@@ -716,6 +756,27 @@ test("node-types: streams construct and child listeners take @types/node's param
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a held close listener declaring a number code throws for a signal's null", async () => {
+  const outDir = outDirFor("child-held-exit-listener-signal");
+  const entry = join(nodeTypesDir, "child-held-exit-listener-signal.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "child-held-exit-listener-signal"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const failure = await execFileAsync(result.binaryPath).then(
+    () => null,
+    (error: { stdout?: string; stderr?: string }) => error,
+  );
+  expect(failure).not.toBeNull();
+  expect(failure?.stdout).toBe("");
+  expect(failure?.stderr).toContain(
+    "TypeError: an 'exit' or 'close' listener declaring a number exit code received null",
+  );
+});
+
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
   const outDir = outDirFor("promisify-timers");
   const entry = join(nodeTypesDir, "promisify-timers.ts");
@@ -838,6 +899,22 @@ test("node-types: exec's numeric ExecException.code remains a named fence", asyn
   for (const diagnostic of result.diagnostics) {
     expect(diagnostic.message).toContain("ExecException.code");
   }
+});
+
+test("node-types: subprocess.stdio is a named fence, also under .length", async () => {
+  // The declared 5-tuple's arity must not answer for Node's array, which
+  // has one entry per configured stdio slot.
+  const dir = outDirFor("node-child-stdio-fences");
+  const entry = join(nodeTypesDir, "child-stdio-fences.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-stdio-fences"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
+  expect(result.diagnostics[0]!.message).toContain("ChildProcess.stdio");
 });
 
 test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {
@@ -1511,6 +1588,65 @@ process.stdin.on("end", () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("no-types-node: uncaught exception listeners type on the fallback declarations", async () => {
+  // The monitor and handler families are declared only in the shipped
+  // fallback; a project without @types/node types them from there. The
+  // listener receives the thrown value, so the parameter is unknown. The
+  // program registers through on, once, off, and prependListener, then
+  // throws from a timer so both families observe it before exit.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-uncaught-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const seen: string[] = [];
+process.on("exit", (code: number) => {
+  console.log("exit", code, seen.join(","));
+});
+const message = (err: unknown) => (err instanceof Error ? err.message : typeof err);
+const firstMonitor = (err: unknown, origin: string) => {
+  seen.push("prepend monitor " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtExceptionMonitor", firstMonitor);
+process.on("uncaughtExceptionMonitor", (err: unknown, origin: string) => {
+  seen.push("monitor " + message(err) + " " + origin);
+});
+const handler = (err: unknown, origin: string) => {
+  seen.push("handler " + message(err) + " " + origin);
+};
+process.on("uncaughtException", handler);
+process.off("uncaughtException", handler);
+const firstHandler = (err: unknown, origin: string) => {
+  seen.push("prepend handler " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtException", firstHandler);
+process.once("uncaughtException", (err: unknown) => {
+  seen.push("once " + message(err));
+});
+setTimeout(() => {
+  throw new Error("kaboom");
+}, 0);
+`,
+  );
+  const outDir = outDirFor("bare-uncaught");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(native.stdout).toContain("prepend monitor kaboom uncaughtException");
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("dot-parent: bare '.' and '..' imports build and run (the TS project dialect)", async () => {
   // The vercel-CLI spelling (`from '..'` for a parent directory's index):
   // scriptc-only — Node refuses directory imports when running raw TS as
@@ -1545,6 +1681,22 @@ test("node-types: terminal properties and filesystem error metadata match Node",
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
+
+for (const name of ["terminal-method-answers.ts", "terminal-method-answers-untyped.mjs"]) {
+  test(`node-types: optional calls of a piped process stream's terminal methods answer undefined (${name})`, async () => {
+    const outDir = outDirFor(name);
+    const entry = join(nodeTypesDir, name);
+    const result = await compile(entry, { outPath: join(outDir, "answers"), outDir, sanitize });
+    expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+    if (!result.ok) return;
+    const [native, node] = await Promise.all([
+      execFileAsync(result.binaryPath),
+      execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+    ]);
+    expect(native.stdout).toBe(node.stdout);
+    expect(comparableStderr(native.stderr)).toBe(node.stderr);
+  });
+}
 
 test("node-types: process.versions entries @types/node declares as strings read undefined when absent", async () => {
   const outDir = outDirFor("process-versions-absent");

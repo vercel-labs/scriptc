@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
 import {
   ambientDtsPath,
   isFallbackDtsPath,
@@ -27,19 +28,6 @@ export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): bo
       );
     })
   );
-}
-
-function strip(expr: ts.Expression): ts.Expression {
-  let current = expr;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertion(current) ||
-    ts.isNonNullExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
 }
 
 /** True when an identifier is a named import of one Node builtin member.
@@ -157,7 +145,7 @@ export function isBuiltinNamespaceImport(
 }
 
 function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expression | null {
-  const current = strip(expr);
+  const current = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(current)) return null;
   const symbol = program.getTypeChecker().getSymbolAtLocation(current);
   const decl = symbol
@@ -176,8 +164,9 @@ function constInitializer(program: ts.Program, expr: ts.Expression): ts.Expressi
   return decl.initializer;
 }
 
-function importMetaUrl(expr: ts.Expression): boolean {
-  const current = strip(expr);
+/** True for `import.meta.url`, the module's own file URL. */
+export function importMetaUrl(expr: ts.Expression): boolean {
+  const current = withoutParenthesesTypeWrappers(expr);
   return (
     ts.isPropertyAccessExpression(current) &&
     !current.questionDotToken &&
@@ -193,7 +182,7 @@ function staticBoolean(
   expr: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean | null {
-  const current = strip(expr);
+  const current = withoutParenthesesTypeWrappers(expr);
   if (current.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (current.kind === ts.SyntaxKind.FalseKeyword) return false;
   const init = constInitializer(program, current);
@@ -239,7 +228,7 @@ function staticString(
   expr: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const current = strip(expr);
+  const current = withoutParenthesesTypeWrappers(expr);
   if (ts.isStringLiteralLike(current)) return current.text;
   if (importMetaUrl(current)) return pathToFileURL(ts.getSourceFileOfNode(current).fileName).href;
   if (ts.isTemplateExpression(current)) {
@@ -281,12 +270,7 @@ function staticString(
       return null;
     }
   }
-  if (
-    ts.isNewExpression(current) &&
-    ts.isIdentifier(current.expression) &&
-    (isBuiltinMemberImport(program, current.expression, "url", "URL") ||
-      (current.expression.text === "URL" && isNodeGlobal(program, current.expression)))
-  ) {
+  if (ts.isNewExpression(current) && isUrlConstructor(program, current.expression)) {
     const args = current.arguments?.nodes ?? [];
     if (args.length < 1 || args.length > 2) return null;
     const input = staticString(program, args[0]!, seen);
@@ -301,11 +285,22 @@ function staticString(
   return null;
 }
 
+/** True for a `new URL(...)` constructor: the `url` module's binding, or the
+ * Node global. */
+export function isUrlConstructor(program: ts.Program, expr: ts.Expression): boolean {
+  const current = withoutParenthesesTypeWrappers(expr);
+  if (!ts.isIdentifier(current)) return false;
+  return (
+    isBuiltinMemberImport(program, current, "url", "URL") ||
+    (current.text === "URL" && isNodeGlobal(program, current))
+  );
+}
+
 /** Resolves the supported fork modulePath expression to an absolute source
  * path. Plain runtime strings are intentionally excluded: worker selection
  * is part of the compiled graph, not a runtime filesystem lookup. */
 export function staticForkModulePath(program: ts.Program, expr: ts.Expression): string | null {
-  const current = strip(expr);
+  const current = withoutParenthesesTypeWrappers(expr);
   const init = constInitializer(program, current);
   if (init !== null && ts.isIdentifier(current)) return staticForkModulePath(program, init);
   const supported =
@@ -330,7 +325,7 @@ export function staticForkModulePath(program: ts.Program, expr: ts.Expression): 
 
 export function forkCallModulePath(program: ts.Program, call: ts.CallExpression): string | null {
   if (call.questionDotToken || call.arguments.nodes[0] === undefined) return null;
-  const callee = strip(call.expression);
+  const callee = withoutParenthesesTypeWrappers(call.expression);
   const isFork =
     (ts.isIdentifier(callee) && isBuiltinMemberImport(program, callee, "child_process", "fork")) ||
     (ts.isPropertyAccessExpression(callee) &&
@@ -381,9 +376,9 @@ function namesChildProcess(program: ts.Program): boolean {
   const own = new Set([ambientDtsPath(), overridesDtsPath()]);
   // Implementation files are already fetched; any other file is read as
   // the host serves it, without fetching its syntax tree.
-  const texts = new Map<string, string>();
+  const fetched = new Map<string, ts.SourceFile>();
   for (const sourceFile of program.getImplementationSourceFiles())
-    texts.set(tsgoPath(sourceFile.fileName), sourceFile.text);
+    fetched.set(tsgoPath(sourceFile.fileName), sourceFile);
   const scopes = new Set<unknown>();
   let names = false;
   for (const fileName of program.getSourceFileNames()) {
@@ -392,10 +387,15 @@ function namesChildProcess(program: ts.Program): boolean {
     // TypeScript's bundled libraries name no Node builtin, and asking for
     // the text of each of them reads the whole library set on every build.
     if (isBundledLibraryFile(program, fileName)) continue;
-    const text = texts.get(path) ?? program.getSourceText(fileName) ?? "";
+    const sourceFile = fetched.get(path);
+    const text = sourceFile === undefined ? (program.getSourceText(fileName) ?? "") : "";
     if (
-      text.includes("child_process") ||
-      (text.includes("\\") && SPELLED_CHILD_PROCESS.test(text))
+      sourceFile === undefined
+        ? text.includes("child_process") ||
+          (text.includes("\\") && SPELLED_CHILD_PROCESS.test(text))
+        : ts.sourceTextIncludes(sourceFile, "child_process") ||
+          (ts.sourceTextIncludes(sourceFile, "\\") &&
+            ts.sourceTextMatches(sourceFile, SPELLED_CHILD_PROCESS))
     ) {
       names = true;
       break;
@@ -426,7 +426,7 @@ export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFi
     const bindings: ts.Node[] = [];
     for (const call of calls) {
       if (call.questionDotToken || call.arguments.nodes[0] === undefined) continue;
-      const callee = strip(call.expression);
+      const callee = withoutParenthesesTypeWrappers(call.expression);
       if (ts.isIdentifier(callee)) bindings.push(callee);
       else if (
         ts.isPropertyAccessExpression(callee) &&

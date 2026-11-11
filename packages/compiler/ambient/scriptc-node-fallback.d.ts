@@ -23,7 +23,24 @@
  * has a lowering (throw sites stamp the errno name — "ENOENT" and
  * friends; reads answer `string | undefined`), errno/syscall/path
  * typecheck and fence per member. */
+/* A typed array or a DataView as a builtin's parameter: the three members
+ * every view has, so each of them, a Buffer and a value typed with the ES
+ * library's `ArrayBufferView` are arguments. The builtin declarations use
+ * this interface instead of the library's: that one is the type of a
+ * program's own values and maps to the checked-dynamic value wherever one
+ * flows, and a builtin's signature keeps its shape whatever a program's
+ * values are. It has no value representation of its own: a builtin lowers
+ * its view argument at the call. */
+interface ScriptcBufferView<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike> {
+  readonly buffer: TArrayBuffer;
+  readonly byteLength: number;
+  readonly byteOffset: number;
+}
 declare namespace NodeJS {
+  /* The type of process.stdout and process.stderr, under the name
+   * @types/node gives it. */
+  type TtyWriteStream = import("tty").WriteStream;
+  interface WriteStream extends TtyWriteStream {}
   interface ProcessVersions {
     readonly node: string;
     readonly openssl?: string;
@@ -48,6 +65,26 @@ declare namespace NodeJS {
   interface MemoryUsageFn {
     (): MemoryUsage;
     rss(): number;
+  }
+  /* process.features: Node's flags, each with the value that holds for a
+   * compiled binary (no inspector, not a debug build, no libuv, TLS and
+   * IPv6 present, no run-time TypeScript loading). A name Node does not
+   * define reads undefined through the index signature. */
+  interface ProcessFeatures {
+    readonly inspector: boolean;
+    readonly debug: boolean;
+    readonly uv: boolean;
+    readonly ipv6: boolean;
+    readonly tls_alpn: boolean;
+    readonly tls_sni: boolean;
+    readonly tls_ocsp: boolean;
+    readonly tls: boolean;
+    readonly openssl_is_boringssl: boolean;
+    readonly cached_builtins: boolean;
+    readonly require_module: boolean;
+    readonly quic: boolean;
+    readonly typescript: "strip" | "transform" | false;
+    readonly [name: string]: boolean | "strip" | "transform" | undefined;
   }
   interface ProcessRelease {
     name: string;
@@ -273,10 +310,9 @@ declare var process: {
     readonly variables: { readonly [name: string]: string | number | boolean | undefined };
     readonly target_defaults?: { readonly default_configuration: string };
   };
-  /* Node's feature probes — a compiled binary has no inspector and is
-   * not a debug build; undeclared members read undefined through the
-   * index signature. */
-  readonly features: { readonly [name: string]: boolean | undefined };
+  /* Node's feature flags with the values that hold for a compiled binary
+   * (see NodeJS.ProcessFeatures). */
+  readonly features: NodeJS.ProcessFeatures;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -351,8 +387,8 @@ declare var process: {
    * preserved. The boolean is Node's backpressure signal — these synchronous
    * writes always return true. Static BufferEncoding arguments and the
    * completion callback overloads match Node's WritableStream surface. */
-  stdout: import("tty").WriteStream;
-  stderr: import("tty").WriteStream;
+  stdout: NodeJS.WriteStream;
+  stderr: NodeJS.WriteStream;
   /* The stdin stream, the piped-input slice: the TTY probe, the
    * data/end/error/readable events and readline's 'keypress' (on and once
    * — a 'data' or 'readable' listener keeps the event loop alive until
@@ -432,6 +468,10 @@ declare var process: {
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* 'warning' — Node's process-warning channel: listeners receive the
    * warning Error (as a dyn value); emitWarning and the runtime's
    * deprecation sites dispatch synchronously (SEMANTICS.md). */
@@ -443,15 +483,31 @@ declare var process: {
    * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
+   * error channel: the monitor listener observes a thrown error before the
+   * default report, the handler listener replaces it, and origin names the
+   * channel that raised it. */
+  on(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
   once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
@@ -461,6 +517,10 @@ declare var process: {
     listener: (reason: unknown, promise: unknown) => void,
   ): void;
   removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  removeListener(
+    event: "uncaughtException" | "uncaughtExceptionMonitor",
+    listener: (err: unknown, origin: string) => void,
+  ): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;
@@ -1156,10 +1216,52 @@ interface UnderlyingSource<T = unknown> {
   pull?(controller: ReadableStreamDefaultController<T>): unknown;
   cancel?(reason?: unknown): unknown;
 }
+/* A byte stream's source and its controller, request and reader
+ * (@types/node's stream/web shapes). */
+interface UnderlyingByteSource {
+  type: "bytes";
+  autoAllocateChunkSize?: number;
+  start?(controller: ReadableByteStreamController): unknown;
+  pull?(controller: ReadableByteStreamController): unknown;
+  cancel?(reason?: unknown): unknown;
+}
+interface ReadableStreamBYOBRequest {
+  readonly view: Uint8Array | null;
+  respond(bytesWritten: number): void;
+  respondWithNewView(view: Uint8Array): void;
+}
+interface ReadableByteStreamController {
+  readonly byobRequest: ReadableStreamBYOBRequest | null;
+  readonly desiredSize: number | null;
+  enqueue(chunk?: ArrayBufferView): void;
+  close(): void;
+  error(reason?: unknown): void;
+}
+interface ReadableStreamBYOBReadValueResult<T extends ArrayBufferView> {
+  done: false;
+  value: T;
+}
+interface ReadableStreamBYOBReadDoneResult<T extends ArrayBufferView> {
+  done: true;
+  value: T | undefined;
+}
+type ReadableStreamBYOBReadResult<T extends ArrayBufferView> =
+  | ReadableStreamBYOBReadValueResult<T>
+  | ReadableStreamBYOBReadDoneResult<T>;
+interface ReadableStreamBYOBReader {
+  readonly closed: Promise<void>;
+  read<T extends ArrayBufferView>(
+    view: T,
+    options?: { min?: number },
+  ): Promise<ReadableStreamBYOBReadResult<T>>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
 interface ReadableStream<T = unknown> {
   readonly locked: boolean;
   cancel(reason?: unknown): Promise<void>;
   getReader(): ReadableStreamDefaultReader<T>;
+  getReader(options: { mode: "byob" }): ReadableStreamBYOBReader;
   tee(): [ReadableStream<T>, ReadableStream<T>];
   pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
   pipeThrough<O>(
@@ -1170,11 +1272,32 @@ interface ReadableStream<T = unknown> {
   values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
 }
 declare var ReadableStream: {
-  new <T = unknown>(source?: UnderlyingSource<T>): ReadableStream<T>;
+  /* Two constructor signatures, like @types/node's: a union of the two
+   * source shapes in one signature would drop the contextual type of a
+   * `pull(controller)` callback, since TypeScript gives no contextual
+   * signature for a property whose type differs across the union. */
+  new (
+    source: UnderlyingByteSource,
+    strategy?: QueuingStrategy<Uint8Array>,
+  ): ReadableStream<Uint8Array>;
+  new <T = unknown>(source?: UnderlyingSource<T>, strategy?: QueuingStrategy<T>): ReadableStream<T>;
   from<T>(iterable: readonly T[]): ReadableStream<T>;
   from(iterable: Uint8Array): ReadableStream<number>;
   from(iterable: string): ReadableStream<string>;
+  from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
   readonly prototype: ReadableStream<unknown>;
+};
+declare var ReadableStreamBYOBReader: {
+  new (stream: ReadableStream<Uint8Array>): ReadableStreamBYOBReader;
+  readonly prototype: ReadableStreamBYOBReader;
+};
+declare var ReadableByteStreamController: {
+  new (): ReadableByteStreamController;
+  readonly prototype: ReadableByteStreamController;
+};
+declare var ReadableStreamBYOBRequest: {
+  new (): ReadableStreamBYOBRequest;
+  readonly prototype: ReadableStreamBYOBRequest;
 };
 /* The writable side of a TransformStream and its writer. A program that
  * constructs a WritableStream, or a TransformStream with a transformer,
@@ -1266,9 +1389,9 @@ declare var CountQueuingStrategy: {
   new (init: { highWaterMark: number }): CountQueuingStrategy;
   readonly prototype: CountQueuingStrategy;
 };
-interface ByteLengthQueuingStrategy extends QueuingStrategy<ArrayBufferView> {
+interface ByteLengthQueuingStrategy extends QueuingStrategy<ScriptcBufferView> {
   readonly highWaterMark: number;
-  readonly size: QueuingStrategySize<ArrayBufferView>;
+  readonly size: QueuingStrategySize<ScriptcBufferView>;
 }
 declare var ByteLengthQueuingStrategy: {
   new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
@@ -1313,6 +1436,11 @@ interface Headers {
     callbackfn: (value: string, key: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void;
+  /* Live iterators over the sorted list: names in byte order with their
+   * combined values, every Set-Cookie value on its own. */
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
   [Symbol.iterator](): IterableIterator<[string, string]>;
 }
 declare var Headers: {
@@ -1376,7 +1504,7 @@ interface Blob {
 }
 declare var Blob: {
   new (
-    sources?: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources?: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     options?: BlobPropertyBag,
   ): Blob;
   readonly prototype: Blob;
@@ -1387,7 +1515,7 @@ interface File extends Blob {
 }
 declare var File: {
   new (
-    sources: readonly (string | ArrayBuffer | ArrayBufferView | Blob)[],
+    sources: readonly (string | ArrayBuffer | ScriptcBufferView | Blob)[],
     fileName: string,
     options?: FilePropertyBag,
   ): File;
@@ -1938,7 +2066,7 @@ declare module "node:readline/promises" {
 /* node:tty — the fd probe (the same isatty(3) behind process.*.isTTY)
  * and the supported structural view of a process output stream. */
 declare module "tty" {
-  export interface WriteStream extends NodeJS.WritableStream {
+  export interface WriteStream extends NodeJS.WritableStream, __scriptcTerminalStream.Methods {
     write(data: string | Uint8Array, callback?: (error?: Error | null) => void): boolean;
     write(
       data: string | Uint8Array,
@@ -1968,6 +2096,33 @@ declare module "tty" {
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;
+}
+
+/* The color methods process.stdout and process.stderr have only while the
+ * descriptor is a terminal: a piped or redirected stream is a socket or a
+ * file stream, which has neither, so `out.getColorDepth?.(env)` answers
+ * undefined there and a plain call throws. @types/node declares them as
+ * required, and so does `Declared`, which is what a program's own type check
+ * sees. The lowering program's overrides add `lowering` to `World`, and the
+ * stream then has `Present`: the same methods, optional, so the type of an
+ * optional call admits the undefined a pipe answers. */
+declare namespace __scriptcTerminalStream {
+  interface World {}
+  interface Declared {
+    /* The color depth Node derives from an environment object
+     * (process.env by default): 1, 4, 8 or 24 bits. */
+    getColorDepth(env?: object): number;
+    hasColors(count?: number): boolean;
+    hasColors(env?: object): boolean;
+    hasColors(count: number, env?: object): boolean;
+  }
+  interface Present {
+    getColorDepth?(env?: object): number;
+    hasColors?(count?: number): boolean;
+    hasColors?(env?: object): boolean;
+    hasColors?(count: number, env?: object): boolean;
+  }
+  type Methods = World extends { lowering: true } ? Present : Declared;
 }
 declare module "node:tty" {
   export * from "tty";

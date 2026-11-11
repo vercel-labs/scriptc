@@ -57,6 +57,7 @@ const sized: Record<string, readonly string[]> = {
     "observed",
     "changed",
     "keptSourceShapes",
+    "warnings",
   ],
 };
 

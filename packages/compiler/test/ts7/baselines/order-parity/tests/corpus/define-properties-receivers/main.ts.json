@@ -1,0 +1,21 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-properties-receivers/accessor-literal-returned-asserted.ts",
+  "<repo>/tests/corpus/define-properties-receivers/accessor-literal-local-asserted.ts",
+  "<repo>/tests/corpus/define-properties-receivers/class-instance.ts",
+  "<repo>/tests/corpus/define-properties-receivers/class-this-constructor.ts",
+  "<repo>/tests/corpus/define-properties-receivers/function.ts",
+  "<repo>/tests/corpus/define-properties-receivers/any-object.ts",
+  "<repo>/tests/corpus/define-properties-receivers/null-prototype.ts",
+  "<repo>/tests/corpus/define-properties-receivers/frozen-sealed.ts",
+  "<repo>/tests/corpus/define-properties-receivers/primitive-targets.ts",
+  "<repo>/tests/corpus/define-properties-receivers/error-instance.ts",
+  "<repo>/tests/corpus/define-properties-receivers/object-typed.ts",
+  "<repo>/tests/corpus/define-properties-receivers/view-literal-no-accessor.ts",
+  "<repo>/tests/corpus/define-properties-receivers/class-instance-as-interface.ts",
+  "<repo>/tests/corpus/define-properties-receivers/class-declared-field.ts",
+  "<repo>/tests/corpus/define-properties-receivers/record-behind-unknown.ts",
+  "<repo>/tests/corpus/define-properties-receivers/main.ts"
+ ],
+ "diags": []
+}

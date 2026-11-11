@@ -190,7 +190,8 @@ export function collectContractAnnotations(
   for (const sf of files) {
     if (
       sf.isDeclarationFile ||
-      (!sf.text.includes(CONTRACT_TYPES_MODULE) && !sf.text.includes(INLINE_ARRAY_MODULE))
+      (!ts.sourceTextIncludes(sf, CONTRACT_TYPES_MODULE) &&
+        !ts.sourceTextIncludes(sf, INLINE_ARRAY_MODULE))
     )
       continue;
     ts.walkPreorder(

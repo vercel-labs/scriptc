@@ -1,0 +1,10 @@
+{
+  "plain": {
+    "three.js sends animated geometry, materials and resource lifecycle to a native host in dev": 85228,
+    "three.js sends animated geometry, materials and resource lifecycle to a native host in release": 273629
+  },
+  "san": {
+    "three.js sends animated geometry, materials and resource lifecycle to a native host in dev": 249674,
+    "three.js sends animated geometry, materials and resource lifecycle to a native host in release": 321118
+  }
+}

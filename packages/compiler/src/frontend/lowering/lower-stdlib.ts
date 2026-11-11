@@ -1,14 +1,24 @@
-import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
+import { resolve } from "node:path";
 
 import { webStreamClassKindOf } from "./builtins/web-streams-dyn.js";
 import { staticString } from "./builtins/module-resolution.js";
-import { resolveImport } from "../program.js";
+import { resolveNpmImport } from "../program.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { lowerToNumberArguments } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
-import { isDeclaredInAmbientNamespace, packageTypeIsData } from "../type-mapper.js";
-import { isExperimentalDeclarationFile } from "../experimental-import.js";
+import {
+  definitelyNoUndiciDispatcher,
+  fetchThroughDispatcher,
+  programHasUndiciPackage,
+} from "./fetch-dispatcher.js";
+import {
+  isDeclaredInAmbientNamespace,
+  packageMemberIsData,
+  packageTypeIsData,
+} from "../type-mapper.js";
 import {
   arrayOf,
   BOOL,
@@ -23,6 +33,7 @@ import {
   VOID,
   canConvertToDyn,
   isUnitType,
+  typeEquals,
 } from "../../ir/ir.js";
 import {
   STDLIB_SURFACE,
@@ -32,7 +43,9 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import {
+  type ScrDiagnostic,
   unsupportedNativeApiDiag,
+  unsupportedPackageImportDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
 import {
@@ -44,11 +57,16 @@ import {
   type StartupCrash,
 } from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
+import { builtinConstantsEsmNamespace } from "./lower-builtin-values.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
+import { builtinCalleeName, refuseWrittenBuiltin } from "./lower-calls.js";
 import { node24FetchCompatProfile, staticFetchMembers } from "../../compat/fetch-profile.js";
 import { classGeneratorIterable } from "./class-iterables.js";
 import { generatorDrain } from "./iterator-adapters.js";
+import { boundSpecifier } from "../specifier-bounds.js";
+import { dynImportKey } from "./lower-modules.js";
+import { tsgoPath } from "../dts-paths.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 
 export function refuseUnsupportedApi(
@@ -84,25 +102,8 @@ function requestInitLiteralKey(lowerer: Lowerer, prop: ts.ObjectLiteralElementLi
   return null;
 }
 
-/** Unwrap assertions and parentheses when checking RequestInit values.
- * Computed runtime keys and non-literal objects are also validated by the
- * native runtime. */
-function requestInitValueExpr(expr: ts.Expression): ts.Expression {
-  let current = expr;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isSatisfiesExpression(current) ||
-    ts.isTypeAssertion(current) ||
-    ts.isNonNullExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
 function requestInitStaticBoolean(lowerer: Lowerer, value: ts.Expression): boolean | null {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
   if (expr.kind === ts.SyntaxKind.FalseKeyword) return false;
   const text = lowerer.checker.typeToString(lowerer.typeOf(expr));
@@ -119,9 +120,9 @@ function requestInitPropMutatedSymbols(lowerer: Lowerer): Set<ts.Symbol> {
   }
   const symbols = new Set<ts.Symbol>();
   const noteBase = (target: ts.Expression): void => {
-    let base = requestInitValueExpr(target);
+    let base = withoutParenthesesTypeWrappers(target);
     while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base)) {
-      base = requestInitValueExpr(base.expression);
+      base = withoutParenthesesTypeWrappers(base.expression);
     }
     if (!ts.isIdentifier(base)) return;
     try {
@@ -164,7 +165,7 @@ function requestInitConstBacked(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     const selected = requestInitStaticBoolean(lowerer, expr.condition);
@@ -214,7 +215,7 @@ function visitRequestInitConstSelectedValues(
   seen: Set<ts.Symbol>,
   visit: (value: ts.Expression) => void,
 ): boolean {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (selector.kind === "property" && ts.isObjectLiteralExpression(expr)) {
     // Last contributor wins. A definite later property (including one from
     // a statically traced spread) hides earlier values exactly as it does at
@@ -469,9 +470,9 @@ function fenceRequestInitObject(
         .map((arm) => lowerer.checker.getPropertyOfType(arm, row.member))
         .find((member) => member !== undefined);
     if (value !== null) {
-      const type = lowerer.typeOf(requestInitValueExpr(value));
+      const type = lowerer.typeOf(withoutParenthesesTypeWrappers(value));
       if (
-        ts.isVoidExpression(requestInitValueExpr(value)) ||
+        ts.isVoidExpression(withoutParenthesesTypeWrappers(value)) ||
         (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
       ) {
         return;
@@ -490,6 +491,20 @@ function fenceRequestInitObject(
       }
     }
     if (row.status === "static") return;
+    // A dispatcher in a program that contains the built-in undici is sent
+    // through (fetch-dispatcher.ts); one that cannot be that package's is
+    // refused here, the others where the call runs.
+    if (row.member === "dispatcher" && programHasUndiciPackage(lowerer)) {
+      if (value !== null && definitelyNoUndiciDispatcher(lowerer, value)) {
+        lowerer.noLowering(
+          "RequestInit option 'dispatcher' holding an object that is no dispatcher of the undici package",
+          blame,
+          "fetch sends a request through an Agent, Pool, Client or ProxyAgent of the undici package, or an instance of a class that extends its Dispatcher; an object that implements dispatch() itself has no lowering",
+          memberSym(),
+        );
+      }
+      return;
+    }
     const sym = memberSym();
     lowerer.noLowering(
       `RequestInit option '${row.member}'${" in a static build"}`,
@@ -545,7 +560,7 @@ function fenceRequestInitValueInner(
   value: ts.Expression,
   seen: Set<ts.Symbol>,
 ): void {
-  const expr = requestInitValueExpr(value);
+  const expr = withoutParenthesesTypeWrappers(value);
   if (ts.isObjectLiteralExpression(expr)) {
     fenceRequestInitObject(lowerer, expr, seen);
     return;
@@ -604,12 +619,21 @@ function fenceRequestInitValue(lowerer: Lowerer, value: ts.Expression): void {
 }
 
 export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
-  const callee = call.expression;
-  if (!ts.isIdentifier(callee) || callee.text !== "fetch") return null;
-  if (call.questionDotToken) return null;
+  // `fetch(…)`, and the same function named through the global object
+  // (`globalThis.fetch(…)`). The spelling decides first: most calls are
+  // neither.
+  const spelled = ts.isIdentifier(call.expression)
+    ? call.expression.text
+    : ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : null;
+  if (spelled !== "fetch" || call.questionDotToken) return null;
+  const callee = builtinCalleeName(lowerer, call);
+  if (callee === null) return null;
   const symbol = lowerer.resolveValueSymbol(callee);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   if (call.arguments.nodes.length < 1) return null;
+  refuseWrittenBuiltin(lowerer, call, callee);
   const loc = locOf(call);
   const initNode = call.arguments.nodes[1];
   if (initNode !== undefined) fenceRequestInitValue(lowerer, initNode);
@@ -694,7 +718,10 @@ export function lowerFetchCall(lowerer: Lowerer, call: ts.CallExpression): IrExp
       type: { kind: "promise", inner: DYN },
       loc,
     };
-    return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+    // An init that carries a dispatcher of the built-in undici goes to
+    // that package's fetch (fetch-dispatcher.ts).
+    const routed = fetchThroughDispatcher(lowerer, initNode, dynInput ?? url, initRef, answer, loc);
+    return { kind: "seqExpr", stmts, result: routed, type: answer.type, loc };
   }
 }
 
@@ -1034,8 +1061,12 @@ export function fenceStaticHeadersMember(
     );
 
   const headersCalls = staticFetchMembers().headersCalls;
-  if (use === "call" && members.every((member) => headersCalls.has(member))) return null;
-  const member = members.find((candidate) => use !== "call" || !headersCalls.has(candidate))!;
+  // A symbol-keyed member the profile calls static is called like the named
+  // ones (`headers[Symbol.iterator]()`).
+  const callable = (member: string): boolean =>
+    headersCalls.has(member) || (member.startsWith("[Symbol.") && status(member) === "static");
+  if (use === "call" && members.every(callable)) return null;
+  const member = members.find((candidate) => use !== "call" || !callable(candidate))!;
   if (status(member) === "unsupported") {
     lowerer.noLowering(
       `Headers.${member}`,
@@ -1047,7 +1078,7 @@ export function fenceStaticHeadersMember(
   lowerer.noLowering(
     `Headers.${member} in a static build`,
     access,
-    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach; keys()/values()/entries(), symbol-keyed iteration, and construction remain unsupported",
+    "the native static Headers surface is append/delete/get/getSetCookie/has/set/forEach, keys()/values()/entries() and iteration, each as a call; a method read as a value is unsupported",
     sym,
   );
 }
@@ -1237,9 +1268,11 @@ export function fenceStaticHeadersIteration(lowerer: Lowerer, node: ts.Node): vo
     node.parent.initializer
       ? node.parent.initializer
       : node;
-  const value = ts.isExpression(source) ? requestInitValueExpr(source) : source;
+  const value = ts.isExpression(source) ? withoutParenthesesTypeWrappers(source) : source;
   const sym = isStdlibFetchInterface(lowerer, value, "Headers");
   if (!sym) return;
+  // The profile decides: a static row iterates the handle's live step.
+  if (fetchInventoryStatus("Headers", "[Symbol.iterator]", "prototype-symbol") === "static") return;
   lowerer.noLowering(
     "Headers.[Symbol.iterator] in a static build",
     node,
@@ -1645,13 +1678,22 @@ export function lowerStaticFetchCompanionCall(
           source.type.elem,
           (id) => lowerer.shapes.get(id),
           (id) => lowerer.unions.get(id),
-        )) ||
-      source.type.kind === "dyn";
+        ));
     if (!preserve) {
-      lowerer.noLowering(
-        `ReadableStream.from() over ${lowerer.checker.typeToString(lowerer.typeOf(call.arguments.nodes[0]!))} iterables`,
-        call.arguments.nodes[0]!,
-        "arrays, Uint8Array, and strings are supported — spread other synchronous iterables into an array first: [...iterable]",
+      // Any other iterable, a compiled generator among them, steps through
+      // the web stream classes' own from (scr_webstreams.c), which reads
+      // the iterator protocol rather than the native streams' index walk.
+      return staticCallWithSurplusArgs(
+        lowerer,
+        call,
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
+        (first) => ({
+          kind: "libCall",
+          fn: "webstream.from",
+          args: [first],
+          type: DYN,
+          loc,
+        }),
       );
     }
     return staticCallWithSurplusArgs(lowerer, call, source, (first) => ({
@@ -1659,8 +1701,7 @@ export function lowerStaticFetchCompanionCall(
       fn: "fetch.streamFrom",
       // Arrays and bytes must cross by reference: their iterators read each
       // entry at pull time, so mutations after ReadableStream.from() remain
-      // observable just as they are in Node. Other supported iterable
-      // shapes retain the checked-dynamic fallback.
+      // observable just as they are in Node.
       args: [first],
       type: DYN,
       loc,
@@ -1932,11 +1973,17 @@ export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): I
 }
 
 export function lowerAbortControllerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
-  if (!ts.isIdentifier(expr.expression) || expr.expression.text !== "AbortController") {
-    return null;
-  }
-  const symbol = lowerer.resolveValueSymbol(expr.expression);
+  const spelled = ts.isIdentifier(expr.expression)
+    ? expr.expression.text
+    : ts.isPropertyAccessExpression(expr.expression)
+      ? expr.expression.name.text
+      : null;
+  if (spelled !== "AbortController") return null;
+  const named = builtinCalleeName(lowerer, expr);
+  if (named === null) return null;
+  const symbol = lowerer.resolveValueSymbol(named);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
+  refuseWrittenBuiltin(lowerer, expr, named);
   const args = expr.arguments?.nodes ?? [];
   if (args.some((argument) => ts.isSpreadElement(argument))) return null;
   const loc = locOf(expr);
@@ -2265,36 +2312,275 @@ export function lowerStaticReadableStreamReaderCall(
   );
 }
 
+/** The pre-bounding refusal for a computed specifier whose values the
+ * build cannot turn into literal edges. */
+const COMPUTED_SPECIFIER_REFUSAL =
+  "dynamic import() of computed specifiers (the module graph resolves at " +
+  "build time — the specifier must be a string literal)";
+
 export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
-  const arg = call.arguments.nodes[0];
-  // The specifier text must be known at build time; a constant expression
-  // (`import("node:" + "fs")`, `import(FS)`) names its module just as a
-  // literal does. collectDynamicImports keys its table by the same text.
-  const specifier = arg === undefined ? null : staticString(lowerer, arg);
-  if (specifier === null) {
-    lowerer.unsupported(
-      "SC1090",
-      call,
-      "dynamic import() of computed specifiers (the module graph resolves at " +
-        "build time — the specifier must be a string literal)",
-      undefined,
-      "dynamic-import",
-    );
-  }
+  // Import attributes are refused whatever the specifier is, so the check
+  // runs before the bounded-specifier lowering can claim the call.
   if (call.arguments.nodes.length !== 1) {
     lowerer.unsupported("SC1090", call, "dynamic import() with import attributes");
   }
-  const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${specifier}`);
-  if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+  const arg = call.arguments.nodes[0];
+  if (arg === undefined) {
+    lowerer.unsupported("SC1090", call, COMPUTED_SPECIFIER_REFUSAL, undefined, "dynamic-import");
+  }
+  // The specifier text must be known at build time. A written string literal
+  // asks the checker: collectDynamicImports recorded that answer under the
+  // same key, and it is the answer Node receives after compilation (`./a.js`
+  // maps to a.ts). A constant expression (`import("node:" + "fs")`,
+  // `import(FS)`) names one module too, so it needs no selector; like every
+  // value the load names at run time, it is recorded under the bounded key.
+  // A specifier that is not a compile-time constant may still be bounded to
+  // a set of values (a module-local parameter every call of which passes a
+  // literal); the bounded lowering picks the arm at run time (SPEC §5.1).
+  if (ts.isStringLiteralLike(arg)) return lowerResolvedImport(lowerer, call, arg.text, false);
+  const folded = staticString(lowerer, arg);
+  if (folded !== null) return lowerResolvedImport(lowerer, call, folded, true);
+  return lowerBoundedDynamicImport(lowerer, call, arg);
+}
+
+/** The package an `import()` names when the program does not compile that
+ * package (the selection never judged it: nothing imports it statically),
+ * or null: the refusal lowerResolvedImport reports for the call. */
+function uncompiledImportPackage(lowerer: Lowerer, call: ts.CallExpression): string | null {
+  if (call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
+  if (call.arguments.nodes.length !== 1) return null;
+  const arg = call.arguments.nodes[0]!;
+  const literal = ts.isStringLiteralLike(arg);
+  const specifier = literal ? arg.text : staticString(lowerer, arg);
+  if (specifier === null) return null;
+  const file = ts.getSourceFileOfNode(call).fileName;
+  if (lowerer.dynImports.get(dynImportKey(file, specifier, !literal)) !== undefined) return null;
+  return resolveNpmImport(file, specifier)?.packageName ?? null;
+}
+
+/** The package a refusal names as outside the compiled module graph
+ * (unsupportedPackageImportDiag, unsupportedPackageValueDiag). */
+const OUTSIDE_GRAPH_PACKAGE =
+  /npm package '([^']+)' statically: its implementation is not part of the compiled module graph/;
+
+/** `statement` was abandoned with `refusals`. Where one of them names a
+ * package the program does not compile, the build answers it with a Node
+ * island and lowers the program again, and the statement then lowers as far
+ * as its next such package: `Promise.all([import("a"), import("b"),
+ * import("c")])` took one build round per package, each a reload of the
+ * program and a lowering. Every `import()` inside the statement that names
+ * such a package is refused the same way once the statement lowers that
+ * far, so those refusals are reported here, with the first: one round
+ * decides every package of the statement.
+ *
+ * Functions and classes DECLARED inside the statement lower on their own
+ * and report for themselves; function expressions lower with the statement
+ * and count. */
+export function reportUncompiledImportsOf(
+  lowerer: Lowerer,
+  statement: ts.Node,
+  refusals: readonly ScrDiagnostic[],
+): void {
+  const named = new Set<string>();
+  for (const d of refusals) {
+    const pkg = d.code === "SC2013" ? OUTSIDE_GRAPH_PACKAGE.exec(d.message) : null;
+    if (pkg !== null) named.add(pkg[1]!);
+  }
+  if (named.size === 0) return;
+  const walk = (node: ts.Node): void => {
+    if (node !== statement && (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)))
+      return;
+    if (ts.isCallExpression(node)) {
+      const pkg = uncompiledImportPackage(lowerer, node);
+      if (pkg !== null && !named.has(pkg)) {
+        named.add(pkg);
+        lowerer.pushDiag(unsupportedPackageImportDiag(pkg, locOf(node)));
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(statement);
+}
+
+/** The single module a build-time specifier names, lowered the way the site
+ * that spelled it is: its recorded entry answers the arm. A written literal
+ * asks the checker; a folded constant, like every bounded value, names the
+ * file Node loads at run time and carries that module. */
+function lowerResolvedImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  specifier: string,
+  bounded: boolean,
+): IrExpr {
+  const res = lowerer.dynImports.get(
+    dynImportKey(ts.getSourceFileOfNode(call).fileName, specifier, bounded),
+  );
+  if (res === undefined) {
+    // A package nothing imports statically was never judged by the
+    // selection, so the program does not compile it. The call gets the
+    // refusal a static import of that package gets, which names the
+    // package: under the automatic policy the package then runs in a Node
+    // island (node-islands/growth.ts) and the next round loads it at this
+    // call (lower-node-island.ts, lowerIslandLoadCall).
+    const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
+    if (npm !== null) {
+      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call)));
+      throw new PoisonError();
+    }
+    lowerer.refuseUnsupportedApi("'import()'", call);
+  }
   if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
-    return lowerOwnStaticModuleImport(lowerer, call, specifier);
+    // A bounded value's entry carries the module its text named under
+    // Node's exact-file rules; the literal site re-reads its own module.
+    return res.dep !== undefined
+      ? lowerOwnStaticModuleImportResolved(lowerer, call, specifier, res.dep)
+      : lowerOwnStaticModuleImport(lowerer, call, specifier);
   }
-  return lowerStaticNamespaceImport(lowerer, call, {
-    kind: "moduleNs",
-    moduleId: `builtin:${res.module}`,
-  });
+  // node:constants resolves the one checked-dynamic namespace object its
+  // `import * as` binding gets: the merged CommonJS object's names plus
+  // "default", sorted, on a null-prototype object (builtinConstantsEsmNamespace).
+  // Its names come from the platform, so a static census cannot list them.
+  if (res.module === "constants")
+    return lowerStaticNamespaceImport(lowerer, call, DYN, null, undefined, () =>
+      builtinConstantsEsmNamespace(lowerer, locOf(call)),
+    );
+  return lowerStaticNamespaceImport(
+    lowerer,
+    call,
+    { kind: "moduleNs", moduleId: `builtin:${res.module}` },
+    null,
+    // Node's punycode module reports DEP0040 when its body first runs,
+    // which a dynamic import does here rather than at link time; the
+    // import's own load reports even from a dependency, whose require()
+    // would not.
+    res.module === "punycode" ? [lowerer.punycodeDynamicImportWarning(call)] : undefined,
+  );
+}
+
+/** A computed import() whose specifier the build can bound (SPEC §5.1): a
+ * selector over the bounded values, each arm the literal site's own
+ * lowering. Values answer the builtins, Node's own rejections, and (slice
+ * B2) the program modules they name; an entry with no resolved module keeps
+ * the pre-bounding refusal, and Top refuses with the first source that
+ * could not be bounded. The default arm is unreachable while the bound is
+ * sound; it throws ERR_MODULE_NOT_FOUND rather than falling through. */
+function lowerBoundedDynamicImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  arg: ts.Expression,
+): IrExpr {
+  const loc = locOf(call);
+  const bound = boundSpecifier(lowerer.specifierBoundContext(), arg);
+  if (bound.kind !== "set") {
+    const at = ts.getSourceFileOfNode(bound.at);
+    const line = ts.getLineAndCharacterOfPosition(at, ts.tokenStartOfNode(bound.at)).line + 1;
+    lowerer.unsupported(
+      "SC1090",
+      call,
+      `dynamic import() with a specifier that cannot be bounded at build time ` +
+        `(at ${at.fileName}:${line}: ${bound.why})`,
+      "pass a string literal, a const, or a parameter of a module-local function every " +
+        "call of which passes one",
+      "dynamic-import",
+    );
+  }
+  const sf = ts.getSourceFileOfNode(call);
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (expected === undefined || expected === null) lowerer.refuseUnsupportedApi("'import()'", call);
+  const arms: { value: string; expr: IrExpr }[] = [];
+  for (const value of bound.values) {
+    const res = lowerer.dynImports.get(dynImportKey(sf.fileName, value, true));
+    if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+    let arm: IrExpr;
+    if (res.kind === "rejected") {
+      arm = lowerRejectedImport(lowerer, call, res.crash);
+    } else if (res.kind === "program-module") {
+      // A bounded value that named a program module lowers exactly as the
+      // literal site of the same specifier would (SPEC §5.1, §4.1 step 2).
+      // A path value carries the exact file it named; any other value
+      // resolves the way a literal of its text does.
+      arm =
+        res.dep !== undefined
+          ? lowerOwnStaticModuleImportResolved(lowerer, call, value, res.dep)
+          : lowerOwnStaticModuleImport(lowerer, call, value);
+    } else {
+      arm = lowerStaticNamespaceImport(lowerer, call, {
+        kind: "moduleNs",
+        moduleId: `builtin:${res.module}`,
+      });
+    }
+    const coerced = lowerer.coerceToExpected(arm, expected);
+    if (!typeEquals(coerced.type, expected)) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `dynamic import() of '${value}' (its namespace does not convert to ` +
+          `'${lowerer.fmt(expected)}')`,
+        undefined,
+        "dynamic-import",
+      );
+    }
+    arms.push({ value, expr: coerced });
+  }
+  const specifier = lowerer.declareHiddenLocal("%specifier", STRING);
+  const specifierRef = (): IrExpr => varRef(specifier.id, STRING, loc);
+  let result: IrExpr = {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [
+      numLit(0, loc),
+      strLit("ERR_MODULE_NOT_FOUND", loc),
+      {
+        kind: "strConcat",
+        left: strLit("Cannot find module '", loc),
+        right: {
+          kind: "strConcat",
+          left: specifierRef(),
+          right: strLit("'", loc),
+          type: STRING,
+          loc,
+        },
+        type: STRING,
+        loc,
+      },
+    ],
+    type: expected,
+    loc,
+  };
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!;
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: specifierRef(),
+        right: strLit(arm.value, loc),
+        type: { kind: "bool" },
+        loc,
+      },
+      then: arm.expr,
+      else_: result,
+      type: expected,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: specifier.id,
+        init: lowerer.lowerExprExpecting(arg, STRING),
+        loc,
+      },
+    ],
+    result,
+    type: expected,
+    loc,
+  };
 }
 
 /** An import() Node rejects before any module of its graph evaluates
@@ -2376,7 +2662,7 @@ function programImportTarget(
       if (ts.isSourceFile(d) && !d.isDeclarationFile) return d;
     }
   }
-  const resolved = resolveImport(lowerer.program, ts.getSourceFileOfNode(call), specifier);
+  const resolved = lowerer.facts.importedModule(ts.getSourceFileOfNode(call), specifier);
   return resolved !== null && !resolved.isDeclarationFile ? resolved : null;
 }
 
@@ -2390,12 +2676,29 @@ function lowerOwnStaticModuleImport(
   call: ts.CallExpression,
   specifier: string,
 ): IrExpr {
-  const dep = programImportTarget(lowerer, call, specifier);
+  return lowerOwnStaticModuleImportResolved(
+    lowerer,
+    call,
+    specifier,
+    programImportTarget(lowerer, call, specifier),
+  );
+}
+
+/** `lowerOwnStaticModuleImport` for a module the site names by value rather
+ * than by a literal node: a BOUNDED dynamic-import arm (SPEC §5.1) resolves
+ * its module at run time, so the caller passes the module and the specifier
+ * text it came from. The fences are the literal site's. */
+function lowerOwnStaticModuleImportResolved(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  spec: string,
+  dep: ts.SourceFile | null,
+): IrExpr {
   if (dep !== null && (dep.fileName.endsWith(".cts") || isCjsJsFile(dep, lowerer.program))) {
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own CommonJS module '${specifier}' ` +
+      `dynamic import of the program's own CommonJS module '${spec}' ` +
         "(its namespace comes from module.exports through Node's CJS lexer, " +
         "which has no compiled story — require it, or import it statically)",
     );
@@ -2404,29 +2707,36 @@ function lowerOwnStaticModuleImport(
     lowerer.unsupported(
       "SC1090",
       call,
-      `dynamic import of the program's own module '${specifier}' ` +
+      `dynamic import of the program's own module '${spec}' ` +
         "(this module is not part of the compiled module graph)",
     );
   }
-  const ns: IrType & { kind: "moduleNs" } = {
-    kind: "moduleNs",
-    moduleId: `file:${dep === null ? "" : (lowerer.moduleNamespaceIdOfType(lowerer.typeOf(call))?.replace(/^file:/, "") ?? dep.fileName)}`,
-  };
-  // The call's type is Promise<typeof import(...)>; prefer the mapper's
-  // canonical normalized id when available.
+  // The call's type is Promise<typeof import(...)>, whose mapper carries the
+  // canonical module namespace id. A bounded arm's type is a widened promise
+  // with no moduleNs to read, so it falls back to the same spelling
+  // moduleNamespaceIdOfType produces — the module's one identity either way.
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
-  const inner = mapped?.kind === "promise" && mapped.inner.kind === "moduleNs" ? mapped.inner : ns;
+  const inner: IrType & { kind: "moduleNs" } =
+    mapped?.kind === "promise" && mapped.inner.kind === "moduleNs"
+      ? mapped.inner
+      : { kind: "moduleNs", moduleId: `file:${tsgoPath(resolve(dep.fileName))}` };
   return lowerStaticNamespaceImport(lowerer, call, inner, dep);
 }
 
 /** Builds a fresh native promise for a static module namespace. Source
  * modules run/await their guarded initializer after the mandatory hop;
- * builtins only take the hop and resolve their immortal token. */
+ * builtins only take the hop and resolve their immortal token. A target
+ * that has a checked-dynamic value instead of a namespace token passes it
+ * as `resolveValue`. */
 function lowerStaticNamespaceImport(
   lowerer: Lowerer,
   call: ts.CallExpression,
-  ns: IrType & { kind: "moduleNs" },
+  ns: IrType,
   dep: ts.SourceFile | null = null,
+  /** Statements the module's own load runs, after the import's hop. */
+  loaded?: readonly IrStmt[],
+  /** A checked-dynamic value to resolve instead of a namespace token. */
+  resolveValue?: () => IrExpr,
 ): IrExpr {
   const loc = locOf(call);
   const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: ns };
@@ -2450,11 +2760,16 @@ function lowerStaticNamespaceImport(
     };
     const body: IrStmt[] = [{ kind: "exprStmt", expr: hop, loc }];
     if (dep !== null) appendStaticModuleInit(lowerer, dep, body, loc);
-    body.push({
-      kind: "return",
-      value: { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc },
-      loc,
-    });
+    if (loaded !== undefined) body.push(...loaded);
+    let resolved: IrExpr;
+    if (resolveValue !== undefined) resolved = resolveValue();
+    else if (ns.kind === "moduleNs")
+      resolved = { kind: "moduleNsRef", moduleId: ns.moduleId, type: ns, loc };
+    else
+      throw new InternalCompilerError(
+        "lowerer bug: static import target has no namespace or value",
+      );
+    body.push({ kind: "return", value: resolved, loc });
     const ctx = lowerer.ctx;
     lowerer.liftedFns.push({
       name: fnName,
@@ -2821,17 +3136,23 @@ export function npmMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExpres
   // read has a representation even though the package ships no code. Only a
   // package VALUE shape (a class, a merged value declaration) has nothing
   // to read from without that package's implementation.
-  if (
-    packageTypeIsData(lowerer.typeOf(access.expression), {
-      isStdlibFile: (sf) => lowerer.isStdlibFile(sf),
-      isExternalTypeFile: lowerer.isExternalTypeFile,
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, lowerer.experimentalFiles),
-    })
-  )
-    return;
-  const pkg =
-    lowerer.npmPackageOf(lowerer.typeOf(access.expression)) ??
-    lowerer.npmPackageOfSymbol(lowerer.checker.getSymbolAtLocation(access.name));
+  const ctx = {
+    isStdlibFile: (sf: ts.SourceFile) => lowerer.isStdlibFile(sf),
+    isExternalTypeFile: lowerer.isExternalTypeFile,
+  };
+  const receiverType = lowerer.typeOf(access.expression);
+  if (packageTypeIsData(receiverType, ctx)) return;
+  let pkg = lowerer.npmPackageOf(receiverType);
+  if (pkg === null) {
+    // The receiver's type is the program's own (a spread copy, an
+    // intersection with a local shape, a `Pick`) and only the member's
+    // declaration is a package's. The same data test, asked of the shape
+    // that declares the member: a data shape's member is data the program
+    // holds, a value shape's member still has nothing to read from.
+    const member = lowerer.checker.getSymbolAtLocation(access.name);
+    pkg = lowerer.npmPackageOfSymbol(member);
+    if (pkg !== null && member && packageMemberIsData(member, lowerer.checker, ctx)) return;
+  }
   if (!pkg) return;
   lowerer.pushDiag(unsupportedPackageValueDiag(pkg, locOf(access)));
   throw new PoisonError();

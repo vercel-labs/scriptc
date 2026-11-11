@@ -10,6 +10,7 @@
   6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080
 
 #include "scr_runtime.h"
+#include "scr_abort_signal.h"
 #include "scr_system_errors.h"
 #include "scr_url_internal.h"
 
@@ -25,8 +26,6 @@ static void sf_signal_install(void);
 #endif
 
 typedef struct SfTransfer SfTransfer;
-typedef struct SfSignal SfSignal;
-typedef struct SfSignalWatch SfSignalWatch;
 typedef struct SfStream SfStream;
 typedef struct SfReader SfReader;
 typedef struct SfResponse SfResponse;
@@ -47,36 +46,16 @@ struct SfReadRequest {
   ScrPromise *promise;            /* or NULL for a sink request */
   const ScrFetchReadSink *sink;   /* readableStreamDefaultReaderRead's read request */
   void *sink_ctx;
+  /* A chunk was queued when read() was called: Node answers it on its
+   * fast path, whose result is { done, value }; a read request's is
+   * { value, done }. */
+  bool buffered;
   SfReadRequest *next;
 };
 
 struct SfTypedRef {
   ScrDyn *value;
   SfTypedRef *next;
-};
-
-struct SfSignalWatch {
-  SfSignal *source; /* weak; NULL after the source fires */
-  void *owner;      /* owner keeps source alive */
-  void (*fire)(SfSignalWatch *, SfSignal *);
-  SfSignalWatch *next;
-};
-
-struct SfSignal {
-  size_t rc;
-  bool aborted;
-  ScrDyn *reason;
-  ScrError *error_reason;
-  bool reason_self;
-  ScrDynHandleTag reason_self_tag;
-  bool reason_tracked;
-  SfSignal *reason_next;
-  ScrEventTargetCore core; /* listeners and the onabort attribute */
-  SfSignalWatch *watchers;
-  SfSignal **sources;
-  SfSignalWatch **source_watches;
-  size_t source_count;
-  double timer_id;
 };
 
 struct SfReader {
@@ -1042,12 +1021,13 @@ static ScrBytes *sf_chunk_bytes(const ScrDyn *chunk) {
   return NULL;
 }
 
-static ScrDyn *sf_read_result(bool done, ScrDyn *value) {
+static ScrDyn *sf_read_result(bool done, ScrDyn *value, bool done_first) {
   ScrDyn *result = scr_dyn_new_obj();
+  if (done_first) scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   scr_dyn_obj_set(result, "value", 5,
                   value ? scr_dyn_retain(value)
                         : scr_dyn_retain(scr_dyn_undefined()));
-  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  if (!done_first) scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   return result;
 }
 
@@ -1061,7 +1041,7 @@ static void sf_reader_fulfill_one(SfReader *r, bool done, ScrDyn *value) {
     free(request);
     return;
   }
-  scr_promise_fulfill_ref(request->promise, sf_read_result(done, value),
+  scr_promise_fulfill_ref(request->promise, sf_read_result(done, value, !done && request->buffered),
                           &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
   scr_promise_release(request->promise);
   free(request);
@@ -1999,6 +1979,7 @@ static bool sf_reader_read_request(SfReader *r, ScrPromise *p, const ScrFetchRea
   request->promise = p ? scr_promise_retain(p) : NULL;
   request->sink = sink;
   request->sink_ctx = sink_ctx;
+  request->buffered = s->head != NULL && !s->closed && !s->error;
   if (r->pending_tail) r->pending_tail->next = request;
   else r->pending_head = request;
   r->pending_tail = request;
@@ -2450,7 +2431,7 @@ ScrDyn *scr_fetch_stream_new(ScrDyn *source) {
     if (type && type->kind != SCR_DYN_UNDEF) {
       sf_stream_release(s);
       scr_dyn_release(materialized);
-      sf_type_error("byte streams are not supported by static ReadableStream");
+      { static const char refused[] = "byte streams are not supported by static ReadableStream"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     const ScrDyn *pull = scr_dyn_obj_get(source_view, "pull", 4);
@@ -2656,7 +2637,7 @@ static ScrDyn *sf_stream_invoke(void *ptr, ScrDyn *self, const char *method,
     scr_dyn_release(materialized);
     if (scr_exc_pending()) return NULL;
     if (byob) {
-      sf_type_error("BYOB readers are not supported");
+      { static const char refused[] = "BYOB readers are not supported"; scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020"); }
       return NULL;
     }
     SfReader *r = sf_stream_get_reader(s);
@@ -6376,6 +6357,7 @@ static bool sf_start_hop(SfTransfer *t) {
     return false;
   }
   t->client = client;
+  scr_http_client_frame_any_method(client);
 
   scr_http_client_on_response(
       client, sf_closure(t, (void *)&sf_on_response),

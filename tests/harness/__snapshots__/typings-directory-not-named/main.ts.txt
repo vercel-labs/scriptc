@@ -1,0 +1,7 @@
+typings-directory-not-named/main.ts:5:23 - error SC0001: Could not find a declaration file for module 'pantry-units'. 'typings-directory-not-named/node_modules/pantry-units/index.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/pantry-units` if it exists or add a new declaration (.d.ts) file containing `declare module 'pantry-units';`
+
+  4 | // does either.
+  5 | import { scale } from "pantry-units";
+    |                       ^~~~~~~~~~~~~~
+  6 | import * as oven from "oven-dial";

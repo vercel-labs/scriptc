@@ -3,6 +3,7 @@ import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
+  DYN,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -14,6 +15,7 @@ import {
   classValueConstructor,
   type IrType,
 } from "../../ir/ir.js";
+import { DYN_KIND } from "./dyn.js";
 import { liveRefView } from "./expr-stream-bridges.js";
 import { typedRefConstructor, vAdapters } from "./shapes.js";
 import { INT32_ABI_SUFFIX, SCALAR_UNION_RESULT } from "./int32-abi.js";
@@ -78,6 +80,8 @@ export function emitCallExpr(
     | "call"
     | "ffiCall"
     | "closure"
+    | "viewOf"
+    | "viewSource"
     | "callValue"
     | "selfRef"
     | "new"
@@ -182,6 +186,7 @@ export function emitCallExpr(
             if (
               (a.kind === "optChain" ||
                 a.kind === "nullish" ||
+                a.kind === "logical" ||
                 a.kind === "ternary" ||
                 a.kind === "arrIntrinsic") &&
               isScalarOptionalSource(a, host.unionSources)
@@ -778,6 +783,20 @@ export function emitCallExpr(
         // Declared function as a value: the interned immortal closure —
         // every mention yields the same pointer, so `f === f` is true.
         host.fnValues.add(e.fnName);
+        if (e.length !== undefined) {
+          // The interned closure has one length for every mention, so each
+          // mention records the same one, as below: the closure names itself
+          // as its identity root and its boxes report the recorded length.
+          const closure = `@${mangleFnClosure(e.fnName)}`;
+          const lengthPtr = B.tmp();
+          const identityPtr = B.tmp();
+          B.line(`${lengthPtr} = getelementptr inbounds %ScrClosure, ptr ${closure}, i64 0, i32 5`);
+          B.line(`store i32 ${e.length}, ptr ${lengthPtr}`);
+          B.line(
+            `${identityPtr} = getelementptr inbounds %ScrClosure, ptr ${closure}, i64 0, i32 6`,
+          );
+          B.line(`store ptr ${closure}, ptr ${identityPtr}`);
+        }
         return host.own({
           name: host.retainFrame(`@${mangleFnClosure(e.fnName)}`, e.type),
           type: e.type,
@@ -785,13 +804,27 @@ export function emitCallExpr(
       }
       // Lifted async lambdas enter through their spawn wrapper (which
       // takes sc_env first, like every lifted function).
-      host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+      // An environment that holds values (value-captures.ts) has its boxes
+      // first, so `caps[]` and its count describe only those.
+      const layout = e.adapts === true ? null : host.valueCaptures.layout(e.fnName);
       const c = B.tmp();
-      B.line(
-        `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
-      );
+      if (layout === null) {
+        host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
+        B.line(
+          `${c} = call ptr @scr_closure_new(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${e.captures.length})`,
+        );
+      } else {
+        const type = host.environmentType(layout);
+        host.declare(
+          `declare ptr @scr_closure_new_values(ptr, ${host.sizeType}, ptr, ${host.sizeType})`,
+        );
+        B.line(
+          `${c} = call ptr @scr_closure_new_values(ptr @${host.callTarget(e.fnName)}, ${host.sizeType} ${layout.boxes}, ptr ${host.environmentValues(layout)}, ${host.sizeType} ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to ${host.sizeType}))`,
+        );
+      }
       const out = host.own({ name: c, type: e.type });
-      const functionKind = host.closureFunctionKind(target);
+      const functionKind =
+        host.closureFunctionKind(target) | (layout === null ? 0 : CLOSURE_KIND.VALUES);
       if (functionKind) {
         const kindPtr = B.tmp();
         B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
@@ -804,17 +837,52 @@ export function emitCallExpr(
         B.line(`${entry} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 7`);
         B.line(`store ptr @${mangleBorrowedFunction(e.fnName)}, ptr ${entry}`);
       }
+      if (e.length !== undefined) {
+        // The function's own length, where its type carries parameters it
+        // does not declare: a closure that names itself as its identity
+        // root reports the recorded length from every box, as an adapter
+        // reports the length of the function it stands for.
+        const lengthPtr = B.tmp();
+        const identityPtr = B.tmp();
+        B.line(`${lengthPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 5`);
+        B.line(`store i32 ${e.length}, ptr ${lengthPtr}`);
+        B.line(`${identityPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 6`);
+        B.line(`store ptr ${c}, ptr ${identityPtr}`);
+      }
       e.captures.forEach((localId, i) => {
+        const slot = layout?.slots[i];
+        if (slot !== undefined && slot.kind !== "box") {
+          host.storeEnvironmentValue(layout!, c, i, localId, true, e.loc);
+          return;
+        }
+        const index = slot?.index ?? i;
         const box = host.captureBox(localId);
         const retained = host.retainBox(box);
         const caps = B.tmp();
         const capp = B.tmp();
         B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 1 ; caps`);
         B.line(
-          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${i} ; caps[${i}]`,
+          `${capp} = getelementptr inbounds ptr, ptr ${caps}, ${host.sizeType} ${index} ; caps[${index}]`,
         );
         B.line(`store ptr ${retained}, ptr ${capp}`);
-        if (i === 0 && e.adapts === true) {
+        if (i === 0 && e.adapts === true && target.captures?.[0]?.type.kind === "dyn") {
+          // A checked adapter over a boxed function: it stands for that
+          // function, and a box of it is that function again
+          // (scr_dyn_new_func reads caps[0] of a closure of this kind).
+          const slot = B.tmp();
+          const original = B.tmp();
+          const kindPtr = B.tmp();
+          const own = B.tmp();
+          const kind = B.tmp();
+          B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+          B.line(`${original} = load ptr, ptr ${slot}`);
+          B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${c}, i64 0, i32 4`);
+          B.line(`${own} = load i32, ptr ${kindPtr}`);
+          B.line(`${kind} = or i32 ${own}, ${CLOSURE_KIND.CHECKED_ADAPTER}`);
+          B.line(`store i32 ${kind}, ptr ${kindPtr}`);
+          host.declare(`declare void @scr_dyn_adopt_identity(ptr, ptr)`);
+          B.line(`call void @scr_dyn_adopt_identity(ptr ${c}, ptr ${original})`);
+        } else if (i === 0 && e.adapts === true) {
           // A signature adapter stands for the function it forwards to.
           const slot = B.tmp();
           const original = B.tmp();
@@ -852,6 +920,45 @@ export function emitCallExpr(
       });
       return out;
     }
+    case "viewOf": {
+      const v = emitBorrowedInputs(host, [e.value])[0]!;
+      const result = B.tmp();
+      if (e.adapter === null) {
+        // The checked-dynamic boundary marks the views it makes
+        // (CHECKED_ADAPTER: the callable is in caps[0]).
+        const kindPtr = B.tmp();
+        const kind = B.tmp();
+        const bit = B.tmp();
+        B.line(`${kindPtr} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 0, i32 4`);
+        B.line(`${kind} = load i32, ptr ${kindPtr}`);
+        B.line(`${bit} = and i32 ${kind}, ${CLOSURE_KIND.CHECKED_ADAPTER}`);
+        B.line(`${result} = icmp ne i32 ${bit}, 0`);
+        return { name: result, type: e.type };
+      }
+      // The view an adapter makes is the closure whose code is the
+      // adapter's body: one load and a pointer comparison.
+      const entry = B.tmp();
+      const code = B.tmp();
+      B.line(`${entry} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 0, i32 1`);
+      B.line(`${code} = load ptr, ptr ${entry}`);
+      B.line(`${result} = icmp eq ptr ${code}, @${host.callTarget(e.adapter)}`);
+      return { name: result, type: e.type };
+    }
+    case "viewSource": {
+      // captures[0] of a view is the box of what it forwards to: the
+      // function (the slot the adapter's identity adoption reads) or the
+      // boundary's checked-dynamic callable.
+      const v = emitBorrowedInputs(host, [e.value])[0]!;
+      const caps = B.tmp();
+      const box = B.tmp();
+      const slot = B.tmp();
+      const source = B.tmp();
+      B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr ${v.name}, i64 1 ; caps`);
+      B.line(`${box} = load ptr, ptr ${caps}`);
+      B.line(`${slot} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
+      B.line(`${source} = load ptr, ptr ${slot}`);
+      return host.own({ name: host.retainFrame(source, e.type), type: e.type });
+    }
     case "callValue": {
       // Calling through a closure value: load the fn pointer, pass the
       // closure itself first (the callValue ABI), then the declared
@@ -880,18 +987,33 @@ export function emitCallExpr(
       // only if the callee reads it: the receiver window records the
       // instance (owned by this frame for the whole call) with its typed-ref
       // recipe, and dyn.this builds the box on first read.
-      const lazyReceiver =
+      // A record or an array bound as `this` (`holder.f(x)`) is recorded the
+      // same way. The frontend holds it in a binding that lives through the
+      // call (a hidden local, or a binding nothing can reassign), so it is
+      // read where the receiver is pushed, without a reference of its own:
+      // a callee that cannot read the receiver costs the call nothing.
+      const lazyValue =
         e.receiver?.kind === "dynFrom" &&
-        e.receiver.value.type.kind === "object" &&
-        isDynTypedRefType(e.receiver.value.type) &&
-        !host.shapeHost.isErrorClass(e.receiver.value.type.className)
-          ? host.emitExpr(e.receiver.value)
+        ((e.receiver.value.type.kind === "object" &&
+          isDynTypedRefType(e.receiver.value.type) &&
+          !host.shapeHost.isErrorClass(e.receiver.value.type.className)) ||
+          e.receiver.value.type.kind === "record" ||
+          e.receiver.value.type.kind === "array")
+          ? e.receiver.value
           : null;
+      const borrowedValue =
+        lazyValue !== null && lazyValue.type.kind !== "object" && lazyValue.kind === "varRef"
+          ? lazyValue
+          : null;
+      const ownedReceiver =
+        lazyValue !== null && borrowedValue === null ? host.emitExpr(lazyValue) : null;
       const receiver =
-        e.receiver === undefined || lazyReceiver || forwardsReceiver
+        e.receiver === undefined || lazyValue !== null || forwardsReceiver
           ? null
           : host.emitExpr(e.receiver);
       const pushReceiver = (): void => {
+        const lazyReceiver =
+          ownedReceiver ?? (borrowedValue !== null ? host.emitReadReceiver(borrowedValue) : null);
         if (lazyReceiver) {
           const t = lazyReceiver.type;
           const recipe = typedRefRecipe(host, t);
@@ -1622,12 +1744,104 @@ export function emitConstruction(
   if (host.mayThrow.has(`%${e.className}.constructor`)) host.emitPendingCheck();
 }
 
+/** A call to the computed-read helper that takes the number,
+ * `helper(value, index)`: the helper's own first test, made at the call. An
+ * integer index below a checked array's length reads the element as the
+ * helper reads it (dyn.arrAt), and every other receiver and index calls the
+ * helper. The test is made in place, without the helper's three runtime
+ * calls: the kind tag says whether the value is a checked array (dyn.arrLen
+ * answers 0 for every other kind), and the index is compared with the
+ * array's dense length as an integer. The call site calls only dyn.arrAt,
+ * which the helper calls, so it links no runtime function the helper does
+ * not link. The helper may answer a checked value or its jsval word. Both
+ * operands must be variables or literals, since the read and the slow path
+ * evaluate them again. Null when the call does not have that shape. */
+function emitArrayElementRead(
+  host: LlvmEmitterContext,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  value: IrExpr,
+  index: IrExpr,
+): LlValue | null {
+  if (callee.params[1]?.type.kind !== "f64" || index.type.kind !== "f64") return null;
+  if (index.kind !== "varRef" && index.kind !== "numLit") return null;
+  if (value.type.kind !== "dyn") return null;
+  const word = callee.returnType.kind === "jsval";
+  if ((callee.returnType.kind !== "dyn" && !word) || host.int32Abis.has(e.callee)) return null;
+  const B = host.B;
+  const loc = e.loc;
+  const slow = B.newLabel("idx.slow");
+  const join = B.newLabel("idx.join");
+  const receiver = host.emitReadReceiver(value);
+  const number = host.emitExpr(index);
+  const isArray = B.tmp();
+  B.line(`${isArray} = icmp eq i32 ${host.dynKind(receiver.name)}, ${DYN_KIND.ARR}`);
+  const array = B.newLabel("idx.arr");
+  B.condBr(isArray, array, slow);
+  B.startBlock(array);
+  // The conversion saturates: NaN converts to 0 and an infinity to an end
+  // of the range, and neither converts back to itself. -0 converts to 0,
+  // the element its property name "0" names. A negative integer compares
+  // unsigned, above every length, and so does the end of the range that
+  // 2^63 converts to.
+  host.declare(`declare i64 @llvm.fptosi.sat.i64.f64(double)`);
+  const integer = B.tmp();
+  const back = B.tmp();
+  const whole = B.tmp();
+  B.line(`${integer} = call i64 @llvm.fptosi.sat.i64.f64(double ${number.name})`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${whole} = fcmp oeq double ${back}, ${number.name}`);
+  const lengthPtr = B.tmp();
+  const length = B.tmp();
+  B.line(`${lengthPtr} = getelementptr inbounds i8, ptr ${receiver.name}, i64 16 ; ->v.arr.len`);
+  B.line(`${length} = load ${host.sizeType}, ptr ${lengthPtr}`);
+  let wideLength = length;
+  if (host.sizeType !== "i64") {
+    wideLength = B.tmp();
+    B.line(`${wideLength} = zext ${host.sizeType} ${length} to i64`);
+  }
+  const below = B.tmp();
+  const holds = B.tmp();
+  B.line(`${below} = icmp ult i64 ${integer}, ${wideLength}`);
+  B.line(`${holds} = and i1 ${whole}, ${below}`);
+  const inRange = B.newLabel("idx.at");
+  B.condBr(holds, inRange, slow);
+  B.startBlock(inRange);
+  const element: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.arrAt",
+    args: [value, index],
+    type: DYN,
+    loc,
+  };
+  host.frames.push([]);
+  const fast = host.emitExpr(
+    word ? { kind: "libCall", fn: "js.fromDyn", args: [element], type: e.type, loc } : element,
+  );
+  host.toFrame(fast);
+  host.releaseTemps(host.frames.pop()!);
+  const fastLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(slow);
+  host.frames.push([]);
+  const read = emitCallExpr(host, e, false, false, undefined, true);
+  host.toFrame(read);
+  host.releaseTemps(host.frames.pop()!);
+  const slowLabel = B.currentLabel();
+  B.terminate(`br label %${join}`);
+  B.startBlock(join);
+  const result = B.tmp();
+  B.line(`${result} = phi ptr [ ${fast.name}, %${fastLabel} ], [ ${read.name}, %${slowLabel} ]`);
+  return host.own({ name: result, type: e.type });
+}
+
 /** A call to a numeric computed-read helper (IrFunction.fastRead "index")
  * `helper(value, String(index))`: scr_dyn_index_get answers dyn arrays and
  * live array capsules at the index without forming the key, and the helper
  * call (with its key string) runs only when that read has no answer. Both
  * operands must be variables or literals, since the slow path evaluates the
- * call again. Null when the call does not have that shape. */
+ * call again. The helper that takes the number is emitArrayElementRead's.
+ * Null when the call does not have that shape. */
 function emitNumericIndexRead(
   host: LlvmEmitterContext,
   e: ExprOf<"call">,
@@ -1636,7 +1850,8 @@ function emitNumericIndexRead(
   const value = e.args[0];
   const key = e.args[1];
   if (e.args.length !== 2 || !value || !key || value.kind !== "varRef") return null;
-  if (key.kind !== "toString" || key.operand.type.kind !== "f64") return null;
+  if (key.kind !== "toString") return emitArrayElementRead(host, e, callee, value, key);
+  if (key.operand.type.kind !== "f64") return null;
   if (key.operand.kind !== "varRef" && key.operand.kind !== "numLit") return null;
   if (callee.returnType.kind !== "dyn" || host.int32Abis.has(e.callee)) return null;
   const B = host.B;

@@ -12,8 +12,9 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
-import { lowerIslandExpr } from "./lower-node-island.js";
-import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
+import { islandFunctionView, lowerIslandExpr } from "./lower-node-island.js";
+import { lowerOwnKeyQuestion } from "./own-key-lists.js";
+import { lowerAwaitedUniformPromiseAll, promiseAllValueUnread } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Expression lowering: the expression dispatch (lowerExpr), literals
@@ -23,10 +24,19 @@ import { InternalCompilerError } from "../../errors.js";
  * ToBoolean/ToString coercion helpers, and field/element reads and writes
  * (FieldTarget). */
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands.js";
 import { staticCondition } from "./static-typeof.js";
+import { noteBuiltinMemberWrite } from "./builtin-member-writes.js";
 import { constituentTypes } from "../ts7/checker.js";
+import { lowerDeferredCallbackCall } from "./expressions/library-callbacks.js";
+import { PoisonError } from "./lowerer.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  CONSTRUCTOR_FUNCTION_PREFIX,
+  holdsConstructorFunction,
+  namedConstructorBox,
+} from "./held-constructors.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { recordStringCall } from "./record-links.js";
 import { nullProtoRecordShape } from "./null-prototype.js";
@@ -44,6 +54,7 @@ import {
   F64,
   type IrExpr,
   type IrFunction,
+  type IrGlobal,
   type IrLocal,
   type IrRecordShape,
   type IrStmt,
@@ -58,6 +69,8 @@ import {
   arrayOf,
   funcOf,
   isUnitType,
+  keyedRecordFields,
+  primitiveConstructorType,
   typeEquals,
   sortArms,
 } from "../../ir/ir.js";
@@ -65,11 +78,15 @@ import {
   cjsExportAssignmentOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
+  isCjsJsFile,
   isJsSourceFile,
   locOf,
+  orderedImportsOf,
 } from "../program.js";
+import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
+  ARRAY_CALLBACK_METHODS,
   type CompoundOp,
   NARROW_FIRST,
   UNSUPPORTED_EXPR,
@@ -77,6 +94,7 @@ import {
   stdlibGlobalNameOf,
 } from "./surfaces.js";
 import { UNSUPPORTED } from "../../diagnostics/diagnostic.js";
+import { isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import { lowerHelperReturnCall } from "./containers/iterator-helpers.js";
 import {
   lowerSafeIndexRead,
@@ -105,9 +123,14 @@ import { classSymbolKeyOf } from "./symbol-fields.js";
 import { lowerTypeofExpr } from "./expressions/typeof.js";
 import { lowerIdentifierExpr } from "./expressions/identifiers.js";
 import { lowerFieldCompoundValue, lowerIncDec } from "./expressions/updates.js";
-import { lowerTernary, staleReadMessage } from "./expressions/narrowing.js";
+import {
+  lowerTernary,
+  noteStrandedInstanceRead,
+  staleReadMessage,
+} from "./expressions/narrowing.js";
 import { checkedArmExtraction } from "./coercions/unions.js";
 import {
+  cjsExportTableAccessorOf,
   classFieldTarget,
   lowerPropertyAccessExpr,
   lowerUnionKeyedRead,
@@ -167,7 +190,7 @@ export {
   lowerPrefixUnary,
 } from "./expressions/updates.js";
 import { lowerDeleteExpression } from "./primitive-throws.js";
-import { awaitDynThenable, programMayDefineThenables } from "./thenables.js";
+import { awaitDynThenable, awaitTypedThenable, programMayDefineThenables } from "./thenables.js";
 import { awaitsChildThenable } from "./handle-properties.js";
 export { lowerInstanceOf } from "./expressions/relational.js";
 
@@ -248,6 +271,94 @@ export function templateRawTextOf(
 const LOWER_EXPR_MAX_DEPTH = 200;
 let lowerExprDepth = 0;
 
+/** Lowering an expression probes its operands (tryLowerExpression) to pick
+ * a form, and a probe lowers the operand in full, so an operand can be
+ * lowered once per form its parent tries and a chain of calls multiplies
+ * that at every link: a chain of array methods taking arrow functions costs
+ * three times as much per link, which is 3 million lowerings (over a
+ * minute) at 12 links and the heap limit at 14. A refused probe is not
+ * repeated (Lowerer.refusedProbes); the rest are bounded here. One
+ * outermost statement (or expression, where no statement is being
+ * lowered) gets this many lowerings of its parts, or
+ * LOWER_EXPR_ATTEMPTS_PER_NODE for each of its nodes when that is more (a
+ * module wrapped in one call is one statement); past that the answer is a
+ * named fence rather than a build that does not end. */
+let lowerExprAttemptsFloor = 5_000_000;
+const LOWER_EXPR_ATTEMPTS_PER_NODE = 2_000;
+
+/** Sets the attempt floor and returns the one it replaced: a test reaches
+ * the fence without the minutes the shipped floor stands for. */
+export function setLowerExprAttemptsFloor(floor: number): number {
+  const previous = lowerExprAttemptsFloor;
+  lowerExprAttemptsFloor = floor;
+  return previous;
+}
+
+let loweringBudgetDepth = 0;
+let loweringBudgetRoot: ts.Node | null = null;
+let lowerExprAttempts = 0;
+let lowerExprAttemptLimit = lowerExprAttemptsFloor;
+let lowerExprAttemptLimitSized = false;
+let lowerExprAttemptsSpent = false;
+
+/** Enters a statement or an expression. The outermost one owns the attempt
+ * budget; answers whether this is it. Pair with closeLoweringBudget. */
+export function openLoweringBudget(node: ts.Node): boolean {
+  if (loweringBudgetDepth++ > 0) return false;
+  loweringBudgetRoot = node;
+  lowerExprAttempts = 0;
+  lowerExprAttemptLimit = lowerExprAttemptsFloor;
+  lowerExprAttemptLimitSized = false;
+  lowerExprAttemptsSpent = false;
+  return true;
+}
+
+export function closeLoweringBudget(): void {
+  if (--loweringBudgetDepth === 0 && lowerExprAttempts > lowerExprAttemptsPeak)
+    lowerExprAttemptsPeak = lowerExprAttempts;
+}
+
+let lowerExprAttemptsPeak = 0;
+
+/** The most lowerings one outermost statement has taken since the last
+ * call, which starts the count again. A count, not a time: the chain
+ * scaling test compares it across chain lengths to hold lowering linear. */
+export function takeLowerExprAttemptsPeak(): number {
+  const peak = lowerExprAttemptsPeak;
+  lowerExprAttemptsPeak = 0;
+  return peak;
+}
+
+/** Refuses the budget's owner when its lowering returned after the budget
+ * was spent: a form that could finish from operands it had already probed
+ * is not the form the full search would have picked. */
+export function refuseSpentLowering(lowerer: Lowerer): void {
+  if (!lowerExprAttemptsSpent) return;
+  lowerer.unsupported(
+    "SC1090",
+    loweringBudgetRoot!,
+    `statements that take more than ${lowerExprAttemptLimit} lowering attempts (each call in a chain is lowered once for every form its caller tries)`,
+    "assign parts of the chain to variables",
+  );
+}
+
+/** The attempt count passed its limit: size the limit to the budget's owner
+ * the first time, and fence once it is truly exceeded. From then on every
+ * lowering inside the owner is refused. */
+function lowerExprAttemptsExceeded(lowerer: Lowerer): void {
+  if (!lowerExprAttemptLimitSized) {
+    lowerExprAttemptLimitSized = true;
+    let nodes = 0;
+    ts.walkPreorder(loweringBudgetRoot!, () => {
+      nodes++;
+    });
+    lowerExprAttemptLimit = Math.max(lowerExprAttemptsFloor, nodes * LOWER_EXPR_ATTEMPTS_PER_NODE);
+    if (lowerExprAttempts <= lowerExprAttemptLimit) return;
+  }
+  lowerExprAttemptsSpent = true;
+  refuseSpentLowering(lowerer);
+}
+
 export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (lowerExprDepth >= LOWER_EXPR_MAX_DEPTH) {
     lowerer.unsupported(
@@ -256,9 +367,42 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       `expressions nested deeper than ${LOWER_EXPR_MAX_DEPTH} levels`,
     );
   }
+  // A probe of this operand was refused while an enclosing expression or
+  // statement was being lowered, and it is asked for again inside a probe
+  // with nothing around it changed: the refusal stands. Without this, a
+  // call chain whose innermost link cannot be lowered is lowered twice at
+  // every link (once to probe the receiver, once to use it), which doubles
+  // the work per link.
+  if (lowerer.diagSink !== null && lowerer.refusedProbes.size > 0) {
+    const refusal = lowerer.standingRefusal(expr);
+    if (refusal !== null) {
+      for (const diagnostic of refusal.diagnostics) lowerer.diagSink.push(diagnostic);
+      throw new PoisonError();
+    }
+  }
+  const outermost = openLoweringBudget(expr);
+  const frame = lowerer.openRefusedProbeFrame();
+  const operands = lowerer.openOperandFrame();
   lowerExprDepth++;
   try {
-    let lowered = lowerExprInner(lowerer, expr);
+    if (!outermost && ++lowerExprAttempts > lowerExprAttemptLimit)
+      lowerExprAttemptsExceeded(lowerer);
+    // An own-key question about a record held under its type is answered
+    // from the type (own-key-lists.ts). Only a `.length` read and a strict
+    // equality can be one.
+    let lowered =
+      (ts.isPropertyAccessExpression(expr) || ts.isBinaryExpression(expr)
+        ? lowerOwnKeyQuestion(lowerer, expr)
+        : null) ?? lowerExprInner(lowerer, expr);
+    // An island's function in a slot the program types as a function is its
+    // typed view there. Programs without islands skip it.
+    if (lowerer.nodeIslands !== null && lowered.type.kind === "dyn")
+      lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
+    // A value that holds a primitive constructor by the constructor's own
+    // function type: a refusal of the statement around it is counted
+    // (held-constructors.ts). Programs that hold no constructor skip it.
+    if (lowerer.constructorFunctionTypes && holdsConstructorFunction(lowerer, lowered.type))
+      lowerer.constructorTouches++;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))
@@ -268,10 +412,44 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
+    if (ts.isAwaitExpression(expr)) lowered = markSuspension(lowerer, lowered, locOf(expr));
+    if (outermost) refuseSpentLowering(lowerer);
     return lowered;
+  } catch (e) {
+    // An internal error or a checker panic on its way out: the innermost
+    // expression being lowered is where the diagnostic belongs
+    // (diagnostics/crash-site.ts). A poison passes untouched.
+    if (!(e instanceof PoisonError) && isCompilerCrash(e)) noteCrashSite(e, () => locOf(expr));
+    throw e;
   } finally {
     lowerExprDepth--;
+    lowerer.closeOperandFrame(operands);
+    lowerer.closeRefusedProbeFrame(frame);
+    closeLoweringBudget();
   }
+}
+
+/** Record that the enclosing arrow resumed: the assignment runs right after
+ * the await's value lands, so anything the body does later reads it. The
+ * await expression itself is the sequence's result, which keeps void awaits
+ * representable. */
+function markSuspension(lowerer: Lowerer, awaited: IrExpr, loc: SrcLoc): IrExpr {
+  const flag = lowerer.ctx.suspendedFlag;
+  if (!flag) return awaited;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "assign",
+        localId: flag.id,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+    ],
+    result: awaited,
+    type: awaited.type,
+    loc,
+  };
 }
 
 /** `number | undefined` from a NaN-coded double whose slot never holds a
@@ -325,6 +503,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   const webAssemblyValue = lowerWebAssemblyValue(lowerer, expr);
   if (webAssemblyValue !== null) return webAssemblyValue;
   refuseWebAssemblyUse(lowerer, expr);
+
+  // A callback that may be unassigned, with observable arguments after it:
+  // the library checks it once they are evaluated
+  // (expressions/library-callbacks.ts). A program whose bindings are all
+  // stored before they are read skips it.
+  if (lowerer.earlyReadVars.size > 0 && (ts.isCallExpression(expr) || ts.isNewExpression(expr))) {
+    const deferred = lowerDeferredCallbackCall(lowerer, expr);
+    if (deferred !== null) return deferred;
+  }
 
   if (ts.isNumericLiteral(expr)) {
     const value = Number(expr.text.replace(/_/g, ""));
@@ -527,7 +714,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     );
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
-  if (ts.isIdentifier(expr)) return lowerIdentifierExpr(lowerer, expr, loc);
+  if (ts.isIdentifier(expr)) {
+    const value = lowerIdentifierExpr(lowerer, expr, loc);
+    // A generic instance's binding that came out as one of its records.
+    if (lowerer.typeParamBindings !== null) noteStrandedInstanceRead(lowerer, expr, value.type);
+    return value;
+  }
   if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
     return lowerer.lowerLambda(expr);
   }
@@ -560,6 +752,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     }
   }
   if (expr.kind === ts.SyntaxKind.ThisKeyword) {
+    // A lifted export-table accessor has no receiver: `this.<member>` reads
+    // resolve statically (property-access.ts), and other uses are refused.
+    if (cjsExportTableAccessorOf(expr) !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "uses of 'this' in a CommonJS export-table accessor other than reading one of its members",
+      );
+    }
     // Only arrows can see an enclosing method's `this` (JS lexical-this);
     // `this` in plain nested functions is already a tsc error under
     // noImplicitThis, so the generic scope walk here is preflight-safe.
@@ -772,6 +973,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       if (awaitsChildThenable(lowerer, expr, value)) {
         return awaitDynThenable(lowerer, lowerer.coerceToExpected(value, DYN), loc);
       }
+      // A TYPED operand whose static type has a callable `then`: the
+      // await calls it, as it does for a checked-dynamic thenable.
+      {
+        const adopted = awaitTypedThenable(lowerer, expr, value, loc);
+        if (adopted !== null) return adopted;
+      }
       // A TYPED non-promise operand (`await 42`, an awaited record):
       // JS awaits non-thenables through exactly one microtask turn and
       // yields the value itself — evaluate the operand, hop, answer it.
@@ -831,6 +1038,9 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     return { kind: "awaitExpr", value, type: value.type.inner, loc };
   }
   if (ts.isYieldExpression(expr)) return lowerYield(lowerer, expr);
+  // A write to a member of a built-in object is recorded for the check at
+  // the end of lowering (builtin-member-writes.ts) and lowers as usual.
+  noteBuiltinMemberWrite(lowerer, expr);
   if (ts.isPrefixUnaryExpression(expr)) return lowerer.lowerPrefixUnary(expr);
   // `x++` / `x--` in expression position: yields the OLD value.
   if (ts.isPostfixUnaryExpression(expr)) return lowerIncDec(lowerer, expr, false);
@@ -1870,8 +2080,14 @@ export function lowerNullishCoalesce(
  * sides of the default. */
 function assertedPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const probe = lowerAbsenceProbe(lowerer, node);
+  // An unassigned deferred-init field takes the default too.
   if (probe === null)
-    return runtimeOptionalStorageOperand(lowerer, node) ?? lowerer.lowerExpr(node);
+    return (
+      runtimeOptionalStorageOperand(lowerer, node) ??
+      deferredSlotOr(lowerer, lowerer.lowerExpr(node))
+    );
+  const slot = lowerer.deferredFieldSlot(probe);
+  if (slot) return slot;
   if (probe.type.kind !== "union" && probe.type.kind !== "object") return probe;
   let outer = node;
   while (ts.isParenthesizedExpression(outer)) outer = outer.expression;
@@ -2298,6 +2514,38 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** `lowerOptionalNumber`'s bigint twin: an `undefined`-armed BIGINT value at
+ * a `++`/`--` use (`let sequence: bigint | undefined` read back after the
+ * guard proved it present). JavaScript's ToNumeric(undefined) is NaN, which
+ * a bigint slot has no representation for, so the payload is EXTRACTED with
+ * the same checked helper a narrowed read uses: a value that is really
+ * undefined there (only a lying assertion reaches it) throws the catchable
+ * TypeError instead of yielding a number the checker says cannot appear.
+ * Null when the operand is not an optional bigint the checker narrowed to
+ * bigint — the caller keeps its refusal. */
+export function lowerOptionalBigint(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  loc: SrcLoc,
+  narrowedNode: ts.Expression,
+): IrExpr | null {
+  if (operand.type.kind !== "union") return null;
+  const unionId = operand.type.unionId;
+  const valueTag = lowerer.armTag(unionId, BIGINT_T);
+  if (valueTag < 0 || lowerer.armTag(unionId, UNDEFINED_T) < 0) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(narrowedNode))?.kind !== "bigint") return null;
+  const checked = lowerer.narrowedArmHelper(unionId, BIGINT_T, loc);
+  if (checked) return { kind: "call", callee: checked, args: [operand], type: BIGINT_T, loc };
+  return {
+    kind: "unionNarrow",
+    unionId,
+    tag: valueTag,
+    value: operand,
+    type: BIGINT_T,
+    loc,
+  };
+}
+
 /** A numeric operand of an operator: the binary arithmetic and bitwise six
  * (and their ordering comparisons), unary `+`, `-` and `~`, and compound
  * assignment's read and right side. JavaScript applies ToNumber to a
@@ -2544,6 +2792,11 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     // Namespace members are bindings, not fields of a runtime namespace
     // object. Their ordinary read already preserves optional storage.
     if (!expr.questionDotToken && nsMemberIdentOf(lowerer, expr)) return null;
+    // The tail of an optional chain (`a?.b.c`) is absent when the chain
+    // short-circuits: the chain's own lowering answers that undefined and
+    // reads the field, with its absence, off a present receiver. A field
+    // target here would read `.c` off the short-circuited `a?.b`.
+    if (!expr.questionDotToken && hasOptionalChainGuard(expr.expression, lowerer)) return null;
     const target = lowerer.fieldTarget(expr);
     if (
       target?.container === "class" &&
@@ -2654,7 +2907,7 @@ export function recordKeyResultOk(lowerer: Lowerer, shape: IrRecordShape, type: 
     (type.kind === "union" && lowerer.armTag(type.unionId, t) >= 0) ||
     exactUnionWidening(lowerer, t, type) ||
     (type.kind === "dyn" && lowerer.dynConvertible(t));
-  if (!shape.fields.every((f) => surfaces(f.type))) return false;
+  if (!keyedRecordFields(shape).every((f) => surfaces(f.type))) return false;
   if (shape.indexValue) {
     if (type.kind === "dyn") return shape.indexValue.kind === "dyn";
     if (!surfaces(shape.indexValue)) return false;
@@ -2682,6 +2935,77 @@ export function lowerElementCompoundStatement(
   return { kind: "exprStmt", expr: lowered.expr!, loc: locOf(expr) };
 }
 
+/** The string a boxed property key names, when its type proves it names
+ * one: a string, or an element of a `string[]` read without a bounds proof
+ * (`keys[i]`, lowered as `string | undefined`). A keyed write or `in` probe
+ * takes it as a string, without boxing it and coercing it back. A missing
+ * element names the property "undefined", as ToPropertyKey spells it, and
+ * the conversion has no effects, so it may run where the key is evaluated.
+ * Null for every other key: it may hold a symbol, which is an identity and
+ * not a name. */
+export function stringPropertyKey(
+  lowerer: Lowerer,
+  boxedKey: IrExpr,
+  node: ts.Expression,
+): IrExpr | null {
+  if (boxedKey.kind !== "dynFrom") return null;
+  const key = boxedKey.value;
+  if (key.type.kind === "string") return key;
+  return lowerer.runtimeOptionalWidening(key.type, STRING) !== null
+    ? lowerer.ensureString(key, node)
+    : null;
+}
+
+/** The reference of a checked member write, evaluated ahead of the value
+ * it will take: the receiver and the key are held in temporaries (key
+ * coercion waits for PutValue), and `store` writes a checked-dynamic value
+ * through them. Shared by the member assignment and by a destructuring
+ * assignment's member targets, so both make the same write. */
+export function dynMemberReference(
+  lowerer: Lowerer,
+  target: ts.ElementAccessExpression | ts.PropertyAccessExpression,
+  recv: IrExpr,
+  loc: SrcLoc,
+): { stmts: IrStmt[]; store: (stored: IrExpr) => IrStmt } {
+  const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
+  const boxedKey = ts.isElementAccessExpression(target)
+    ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
+    : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
+  // A key that is a string before boxing is its own property key: the
+  // write takes it as a string, without boxing it and coercing it back.
+  const namedKey = ts.isElementAccessExpression(target)
+    ? stringPropertyKey(lowerer, boxedKey, target.argumentExpression)
+    : null;
+  const stringKey = namedKey !== null;
+  const keyValue = namedKey ?? boxedKey;
+  // A key that names a string by conversion marks its write (the libCall's
+  // namedKey); a key typed `string` makes the write it always made.
+  const converted = stringKey && boxedKey.kind === "dynFrom" && namedKey !== boxedKey.value;
+  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
+  return {
+    stmts: [
+      { kind: "varDecl", localId: receiver.id, init: recv, loc },
+      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+    ],
+    store: (stored) => ({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+        args: [
+          varRef(receiver.id, DYN, loc),
+          varRef(key.id, stringKey ? STRING : DYN, loc),
+          stored,
+        ],
+        type: VOID,
+        loc,
+        ...(converted ? { namedKey: true as const } : {}),
+      },
+      loc,
+    }),
+  };
+}
+
 /** Checked member assignment evaluates the reference before its RHS and
  * yields the original assigned value, including in a chained assignment. */
 export function lowerDynMemberAssignment(
@@ -2691,18 +3015,7 @@ export function lowerDynMemberAssignment(
 ): IrExpr {
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
-  const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const boxedKey = ts.isElementAccessExpression(target)
-    ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
-    : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  // A key that is a string before boxing is its own property key: the
-  // write takes it as a string, without boxing it and coercing it back.
-  const stringKey =
-    ts.isElementAccessExpression(target) &&
-    boxedKey.kind === "dynFrom" &&
-    boxedKey.value.type.kind === "string";
-  const keyValue = stringKey ? boxedKey.value : boxedKey;
-  const key = lowerer.declareHiddenLocal("%setKey", stringKey ? STRING : DYN);
+  const reference = dynMemberReference(lowerer, target, recv, loc);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2724,24 +3037,9 @@ export function lowerDynMemberAssignment(
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: receiver.id, init: recv, loc },
-      { kind: "varDecl", localId: key.id, init: keyValue, loc },
+      ...reference.stmts,
       { kind: "varDecl", localId: assigned.id, init: value, loc },
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
-          args: [
-            varRef(receiver.id, DYN, loc),
-            varRef(key.id, stringKey ? STRING : DYN, loc),
-            stored,
-          ],
-          type: VOID,
-          loc,
-        },
-        loc,
-      },
+      reference.store(stored),
     ],
     result,
     type: result.type,
@@ -2820,7 +3118,7 @@ export function concatOperand(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExp
   return (
     classToStringConversion(lowerer, e, "default", node) ??
     classUnionToString(lowerer, e, "default", node) ??
-    lowerer.ensureString(e, node)
+    lowerer.ensureString(e, node, "default")
   );
 }
 
@@ -2957,13 +3255,6 @@ export function operatorUnsupported(
   );
 }
 
-/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
- * binding: the runtime kind test over the snapshot's tag. Only the
- * primitive literals narrow ("string"/"number"/"boolean" — exactly what
- * the exception cell can distinguish); "object"/"function"/"undefined"
- * cannot be answered from the payload kinds (a thrown array and a thrown
- * record are both refs) and get the instanceof hint. Null when neither
- * side is a typeof over a catch binding (not this pattern). */
 /** The %Error-rooted object type inside a checker type, or null: the
  * direct mapping when it IS one, else the first mappable %Error-rooted
  * constituent of an intersection (`Error & Record<"code", unknown>` —
@@ -2988,6 +3279,12 @@ export function errorRootedObjectOf(lowerer: Lowerer, t: ts.Type): IrType | null
   return null;
 }
 
+/** `typeof e === "lit"` / `typeof e !== "lit"` where e is a catch
+ * binding. "string", "number", "boolean" and "object" are the runtime kind
+ * test over the snapshot's tag; "undefined", "function", "bigint" and
+ * "symbol" are asked of the checked-dynamic value the binding holds. Null
+ * when neither side is a typeof over a catch binding compared with a
+ * string literal (not this pattern). */
 export function lowerCaughtTypeofTest(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -2998,19 +3295,34 @@ export function lowerCaughtTypeofTest(
     if (!ts.isTypeOfExpression(a)) continue;
     const local = lowerer.caughtLocalOf(a.expression);
     if (!local) continue;
-    if (!ts.isStringLiteral(b)) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "'typeof' catch-binding tests against non-literal strings",
-      );
-    }
+    // A comparison with a computed string compares the ordinary `typeof`
+    // value, as it does for every other operand.
+    if (!ts.isStringLiteral(b)) continue;
+    const ref: IrExpr = { kind: "varRef", localId: local.id, type: CAUGHT, loc };
     if (b.text === "string" || b.text === "number" || b.text === "boolean" || b.text === "object") {
       return {
         kind: "caughtTest",
-        value: { kind: "varRef", localId: local.id, type: CAUGHT, loc },
+        value: ref,
         test: b.text,
         ...(negated ? { negated: true } : {}),
+        type: BOOL,
+        loc,
+      };
+    }
+    // The kinds the snapshot's tag does not tell apart are asked of the
+    // value the binding holds, exactly as for an `unknown` value
+    // (lowerDynTypeofTest).
+    if (
+      b.text === "undefined" ||
+      b.text === "function" ||
+      b.text === "bigint" ||
+      b.text === "symbol"
+    ) {
+      return {
+        kind: "dynTest",
+        test: b.text,
+        ...(negated ? { negated: true as const } : {}),
+        value: { kind: "caughtToDyn", value: ref, type: DYN, loc },
         type: BOOL,
         loc,
       };
@@ -3018,10 +3330,32 @@ export function lowerCaughtTypeofTest(
     lowerer.unsupported(
       "SC1090",
       b,
-      `'typeof' catch-binding tests against "${b.text}" (only "string"/"number"/"boolean"/"object" are supported)`,
+      `'typeof' catch-binding tests against "${b.text}" ('typeof' answers "string", "number", "boolean", "object", "undefined", "function", "bigint" or "symbol")`,
     );
   }
   return null;
+}
+
+/** Whether values of `type` are JavaScript functions kept in a `%call`
+ * slot: a function with members (a hybrid record), or an instance of a
+ * class whose merged interface carries a call signature. The slot is how
+ * the value is called (hybridCallUnwrap); to `typeof` it is a function. */
+export function hasCallSlot(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "object")
+    return lowerer.classes.get(type.className)?.fields.get("%call")?.kind === "func";
+  if (type.kind === "record")
+    return (
+      lowerer.shapes
+        .get(type.shapeId)
+        ?.fields.some((f) => f.name === "%call" && f.type.kind === "func") === true
+    );
+  return false;
+}
+
+/** typeofAnswer for a lowerer's types: a value with a `%call` slot is a
+ * function, whatever its representation. */
+export function typeofAnswerOf(lowerer: Lowerer): (arm: IrType) => string | null {
+  return (arm) => (hasCallSlot(lowerer, arm) ? "function" : typeofAnswer(arm));
 }
 
 export function typeofAnswer(arm: IrType): string | null {
@@ -3098,12 +3432,8 @@ export function aliasTypeofNarrows(
   polarity: boolean,
 ): { sym: ts.Symbol; tsArm: ts.Type }[] {
   const out: { sym: ts.Symbol; tsArm: ts.Type }[] = [];
-  const strip = (e: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    return e;
-  };
   const walk = (e0: ts.Expression, pol: boolean): void => {
-    const e = strip(e0);
+    const e = withoutParentheses(e0);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
       walk(e.operand, !pol);
       return;
@@ -3124,7 +3454,7 @@ export function aliasTypeofNarrows(
       (k === ts.SyntaxKind.EqualsEqualsEqualsToken && pol) ||
       (k === ts.SyntaxKind.ExclamationEqualsEqualsToken && !pol);
     if (!positive) return;
-    const leaf = aliasTypeofArmOf(lowerer, e, strip);
+    const leaf = aliasTypeofArmOf(lowerer, e, withoutParentheses);
     if (leaf) out.push(leaf);
   };
   if (implicitMonoFile(ts.getSourceFileOfNode(cond))) walk(cond, polarity);
@@ -3162,21 +3492,21 @@ function aliasTypeofArmOf(
     if (!ts.isTypeOfExpression(init)) continue;
     const opnd = strip(init.expression);
     if (!ts.isIdentifier(opnd)) continue;
-    if (!bindingNeverReassigned(lowerer, aliasSym, aliasDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), aliasSym, aliasDecl)) continue;
     const valSym = lowerer.resolveValueSymbol(opnd);
     const valDecl = valSym ? valSym.valueDeclaration : undefined;
     if (!valSym || !valDecl) continue;
     // v1: identifier PARAMETERS only — initialized at function entry,
     // before any alias can capture their typeof.
     if (!ts.isParameter(valDecl) || !ts.isIdentifier(valDecl.name)) continue;
-    if (!bindingNeverReassigned(lowerer, valSym, valDecl)) continue;
+    if (!bindingNeverReassigned(lowerer.bindingScope(), valSym, valDecl)) continue;
     const fn = valDecl.parent;
     if (fn === undefined || !(e.pos >= fn.pos && e.end <= fn.end)) continue;
     const valT = lowerer.typeOf(opnd); // override-aware: implicit bindings compose
     const mapped = lowerer.mapTypeOf(valT);
     if (mapped?.kind !== "union") continue;
     const def = lowerer.unions.get(mapped.unionId);
-    const answers = def?.arms.map(typeofAnswer);
+    const answers = def?.arms.map(typeofAnswerOf(lowerer));
     if (!def || !answers || !answers.every((s): s is string => s !== null)) continue;
     const tags = answers.flatMap((s, i) => (s === b.text ? [i] : []));
     if (tags.length !== 1) continue;
@@ -3229,20 +3559,94 @@ export function cjsAccessorSnapshotOf(
   if (hit !== undefined) return hit;
   if (!lexerVisibleAccessors(ts.getSourceFileOfNode(getter)).includes(getter)) return null;
   const call = cjsAccessorCall(lowerer, getter, locOf(getter));
-  if (call === null) return null;
-  const at = locOf(getter);
+  return call === null ? null : cjsLinkSnapshot(lowerer, getter, call.type);
+}
+
+function cjsLinkSnapshot(
+  lowerer: Lowerer,
+  decl: ts.Node,
+  type: IrType,
+): { id: string; type: IrType } {
+  const hit = lowerer.cjsAccessorSnapshots.get(decl);
+  if (hit !== undefined) return hit;
+  const at = locOf(decl);
   const snapshot = {
     id: keyedHelperName(lowerer, "%g.cjsSnapshot", `${at.file}:${at.start}:${at.end}`),
-    type: call.type,
+    type,
   };
-  lowerer.globalsList.push({
-    id: snapshot.id,
-    name: "%cjsSnapshot",
-    type: call.type,
-    mutable: true,
-  });
-  lowerer.cjsAccessorSnapshots.set(getter, snapshot);
+  lowerer.globalsList.push({ id: snapshot.id, name: "%cjsSnapshot", type, mutable: true });
+  lowerer.cjsAccessorSnapshots.set(decl, snapshot);
   return snapshot;
+}
+
+/** The export global and link-time snapshot of a CommonJS data export
+ * that can change after its module initialized. ES-module import bindings
+ * keep the value Node copied at link; stable exports alias the global. */
+function cjsLinkedDataExport(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+): { global: IrGlobal; snapshot: { id: string; type: IrType } } | null {
+  const decl = symbol.declarations[0];
+  const global = lowerer.globalsBySymbol.get(symbol);
+  if (
+    decl === undefined ||
+    global === undefined ||
+    !isCjsJsFile(ts.getSourceFileOfNode(decl), lowerer.program) ||
+    symbol.declarations.some(ts.isGetAccessorDeclaration) ||
+    !cjsExportChangesAfterInit(lowerer, symbol)
+  )
+    return null;
+  return { global, snapshot: cjsLinkSnapshot(lowerer, decl, global.type) };
+}
+
+/** The snapshot an ES-module import binding of a changing CommonJS data
+ * export reads, or null when the binding aliases live storage. */
+export function cjsImportedDataSnapshotOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): { id: string; type: IrType } | null {
+  const raw = lowerer.checker.getSymbolAtLocation(ident);
+  const binding = raw?.declarations[0];
+  if (
+    raw === undefined ||
+    binding === undefined ||
+    !(ts.isImportSpecifier(binding) || ts.isExportSpecifier(binding)) ||
+    isCjsJsFile(ts.getSourceFileOfNode(binding), lowerer.program)
+  )
+    return null;
+  return cjsLinkedDataExport(lowerer, lowerer.checker.getAliasedSymbol(raw))?.snapshot ?? null;
+}
+
+/** Per CommonJS module, the export names ES-module importers bind by name
+ * (`import { n }`, `export { n } from`); null for `export *`, which binds
+ * them all. Only those bindings read link-time copies. */
+function esmBoundNamesOf(lowerer: Lowerer, dep: ts.SourceFile): ReadonlySet<string> | null {
+  if (lowerer.cjsEsmBoundNames === null) {
+    const bound = new Map<ts.SourceFile, Set<string> | null>();
+    for (const sf of lowerer.fileTag.keys()) {
+      if (sf.isDeclarationFile || isCjsJsFile(sf, lowerer.program)) continue;
+      for (const { stmt, dep: target } of orderedImportsOf(lowerer.program, sf)) {
+        if (target === null || !isCjsJsFile(target, lowerer.program)) continue;
+        const clause = ts.isImportDeclaration(stmt)
+          ? stmt.importClause?.namedBindings
+          : ts.isExportDeclaration(stmt)
+            ? stmt.exportClause
+            : undefined;
+        if (clause === undefined && ts.isImportDeclaration(stmt)) continue;
+        if (clause === undefined || !(ts.isNamedImports(clause) || ts.isNamedExports(clause))) {
+          bound.set(target, null);
+          continue;
+        }
+        let names = bound.get(target);
+        if (names === null) continue;
+        if (names === undefined) bound.set(target, (names = new Set()));
+        for (const e of clause.elements.nodes) names.add((e.propertyName ?? e.name).text);
+      }
+    }
+    lowerer.cjsEsmBoundNames = bound;
+  }
+  const names = lowerer.cjsEsmBoundNames.get(dep);
+  return names === undefined ? new Set() : names;
 }
 
 /** Node's ES-module loader reads every lexer-visible export of a CommonJS
@@ -3253,10 +3657,45 @@ export function cjsAccessorSnapshotOf(
 export function cjsAccessorSnapshotStores(
   lowerer: Lowerer,
   dep: ts.SourceFile,
-  loc: SrcLoc,
+  link: ts.Statement,
 ): IrStmt[] {
+  const loc = locOf(link);
   const getters = lexerVisibleAccessors(dep);
-  if (getters.length === 0) return [];
+  // A `module.exports = require("./lib")` wrapper links lib's exports.
+  const moduleSym = lowerer.checker.getSymbolAtLocation(cjsNamespaceTargetOf(lowerer, dep) ?? dep);
+  const bound = esmBoundNamesOf(lowerer, dep);
+  let shared: string | null = null;
+  const data: { global: IrGlobal; snapshot: { id: string; type: IrType } }[] = [];
+  const exportedSymbols =
+    moduleSym === undefined ? [] : lowerer.checker.getExportsOfModule(moduleSym);
+  for (const exported of exportedSymbols) {
+    if (bound !== null && !bound.has(ts.symbolName(exported))) continue;
+    const symbol =
+      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+    const linked = cjsLinkedDataExport(lowerer, symbol);
+    if (linked === null) continue;
+    const first = lowerer.cjsLinkedDataModules.get(symbol);
+    if (first === undefined) lowerer.cjsLinkedDataModules.set(symbol, dep);
+    else if (first !== dep) shared ??= ts.symbolName(exported);
+    data.push(linked);
+  }
+  // Node copies the export separately at each module's link; the bindings
+  // here share one copy per export.
+  if (shared !== null) {
+    const before = lowerer.diags.length;
+    try {
+      lowerer.unsupported(
+        "SC1090",
+        link,
+        `importing '${shared}', a CommonJS export that changes after it loads, through two different modules`,
+      );
+    } catch (error) {
+      const fence = lowerer.deferToRuntimeFence(before, link, { kind: "statement" });
+      if (fence === null) throw error;
+      return [fence];
+    }
+  }
+  if (getters.length === 0 && data.length === 0) return [];
   let readyId = lowerer.cjsSnapshotReady.get(dep);
   if (readyId === undefined) {
     readyId = keyedHelperName(lowerer, "%g.cjsSnapshotReady", dep.fileName);
@@ -3276,6 +3715,14 @@ export function cjsAccessorSnapshotStores(
     const call = cjsAccessorCall(lowerer, getter, loc);
     if (snapshot === null || call === null) return [];
     stores.push({ kind: "assign", localId: snapshot.id, value: call, loc });
+  }
+  for (const { global, snapshot } of data) {
+    stores.push({
+      kind: "assign",
+      localId: snapshot.id,
+      value: varRef(global.id, global.type, loc),
+      loc,
+    });
   }
   return [
     {
@@ -3321,12 +3768,13 @@ export function cjsAccessorCall(
 }
 
 /** A read of a catch binding — the caught analog of maybeNarrow. Where
- * tsc's control-flow narrowing has proven a supported test (`instanceof`
- * over a hierarchy class, `typeof` over a primitive), the read bridges
- * with a `caughtNarrow` extraction whose kind backends verify at run time,
- * exactly like unionNarrow. Every OTHER read is the narrowness fence:
- * the binding's payload is a typed exception snapshot, not a dyn, so
- * un-narrowed uses have nothing sound to lower to. */
+ * tsc's control-flow narrowing has proven a test the exception snapshot
+ * answers natively (`instanceof` over a class, `typeof` over a primitive),
+ * the read bridges with a `caughtNarrow` extraction whose kind backends
+ * verify at run time, exactly like unionNarrow, and a typed throw never
+ * boxes. Every OTHER read converts the snapshot to the checked-dynamic
+ * value it holds (caughtToDyn keeps the thrown object's identity) and is
+ * from there an ordinary `unknown` value. */
 export function caughtRead(
   lowerer: Lowerer,
   node: ts.Identifier,
@@ -3391,7 +3839,15 @@ export function caughtRead(
   ) {
     return { kind: "caughtToDyn", value: ref, type: DYN, loc };
   }
-  lowerer.unsupported("SC1063", node);
+  // Every other narrowing (`Array.isArray(e)`, `e === undefined`, `e
+  // instanceof Map`, a class whose declaration was refused, `never` past an
+  // exhaustive test): the binding is a value of TypeScript's declared type
+  // for it, `unknown` or `any`, so it reads as that value and the narrowing
+  // bridges exactly as it does for any other unknown value (maybeNarrow: a
+  // validated extraction where one exists, the checked-dynamic value
+  // otherwise, whose uses each validate what they read). A use the narrowed
+  // type cannot lower is refused where it is written, for its own reason.
+  return lowerer.maybeNarrow({ kind: "caughtToDyn", value: ref, type: DYN, loc }, node);
 }
 
 /** `String(e)` / `${e}` where e is a catch binding: JS's String() over
@@ -3589,7 +4045,8 @@ export function matchAllCallbackRegexOf(
   // A reassigned parameter can hold a row of another regex.
   if (ts.isIdentifier(param.name)) {
     const sym = lowerer.checker.getSymbolAtLocation(param.name);
-    if (sym === undefined || !bindingNeverReassigned(lowerer, sym, param)) return null;
+    if (sym === undefined || !bindingNeverReassigned(lowerer.bindingScope(), sym, param))
+      return null;
   }
   let site: ts.Node = fn;
   while (ts.isParenthesizedExpression(site.parent)) site = site.parent;
@@ -3948,9 +4405,10 @@ export function lowerPromiseRejectCall(
  * rejects — but a homogeneous tuple of promises IS a Promise<T>[] in
  * every observable way, so the entries build the array directly and
  * the runtime's countdown combinator runs (the certs read-both-files
- * shape). Result Promise<T[]>; void inners collapse to Promise<void>
- * exactly like the array path. Null otherwise: heterogeneous literals
- * and non-literal arguments keep the array path and its fences. */
+ * shape). Result Promise<T[]>; void inners whose values nothing reads
+ * are a Promise<void>, exactly like the array path. Null otherwise:
+ * heterogeneous literals, non-literal arguments and void entries whose
+ * values are read keep the static path and its fences. */
 export function lowerPromiseAllTupleCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -3977,6 +4435,14 @@ export function lowerPromiseAllTupleCall(
   }
   const loc = locOf(call);
   const inner = first.inner;
+  // Promise<void> entries whose values are read are an array, or the
+  // checker's tuple, of undefined values: the static path makes it.
+  if (
+    inner.kind === "void" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    !promiseAllValueUnread(call)
+  )
+    return null;
   const entryT: IrType = { kind: "promise", inner };
   const elems = argNode.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, entryT));
   const entries: IrExpr = { kind: "arrayLit", elems, type: arrayOf(entryT), loc };
@@ -4005,18 +4471,60 @@ export function lowerFieldCompound(
   };
 }
 
-/** The primitive-constructor closure (`String`/`Number`/`Boolean` as a
- * VALUE): interns one synthesized module function per constructor/ABI and
- * returns the zero-capture closure over it. Typed sources use the mapped
- * `(value: string) => primitive` signature; a recognized JavaScript
- * concise-arrow selector (`() => String`, the picocolors fallback) takes
- * dyn so its ordinary coercion signature survives inference residue, and a
- * boxed constructor value takes dyn too (coerceToExpected). The dyn bodies
- * run what the constructors do for any argument: String() (a symbol's
- * description form included), ToNumber and ToBoolean, with object hooks.
- * Interning makes every reference under one ABI the SAME immortal closure,
- * so `opt.type === String` compares like JS function identity. */
-export function primitiveCtorClosure(
+/** Whether `expr` is written as the callback of an array iteration method
+ * (`xs.map(expr)`, `xs.filter(expr)`: the first argument, on a receiver the
+ * checker types as an array or a tuple) or as Array.from's map function.
+ * Such a method calls its callback with each element and never hands it
+ * back, so which function value it received is unobservable. */
+export function isArrayIterationCallback(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node: ts.Node = expr;
+  while (node.parent !== undefined && ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const call = node.parent;
+  if (
+    call === undefined ||
+    !ts.isCallExpression(call) ||
+    !ts.isPropertyAccessExpression(call.expression)
+  )
+    return false;
+  const callee = call.expression;
+  if (call.arguments.nodes[0] === node && ARRAY_CALLBACK_METHODS.has(callee.name.text)) {
+    const receiver = lowerer.typeOf(callee.expression);
+    return lowerer.checker.isArrayType(receiver) || lowerer.checker.isTupleType(receiver);
+  }
+  return (
+    call.arguments.nodes[1] === node &&
+    callee.name.text === "from" &&
+    stdlibGlobalNameOf(lowerer, callee.expression) === "Array"
+  );
+}
+
+/** The type of the conversion closure `expr` lowers to when it names a
+ * primitive constructor in an array iteration callback position
+ * (primitiveConversionCallback), or null for any other expression: the
+ * callback there is not the constructor value, so analyses of the callback
+ * ask for this type and not for the mapped type of `typeof String`. */
+export function conversionCallbackTypeOf(lowerer: Lowerer, expr: ts.Expression): IrType | null {
+  const node = withoutParentheses(expr);
+  if (!ts.isIdentifier(node) || !isArrayIterationCallback(lowerer, node)) return null;
+  const name = stdlibGlobalNameOf(lowerer, node);
+  if (name !== "String" && name !== "Number" && name !== "Boolean" && name !== "BigInt")
+    return null;
+  const ret =
+    name === "String" ? STRING : name === "Number" ? F64 : name === "BigInt" ? BIGINT_T : BOOL;
+  const dynamicInput = isJsSourceFile(ts.getSourceFileOfNode(node)) || name === "BigInt";
+  return funcOf([dynamicInput ? DYN : STRING], ret);
+}
+
+/** `String`, `Number`, `Boolean` or `BigInt` written as the callback of an
+ * array iteration method or of Array.from (`xs.map(Number)`): the method
+ * calls it with each element and cannot observe which function it
+ * received, so the argument is the constructor's CONVERSION, as a direct
+ * call `Number(x)` is, and not the constructor value: a closure over the
+ * string-input conversion in typed sources (String is the identity, Number
+ * the ECMA StringToNumber, Boolean emptiness), which the array lowerings
+ * inline into their loops, and over the any-argument conversion where the
+ * elements are untyped. */
+export function primitiveConversionCallback(
   lowerer: Lowerer,
   name: "String" | "Number" | "Boolean" | "BigInt",
   loc: SrcLoc,
@@ -4063,6 +4571,105 @@ export function primitiveCtorClosure(
       loc,
     };
     lowerer.liftedFns.push(fn);
+    // Printed through a typed slot, the typed value takes the constructor's
+    // name (function-names.ts). The form over untyped input is the global
+    // object's member in JavaScript, which has its name where it is read.
+    if (!dynamicInput) lowerer.heldFunctionNames.set(fnName, name);
   }
   return { kind: "closure", fnName, captures: [], type: fnT, loc };
+}
+
+/** A primitive constructor written as a value expression: the function
+ * itself (primitiveCtorClosure) while the program types its constructors by
+ * their own function types, and that function as an untyped value in the
+ * pass that holds them untyped (Lowerer.untypedConstructors), where a
+ * constructor's type is the checked-dynamic value. */
+export function primitiveCtorValue(
+  lowerer: Lowerer,
+  name: "String" | "Number" | "Boolean" | "BigInt",
+  loc: SrcLoc,
+): IrExpr {
+  const fn = primitiveCtorClosure(lowerer, name, loc);
+  // The program holds a constructor as a value from here on. The untyped
+  // tier's own uses of the function (a `constructor` answer, a wrapper's
+  // prototype) call primitiveCtorClosure and do not say so: nothing typed
+  // holds the function there.
+  lowerer.constructorFunctionTypes = true;
+  return lowerer.untypedConstructors ? namedConstructorBox(lowerer.coerceToExpected(fn, DYN)) : fn;
+}
+
+/** A primitive constructor read as a VALUE (`String`, `Number`, `Boolean`,
+ * `BigInt`): the zero-capture closure over the program's one function for
+ * that constructor, in TypeScript and JavaScript sources alike, so every
+ * reference is the same function (`type === Boolean`, across modules,
+ * through untyped slots and collections). The function reads the arguments
+ * its caller actually passed and runs what the builtin runs for them:
+ * String() (a symbol's description form included), ToNumber, ToBoolean and
+ * BigInt's conversion, with object hooks, and the constants String() and
+ * Number() answer without an argument. Direct calls (`String(x)`) never
+ * reach it: the call lowering converts statically; nor does a callback of
+ * an array iteration method (primitiveConversionCallback). */
+export function primitiveCtorClosure(
+  lowerer: Lowerer,
+  name: "String" | "Number" | "Boolean" | "BigInt",
+  loc: SrcLoc,
+): IrExpr {
+  const ret =
+    name === "String" ? STRING : name === "Number" ? F64 : name === "BigInt" ? BIGINT_T : BOOL;
+  const key = `${name}:value`;
+  let fnName = lowerer.primitiveCtorFns.get(key);
+  if (!fnName) {
+    fnName = `${CONSTRUCTOR_FUNCTION_PREFIX}${name}`;
+    lowerer.primitiveCtorFns.set(key, fnName);
+    // `value` is the declared parameter and `args` the hidden array of
+    // the arguments the caller actually passed (argumentsAll).
+    const first = varRef("value", DYN, loc);
+    const args = varRef("args", DYN, loc);
+    const converted: IrExpr =
+      name === "BigInt"
+        ? { kind: "libCall", fn: "dyn.bigintConstructor", args: [first], type: BIGINT_T, loc }
+        : name === "String"
+          ? { kind: "libCall", fn: "dyn.stringConstructor", args: [first], type: STRING, loc }
+          : name === "Number"
+            ? { kind: "libCall", fn: "dyn.numberConstructor", args: [first], type: F64, loc }
+            : { kind: "dynTest", test: "truthy", value: first, type: BOOL, loc };
+    // String() is "" and Number() is 0, where an undefined argument gives
+    // "undefined" and NaN. Boolean and BigInt answer an absent argument as
+    // they answer undefined.
+    const value: IrExpr =
+      name === "String" || name === "Number"
+        ? {
+            kind: "ternary",
+            cond: {
+              kind: "bin",
+              op: ">=",
+              left: { kind: "libCall", fn: "dyn.arrLen", args: [args], type: F64, loc },
+              right: numLit(1, loc),
+              type: BOOL,
+              loc,
+            },
+            then: converted,
+            else_: name === "String" ? strLit("", loc) : numLit(0, loc),
+            type: ret,
+            loc,
+          }
+        : converted;
+    const fn: IrFunction = {
+      name: fnName,
+      displayName: name,
+      params: [
+        { localId: "value", name: "value", type: DYN },
+        { localId: "args", name: "args", type: DYN },
+      ],
+      returnType: ret,
+      locals: [
+        { id: "value", name: "value", type: DYN, mutable: false },
+        { id: "args", name: "args", type: DYN, mutable: false },
+      ],
+      body: [{ kind: "return", value, loc }],
+      loc,
+    };
+    lowerer.liftedFns.push(fn);
+  }
+  return { kind: "closure", fnName, captures: [], type: primitiveConstructorType(ret), loc };
 }

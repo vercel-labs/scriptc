@@ -1742,7 +1742,7 @@ static ScrDyn *scr_wasm_member(const ScrDyn *obj, const char *key, size_t len) {
       break;
     case SCR_DYN_TYPED_REF: {
       ScrStr *k = scr_str_new(key, len);
-      v = scr_dyn_typed_ref_key_get(obj, k);
+      v = scr_dyn_typed_ref_own_get(obj, k);
       scr_str_release(k);
       break;
     }
@@ -2182,8 +2182,9 @@ ScrDyn *scr_wasm_memory_construct(ScrDyn *descriptor) {
     return NULL;
   }
   if (shared) {
-    scr_wasm_type_error("WebAssembly.Memory(): shared memories are not supported yet (scriptc does not translate "
-                        "WebAssembly threads; see https://scriptc.dev/limitations)");
+    static const char refused[] = "WebAssembly.Memory(): shared memories are not supported yet (scriptc does not "
+                                  "translate WebAssembly threads; see https://scriptc.dev/limitations)";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, refused, sizeof refused - 1, "SC2020");
     return NULL;
   }
   ScrWasmMemory *m = scr_wasm_memory_new(initial, maximum, scr_wasm_build_guarded(), what);

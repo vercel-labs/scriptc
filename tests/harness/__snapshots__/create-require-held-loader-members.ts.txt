@@ -1,0 +1,8 @@
+create-require-held-loader-members.ts:15:13 - error SC2020: 'createRequire's require with a computed specifier or this argument shape' is part of the standard library types but has no scriptc lowering yet
+
+  14 | console.log(guide.narrate.main === undefined);
+  15 | console.log(narrate("./narration-" + room + ".js"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | 
+
+  hint: the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded

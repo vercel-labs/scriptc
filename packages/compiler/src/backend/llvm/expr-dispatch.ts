@@ -44,6 +44,7 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
     case "arrayGet":
     case "arrayHas":
     case "arrayState":
+    case "constCell":
     case "arrIntrinsic":
     case "bytesNew":
     case "bytesIntrinsic":
@@ -55,6 +56,8 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
     case "call":
     case "ffiCall":
     case "closure":
+    case "viewOf":
+    case "viewSource":
     case "callValue":
     case "selfRef":
     case "new":

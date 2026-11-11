@@ -1,0 +1,7 @@
+{
+  "entry": "module-table/main.ts",
+  "args": [
+    "100"
+  ],
+  "scaleArg": 0
+}

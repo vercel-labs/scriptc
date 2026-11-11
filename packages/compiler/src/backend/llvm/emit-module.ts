@@ -2,6 +2,7 @@
 import { loopUnrollMetadata } from "./periodic-guards.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { emitWasmModules } from "./wasm-modules.js";
+import { weakTraceTable } from "./alloc.js";
 import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,6 +37,11 @@ import {
   typedRefConstructor,
   vAdapters,
 } from "./shapes.js";
+import {
+  ABORT_FRAMES_DECLARATIONS,
+  ABORT_FRAMES_INSTALL,
+  abortFramesDefinition,
+} from "./frame-positions.js";
 import { emitLlvmLayouts } from "./layouts.js";
 import { emitArraySearchHelpers } from "./array-search.js";
 import { emitClassMembershipHelper } from "./classes.js";
@@ -65,6 +71,13 @@ import { hasLoneSurrogate, llvmBytes, wtf8Bytes } from "../literals.js";
 import { nodeIslandManifest } from "../../node-islands/modules.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
+import {
+  UNIT_KEY_ESCAPE,
+  UNIT_KEY_NULL,
+  UNIT_KEY_UNDEFINED,
+  unitKeyBytes,
+  unitKeyHelperDefinitions,
+} from "./string-union-keys.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
 import { STRING_READ_HELPERS, stringScanDecl, stringScanInline } from "./string-reads.js";
 import { emitLibraryIdentityLines } from "../library-identity-markers.js";
@@ -78,7 +91,18 @@ import {
 } from "./cpu-dispatch.js";
 import { LANE_INIT_CALL, lanePlansEnabled, laneToggleDefs } from "./lanes.js";
 import type { IrFunction } from "../../ir/ir.js";
-import { type FunctionLayout, layoutTierOf } from "./function-layout.js";
+import { ERROR_READER_PROPERTIES, errorReaderName } from "../../ir/function-references.js";
+import {
+  type FunctionLayout,
+  STARTUP_ORDER_MARKER,
+  STARTUP_SECTION,
+  STARTUP_TIER,
+  definedSymbol,
+  firstReachRanks,
+  hasStartupTier,
+  isStartupFunction,
+  layoutTierOf,
+} from "./function-layout.js";
 
 /** The function bodies emitted in `chunks` contiguous ranges, each by its
  * own emitter (LlEmitter.chunkEmitter), then merged in function order: the
@@ -327,6 +351,52 @@ function partitionEntries(functions: readonly IrFunction[], sourceFile: string):
   return functions.map((fn) => fn.name.startsWith("%init.") && fn.loc.file === sourceFile);
 }
 
+/** The section attribute of a definition, which a definition's text gets when
+ * it is the start-up tier's. */
+const STARTUP_ATTRIBUTE = `section "${STARTUP_SECTION}"`;
+
+/** `text` with each of its definitions that is a start-up function moved into
+ * STARTUP_SECTION: the attribute goes on the definition's header line, before
+ * the body's brace. Every definition passes through here, the generated
+ * helpers too, so a thunk the start-up path reaches keeps its code with the
+ * rest of the start-up code. */
+function startupSectioned(text: string, layout: FunctionLayout): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      if (!line.startsWith("define ") || line.includes(STARTUP_ATTRIBUTE)) return line;
+      const symbol = definedSymbol(line);
+      if (symbol === undefined || !isStartupFunction(layout, symbol)) return line;
+      const brace = line.lastIndexOf("{");
+      if (brace < 0) return line;
+      // The section goes after the function's attribute group and before the
+      // trailing clauses LLVM orders after it (partition, comdat, align, gc,
+      // prefix, prologue, personality), which the emitter writes as a group.
+      const group = / #\d+(?= |$)/.exec(line);
+      let at: number;
+      if (group !== null) at = group.index + group[0].length;
+      else {
+        const clause = / (?:partition|comdat|align|gc|prefix|prologue|personality)\b/.exec(line);
+        at = clause !== null && clause.index < brace ? clause.index : brace;
+      }
+      const before = line.slice(0, at).trimEnd();
+      const after = line.slice(at).trimStart();
+      return `${before} ${STARTUP_ATTRIBUTE}${after === "" ? "" : ` ${after}`}`;
+    })
+    .join("\n");
+}
+
+/** The symbols of `text`'s definitions that STARTUP_SECTION holds. */
+function sectionedSymbols(text: string): string[] {
+  const symbols: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("define ") || !line.includes(STARTUP_ATTRIBUTE)) continue;
+    const symbol = definedSymbol(line);
+    if (symbol !== undefined) symbols.push(symbol);
+  }
+  return symbols;
+}
+
 /** Writes the generated helpers, then the function definitions with their
  * group lines, and the entry line before the entry module's top-level code.
  * With a layout, the definitions it lists, helpers included, move after the
@@ -334,7 +404,11 @@ function partitionEntries(functions: readonly IrFunction[], sourceFile: string):
  * tier's group (`layout-<tier>`). The helper compiles each
  * partition's definitions in text order, so listed ones come first in their
  * partitions, and it places a group's definitions in the same partitions.
- * Everything else keeps its order and its source-file group. */
+ * Everything else keeps its order and its source-file group.
+ *
+ * The start-up tier comes out in first-reach order. On a target whose linker
+ * places STARTUP_SECTION first, its definitions move into that section, and the
+ * symbols come back in that order: the link plan hands them to the linker. */
 function writeDefinitions(
   out: string[],
   layout: FunctionLayout | undefined,
@@ -342,7 +416,9 @@ function writeDefinitions(
   fnDefs: readonly string[],
   groups: readonly string[],
   entries: readonly boolean[],
-): void {
+  roots: readonly string[] = [],
+  startupSection = false,
+): string[] {
   const tierLine = (tier: number) => `${PARTITION_GROUP_END} layout-${tier}`;
   const listed = new Map<number, string[]>();
   const listIn = (tier: number, lines: readonly string[]) => {
@@ -350,6 +426,20 @@ function writeDefinitions(
     if (!listed.has(tier)) listed.set(tier, list);
     for (const line of lines) list.push(line);
   };
+  /** The start-up tier's whole definitions, ordered first-reach below. */
+  const startup: { lines: readonly string[]; text: string }[] = [];
+  /** Lists a whole definition in its tier, in the start-up tier's list when it
+   * is that tier's. */
+  const listDefinition = (tier: number, lines: readonly string[], text: string) => {
+    if (tier === STARTUP_TIER) startup.push({ lines, text });
+    else listIn(tier, lines);
+  };
+  /** A definition's text, put in STARTUP_SECTION when it is the start-up
+   * tier's and the target's linker places that section first. */
+  const definitionText = (tier: number, text: string) =>
+    startupSection && tier === STARTUP_TIER && layout !== undefined
+      ? startupSectioned(text, layout)
+      : text;
   if (layout === undefined || layout.size === 0) {
     for (const texts of helperTexts) for (const text of texts) out.push(text);
   } else {
@@ -365,7 +455,8 @@ function writeDefinitions(
         out.push(part);
         continue;
       }
-      listIn(tier, [tierLine(tier), part.slice(0, close + 2)]);
+      const body = definitionText(tier, part.slice(0, close + 2));
+      listDefinition(tier, [tierLine(tier), body], body);
       const rest = part.slice(close + 3);
       if (rest !== "") out.push(rest);
     }
@@ -374,8 +465,35 @@ function writeDefinitions(
   fnDefs.forEach((text, i) => {
     const tier = layout === undefined || layout.size === 0 ? undefined : layoutTierOf(layout, text);
     if (tier === undefined) unlisted.push(i);
-    else listIn(tier, ["", ...(entries[i] ? [PARTITION_ENTRY_LINE] : []), tierLine(tier), text]);
+    else {
+      const body = definitionText(tier, text);
+      listDefinition(
+        tier,
+        ["", ...(entries[i] ? [PARTITION_ENTRY_LINE] : []), tierLine(tier), body],
+        body,
+      );
+    }
   });
+  const startupSymbols: string[] = [];
+  if (startup.length > 0) {
+    const ranks = firstReachRanks(
+      startup.map((item) => item.text),
+      roots,
+    );
+    // A walk that reaches none of them leaves their order as it was.
+    const order = startup
+      .map((_, i) => i)
+      .sort((a, b) => {
+        const rankA = ranks[a]!;
+        const rankB = ranks[b]!;
+        return rankA === rankB ? a - b : rankA < rankB ? -1 : 1;
+      });
+    for (const i of order) {
+      const item = startup[i]!;
+      listIn(STARTUP_TIER, item.lines);
+      for (const symbol of sectionedSymbols(item.text)) startupSymbols.push(symbol);
+    }
+  }
   for (const tier of [...listed.keys()].sort((a, b) => a - b))
     for (const line of listed.get(tier)!) out.push(line);
   for (const [k, i] of unlisted.entries()) {
@@ -383,6 +501,7 @@ function writeDefinitions(
     if (entries[i]) out.push(PARTITION_ENTRY_LINE);
     out.push(groups[i] ?? PARTITION_GROUP_END, fnDefs[i]!);
   }
+  return startupSymbols;
 }
 
 export function emitModuleParts(emitter: LlEmitter): string[] {
@@ -402,13 +521,15 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     }
   emitter.selectStacklessAsync(fnDefs);
   const errorViews: string[] = [];
-  for (const property of ["name", "message"])
-    if (emitter.mod.functions.some((fn) => fn.name === `%error.${property}.read`)) {
+  for (const property of ERROR_READER_PROPERTIES) {
+    const reader = errorReaderName(property);
+    if (emitter.mod.functions.some((fn) => fn.name === reader)) {
       emitter.declare(`declare void @scr_error_install_${property}_reader(ptr)`);
       errorViews.push(
-        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(`%error.${property}.read`)})`,
+        `  call void @scr_error_install_${property}_reader(ptr @${mangleFunction(reader)})`,
       );
     }
+  }
   for (const meta of emitter.classMeta.values()) {
     if (meta.def.runtime || meta.root.def.name !== "%Error") continue;
     const type: IrType = { kind: "object", className: meta.def.name };
@@ -502,6 +623,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // ordering — the atexit half becomes an idempotent no-op).
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
+  // A program that can register an 'error' listener on a child installs
+  // the builder of a failed spawn's error object (runtime-features.ts).
+  const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
   const usesFsWatch = runtimeFeatures.fsWatch;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
@@ -547,6 +671,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
+  if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -979,6 +1104,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ? [`@scr_stdout_buffering = constant i8 1`]
       : []),
   );
+  if (emitter.abortFrames) for (const d of ABORT_FRAMES_DECLARATIONS) emitter.declare(d);
+  if (emitter.nullableUnions.usesUnitKeys) {
+    // What the two helpers of the key escape call (string-union-keys.ts).
+    emitter.declare(`declare ptr @scr_str_concat(ptr, ptr)`);
+    emitter.declare(`declare ptr @scr_str_new(ptr, ${emitter.sizeType})`);
+  }
   for (const d of emitter.decls) out.push(d);
   out.push(``);
   const flushedDecls = new Set(emitter.decls);
@@ -1105,6 +1236,22 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ``,
     );
   }
+  if (emitter.nullableUnions.usesUnitKeys) {
+    // The keys a Map or Set of a string-key union stores for `undefined`
+    // and `null` (string-union-keys.ts): two immortal strings like the
+    // literals above, which no stored string equals; then the byte an
+    // escaped key starts with, and the two helpers of the escape.
+    const S = emitter.sizeType;
+    for (const symbol of [UNIT_KEY_UNDEFINED, UNIT_KEY_NULL, UNIT_KEY_ESCAPE]) {
+      const bytes = unitKeyBytes(symbol);
+      const capWord = S === "i64" ? literalCapWord(bytes) : literalCapWord32(bytes);
+      out.push(
+        `${symbol} = internal global { ${S}, ${S}, ${S}, [${bytes.length + 1} x i8] } ` +
+          `{ ${S} -1, ${S} ${bytes.length}, ${S} ${capWord}, [${bytes.length + 1} x i8] c"${llvmBytes(bytes)}" } ; unit key`,
+      );
+    }
+    out.push(``, ...unitKeyHelperDefinitions(S));
+  }
   if (emitter.needsNullableAbsent) {
     // The ABSENT field-slot state of every nullable-pointer union: one
     // module-scope immortal object (rc == SIZE_MAX), distinct from NULL
@@ -1181,6 +1328,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (emitter.arrayConstData.size > 0) out.push(``);
+  for (const [definition, sym] of emitter.imageDataSyms) out.push(`@${sym} = ${definition}`);
+  if (emitter.imageDataSyms.size > 0) out.push(``);
   for (const sym of emitter.methodIdSlots.values()) out.push(`@${sym} = internal global i32 -1`);
   if (emitter.methodIdSlots.size > 0) out.push(``);
 
@@ -1195,7 +1344,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     );
   }
   if (globals.length > 0) out.push(``);
-  writeDefinitions(
+  const startupSymbols = writeDefinitions(
     out,
     emitter.targetOptions.functionLayout,
     [
@@ -1213,12 +1362,23 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     fnDefs,
     partitionGroupLines(emitter.mod.functions),
     partitionEntries(emitter.mod.functions, emitter.mod.sourceFile),
+    // The entry and the initialisers start the start-up walk, whether or not
+    // the layout lists them.
+    emitter.mod.functions.flatMap((fn, i) =>
+      fn.name === "%main" || fn.name.startsWith("%init.") ? [fnDefs[i] ?? ""] : [],
+    ),
+    emitter.targetOptions.startupSection === true,
   );
+  if (startupSymbols.length > 0)
+    out.push("", `${STARTUP_ORDER_MARKER} ${startupSymbols.join(" ")}`);
   if (fnDefs.length === 0) out.push("");
   out.push(PARTITION_GROUP_END, "");
   // WebAssembly modules translated into this program, and the registry.
   for (const line of emitWasmModules(emitter.mod, flushedDecls, emitter.wasmBoundsChecks))
     out.push(line);
+  // The traces the weak analysis reads; overrides the runtime's weak, empty
+  // default (scr_json.c).
+  for (const line of weakTraceTable(emitter.weakTraces)) out.push(line);
 
   // main(): scr_init, the program-dependent error-vt interval stamps,
   // scr_lib_init(argc, argv), then the entry function. An uncaught
@@ -1297,6 +1457,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     if (emitter.debug !== null) out.push(emitter.debug.render());
     return out;
   }
+  if (emitter.abortFrames) out.push(...abortFramesDefinition(FN_ATTRS));
+  const entryStart = out.length;
   out.push(
     `define i32 @${emitter.mod.workers ? "sc_context_entry" : emitter.wasi ? "__main_argc_argv" : "main"}(i32 %argc, ptr %argv) ${FN_ATTRS} {`,
     `entry:`,
@@ -1305,6 +1467,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(lanePlansEnabled(emitter) ? [LANE_INIT_CALL] : []),
     ...(emitter.mod.workers ? [`  call void @scr_runtime_workers_v8()`] : []),
     `  call void @scr_init()`,
+    ...(emitter.abortFrames ? [ABORT_FRAMES_INSTALL] : []),
     // Compressed fields hold addresses in the program-lifetime region, which
     // is reserved below 32 GiB before compiled code runs.
     ...(emitter.compactRegion ? [`  call void @scr_plr_init()`] : []),
@@ -1320,6 +1483,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
+    ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
@@ -1360,7 +1524,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
-      : [`  call void @${mangleFunction(emitter.mod.entry)}()`]),
+      : // The entry runs once: `noinline` keeps LLVM from inlining the
+        // program into this function and re-optimizing it here. The entry's
+        // own calls into the file initializers carry it too (emitter.ts
+        // entryChainCall), so the top-level code is optimized where it is
+        // written rather than again at every level of the chain.
+        [`  call void @${mangleFunction(emitter.mod.entry)}() noinline`]),
     // Uncaught exception from top-level code: Node exits 1.
     ...(entryMayThrow && !asyncEntry
       ? [
@@ -1454,6 +1623,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `}`,
     ``,
   );
+  // Inline RC helpers are emitted here rather than with the other helpers;
+  // the start-up section claims them with the rest of the text appended after
+  // the listed definitions (below).
   for (const line of emitter.inlineRcTail(flushedDecls)) out.push(line);
   // The sanitized lane's -fsanitize=address link instruments the functions
   // marked sanitize_address (the runtime TUs get theirs from clang).
@@ -1484,6 +1656,26 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   for (const line of emitter.fieldAliasMetadata()) out.push(line);
   for (const line of loopUnrollMetadata(out)) out.push(line);
   if (emitter.debug !== null) out.push(emitter.debug.render());
+  // The definitions written after the listed ones (the inline RC helpers, the
+  // entry wrapper, worker and runtime glue) meet the start-up section here:
+  // the ones the layout's start-up tier names go in it, and the marker's
+  // second line hands their symbols to the linker.
+  const layout = emitter.targetOptions.functionLayout;
+  const lateStartup: string[] = [];
+  if (
+    emitter.targetOptions.startupSection === true &&
+    hasStartupTier(layout) &&
+    layout !== undefined
+  )
+    for (let i = entryStart; i < out.length; i++) {
+      const text = out[i]!;
+      if (!text.includes("define ")) continue;
+      const sectioned = startupSectioned(text, layout);
+      if (sectioned === text) continue;
+      out[i] = sectioned;
+      for (const symbol of sectionedSymbols(sectioned)) lateStartup.push(symbol);
+    }
+  if (lateStartup.length > 0) out.push("", `${STARTUP_ORDER_MARKER} ${lateStartup.join(" ")}`);
   return out;
 }
 

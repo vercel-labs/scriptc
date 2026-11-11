@@ -16,7 +16,7 @@ child-process.ts:30:21 - error SC2020: 'spawnSync with shell enabled and separat
 
   hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
 
-child-process.ts:37:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "error", listener: (err: Error) => void): ChildProcess; (event...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+child-process.ts:37:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: ...): ChildProcess; (event: "error", listener: ...): ChildProcess; (event: "message", listener: ...): ChildProcess; (event: "disconnect", l...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
   36 | // Methods have no bound-value form — call on directly.
   37 | const f = c.on;
@@ -75,7 +75,7 @@ child-process.ts:54:24 - error SC2020: 'execFile option 'killSignal'' is part of
      |                        ^~~~~~~~~~~~~~~~~~~~~
   55 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
-  hint: encoding: 'utf8', a pure numeric maxBuffer, cwd, and shell: true are the supported options in the callback form
+  hint: encoding: 'utf8', maxBuffer, cwd, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
 
 child-process.ts:55:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
 
@@ -85,15 +85,6 @@ child-process.ts:55:20 - error SC2020: 'execFile with shell enabled and separate
   56 | const bufferLimit = 1024;
 
   hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
-
-child-process.ts:57:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
-
-  56 | const bufferLimit = 1024;
-  57 | execFile("true", [], { maxBuffer: bufferLimit }, () => {});
-     |                                   ^~~~~~~~~~~
-  58 | const getEncoding = (): "utf8" => "utf8";
-
-  hint: pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)
 
 child-process.ts:59:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 

@@ -1372,6 +1372,12 @@ static void sp_invalid_jwk(void) {
   sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK data");
 }
 
+/* A JWK whose members do not make a key of its type: Node names the type
+ * ("Invalid JWK RSA key"). */
+static void sp_invalid_jwk_key(const char *kty) {
+  scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK %s key", kty);
+}
+
 /* A key from a JWK object: RSA (n, e, and d, p, q for a private key) or EC
  * (crv, x, y, and d). NULL with the error pending. */
 static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private);
@@ -1489,7 +1495,7 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
   }
   if (!ok) {
     sp_key_release(k);
-    sp_invalid_jwk();
+    sp_invalid_jwk_key(sp_is_str(kty, "OKP") ? "OKP" : sp_is_str(kty, "RSA") ? "RSA" : "EC");
     return NULL;
   }
   return k;
@@ -1795,6 +1801,97 @@ static SpKey *sp_parse(const unsigned char *data, size_t len, bool private_key) 
   return sp_parse_with(data, len, private_key, NULL);
 }
 
+/* How many decoders OpenSSL runs over the body of an armored private key
+ * before it gives up: one for the PKCS#8 labels, two for the traditional
+ * RSA and EC labels (the type's decoder, then PKCS#8). 0 for input without
+ * armor and for a label no private-key decoder takes. */
+static size_t sp_pem_private_decoders(const unsigned char *data, size_t len) {
+  static const struct { const char *label; size_t decoders; } labels[] = {
+    {"PRIVATE KEY", 1}, {"ENCRYPTED PRIVATE KEY", 1}, {"RSA PRIVATE KEY", 2}, {"EC PRIVATE KEY", 2},
+  };
+  for (size_t at = 0; at + 11 <= len; at++) {
+    if (memcmp(data + at, "-----BEGIN ", 11) != 0) continue;
+    const unsigned char *label = data + at + 11;
+    size_t rest = len - at - 11;
+    for (size_t i = 0; i < sizeof labels / sizeof labels[0]; i++) {
+      size_t n = strlen(labels[i].label);
+      if (rest >= n + 5 && memcmp(label, labels[i].label, n) == 0 && memcmp(label + n, "-----", 5) == 0)
+        return labels[i].decoders;
+    }
+    return 0;
+  }
+  return 0;
+}
+
+/* How OpenSSL's ASN.1 reader fails on the outer element of a DER body
+ * that is not a key, as far as the element's header decides it: a header
+ * whose length field cannot be read, a length that runs past the data, or
+ * a complete element that is not a SEQUENCE. SP_OUTER_INSIDE for anything
+ * else (a SEQUENCE that fails further in, an indefinite length, a
+ * multi-byte tag): what OpenSSL reports there depends on where its parser
+ * stops. */
+enum { SP_OUTER_INSIDE, SP_OUTER_WRONG_TAG, SP_OUTER_HEADER_TOO_LONG, SP_OUTER_TOO_LONG };
+
+static int sp_der_outer_failure(const unsigned char *der, size_t len) {
+  if (len == 0 || (der[0] & 0x1f) == 0x1f) return SP_OUTER_INSIDE;
+  if (len == 1) return SP_OUTER_HEADER_TOO_LONG; /* a tag and no length */
+  size_t at = 2;
+  size_t length = der[1];
+  if (der[1] & 0x80) {
+    size_t count = der[1] & 0x7f;
+    if (count == 0) return SP_OUTER_INSIDE;
+    if (count > len - at) return SP_OUTER_HEADER_TOO_LONG;
+    while (count > 0 && der[at] == 0) {
+      at++;
+      count--;
+    }
+    if (count > sizeof(long)) return SP_OUTER_HEADER_TOO_LONG;
+    length = 0;
+    while (count-- > 0) length = (length << 8) | der[at++];
+  }
+  if (length > len - at) return SP_OUTER_TOO_LONG;
+  return (der[0] & 0x1f) != 0x10 ? SP_OUTER_WRONG_TAG : SP_OUTER_INSIDE;
+}
+
+/* OpenSSL's "unsupported" for key material no decoder takes, as Node
+ * reports it: library, reason and code, and the error stack. The stack
+ * ends with the reported error. Before it come the errors of each decoder
+ * that ran over an armored private key, when the outer element's header
+ * decides them (sp_der_outer_failure); for a body that fails further in
+ * they are left out. */
+static void sp_unsupported_key_input(const unsigned char *data, size_t len) {
+  static const char unsupported[] = "error:1E08010C:DECODER routines::unsupported";
+  static const char nested[] = "error:0688010A:asn1 encoding routines::nested asn1 error";
+  static const char wrong_tag[] = "error:068000A8:asn1 encoding routines::wrong tag";
+  static const char bad_header[] = "error:06800066:asn1 encoding routines::bad object header";
+  static const char header_too_long[] = "error:0680007B:asn1 encoding routines::header too long";
+  static const char too_long[] = "error:0680009B:asn1 encoding routines::too long";
+  const char *stack[7];
+  size_t n = 0;
+  size_t decoders = sp_pem_private_decoders(data, len);
+  int failure = SP_OUTER_INSIDE;
+  if (decoders > 0) {
+    unsigned char *decoded;
+    const unsigned char *der;
+    size_t der_len;
+    if (sp_der_of(data, len, &decoded, &der, &der_len)) {
+      failure = sp_der_outer_failure(der, der_len);
+      free(decoded);
+    }
+  }
+  for (; failure != SP_OUTER_INSIDE && decoders > 0; decoders--) {
+    stack[n++] = nested;
+    if (failure == SP_OUTER_WRONG_TAG) {
+      stack[n++] = wrong_tag;
+    } else {
+      stack[n++] = bad_header;
+      stack[n++] = failure == SP_OUTER_HEADER_TOO_LONG ? header_too_long : too_long;
+    }
+  }
+  stack[n++] = unsupported;
+  sp_throw_key_decrypt(unsupported, "DECODER routines", "unsupported", "ERR_OSSL_UNSUPPORTED", stack, n);
+}
+
 /* sp_parse with a passphrase for an encrypted private key (NULL: none). */
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass) {
   {
@@ -1899,7 +1996,7 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
     /* An encrypted traditional PEM key mbedTLS read. */
     if (private_rc == MBEDTLS_ERR_PK_PASSWORD_REQUIRED) sp_throw_passphrase_missing(false);
     else if (private_rc == MBEDTLS_ERR_PK_PASSWORD_MISMATCH) sp_throw_bad_decrypt(2);
-    else sp_unsupported_input();
+    else sp_unsupported_key_input(data, len);
     return NULL;
   }
   if (!sp_key_supported(k)) {
@@ -3130,6 +3227,17 @@ static bool sp_sig_key(const ScrDyn *value, bool sign, SpSigKey *out) {
   return ok;
 }
 
+/* The key of Sign.prototype.sign and crypto.sign: Node tests it for
+ * truthiness before it looks at its type. */
+static bool sp_sign_key(const ScrDyn *value, SpSigKey *out) {
+  out->key = NULL;
+  if (!scr_dyn_truthy(value)) {
+    sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_SIGN_KEY_REQUIRED", "No key provided to sign");
+    return false;
+  }
+  return sp_sig_key(value, true, out);
+}
+
 static bool sp_sig_key_plain(const ScrDyn *value, bool sign, SpSigKey *out) {
   out->key = NULL;
   out->padding = 1;
@@ -3485,7 +3593,7 @@ ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key) {
     return NULL;
   }
   SpSigKey k;
-  if (!sp_sig_key(key, true, &k)) return NULL;
+  if (!sp_sign_key(key, &k)) return NULL;
   if (sp_reject_x25519(&k)) return NULL;
   /* A null algorithm signs with an RSA-PSS key's own digest. */
   if ((algorithm->kind == SCR_DYN_UNDEF || algorithm->kind == SCR_DYN_NULL) && k.key->pss_params)
@@ -3561,6 +3669,13 @@ typedef struct SpSigner {
   mbedtls_md_context_t md;
   mbedtls_md_type_t type;
   bool done; /* sign()/verify() ran: Node's "Not initialised" afterwards */
+  bool verifier; /* createVerify rather than createSign */
+  /* The Writable of a Sign or Verify used as a stream (+1) and its release
+   * (scr_stream.c). Its step holds the signer, so the signer is a
+   * collector-headered object behind a traced handle, and the pair is
+   * reclaimed as a cycle. */
+  void *stream;
+  void (*stream_release)(void *);
 } SpSigner;
 
 static void *sp_signer_retain(void *h) {
@@ -3568,11 +3683,34 @@ static void *sp_signer_retain(void *h) {
   return h;
 }
 
+static void sp_signer_trace(void *h, ScrTraceVisit visit, void *ctx) {
+  SpSigner *s = h;
+  if (s->stream) visit(s->stream, ctx);
+}
+
+/* The collector frees the stream itself; the rest is released here. */
+static void sp_signer_gcfree(void *h) {
+  SpSigner *s = h;
+  mbedtls_md_free(&s->md);
+  mbedtls_platform_zeroize(s, sizeof *s);
+  scr_obj_free_note();
+  scr_cyc_free(s);
+}
+
+static void sp_signer_destroy(void *h) {
+  SpSigner *s = h;
+  void *stream = s->stream;
+  s->stream = NULL;
+  if (stream) s->stream_release(stream);
+  sp_signer_gcfree(s);
+}
+
 static void sp_signer_release(void *h) {
   SpSigner *s = h;
-  if (--s->rc) return;
-  mbedtls_md_free(&s->md);
-  free(s);
+  if (--s->rc == 0) {
+    scr_cyc_dead(s);
+    scr_rc_destroy(s, sp_signer_destroy);
+  } else scr_cyc_released(s);
 }
 
 static void sp_not_initialised(void) {
@@ -3598,11 +3736,74 @@ static bool sp_signer_update(SpSigner *s, ScrDyn *const *args, size_t argc) {
   return true;
 }
 
+/* ── Sign and Verify as streams ─────────────────────────────────────────
+ * The stream unit builds a signer's Writable from these operations
+ * (ScrDynHandleWritable): each chunk goes through update(), as Node's
+ * Sign.prototype._write does. There is no final step, so ending the stream
+ * finishes it as soon as the last write completes. */
+
+static void *sp_signer_stream_get(void *h) {
+  return ((SpSigner *)h)->stream;
+}
+
+static void sp_signer_stream_set(void *h, void *stream, void (*release)(void *)) {
+  SpSigner *s = h;
+  s->stream = stream;
+  s->stream_release = release;
+}
+
+/* The handle's write(): the chunk's bytes go through update(). A sign() or
+ * verify() that already ran refuses as update() does ("Not initialised"),
+ * throwing out of the write. */
+static void sp_signer_stream_write(void *h, ScrBytes *chunk) {
+  SpSigner *s = h;
+  if (s->done) {
+    sp_not_initialised();
+    return;
+  }
+  SCR_BYTES_SNAPSHOT(chunk);
+  mbedtls_md_update(&s->md, chunk->data, (size_t)scr_bytes_byte_len(chunk));
+}
+
+static const ScrDynHandleWritable sp_writable_ops = {
+  sp_signer_stream_get, sp_signer_stream_set, sp_signer_stream_write, sp_signer_trace,
+};
+
+static const ScrDynHandleOps sp_sign_ops;
+static const ScrDynHandleOps sp_verify_ops;
+
+static const ScrDynHandleOps *sp_signer_ops_of(const SpSigner *s) {
+  return s->verifier ? &sp_verify_ops : &sp_sign_ops;
+}
+
 /* An output or signature encoding argument: a string encoding, or the
  * Buffer form for undefined, null and "buffer". */
 static const ScrStr *sp_encoding_arg(const ScrDyn *v) {
   if (v == NULL || v->kind != SCR_DYN_STR || sp_is_str(v, "buffer")) return NULL;
   return v->v.str;
+}
+
+/* Writable stream members a Sign or Verify inherits. */
+static bool sp_stream_member(const char *name) {
+  static const char *const members[] = {
+    "write", "end", "cork", "uncork", "setDefaultEncoding", "destroy",
+    "on", "once", "off", "addListener", "removeListener", "removeAllListeners",
+    "emit", "prependListener", "prependOnceListener", "listeners", "listenerCount",
+    "eventNames", "setMaxListeners", "getMaxListeners", "rawListeners",
+  };
+  for (size_t i = 0; i < sizeof members / sizeof *members; i++)
+    if (strcmp(name, members[i]) == 0) return true;
+  return false;
+}
+
+static void sp_stream_fence(void) {
+  static const char message[] =
+    "This Sign or Verify stream member has no lowering when called through an untyped value";
+  static const char streamless[] =
+    "Sign and Verify stream members called through an untyped value have no lowering in a program "
+    "that uses no streams";
+  if (scr_handle_stream_hooks) scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, streamless, sizeof streamless - 1, "SC2020");
 }
 
 static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
@@ -3615,7 +3816,7 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
       return NULL;
     }
     SpSigKey k;
-    if (!sp_sig_key(argc ? args[0] : scr_dyn_undefined(), true, &k)) return NULL;
+    if (!sp_sign_key(argc ? args[0] : scr_dyn_undefined(), &k)) return NULL;
     if (sp_reject_x25519(&k)) return NULL;
     if (sp_is_ed(k.key)) {
       sp_key_release(k.key);
@@ -3672,6 +3873,16 @@ static ScrDyn *sp_signer_invoke(void *h, ScrDyn *self, const char *method, ScrDy
     sp_key_release(k.key);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(ok);
   }
+  if (sp_stream_member(method)) {
+    /* The members a native stream answers run on the signer's Writable;
+     * the others have no lowering. */
+    ScrDyn *result = NULL;
+    if (scr_handle_stream_hooks &&
+        scr_handle_stream_hooks->call(sp_signer_ops_of(s), s, self, method, args, argc, &result))
+      return result;
+    sp_stream_fence();
+    return NULL;
+  }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
 }
@@ -3686,9 +3897,12 @@ static ScrDyn *sp_verify_invoke(void *h, ScrDyn *self, const char *method, ScrDy
   return sp_signer_invoke(h, self, method, args, argc, what, true);
 }
 
-/* Sign and Verify have no modeled properties. */
+/* Sign and Verify model the stream properties of their Writable. */
 static ScrDyn *sp_signer_get(void *h, const char *name, size_t len) {
-  (void)h;
+  if (scr_handle_stream_hooks) {
+    ScrDyn *value = scr_handle_stream_hooks->get(sp_signer_ops_of(h), h, name, len);
+    if (value || scr_exc_pending()) return value;
+  }
   (void)name;
   (void)len;
   return NULL;
@@ -3715,6 +3929,7 @@ static const ScrDynHandleOps sp_sign_ops = {
     .get = sp_signer_get,
     .set = sp_signer_set,
     .inspect_view = sp_signer_inspect_view,
+    .writable = &sp_writable_ops,
 };
 
 static const ScrDynHandleOps sp_verify_ops = {
@@ -3725,6 +3940,7 @@ static const ScrDynHandleOps sp_verify_ops = {
     .get = sp_signer_get,
     .set = sp_signer_set,
     .inspect_view = sp_signer_inspect_view,
+    .writable = &sp_writable_ops,
 };
 
 /* createSign(algorithm) / createVerify(algorithm). */
@@ -3744,10 +3960,12 @@ static ScrDyn *sp_signer_new(ScrDyn *algorithm, bool verifier) {
     scr_dyn_handle_install(SCR_DYNH_SIGN, &sp_sign_ops);
     scr_dyn_handle_install(SCR_DYNH_VERIFY, &sp_verify_ops);
   }
-  SpSigner *s = calloc(1, sizeof *s);
-  if (!s) scr_trap("scriptc: out of memory\n");
+  static ScrCycType cyc_type = {&sp_signer_trace, &sp_signer_gcfree, SCR_CYC_KIND_NONE, 0};
+  SpSigner *s = scr_cyc_alloc(sizeof *s, &cyc_type);
   s->rc = 1;
+  scr_obj_alloc_note();
   s->type = md;
+  s->verifier = verifier;
   mbedtls_md_init(&s->md);
   mbedtls_md_setup(&s->md, mbedtls_md_info_from_type(md), 0);
   mbedtls_md_starts(&s->md);

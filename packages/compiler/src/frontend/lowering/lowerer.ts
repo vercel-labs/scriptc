@@ -1,3 +1,4 @@
+import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -15,7 +16,11 @@ import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.
 import { Normalizer } from "../canon.js";
 import { resolveEntryExportSymbol } from "../lib-exports.js";
 import { compactDeclOrigins, recordOrigin, slotOrigin, type RecordOrigin } from "./decl-origin.js";
+import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js";
+import { isDeclBoundaryTypeNode } from "../decl-projection.js";
+import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
   countTable,
@@ -40,6 +45,7 @@ import {
 } from "./unit-journal.js";
 import { UnitReuse, unitReuseVerify, verifyStoredUnit, type UnitStore } from "./unit-reuse.js";
 import {
+  moduleNamespaceBuiltinDynValue,
   moduleNamespaceDynValue,
   moduleNamespaceObject,
   moduleNamespaceValue,
@@ -53,7 +59,7 @@ import {
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import type { IslandBinding, IslandModuleBinding } from "./lower-node-island.js";
-import { bindingSymbolOfRead, onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
+import { bindingSymbolOfRead, onlyForwarded } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
   noteUntypedStreamFlow,
@@ -81,6 +87,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { refuseForwardsToOwnCall } from "./module-member-this.js";
 import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
@@ -89,23 +96,44 @@ import {
   type RequireInitFlag,
 } from "./require-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
+import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "./coercions/console-records.js";
 import { scanDivergences } from "./divergences.js";
+import {
+  collectWidthCopies,
+  refuseObservedCopies,
+  traceWidthCopies,
+  widthCopyDivergences,
+  type WidthCopyFact,
+} from "./width-copies.js";
+import { guardedDeferredFences } from "../../ir/deferred-fence.js";
+import {
+  absentDefaultStopDiag,
+  deferredRefusalDiag,
+  strandedInstanceArmDiag,
+  guardedDeferredFenceDiag,
+} from "../../diagnostics/diagnostic.js";
 import { applyKeyOrderWitnesses, KeyOrderNotes } from "./key-order-witness.js";
-import { installBuiltinStatics } from "./builtin-statics.js";
-import { functionKeepsRecordSources } from "./record-sources.js";
-import { exprFunctionReference } from "../../ir/function-references.js";
+import { installBuiltinStatics, registerIslandIntrinsics } from "./builtin-statics.js";
+import type { BuiltinModuleNamespaceFlavor } from "./builtin-module-members.js";
+import { unloweredModuleMemberValue } from "./node-value-reads.js";
+import { foldRecordSourceTests, programKeepsRecordSources } from "./record-sources.js";
+import { OwnKeyListState } from "./own-key-lists.js";
+import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
+import { ownEscapingLocals } from "../../ir/local-scopes.js";
+import { FunctionViews } from "./function-views.js";
 import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
-import { checkedClassAssertion } from "./class-assertions.js";
+import { canAssertClassValue, checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import {
   isOptionalProcessStreamProperty,
   isOptionalProcessVersionsRead,
-  programPatchesStdio,
-  type StdioPatchSite,
+  isProcessStreamPatternSource,
+  OPTIONAL_PROCESS_STREAM_MEMBERS,
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
+import { sharedDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -116,12 +144,15 @@ import {
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
+import { isInstalledPackagePath } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
+import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
+import { refuseUnseenBuiltinMemberWrites } from "./builtin-member-readers.js";
 import { isEcdhType, lowerEcdhCall } from "./builtins/ecdh.js";
 import { isDiffieHellmanType, lowerDiffieHellmanCall } from "./builtins/dh.js";
 import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.js";
-import { valueStreamOf } from "./builtins/hash-stream.js";
+import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
 import {
@@ -131,12 +162,14 @@ import {
 } from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
+import { finalizeGeneratorArrays } from "./generator-arrays.js";
 import { iterableSlotValue } from "./iterable-values.js";
 import type { FieldLift } from "./coercions/structural-plans.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { CoercionState } from "./coercions/state.js";
 import {
   widthLiftPlan,
+  checkedWidthLift,
   unitOnlyElem,
   recordWidthPlan,
   describeRecordWidthBlocker,
@@ -150,17 +183,25 @@ import {
   unionArrayWidthHelper,
   recordWidthHelper,
   tupleArrayWidthHelper,
-  emptyArrayLiftHelper,
   arrayWidthHelper,
   objRecordWidthHelper,
   recordClassWidthHelper,
   classStaticsProjection,
 } from "./coercions/structural.js";
+import { checkVariadicFunctions, type FinishedBodies } from "./variadic-functions.js";
+import { reportDynamicClasses, watchedDynamicClasses } from "./dynamic-class-report.js";
+import {
+  callbackReadsThis,
+  callbackTakesEveryArgument,
+  namesDeclaredFunction,
+} from "./callback-arg.js";
 import {
   funcReturnWidthAdapter,
   coercibleValue,
   cleanFuncAdaptable,
   funcCoerceAdapter,
+  adaptedFunction,
+  variadicBoundaryBlocker,
   sortComparatorResultAdapter,
   spawnResFnAdapterPlan,
   spawnResFnAdapter,
@@ -179,13 +220,17 @@ import {
   checkedNarrowOperand,
   deferredReadHelper,
   widthNarrowHelper,
+  liftableBesideArm,
 } from "./coercions/unions.js";
 import { assertedConversion } from "./coercions/asserted.js";
+import { siteDiscriminantConversion } from "./coercions/site-discriminant.js";
 import {
   boxBuiltinValuesChecked,
+  shareBuiltinValueIdentities,
   lowerUtilTypeValue,
   checkedNativeCallableValue,
   pathModuleValue,
+  settleLoaderShareEnv,
   utilTypesModuleValue,
 } from "./lower-builtin-values.js";
 import { devirtualizeVirtualCalls } from "./devirtualize.js";
@@ -220,7 +265,10 @@ import {
   type FnCtx,
 } from "./function-context.js";
 import type { FrontendServices } from "../services.js";
+import type { Defines } from "../defines.js";
+import { programImportsNodeApi } from "../node-api-import.js";
 import { InternalCompilerError } from "../../errors.js";
+import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
 import { type ProtocolDispatch } from "./class-protocol-dispatch.js";
@@ -229,19 +277,22 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
+import { settleClassIdentityHelpers } from "./class-instance-constructor.js";
 import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
-import {
-  alignHandlePropertyChildFact,
-  applyHandleProperties,
-  handlePropertyScanRoots,
-} from "./handle-properties.js";
+import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
+import { shareIslandProcessState } from "./island-process-state.js";
+import { adoptIslandThenables } from "./island-thenables.js";
 import { installBufferValue } from "./containers/bytes.js";
 import { installMutableBuffersArm } from "./buffers.js";
+import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
-import { earlyReadVarSymbols } from "./var-hoisting.js";
+import { analyzeVarReads } from "./var-hoisting.js";
+import { type ClassHierarchy, classHierarchyOf } from "./construction-reads.js";
+import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
+import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
@@ -256,8 +307,10 @@ import {
 import { DeferredModuleInitializers } from "./deferred-module-initializers.js";
 import { finalizeClassMethodValues } from "./class-method-values.js";
 import { finalizeRecordLinks, type LinkedHelper, type StringFallback } from "./record-links.js";
+import { refuseSourceFieldDeletes } from "./record-source-deletes.js";
 import { finalizePrivateBrands } from "./private-brands.js";
 import { finalizeFunctionNames } from "./function-names.js";
+import { analyzeOpenEnumerations } from "./open-enumerations.js";
 import { type ClassSymbolKey, INSPECT_CUSTOM_MEMBER, tableKeyFieldType } from "./symbol-fields.js";
 import type { HttpClientFnBinding } from "./lower-server.js";
 export type { WidthLift } from "./width-lift.js";
@@ -280,6 +333,10 @@ import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
 import * as ts from "../ts7/adapter.js";
+import {
+  withoutParenthesesAssertionsNonNull,
+  withoutParenthesesTypeWrappers,
+} from "../outer-expressions.js";
 import { isBundledShimForwarder } from "../package-shims.js";
 import { erasedTypeOnlyImport } from "../type-only-imports.js";
 import { literalValues } from "../literal-values.js";
@@ -292,27 +349,36 @@ import type {
 } from "../../diagnostics/diagnostic.js";
 import { declarationGroupKey, typeFailureOf } from "./type-failure.js";
 import { dynamicSlotDiag, type DynamicSlotEntry } from "../../diagnostics/dynamic-slots.js";
+import { compilerCrashDiag, isCompilerCrash, noteCrashSite } from "../../diagnostics/crash-site.js";
 import {
   unsupportedAnyOperationDiag,
   blockedBindingUseDiag,
-  checkerPanicDiag,
   componentTypeDiag,
   isCheckerPanic,
   genericSignatureTypeDiag,
   hostGlobalDiag,
+  nodeValueDiag,
   indexSignatureTypeDiag,
   intersectionTypeDiag,
   noLoweringDiag,
+  nodeIslandNativeUseDiag,
+  nodeIslandWorkerInstanceDiag,
+  nodeIslandWorkerThreadDiag,
+  nodeIslandWorkerValueDiag,
   overloadedSignatureTypeDiag,
   recordShapeMismatchDiag,
   stdlibSnapshotValueUseDiag,
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
   unionMismatchDiag,
+  emptyArrayDiag,
+  typeWalkBudgetDiag,
   UNSUPPORTED,
   unsupportedDiag,
   unsupportedTypeDiag,
+  nodeIslandBoundaryDiag,
 } from "../../diagnostics/diagnostic.js";
+import type { UnionWidthAmbiguity } from "../../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
   IrExpr,
@@ -339,6 +405,7 @@ import {
   canDynCheckTo,
   canConvertToDyn,
   DYN,
+  DYN_HANDLE_KINDS,
   F64,
   isDynTypedRefType,
   isJsonSafeType,
@@ -368,14 +435,13 @@ import {
   isCjsExportTableLiteral,
   isCjsJsFile,
   isJsSourceFile,
+  isModuleExportsAccess,
   isNodeEsmFile,
   locOf,
   orderedImportsOf,
-  npmStaticDepSf7,
   requireSpecOf,
   isJsWriteTarget7,
   isStrictCode,
-  resolveImport,
   workspacePackageOfPath,
   type CycleEdge,
 } from "../program.js";
@@ -384,6 +450,10 @@ import {
   containsUnion,
   describeComponentBlocker,
   describeRecordMemberBlocker,
+  resetTypeWalkBudget,
+  TypeWalkBudgetError,
+  typeWalkOverLimit,
+  withTypeWalk,
   erasedOverloadMemberType,
   formatIrType,
   FETCH_AMBIENT_TYPES,
@@ -394,9 +464,11 @@ import {
   isFetchHandleType,
   jsOpenObjectType,
   mapType,
+  mergePromiseArms,
   computeSymbolProvenance,
   declaresLegacyUrl,
   declaresWebAssemblyNamespace,
+  holdsPrimitiveConstructors,
   ShapeRegistry,
   noteScopeSensitiveMapping,
   type DeclaredOrderPriorityRef,
@@ -445,19 +517,30 @@ import {
   appendDynamicImportModules,
   appendForkModules,
   appendWorkerModules,
+  workerThreadModules,
 } from "./lower-modules.js";
-import { prepareCjsModuleGraph, usesCjsTopLevelThis } from "./lower-node-module.js";
 import {
+  isNodeModuleHandle,
+  prepareCjsModuleGraph,
+  untypedModuleValueFence,
+  usesCjsTopLevelThis,
+} from "./lower-node-module.js";
+import {
+  accessorRequirerAssign,
+  accessorRequirerSlot,
   type SplitRequireBinding,
+  cjsHasLiveMemberExports,
   cjsNamespaceModule,
+  cjsNamespaceTargetOf,
   cjsWholeExportValueOf,
-  inlineNamespaceRequireOf,
+  hasWholeExportValue,
   inlineProgramRequireOf,
   splitRequireBindingOf,
   splitWholeExportAliasTargetOf,
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -554,12 +637,19 @@ import {
   genericLocalClassBinding,
   checkGenericIdentityPins,
 } from "./generic-functions.js";
-import { bindingNeverReassigned } from "./binding-analysis.js";
+import { bindingNeverReassigned, type BindingScope } from "./binding-analysis.js";
+import type { SpecifierBoundContext } from "../specifier-bounds.js";
 import { isMessageListenerCall } from "./expressions/message-listeners.js";
 import type { InstantiationPath } from "./instantiation-path.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import { completeArgs, wrappedUndefined, undefinedArgFor } from "./call-arguments.js";
-import { bodyReturnType, declaredReturnType, widensReducedRecords } from "./function-returns.js";
+import {
+  bodyReturnType,
+  declaredReturnType,
+  checkedUndefinedResult,
+  returnsDeclaredUndefined,
+  widensReducedRecords,
+} from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
 import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
 import {
@@ -571,6 +661,7 @@ import {
 } from "./lower-functions.js";
 import { lowerArrayMethodCall } from "./containers/array-methods.js";
 import { type ArrayHofInfo, fuseArrayPipelines } from "./containers/array-pipelines.js";
+import type { ArrayHelperRecipe } from "./containers/array-callbacks.js";
 import {
   lowerMapMethodCall,
   lowerMapForEachCall,
@@ -592,13 +683,14 @@ import {
   type EventSig,
 } from "./lower-event-emitter.js";
 import {
+  awaitedBuiltinDynamicImportOf,
   builtinImportOf,
   createRequireProgramModuleOf,
   createRequireSpecOf,
   fencedBuiltinImportOf,
-  esmImportBindingKind,
+  isBuiltinEsmNamespaceOf,
+  namespaceNonExportRead,
 } from "./builtins/module-bindings.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import { lowerBuiltinModuleCall } from "./builtins/module-calls.js";
 import { lowerTimersPromisesSetInterval, lowerTimeoutMethodCall } from "./builtins/timers.js";
 import {
@@ -614,7 +706,7 @@ import {
   lowerProcessEnvGet,
   refuseHeldEnvWrite,
 } from "./builtins/environment.js";
-import { lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
+import { jsonResultTextOnly, lowerJsonMethodCall, lowerJsonProperty } from "./builtins/json.js";
 import { lowerCryptoComposedCall, lowerCryptoModuleCall } from "./builtins/crypto.js";
 import {
   legacyUrlClassValue,
@@ -719,6 +811,13 @@ import {
 } from "./lower-assert.js";
 import type { AssertInstanceOptions } from "./assert-instances.js";
 import { lowerUtilModuleCall } from "./lower-inspect.js";
+import {
+  constructorRefusals,
+  fewerRefusals,
+  namedConstructorBox,
+  otherErrors,
+  untypedConstructorAsFunction,
+} from "./held-constructors.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
 import {
   lowerComptime,
@@ -803,17 +902,32 @@ import {
   rejectThisInObjectMethod,
 } from "./expressions/object-literals.js";
 import type { ExpandoMembers } from "./lower-expando.js";
+import { funduleMemberOf, type FunduleMember } from "./lower-fundule.js";
 import { lowerRecordFieldCall, lowerObjectMethodCall } from "./lower-calls.js";
 import { fenceCrossBlockNsRef, nsPathPrefix } from "./lower-namespaces.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
-import { partialAssertionFields } from "./partial-assertions.js";
+import {
+  noteStrandedInstanceFlow,
+  noteStrandedInstanceParameter,
+} from "./expressions/narrowing.js";
+import { guardPartialReads, partialAssertionFields } from "./partial-assertions.js";
+import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 import { emptyArrayLiteralArm } from "./expressions/array-literals.js";
+import {
+  type EmptyArrayOrigin,
+  untypedArrayBindingType,
+  untypedArrayPropertyType,
+  untypedEmptyArraySlot,
+} from "./empty-array-places.js";
 import { lowerTernary } from "./lower-exprs.js";
+import { closeLoweringBudget, openLoweringBudget, refuseSpentLowering } from "./lower-exprs.js";
+import { conversionCallbackTypeOf } from "./lower-exprs.js";
 import {
   maybePromiseReturnStmt,
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
@@ -857,6 +971,99 @@ const DECLARATION_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>
   "global",
   "loop",
 ]);
+
+/** A refused probe of an operand (Lowerer.refusedProbes). */
+interface RefusedProbe {
+  node: ts.Expression;
+  ctx: FnCtx;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the probe was refused. */
+  surroundings: number;
+  diagnostics: ScrDiagnostic[];
+}
+
+/** The declaration slots a lowering inside a probe met, keyed by node and
+ * then by checker type id: the same slot met again is one entry.
+ *
+ * A kept receiver's notes are handed to every form that asks for the value
+ * and forwarded into the enclosing receiver's notes, so the same slot is met
+ * many times along a chain of calls. Recording it once per node keeps a
+ * chain's notes in proportion to the slots it declares; recording every
+ * meeting made them multiply at each link (three ways for an array method),
+ * which took a chain of eighteen array methods past the heap limit. */
+type ProbedSlotNotes = Map<ts.Node, Map<number, ts.Type>>;
+
+/** Test hook: note-recording requests since the last call (see
+ * ProbedSlotNotes); a request for a slot the scope already holds is
+ * counted too, because it is the work a chain of calls must not repeat. */
+let probedSlotNoteRequests = 0;
+
+export function takeProbedSlotNoteRequests(): number {
+  const count = probedSlotNoteRequests;
+  probedSlotNoteRequests = 0;
+  return count;
+}
+
+/** Adds `from` to `into`, one entry per node and type id. Copies the type
+ * maps it adds rather than sharing them: a node reached in two subtrees
+ * keeps each subtree's types. */
+function mergeSlotNotes(into: ProbedSlotNotes, from: ProbedSlotNotes): void {
+  for (const [node, types] of from) {
+    const seen = into.get(node);
+    if (seen === undefined) {
+      into.set(node, new Map(types));
+      continue;
+    }
+    for (const [id, type] of types) if (!seen.has(id)) seen.set(id, type);
+  }
+}
+
+/** An operand that may be asked for again while the expression that asked
+ * is still being lowered: the receiver of the call being dispatched
+ * (Lowerer.dispatchedReceiver) or another operand of the expression or
+ * statement on top (Lowerer.keptOperands). Once a lowering produced a value
+ * that may be handed out again, the value with what that lowering ran
+ * under. */
+interface KeptOperand {
+  node: ts.Expression;
+  value: IrExpr | null;
+  ctx: FnCtx | null;
+  bindings: Map<ts.Symbol, IrType> | null;
+  /** Lowerer.probeSurroundings when the value was lowered. */
+  surroundings: number;
+  /** The expression overrides in force then, in the table's order (null
+   * for none): replacing one leaves the table's size as it was. */
+  overrides: IrExpr[] | null;
+  /** The declaration slots the lowering would have reported as dynamic had
+   * it not run inside a probe (noteDegradedSlot), or null for none. */
+  slotNotes: ProbedSlotNotes | null;
+}
+
+/** Operands that cost less to lower than to keep (Lowerer.keptOperands). */
+function isCheapOperand(node: ts.Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isNumericLiteral(node) ||
+    ts.isStringLiteralLike(node) ||
+    node.kind === ts.SyntaxKind.ThisKeyword ||
+    node.kind === ts.SyntaxKind.TrueKeyword ||
+    node.kind === ts.SyntaxKind.FalseKeyword ||
+    node.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+/** Test hook: operands compared with the requested one while looking up a
+ * kept operand (Lowerer.keptOperands). A map answers in one comparison; the
+ * list this replaced was scanned from its end, so a wide expression compared
+ * every operand it had recorded since, and its comparisons quadrupled with
+ * each doubling of the expression's operands. */
+let keptOperandLookups = 0;
+
+export function takeKeptOperandLookups(): number {
+  const count = keptOperandLookups;
+  keptOperandLookups = 0;
+  return count;
+}
 
 export class PoisonError extends Error {
   /** Set when a type with no static lowering poisoned a slot (badType and
@@ -927,6 +1134,21 @@ export function boundIdentifiersOf(name: ts.BindingName): ts.Identifier[] {
   return out;
 }
 
+/** Whether a declaration belongs to a module's own top level rather than to
+ * a function body inside it: a direct statement of the module, or a
+ * property of a module-scope object literal. A property of a value a module
+ * function returns is inside that function and belongs to the value. */
+function moduleScopeDeclarationOf(dep: ts.SourceFile, d: ts.Node): boolean {
+  let n: ts.Node = d;
+  while (n.parent !== undefined && n.parent !== dep) {
+    const parent = n.parent;
+    if (ts.isFunctionLike(parent) || ts.isBlock(parent) || ts.isReturnStatement(parent))
+      return false;
+    n = parent;
+  }
+  return n.parent === dep;
+}
+
 /** Statements a never-lowered body would have contributed to the coverage
  * totals: every element of a statement list (blocks, case clauses), plus
  * the single-statement bodies of control flow, nested functions included —
@@ -986,22 +1208,31 @@ export interface LowerResult {
   /** Compile-time-detectable behavior differences from Node (SC6xxx
    * divergence warnings) in the program's own modules. Never failures. */
   divergences?: ScrDiagnostic[];
+  /** The conversions of the lowered program that build a new object
+   * (lowering/width-copies.ts), present when it has any. */
+  widthCopies?: WidthCopyFact[];
+  /** The functions the lowering assembled (the module's, when there is
+   * one), also when diagnostics leave no module: what the scans that run
+   * once lowering has settled read. */
+  loweredFunctions?: IrFunction[];
   /** Performance warnings (SC61xx): the likely-hot functions the source
    * leaves untyped (lowering/dynamic-tier.ts). Never failures. */
   performance?: ScrDiagnostic[];
   /** Localized failure: the checked dynamic slots the commit points
    * created (each also an SC6104 in `performance`), present when any. */
   dynamicSlots?: DynamicSlotEntry[];
+  /** Coverage only: the checked conversions that trust a type no build
+   * can verify (type-claims.ts), present when any. */
+  typeClaims?: TypeClaimSite[];
   /** Functions lowering placed in the dynamic tier (ir/tiers.ts), present
    * when there are any. */
   dynamicFunctions?: DynamicFunction[];
   /** LowerOptions.tierReport: the report-only tier assignment. */
   tiers?: TierReport;
-  /** The program replaces a process output stream's write method, with the
-   * site: the executable planner refuses the combination with Node islands
-   * (SC8006), whose process objects would not see the patch. Present only
-   * when the build has islands. */
-  stdioPatches?: StdioPatchSite[];
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (Lowerer.nodeIslandUse). The executable build's SC8005
+   * hint names it. */
+  nodeIslandUse?: { file: string; api: string };
   /** LIBRARY mode (LowerOptions.libRoots): each root name resolved through
    * the entry module's export table to the unit that supplies it — the
    * entry's own unit for a direct export, the module-tagged unit of the
@@ -1022,11 +1253,23 @@ export interface LowerOptions {
   unitStore?: UnitStore | null;
   /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
   projectCheckJs?: boolean;
+  /** LoadResult.parameterPropertiesFirst. */
+  parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
    * builds deliberately gave up. */
   coverage?: boolean;
+  /** Coverage only: lower the unreached remainder (default true).
+   * `--coverage=reached` sets false; the report then has no unreached group,
+   * and the aggregates cover the reached statements only. */
+  coverageRemainder?: boolean;
+  /** End a pass that a stream pass replaces where it asks for that pass
+   * (default; see Lowerer.requestedStreamMode). `false` lowers every pass
+   * to its end, which is how the equivalence test compares the two
+   * pipelines. A unit store or coverage disables the abort regardless,
+   * because each reads the push-down pass itself. */
+  abortOnStreamFlags?: boolean;
   /** Coverage only: module files named by --wasm (absolute). */
   wasmFiles?: readonly string[];
   /** The platform the build TARGETS ("win32" under a windows cross triple,
@@ -1037,6 +1280,9 @@ export interface LowerOptions {
    * path.delimiter / os.EOL lower as the win32 literals; path.posix and
    * path.win32 keep answering THEIR platform everywhere, like Node's. */
   targetPlatform?: string;
+  /** `--define` values: %main sets each defined `process.env.NAME` first,
+   * and writes to one are refused. */
+  define?: Defines | undefined;
   /** Node's startup refusal (LoadResult.startupCrash — preflight's
    * resolution walk and named-import link checks): the program
    * compiles to that startup crash. */
@@ -1133,6 +1379,10 @@ export interface DegradedType {
   /** The type maps exactly from its canonical form (stage N2): its slots
    * are static. */
   canonical?: true;
+  /** The type's canonical form maps but for an array of generators, which
+   * has no array storage: the slot that failed first and the type as
+   * written (generator-arrays.ts). */
+  generatorArray?: { loc: SrcLoc; type: string };
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -1151,6 +1401,16 @@ export interface LowererMode {
    * dynamic, never to its pushed-down shape (lowerToIr's comparison
    * pass). */
   wholeSlotDegradation?: boolean;
+  /** Hold the primitive constructors a program holds as values untyped
+   * (TypeMapperCtx.untypedConstructors: their types map as `unknown` does)
+   * instead of typing them by the constructors' own function types. lowerToIr sets it
+   * on the comparison pass of a program whose first pass met a refusal that
+   * involves a held constructor (held-constructors.ts). */
+  untypedConstructors?: boolean;
+  /** End the pass where it asks for the next stream mode, because that
+   * pass replaces its result outright (lowerToIrWithIslands sets this on
+   * the push-down pass and on the general stream pass). */
+  abortOnStreamFlags?: boolean;
   /** LowerOptions.externalTypes, threaded through every lowering pass. */
   externalTypes?: ReadonlyMap<string, string>;
   /** LowerOptions.externalTypeSpecifiersByFile, shared by every pass. */
@@ -1182,17 +1442,28 @@ export interface LowererMode {
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
+  /** LoadResult.parameterPropertiesFirst. */
+  parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
    * always-reachable init bodies and module building, and report deferred
    * collection diagnostics nothing flushed. */
   remainder?: boolean;
+  /** Coverage without the remainder pass (`--coverage=reached`): the
+   * reached pass counts and reports the signature-blocked bodies it
+   * reaches, which the remainder would otherwise report. */
+  coverageReached?: boolean;
   /** Coverage (--explain-dynamic): keep the runtime-optional storage
    * decisions and the reads the checker narrows below the widened
    * storage, for the report (runtime-optional-report.ts). Report-only:
    * lowering does not change. */
   runtimeOptionalReport?: boolean;
+  /** Coverage: collect the program's type claims (type-claims.ts), and
+   * record the declaration that types each Node island value
+   * (Lowerer.islandClaimOrigins). Report-only: no build sets it, and the
+   * lowered code is the same with and without it. */
+  typeClaims?: boolean;
   /** Node's startup refusal (preflight's resolution walk / named-import
    * link checks): %main opens with exactly this throw, before any
    * module init — Node refuses the whole graph before anything evaluates,
@@ -1201,9 +1472,15 @@ export interface LowererMode {
   /** The build's target platform (LowerOptions.targetPlatform — lowerToIr
    * passes it to every pass). Defaults to the host. */
   targetPlatform?: string;
+  /** LowerOptions.define, shared by every pass. */
+  define?: Defines | undefined;
   /** LowerOptions.tierMode, shared by every pass. */
   tierMode?: TierMode;
   workerTargets?: readonly ts.SourceFile[];
+  /** The modules only worker entries reach (see Lowerer.workerOnlyModules). */
+  workerOnlyModules?: ReadonlySet<ts.SourceFile>;
+  /** Every module a worker entry reaches (see Lowerer.workerModules). */
+  workerModules?: ReadonlySet<ts.SourceFile>;
   /** The program facts every pass of ONE island round shares
    * (lowering-facts.ts): the same program and moduleOrder, so a pass that
    * omits it simply gets a private copy. lowerToIrWithIslands builds one and
@@ -1273,6 +1550,16 @@ function emitSpecRoot(spec: EmitSpecRequest): string {
   return `%emit.${spec.info.def.name}.${spec.event}.${spec.ordinal}`;
 }
 
+/** A pass ended where it asked for the next stream mode. That pass replaces
+ * its reachable set, result, diagnostics and Lowerer outright, so
+ * lowerToIrWithIslands keeps only the request (requestedStreamMode). */
+class StreamFlagsAbort {}
+
+/** SCRIPTC_CHECK_STREAM_MODE=1 lowers the push-down pass of every program
+ * to its end and fails the build when that pass met an untyped stream flow
+ * after its request which the general stream pass did not meet. */
+const CHECK_STREAM_MODE = process.env["SCRIPTC_CHECK_STREAM_MODE"] === "1";
+
 export function lowerToIr(
   program: ts.Program,
   entry: ts.SourceFile,
@@ -1280,21 +1567,75 @@ export function lowerToIr(
   options: LowerOptions = {},
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
+  resetTypeWalkBudget();
   try {
     const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
+    // A type walk that passed its step limit ends the build, also when
+    // something on the way out answered for the error.
+    const overLimit = typeWalkOverLimit();
+    if (overLimit !== null) return typeWalkBudgetFailure(overLimit, entry);
     markModuleInitFences(program, result.runtimeFences);
     return result;
+  } catch (e) {
+    if (!(e instanceof TypeWalkBudgetError)) throw e;
+    return typeWalkBudgetFailure(e, entry);
   } finally {
     setActiveNodeIslands(null);
   }
 }
 
-/** Marks the runtime fences in npm package code whose site is top-level
- * module code (outside every function body): they throw when the module
+/** The build of a program one of whose types passed the type walk's step
+ * limit: SC2016 at the type's declaration (the entry, for a type without
+ * one) and nothing else, in every tier. */
+function typeWalkBudgetFailure(error: TypeWalkBudgetError, entry: ts.SourceFile): LowerResult {
+  const loc = error.loc ?? { file: entry.fileName, start: 0, end: 0 };
+  return {
+    module: null,
+    diagnostics: [typeWalkBudgetDiag(error.typeText, error.steps, loc)],
+    runtimeFences: [],
+    stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+  };
+}
+
+/** Whether `fn` is a function the expression it sits in calls where it is
+ * written (`(function () {…})()`, `(() => {…})()`, `(function () {…}).call(this)`,
+ * `!function () {…}()`): its body runs when that call is evaluated. A UMD
+ * wrapper is one. A generator's body does not run at the call. */
+export function isImmediatelyInvokedFunction(fn: ts.Node): boolean {
+  if (!ts.isFunctionExpression(fn) && !ts.isArrowFunction(fn)) return false;
+  if (ts.isFunctionExpression(fn) && fn.asteriskToken !== undefined) return false;
+  let callee: ts.Node = fn;
+  while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+    callee = callee.parent;
+  let parent = callee.parent;
+  if (
+    parent !== undefined &&
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === callee &&
+    !parent.questionDotToken &&
+    (parent.name.text === "call" || parent.name.text === "apply")
+  ) {
+    callee = parent;
+    while (callee.parent !== undefined && ts.isParenthesizedExpression(callee.parent))
+      callee = callee.parent;
+    parent = callee.parent;
+  }
+  return (
+    parent !== undefined &&
+    ts.isCallExpression(parent) &&
+    parent.expression === callee &&
+    !parent.questionDotToken
+  );
+}
+
+/** Marks the runtime fences in npm package code whose site is module-init
+ * code: top-level module code outside every function body, or the body of a
+ * function that is called where it is written, at such a place (a UMD
+ * wrapper's body runs when its module evaluates). They throw when the module
  * evaluates (ScrDiagnostic.moduleInit). */
 function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
   for (const d of fences) {
-    if (!d.loc.file.includes("/node_modules/")) continue;
+    if (!isInstalledPackagePath(d.loc.file)) continue;
     // A fence without a source position belongs to synthesized code, such
     // as the global object's lookup (global-values.ts), which runs when the
     // program calls it, not when the module evaluates.
@@ -1316,7 +1657,7 @@ function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnosti
       });
       if (next === undefined) break;
       if (
-        ts.isFunctionLike(next) ||
+        (ts.isFunctionLike(next) && !isImmediatelyInvokedFunction(next)) ||
         (ts.isPropertyDeclaration(next) &&
           !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
       )
@@ -1361,6 +1702,10 @@ function lowerToIrWithIslands(
   const cycleKeys = new Set<string>();
   const forkTargets: ts.SourceFile[] = [];
   const workerTargets: ts.SourceFile[] = [];
+  // The modules the worker entries add to the order: no module the program's
+  // entry, a literal import() or a fork entry reaches is among them, so
+  // their code runs on worker threads only.
+  const workerOnlyModules = new Set<ts.SourceFile>();
   const onExtraCycle = (cycle: string, reason: string): void => {
     const key = `${cycle}\0${reason}`;
     if (cycleKeys.has(key)) return;
@@ -1385,10 +1730,18 @@ function lowerToIrWithIslands(
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
     appendForkModules(program, moduleOrder, forkTargets, onExtraCycle, graph);
+    const beforeWorkers = moduleOrder.length;
+    const last = moduleOrder[beforeWorkers - 1];
     appendWorkerModules(program, moduleOrder, workerTargets, onExtraCycle, graph);
+    // The added modules sit in front of the order's last module, the entry
+    // (appendEntryModules).
+    if (moduleOrder[moduleOrder.length - 1] === last)
+      for (let i = beforeWorkers - 1; i < moduleOrder.length - 1; i++)
+        workerOnlyModules.add(moduleOrder[i]!);
     if (moduleOrder.length === before) break;
     if (pass === 31) throw new Error("dynamic import and fork module discovery did not converge");
   }
+  const workerModules = workerThreadModules(program, workerTargets, graph);
   const ffiImports = options.ffiImports ?? [];
   const libraryCallbacks = options.libraryCallbacks ?? false;
   const externalTypes = options.externalTypes ?? new Map<string, string>();
@@ -1396,6 +1749,12 @@ function lowerToIrWithIslands(
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
   const tierMode = options.tierMode ?? "auto";
   const runtimeOptionalReport = options.tierReport !== undefined;
+  // `--coverage=reached` has no remainder pass, so the reached pass reports
+  // the body diagnostics of the functions it reaches whose signature
+  // blocked, which the remainder would otherwise report.
+  const coverageReached = options.coverage === true && options.coverageRemainder === false;
+  // Coverage lists the program's type claims (lowering/type-claims.ts).
+  const typeClaims = options.coverage === true;
   // One island round lowers the same program through several passes:
   // validation, reachable emit, the whole-slot comparison, the stream
   // relowers, historical order and the coverage remainder. They differ only
@@ -1403,11 +1762,25 @@ function lowerToIrWithIslands(
   // computed once here and shared (lowering-facts.ts); per-pass state stays
   // private to the pass.
   const facts = new LoweringFacts(program, moduleOrder, externalTypeSpecifiersByFile);
+  // The push-down pass of a stream program exists only to learn the stream
+  // mode it asks for, and the general stream pass of a program that needs
+  // checked-dynamic stream slots only to ask for them: the pass that
+  // follows replaces the reachable set, result, diagnostics and Lowerer
+  // outright. Each ends where it asks. Not when a unit store records the
+  // push-down pass's units for reuse, and not in coverage, whose analysis
+  // reads the push-down pass's reachable set.
+  const abortReplacedPasses =
+    !CHECK_STREAM_MODE &&
+    options.abortOnStreamFlags !== false &&
+    (options.unitStore ?? null) === null &&
+    options.coverage !== true;
   const validation = new Lowerer(program, entry, moduleOrder, {
     facts,
     frontendServices: options.frontendServices,
     projectCheckJs: options.projectCheckJs ?? false,
+    parameterPropertiesFirst: options.parameterPropertiesFirst,
     targetPlatform,
+    define: options.define,
     startupCrash,
     admittedOpinions: options.admittedOpinions,
     inlineRequireCycleCalls,
@@ -1416,10 +1789,15 @@ function lowerToIrWithIslands(
     libraryCallbacks,
     forkTargets,
     workerTargets,
+    workerOnlyModules,
+    workerModules,
     externalTypes,
     externalTypeSpecifiersByFile,
+    abortOnStreamFlags: abortReplacedPasses,
     tierMode,
     runtimeOptionalReport,
+    coverageReached,
+    typeClaims,
   });
   const ffiValidation = validateFfiImports(validation);
   timing("ffi-validate");
@@ -1435,7 +1813,9 @@ function lowerToIrWithIslands(
           facts,
           frontendServices: options.frontendServices,
           projectCheckJs: options.projectCheckJs ?? false,
+          parameterPropertiesFirst: options.parameterPropertiesFirst,
           targetPlatform,
+          define: options.define,
           startupCrash,
           admittedOpinions: options.admittedOpinions,
           inlineRequireCycleCalls,
@@ -1444,19 +1824,44 @@ function lowerToIrWithIslands(
           libraryCallbacks,
           forkTargets,
           workerTargets,
+          workerOnlyModules,
+          workerModules,
           externalTypes,
           externalTypeSpecifiersByFile,
           tierMode,
           runtimeOptionalReport,
+          coverageReached,
+          typeClaims,
           ffiBindingSymbols: ffiValidation.symbolsByName,
+          abortOnStreamFlags: abortReplacedPasses,
         });
   for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
   for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
-  const emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+  let pushDownAborted = false;
+  let emitted: { reachable: Set<string>; result: LowerResult };
+  try {
+    emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+  } catch (e) {
+    if (!(e instanceof StreamFlagsAbort)) throw e;
+    // The pass asked for a stream mode, so the stream pass below replaces
+    // its reachable set, result and Lowerer before any of them is read.
+    pushDownAborted = true;
+    emitted = {
+      reachable: new Set(),
+      result: { module: null, diagnostics: [], runtimeFences: [], stats: reachableEmit.stats },
+    };
+  }
   let { reachable } = emitted;
   let result = emitted.result;
   let resultLowerer = reachableEmit;
-  timing("reachable-emit", { reachable: reachable.size });
+  timing("reachable-emit", {
+    reachable: reachable.size,
+    ...(pushDownAborted ? { aborted: "stream-flags" } : {}),
+    // The program holds a primitive constructor in its typed form
+    // (held-constructors.ts): what makes its refusals count for the
+    // comparison round below.
+    ...(reachableEmit.constructorFunctionTypes ? { held_constructors: true } : {}),
+  });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
   // a general stream into a stdio-represented stream slot lowers again
@@ -1464,57 +1869,117 @@ function lowerToIrWithIslands(
   // The stream pass below replaces this pass's result outright, so the
   // whole-slot comparison runs after it for those programs (it would
   // otherwise pay for a result the stream pass throws away).
-  const generalNodeStreams = reachableEmit.requiresGeneralNodeStreams;
-  // Localized failure (stage L3): push-down must never cost a failing
-  // program more errors than the whole-slot checked dynamic. A pushed-down
-  // type is baked into the globals, fields and signatures that hold it, so
-  // when the program still fails, the emit runs once more with every
-  // degraded type held whole, and the pass with fewer errors wins (ties
-  // keep push-down). A program that compiles never takes this path.
-  if (
-    !generalNodeStreams &&
-    result.diagnostics.length > 0 &&
-    reachableEmit.hasPartialDegradedTypes()
-  ) {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      targetPlatform,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
+  const pushDownRequest = reachableEmit.requestedStreamMode();
+  const generalNodeStreams = pushDownRequest !== null;
+  if (pushDownAborted && !generalNodeStreams)
+    throw new InternalCompilerError(
+      "lowerer bug: a stream-flags abort without the general stream flag",
+    );
+  // The comparison round. A failing program lowers once more in another
+  // representation, and the pass with fewer refusals stands (ties keep the
+  // standing pass). A program that compiles with nothing refused never
+  // takes this path. Two representations are compared, in ONE pass when the
+  // program asks for both:
+  //   - Localized failure (stage L3): push-down must never cost a failing
+  //     program more errors than the whole-slot checked dynamic. A
+  //     pushed-down type is baked into the globals, fields and signatures
+  //     that hold it, so when the program still fails, the emit runs with
+  //     every degraded type held whole.
+  //   - Held constructors (held-constructors.ts): the function form of a
+  //     primitive constructor held as a value must never cost a program a
+  //     refusal. When a refusal involves one, a build error or one deferred
+  //     to run time, the emit runs with the constructors in checked-dynamic
+  //     slots.
+  // A program whose errors all involve a held constructor compares that
+  // representation alone first: its degraded types are not what failed. If
+  // the standing pass then still fails with pushed-down types, it takes the
+  // whole-slot comparison as any failing program does.
+  const comparisonRounds = (general: boolean): void => {
+    let constructorsCompared = false;
+    for (;;) {
+      const partial = result.diagnostics.length > 0 && resultLowerer.hasPartialDegradedTypes();
+      const untyped =
+        !constructorsCompared &&
+        !resultLowerer.untypedConstructors &&
+        constructorRefusals(resultLowerer, result);
+      const whole = partial && (!untyped || otherErrors(result));
+      if (!whole && !untyped) return;
+      if (untyped) constructorsCompared = true;
+      const pass = new Lowerer(program, entry, moduleOrder, {
+        facts,
+        frontendServices: options.frontendServices,
+        projectCheckJs: options.projectCheckJs ?? false,
+        parameterPropertiesFirst: options.parameterPropertiesFirst,
+        ...(general
+          ? {
+              generalNodeStreams: true,
+              ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
+              dynamicImportRejections: options.dynamicImportRejections,
+            }
+          : {}),
+        targetPlatform,
+        define: options.define,
+        startupCrash,
+        admittedOpinions: options.admittedOpinions,
+        inlineRequireCycleCalls,
+        ffiImports,
+        libraryCallbacks,
+        forkTargets,
+        workerTargets,
+        workerOnlyModules,
+        workerModules,
+        externalTypes,
+        externalTypeSpecifiersByFile,
+        tierMode,
+        runtimeOptionalReport,
+        coverageReached,
+        typeClaims,
+        ffiBindingSymbols: ffiValidation.symbolsByName,
+        ...(whole ? { wholeSlotDegradation: true } : {}),
+        ...(untyped || resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
+      });
+      for (const d of extraModuleCycleDiags) pass.pushDiag(d);
+      for (const d of ffiValidation.diagnostics) pass.pushDiag(d);
+      const emitted = pass.emitReachable(options.libRoots);
+      // The whole-slot comparison alone judges build errors, as it always
+      // has; a comparison that involves held constructors also counts the
+      // refusals deferred to run time.
+      const fewer = untyped
+        ? fewerRefusals(emitted.result, result)
+        : emitted.result.diagnostics.length < result.diagnostics.length;
+      if (fewer) {
+        reachable = emitted.reachable;
+        result = emitted.result;
+        resultLowerer = pass;
+      }
+      timing(whole ? "whole-slot-relower" : "untyped-constructors-relower", {
+        reachable: emitted.reachable.size,
+        ...(whole && untyped ? { constructors: "untyped" } : {}),
+        ...(untyped
+          ? {
+              kept: fewer,
+              errors: emitted.result.diagnostics.length,
+              deferred: emitted.result.runtimeFences.length,
+            }
+          : {}),
+      });
+      if (whole) return;
     }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-  }
+  };
+  // Stream programs take it after their stream passes (below).
+  if (!generalNodeStreams) comparisonRounds(false);
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
-  let dynNodeStreams = reachableEmit.requiresDynNodeStreams;
+  let dynNodeStreams = pushDownRequest !== null && pushDownRequest.dyn;
   const streamPass = (dyn: boolean): Lowerer => {
     const general = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1523,31 +1988,63 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      coverageReached,
+      typeClaims,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       generalNodeStreams: true,
-      ...(dyn ? { dynNodeStreams: true } : {}),
+      // The general pass of a program that asks for checked-dynamic slots
+      // is replaced by the pass that has them.
+      ...(dyn ? { dynNodeStreams: true } : { abortOnStreamFlags: abortReplacedPasses }),
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
-    const generalEmitted = general.emitReachable(options.libRoots);
+    const phase = dyn ? "dyn-streams-relower" : "general-streams-relower";
+    let generalEmitted: { reachable: Set<string>; result: LowerResult };
+    try {
+      generalEmitted = general.emitReachable(options.libRoots);
+    } catch (e) {
+      if (!(e instanceof StreamFlagsAbort)) throw e;
+      timing(phase, { reachable: 0, aborted: "stream-flags" });
+      return general;
+    }
     reachable = generalEmitted.reachable;
     result = generalEmitted.result;
     resultLowerer = general;
-    timing(dyn ? "dyn-streams-relower" : "general-streams-relower", { reachable: reachable.size });
+    timing(phase, { reachable: reachable.size });
     return general;
   };
   if (generalNodeStreams) {
     const general = streamPass(dynNodeStreams);
-    if (!dynNodeStreams && general.requiresDynNodeStreams) {
+    if (!dynNodeStreams && general.requestedStreamMode() !== null) {
       dynNodeStreams = true;
       streamPass(true);
     }
+    if (CHECK_STREAM_MODE && reachableEmit.requiresDynNodeStreams && !dynNodeStreams)
+      throw new InternalCompilerError(
+        "lowerer bug: the push-down pass met an untyped stream flow after its stream request, and the general stream pass met none",
+      );
   }
+  // The async-iteration protocol analysis (async-protocol-holders.ts) ran
+  // inside the first pass that mapped a protocol type; its cost is part of
+  // that pass's phase, reported here on its own line.
+  const asyncProtocols = facts.askedAsyncProtocolHolders;
+  if (phaseTiming && asyncProtocols !== null && asyncProtocols.sites > 0)
+    process.stderr.write(
+      `scriptc lowering ${JSON.stringify({
+        phase: "async-protocol-flows",
+        scan_ms: asyncProtocols.elapsedMs,
+        sites: asyncProtocols.sites,
+        marked: asyncProtocols.markedCount,
+        island_declared: asyncProtocols.islandDeclared,
+      })}\n`,
+    );
   // A generic class-rest support decision can depend on record metadata
   // whose historical owner is discovered only while retained bodies lower.
   // If the settled answer is a fence, rerun the ordinary reachable emit so
@@ -1560,10 +2057,12 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
       targetPlatform,
+      define: options.define,
       startupCrash,
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
@@ -1572,12 +2071,17 @@ function lowerToIrWithIslands(
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
+      coverageReached,
+      typeClaims,
       ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
     });
     for (const d of extraModuleCycleDiags) emit.pushDiag(d);
     for (const d of ffiValidation.diagnostics) emit.pushDiag(d);
@@ -1585,48 +2089,11 @@ function lowerToIrWithIslands(
     resultLowerer = emit;
     timing("historical-order-relower");
   }
-  // A stream program whose passes still fail takes the whole-slot
-  // comparison here, against the pass whose result stands: the stream pass
-  // replaces the earlier result outright, so the comparison is only worth
-  // paying for on the pass it would judge. The rule is unchanged — the
-  // whole-slot pass is kept only when it has strictly fewer errors.
-  if (
-    generalNodeStreams &&
-    result.diagnostics.length > 0 &&
-    resultLowerer.hasPartialDegradedTypes()
-  ) {
-    const whole = new Lowerer(program, entry, moduleOrder, {
-      facts,
-      frontendServices: options.frontendServices,
-      projectCheckJs: options.projectCheckJs ?? false,
-      generalNodeStreams: true,
-      ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
-      targetPlatform,
-      startupCrash,
-      admittedOpinions: options.admittedOpinions,
-      inlineRequireCycleCalls,
-      dynamicImportRejections: options.dynamicImportRejections,
-      ffiImports,
-      libraryCallbacks,
-      forkTargets,
-      workerTargets,
-      ffiBindingSymbols: ffiValidation.symbolsByName,
-      externalTypes,
-      externalTypeSpecifiersByFile,
-      tierMode,
-      runtimeOptionalReport,
-      wholeSlotDegradation: true,
-    });
-    for (const d of extraModuleCycleDiags) whole.pushDiag(d);
-    for (const d of ffiValidation.diagnostics) whole.pushDiag(d);
-    const wholeEmitted = whole.emitReachable(options.libRoots);
-    if (wholeEmitted.result.diagnostics.length < result.diagnostics.length) {
-      reachable = wholeEmitted.reachable;
-      result = wholeEmitted.result;
-      resultLowerer = whole;
-    }
-    timing("whole-slot-relower", { reachable: wholeEmitted.reachable.size });
-  }
+  // A stream program whose passes still fail takes the comparison round
+  // here, against the pass whose result stands: the stream pass replaces
+  // the earlier result outright, so the comparison is only worth paying for
+  // on the pass it would judge.
+  if (generalNodeStreams) comparisonRounds(true);
   // LIBRARY mode: the profile's export names resolved to the units that
   // supply them — the entry's own unit for a direct export, the declaring
   // module's tagged unit for a re-exported one. The export-map resolution
@@ -1642,9 +2109,44 @@ function lowerToIrWithIslands(
   }
   // Divergence warnings over the program's own modules: computed once,
   // after lowering, from the same checker (never part of a failure).
+  // Width copies are read off the functions of the pass whose result
+  // stands, once.
+  const traceCopies = process.env["SCRIPTC_TRACE_WIDTH_COPIES"] === "1";
+  const widthCopies = collectWidthCopies(resultLowerer, result.loweredFunctions ?? [], traceCopies);
+  timing("width-copies", { found: widthCopies.length });
+  if (traceCopies)
+    for (const line of traceWidthCopies(resultLowerer, widthCopies))
+      process.stderr.write(line + "\n");
+  if (widthCopies.length > 0) result = { ...result, widthCopies };
+  const scanned = scanDivergences(resultLowerer, moduleOrder);
   const divergences = [
-    ...scanDivergences(resultLowerer, moduleOrder),
+    ...widthCopyDivergences(resultLowerer, widthCopies),
+    ...scanned,
+    // Key orders the witness pass could not follow (SC6014), except where
+    // the scan already names the same construction for its own order
+    // (SC6002).
+    ...resultLowerer.keyOrder.warnings.filter(
+      (warning) =>
+        !scanned.some(
+          (found) =>
+            found.code === "SC6002" &&
+            found.loc.file === warning.loc.file &&
+            found.loc.start === warning.loc.start,
+        ),
+    ),
     ...resultLowerer.sharedModuleWarnings,
+    ...resultLowerer.islandWorkerWarnings,
+    ...resultLowerer.deferredRefusalWarnings,
+    ...Array.from(resultLowerer.absentDefaultStops.values(), (site) =>
+      absentDefaultStopDiag(resultLowerer.fmt(site.from), resultLowerer.fmt(site.to), site.loc),
+    ),
+    // Deferred refusals inside their own try/catch: named here, since the
+    // binary does not report them (ir/deferred-fence.ts).
+    ...(result.module === null
+      ? []
+      : guardedDeferredFences(result.module).map((site) =>
+          guardedDeferredFenceDiag(site.code, site.refusal, site.loc),
+        )),
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
@@ -1678,6 +2180,8 @@ function lowerToIrWithIslands(
       dynamicSlots,
     };
   }
+  if (resultLowerer.typeClaimSites.length > 0)
+    result = { ...result, typeClaims: resultLowerer.typeClaimSites };
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
   // Acyclic object types name the IR unit the program lowered them to; a
@@ -1761,6 +2265,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       reachable,
@@ -1768,34 +2273,45 @@ function lowerToIrWithIslands(
       alreadyFlushed: resultLowerer.flushedSymbols,
       degradedTypes: resultLowerer.degradedTypes,
       retriedSymbols: resultLowerer.retriedSymbols,
+      ...(resultLowerer.untypedConstructors ? { untypedConstructors: true } : {}),
       admittedOpinions: options.admittedOpinions,
       inlineRequireCycleCalls,
       dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
+      define: options.define,
       ffiImports,
       libraryCallbacks,
       forkTargets,
       workerTargets,
+      workerOnlyModules,
+      workerModules,
       ffiBindingSymbols: ffiValidation.symbolsByName,
       externalTypes,
       externalTypeSpecifiersByFile,
       tierMode,
       runtimeOptionalReport,
     });
-  let remainder = remainderPass(generalNodeStreams);
-  let rem = remainder.run();
-  // Unreached code reports what it would compile to once reached: a
-  // stream flow there that needs the general representation lowers the
-  // remainder again with it, as reachable emit would.
-  if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
-    remainder = remainderPass(true, remainder.requiresDynNodeStreams);
+  // `--coverage=reached` skips this pass: lowering every unreached body is
+  // what made the analysis of a large program run out of memory.
+  let rem: LowerResult | null = null;
+  let blockedBody: readonly ScrDiagnostic[] = resultLowerer.reachedBlockedBodyDiagnostics;
+  if (options.coverageRemainder !== false) {
+    let remainder = remainderPass(generalNodeStreams);
     rem = remainder.run();
+    // Unreached code reports what it would compile to once reached: a
+    // stream flow there that needs the general representation lowers the
+    // remainder again with it, as reachable emit would.
+    if (!generalNodeStreams && remainder.requiresGeneralNodeStreams) {
+      remainder = remainderPass(true, remainder.requiresDynNodeStreams);
+      rem = remainder.run();
+    }
+    if (!dynNodeStreams && remainder.generalNodeStreams && remainder.requiresDynNodeStreams) {
+      remainder = remainderPass(true, true);
+      rem = remainder.run();
+    }
+    blockedBody = remainder.reachedBlockedBodyDiagnostics;
+    timing("coverage-remainder");
   }
-  if (!dynNodeStreams && remainder.generalNodeStreams && remainder.requiresDynNodeStreams) {
-    remainder = remainderPass(true, true);
-    rem = remainder.run();
-  }
-  timing("coverage-remainder");
   // Tiers (tier-analysis.ts): reached statements in dynamic-tier functions,
   // and with tierReport the report-only demotion analysis.
   const dynamicFunctions = resultLowerer.dynamicBodies;
@@ -1807,7 +2323,7 @@ function lowerToIrWithIslands(
           dynamicFunctions,
           reached: [...options.tierReport.preflight, ...result.diagnostics],
           deferred: result.runtimeFences,
-          unreached: [...rem.diagnostics, ...rem.runtimeFences],
+          unreached: rem === null ? [] : [...rem.diagnostics, ...rem.runtimeFences],
           runtimeOptional: resultLowerer.runtimeOptionalNarrowings,
         });
   // A dynamic function's own statements can include ones that failed.
@@ -1822,13 +2338,17 @@ function lowerToIrWithIslands(
   // travel with them: a failed statement is never left unexplained.
   const covered: LowerResult = {
     ...result,
-    diagnostics: [...result.diagnostics, ...remainder.reachedBlockedBodyDiagnostics],
+    diagnostics: [...result.diagnostics, ...blockedBody],
     stats: { ...result.stats, statementsDynamic },
-    unreached: {
-      diagnostics: rem.diagnostics,
-      stats: rem.stats,
-      ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
-    },
+    ...(rem === null
+      ? {}
+      : {
+          unreached: {
+            diagnostics: rem.diagnostics,
+            stats: rem.stats,
+            ...(rem.runtimeFences.length > 0 ? { runtimeFences: rem.runtimeFences } : {}),
+          },
+        }),
   };
   if (tiers !== undefined) covered.tiers = tiers;
   const wasmModules = discoverModules();
@@ -1878,7 +2398,10 @@ export function staticImportNamespaceType(
     }
   }
   if (moduleId === null) return null;
-  const ns: IrType = { kind: "moduleNs", moduleId };
+  // node:constants has no census and its ESM namespace is a checked-dynamic
+  // object (sorted runtime names plus "default"), so the import's value is
+  // typed dynamically rather than as a module namespace token.
+  const ns: IrType = moduleId === "builtin:constants" ? DYN : { kind: "moduleNs", moduleId };
   return awaited ? ns : { kind: "promise", inner: ns };
 }
 
@@ -2342,15 +2865,79 @@ function isAnonymousCallableDefinition(node: ts.Node): boolean {
   return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
 }
 
-/** The name V8 gives a function value read from this expression: its own
- * definition, through parenthesized, rebindable and const bindings and
- * property reads (`process.cwd`), or the binding an anonymous definition
- * initializes. Null when the source does not determine it. */
-export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
-  // Typed source cannot read a function's `name` (SC2020), so the names below
-  // are unobservable there; keeping them JavaScript-only leaves every typed
-  // program's output byte-identical.
+/** How jsFuncNameOf reads its node. */
+export interface FuncNameQuery {
+  /** The source spelling of a callee for an error message: a reference
+   * the source does not tie to a definition answers its own spelling. */
+  readonly spelling?: true;
+  /** Every naming form of an anonymous definition, in TypeScript too: the
+   * JavaScript name a typed function carries beside its stack-frame name
+   * (noted where the function is lifted, for function-names.ts). */
+  readonly everyForm?: true;
+}
+
+/** Whether a declaration only describes a value that exists elsewhere (a
+ * declaration file, or `declare`): the value is named as it is declared. */
+function isAmbientDeclaration(declaration: ts.Node): boolean {
+  return (
+    ts.getSourceFileOfNode(declaration).isDeclarationFile ||
+    (ts.getCombinedModifierFlags(declaration as ts.Declaration) & ts.ModifierFlags.Ambient) !== 0
+  );
+}
+
+/** Whether the identifier's own spelling is the name of the function it
+ * holds: it names a class, or a value an ambient declaration describes. A
+ * parameter, a destructured binding, a binding assigned after its
+ * declaration and a binding without an initializer hold whichever function
+ * the program put there, which only the function itself can name. */
+function identifierNamesItsValue(lowerer: Lowerer, ident: ts.Identifier): boolean {
+  const declaration = lowerer.resolveValueSymbol(ident)?.valueDeclaration;
+  if (!declaration) return true;
+  if (ts.isVariableDeclaration(declaration)) return isAmbientDeclaration(declaration);
+  return !ts.isParameter(declaration) && !ts.isBindingElement(declaration);
+}
+
+/** Whether a property read answers a function named as the property: the
+ * property is a method the program defines, a function or class a module
+ * or namespace exports, or a member an ambient declaration describes. A
+ * field, an index-signature slot or an accessor holds whichever function
+ * the program stored, which only the function itself can name. */
+function propertyNamesItsValue(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  const declarations = lowerer.checker.getSymbolAtLocation(access.name)?.declarations ?? [];
+  return (
+    declarations.length > 0 &&
+    declarations.every(
+      (declaration) =>
+        ts.isMethodDeclaration(declaration) ||
+        ts.isFunctionDeclaration(declaration) ||
+        ts.isClassDeclaration(declaration) ||
+        isAmbientDeclaration(declaration),
+    )
+  );
+}
+
+/** The `name` of the function value this expression reads, when the source
+ * proves which definition it is: the definition itself, a declared
+ * function or class, a binding that is never assigned again and that an
+ * anonymous definition initializes (which names it, V8's SetFunctionName)
+ * or that aliases such a reference, a method read through its declaration,
+ * or a member an ambient declaration describes (`process.cwd`). Null when
+ * the source does not determine it: the value then answers with its own
+ * name at run time (the closure-name table, LlEmitter.closureNames), so a
+ * function read through a parameter, a field, an element or a binding
+ * assigned later is never named after the place it is read from. */
+export function jsFuncNameOf(
+  node: ts.Node,
+  lowerer?: Lowerer,
+  query: FuncNameQuery = {},
+): string | null {
   const js = isJsSourceFile(ts.getSourceFileOfNode(node));
+  const spelling = query.spelling === true;
+  // A typed program's stack frames are named by sourceName, so the forms
+  // below that only JavaScript's frames used keep that scope there; the
+  // JavaScript name they give a typed function is its displayName
+  // (function-names.ts), which asks for every form.
+  const everyForm = js || query.everyForm === true;
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2363,28 +2950,45 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    // A binding element or a parameter holds the default's value only when the
-    // destructured value or the argument was undefined; otherwise it holds the
-    // source's value. Which one ran is a runtime fact, so a default never
-    // answers for the binding: when it runs, the definition it created was
-    // already named after the binding, and a named definition it references
-    // keeps the name it spells. A default the source overrides must not lend
-    // its name to the supplied value (`const [x = function unused() {}] =
-    // [function supplied() {}]` is "supplied"), so this answers null and the
-    // name read takes the runtime value's own name.
-    // Without a default the spelling is wrong for every value the binding can
-    // hold, but that shape has no pattern-default signature and is a separate
-    // change; it keeps the previous answer here.
-    if (js && declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
-      if (!declaration.initializer) break;
+    // A binding element or a parameter holds the function the caller or the
+    // destructured value supplied, or its default's value when that was
+    // undefined. Which one it holds is a runtime fact, so the binding never
+    // answers: a default that runs named its definition after the binding
+    // when it created it, and a supplied function keeps its own name
+    // (`const [x = function unused() {}] = [function supplied() {}]` is
+    // "supplied").
+    if (declaration && (ts.isBindingElement(declaration) || ts.isParameter(declaration))) {
+      if (spelling && !(js && declaration.initializer)) break;
       return null;
     }
+    // A whole export (`module.exports = <value>`) read through an importer's
+    // binding: the value is the one that statement assigned. A member target
+    // names nothing, so an anonymous definition there keeps the empty name;
+    // any other value carries its own.
+    if (
+      declaration &&
+      ts.isBinaryExpression(declaration) &&
+      declaration.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(declaration.left)
+    ) {
+      let exported: ts.Node = declaration.right;
+      while (ts.isParenthesizedExpression(exported)) exported = exported.expression;
+      if (isAnonymousCallableDefinition(exported)) return "";
+      n = exported;
+      continue;
+    }
     if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
+    // A binding the program assigns again holds the function assigned last.
+    if (
+      !spelling &&
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 &&
+      !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration)
+    )
+      return null;
     let value: ts.Node = declaration.initializer;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
     // Name inference (V8's SetFunctionName) covers an ANONYMOUS function or
-    // class definition and nothing else: the binding names it, so a
-    // rebindable binding keeps the binding's spelling below. Any other
+    // class definition and nothing else: the binding names it. Any other
     // initializer is a value that carries its own name — a named
     // definition, a builtin function (`var a = String; a.name` is
     // "String") or another binding (`var a = b` keeps b's name) — and
@@ -2399,8 +3003,12 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     }
     n = value;
   }
-  if (ts.isIdentifier(n)) return n.text;
-  if (ts.isPropertyAccessExpression(n)) return n.name.text;
+  if (ts.isIdentifier(n)) {
+    return spelling || !lowerer || identifierNamesItsValue(lowerer, n) ? n.text : null;
+  }
+  if (ts.isPropertyAccessExpression(n)) {
+    return spelling || !lowerer || propertyNamesItsValue(lowerer, n) ? n.name.text : null;
+  }
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
   if (ts.isClassExpression(n) && n.name) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
@@ -2422,11 +3030,11 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
     // does an object-assignment shorthand (`({ a = function () {} } = o)`)
     // and a plain identifier assignment (`a = function () {}`). A member
     // target never names one: only an identifier reference does.
-    if (js && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+    if (everyForm && p && ts.isParameter(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
       return p.name.text;
     }
     if (
-      js &&
+      everyForm &&
       p &&
       ts.isShorthandPropertyAssignment(p) &&
       p.objectAssignmentInitializer === outer &&
@@ -2435,7 +3043,7 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       return p.name.text;
     }
     if (
-      js &&
+      everyForm &&
       p &&
       ts.isBinaryExpression(p) &&
       p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -2578,9 +3186,16 @@ export class Lowerer {
   /** Identifiers by spelling, per file, for the generic bindings' use
    * ordering (runsAfterDeclaration). */
   readonly bindingIdentifiers = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** Each source file's inline `comptime` callbacks (comptimeCallbacksOf). */
+  readonly comptimeCallbacks = new Map<ts.SourceFile, string[]>();
   /** Per JavaScript file, the declarations of the bindings it assigns an
    * own `toString` (jsAssignsOwnToString in lower-calls.ts). */
   readonly ownToStringTargets = new Map<ts.SourceFile, Set<ts.Node>>();
+  /** Per JavaScript file and keyed-collection class, whether the file
+   * patches that class's prototype (jsSourcePatchesCollectionPrototype in
+   * containers/collection-methods.ts). Both answers are kept, so a file's
+   * scan runs once per class however many constructors it holds. */
+  readonly collectionPrototypePatches = new Map<ts.SourceFile, Map<string, boolean>>();
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
@@ -2864,6 +3479,11 @@ export class Lowerer {
   /** `??` expressions whose result is the optional callback's own function
    * type (an adapted function default); their bindings take that type. */
   readonly nullishFuncResults = new Set<ts.Node>();
+  /** `rows[at] ?? wide` / `rows[at] || wide` expressions whose default
+   * stops the program where the left side is absent (absentDefaultStop in
+   * expressions/binary.ts), with the default's type and the left's: the
+   * build reports each once (SC6001, absentDefaultStopDiag). */
+  readonly absentDefaultStops = new Map<ts.Node, { from: IrType; to: IrType; loc: SrcLoc }>();
   /** The static names of the current generic instance's name-keyed
    * function parameters (static-function-names.ts). */
   staticFnNames: Map<ts.Symbol, string | null> | null = null;
@@ -2902,6 +3522,15 @@ export class Lowerer {
     ts.Type,
     { tsBindings: Map<ts.Symbol, ts.Type>; instance: ts.Type }[]
   >();
+  /** The ts bindings of each call-keyed instance whose key names bound
+   * literals beyond the keyof ones (generic-functions.ts memberPatternKey),
+   * with the type parameters it names them for. No call that binds those
+   * parameters otherwise shares the instance, so its body may map a type by
+   * them (pinnedTypeParamTsResolver). */
+  readonly pinnedTypeParams: {
+    tsBindings: Map<ts.Symbol, ts.Type>;
+    pinned: ReadonlySet<ts.Symbol>;
+  }[] = [];
   /** Values an erased type assertion produced, with the asserted type
    * (`x as T` keeps x's representation): a slot that no ordinary
    * conversion reaches converts them as asserted (assertedConversion). */
@@ -2913,6 +3542,16 @@ export class Lowerer {
    * typeParamBindings — the checker has no `T` to substitute, so the
    * binding rides the node-type accessor instead of mapType. */
   implicitParamTypes: Map<ts.Symbol, ts.Type> | null = null;
+  /** True while a JavaScript statement of an implicit-any instance body
+   * lowers a SECOND time, after its first lowering was refused (lowerStmts).
+   * The first lowering types a read through a bound parameter (`e.limit`,
+   * `const n = e.limit`) as the checker does, `any`, and the forms that
+   * dispatch on a receiver's type find none for the number, the Date or the
+   * Map the read holds. The second lowering types those reads by what the
+   * binding declares (typeThroughBindings), so they dispatch as a bound
+   * parameter itself does. A statement that lowers the first time is never
+   * lowered this way, so what compiles today compiles to the same code. */
+  bindingTypedRetry = false;
   /** The builtin class each binding names (`const E = EventEmitter`,
    * `const C = zlib.Gzip`), keyed by the binding's symbol; null for
    * bindings that name none (builtinClassAliasOf). new, instanceof,
@@ -2957,9 +3596,18 @@ export class Lowerer {
   /** Whether some source replaces a process output stream's write method
    * (programPatchesStdio in builtins/process.ts). */
   patchesStdio: boolean | null = null;
-  /** The write-replacement site programPatchesStdio found: the executable
-   * planner refuses it beside Node islands (SC8006). */
-  readonly stdioPatchSites: StdioPatchSite[] = [];
+  /** The writes to members of built-in objects that lowering met, by the
+   * node each is reported at: the end of lowering refuses the ones whose
+   * member the program also uses natively (builtin-member-readers.ts). */
+  readonly builtinMemberWrites = new Map<ts.Node, BuiltinMemberWrite>();
+  /** The feature tests of built-in members that lowering decided from the
+   * census (builtin-member-writes.ts): each reads its members at build
+   * time. */
+  readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** Per file, the `const` names that may denote a built-in object, for
+   * the syntactic test in front of the write detection
+   * (builtin-member-writes.ts): a function of the file alone. */
+  readonly builtinAliasNames = new Map<ts.SourceFile, Set<string>>();
   requestInitPropMutatedSyms: Set<ts.Symbol> | null = null;
   emitterEventTable: Map<string, EventSig> | null = null;
   emitterComputedPatterns: ComputedEventPattern[] = [];
@@ -2984,9 +3632,47 @@ export class Lowerer {
   /** All storage slots widened for runtime absence, including slots whose
    * current control-flow branch has temporarily narrowed the value. */
   readonly runtimeOptionalStorageLocals = new Set<IrLocal>();
-  /** `var` bindings code can read before their first store
-   * (var-hoisting.ts): their storage holds undefined until then. */
+  /** The files being lowered, for whole-program syntax scans. */
+  programSourceFiles: readonly ts.SourceFile[] = [];
+  private classHierarchyCache: ClassHierarchy | null = null;
+
+  /** The program's classes by base class (construction-reads.ts). */
+  classHierarchy(): ClassHierarchy {
+    return (this.classHierarchyCache ??= classHierarchyOf(this.programSourceFiles, (heritage) => {
+      let base = heritage;
+      while (ts.isParenthesizedExpression(base)) base = base.expression;
+      if (!ts.isIdentifier(base) && !ts.isPropertyAccessExpression(base)) return undefined;
+      let symbol = panicSafe(() => this.checker.getSymbolAtLocation(base), undefined);
+      if (symbol && symbol.flags & ts.SymbolFlags.Alias)
+        symbol = panicSafe(() => this.checker.getAliasedSymbol(symbol!), undefined);
+      const declaration = symbol?.valueDeclaration;
+      if (!declaration) return undefined;
+      // A runtime or library class runs no program code while it constructs.
+      if (ts.getSourceFileOfNode(declaration).isDeclarationFile) return null;
+      if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration))
+        return declaration;
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        let value = declaration.initializer;
+        while (ts.isParenthesizedExpression(value)) value = value.expression;
+        if (ts.isClassExpression(value)) return value;
+      }
+      return undefined;
+    }));
+  }
+
+  /** `var` bindings, and `let` bindings declared without an initializer,
+   * that code can read before their first store (var-hoisting.ts): their
+   * storage holds undefined until then. */
   readonly earlyReadVars = new Set<ts.Symbol>();
+  /** Unannotated JavaScript `var`s every read of which follows a store
+   * (var-hoisting.ts): nothing can observe them unassigned, so their writes
+   * may decide their type (jsVarWriteType). */
+  readonly storedBeforeReadVars = new Set<ts.Symbol>();
+  /** Enums whose object some code uses as a value (enum-objects.ts), by
+   * symbol and by their first and last declarations. Filled before the
+   * globals are collected. */
+  readonly enumObjects = new Map<ts.Symbol, EnumObject>();
+  readonly enumObjectDecls = new Map<ts.EnumDeclaration, EnumObject>();
   /** Globals whose checker-bare type was widened because an indexed read can
    * carry undefined at runtime. Identifier reads keep the union tag so
    * typeof and later boundaries observe the real value. */
@@ -2997,11 +3683,30 @@ export class Lowerer {
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
+  /** Terminal export table, or null for whole values and pure re-export cycles. */
+  readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
+  /** Receiver proofs depend only on a module's source and stable bindings. */
+  readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Per CommonJS file, what its source shows of its exports object
+   * (cjs-exports-receiver.ts); null when it does not show every write. */
+  readonly cjsExportsShapes = new Map<ts.SourceFile, CjsExportsShape | null>();
+  /** Member write sites by property name across the program, built on the
+   * first query, and the exports each query proved change after their
+   * module initializes (cjs-inline-require.ts). */
+  cjsMemberWritesByName: Map<
+    string,
+    (ts.PropertyAccessExpression | ts.ElementAccessExpression)[]
+  > | null = null;
+  readonly cjsLateWrittenExports = new Map<ts.Symbol, boolean>();
   /** Per-module whole-export symbol (cjs-inline-require.ts). Null means the
    * module's exports are a table. */
   readonly cjsWholeExportSymbols = new Map<ts.SourceFile, ts.Symbol | null>();
   /** Per-module live member-export classification (cjs-inline-require.ts). */
   readonly cjsLiveMemberExports = new Map<ts.SourceFile, boolean>();
+  /** Per requiring module and accessor-exporting module, the storage of
+   * what that module's `require()` answered (accessorRequirerSlot); null
+   * for a pair without one. A cache: a miss finds the global again. */
+  readonly accessorRequirerSlots = new Map<string, IrGlobal | null>();
   /** Inline program-module require calls whose %init the enclosing member
    * read or member call is already sequencing (cjs-inline-require.ts). */
   readonly inlineRequireInitDone = new Set<ts.CallExpression>();
@@ -3039,7 +3744,9 @@ export class Lowerer {
   runtimeOptionalNarrowings: readonly RuntimeOptionalNarrowing[] = [];
   /** JavaScript bindings assigned values outside their declared type
    * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
-   * stored value instead of narrowing it to the checker's type. */
+   * stored value instead of narrowing it to the checker's type. Also the
+   * TypeScript bindings that take the values of an open spread value's
+   * enumeration as they are (analyzeOpenEnumerations). */
   readonly jsWidenedBindings = new Set<ts.Symbol>();
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
@@ -3060,12 +3767,26 @@ export class Lowerer {
    * that misses.
    * Each instance's result admits undefined (generic-functions.ts). */
   readonly runtimeOptionalGenericReturns = new Set<ts.Node>();
+  /** Generic calls whose argument at a bare type-parameter slot (`id(xs[i])`
+   * into `v: T`) can be a missing element, with the type parameters bound
+   * there. The call's instance binds each to its type with undefined
+   * (generic-functions.ts), as a declared function's parameter widens. */
+  readonly runtimeOptionalGenericArguments = new Map<ts.CallExpression, Set<ts.Symbol>>();
   /** Concise callback/lambda returns promoted by the HOF callback prepass;
    * arrows have no declaration symbol to key in fnSigsBySymbol. */
   readonly runtimeOptionalFunctionReturns = new Map<ts.Node, IrType>();
   /** Intrinsic callback slots can supply a destination for fresh return
    * literals, such as a reduce accumulator with recursive union fields. */
   readonly contextualFunctionReturns = new Map<ts.Node, IrType>();
+  /** The function type of the slot a function literal is being lowered
+   * into, for the duration of that lowering (lowerAtSlot). The literal
+   * takes the slot's parameter list as its own when it can
+   * (slotSignatureAdoption). */
+  readonly slotSignatures = new Map<ts.Node, SlotSignature>();
+  /** The resolve parameters of the typed promise executors being lowered
+   * that are given a value with a promise arm (adoptingResolveType), each
+   * with the type it reads as at such a use. */
+  readonly adoptingResolves = new Map<ts.Symbol, IrType & { kind: "func" }>();
   /** Arithmetic over an unchecked string read can answer either NaN or a
    * string. Bindings and returns use this marker to retain that result union
    * through checker-bare string annotations. */
@@ -3104,11 +3825,35 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** The loops of presentElementLoops whose arrays come from generic
+   * arrays, with those arrays. A generic array has no element key until an
+   * instance binds its type parameters, so the analysis judged the loop
+   * without the holes and undefined values recorded under the key each
+   * instance gives it; the instance asks again (instanceLoopHoldsMissing). */
+  readonly instanceElementLoops = new Map<ts.ForOfStatement, readonly ts.Expression[]>();
+  /** The optional-read analysis's final element facts, for questions that
+   * only lowering can ask: whether one of a loop's generic arrays can hold
+   * a hole or undefined under the type-parameter bindings installed when it
+   * is asked, and whether arrays with an element key can. */
+  elementFacts: {
+    sourcesHoldMissing(sources: readonly ts.Expression[]): boolean;
+    keyHoldsMissing(key: string): boolean;
+  } | null = null;
   /** Element keys (typeKey of the element type) of native arrays that can
    * hold elements outside their element type, stored through dynamic views
    * (SCR_ARR_FOREIGN); "*" for every array. Empty unless the program stores
    * values through a dynamic value that can view a native array. */
   foreignElementKeys: ReadonlySet<string> = new Set();
+  /** A for-of loop the analysis judged present reads, where it lowers now,
+   * a generic array whose element key can hold a hole or undefined. */
+  instanceLoopHoldsMissing(stmt: ts.ForOfStatement): boolean {
+    const sources = this.instanceElementLoops.get(stmt);
+    return sources !== undefined && (this.elementFacts?.sourcesHoldMissing(sources) ?? true);
+  }
+  /** Native arrays with this element type can hold a hole or undefined. */
+  elementsMayBeMissing(elem: IrType): boolean {
+    return this.elementFacts?.keyHoldsMissing(typeKey(elem)) ?? true;
+  }
   /** The fs/promises glob() call lowerForOf is lowering as a for await
    * head; other glob() calls have no lowering. */
   fspGlobHead: ts.Node | null = null;
@@ -3165,6 +3910,62 @@ export class Lowerer {
       }
     }
     return fallback ?? null;
+  }
+
+  /** The record layout a fresh data literal takes when it flows into an
+   * untyped slot while the checker names one closed record type as its
+   * target (`contextual`: the constituents of its contextual type): that
+   * type, when the literal's own type widens into it member for member
+   * (the checker has proven the assignment; optional members the literal
+   * omits are absent). Null keeps the literal's own layout: no single
+   * record target, a target with an index signature or a tuple, a member
+   * the target does not declare, or a literal that is more than data (a
+   * spread, a method, an accessor, a computed name). */
+  contextualRecordLayout(
+    literal: ts.ObjectLiteralExpression,
+    contextual?: readonly ts.Type[],
+  ): (IrType & { kind: "record" }) | null {
+    if (contextual === undefined) {
+      // A declaration's initializer: the same rule, from the literal's own
+      // contextual type. A JavaScript literal and one that holds a binding
+      // whose array is still taking shape keep their dynamic form.
+      if (isJsSourceFile(ts.getSourceFileOfNode(literal)) || holdsEvolvingArray(this, literal))
+        return null;
+      const type = this.checker.getContextualType(literal);
+      const widened = type ? this.checker.getBaseTypeOfLiteralType(type) : undefined;
+      if (!widened) return null;
+      contextual = widened.isUnionType() ? ts.constituentTypes(widened) : [widened];
+    }
+    const targets = contextual.filter(
+      (part) =>
+        (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0,
+    );
+    if (targets.length !== 1) return null;
+    const target = targets[0]!;
+    if (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter))
+      return null;
+    const plain = literal.properties.nodes.every((prop) => {
+      if (ts.isShorthandPropertyAssignment(prop)) return true;
+      if (!ts.isPropertyAssignment(prop) || ts.isComputedPropertyName(prop.name)) return false;
+      let init: ts.Expression = prop.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      return !(
+        ts.isFunctionExpression(init) ||
+        ts.isArrowFunction(init) ||
+        ts.isClassExpression(init)
+      );
+    });
+    if (!plain) return null;
+    const own = this.mapTypeOf(this.typeOf(literal));
+    const declared = this.mapTypeOf(target);
+    if (own?.kind !== "record" || declared?.kind !== "record" || typeEquals(own, declared))
+      return null;
+    const from = this.shapes.get(own.shapeId);
+    const to = this.shapes.get(declared.shapeId);
+    if (!from || !to || from.tuple || to.tuple || from.indexValue || to.indexValue) return null;
+    if (!from.fields.every((field) => to.fields.some((other) => other.name === field.name)))
+      return null;
+    return this.widthLiftPlan(own, declared) === null ? null : declared;
   }
 
   /** An object or array literal in an untyped context: its contextual type
@@ -3670,6 +4471,10 @@ export class Lowerer {
   /** What each array-HOF helper computes, keyed by helper name: the chain
    * fusion pass reads it to recognize pipelines of helper calls. */
   readonly arrHofInfo = new Map<string, ArrayHofInfo>();
+  /** What each shared array-method helper was built from, keyed by helper
+   * name: function-views.ts rebuilds the helper for a callback of more
+   * parameters from it. */
+  readonly arrHofRecipes = new Map<string, ArrayHelperRecipe>();
   /** Per-arm calls through union-typed class receivers, interned by the
    * receiver union, member, completed argument ABI, and result type. */
   readonly unionCallHelpers = new Map<string, string>();
@@ -3679,6 +4484,12 @@ export class Lowerer {
   /** Settled generic class-rest metadata requires the historical emit
    * fallback so its fence can poison the original statement atomically. */
   requiresHistoricalOrderRelower = false;
+  /** The stream pass this pass asks for replaces its result outright, so
+   * the pass ends where it asks (settleStreamRequest). Set only on the
+   * push-down pass and the general stream pass, and only when no unit
+   * store records the build's units and coverage does not read the
+   * push-down pass's reachable set (lowerToIrWithIslands). */
+  readonly abortOnStreamFlags: boolean;
   /** A general stream value (a runtime stream class instance) reached a
    * slot the child/process stdio handles represent — NodeJS.ReadableStream,
    * NodeJS.WritableStream, or @types/node's stream.Readable/Writable — or
@@ -3690,6 +4501,32 @@ export class Lowerer {
    * then lowers the program again with checked-dynamic stream slots
    * (dyn-streams.ts). */
   requiresDynNodeStreams = false;
+  /** requestedStreamMode's answer at the first unit boundary where the pass
+   * asked for another stream mode. */
+  private streamRequest: { dyn: boolean } | null = null;
+  /** The stream mode the next pass lowers in, or null when this pass's mode
+   * stands. The push-down pass asks for the general representation, with
+   * checked-dynamic slots when it has already met an untyped stream flow;
+   * the general pass asks for those slots. A pass asks once, at the first
+   * unit boundary after the flag that needs another pass: what it would
+   * meet later is the next pass's to find, in the representation that pass
+   * lowers with. An aborting pass ends there, and a pass that runs on
+   * (coverage, a unit store) keeps the answer it gave there, so a build
+   * and its coverage analysis lower a program in the same mode. */
+  requestedStreamMode(): { dyn: boolean } | null {
+    if (this.streamRequest !== null) return this.streamRequest;
+    if (this.dynNodeStreams) return null;
+    if (this.generalNodeStreams) return this.requiresDynNodeStreams ? { dyn: true } : null;
+    return this.requiresGeneralNodeStreams ? { dyn: this.requiresDynNodeStreams } : null;
+  }
+  /** Between units, and before the fixpoint: the pass settles the stream
+   * mode it asks for, and a pass whose result that mode's pass replaces
+   * stops here. */
+  private settleStreamRequest(): void {
+    if (this.streamRequest !== null) return;
+    this.streamRequest = this.requestedStreamMode();
+    if (this.streamRequest !== null && this.abortOnStreamFlags) throw new StreamFlagsAbort();
+  }
   /** Receiver representations forced by the per-value stream dispatch
    * (dyn-streams.ts): the native arm lowers a member call on the unboxed
    * stream through the ordinary class-method path. */
@@ -3714,6 +4551,9 @@ export class Lowerer {
   readonly emitSpecQueue: EmitSpecRequest[] = [];
   emitSpecCtx: EmitSpecCtx | null = null;
   readonly coercions = new CoercionState();
+  /** The key lists that exist only as numbers while their statements
+   * lower, and the syntax that keeps its lowering (own-key-lists.ts). */
+  readonly ownKeyLists = new OwnKeyListState();
   /** Generated value helpers, keyed by operation and type. Callers own
    * their key prefixes; this includes more than structural conversions. */
   readonly valueHelpers = new Map<string, string>();
@@ -3749,6 +4589,10 @@ export class Lowerer {
   /** Method adapter names are owned by class-method-values. Looking them
    * up must not scan and retain every unrelated lifted function. */
   readonly classMethodValueHelpers = new Set<string>();
+  /** The method value adapters (`%method.value:…`) of methods whose source
+   * reads `this` or `super`: each checks its receiver on every call, even
+   * when no read of the receiver is left in the method's lowered body. */
+  readonly receiverReadingMethodValues = new Set<string>();
   /** Reflected class methods whose lambda is lowering right now (null
    * until lowerLambda named it), with the closure it will produce: a
    * method that reads itself as a value inside its own body
@@ -3773,6 +4617,21 @@ export class Lowerer {
    * without a diagnostic and the mismatch surfaces as a runtime release
    * trap instead. */
   readonly freshClosureAdapters = new Set<string>();
+  /** The lifted function literals whose result the checker types as an
+   * island value (an instance of an island class, or of a program class
+   * that extends one): adapting one to a slot whose result is a native
+   * class is refused by name (coerceToExpected). Filled only when the
+   * program has Node islands. */
+  readonly islandResultLambdas = new Set<string>();
+  /** The stores of a variadic function under a fixed signature that no
+   * adapter marks in the IR (noteVariadicStore): each entry is the slot's
+   * type and the store's place, for variadic-functions.ts. */
+  readonly notedVariadicStores = new Set<string>();
+  /** The native calls that pass a function value more arguments than its
+   * type names, where only the call's own lowering knows how many it
+   * passes (noteLongerCall): the function's type, what it is handed to
+   * and the place, for variadic-functions.ts. */
+  readonly notedLongerCalls = new Set<string>();
   /** Symbols bound by `const process = globalThis.process` (and the other
    * stdlib-global snapshot spellings): pure alias plumbing — receiver
    * checks resolve through this map (stdlibGlobalNameOf), declarations
@@ -3796,10 +4655,16 @@ export class Lowerer {
    * lifted lazily as module-level functions and interned per accessor
    * declaration: member reads call the getter (lower-exprs). */
   readonly cjsAccessorFns = new Map<ts.Node, { fnName: string; type: IrType & { kind: "func" } }>();
-  /** Accessor exports' link-time values for ES-module importers, and the
-   * per-module flag that the copy already ran (cjsAccessorSnapshotStores). */
+  /** CommonJS exports' link-time values for ES-module importers (getters,
+   * and data exports that change later), and the per-module flag that the
+   * copy already ran (cjsAccessorSnapshotStores). */
   readonly cjsAccessorSnapshots = new Map<ts.Node, { id: string; type: IrType }>();
   readonly cjsSnapshotReady = new Map<ts.SourceFile, string>();
+  /** Export names ES-module importers bind from each CommonJS module; null
+   * entries bind every name (lower-exprs.ts esmBoundNamesOf). */
+  cjsEsmBoundNames: Map<ts.SourceFile, Set<string> | null> | null = null;
+  /** The module whose ES-module link first copied each changing data export. */
+  readonly cjsLinkedDataModules = new Map<ts.Symbol, ts.SourceFile>();
   /** Interned `%iter.drain.<n>` helpers (classIteratorDrainCall): one per
    * receiver class — the eager drain of a class iterable's protocol into
    * a fresh element array, behind array/call spreads. */
@@ -3822,6 +4687,13 @@ export class Lowerer {
   /** Whether a compiled source creates primitive wrapper objects
    * (programCreatesWrappers), computed on first use. */
   createsWrappers: boolean | undefined = undefined;
+  /** Which member calls on records pass the record as the receiver
+   * (memberCallReceivers), computed on first use. */
+  memberReceivers: MemberCallReceivers | undefined = undefined;
+  /** Whether the program imports @scriptc/node (programImportsNodeApi), so
+   * a checked-dynamic value may be a Node island value and code the build
+   * does not lower may run (mayRunInNode); computed on first use. */
+  importsNodeApi: boolean | undefined = undefined;
   /** Builtin-module FUNCTIONS admitted as values by their surface-table
    * entries. The resolved runtime function plus ABI is the identity key,
    * so named imports, namespace reads, CommonJS bindings, and alias chains
@@ -3840,7 +4712,7 @@ export class Lowerer {
    * builtin, its display name and the location the twin is lowered at. */
   readonly builtinCheckedValues = new Map<
     string,
-    { fn: BuiltinModuleFn; display: string; loc: SrcLoc }
+    { fn: BuiltinModuleFn; display: string; loc: SrcLoc; type: IrType & { kind: "func" } }
   >();
   /** Optional-chain lowering state. While a chain body lowers, the guarded
    * receiver NODE reads as a chainRecv (typed by the narrowed arm) instead
@@ -3874,6 +4746,15 @@ export class Lowerer {
    * walk falls back to the plain array walk and the fence). */
   readonly matchAllDrainIndexes = new Map<ts.Symbol, { idxsLocalId: string; ctx: FnCtx }>();
   readonly splitIdentifierUses = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
+  /** The array type decided for each untyped empty array property
+   * (empty-array-places.ts): a function of the program's declared types,
+   * computed on first use. `active` and `reentered` guard a search whose
+   * own type mapping asks for the property being searched. */
+  readonly emptyArrayPlaces = {
+    decided: new Map<EmptyArrayOrigin, IrType | null>(),
+    active: new Set<EmptyArrayOrigin>(),
+    reentered: new Set<EmptyArrayOrigin>(),
+  };
   /** STORED numeric value iterators: `const it = numbers.values()` (and
    * the equivalent `[Symbol.iterator]()` spelling) over number[] or a
    * represented typed array has no first-class IR value, so its statically
@@ -3920,9 +4801,19 @@ export class Lowerer {
    * only then can a value that is not an Error instance be
    * `instanceof Error`. */
   errorPrototypeValues = false;
+  /** Every write of the global object the program makes, by any spelling
+   * (global-object-writes.ts), collected on first use. */
+  globalObjectWrites: import("./global-object-writes.js").GlobalObjectWrites | null = null;
   /** The property names the program assigns on the global object
    * (property-access.ts), collected on first use. */
   globalThisWrittenNames: Set<string> | null = null;
+  /** Whether the program contains the built-in undici package
+   * (fetch-dispatcher.ts), found on first use. */
+  undiciPackageInProgram: boolean | null = null;
+  /** Whether the program writes or deletes an environment variable through
+   * a name that is not a literal (constant-conditions.ts), found on first
+   * use. */
+  computedEnvironmentWrite: boolean | null = null;
   /** Set with globalThisWrittenNames: the program writes the global object
    * by a computed name somewhere. */
   globalThisComputedWrite = false;
@@ -3993,10 +4884,12 @@ export class Lowerer {
   readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
-   * collection; lowerDynamicImportCall reads it per site). */
+   * collection; lowerDynamicImportCall reads it per site). A program module
+   * carries the module when the specifier was a BOUNDED value: its site has
+   * no literal node, so the lowering needs the module this value named. */
   readonly dynImports = new Map<
     string,
-    | { kind: "program-module" }
+    | { kind: "program-module"; dep?: ts.SourceFile }
     | { kind: "static-builtin"; module: string }
     | { kind: "rejected"; crash: StartupCrash }
   >();
@@ -4014,10 +4907,14 @@ export class Lowerer {
   /** Inline Promise.then parameters whose contextual type is a builtin
    * module namespace anonymous object. The settled native token is the
    * ABI truth even when the checker type has no stable module symbol. */
-  /** Receivers of a stream call on a Hash, Hmac, Cipheriv or Decipheriv
-   * (lowerHashStreamCall): for the duration of that call, the receiver
-   * lowers to the Transform of the value held in the named local. */
-  readonly valueStreamReceivers = new Map<ts.Expression, { localId: string; type: IrType }>();
+  /** Receivers of a stream call on a Hash, Hmac, Cipheriv, Decipheriv,
+   * Sign or Verify (lowerHashStreamCall): for the duration of that call,
+   * the receiver lowers to the native stream of the value held in the
+   * named local — its Transform, or for a signer its Writable. */
+  readonly valueStreamReceivers = new Map<
+    ts.Expression,
+    { localId: string; type: IrType; writable: boolean }
+  >();
   /** fs call arguments evaluated ahead of a URL path's conversion
    * (builtins/fs-paths.ts): each lowers to the hidden local that holds its
    * value, which is null until the path's lowering has saved it. */
@@ -4037,15 +4934,27 @@ export class Lowerer {
    * lowered into the call itself (lowerFallibleFsUrlCall). A call may be
    * lowered more than once, and each lowering converts again. */
   readonly fallibleFsCalls = new Set<ts.CallExpression>();
-  readonly moduleNsParamOverrides = new Map<
-    ts.ParameterDeclaration,
-    IrType & { kind: "moduleNs" }
-  >();
+  /** What a promise handler's parameter takes where the checker typed it as
+   * a module namespace: the namespace itself when ONE module settles the
+   * promise, the namespace object's checked-dynamic value when SEVERAL
+   * namespace arms merge into one dyn payload (mergePromiseArms — a
+   * namespace has no union tag, so the arms are one object at runtime). */
+  readonly namespaceHandlerParamOverrides = new Map<ts.ParameterDeclaration, IrType>();
   /** File → qualifier prefix: "" for the entry, "%mI." otherwise. */
   readonly fileTag = new Map<ts.SourceFile, string>();
   /** Embedded fork roots and their private startup ids. */
   readonly forkTargets: readonly ts.SourceFile[];
   readonly workerTargets: readonly ts.SourceFile[];
+  /** The modules only worker entries reach: their code never runs on the
+   * main thread, so what a worker thread cannot do with a Node island is
+   * known at build time there (lower-node-island.ts, SC8012). A module the
+   * main thread loads as well is not in it, whichever thread a call in it
+   * runs on. */
+  readonly workerOnlyModules: ReadonlySet<ts.SourceFile>;
+  /** Every module a worker entry reaches, the ones the main thread loads
+   * too among them: an island module one of them loads is the one instance
+   * the whole program has (SC6011). */
+  readonly workerModules: ReadonlySet<ts.SourceFile>;
   readonly workerTargetIdByPath = new Map<string, number>();
   usesWorkers = false;
   /** The program uses the WebAssembly API (builtins/webassembly.ts): the
@@ -4059,13 +4968,25 @@ export class Lowerer {
   /** The program calls into Node.js (@scriptc/node): the module carries
    * the nodeIsland record, which the executable build fills in. */
   usesNodeIsland = false;
+  /** The first place the program reaches into Node: the module that does and
+   * what it uses there (@scriptc/node surface, or the island import). The
+   * executable build's SC8005 hint names it, so a program that cannot install
+   * a pack can avoid the island instead. */
+  nodeIslandUse: { file: string; api: string } | undefined;
+
+  /** Records that `file` reaches into Node through `api`, and marks the
+   * program as an island user. */
+  noteNodeIslandUse(file: string, api: string): void {
+    this.usesNodeIsland = true;
+    this.nodeIslandUse ??= { file, api };
+  }
   /** The program's Node island packages (scope-B NI-4), or null. */
   readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
   /** Island module loads, by the importing file and specifier: the module
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
-  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  readonly nodeIslandModules: NodeIslandModuleCollector;
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -4081,12 +5002,51 @@ export class Lowerer {
   /** Names a native module re-exports from an island package, by the
    * symbol an alias chain reaches (lower-node-island.ts). */
   readonly islandReexports = new Map<ts.Symbol, IslandBinding>();
+  /** The island binding each symbol's alias chain reaches (null: none),
+   * for the island modules and re-exports collected so far: `collected`
+   * is their count when the answers were made (lower-node-island.ts). */
+  readonly islandAliasBindings = {
+    collected: 0,
+    bySymbol: new Map<ts.Symbol, IslandBinding | null>(),
+  };
   /** `instanceof` expressions the island lowering already handles. */
   readonly islandInstanceofHandled = new Set<ts.Node>();
+  /** Module-level constants and statements the island evaluates
+   * (closed-island-init.ts): what each top-level `const`, expression
+   * statement or `for…of` is to it (null: not closed), and each file's. */
+  readonly closedIslandStatements = new Map<
+    ts.Statement,
+    import("./closed-island-init.js").ClosedConstant | null
+  >();
+  readonly closedIslandFiles = new Map<
+    ts.SourceFile,
+    import("./closed-island-init.js").ClosedFile
+  >();
+  /** The decisions in progress, and each file's identifiers by their text
+   * (closed-island-init.ts: a table and the statements that name it are
+   * decided together). */
+  readonly closedIslandDeciding: import("./closed-island-init.js").ClosedDeciding = {
+    active: new Set(),
+    assumed: null,
+  };
+  readonly closedIslandMentions = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   /** NI-6: the modules shared with Node islands (lower-shared-modules.ts),
    * their SC8020 warnings, and the TDZ flags their declarations set. */
   sharedModules: import("./lower-shared-modules.js").SharedModulePlan[] | null = null;
   readonly sharedModuleWarnings: ScrDiagnostic[] = [];
+  /** SC6011 warnings: the Node island modules that modules worker threads
+   * run load (noteIslandOnWorkerThread), one per load site. Warnings, so
+   * they leave with the divergences and never fail the build. */
+  readonly islandWorkerWarnings: ScrDiagnostic[] = [];
+  /** SC6015 warnings: the TypeScript statements that compile to a throw
+   * (noteDeferredRefusal), one per statement. Warnings, so they leave with
+   * the divergences and never fail the build. */
+  readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** The sites whose receiver proof read `f.call(this, …)` or
+   * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
+   * `start:end:file`: refused when the lowered program gives a function its
+   * own `call` or `apply` (refuseForwardsToOwnCall). */
+  readonly receiverForwardSites = new Set<string>();
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -4105,6 +5065,9 @@ export class Lowerer {
   >();
   /** Classes used as ThreadSlots keys: their hierarchies carry a slot word. */
   readonly threadSlotKeys = new Set<string>();
+  /** The types of the keys WeakMap and WeakSet entries are made for
+   * (IrModule.weakKeys; noteWeakKey). */
+  readonly weakKeys = new Set<string>();
   /** The narrowing conversions that link copies to their sources, by
    * `${from}:${to}` (record-links.ts). */
   readonly recordLinks = new Map<string, IrRecordLink>();
@@ -4119,15 +5082,25 @@ export class Lowerer {
   /** Object.prototype methods other than toString called by name on
    * record types (finalizeRecordLinks checks them against link sources). */
   readonly recordMethodCalls: { shapeId: string; method: string; loc: SrcLoc }[] = [];
+  /** `delete` of a key its operand's record type does not declare
+   * (record.sourceDelete), checked once the conversions are known
+   * (refuseSourceFieldDeletes). */
+  readonly recordSourceDeletes: { shapeId: string; key: string; loc: SrcLoc }[] = [];
   /** Completions of "custom" linked helpers (record-links.ts), which
    * finalizeRecordLinks runs once the links are known, with the record
    * shapes a checked conversion can leave holding a kept source. */
   readonly linkedHelperFinalizers: ((sourced: ReadonlySet<string>) => void)[] = [];
   /** Helpers over record types that finalizeRecordLinks completes. */
   readonly linkedHelpers: LinkedHelper[] = [];
-  /** The JavaScript names of object literals' methods, by lifted function
-   * (function-names.ts). */
+  /** The JavaScript names of methods (an object literal's, a class's, the
+   * function that stands for a method read as a value, a static method
+   * read as a value) and of the functions that initialize class fields, by
+   * function (function-names.ts). */
   readonly objectMethodNames = new Map<string, string>();
+  /** The JavaScript names of the functions the compiler lifts for primitive
+   * constructors held as typed values. Given only in a program that prints
+   * a function held in a typed slot (function-names.ts). */
+  readonly heldFunctionNames = new Map<string, string>();
   readonly forkTargetIdByPath = new Map<string, number>();
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
@@ -4136,6 +5109,15 @@ export class Lowerer {
    * still resolved statically). Ambient blocks never register — their
    * members keep the ReferenceError/fence paths (lower-namespaces.ts). */
   readonly nsBlocks = new Map<ts.Node, "flattened" | "typeOnly">();
+  /** Exported members of function+namespace merges, by member symbol: their
+   * storage is the merged function's own-property table, not a module
+   * global (lower-fundule.ts). Filled by splitFiles. */
+  readonly funduleMembers = new Map<ts.Symbol, FunduleMember>();
+  /** File → the exported FUNCTION members of its merged namespace blocks,
+   * whose property assignment runs at the declaration's source position
+   * (`fmt.helper = helper`) — lowerFileInit's init body interleaves them
+   * by position (lower-fundule.ts). */
+  readonly funduleFnStores = new Map<ts.SourceFile, ts.FunctionDeclaration[]>();
   /** File → its %init function name, filled by prepareModuleInits before
    * any body lowers: import headers and inline require statements call
    * dependency inits by these names. */
@@ -4280,6 +5262,15 @@ export class Lowerer {
    * the scr_js_buffers views registry in %main. */
   buffersMutable = false;
   readonly liftedFns: IrFunction[] = [];
+  /** The export keys each builtin namespace box serves, by module id (the
+   * box's getter is lifted once per module; its key list comes from
+   * module-namespace-elements.ts). */
+  readonly builtinNamespaceBoxKeys = new Map<string, string[]>();
+  /** Each `x.constructor` helper's body as it was last built from the class
+   * graph, by helper name (class-instance-constructor.ts): later passes
+   * rewrite a helper in place, so the settle step compares what it builds
+   * with this. A cache: a helper it lacks is built again once. */
+  readonly classIdentityBuilt = new Map<string, string>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -4288,22 +5279,37 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** array-values.ts's answer per binding: where its value is handed to a
+   * slot of a mutable array type (mutableArraySlotUseOf), or null. */
+  readonly mutableArraySlotUses = new Map<ts.Symbol, ts.Node | null>();
   /** global-values.ts's answer per JavaScript source: the builtin globals
    * its sloppy-mode functions read through their `this`. */
   readonly sloppyThisGlobalReads = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** global-values.ts's answer per JavaScript source: whether it stores the
+   * global object as a value the compiler does not follow. */
+  readonly storedGlobalObjects = new Map<ts.SourceFile, boolean>();
+  /** global-values.ts's answer: the globals the program reads by name off a
+   * value that can be a stored global object; undefined until asked. */
+  storedGlobalReadNames: ReadonlySet<string> | undefined = undefined;
   /** global-values.ts's answer: the names the program's global lookup
    * answers; undefined until asked. */
   globalLookupNames: readonly string[] | undefined = undefined;
+  /** node-value-reads.ts's answer per global object (`process`,
+   * `performance`): whether a JavaScript source reads it as a value. */
+  readonly nodeObjectValueReads = new Map<string, boolean>();
   /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
    * stream class; undefined until asked. */
   namesWebStreamClass: boolean | undefined = undefined;
   /** web-streams-dyn.ts's answer: whether a TypeScript source uses a web
    * stream operation the native streams lack; undefined until asked. */
   typedWebStreams: boolean | undefined = undefined;
-  /** The first lifted function of each name (liftedFnNamed), for the
-   * liftedFns indexed so far. liftedFns only grows. */
+  /** The first lifted function of each name (liftedFnNamed), for the first
+   * liftedFnsIndexed entries of liftedFns, and the last of those entries.
+   * liftedFns mostly grows; the unit journal cuts it back and record-links.ts
+   * removes helpers from its middle, and liftedFnNamed notices either. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
   private liftedFnsIndexed = 0;
+  private liftedFnsLast: IrFunction | undefined = undefined;
   /** Runtime-provided classes used as values (defineClassValueConstruct),
    * by IR class name. */
   readonly runtimeClassValues = new Map<string, ClassInfo>();
@@ -4371,6 +5377,7 @@ export class Lowerer {
     const first = keyedHelperName(this, prefix, key);
     const seen = this.closureNameCounts.get(first) ?? 0;
     this.closureNameCounts.set(first, seen + 1);
+    this.closureNamesIssued++;
     return (seen === 0 ? first : keyedHelperName(this, prefix, `${key}|${seen}`)) + suffix;
   }
 
@@ -4405,6 +5412,9 @@ export class Lowerer {
   /** Initialization flags of classes reachable before their statement ran,
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
+  /** Initialization flags of import-cycle bindings that have no module
+   * storage and are only ever called (cycle-initialization.ts). */
+  readonly calledBindingInitFlags: CycleInitFlag[] = [];
   readonly cycleInitDeclarations = new Map<ts.Statement, CycleInitFlag[]>();
   /** Each class's constructor return plan by class name
    * (constructor-returns.ts); null when no return can yield an object. */
@@ -4591,12 +5601,26 @@ export class Lowerer {
       visit(fn);
     }
   }
-  /** The first lifted function named `name`, the one
-   * `liftedFns.find((fn) => fn.name === name)` returns. */
+  /** The first lifted function named `name`: the one a search of
+   * `liftedFns` from the front finds, whatever was pushed to or removed from
+   * the list since the last lookup. Every lookup of a lifted function by
+   * name goes through here; a search of the list reads each lifted function
+   * of the program at every lookup (lowerer.test.ts keeps searches out). */
   liftedFnNamed(name: string | undefined): IrFunction | undefined {
-    for (; this.liftedFnsIndexed < this.liftedFns.length; this.liftedFnsIndexed++) {
-      const fn = this.liftedFns[this.liftedFnsIndexed]!;
-      if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+    const fns = this.liftedFns;
+    // Removing an indexed entry moves another function, or nothing, into the
+    // last indexed position: the index then describes a list that no longer
+    // exists, and is rebuilt.
+    if (this.liftedFnsIndexed > 0 && fns[this.liftedFnsIndexed - 1] !== this.liftedFnsLast) {
+      this.liftedFnsByName.clear();
+      this.liftedFnsIndexed = 0;
+    }
+    if (this.liftedFnsIndexed < fns.length) {
+      for (; this.liftedFnsIndexed < fns.length; this.liftedFnsIndexed++) {
+        const fn = fns[this.liftedFnsIndexed]!;
+        if (!this.liftedFnsByName.has(fn.name)) this.liftedFnsByName.set(fn.name, fn);
+      }
+      this.liftedFnsLast = fns[fns.length - 1];
     }
     return name === undefined ? undefined : this.liftedFnsByName.get(name);
   }
@@ -4619,20 +5643,28 @@ export class Lowerer {
       mapTable("equalityHelpers", this.equalityHelpers),
       mapTable("arrHofHelpers", this.arrHofHelpers),
       irDataTable("arrHofInfo", this.arrHofInfo),
+      irDataTable("arrHofRecipes", this.arrHofRecipes),
       mapTable("unionCallHelpers", this.unionCallHelpers),
       mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
       setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
+      setTable("coercions.deferredRetags", this.coercions.deferredRetags),
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
+      mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
       mapTable("valueHelpers", this.valueHelpers),
+      irDataTable("builtinNamespaceBoxKeys", this.builtinNamespaceBoxKeys),
       countTable("keyedNameKeys", this.keyedNameKeys),
       mapTable("assertHelpers", this.assertHelpers),
       mapTable("inspectHelpers", this.inspectHelpers),
       setTable("classMethodValueHelpers", this.classMethodValueHelpers),
+      setTable("receiverReadingMethodValues", this.receiverReadingMethodValues),
       setTable("freshClosureAdapters", this.freshClosureAdapters),
+      setTable("islandResultLambdas", this.islandResultLambdas),
+      setTable("notedVariadicStores", this.notedVariadicStores),
+      setTable("notedLongerCalls", this.notedLongerCalls),
       mapTable("iterDrainHelpers", this.iterDrainHelpers),
       mapTable("mapHofHelpers", this.mapHofHelpers),
       mapTable("setHofHelpers", this.setHofHelpers),
@@ -4652,6 +5684,7 @@ export class Lowerer {
         () => {
           this.liftedFnsByName.clear();
           this.liftedFnsIndexed = 0;
+          this.liftedFnsLast = undefined;
         },
       ),
       countTable("closureNameCounts", this.closureNameCounts),
@@ -4659,12 +5692,16 @@ export class Lowerer {
       setTable("sloppyRecordWrites", this.sloppyRecordWrites),
       setTable("recordFieldDeletes", this.recordFieldDeletes),
       setTable("freezableArrays", this.freezableArrays),
+      setTable("weakKeys", this.weakKeys),
+      setTable("receiverForwardSites", this.receiverForwardSites),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
       // The shared-module plan runs inside the first unit that lowers a
       // module; a warning it adds is a diagnostic of that unit, so its count
       // is journaled like `diags` (the plan itself is unjournaled).
       checkedTable("sharedModuleWarnings", () => this.sharedModuleWarnings.length),
+      checkedTable("islandWorkerWarnings", () => this.islandWorkerWarnings.length),
+      checkedTable("deferredRefusalWarnings", () => this.deferredRefusalWarnings.length),
       // Node island call sites hold literals of the unit's IR that lowering's
       // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
       // one lowers again rather than replaying a record.
@@ -4691,6 +5728,12 @@ export class Lowerer {
       checkedTable("rebindableFunctions", () => this.rebindableFunctions.size),
       checkedTable("trapBindings", () => this.trapBindings.size),
       checkedTable("deadBindings", () => this.deadBindings.size),
+      // A write to a built-in member, and a feature test decided from the
+      // census, are judged against the whole program when lowering ends
+      // (builtin-member-readers.ts): a unit that has one lowers again
+      // rather than replaying a record.
+      checkedTable("builtinMemberWrites", () => this.builtinMemberWrites.size),
+      checkedTable("builtinFeatureTests", () => this.builtinFeatureTests.size),
       checkedTable("instantiationQueue", () => this.instantiationQueue.length),
       checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
       checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
@@ -4705,6 +5748,7 @@ export class Lowerer {
       checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
       checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
       checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
+      checkedTable("absentDefaultStops", () => this.absentDefaultStops.size),
       checkedTable("localClassInstantiations", () => this.localClassInstantiations.length),
       checkedTable("localClassInstanceTypes", () => this.localClassInstanceTypes.size),
       checkedTable("localClassValueTypes", () => this.localClassValueTypes.size),
@@ -4717,6 +5761,9 @@ export class Lowerer {
       checkedTable("emitterComputedPatterns", () => this.emitterComputedPatterns.length),
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
+      checkedTable("storedBeforeReadVars", () => this.storedBeforeReadVars.size),
+      checkedTable("enumObjects", () => this.enumObjects.size),
+      checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
       checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
       checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
@@ -4730,12 +5777,18 @@ export class Lowerer {
         "runtimeOptionalAssignedSymbols",
         () => this.runtimeOptionalAssignedSymbols.size,
       ),
+      checkedTable(
+        "runtimeOptionalGenericArguments",
+        () => this.runtimeOptionalGenericArguments.size,
+      ),
       checkedTable("runtimeOptionalGenericReturns", () => this.runtimeOptionalGenericReturns.size),
       checkedTable(
         "runtimeOptionalFunctionReturns",
         () => this.runtimeOptionalFunctionReturns.size,
       ),
       checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
+      checkedTable("slotSignatures", () => this.slotSignatures.size),
+      checkedTable("adoptingResolves", () => this.adoptingResolves.size),
       checkedTable(
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,
@@ -4751,6 +5804,7 @@ export class Lowerer {
       checkedTable("runtimeOptionalAssertions", () => this.runtimeOptionalAssertions.size),
       checkedTable("presentElementCalls", () => this.presentElementCalls.size),
       checkedTable("presentElementLoops", () => this.presentElementLoops.size),
+      checkedTable("instanceElementLoops", () => this.instanceElementLoops.size),
       checkedTable("errorFirstLiterals", () => this.errorFirstLiterals.size),
       checkedTable("anySymbols", () => this.anySymbols.size),
       checkedTable("knownErrors", () => this.knownErrors.size),
@@ -4802,10 +5856,15 @@ export class Lowerer {
       checkedTable("checkedCallbackParams", () => this.checkedCallbackParams.size),
       checkedTable("valueStreamReceivers", () => this.valueStreamReceivers.size),
       checkedTable("stagedArguments", () => this.stagedArguments.size),
-      checkedTable("moduleNsParamOverrides", () => this.moduleNsParamOverrides.size),
+      checkedTable(
+        "namespaceHandlerParamOverrides",
+        () => this.namespaceHandlerParamOverrides.size,
+      ),
       checkedTable("fileTag", () => this.fileTag.size),
       checkedTable("forkTargets", () => this.forkTargets.length),
       checkedTable("workerTargets", () => this.workerTargets.length),
+      checkedTable("workerOnlyModules", () => this.workerOnlyModules.size),
+      checkedTable("workerModules", () => this.workerModules.size),
       checkedTable("workerTargetIdByPath", () => this.workerTargetIdByPath.size),
       checkedTable("experimentalFiles", () => this.experimentalFiles.size),
       checkedTable("internTableNames", () => this.internTableNames.size),
@@ -4819,12 +5878,19 @@ export class Lowerer {
       checkedTable("linkedHelpers", () => this.linkedHelpers.length),
       checkedTable("linkedHelperFinalizers", () => this.linkedHelperFinalizers.length),
       checkedTable("recordMethodCalls", () => this.recordMethodCalls.length),
+      checkedTable("recordSourceDeletes", () => this.recordSourceDeletes.length),
       checkedTable("objectMethodNames", () => this.objectMethodNames.size),
+      checkedTable("heldFunctionNames", () => this.heldFunctionNames.size),
       checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
       checkedTable("nsBlocks", () => this.nsBlocks.size),
+      checkedTable("funduleMembers", () => this.funduleMembers.size),
+      checkedTable("funduleFnStores", () => this.funduleFnStores.size),
       checkedTable("initNameOf", () => this.initNameOf.size),
       checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
       checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
+      // Which module's link first copied a changing data export: a unit that
+      // records an entry changes what a later link lowering emits.
+      checkedTable("cjsLinkedDataModules", () => this.cjsLinkedDataModules.size),
       checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
       checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
       checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
@@ -4837,6 +5903,7 @@ export class Lowerer {
       checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("calledBindingInitFlags", () => this.calledBindingInitFlags.length),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
       checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
       checkedTable("requireInitFlags", () => this.requireInitFlags.size),
@@ -4880,6 +5947,7 @@ export class Lowerer {
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
+      checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
       checkedTable("methodAccessSites", () => this.methodAccessSites.size),
       checkedTable("checkedJsOverrideMethods", () => this.checkedJsOverrideMethods.size),
@@ -4918,28 +5986,61 @@ export class Lowerer {
    * unwinds before the unit ends, and state that applying the unit's events
    * rebuilds. */
   static readonly unjournaled: readonly string[] = [
+    // What the class-identity helpers were last built as: rebuilt from the
+    // class graph whenever an entry is missing.
+    "classIdentityBuilt",
     // settings
     "frontendServices",
     "nodeIslands",
     "remainder",
+    // The reached pass of a report that skips the remainder is a setting of
+    // the pass (`--coverage=reached`), fixed before any unit lowers.
+    "coverageReached",
     "tierMode",
     "runtimeOptionalReport",
+    "typeClaims",
     "generalNodeStreams",
     "dynNodeStreams",
     "targetPlatform",
+    "define",
     "startupCrash",
     "projectCheckJs",
+    "parameterPropertiesFirst",
     "libraryCallbacks",
     "ffiBindingSymbols",
     "priorRetriedSymbols",
     "wholeSlotDegradation",
+    "untypedConstructors",
+    // Which refusals involve a held constructor (held-constructors.ts): a
+    // count and its mark for the statement being lowered, and the answers
+    // per named type, computed again when asked.
+    "constructorTouches",
+    "constructorTouchMark",
+    "constructorHolders",
+    "constructorFunctionMemo",
+    "abortOnStreamFlags",
+    // The stream mode the pass settled on asking for (pass scratch, read
+    // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
+    "streamRequest",
     "inferredCollectionTypes",
     "partialAssertions",
     "foreignElementKeys",
+    "elementFacts",
     // caches made when first needed
+    "programSourceFiles",
+    "classHierarchyCache",
     "nanCodedReads",
     "mentionsProcessVersions",
     "createsWrappers",
+    "memberReceivers",
+    "importsNodeApi",
+    // The census of the program's writes on the global object, a pure
+    // function of its modules, read again when a unit replays.
+    "globalObjectWrites",
+    "globalThisWrittenNames",
+    // Asked only where no unit is recorded: a build that reuses units leaves
+    // the conditions `--define` decides to the run (constant-conditions.ts).
+    "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
     "socketEncodingReachable",
@@ -4948,8 +6049,15 @@ export class Lowerer {
     "streamPropMutatedSyms",
     "readsExitCode",
     "patchesStdio",
-    "stdioPatchSites",
+    "builtinAliasNames",
     "requestInitPropMutatedSyms",
+    // familyFieldLayoutFixed and familyAnswersFromInstance answer from the
+    // class declarations and the module order, which do not change while a
+    // program lowers: the same questions ClassDynamicDispatch asks once when
+    // it starts.
+    "fixedFieldFamilies",
+    "familyDeletedNames",
+    "familyInstanceAnswers",
     // Program facts the round's passes share (lowering-facts.ts): file
     // paths, stdlib/external/package classification, a symbol's declared
     // provenance, the island-handle answers, the admitted-opinion index,
@@ -4962,11 +6070,16 @@ export class Lowerer {
     // index and provenance hit check, the comparisons the shared answers
     // are checked against.
     "ownClassProtocols",
+    "ownAsyncProtocolHolders",
     "verifySymbolProvenance",
     // Whether the program has a JavaScript implementation file depends only on
     // its modules, so the answer is a memo computed on first use and the
     // census in handle-properties.ts reads it again when a unit replays.
     "handleJsSources",
+    "collectionPrototypePatches",
+    // The inline `comptime` callbacks of a source file are its text, read
+    // again when a unit replays (comptimeCallbacksOf in lower-comptime.ts).
+    "comptimeCallbacks",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
@@ -4977,15 +6090,35 @@ export class Lowerer {
     // storage decisions and the narrowed reads they explain.
     "runtimeOptionalProvenance",
     "runtimeOptionalNarrowings",
+    // Coverage's type claims, read off the final bodies when the pass ends,
+    // and the island positions they name declarations for: a report's
+    // side table, which no lowering decision reads.
+    "typeClaimSites",
+    "islandClaimOrigins",
+    "assertedClaims",
+    "boundaryClaims",
     "cjsSplitRequireBindings",
     "cjsWholeExportSymbols",
     "cjsLiveMemberExports",
+    "cjsNamespaceTargets",
+    "cjsReceiverProofs",
+    "cjsExportsShapes",
+    "cjsLateWrittenExports",
+    "cjsMemberWritesByName",
+    "cjsEsmBoundNames",
+    "accessorRequirerSlots",
+    "requireWholeExportSlots",
     "cjsNamespaces",
+    "runtimeExports",
     "createRequireBindingTargets",
     "createRequireElementTargets",
     "computedGlobalReads",
+    "mutableArraySlotUses",
     "sloppyThisGlobalReads",
+    "storedGlobalObjects",
+    "storedGlobalReadNames",
     "globalLookupNames",
+    "nodeObjectValueReads",
     "namesWebStreamClass",
     "typedWebStreams",
     "timeValueDateDecisions",
@@ -5003,6 +6136,20 @@ export class Lowerer {
     // The island names native modules re-export: a pure function of the
     // program's modules, collected before lowering begins.
     "islandReexports",
+    // The island binding an alias chain reaches: a pure function of the
+    // program's declarations and of the two collections above, emptied
+    // whenever either grows.
+    "islandAliasBindings",
+    // Which module-level constants and statements the island evaluates:
+    // decided from the program's syntax, types and the facts collection
+    // settled (island bindings, initialization flags), so every pass decides
+    // the same.
+    "closedIslandStatements",
+    "closedIslandFiles",
+    // A file's identifiers by their text: syntax. The decisions in progress
+    // are empty whenever no decision is being taken.
+    "closedIslandMentions",
+    "closedIslandDeciding",
     // The modules shared with the islands (NI-6): a pure function of the
     // program's modules, computed once, and the TDZ flags its plan gives a
     // statement.
@@ -5023,11 +6170,21 @@ export class Lowerer {
     "fallibleFsCalls",
     "failureTouches",
     "partialHits",
+    // The slot-directed conversion in progress and the callers that state a
+    // declared slot (callListDeclared): each is restored when its conversion
+    // ends, so the lowering between two units finds them empty.
+    "slotSiteNode",
+    "slotSiteType",
+    "declaredCallLists",
+    // Set by fieldInitStmts and restored after it, so the lowering that runs
+    // between two units finds it null.
+    "fieldInitializer",
     // sized by journalTables, indexes over journaled tables, and state that
     // applying a unit's events rebuilds
     "deferredModuleInitializers",
     "liftedFnsIndexed",
     "liftedFnsByName",
+    "liftedFnsLast",
     "reachable",
     "reachableForArtifacts",
     "constructedClasses",
@@ -5050,6 +6207,9 @@ export class Lowerer {
     "narrowing.effects",
     "narrowing.capturedMutable",
     "narrowing.staleBindings",
+    "narrowing.inherited",
+    "narrowing.writes",
+    "narrowing.resolving",
     "narrowing.identifierWrites",
     "narrowing.widened",
     "narrowing.plainContainers",
@@ -5067,8 +6227,26 @@ export class Lowerer {
     "neverValued",
     "chainNarrowedType",
     "chainHandled",
+    // Refused probes are held only while the expression or statement that
+    // probed is being lowered, so a unit begins and ends with none; the
+    // closure-name count is only compared across one probe.
+    "refusedProbes",
+    "refusedProbeFrame",
+    "refusedProbeFrames",
+    "closureNamesIssued",
+    // Set and restored around one call's dispatch (lowerCall), so a unit
+    // begins and ends with none.
+    "dispatchedReceiver",
+    "probedSlotNotes",
+    // Kept only while the expression or statement that lowered them is
+    // being lowered, so a unit begins and ends with none.
+    "keptOperands",
+    "operandFrames",
     "spreadArmOverrides",
     "splitIdentifierUses",
+    "emptyArrayPlaces.decided",
+    "emptyArrayPlaces.active",
+    "emptyArrayPlaces.reentered",
     "typeMemo",
     "sharedTypeMemo",
     "scopedTypeMemos",
@@ -5081,6 +6259,11 @@ export class Lowerer {
     "activeStmtLists",
     "constructorReturnPlans",
     "mixinFnShapes",
+    // SC8005's hint names the first reach into Node (file and API). It is
+    // guidance for a build that cannot record a pack, not lowering state: a
+    // unit reused from a record does not lower, so the hint falls back to
+    // the generic install line.
+    "nodeIslandUse",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -5174,6 +6357,11 @@ export class Lowerer {
         () => this.partialDegradedTypesMapped,
         () => (this.partialDegradedTypesMapped = true),
       ),
+      flag(
+        "constructorFunctionTypes",
+        () => this.constructorFunctionTypes,
+        () => (this.constructorFunctionTypes = true),
+      ),
       fixed("errorAccessorReflection", () => this.errorAccessorReflection),
       fixed("subclassLinks", () => this.subclassLinks),
       fixed("errorPathCopies", () => this.errorPathCopies),
@@ -5186,7 +6374,9 @@ export class Lowerer {
       fixed("handleAdditions", () => this.handleAdditions),
       fixed("emitterEventTable", () => this.emitterEventTable),
       fixed("emitterAnyNameListener", () => this.emitterAnyNameListener),
+      fixed("globalObjectWrites", () => this.globalObjectWrites),
       fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
+      fixed("undiciPackageInProgram", () => this.undiciPackageInProgram),
       fixed("importRetryModules", () => this.importRetryModules),
       fixed("localSubclassIndex", () => this.localSubclassIndex),
       // State of the lowering in progress, which a unit restores.
@@ -5198,6 +6388,8 @@ export class Lowerer {
       fixed("instanceResultClass", () => this.instanceResultClass),
       fixed("typeParamTsBindings", () => this.typeParamTsBindings),
       fixed("implicitParamTypes", () => this.implicitParamTypes),
+      fixed("bindingTypedRetry", () => this.bindingTypedRetry),
+      fixed("typeThroughBindingsDepth", () => this.typeThroughBindingsDepth),
       fixed("fspGlobHead", () => this.fspGlobHead),
       fixed("instantiationContext", () => this.instantiationContext),
       fixed("suppressStats", () => this.suppressStats),
@@ -5210,6 +6402,7 @@ export class Lowerer {
       fixed("collecting", () => this.collecting),
       fixed("diagSink", () => this.diagSink),
       fixed("speculativeTypeQueryDepth", () => this.speculativeTypeQueryDepth),
+      fixed("speculativeCollectionDepth", () => this.speculativeCollectionDepth),
       fixed("mixinTypeContext", () => this.mixinTypeContext),
       fixed("pendingLabels", () => this.pendingLabels),
       fixed("onEdge", () => this.onEdge),
@@ -5228,12 +6421,30 @@ export class Lowerer {
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
   readonly remainder: boolean;
+  /** LowererMode.coverageReached: the reached pass of a report that skips
+   * the remainder, so the signature-blocked bodies it reaches are counted
+   * and reported here. */
+  readonly coverageReached: boolean;
   /** `--tier` (tier-analysis.ts). Stage S2 is report-only: both modes
    * refuse and fence exactly as before. Stage S6 demotes the units of
    * committed refusals in "auto" and keeps them refusals in "static-only". */
   readonly tierMode: TierMode;
   /** LowererMode.runtimeOptionalReport. */
   readonly runtimeOptionalReport: boolean;
+  /** LowererMode.typeClaims. */
+  readonly typeClaims: boolean;
+  /** Coverage (typeClaims): the claim sites of the final bodies. */
+  typeClaimSites: TypeClaimSite[] = [];
+  /** Coverage (typeClaims): each Node island value, and each function an
+   * island calls, by source position (type-claims.ts's claimKey), with the
+   * origin of the declaration that types it ("" when none can be named). */
+  readonly islandClaimOrigins = new Map<string, string>();
+  /** Coverage (typeClaims): the positions of the checked conversions a
+   * type assertion asked for. */
+  readonly assertedClaims = new Set<string>();
+  /** Coverage (typeClaims): the positions of the declaration-typed
+   * boundary's casts. */
+  readonly boundaryClaims = new Set<string>();
   readonly generalNodeStreams: boolean;
   readonly dynNodeStreams: boolean;
   /** Functions finishModule placed in the dynamic tier (ir/tiers.ts). */
@@ -5262,10 +6473,14 @@ export class Lowerer {
    * selects the platform-keyed builtin surfaces (builtinModuleFnsOf /
    * builtinModuleConstOf in surfaces.ts). */
   readonly targetPlatform: string;
+  readonly define: Defines | undefined;
   /** LowererMode.startupCrash — buildMain opens %main with the throw. */
   readonly startupCrash: StartupCrash | null;
   /** The project's tsconfig sets `checkJs`. */
   readonly projectCheckJs: boolean;
+  /** The files whose classes assign parameter properties before their
+   * field initializers run (LoadResult.parameterPropertiesFirst). */
+  readonly parameterPropertiesFirst: ReadonlySet<string> | null;
   private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
@@ -5313,6 +6528,23 @@ export class Lowerer {
   readonly priorRetriedSymbols: ReadonlySet<ts.Symbol>;
   /** LowererMode.wholeSlotDegradation. */
   readonly wholeSlotDegradation: boolean;
+  /** LowererMode.untypedConstructors. */
+  readonly untypedConstructors: boolean;
+  /** The program holds a primitive constructor as a value: one was written
+   * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
+   * nothing of held-constructors.ts is asked of the values it lowers. */
+  constructorFunctionTypes = false;
+  /** How often lowering met a value or a type that holds a constructor's
+   * function type (lowerExpr, the type mapper). */
+  constructorTouches = 0;
+  /** constructorTouches when the innermost statement being lowered began
+   * (lowerStmts): a diagnostic made past it is marked heldConstructor. */
+  constructorTouchMark = 0;
+  /** held-constructors.ts: whether a record shape, a union or a class holds
+   * a constructor's function type. */
+  readonly constructorHolders = new Map<string, boolean>();
+  /** TypeMapperCtx.constructorFunctionMemo. */
+  readonly constructorFunctionMemo = new Set<number>();
   /** Bodies run() skipped because their declaration had not registered. */
   readonly skippedBodies = new Set<ts.Node>();
   /** Declarations retryDeferred registered, in order: run() lowers the
@@ -5347,6 +6579,208 @@ export class Lowerer {
   /** Non-null redirects pushDiag into a capture buffer (the deferred
    * collection wrapper). */
   diagSink: ScrDiagnostic[] | null = null;
+  /** Operands whose probe (tryLowerExpression) was refused, for as long as
+   * the expression or statement that probed them is still being lowered:
+   * the function context, type bindings and ambient lowering state the
+   * probe ran under, and the diagnostics it captured. lowerExpr answers a
+   * later request for the same operand from here while a probe is active,
+   * in place of lowering it again to the same refusal. */
+  readonly refusedProbes = new Map<ts.Expression, RefusedProbe>();
+  /** The refusals the expression or statement on top recorded (null until
+   * its first), and how many expressions and statements are open. */
+  private refusedProbeFrame: RefusedProbe[] | null = null;
+  private refusedProbeFrames = 0;
+  /** Closure names handed out so far (closureName counts every request). */
+  private closureNamesIssued = 0;
+
+  /** Starts the expression or statement that owns the refusals recorded
+   * until closeRefusedProbeFrame; returns the enclosing owner's. */
+  openRefusedProbeFrame(): RefusedProbe[] | null {
+    const outer = this.refusedProbeFrame;
+    this.refusedProbeFrame = null;
+    this.refusedProbeFrames++;
+    return outer;
+  }
+
+  /** Forgets the refusals recorded since the matching open. */
+  closeRefusedProbeFrame(outer: RefusedProbe[] | null): void {
+    const own = this.refusedProbeFrame;
+    if (own !== null) {
+      for (const refusal of own) {
+        if (this.refusedProbes.get(refusal.node) === refusal)
+          this.refusedProbes.delete(refusal.node);
+      }
+    }
+    this.refusedProbeFrame = outer;
+    this.refusedProbeFrames--;
+  }
+
+  /** A number that changes when lowering leaves something behind besides
+   * its result: a local or a lifted function declared, a closure name
+   * taken, a diagnostic or a deferred fence recorded. A refused probe that
+   * leaves it unchanged can be refused again without being run again. */
+  probeEffects(): number {
+    return (
+      this.ctx.locals.length +
+      this.liftedFns.length +
+      this.implicitFns.length +
+      this.closureNamesIssued +
+      this.diags.length +
+      this.runtimeFences.length
+    );
+  }
+
+  /** A number that changes when a lowering in progress installs or removes
+   * what makes an expression lower differently: an expression override, an
+   * optional chain taken in hand, a narrowed type, a staged argument, a
+   * scope. A recorded refusal stands only while it is unchanged. */
+  private probeSurroundings(): number {
+    return (
+      this.chainRecvByNode.size +
+      this.chainHandled.size +
+      this.chainNarrowedType.size +
+      this.runtimeOptionalBindingTypes.size +
+      this.stagedArguments.size +
+      this.receiverTypeOverrides.size +
+      this.ctx.scopes.length
+    );
+  }
+
+  /** A probe of `node` was refused with these captured diagnostics and
+   * left nothing else behind. */
+  noteRefusedProbe(node: ts.Expression, diagnostics: ScrDiagnostic[]): void {
+    if (this.refusedProbeFrames === 0) return;
+    const refusal: RefusedProbe = {
+      node,
+      ctx: this.ctx,
+      bindings: this.typeParamBindings,
+      surroundings: this.probeSurroundings(),
+      diagnostics,
+    };
+    this.refusedProbes.set(node, refusal);
+    (this.refusedProbeFrame ??= []).push(refusal);
+  }
+
+  /** The recorded refusal of `node` that still stands here, or null. */
+  standingRefusal(node: ts.Expression): RefusedProbe | null {
+    const refusal = this.refusedProbes.get(node);
+    return refusal !== undefined &&
+      refusal.ctx === this.ctx &&
+      refusal.bindings === this.typeParamBindings &&
+      refusal.surroundings === this.probeSurroundings()
+      ? refusal
+      : null;
+  }
+  /** The receiver of the method call being dispatched, from lowerCall's
+   * entry to its return. A call is claimed by one of about a hundred
+   * forms, and the forms that have to see the receiver's value to decide
+   * (lowerDynReceiverMethodCall asks whether a typed receiver lowered to a
+   * checked-dynamic value, the array methods ask for its kind) lower it,
+   * as does the form that finally claims the call. Lowering it once per
+   * form made a chain of calls cost that factor at every link: two to the
+   * power of the chain's length through classes and records, three for
+   * array methods. The first lowering's value is kept here and handed to
+   * every later request for the same node (lowerDispatchedReceiver). */
+  private dispatchedReceiver: KeptOperand | null = null;
+
+  /** The lowering of the dispatched call's receiver: the value an earlier
+   * form's lowering produced when a new lowering would produce it again,
+   * and a lowering that is kept for the next form otherwise.
+   *
+   * What the kept lowering declared (a local, a lifted function, a closure
+   * name) is declared once, by it, and the forms that follow use those
+   * declarations: lowering the receiver again would declare all of it a
+   * second time under later names and leave the first set behind unused.
+   * A lowering that recorded a diagnostic or a deferred fence is not kept:
+   * the next form's lowering reports it again, as before.
+   *
+   * A value is handed out only in the function context and under the type
+   * bindings it was lowered in, with the surroundings that decide how an
+   * expression lowers unchanged (probeSurroundings) and the same expression
+   * overrides in force, and never for a receiver that is itself overridden
+   * (an optional chain's guarded receiver is its bind temp).
+   *
+   * A lowering inside a probe does not report the declaration slots whose
+   * type is degraded (noteDegradedSlot); the kept value carries them, and
+   * the first request outside a probe reports them. */
+  private lowerDispatchedReceiver(receiver: KeptOperand): IrExpr {
+    const node = receiver.node;
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    if (receiver.value !== null && this.keptOperandStands(receiver, surroundings)) {
+      const notes = receiver.slotNotes;
+      if (notes !== null) {
+        if (this.diagSink === null) {
+          receiver.slotNotes = null;
+          for (const [node, types] of notes)
+            for (const type of types.values()) this.noteDegradedSlot(node, type);
+        } else if (this.probedSlotNotes !== null) {
+          // Still inside a probe: the notes join that probe's notes, which
+          // defer them further up, without recording each one again.
+          mergeSlotNotes(this.probedSlotNotes, notes);
+        }
+      }
+      return receiver.value;
+    }
+    const diagsBefore = this.diags.length;
+    const fencesBefore = this.runtimeFences.length;
+    const sinkMark = this.diagSinkMark();
+    const outerNotes = this.probedSlotNotes;
+    const notes: ProbedSlotNotes = new Map();
+    this.probedSlotNotes = notes;
+    let value: IrExpr;
+    try {
+      value = lowerExpr(this, node);
+    } finally {
+      this.probedSlotNotes = outerNotes;
+      // An enclosing receiver's lowering skipped them too.
+      if (outerNotes !== null) mergeSlotNotes(outerNotes, notes);
+    }
+    if (
+      this.diags.length === diagsBefore &&
+      this.runtimeFences.length === fencesBefore &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      receiver.value = value;
+      receiver.ctx = this.ctx;
+      receiver.bindings = this.typeParamBindings;
+      receiver.surroundings = surroundings;
+      receiver.overrides =
+        this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()];
+      receiver.slotNotes = notes.size > 0 ? notes : null;
+    }
+    return value;
+  }
+
+  /** The degraded declaration slots a probe did not report while a
+   * dispatched receiver is being lowered (null otherwise): its kept value
+   * reports them when it is used outside a probe. */
+  private probedSlotNotes: ProbedSlotNotes | null = null;
+
+  /** Whether a new lowering here would run under what `kept` was lowered
+   * under: the function context, the type bindings, the surroundings
+   * (probeSurroundings, given) and the expression overrides in force. */
+  private keptOperandStands(kept: KeptOperand, surroundings: number): boolean {
+    return (
+      kept.ctx === this.ctx &&
+      kept.bindings === this.typeParamBindings &&
+      kept.surroundings === surroundings &&
+      this.expressionOverridesAre(kept.overrides)
+    );
+  }
+
+  /** Whether the expression overrides in force are exactly `overrides`. */
+  private expressionOverridesAre(overrides: IrExpr[] | null): boolean {
+    if (overrides === null) return this.chainRecvByNode.size === 0;
+    if (overrides.length !== this.chainRecvByNode.size) return false;
+    let index = 0;
+    for (const value of this.chainRecvByNode.values()) {
+      if (overrides[index++] !== value) return false;
+    }
+    return true;
+  }
+
   /** Diagnostics converted into runtimeFence statements (JS sources —
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
@@ -5436,6 +6870,187 @@ export class Lowerer {
   coercionFieldOrigin: string | null = null;
   private readonly recordOriginMemo = new Map<ts.Node, RecordOrigin | null>();
 
+  /** The slot-directed conversion in progress (coerceInto): the node whose
+   * value is converted and the slot's type. Null outside one. Read by
+   * callListDeclared; restored when the conversion ends. */
+  private slotSiteNode: ts.Node | null = null;
+  private slotSiteType: IrType | null = null;
+  /** Counts the callers that state their slot is a declared one
+   * (withDeclaredCallList). */
+  private declaredCallLists = 0;
+
+  /** Whether the conversion in progress goes into a slot whose function
+   * types are called with their declared parameters and nothing else
+   * (function-adapters.ts, THE RULE): the checker types the slot as the
+   * conversion's destination, or types the converted value itself as it (a
+   * value a declaration types, such as a package function's result). A
+   * slot lowering made for one of its own helpers is neither: its type is
+   * narrower than the checker's, or there is no slot-directed conversion
+   * at all. */
+  callListDeclared(): boolean {
+    if (this.declaredCallLists > 0) return true;
+    const node = this.slotSiteNode;
+    const slot = this.slotSiteType;
+    if (node === null || slot === null) return false;
+    const typedAs = (type: ts.Type | null | undefined): boolean => {
+      if (type === null || type === undefined) return false;
+      const mapped = panicSafe(() => this.mapTypeOf(type), null);
+      if (mapped === null) return false;
+      if (typeEquals(mapped, slot)) return true;
+      // The one function arm of an optional slot (`f?: F`), where the
+      // conversion goes into the arm.
+      return (
+        mapped.kind === "union" && slot.kind !== "union" && this.armTag(mapped.unionId, slot) >= 0
+      );
+    };
+    let context = panicSafe(() => this.checker.getContextualType(node as ts.Expression), null);
+    if (
+      context &&
+      context.isUnionType() &&
+      ts.constituentTypes(context).some((t) => ts.symbolNameOf(t.getSymbol()) === "PromiseLike")
+    )
+      context = this.checker.getAwaitedType(context) ?? context;
+    return typedAs(context) || typedAs(panicSafe(() => this.typeOf(node), null));
+  }
+
+  /** A function the program declares variadic that is held untyped (a
+   * constant bound to one is stored boxed), converted into a fixed
+   * signature: the checked function boundary calls it with the slot's
+   * parameters, as the adapter of a typed variadic function does
+   * (function-adapters.ts, THE RULE). A slot whose last parameter the
+   * checker declares optional is refused for the same reason as there: a
+   * call that omits it passes nothing, and the boundary passes a completed
+   * `undefined`. Every other such store is recorded for the check that
+   * runs when lowering ends (variadic-functions.ts). */
+  private noteUntypedVariadicStore(node: ts.Node, expr: IrExpr, expected: IrType): void {
+    if (expr.type.kind !== "dyn") return;
+    let slot: IrType | undefined = expected;
+    if (expected.kind === "union") {
+      const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+      slot = arms?.length === 1 ? arms[0] : undefined;
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return;
+    if (!ts.isExpression(node) || !callbackTakesEveryArgument(this, node)) return;
+    const context = panicSafe(() => this.checker.getContextualType(node), null);
+    const optionalLast =
+      context !== null &&
+      context !== undefined &&
+      panicSafe(
+        () =>
+          this.checker
+            .getCallSignatures(this.checker.getNonNullableType(context))
+            .some((signature) => {
+              const last = signature.declaration?.parameters?.nodes.at(-1);
+              return (
+                last !== undefined &&
+                ts.isParameter(last) &&
+                (last.questionToken !== undefined || last.initializer !== undefined)
+              );
+            }),
+        false,
+      );
+    if (optionalLast)
+      this.unsupported(
+        "SC1090",
+        node,
+        `variadic function values where another signature is expected (into '${this.fmt(slot)}': the last parameter of the expected type is optional, and the function would receive 'undefined' where a call passes nothing)`,
+      );
+    this.noteVariadicStore(node, slot);
+  }
+
+  /** Records that the function value `node`, of the fixed signature
+   * `type`, is handed to `what`, which calls it natively with `passes`
+   * arguments, more than the type names. The declaration of such a library
+   * function says only that it may pass more (a rest parameter); its
+   * lowering knows the count. A function written in place or named by its
+   * declaration is not a slot's content and is not recorded. */
+  noteLongerCall(node: ts.Expression, type: IrType, what: string, passes: number): void {
+    if (type.kind !== "func" || type.rest === true || type.params.length >= passes) return;
+    if (namesDeclaredFunction(this, node)) return;
+    const loc = locOf(node);
+    this.notedLongerCalls.add(
+      [typeKey(type), what, loc.file, loc.start, loc.end, "arguments"].join("\u001f"),
+    );
+  }
+
+  /** Records that the function value `node` is handed to `what`, which
+   * Node.js calls with a receiver the native call does not pass (a timer,
+   * a process listener, a stream). A function whose own type shows that it
+   * reads `this` is refused there; one stored under a type that does not
+   * is what this records, for the stores of variadic functions that read
+   * `this` (noteReceiverReadingStore). */
+  noteReceiverCall(node: ts.Expression, what: string): void {
+    if (namesDeclaredFunction(this, node)) return;
+    const type = panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
+    const funcs =
+      type?.kind === "func"
+        ? [type]
+        : type?.kind === "union"
+          ? (this.unions.get(type.unionId)?.arms ?? []).filter((arm) => arm.kind === "func")
+          : [];
+    const loc = locOf(node);
+    for (const func of funcs)
+      if (func.kind === "func" && func.rest !== true)
+        this.notedLongerCalls.add(
+          [typeKey(func), what, loc.file, loc.start, loc.end, "receiver"].join("\u001f"),
+        );
+  }
+
+  /** A variadic function whose own body reads `this` (or whose signature
+   * declares a `this` parameter), stored under a fixed signature: the
+   * slot's type no longer shows the read, so a library function that
+   * passes no receiver cannot refuse it. Recorded for the check that runs
+   * when lowering ends (variadic-functions.ts). */
+  private noteReceiverReadingStore(node: ts.Node, expr: IrExpr, expected: IrType): void {
+    const variadic =
+      expr.type.kind === "dyn" ||
+      (expr.type.kind === "func" && expr.type.rest === true && expr.type.restAbi === undefined);
+    if (!variadic || !ts.isExpression(node)) return;
+    let slot: IrType | undefined = expected;
+    if (expected.kind === "union") {
+      const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+      slot = arms?.length === 1 ? arms[0] : undefined;
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return;
+    if (!callbackTakesEveryArgument(this, node) || !callbackReadsThis(this, node)) return;
+    const loc = locOf(node);
+    this.notedVariadicStores.add(
+      [
+        typeKey(slot),
+        this.fmt(slot),
+        slot.params.length,
+        loc.file,
+        loc.start,
+        loc.end,
+        "receiver",
+      ].join("\u001f"),
+    );
+  }
+
+  /** Records a store of a variadic function under the fixed signature
+   * `slot`, one no adapter marks in the IR, for the check that runs when
+   * lowering ends (variadic-functions.ts). */
+  noteVariadicStore(node: ts.Node, slot: IrType & { kind: "func" }): void {
+    const loc = locOf(node);
+    this.notedVariadicStores.add(
+      [typeKey(slot), this.fmt(slot), slot.params.length, loc.file, loc.start, loc.end].join(
+        "\u001f",
+      ),
+    );
+  }
+
+  /** Runs `body` for a caller whose slot is a declared one although no
+   * slot-directed conversion says so: a function literal judged against
+   * its contextual type, a default for an optional callback. */
+  withDeclaredCallList<T>(body: () => T): T {
+    this.declaredCallLists++;
+    try {
+      return body();
+    } finally {
+      this.declaredCallLists--;
+    }
+  }
+
   /** The package-declared record type the current coercion converts to. */
   coercionRecordOrigin(): RecordOrigin | null {
     const node = this.coercionOriginNode;
@@ -5505,6 +7120,8 @@ export class Lowerer {
         });
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.wholeSlotDegradation = mode.wholeSlotDegradation ?? false;
+    this.untypedConstructors = mode.untypedConstructors ?? false;
+    this.abortOnStreamFlags = mode.abortOnStreamFlags === true;
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;
     this.ffiImports = mode.ffiImports ?? [];
@@ -5515,18 +7132,24 @@ export class Lowerer {
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
+    this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
+    this.coverageReached = mode.coverageReached ?? false;
     this.startupCrash = mode.startupCrash ?? null;
     this.targetPlatform = mode.targetPlatform ?? process.platform;
+    this.define = mode.define;
     this.tierMode = mode.tierMode ?? "auto";
     this.runtimeOptionalReport = mode.runtimeOptionalReport === true;
+    this.typeClaims = mode.typeClaims === true;
     this.runtimeOptionalProvenance = this.runtimeOptionalReport
       ? RuntimeOptionalProvenance.forReport()
       : RuntimeOptionalProvenance.fromEnvironment();
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
+    this.workerOnlyModules = mode.workerOnlyModules ?? new Set<ts.SourceFile>();
+    this.workerModules = mode.workerModules ?? new Set<ts.SourceFile>();
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });
@@ -5544,6 +7167,7 @@ export class Lowerer {
       throw new InternalCompilerError(
         "lowerer bug: LowererMode.facts belongs to a different program or moduleOrder",
       );
+    this.nodeIslandModules = new NodeIslandModuleCollector(this.facts.moduleSpecifierScans);
     this.verifySymbolProvenance = this.facts.verify
       ? (sym, answer) => this.verifySymbolProvenanceAnswer(sym, answer)
       : undefined;
@@ -5553,12 +7177,14 @@ export class Lowerer {
     this.typeCtx = {
       ...(islands !== null ? { foreignType: (t: ts.Type) => this.foreignType(t) } : {}),
       checker: this.checker,
+      untypedArrayPropertyType: (decl) => untypedArrayPropertyType(this, decl),
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,
       unions: this.unions,
       classNamer: (decl) => this.classNamer(decl),
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      resolvePinnedTypeParamTs: this.pinnedTypeParamTsResolver,
       resolveBoundAliasTs: this.boundAliasTsResolver,
       degradedType: (type) => {
         const id = (type as { id?: number }).id;
@@ -5612,6 +7238,7 @@ export class Lowerer {
             (clause) =>
               clause.token === ts.SyntaxKind.ExtendsKeyword &&
               clause.types.nodes.some((base) => {
+                if (!ts.isExpressionWithTypeArguments(base)) return false;
                 const expression = base.expression;
                 if (ts.isCallExpression(expression)) return true;
                 if (ts.isIdentifier(expression) && this.isStdlibGlobal(expression, expression.text))
@@ -5663,10 +7290,10 @@ export class Lowerer {
       },
       mixinIntersectionInstance: (widened) => mixinIntersectionInstanceType(this, widened),
       classImplementedProtocol: (type) => this.classImplementedProtocol(type),
+      enumObjectEntries: (symbol) => this.enumObjects.get(symbol)?.entries ?? null,
       isStdlibFile: (sf) => this.isStdlibFile(sf),
       primitiveWrappers: () => (this.createsWrappers ??= programCreatesWrappers(this)),
       isNpmFile: (sf) => this.isNpmFile(sf),
-      isExperimentalFile: (sf) => isExperimentalDeclarationFile(sf, this.experimentalFiles),
       // The declaration-typed boundary's generated types (decl-projection.ts)
       // describe data, like an explicitly mapped external type surface.
       isExternalTypeFile: this.isExternalTypeFile,
@@ -5682,6 +7309,16 @@ export class Lowerer {
       typeMemoShared: this.sharedTypeMemo,
       ...(this.generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(this.dynNodeStreams ? { dynNodeStreams: true } : {}),
+      ...(this.untypedConstructors ? { untypedConstructors: true } : {}),
+      // A mapping says nothing of whether the program holds a constructor:
+      // analyses map the type of a callee or a receiver they never hold.
+      onConstructorFunctionType: () => {
+        this.constructorTouches++;
+      },
+      constructorFunctionMemo: this.constructorFunctionMemo,
+      // The protocol types that hold a checked-dynamic value are a fact of
+      // the program (async-protocol-holders.ts), the same in every pass.
+      asyncProtocolHoldsImplementor: (element) => this.asyncProtocolHoldsImplementor(element),
       // Memoization is scoped by the binding maps (typeMemoFor); only a mixin
       // context opts out, because mixinClassInstance answers by class node and
       // the bindings do not identify it.
@@ -5745,6 +7382,33 @@ export class Lowerer {
     return list.some((site) => start <= site.pos && site.end <= node.end);
   }
 
+  /** Whether preflight admitted the checker diagnostic `code` at exactly
+   * this node's own span. `opinionAt` answers for a site anywhere in the
+   * node the query names, which suits a view whose path applies to the
+   * outermost expression; a discarded construct's site can also sit inside a
+   * node whose own value IS consumed, so that query must name the node the
+   * diagnostic was reported on. */
+  opinionAtNode(node: ts.Node, code: number): boolean {
+    if (this.admittedOpinions.length === 0) return false;
+    const file = ts.getSourceFileOfNode(node).fileName;
+    const start = ts.tokenStartOfNode(node);
+    const hit = this.admittedOpinionSites();
+    const list = hit.get(`${file}\0${code}`);
+    if (list === undefined) return false;
+    return list.some((site) => site.pos === start && site.end === node.end);
+  }
+
+  /** Whether `name` is a name only the project's libraries declare, in a
+   * TypeScript source: preflight admitted its "cannot find name" error
+   * (program.ts, projectLibraryName), so the project's own tsc resolves it
+   * and Node, which defines no such global, resolves it at run time. */
+  projectLibraryNameAt(name: ts.Identifier): boolean {
+    return (
+      this.admittedOpinions.length > 0 &&
+      (this.opinionAt(name, 2304) || this.opinionAt(name, 2584) || this.opinionAt(name, 2552))
+    );
+  }
+
   /** opinionAt's index: admitted sites by file and code (one index per
    * admitted-opinions list, shared by the round). */
   private admittedOpinionSites(): ReadonlyMap<string, readonly AdmittedOpinion[]> {
@@ -5773,6 +7437,29 @@ export class Lowerer {
     );
   }
 
+  /** The untyped island values the program stores where their origin is no
+   * longer followed (class-protocols.ts, noteIslandEscapes). */
+  islandEscapeSites(): readonly ts.Expression[] {
+    return this.facts.classProtocols().islandEscapeSites();
+  }
+
+  /** Whether the program declares an interface that extends a builtin Error
+   * (class-protocols.ts, markErrorInterfaces). */
+  declaresErrorInterface(): boolean {
+    return this.facts.classProtocols().declaresErrorInterface();
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    return this.facts.classProtocols().errorInterface(type);
+  }
+
+  /** Whether `expr` holds a value a Node island made, by its origin
+   * (class-protocols.ts, islandOrigin). */
+  islandOrigin(expr: ts.Expression): boolean {
+    return this.facts.classProtocols().islandOrigin(expr);
+  }
+
   /** A record view a Map or Set answers: it keeps protocol identity but
    * calls the collection's own methods, never a stored member. */
   classCollectionView(type: ts.Type): boolean {
@@ -5792,7 +7479,9 @@ export class Lowerer {
     const answer = ask(this.facts.classProtocols());
     if (!this.facts.verify) return answer;
     if (this.ownClassProtocols === null) {
-      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder);
+      this.ownClassProtocols = new ClassProtocols(this.checker, this.moduleOrder, (file) =>
+        this.isStdlibFile(file),
+      );
     }
     const fresh = ask(this.ownClassProtocols);
     this.facts.noteVerified("classProtocols");
@@ -5803,6 +7492,30 @@ export class Lowerer {
     );
   }
   private ownClassProtocols: ClassProtocols | null = null;
+
+  /** Whether the async-iteration protocol types over `element` hold the
+   * checked-dynamic value (TypeMapperCtx.asyncProtocolHoldsImplementor): the
+   * round's shared analysis (lowering-facts.ts), a pure function of the
+   * checker and the program's modules. With SCRIPTC_LOWERING_FACTS_VERIFY this Lowerer
+   * runs its own and every answer is compared. */
+  private asyncProtocolHoldsImplementor(element: ts.Type | undefined): boolean {
+    const answer = this.facts.asyncProtocolHolders(this.entry, this.nodeIslands).holds(element);
+    if (!this.facts.verify) return answer;
+    this.ownAsyncProtocolHolders ??= new AsyncProtocolHolders(
+      this.checker,
+      this.moduleOrder.includes(this.entry) ? this.moduleOrder : [...this.moduleOrder, this.entry],
+      (sf) => this.isStdlibFile(sf),
+      () => this.facts.islandProtocolFiles(this.nodeIslands),
+    );
+    const fresh = this.ownAsyncProtocolHolders.holds(element);
+    this.facts.noteVerified("asyncProtocolHolders");
+    if (answer === fresh) return answer;
+    throw new InternalCompilerError(
+      `shared async protocol analysis answered ${String(answer)} where a fresh one over the ` +
+        `same program answered ${String(fresh)}`,
+    );
+  }
+  private ownAsyncProtocolHolders: AsyncProtocolHolders | null = null;
 
   /** Declared class fields may store a DYN value only when its static type
    * is `unknown` or `object` (also with `null` or `undefined`, or an array
@@ -5824,6 +7537,61 @@ export class Lowerer {
         (part) => isEcdhType(this, part) || isDiffieHellmanType(this, part),
       )
     );
+  }
+
+  /** The instance field initializer whose expression is lowering right now
+   * (set by fieldInitStmts and restored after it): a membership test on
+   * `this` inside it answers from the fields defined so far. */
+  fieldInitializer: { info: ClassInfo; index: number; initializer: ts.Expression } | null = null;
+
+  /** familyFieldLayoutFixed answers, by family root. */
+  private readonly fixedFieldFamilies = new Map<ClassInfo, boolean>();
+  private familyDeletedNames: Set<string> | null | undefined;
+
+  /** Whether every own field of every class in `info`'s family exists from
+   * construction and no field can be deleted, the same decision
+   * ClassDynamicDispatch makes when it decides whether a class tracks its
+   * own fields (js-class-fields' fixedFieldFamily), available while
+   * membership tests lower. */
+  familyFieldLayoutFixed(info: ClassInfo): boolean {
+    let root = info;
+    while (root.base && !root.base.def.runtime) root = root.base;
+    // Runtime-owned roots keep their dedicated property contracts, which
+    // membership answers before this question is asked.
+    if (root.base?.def.runtime) return true;
+    const cached = this.fixedFieldFamilies.get(root);
+    if (cached !== undefined) return cached;
+    this.familyDeletedNames ??= deletedPropertyNames(this.moduleOrder);
+    const fixed = fixedFieldFamily(root, this.familyDeletedNames);
+    this.fixedFieldFamilies.set(root, fixed);
+    return fixed;
+  }
+
+  /** familyAnswersFromInstance answers, by family root. */
+  private readonly familyInstanceAnswers = new Map<ClassInfo, boolean>();
+
+  /** Whether what an instance of `info`'s family actually has can differ
+   * from what the family declares: a JavaScript class in it creates its own
+   * fields by assignment, so a constructor branch that did not run, or a
+   * property added later, is missing from the declaration. */
+  familyAnswersFromInstance(info: ClassInfo): boolean {
+    let root = info;
+    while (root.base && !root.base.def.runtime) root = root.base;
+    // Runtime-owned roots answer membership from their own contracts.
+    if (root.base?.def.runtime) return false;
+    const cached = this.familyInstanceAnswers.get(root);
+    if (cached !== undefined) return cached;
+    let answer = false;
+    if (!this.familyFieldLayoutFixed(root)) {
+      const pending = [root];
+      while (pending.length > 0 && !answer) {
+        const c = pending.pop()!;
+        if (c.decl !== null && isJsSourceFile(ts.getSourceFileOfNode(c.decl))) answer = true;
+        pending.push(...c.subclasses);
+      }
+    }
+    this.familyInstanceAnswers.set(root, answer);
+    return answer;
   }
 
   /** A stdlib WeakMap or WeakSet, alone or in a union with `null`/`undefined`
@@ -5880,10 +7648,13 @@ export class Lowerer {
 
   /** `unknown`, `object`, an array of those, or a union of those with
    * `null` and `undefined`: types whose values use checked-dynamic storage
-   * as they do in JavaScript class fields. */
+   * as they do in JavaScript class fields. A type parameter counts when the
+   * current generic instantiation binds it to the checked-dynamic kind
+   * (`value: T` in `Box<unknown>`), so `T | null` and `T[]` follow. */
   private opaqueValueType(type: ts.Type): boolean {
     const opaque = (part: ts.Type): boolean =>
       (part.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) !== 0 ||
+      this.typeParamResolver(part)?.kind === "dyn" ||
       (this.checker.isArrayType(part) &&
         this.checker.getTypeArguments(part as ts.TypeReference).every(opaque));
     if (!type.isUnionType()) return opaque(type);
@@ -5931,6 +7702,10 @@ export class Lowerer {
     { names: ReadonlySet<string>; assignedLater: ReadonlySet<string> | "all" }
   >();
 
+  /** The runtime export names of each module (runtimeExportNames): a pure
+   * function of the module graph, shared by every namespace key census. */
+  private readonly runtimeExports = new Map<ts.SourceFile, Set<string>>();
+
   cjsNamespaceOf(dep: ts.SourceFile): {
     names: ReadonlySet<string>;
     assignedLater: ReadonlySet<string> | "all";
@@ -5957,6 +7732,75 @@ export class Lowerer {
     return namespace;
   }
 
+  /** The runtime exports of a module: its own value exports except the
+   * names a type-only export declaration forwards, plus the runtime exports
+   * of every `export *` target. TypeScript's resolved export set also lists
+   * the names behind `export type *` and `export type { … }`; those carry no
+   * runtime binding, so a namespace key census must not take them from the
+   * resolved set alone.
+   *
+   * `export *` is transitive, and a cycle of star re-exports is one union
+   * seen from each of its modules. The walk therefore collects every
+   * reachable module's own names before anything is memoized: a set handed
+   * out while the walk was still under way would be missing the names a
+   * module further around the cycle contributes, and every later census and
+   * dynamic read of that module would answer the short set. */
+  runtimeExportNames(source: ts.SourceFile): ReadonlySet<string> {
+    const cached = this.runtimeExports.get(source);
+    if (cached !== undefined) return cached;
+    const names = this.ownRuntimeExportNames(source);
+    const seen = new Set<ts.SourceFile>([source]);
+    const pending = [source];
+    while (pending.length > 0) {
+      for (const dep of this.starReexportTargets(pending.pop()!)) {
+        if (seen.has(dep)) continue;
+        seen.add(dep);
+        for (const name of this.ownRuntimeExportNames(dep)) {
+          if (name !== "default") names.add(name);
+        }
+        pending.push(dep);
+      }
+    }
+    this.runtimeExports.set(source, names);
+    return names;
+  }
+
+  /** The value exports a module declares itself: its resolved export set
+   * minus the names a type-only declaration forwards. `default` is included
+   * (the module's own namespace carries it) and is dropped by the star walk
+   * that forwards this set to another module. */
+  private ownRuntimeExportNames(source: ts.SourceFile): Set<string> {
+    const names = new Set<string>();
+    const moduleSymbol = this.checker.getSymbolAtLocation(source);
+    if (moduleSymbol !== undefined) {
+      for (const symbol of moduleSymbol.getExports().values()) {
+        if (exportedByTypeOnlyDeclaration(symbol)) continue;
+        const target =
+          symbol.flags & ts.SymbolFlags.Alias ? this.checker.getAliasedSymbol(symbol) : symbol;
+        if (target.flags & ts.SymbolFlags.Value) names.add(ts.symbolName(symbol));
+      }
+    }
+    return names;
+  }
+
+  /** The modules a module star-re-exports (`export * from "./m"`), in
+   * statement order. */
+  private starReexportTargets(source: ts.SourceFile): ts.SourceFile[] {
+    const targets: ts.SourceFile[] = [];
+    for (const stmt of source.statements.nodes) {
+      if (
+        !ts.isExportDeclaration(stmt) ||
+        stmt.isTypeOnly ||
+        stmt.exportClause !== undefined ||
+        !ts.isStringLiteral(stmt.moduleSpecifier)
+      )
+        continue;
+      const dep = this.moduleSourceFileOf(source, stmt.moduleSpecifier);
+      if (dep !== null) targets.push(dep);
+    }
+    return targets;
+  }
+
   sourceFileOfModuleNamespace(type: IrType): ts.SourceFile | null {
     if (type.kind !== "moduleNs" || !type.moduleId.startsWith("file:")) return null;
     const path = type.moduleId.slice("file:".length);
@@ -5967,9 +7811,22 @@ export class Lowerer {
    * = ns`, `take(ns)`): the runtime's namespace object — one per module,
    * Node's sorted export keys, live reads through a compiled getter, and
    * Node's read-only write errors — built by `moduleNamespaceDynValue`.
-   * `node:` builtins have no compiled source and no complete export table,
-   * so they keep their fence. */
+   * `node:` builtins have no compiled source, so their box comes from the
+   * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    if (ns.type.moduleId.startsWith("builtin:")) {
+      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
+      // The namespace expression still runs first: an awaited import()
+      // suspends the caller until the import settles.
+      if (boxed === null || isSafeToRepeat(ns)) return boxed;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: ns, loc: ns.loc }],
+        result: boxed,
+        type: boxed.type,
+        loc: ns.loc,
+      };
+    }
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
   }
@@ -5985,11 +7842,13 @@ export class Lowerer {
     value: IrExpr & { type: IrType & { kind: "promise" } },
   ): IrExpr | null {
     const inner = value.type.inner;
-    if (inner.kind !== "moduleNs" || !inner.moduleId.startsWith("file:")) return null;
+    if (inner.kind !== "moduleNs") return null;
+    const builtin = inner.moduleId.startsWith("builtin:");
+    if (!builtin && !inner.moduleId.startsWith("file:")) return null;
     const loc = value.loc;
     const name = `%module.promise:${inner.moduleId}`;
     const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
-    if (!this.liftedFns.some((fn) => fn.name === name)) {
+    if (this.liftedFnNamed(name) === undefined) {
       const context = newFnCtx(false, null, null, DYN);
       context.isAsync = true;
       const previousClass = this.currentClass;
@@ -6003,7 +7862,21 @@ export class Lowerer {
           type: inner,
           loc,
         };
-        namespace = moduleNamespaceDynValue(this, awaited);
+        // The mapper still awaits its input: a rejected import() must reject
+        // the mapped promise. A builtin's box comes from the lowering tables
+        // and reads nothing from the awaited value, so the await runs as a
+        // statement before it.
+        const boxed = builtin ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc) : null;
+        namespace =
+          boxed === null
+            ? moduleNamespaceDynValue(this, awaited)
+            : {
+                kind: "seqExpr",
+                stmts: [{ kind: "exprStmt", expr: awaited, loc }],
+                result: boxed,
+                type: boxed.type,
+                loc,
+              };
         if (namespace) {
           const fn: IrFunction = {
             name,
@@ -6146,6 +8019,16 @@ export class Lowerer {
     if (createdWhole) symbol = createdWhole;
     const createdMember = this.createRequireDestructuredExportSymbolOf(ident);
     if (createdMember) symbol = createdMember;
+    // A `require("./g")` binding whose target module exports ONE value
+    // that lives in the module's snapshot global (`module.exports =
+    // Object.getOwnPropertyDescriptor` — gopd's whole module — or the
+    // snapshot of an exported reassigned binding): tsgo's alias resolves
+    // PAST the export statement to the expression's own symbol (a stdlib
+    // declaration, or the live source binding), neither of which is
+    // Node's answer. Reconnect to the export= symbol that keys the
+    // snapshot.
+    const wholeSlot = this.requireWholeExportSlotSymbolOf(ident);
+    if (wholeSlot) symbol = wholeSlot;
     // tsgo synthesizes no expando symbol at a CJS MEMBER-EXPORT use site
     // (`common.GREETING` where the exporter attached GREETING with
     // `module.exports.GREETING = ...` — 5.9.3 answered the expando
@@ -6158,11 +8041,16 @@ export class Lowerer {
       ident.parent.name === ident
     ) {
       const recv = ident.parent.expression;
-      if (this.cjsLocalModuleBindingOf(recv)) {
+      const namespaceRecv = this.cjsLocalModuleBindingOf(recv);
+      if (namespaceRecv || this.cjsWholeExportMemberOf(recv, ident.text)) {
         const dep = ts.isIdentifier(recv)
-          ? this.localModuleBindingDepOf(recv)
+          ? this.cjsModuleBindingDepOf(recv)
           : this.cjsModuleRefDepOf(recv);
-        const exported = dep ? this.cjsModuleExportSymbol(dep, ident.text) : undefined;
+        const exported = dep
+          ? namespaceRecv
+            ? this.cjsModuleExportSymbol(dep, ident.text)
+            : this.cjsWholeExportMemberSymbol(dep, ident.text)
+          : undefined;
         // A createRequire call is typed as `any`, so tsgo can manufacture a
         // transient property symbol with no relation to the target module.
         // Prefer the real export-table symbol whenever the receiver is a
@@ -6176,6 +8064,15 @@ export class Lowerer {
     // transform throws ReferenceError where tsc's emit would qualify —
     // lower-namespaces.ts); a no-op for programs without namespaces.
     fenceCrossBlockNsRef(this, ident, symbol);
+    // The reconnected export= symbol IS the snapshot's key: its declaration
+    // is the export statement, which is where globalOf reads the value.
+    // Chasing its alias would land on the exported EXPRESSION's symbol
+    // (a stdlib declaration, or the live source binding), which owns no
+    // storage here — the value Node's requirer sees is the snapshot.
+    if (wholeSlot) {
+      this.flushDeferred(wholeSlot);
+      return wholeSlot;
+    }
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
       // (`import x = N.y` of a mutable target — collectGlobals): the
@@ -6196,7 +8093,17 @@ export class Lowerer {
         this.flushDeferred(snap);
         return snap;
       }
-      symbol = this.checker.getAliasedSymbol(symbol);
+      const aliased = this.checker.getAliasedSymbol(symbol);
+      // `const { member } = require("./x")` of a module that builds its
+      // export object anew (`exports = module.exports = {}`, then
+      // `exports.member = …`): the checker answers a property that has no
+      // declaration, which keys nothing here. The module's export table
+      // still names the member, the symbol its own statements and a
+      // `x.member` read resolve to.
+      symbol =
+        aliased.declarations.length === 0
+          ? (this.requireDestructuredExportSymbolOf(symbol) ?? aliased)
+          : aliased;
     }
     // CommonJS export plumbing: a binding that resolved to a PROPERTY of a
     // top-level `module.exports = { ... }` literal (shorthand, or a plain
@@ -6305,7 +8212,7 @@ export class Lowerer {
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl)) return decl;
     }
-    return resolveImport(this.program, from, spec.text);
+    return this.facts.importedModule(from, spec.text);
   }
 
   /** Follow one project-module export through the checker's resolved export
@@ -6458,7 +8365,7 @@ export class Lowerer {
       }
       if (d === undefined || spec === undefined || !ts.isStringLiteral(spec) || name !== "default")
         return null;
-      const dep = resolveImport(this.program, ts.getSourceFileOfNode(d), spec.text);
+      const dep = this.facts.importedModule(ts.getSourceFileOfNode(d), spec.text);
       if (!dep) return null;
       sym = defaultExportSymbolOf(this, dep) ?? undefined;
     }
@@ -6574,8 +8481,8 @@ export class Lowerer {
     // Project aliases/self-references resolve through the same entry point as
     // relative imports; an opted-in --npm-static package is the fallback.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(importDecl), spec) ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(importDecl), spec);
+      this.facts.importedModule(ts.getSourceFileOfNode(importDecl), spec) ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(importDecl), spec);
     if (!dep || !isJsSourceFile(dep) || isNodeEsmFile(dep, this.program)) return null;
     return dep;
   }
@@ -6584,15 +8491,14 @@ export class Lowerer {
    * `require("./x")` (cjs-inline-require.ts) or tsc's unstamped
    * `x_1.default` interop read (cjs-tsc-interop.ts). */
   cjsModuleRefDepOf(expr: ts.Expression): ts.SourceFile | null {
-    const inline = inlineNamespaceRequireOf(this, expr);
-    if (inline !== null) return inline.dep;
-    const interop = tscInteropModuleOf(this, expr);
-    return interop !== null && cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
+    const ref = inlineProgramRequireOf(this, expr) ?? tscInteropModuleOf(this, expr);
+    return ref === null ? null : cjsNamespaceTargetOf(this, ref.dep);
   }
 
   /** The table module a CommonJS module binding identifier names. */
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
-    return this.localModuleBindingDepOf(expr);
+    const dep = this.localModuleBindingDepOf(expr);
+    return dep === null ? null : (cjsNamespaceTargetOf(this, dep) ?? dep);
   }
 
   /** The compiled module behind a require-like namespace binding: an
@@ -6615,8 +8521,8 @@ export class Lowerer {
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
       return (
-        resolveImport(this.program, ts.getSourceFileOfNode(decl), directSpec, "require") ??
-        npmStaticDepSf7(this.program, ts.getSourceFileOfNode(decl), directSpec, "require")
+        this.facts.importedModule(ts.getSourceFileOfNode(decl), directSpec, "require") ??
+        this.facts.npmStaticModule(ts.getSourceFileOfNode(decl), directSpec, "require")
       );
     }
     return createRequireProgramModuleOf(this, decl.initializer)?.dep ?? null;
@@ -6639,8 +8545,8 @@ export class Lowerer {
     if (spec === null) return null;
     const sf = stmt.parent;
     const dep =
-      resolveImport(this.program, sf, spec, "require") ??
-      npmStaticDepSf7(this.program, sf, spec, "require");
+      this.facts.importedModule(sf, spec, "require") ??
+      this.facts.npmStaticModule(sf, spec, "require");
     return dep !== null && cjsNamespaceModule(this, dep) ? dep : null;
   }
 
@@ -6693,19 +8599,20 @@ export class Lowerer {
     return found;
   }
 
-  /** The represented single value behind a createRequire binding, or null
-   * when the target is a namespace/table module. Collection has already
-   * registered executable exports before entry-module uses lower, so the
-   * registries are the authority for whether the export= value exists in
-   * static storage or callable/class metadata. */
-  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
-    const binding = this.checker.getSymbolAtLocation(ident);
-    const target = binding ? this.createRequireBindingTarget(binding) : null;
-    if (target === null) return null;
-    const moduleSym = this.checker.getSymbolAtLocation(target.dep);
-    let symbol = moduleSym?.getExports().get("export=" as ts.__String);
+  /** The module's `export=` symbol together with the whole-export
+   * statement it declares at, or null when the module's exports are not
+   * one top-level `module.exports = <value>` replacement. The statement is
+   * the key for represented single-value exports (`%g.<tag>exports` —
+   * collectGlobals): requirer aliases resolve to this symbol, whose
+   * declaration IS the statement, and globalOf's declaration-node
+   * fallback reads the value there. */
+  private wholeExportAssignmentOf(
+    dep: ts.SourceFile,
+  ): { symbol: ts.Symbol; assignment: ts.BinaryExpression } | null {
+    const moduleSym = this.checker.getSymbolAtLocation(dep);
+    const symbol = moduleSym?.getExports().get("export=" as ts.__String);
     if (!symbol) return null;
-    const wholeAssignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
+    const assignment = symbol.declarations.find((d): d is ts.BinaryExpression => {
       if (
         !ts.isBinaryExpression(d) ||
         !ts.isExpressionStatement(d.parent) ||
@@ -6719,13 +8626,115 @@ export class Lowerer {
         cjsExportDiscardReason(d.parent) === null
       );
     });
-    if (wholeAssignment === undefined) return null;
+    return assignment === undefined ? null : { symbol, assignment };
+  }
+
+  /** The module a wrapper's whole export re-exports: `module.exports =
+   * require("./y")`, or `= m` where `m` is a require binding. A wrapper
+   * with live members owns storage for them, so it is not followed. */
+  private wholeReexportDepOf(dep: ts.SourceFile): ts.SourceFile | null {
+    if (cjsHasLiveMemberExports(this, dep)) return null;
+    const whole = cjsWholeExportValueOf(dep);
+    if (whole === null) return null;
+    const inner = inlineProgramRequireOf(this, whole.rhs);
+    if (inner !== null) return inner.dep;
+    let rhs: ts.Expression = whole.rhs;
+    while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+    if (!ts.isIdentifier(rhs)) return null;
+    return this.localModuleBindingDepOf(rhs);
+  }
+
+  /** The whole-export statement that owns the value's storage, following
+   * `module.exports = require("./y")` re-export chains: a wrapper stores
+   * whatever the module at the end of the chain stored. Null when the
+   * chain ends at a statement with no snapshot (a class, a builtin member,
+   * a table module). */
+  private wholeExportStorageOf(
+    dep: ts.SourceFile,
+  ): { symbol: ts.Symbol; assignment: ts.BinaryExpression } | null {
+    const seen = new Set<ts.SourceFile>();
+    let current: ts.SourceFile | null = dep;
+    for (let depth = 0; current !== null && depth < 32 && !seen.has(current); depth++) {
+      seen.add(current);
+      const whole = cjsWholeExportValueOf(current);
+      if (whole === null) return null;
+      if (this.globalsByDeclNode.has(whole.assign)) {
+        const owner = this.wholeExportAssignmentOf(current);
+        return owner === null ? null : owner;
+      }
+      current = this.wholeReexportDepOf(current);
+    }
+    return null;
+  }
+
+  /** The export symbol that keys a module's whole-export snapshot global,
+   * or null when the value has no storage of its own (a class, a builtin
+   * member, a table module). Reads of the symbol resolve to that storage. */
+  wholeExportStorageSymbolOf(dep: ts.SourceFile): ts.Symbol | null {
+    return this.wholeExportStorageOf(dep)?.symbol ?? null;
+  }
+
+  /** A require-like binding of a module whose whole export is a value
+   * stored in the module's snapshot global: `module.exports =
+   * Object.getOwnPropertyDescriptor` (gopd's whole module — a stdlib
+   * member), a factory call, or an exported binding that is reassigned
+   * before the export. tsgo types the binding as an alias that resolves
+   * PAST the export statement to the expression's own symbol (the stdlib
+   * declaration, or the live source binding), so the ordinary alias chase
+   * lands on a symbol with no storage here. The snapshot global is the
+   * value Node's requirer sees, so reconnect the binding to the export=
+   * symbol that owns it. Identifier and class exports with no snapshot
+   * keep resolving straight to their declaration. */
+  private requireWholeExportSlotSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    if (!binding || !(binding.flags & ts.SymbolFlags.Alias)) return null;
+    const cached = this.requireWholeExportSlots.get(binding);
+    if (cached !== undefined) return cached;
+    const decl =
+      binding.declarations.find(ts.isVariableDeclaration) ??
+      binding.declarations.find(ts.isImportClause);
+    // Split bindings (`var m; m = require("./m")`) keep their own
+    // statement-position plumbing (cjs-inline-require.ts); other alias
+    // forms (named imports, import equals) have no module value here.
+    if (decl === undefined) return null;
+    if (ts.isVariableDeclaration(decl) && decl.initializer === undefined) return null;
+    const dep = this.localModuleBindingDepOf(ident);
+    // A wrapper stores the value the module at the end of its re-export
+    // chain stored, so the snapshot that reconnects this binding may live
+    // in an inner module.
+    const stored = dep === null ? null : this.wholeExportStorageOf(dep);
+    const found: ts.Symbol | null = stored === null ? null : stored.symbol;
+    // Only the positive answer is cached: collection registers whole-export
+    // slots as it walks the exporting modules.
+    if (found !== null) this.requireWholeExportSlots.set(binding, found);
+    return found;
+  }
+
+  private readonly requireWholeExportSlots = new Map<ts.Symbol, ts.Symbol>();
+
+  /** The represented single value behind a createRequire binding, or null
+   * when the target is a namespace/table module. Collection has already
+   * registered executable exports before entry-module uses lower, so the
+   * registries are the authority for whether the export= value exists in
+   * static storage or callable/class metadata. */
+  private createRequireWholeExportSymbolOf(ident: ts.Identifier): ts.Symbol | null {
+    const binding = this.checker.getSymbolAtLocation(ident);
+    const target = binding ? this.createRequireBindingTarget(binding) : null;
+    if (target === null) return null;
+    const whole = this.wholeExportAssignmentOf(target.dep);
+    if (whole === null) return null;
+    let symbol = whole.symbol;
+    const wholeAssignment = whole.assignment;
     let rhs: ts.Expression = wholeAssignment.right;
     while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
     // A pure re-export (`module.exports = require("./core")`) is the inner
-    // module's export table, read like any namespace binding.
-    if (inlineProgramRequireOf(this, rhs) !== null && !this.globalsByDeclNode.has(wholeAssignment))
-      return null;
+    // module's export table, read like any namespace binding — unless the
+    // chain ends at a snapshot, whose stored value this binding is.
+    const inner = inlineProgramRequireOf(this, rhs);
+    if (inner !== null && !this.globalsByDeclNode.has(wholeAssignment)) {
+      const stored = this.wholeExportStorageOf(inner.dep);
+      return stored === null ? null : stored.symbol;
+    }
     if (ts.isIdentifier(rhs)) {
       const value = this.checker.getSymbolAtLocation(rhs);
       if (value) {
@@ -6756,6 +8765,33 @@ export class Lowerer {
     return this.cjsModuleExportSymbol(target.dep, name) ?? null;
   }
 
+  /** The target export behind `const { member: local } = require("./x")`
+   * of a program module whose exports are a table, by the member's name in
+   * that table. Null when the binding is not such an element or the table
+   * does not name the member. */
+  private requireDestructuredExportSymbolOf(binding: ts.Symbol): ts.Symbol | null {
+    const element = binding.declarations.find(ts.isBindingElement);
+    if (
+      element === undefined ||
+      element.name === undefined ||
+      !ts.isIdentifier(element.name) ||
+      element.dotDotDotToken !== undefined ||
+      !ts.isObjectBindingPattern(element.parent)
+    )
+      return null;
+    const declaration = element.parent.parent;
+    if (!ts.isVariableDeclaration(declaration) || declaration.initializer === undefined)
+      return null;
+    const required = inlineProgramRequireOf(this, declaration.initializer);
+    // A module that exports one value whole keeps its members as
+    // properties of that value (cjsMemberAliasValueOf answers those).
+    if (required === null || !cjsNamespaceModule(this, required.dep)) return null;
+    const property = element.propertyName;
+    if (property !== undefined && !ts.isIdentifier(property) && !ts.isStringLiteralLike(property))
+      return null;
+    return this.cjsModuleExportSymbol(required.dep, (property ?? element.name).text) ?? null;
+  }
+
   /** True when `expr` is an identifier bound by a top-level
    * `const x = require("./local")` of a project module — relative,
    * tsconfig-aliased, or package.json-mediated — or of a bare specifier
@@ -6774,7 +8810,14 @@ export class Lowerer {
     const splitDecl = sym?.declarations.find(ts.isVariableDeclaration);
     const split = splitDecl === undefined ? null : splitRequireBindingOf(this, splitDecl);
     if (split !== null) return cjsNamespaceModule(this, split.dep);
-    if (this.localModuleBindingDepOf(expr) === null) return false;
+    const dep = this.localModuleBindingDepOf(expr);
+    if (dep === null) return false;
+    // A binding of a SINGLE-VALUE module IS module.exports (Node's require
+    // answers it): the read lowers to the exporter's represented value
+    // (cjs-inline-require.ts), whatever the binding's own symbol shape —
+    // a JS `const m = require(...)` binding has no alias symbol and no
+    // storage, so the alias tests below never see it.
+    if (!cjsNamespaceModule(this, dep) && hasWholeExportValue(this, dep)) return false;
     if (this.createRequireWholeExportSymbolOf(expr) !== null) return false;
     // SINGLE-VALUE exporters (`module.exports = Countdown` / `= double` /
     // `= 42`): the requirer's binding IS the exported value, not a
@@ -6792,16 +8835,17 @@ export class Lowerer {
       if (d && ts.isVariableDeclaration(d)) {
         let init = d.initializer;
         while (init && ts.isParenthesizedExpression(init)) init = init.expression;
-        if (!init || !ts.isObjectLiteralExpression(init)) return false;
+        if (!init || !ts.isObjectLiteralExpression(init)) return cjsNamespaceModule(this, dep);
       }
       // A represented whole export declares AT the `module.exports =`
       // statement itself. Scalar/function/factory-call roots register one
-      // snapshot global on that declaration; table/Proxy replacements do
-      // not. A binding whose declaration owns such storage is therefore a
-      // single VALUE, not a namespace whose members must appear in Node's
-      // CJS lexer export table.
+      // snapshot global on that declaration, and a `module.exports =
+      // require("./y")` wrapper stores the inner module's snapshot, so a
+      // binding whose declaration ends at such storage is a single VALUE,
+      // not a namespace whose members must appear in Node's CJS lexer
+      // export table. Table/Proxy replacements register no such storage.
       if (d && ts.isBinaryExpression(d)) {
-        if (this.globalsByDeclNode.has(d)) return false;
+        if (this.wholeExportStorageOf(ts.getSourceFileOfNode(d)) !== null) return false;
         let r: ts.Expression = d.right;
         while (ts.isParenthesizedExpression(r)) r = r.expression;
         const scalar =
@@ -6819,6 +8863,55 @@ export class Lowerer {
     return true;
   }
 
+  /** True when `expr` is a binding of a SINGLE-VALUE module whose export
+   * table carries the member `name`. `module.exports = <value>` followed
+   * by `module.exports.name = <expr>` keeps the member on the exported
+   * value in Node, so a member read through any require binding (plain
+   * require, default import, createRequire) answers that export member.
+   * Members the exported VALUE declares itself — a class's statics, a
+   * function's own `name`/`length`/`prototype`, expando properties attached
+   * through the declarator — have no export storage and read through the
+   * value. */
+  cjsWholeExportMemberOf(expr: ts.Expression, name: string): boolean {
+    if (!ts.isIdentifier(expr)) return false;
+    const dep = this.localModuleBindingDepOf(expr);
+    if (dep === null || cjsNamespaceModule(this, dep)) return false;
+    if (!hasWholeExportValue(this, dep)) return false;
+    let sym = this.cjsWholeExportMemberSymbol(dep, name);
+    if (sym === undefined) return false;
+    // The member has export storage (an expression-valued member), or it is
+    // alias plumbing naming a declaration importers resolve to. A property
+    // the checker synthesized from an expando write on the exported value
+    // has neither and belongs to the value.
+    if (this.globalsBySymbol.has(sym)) return true;
+    if (sym.flags & ts.SymbolFlags.Alias) sym = this.checker.getAliasedSymbol(sym);
+    if (this.globalsBySymbol.has(sym)) return true;
+    for (const d of sym.declarations) {
+      if (this.globalsByDeclNode.has(d)) return true;
+      if (!moduleScopeDeclarationOf(dep, d)) continue;
+      if (ts.isShorthandPropertyAssignment(d)) return true;
+      if (ts.isPropertyAssignment(d) && ts.isIdentifier(d.initializer)) return true;
+      if (ts.isFunctionDeclaration(d) || ts.isClassDeclaration(d)) return true;
+    }
+    return false;
+  }
+
+  /** The export symbol of member `name` in a SINGLE-VALUE module: the
+   * checker's exports table when it carries the member, otherwise the
+   * member statement itself (`module.exports.name = …` — a class-expression
+   * whole export's type has no expando property for the checker to put in
+   * the table). */
+  cjsWholeExportMemberSymbol(dep: ts.SourceFile, name: string): ts.Symbol | undefined {
+    const direct = this.cjsModuleExportSymbol(dep, name);
+    if (direct !== undefined) return direct;
+    for (const stmt of dep.statements.nodes) {
+      const member = cjsExportAssignmentOf(stmt);
+      if (member?.kind === "member" && ts.isIdentifier(member.name) && member.name.text === name)
+        return this.checker.getSymbolAtLocation(member.name) ?? undefined;
+    }
+    return undefined;
+  }
+
   /** Assignment-target resolution: a function local (possibly captured) or
    * a module global. tsc has already rejected writes to consts. */
   resolveWritable(ident: ts.Identifier): IrLocal | null {
@@ -6831,6 +8924,19 @@ export class Lowerer {
     if (local) return local;
     const g = this.globalOf(ident);
     if (g) return g;
+    // A BARE write to an exported member of a function+namespace merge
+    // (lower-fundule.ts): Node's transform qualifies the reference, so it
+    // is a property write on the function object — which this compiler
+    // models through the qualified spelling.
+    const merged = funduleMemberOf(this, this.resolveValueSymbol(ident));
+    if (merged !== null) {
+      this.unsupported(
+        "SC1090",
+        ident,
+        `assignment to '${ident.text}' by its bare name inside the function+namespace merge '${merged.fn.text}'`,
+        `the member is a property of the function object; write ${merged.fn.text}.${ident.text}`,
+      );
+    }
     return null;
   }
 
@@ -6854,7 +8960,13 @@ export class Lowerer {
     }
     for (const d of symbol.declarations) {
       const byDecl = this.globalsByDeclNode.get(d);
-      if (byDecl) return byDecl;
+      // A binding of a module whose export object is an accessor reads the
+      // value its own module's `require()` got (accessorRequirerSlot).
+      if (byDecl)
+        return (
+          accessorRequirerSlot(this, ts.getSourceFileOfNode(ident), ts.getSourceFileOfNode(d)) ??
+          byDecl
+        );
     }
     return null;
   }
@@ -7032,27 +9144,45 @@ export class Lowerer {
     for (const fp of parts) if (!indexOf.has(fp.sf)) visit(fp.sf);
   }
 
-  /** node:punycode's load at a require() call: the module body reports
-   * DEP0040 when it first runs, unless isInsideNodeModules() finds the
-   * requiring frame in a dependency, and process.emitWarning delivers the
-   * report on the next tick. Later loads are cache hits either way. */
-  punycodeRequireWarning(node: ts.Node): IrStmt {
-    const loc = locOf(node);
-    const fromDependency = /[\\/]node_modules[\\/]/.test(ts.getSourceFileOfNode(node).fileName);
+  /** One DEP0040 site's scr_punycode_warn call: the first load of the
+   * module latches it loaded and, when report is set and deprecation
+   * reporting is on, delivers the warning (immediately, or on the next
+   * tick like process.emitWarning). */
+  private punycodeWarn(immediate: boolean, report: boolean, loc: SrcLoc): IrStmt {
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "punycode.warn",
         args: [
-          { kind: "boolLit", value: false, type: BOOL, loc },
-          { kind: "boolLit", value: !fromDependency, type: BOOL, loc },
+          { kind: "boolLit", value: immediate, type: BOOL, loc },
+          { kind: "boolLit", value: report, type: BOOL, loc },
         ],
         type: VOID,
         loc,
       },
       loc,
     };
+  }
+
+  /** node:punycode's load at a require() call: the module body reports
+   * DEP0040 when it first runs, unless isInsideNodeModules() finds the
+   * requiring frame in a dependency, and process.emitWarning delivers the
+   * report on the next tick. Later loads are cache hits either way. */
+  punycodeRequireWarning(node: ts.Node): IrStmt {
+    const fromDependency = /[\\/]node_modules[\\/]/.test(ts.getSourceFileOfNode(node).fileName);
+    return this.punycodeWarn(false, !fromDependency, locOf(node));
+  }
+
+  /** node:punycode's load at a dynamic import(): the import evaluates the
+   * module body where the call runs, so the report is deferred like a
+   * require()'s, but isInsideNodeModules() reads the stack of the builtin
+   * load, which runs inside the loader — no requiring frame of the
+   * importing file is on it — so a dependency's dynamic import reports
+   * where its require() is silent (punycodeRequireWarning). Only the first
+   * load reports; the program's own later import is a cache hit. */
+  punycodeDynamicImportWarning(node: ts.Node): IrStmt {
+    return this.punycodeWarn(false, true, locOf(node));
   }
 
   /** node:punycode's DEP0040 for a static ES import anywhere in the module
@@ -7116,8 +9246,8 @@ export class Lowerer {
     // those globals stay uninitialized: the dep's module body would never
     // run.
     const dep =
-      resolveImport(this.program, ts.getSourceFileOfNode(node), spec, "require") ??
-      npmStaticDepSf7(this.program, ts.getSourceFileOfNode(node), spec, "require");
+      this.facts.importedModule(ts.getSourceFileOfNode(node), spec, "require") ??
+      this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
       this.unsupported(
@@ -7134,9 +9264,13 @@ export class Lowerer {
       expr: { kind: "call", callee: initName, args: [], type: VOID, loc },
       loc,
     };
+    // A module whose export object is an accessor answers this `require()`
+    // a value of its own, taken after the module has loaded.
+    const own = accessorRequirerAssign(this, ts.getSourceFileOfNode(node), dep, loc);
     const parentModule = this.cjsModuleIdOf.get(ts.getSourceFileOfNode(node));
     const childModule = this.cjsModuleIdOf.get(dep);
-    if (parentModule === undefined || childModule === undefined) return init;
+    if (parentModule === undefined || childModule === undefined)
+      return own.length === 0 ? init : { kind: "block", body: [init, ...own], loc };
     return {
       kind: "block",
       body: [
@@ -7152,6 +9286,7 @@ export class Lowerer {
           loc,
         },
         init,
+        ...own,
       ],
       loc,
     };
@@ -7184,7 +9319,7 @@ export class Lowerer {
   analyzeDateJsonResults(parts: FileParts[]): void {
     const nullable = dateJsonType(this);
     for (const { sf } of parts) {
-      if (!sf.text.includes("toJSON")) continue;
+      if (!ts.sourceTextIncludes(sf, "toJSON")) continue;
       ts.walkPreorder(sf, (node) => {
         // `x = d.toJSON()`: the checker narrows x to string after the
         // assignment, so its reads must stay checked.
@@ -7325,6 +9460,27 @@ export class Lowerer {
     }
   }
 
+  /** The bindings that take the pairs or values of an open spread value's
+   * enumeration as they are, checked-dynamic, instead of the element type
+   * the checker inferred from the literal's members (open-enumerations.ts). */
+  analyzeOpenEnumerations(parts: FileParts[]): void {
+    analyzeOpenEnumerations(
+      this,
+      parts,
+      (symbol, type) => {
+        // This decides the binding's storage, whatever the optional-read
+        // analysis made of the checker's element type before.
+        this.runtimeOptionalBindingTypes.set(symbol, type);
+        // A read of the value answers what the binding holds: the
+        // checker's type at the read does not describe it.
+        if (type.kind === "dyn") this.jsWidenedBindings.add(symbol);
+      },
+      (pattern, type) => {
+        this.runtimeOptionalPatternTypes.set(pattern, type);
+      },
+    );
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = this.runtimeOptionalProvenance;
     // The site whose value the current promotion follows (debug only).
@@ -7426,6 +9582,8 @@ export class Lowerer {
       // Static methods never share a dispatch slot: each is its own family.
       if (info.staticMethods) {
         for (const sig of info.staticMethods.values()) {
+          // A static accessor's two halves share the property's symbol.
+          if (!ts.isMethodDeclaration(sig.member)) continue;
           const name = sig.member.name;
           if (!(ts.isIdentifier(name) || ts.isStringLiteral(name))) continue;
           const symbol = symbolOf(name);
@@ -7499,6 +9657,13 @@ export class Lowerer {
           const t = mappedOrNull(receiver);
           return t?.kind === "bytes" ? t.elem : null;
         },
+        // TypeScript `number[]` reads keep the optional-read lowering they
+        // already have (runtime-optional-locals.ts).
+        isJsNumberArray: (receiver) => {
+          if (!isJsSourceFile(ts.getSourceFileOfNode(receiver))) return false;
+          const t = mappedOrNull(receiver);
+          return t?.kind === "array" && t.elem.kind === "f64";
+        },
         isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",
         isString: (node) => mappedOrNull(node)?.kind === "string",
@@ -7522,18 +9687,6 @@ export class Lowerer {
     );
     nanCoded.analyze();
     this.nanCodedReads = nanCoded;
-    const peel = (node: ts.Expression): ts.Expression => {
-      let e = node;
-      while (
-        ts.isParenthesizedExpression(e) ||
-        ts.isAsExpression(e) ||
-        ts.isTypeAssertion(e) ||
-        ts.isNonNullExpression(e)
-      ) {
-        e = e.expression;
-      }
-      return e;
-    };
     const callableSymbols = new Map<ts.Expression, ts.Symbol | null>();
     const callableSymbolOf = (node: ts.Expression): ts.Symbol | null => {
       const cached = callableSymbols.get(node);
@@ -7556,9 +9709,9 @@ export class Lowerer {
           declaration &&
           ts.isVariableDeclaration(declaration) &&
           declaration.initializer &&
-          ts.isIdentifier(peel(declaration.initializer))
+          ts.isIdentifier(withoutParenthesesAssertionsNonNull(declaration.initializer))
         ) {
-          symbol = symbolOf(peel(declaration.initializer));
+          symbol = symbolOf(withoutParenthesesAssertionsNonNull(declaration.initializer));
         } else break;
       }
       callableSymbols.set(node, symbol);
@@ -7576,6 +9729,175 @@ export class Lowerer {
         e = e.expression;
       }
       return false;
+    };
+    // A function declared inside another function or a block. Lowering
+    // gives it a lambda's signature (lowerNestedFunctionDecl), so its
+    // parameters and result widen the way a function-valued const's do,
+    // and a call of it behaves as a call of the same declaration at module
+    // level. Generic and JavaScript declarations keep their own paths.
+    const nestedFunctionDeclaration = (symbol: ts.Symbol): ts.FunctionDeclaration | null => {
+      const declaration = symbol.valueDeclaration;
+      return declaration !== undefined &&
+        ts.isFunctionDeclaration(declaration) &&
+        declaration.body !== undefined &&
+        declaration.name !== undefined &&
+        symbol.declarations.length === 1 &&
+        (declaration.typeParameters?.nodes.length ?? 0) === 0 &&
+        !signatureBySymbol.has(symbol) &&
+        !this.genericFnsBySymbol.has(symbol) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(declaration))
+        ? declaration
+        : null;
+    };
+    // A generic function's parameter slots and result that are declared as
+    // one of its type parameters and nothing else (`v: T`, `): T`), for the
+    // type parameters the signature uses only that way. An argument that
+    // can be a missing element then binds the type parameter with
+    // undefined for that call's instance: the parameter holds the value
+    // Node passes, and no other slot of the signature changes its layout.
+    // A constrained type parameter keeps the checker's binding, since the
+    // body may use what the constraint promises.
+    type BareSlots = { params: (ts.Symbol | null)[]; result: ts.Symbol | null };
+    /** What the slots are read from: the function-like a call instantiates
+     * and the symbols of its own type parameters. */
+    type GenericCallee = Pick<GenericFnInfo, "decl" | "typeParams" | "implicitParams">;
+    // A generic member of a class (a method, a static method, a field that
+    // holds a generic function) is instantiated per call as a generic
+    // function is, through the same genericCallInstance. Its GenericFnInfo
+    // is made when its class lowers, and a generic class makes one for each
+    // of its instantiations, some of them after this scan. The slots depend
+    // on the declaration alone, so the callee is read from it. An overloaded
+    // method keeps the checker's bindings: its calls instantiate through the
+    // overload they resolve to.
+    const genericMembers = new Map<ts.Symbol, GenericCallee | null>();
+    const genericMemberOf = (symbol: ts.Symbol): GenericCallee | null => {
+      const cached = genericMembers.get(symbol);
+      if (cached !== undefined) return cached;
+      const compute = (): GenericCallee | null => {
+        const declaration = symbol.valueDeclaration;
+        if (
+          !declaration ||
+          !(ts.isMethodDeclaration(declaration) || ts.isPropertyDeclaration(declaration)) ||
+          !declaration.parent ||
+          !(ts.isClassDeclaration(declaration.parent) || ts.isClassExpression(declaration.parent))
+        )
+          return null;
+        // A field names the function it holds directly: an assertion around
+        // the function gives the field that type, not the function's own
+        // type parameters.
+        let decl: ts.Node | undefined = declaration;
+        if (ts.isPropertyDeclaration(declaration)) {
+          decl = declaration.initializer;
+          while (decl && ts.isParenthesizedExpression(decl)) decl = decl.expression;
+        }
+        if (
+          !decl ||
+          !(
+            ts.isMethodDeclaration(decl) ||
+            ts.isArrowFunction(decl) ||
+            ts.isFunctionExpression(decl)
+          ) ||
+          !decl.body ||
+          (decl.typeParameters?.nodes.length ?? 0) === 0 ||
+          symbol.declarations.length !== 1
+        )
+          return null;
+        const typeParams: ts.Symbol[] = [];
+        for (const parameter of decl.typeParameters!.nodes) {
+          const typeParameter = symbolOf(parameter.name);
+          if (!typeParameter) return null;
+          typeParams.push(typeParameter);
+        }
+        return { decl, typeParams };
+      };
+      const member = panicSafe(compute, null);
+      genericMembers.set(symbol, member);
+      return member;
+    };
+    /** The generic function or member a call of `symbol` instantiates. */
+    const genericCalleeOf = (symbol: ts.Symbol): GenericCallee | null =>
+      this.genericFnsBySymbol.get(symbol) ?? genericMemberOf(symbol);
+    const bareSlots = new Map<ts.Node, BareSlots | null>();
+    const bareTypeParameterSlots = (info: GenericCallee): BareSlots | null => {
+      const decl = info.decl;
+      const cached = bareSlots.get(decl);
+      if (cached !== undefined) return cached;
+      const compute = (): BareSlots | null => {
+        if (info.implicitParams || isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+        const declarations = decl.typeParameters?.nodes ?? [];
+        // Every mention of a type parameter in the signature, by its place.
+        const elsewhere = new Set<ts.Symbol>();
+        const named = (node: ts.Node | undefined): ts.Symbol | null => {
+          if (!node || !ts.isTypeReferenceNode(node) || !ts.isIdentifier(node.typeName))
+            return null;
+          if ((node.typeArguments?.nodes.length ?? 0) > 0) return null;
+          const symbol = symbolOf(node.typeName);
+          return symbol && info.typeParams.includes(symbol) ? symbol : null;
+        };
+        const mentions = (root: ts.Node | undefined): void => {
+          if (!root) return;
+          ts.walkPreorder(root, (node) => {
+            const symbol = named(node);
+            if (symbol) elsewhere.add(symbol);
+          });
+        };
+        declarations.forEach((declaration, i) => {
+          const symbol = info.typeParams[i];
+          if (symbol && declaration.constraint) elsewhere.add(symbol);
+          mentions(declaration.constraint);
+          mentions(declaration.defaultType);
+        });
+        const params = decl.parameters.nodes.map((parameter) => {
+          const plain =
+            !parameter.dotDotDotToken && !parameter.questionToken && !parameter.initializer;
+          const symbol = plain && ts.isIdentifier(parameter.name) ? named(parameter.type) : null;
+          if (!symbol) mentions(parameter.type);
+          return symbol;
+        });
+        let result = named(decl.type);
+        if (!result && decl.type) mentions(decl.type);
+        if (!decl.type) {
+          // An inferred result is the type parameter itself, or a type
+          // that cannot mention one.
+          const signature = this.checker.getSignatureFromDeclaration(decl);
+          const returned = signature ? this.checker.getReturnTypeOfSignature(signature) : null;
+          if (!returned) return null;
+          if ((returned.flags & ts.TypeFlags.TypeParameter) !== 0) {
+            const symbol = returned.getSymbol();
+            result = symbol && info.typeParams.includes(symbol) ? symbol : null;
+            if (!result) return null;
+          } else if (
+            (returned.flags &
+              (ts.TypeFlags.Void |
+                ts.TypeFlags.Undefined |
+                ts.TypeFlags.Null |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.StringLike |
+                ts.TypeFlags.BigIntLike)) ===
+            0
+          )
+            return null;
+        }
+        const bare = params.map((symbol) => (symbol && !elsewhere.has(symbol) ? symbol : null));
+        if (!bare.some((symbol) => symbol !== null)) return null;
+        return { params: bare, result: result && !elsewhere.has(result) ? result : null };
+      };
+      const slots = panicSafe(compute, null);
+      bareSlots.set(decl, slots);
+      return slots;
+    };
+    /** A generic call whose result is the type parameter a possibly missing
+     * argument bound: the call answers that argument's value. */
+    const genericResultMayBeMissing = (call: ts.CallExpression): boolean => {
+      const bound = this.runtimeOptionalGenericArguments.get(call);
+      if (!bound) return false;
+      if (!ts.isIdentifier(call.expression) && !ts.isPropertyAccessExpression(call.expression))
+        return false;
+      const symbol = callableSymbolOf(call.expression);
+      const info = symbol ? genericCalleeOf(symbol) : null;
+      const result = info ? bareTypeParameterSlots(info)?.result : null;
+      return !!result && bound.has(result);
     };
     // `parent!` passed to a call or bound to a name forwards the value
     // without reading it: a callee that never dereferences it observes
@@ -7631,8 +9953,12 @@ export class Lowerer {
       return e;
     };
     const isIndexedRead = (node: ts.Expression): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(e)) return false;
+      // An enum's reverse lookup through a runtime number answers undefined
+      // for a value no member has. A member-only enum has no object and so
+      // no record type here, and the miss still has to reach the binding.
+      if (enumNumberReadMayMiss(this, e)) return true;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
       // Typed-array reads answer undefined for an invalid index too, unless
@@ -7696,7 +10022,7 @@ export class Lowerer {
     const genericMayBeOptional = (node: ts.Expression): boolean => {
       if (explicitlyNonNull(node)) return false;
       if (mayBeOptional(node)) return true;
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isConditionalExpression(e))
         return genericMayBeOptional(e.whenTrue) || genericMayBeOptional(e.whenFalse);
       if (ts.isBinaryExpression(e)) {
@@ -7725,7 +10051,7 @@ export class Lowerer {
       return genericIndexedRead(e);
     };
     const genericIndexedRead = (node: ts.Expression): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(e) || explicitlyNonNull(node)) return false;
       const read = typeOrNull(e);
       if (!read || (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any)) !== 0) return false;
@@ -7748,13 +10074,13 @@ export class Lowerer {
         .some((info) => (info.keyType.flags & ts.TypeFlags.StringLike) !== 0);
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
-      const read = peel(node);
+      const read = withoutParenthesesAssertionsNonNull(node);
       if (!ts.isElementAccessExpression(read) || !ts.isIdentifier(read.expression)) return false;
       const source = symbolOf(read.expression);
       const declaration = source ? source.valueDeclaration : undefined;
       if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer)
         return false;
-      const init = peel(declaration.initializer);
+      const init = withoutParenthesesAssertionsNonNull(declaration.initializer);
       if (!ts.isCallExpression(init) || !ts.isPropertyAccessExpression(init.expression))
         return false;
       if (
@@ -7838,18 +10164,22 @@ export class Lowerer {
       // function/global ABI to `T | undefined`.
       if (explicitlyNonNull(node)) return false;
       if (assertsDefined(node)) return false;
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (isIndexedRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isRecordIndexPropertyRead(e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalProcessStreamProperty(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isOptionalReadlineCursorRead(this, e)) return true;
       if (isOptionalProcessVersionsRead(this, e)) return true;
       if (ts.isPropertyAccessExpression(e) && isSettledIteratorValueRead(this, e)) return true;
-      if (ts.isPropertyAccessExpression(e) && isOsConstantsSymbol(symbolOf(e.expression), this))
+      if (
+        ts.isPropertyAccessExpression(e) &&
+        isOsConstantsSymbol(symbolOf(e.expression), this.osConstantsCtx())
+      )
         return true;
       if (ts.isCallExpression(e)) {
         siteDependencies?.read(e);
         if (this.runtimeOptionalReduceTypes.has(e)) return true;
+        if (genericResultMayBeMissing(e)) return true;
       }
       if (
         ts.isCallExpression(e) &&
@@ -7859,6 +10189,30 @@ export class Lowerer {
         this.isStdlibGlobal(e.expression.expression, "JSON")
       )
         return true;
+      // An untyped root can serialize to undefined; the result keeps it
+      // unless every use reads it as text (jsonResultTextOnly).
+      if (
+        ts.isCallExpression(e) &&
+        e.arguments.nodes.length > 0 &&
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "stringify" &&
+        this.isStdlibGlobal(e.expression.expression, "JSON") &&
+        !ts.isSpreadElement(e.arguments.nodes[0]!) &&
+        !jsonResultTextOnly(this, e)
+      ) {
+        // A JavaScript parameter has no mapping yet: its checker type says.
+        // An instance of a class with a toJSON method serializes what the
+        // method returns, which can be undefined too.
+        const root = this.typeOf(e.arguments.nodes[0]!);
+        const mapped = this.mapTypeOf(root);
+        if (
+          mapped?.kind === "dyn" ||
+          (mapped === null && (root.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) ||
+          (mapped?.kind === "object" &&
+            this.findMethodOn(this.classes.get(mapped.className) ?? null, "toJSON") !== null)
+        )
+          return true;
+      }
       if (
         ts.isCallExpression(e) &&
         ts.isPropertyAccessExpression(e.expression) &&
@@ -7905,6 +10259,13 @@ export class Lowerer {
       if (ts.isConditionalExpression(e)) {
         return mayBeOptional(e.whenTrue) || mayBeOptional(e.whenFalse);
       }
+      // Awaiting a call of an async function whose promise settles with a
+      // missing element answers that element.
+      if (
+        ts.isAwaitExpression(e) &&
+        ts.isCallExpression(withoutParenthesesAssertionsNonNull(e.expression))
+      )
+        return mayBeOptional(e.expression);
       if (ts.isBinaryExpression(e)) {
         const op = e.operatorToken.kind;
         // Nullish/falsy left values select the fallback, so only that
@@ -7920,7 +10281,7 @@ export class Lowerer {
       return false;
     };
     const optionalPrimitiveResultType = (node: ts.Expression): IrType | null => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         return symbol ? (primitiveBindings.get(symbol) ?? null) : null;
@@ -7943,7 +10304,7 @@ export class Lowerer {
       }
       if (e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return null;
       const stringRead = (part: ts.Expression): boolean => {
-        const p = peel(part);
+        const p = withoutParenthesesAssertionsNonNull(part);
         if (!ts.isElementAccessExpression(p)) return false;
         const t = this.mapTypeOf(this.typeOf(part));
         if (t?.kind !== "string") return false;
@@ -7963,7 +10324,7 @@ export class Lowerer {
       // templates and sums with such an operand are always strings; a
       // binding or call can hold a missing read.
       const definitelyString = (part: ts.Expression): boolean => {
-        const p = peel(part);
+        const p = withoutParenthesesAssertionsNonNull(part);
         if (ts.isStringLiteral(p) || ts.isNoSubstitutionTemplateLiteral(p)) return true;
         if (ts.isTemplateExpression(p)) return true;
         return (
@@ -8025,7 +10386,7 @@ export class Lowerer {
     // Runtime-optional record fields travel with the record value: a copy,
     // a spread or a parameter receives the source's optional fields.
     const fieldsOfValue = (node: ts.Expression): ReadonlySet<string> | undefined => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         // A binding whose class reaches other storage keeps the declared
@@ -8091,6 +10452,8 @@ export class Lowerer {
         // equivalent array pattern: each may sit past the end.
         // Regex match results keep their own pattern lowering.
         const arrayType = this.mapTypeOf(this.typeOf(init));
+        if (isProcessStreamPatternSource(this, init, arrayType))
+          return scanProcessStreamPattern(name, init);
         const initType = this.checker.getNonNullableType(this.typeOf(init));
         const initSymbol = initType.getAliasSymbol() ?? initType.getSymbol();
         const matchResult =
@@ -8150,6 +10513,48 @@ export class Lowerer {
           }
         }
       });
+      return changed;
+    };
+    /** `const { isTTY, columns } = process.stdout`: a process stream has
+     * its terminal members only on a terminal, whatever the declarations
+     * say, so a name that takes one of them can be undefined, exactly as
+     * the spelled read `process.stdout.isTTY` can
+     * (isOptionalProcessStreamProperty). A binding with a default never
+     * holds the missing value. */
+    const scanProcessStreamPattern = (
+      name: ts.ObjectBindingPattern,
+      init: ts.Expression,
+    ): boolean => {
+      let changed = false;
+      for (const el of name.elements.nodes) {
+        if (el.dotDotDotToken || el.initializer || el.name === undefined) continue;
+        if (!ts.isIdentifier(el.name)) continue;
+        const key = el.propertyName ?? el.name;
+        const keyName = ts.isComputedPropertyName(key)
+          ? this.foldedStringKeyOf(key.expression)
+          : ts.isIdentifier(key) || ts.isStringLiteral(key)
+            ? key.text
+            : undefined;
+        if (typeof keyName !== "string" || !OPTIONAL_PROCESS_STREAM_MEMBERS.includes(keyName))
+          continue;
+        const symbol = symbolOf(el.name);
+        if (!symbol || optionalSymbols.has(symbol)) continue;
+        const read = this.mapTypeOf(this.typeOf(el.name));
+        if (!read || read.kind === "dyn" || read.kind === "void") continue;
+        if (read.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) continue;
+        const widened =
+          read.kind === "union" ? this.withUndefinedArmOf(read) : this.withUndefinedArm(read);
+        if (!widened) continue;
+        optionalSymbols.add(symbol);
+        provenance?.note("pattern-binding", el.name, init);
+        this.runtimeOptionalBindingTypes.set(symbol, widened);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) {
+          global.type = widened;
+          this.runtimeOptionalGlobals.add(global);
+        }
+        changed = true;
+      }
       return changed;
     };
     /** `const { a, b } = table` over an index-signature record: a name that
@@ -8259,7 +10664,7 @@ export class Lowerer {
     /** A return of a var that code can read before its first store. */
     const returnsEarlyVar = (fn: ts.FunctionLikeDeclaration): boolean => {
       const early = (e: ts.Expression): boolean => {
-        const read = peel(e);
+        const read = withoutParenthesesAssertionsNonNull(e);
         if (!ts.isIdentifier(read)) return false;
         const symbol = symbolOf(read);
         return symbol !== null && this.earlyReadVars.has(symbol);
@@ -8278,6 +10683,10 @@ export class Lowerer {
       ts.walkPreorder(sf, (node) => {
         if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
           (js ? jsLambdas : tsLambdas).push(node);
+        else if (!js && ts.isFunctionDeclaration(node) && node.name) {
+          const symbol = symbolOf(node.name);
+          if (symbol && nestedFunctionDeclaration(symbol) === node) tsLambdas.push(node);
+        }
       });
     }
     /** The primitive result union of a lambda's returns (see
@@ -8317,7 +10726,24 @@ export class Lowerer {
       callback: ts.Expression,
       parameterIndices: readonly number[],
       seen = new Set<ts.Symbol>(),
+      // The nested function declaration a direct call names. As an array
+      // method's callback such a declaration keeps its declared parameters.
+      called: ts.FunctionDeclaration | null = null,
     ): boolean => {
+      // `String`, `Number`, `Boolean` or `BigInt` written as the callback is
+      // the constructor's conversion, not a function of the program (lower-
+      // exprs.ts, conversionCallbackTypeOf): there is no parameter to widen,
+      // and mapping the constructor's own type here would say the program
+      // holds one as a value (held-constructors.ts).
+      if (
+        ts.isIdentifier(callback) &&
+        (callback.text === "String" ||
+          callback.text === "Number" ||
+          callback.text === "Boolean" ||
+          callback.text === "BigInt") &&
+        conversionCallbackTypeOf(this, callback) !== null
+      )
+        return false;
       let changed = false;
       const checkerTypeContainsTypeParameter = (type: ts.Type): boolean => {
         if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
@@ -8338,9 +10764,14 @@ export class Lowerer {
           // asking irTypeOf to invent one poisons otherwise valid generic
           // value/HOF programs. Leave that parameter at its generic
           // signature and let the normal instantiation path specialize it.
+          // A parameter whose type has no lowering stays at its declared
+          // signature the same way: the statement that holds the callback
+          // owns that refusal (irTypeOfSpeculatively).
           const current =
             mapped ??
-            (checkerTypeContainsTypeParameter(checkerType) ? null : this.irTypeOf(parameter.name));
+            (checkerTypeContainsTypeParameter(checkerType)
+              ? null
+              : this.irTypeOfSpeculatively(parameter.name));
           if (!current) continue;
           if (!ts.isIdentifier(parameter.name)) {
             const widened = this.runtimeOptionalType(current);
@@ -8361,7 +10792,15 @@ export class Lowerer {
           }
         }
         const fnType = this.mapTypeOf(this.typeOf(fn));
-        if (fnType?.kind === "func" && bodyReturnsOptional(fn)) {
+        // An async function's result is the promise it creates: a missing
+        // value its body returns settles that promise and never stands in
+        // for it, so the promise is not what widens. Its payload belongs to
+        // the lambda passes below, which keep a TypeScript lambda's and
+        // widen a JavaScript one's.
+        const returnsOwnPromise =
+          fn.asteriskToken === undefined &&
+          fn.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+        if (fnType?.kind === "func" && !returnsOwnPromise && bodyReturnsOptional(fn)) {
           const widenedReturn = this.runtimeOptionalType(fnType.ret);
           provenance?.note("callback-return", fn, provenanceSite);
           siteDependencies?.read(fn);
@@ -8395,7 +10834,13 @@ export class Lowerer {
       seen.add(symbol);
       const declaration = symbol.valueDeclaration;
       if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) {
-        if (promoteHofCallback(peel(declaration.initializer), parameterIndices, seen))
+        if (
+          promoteHofCallback(
+            withoutParenthesesAssertionsNonNull(declaration.initializer),
+            parameterIndices,
+            seen,
+          )
+        )
           changed = true;
       }
       const sig = signatureBySymbol.get(symbol);
@@ -8408,7 +10853,7 @@ export class Lowerer {
           if (!typeEquals(before, sig.params[parameterIndex]!.type)) changed = true;
         }
       }
-      const fn = functionDeclBySymbol.get(symbol);
+      const fn = functionDeclBySymbol.get(symbol) ?? called;
       if (fn) promoteNode(fn);
       const valueType =
         this.runtimeOptionalBindingTypes.get(symbol) ?? this.mapTypeOf(this.typeOf(callback));
@@ -8463,7 +10908,7 @@ export class Lowerer {
       callback: ts.Expression,
       parameterIndices: readonly number[],
     ): boolean => {
-      const fn = peel(callback);
+      const fn = withoutParenthesesAssertionsNonNull(callback);
       if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return false;
       let changed = false;
       for (const parameterIndex of parameterIndices) {
@@ -8500,7 +10945,7 @@ export class Lowerer {
       elem: IrType,
       index: number,
     ): boolean => {
-      const fn = peel(callback);
+      const fn = withoutParenthesesAssertionsNonNull(callback);
       let param: IrType | null;
       if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
         const parameter = fn.parameters.nodes[index];
@@ -8509,7 +10954,7 @@ export class Lowerer {
         if ((checkerType.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
         param = this.mapTypeOf(checkerType);
       } else {
-        const value = this.mapTypeOf(this.typeOf(fn));
+        const value = conversionCallbackTypeOf(this, fn) ?? this.mapTypeOf(this.typeOf(fn));
         if (value?.kind !== "func" || value.rest === true) return true;
         param = value.params[index] ?? null;
       }
@@ -8519,7 +10964,7 @@ export class Lowerer {
       callback: ts.Expression,
       seen = new Set<ts.Symbol>(),
     ): boolean => {
-      const node = peel(callback);
+      const node = withoutParenthesesAssertionsNonNull(callback);
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
         return bodyReturnsOptional(node);
       const symbol = symbolOf(ts.isPropertyAccessExpression(node) ? node.name : node);
@@ -8553,13 +10998,17 @@ export class Lowerer {
           throw e;
         }
       }, null);
+    // Set while an instance asks about its own arrays after the fixed
+    // point (elementFacts.sourcesHoldMissing): the answer is the instance's,
+    // not the one cached here.
+    let instanceQuery = false;
     const arrayKeysUnsafe = (node: ts.Expression): readonly string[] | null => {
-      let checkerType = checkerTypes.get(node);
+      let checkerType = instanceQuery ? undefined : checkerTypes.get(node);
       if (checkerType === undefined) {
         checkerType = this.typeOf(node);
-        checkerTypes.set(node, checkerType);
+        if (!instanceQuery) checkerTypes.set(node, checkerType);
       }
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       // A binding the prepass widened stores its widened array ABI.
       const widened = ts.isIdentifier(e)
         ? (() => {
@@ -8608,6 +11057,157 @@ export class Lowerer {
       }
       return keys;
     };
+    // A generic callee: a function, method or constructor whose declaration,
+    // or a declaration around it (a function, a class, an interface, a type
+    // alias), has type parameters. Such a body is judged without its
+    // instances' element keys. A function held in a parameter, a variable or
+    // a field is not one: its body is judged where it is written. The slots
+    // say which declared parameter types,
+    // and whether the declared result, give the body a generic view of a
+    // record's or a class instance's fields (`box: { items: T[] }`, `Box<T>`,
+    // `v: B` with `B extends Box<T>`); a bare `v: T` is opaque to it. A
+    // method of a generic class or interface also has that view of its
+    // receiver.
+    type GenericSlots = {
+      params: readonly boolean[] | null;
+      result: boolean;
+      receiver: boolean;
+      // The callee's bodies; null when a declaration has none in the program.
+      bodies: readonly ts.Node[] | null;
+    };
+    const genericCallees = new Map<ts.CallExpression | ts.NewExpression, GenericSlots | null>();
+    const genericSlots = (symbol: ts.Symbol): GenericSlots | null => {
+      // A function's implementation, or the class a constructor belongs to.
+      // Overload signatures add nothing beside an implementation; a callee
+      // with no implementation here (a declaration file, an interface or
+      // abstract method) is unknown.
+      const bodies: ts.Node[] = [];
+      for (const declaration of symbol.declarations ?? []) {
+        const value =
+          ts.isVariableDeclaration(declaration) && declaration.initializer
+            ? withoutParenthesesAssertionsNonNull(declaration.initializer)
+            : declaration;
+        if (ts.isClassDeclaration(value) || ts.isClassExpression(value)) bodies.push(value);
+        else if (ts.isFunctionLike(value) && value.body !== undefined) bodies.push(value);
+      }
+      for (const declaration of symbol.declarations ?? []) {
+        // The standard library's generic methods are judged by what they do
+        // (ArrayElementStates), not by this rule.
+        if (this.isStdlibFile(ts.getSourceFileOfNode(declaration))) continue;
+        const value =
+          ts.isVariableDeclaration(declaration) && declaration.initializer
+            ? withoutParenthesesAssertionsNonNull(declaration.initializer)
+            : declaration;
+        if (
+          !ts.isFunctionLike(value) &&
+          !ts.isClassDeclaration(value) &&
+          !ts.isClassExpression(value)
+        )
+          continue;
+        const declared = new Map<string, ts.TypeParameterDeclaration>();
+        let receiver = false;
+        for (let node: ts.Node | undefined = value; node; node = node.parent) {
+          if (
+            !ts.isFunctionLike(node) &&
+            !ts.isClassDeclaration(node) &&
+            !ts.isClassExpression(node) &&
+            !ts.isInterfaceDeclaration(node) &&
+            !ts.isTypeAliasDeclaration(node)
+          )
+            continue;
+          const parameters = node.typeParameters?.nodes ?? [];
+          if (parameters.length > 0 && !ts.isFunctionLike(node)) receiver = true;
+          for (const parameter of parameters)
+            if (!declared.has(parameter.name.text)) declared.set(parameter.name.text, parameter);
+        }
+        if (declared.size === 0) continue;
+        const mentions = (type: ts.Node): boolean => {
+          let found = false;
+          ts.walkPreorder(type, (node) => {
+            if (ts.isIdentifier(node) && declared.has(node.text)) found = true;
+            return undefined;
+          });
+          return found;
+        };
+        const viewsFields = (type: ts.Node | undefined): boolean => {
+          // An inferred type is not known here.
+          if (type === undefined) return true;
+          if (
+            ts.isTypeReferenceNode(type) &&
+            ts.isIdentifier(type.typeName) &&
+            (type.typeArguments?.nodes.length ?? 0) === 0
+          ) {
+            const bare = declared.get(type.typeName.text);
+            if (bare !== undefined)
+              return bare.constraint !== undefined && mentions(bare.constraint);
+          }
+          return mentions(type);
+        };
+        const known = bodies.length > 0 ? bodies : null;
+        return ts.isFunctionLike(value)
+          ? {
+              params: value.parameters.nodes.map((parameter) => viewsFields(parameter.type)),
+              result: viewsFields(value.type),
+              receiver,
+              bodies: known,
+            }
+          : { params: null, result: true, receiver, bodies: known };
+      }
+      return null;
+    };
+    const mappedArrayHolder = (node: ts.Node): IrType | null =>
+      panicSafe(() => {
+        try {
+          return this.mapTypeOf(this.typeOf(node));
+        } catch (e) {
+          if (e instanceof PoisonError) return null;
+          throw e;
+        }
+      }, null);
+    // Element keys of the native arrays a value of `type` is or directly
+    // holds: through arrays, unions, promises, tuples, maps, sets, and the
+    // parameters and result of a function value. The fields of a record or
+    // a class instance are entered `fields` levels deep: a generic body
+    // reads them by their declared types, which are generic only where the
+    // callee's own declaration says so. A function held in a field is not
+    // entered: it is called with what its own body builds.
+    const reachableElementKeys = (
+      type: IrType | null,
+      keys: Set<string>,
+      fields: number,
+      depth = 0,
+      field = false,
+    ): void => {
+      if (!type || depth > 4) return;
+      const enter = (inner: IrType | null): void =>
+        reachableElementKeys(inner, keys, fields, depth + 1, field);
+      const enterField = (inner: IrType | null): void =>
+        reachableElementKeys(inner, keys, fields - 1, depth + 1, true);
+      if (type.kind === "array") {
+        if (type.elem.kind !== "dyn") keys.add(typeKey(type.elem));
+        enter(type.elem);
+      } else if (type.kind === "union") {
+        for (const arm of this.unions.get(type.unionId)?.arms ?? []) enter(arm);
+      } else if (type.kind === "promise") enter(type.inner);
+      else if (type.kind === "set") enter(type.elem);
+      else if (type.kind === "map") {
+        enter(type.key);
+        enter(type.value);
+      } else if (type.kind === "record") {
+        const shape = this.shapes.get(type.shapeId);
+        if (shape?.tuple === true) for (const item of shape.fields) enter(item.type);
+        else if (fields > 0) for (const item of shape?.fields ?? []) enterField(item.type);
+      } else if (type.kind === "object") {
+        if (fields > 0)
+          for (const item of this.classes.get(type.className)?.fields.values() ?? [])
+            enterField(item);
+      } else if (type.kind === "func" && !field) {
+        // The arrays a callback takes and returns, not the fields of its
+        // other parameters.
+        for (const param of type.params) reachableElementKeys(param, keys, 0, depth + 1);
+        reachableElementKeys(type.ret, keys, 0, depth + 1);
+      }
+    };
     const ownership = new ArrayOwnership(sourceFiles, {
       symbolOf,
       declarationOf: (symbol) => symbol.valueDeclaration,
@@ -8647,7 +11247,7 @@ export class Lowerer {
       // A binding's declared type says whether it holds dynamic data; a flow
       // type such as `Array.isArray(x)`'s `any[]` only narrows it.
       const typedNode = (node: ts.Expression): ts.Node => {
-        const e = peel(node);
+        const e = withoutParenthesesAssertionsNonNull(node);
         const symbol = ts.isIdentifier(e) ? symbolOf(e) : null;
         const declaration = symbol ? symbol.valueDeclaration : undefined;
         return declaration &&
@@ -8761,7 +11361,7 @@ export class Lowerer {
     const standardLibraryReader = (node: ts.CallExpression | ts.NewExpression): boolean =>
       panicSafe(() => {
         if (!ts.isCallExpression(node)) return false;
-        const callee = peel(node.expression);
+        const callee = withoutParenthesesAssertionsNonNull(node.expression);
         if (ts.isIdentifier(callee))
           return [...readerFunctions].some((name) => this.isStdlibGlobal(callee, name));
         if (!ts.isPropertyAccessExpression(callee)) return false;
@@ -8773,8 +11373,8 @@ export class Lowerer {
           const replacer = node.arguments.nodes[1];
           return (
             replacer === undefined ||
-            ts.isArrayLiteralExpression(peel(replacer)) ||
-            peel(replacer).kind === ts.SyntaxKind.NullKeyword
+            ts.isArrayLiteralExpression(withoutParenthesesAssertionsNonNull(replacer)) ||
+            withoutParenthesesAssertionsNonNull(replacer).kind === ts.SyntaxKind.NullKeyword
           );
         }
         if (!utilReaders.has(member)) return false;
@@ -8888,10 +11488,10 @@ export class Lowerer {
     // const variable, or a readonly property with an initializer) is never
     // a view of a native array, even when its elements are dynamic.
     const freshDynamicStorage = (node: ts.Expression, depth: number): boolean => {
-      const e = peel(node);
+      const e = withoutParenthesesAssertionsNonNull(node);
       if (ts.isArrayLiteralExpression(e)) return true;
       if (ts.isNewExpression(e) || ts.isCallExpression(e)) {
-        const callee = peel(e.expression);
+        const callee = withoutParenthesesAssertionsNonNull(e.expression);
         if (ts.isIdentifier(callee)) return this.isStdlibGlobal(callee, "Array");
         return (
           ts.isPropertyAccessExpression(callee) &&
@@ -8932,7 +11532,7 @@ export class Lowerer {
       if (assignments === null) {
         const found = new Map<ts.Symbol, ts.Expression[] | null>();
         const add = (target: ts.Expression, value: ts.Expression | null): void => {
-          const e = peel(target);
+          const e = withoutParenthesesAssertionsNonNull(target);
           if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
             // Destructuring: every target is written with a part of the value.
             ts.forEachChild(e, (child) => {
@@ -9000,6 +11600,48 @@ export class Lowerer {
       ownerOf: (node) => ownership.ownerOf(node),
       allocationOwner: (node) => ownership.allocationOwner(node),
       arrayKeys: arrayKeysOf,
+      instanceTyped: (node) => {
+        const type = checkerTypes.get(node) ?? typeOrNull(node);
+        return type !== null && (type.flags & ts.TypeFlags.Instantiable) !== 0;
+      },
+      genericCall: (call) => {
+        const callee = withoutParenthesesAssertionsNonNull(call.expression);
+        if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
+        let slots = genericCallees.get(call);
+        if (slots === undefined) {
+          const symbol = callableSymbolOf(callee);
+          slots = symbol === null ? null : genericSlots(symbol);
+          genericCallees.set(call, slots);
+        }
+        if (slots === null) return null;
+        const { params: declared, result, receiver, bodies } = slots;
+        const keys = (): readonly string[] => {
+          const keys = new Set<string>();
+          (call.arguments?.nodes ?? []).forEach((arg, index) => {
+            // Arguments past the declared ones fill a rest parameter.
+            const generic =
+              declared === null || (declared[Math.min(index, declared.length - 1)] ?? true);
+            reachableElementKeys(
+              mappedArrayHolder(ts.isSpreadElement(arg) ? arg.expression : arg),
+              keys,
+              generic ? 1 : 0,
+            );
+          });
+          // A method's receiver and a constructor's instance hold the arrays
+          // their class's type parameters type.
+          const instance = !receiver
+            ? null
+            : ts.isNewExpression(call)
+              ? call
+              : ts.isPropertyAccessExpression(callee)
+                ? callee.expression
+                : null;
+          if (instance !== null) reachableElementKeys(mappedArrayHolder(instance), keys, 1);
+          reachableElementKeys(mappedArrayHolder(call), keys, result ? 1 : 0);
+          return [...keys];
+        };
+        return { bodies, keys };
+      },
       mayBeUndefined: (node) => {
         if (explicitlyNonNull(node)) return assertedReadMayBeUndefined(node);
         if (mayBeOptional(node)) return true;
@@ -9027,7 +11669,7 @@ export class Lowerer {
           if (type === null || (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
             return true;
         }
-        const e = peel(node);
+        const e = withoutParenthesesAssertionsNonNull(node);
         if (!ts.isIdentifier(e)) return false;
         const symbol = symbolOf(e);
         return symbol !== null && iterationSymbols.has(symbol) && !provenPresent(e, symbol);
@@ -9059,6 +11701,35 @@ export class Lowerer {
           (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
         );
       },
+      settledMayBeUndefined: (node) => {
+        // `Promise.all` resolves to an array or tuple of the entries'
+        // settled types. `(T | undefined)[]` stores T elements, so an
+        // undefined settled value is a fact of the result, not of its ABI.
+        const type = typeOrNull(node);
+        if (type === null) return true;
+        return panicSafe(() => {
+          const result = this.checker.getAwaitedType(type);
+          if (
+            result === undefined ||
+            !(this.checker.isArrayType(result) || this.checker.isTupleType(result))
+          )
+            return true;
+          return this.checker
+            .getTypeArguments(result as ts.TypeReference)
+            .some((element) =>
+              (element.isUnionType() ? ts.constituentTypes(element) : [element]).some(
+                (part) =>
+                  (part.flags &
+                    (ts.TypeFlags.Undefined |
+                      ts.TypeFlags.Void |
+                      ts.TypeFlags.Any |
+                      ts.TypeFlags.Unknown |
+                      ts.TypeFlags.TypeParameter)) !==
+                  0,
+              ),
+            );
+        }, true);
+      },
       callbackReturnsUndefined: (node) => {
         if (callbackReturnsOptional(node)) return true;
         // A callback the checker types as possibly returning undefined
@@ -9081,7 +11752,7 @@ export class Lowerer {
         return type !== null && this.mapTypeOf(type)?.kind === "string";
       },
       isArrayLikeObject: (node) => {
-        if (ts.isObjectLiteralExpression(peel(node))) return true;
+        if (ts.isObjectLiteralExpression(withoutParenthesesAssertionsNonNull(node))) return true;
         const type = typeOrNull(node);
         const mapped = type === null ? null : this.mapTypeOf(type);
         return (
@@ -9093,7 +11764,7 @@ export class Lowerer {
         );
       },
       restKeys: (call) => {
-        const callee = peel(call.expression);
+        const callee = withoutParenthesesAssertionsNonNull(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
         const symbol = callableSymbolOf(callee);
         const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
@@ -9102,7 +11773,7 @@ export class Lowerer {
         return rest?.type.kind === "array" ? [typeKey(rest.type.elem)] : [];
       },
       restStart: (call) => {
-        const callee = peel(call.expression);
+        const callee = withoutParenthesesAssertionsNonNull(call.expression);
         if (!ts.isIdentifier(callee) && !ts.isPropertyAccessExpression(callee)) return null;
         const symbol = callableSymbolOf(callee);
         const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
@@ -9138,6 +11809,8 @@ export class Lowerer {
     const presentSites = new Map<ts.CallExpression, boolean>();
     // The same for each for-of loop over an array.
     const presentLoops = new Map<ts.ForOfStatement, boolean>();
+    // The generic arrays each present loop's elements come from.
+    const loopSources = new Map<ts.ForOfStatement, readonly ts.Expression[]>();
     const scanSites = new Map<ts.SourceFile, ts.Node[]>();
     const sitesOf = (sf: ts.SourceFile): ts.Node[] => {
       const cached = scanSites.get(sf);
@@ -9187,8 +11860,11 @@ export class Lowerer {
       let changed = false;
       const scan = (node: ts.Node): void => {
         if (elementStates.scan(node)) changed = true;
-        if (ts.isForOfStatement(node))
-          presentLoops.set(node, !elementStates.loopMayYieldUndefined(node));
+        if (ts.isForOfStatement(node)) {
+          const sources = elementStates.loopSources(node);
+          presentLoops.set(node, sources !== null);
+          loopSources.set(node, sources ?? []);
+        }
         // A parameter pattern reads its argument like a declaration's
         // pattern reads its initializer.
         if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
@@ -9231,10 +11907,20 @@ export class Lowerer {
               }
             }
             if (ts.isIdentifier(node.name)) {
-              const valueSymbol = ts.isIdentifier(peel(node.initializer))
-                ? symbolOf(peel(node.initializer))
-                : ts.isPropertyAccessExpression(peel(node.initializer))
-                  ? symbolOf((peel(node.initializer) as ts.PropertyAccessExpression).name)
+              const valueSymbol = ts.isIdentifier(
+                withoutParenthesesAssertionsNonNull(node.initializer),
+              )
+                ? symbolOf(withoutParenthesesAssertionsNonNull(node.initializer))
+                : ts.isPropertyAccessExpression(
+                      withoutParenthesesAssertionsNonNull(node.initializer),
+                    )
+                  ? symbolOf(
+                      (
+                        withoutParenthesesAssertionsNonNull(
+                          node.initializer,
+                        ) as ts.PropertyAccessExpression
+                      ).name,
+                    )
                   : null;
               const symbol = symbolOf(node.name);
               const sourceSig = valueSymbol ? signatureBySymbol.get(valueSymbol) : undefined;
@@ -9271,7 +11957,7 @@ export class Lowerer {
             if (scanPattern(node.name, node.initializer)) changed = true;
             if (ts.isIdentifier(node.name)) {
               const symbol = symbolOf(node.name);
-              const init = peel(node.initializer);
+              const init = withoutParenthesesAssertionsNonNull(node.initializer);
               if (symbol && noteFieldsFrom(symbol, init)) {
                 provenance?.note("record-copy", node.name, node.initializer);
                 changed = true;
@@ -9287,9 +11973,11 @@ export class Lowerer {
             }
             if (
               ts.isIdentifier(node.name) &&
-              ts.isObjectLiteralExpression(peel(node.initializer))
+              ts.isObjectLiteralExpression(withoutParenthesesAssertionsNonNull(node.initializer))
             ) {
-              const object = peel(node.initializer) as ts.ObjectLiteralExpression;
+              const object = withoutParenthesesAssertionsNonNull(
+                node.initializer,
+              ) as ts.ObjectLiteralExpression;
               for (const prop of object.properties.nodes) {
                 if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop))
                   continue;
@@ -9466,15 +12154,19 @@ export class Lowerer {
                   : null;
               if (reduce && (optional || arithmetic !== null)) {
                 if (optional && promoteHofCallback(callback, [0, 1])) changed = true;
-                let result = this.irTypeOf(node);
-                if (arithmetic !== null)
-                  result = joinPrimitiveTypes([result, arithmetic]) ?? result;
-                if (optional) result = this.runtimeOptionalType(result);
-                siteDependencies?.read(node);
-                const previous = this.runtimeOptionalReduceTypes.get(node);
-                if (!previous || !typeEquals(previous, result)) {
-                  this.runtimeOptionalReduceTypes.set(node, result);
-                  changed = true;
+                // A result type with no lowering records nothing: the
+                // statement that holds the call owns that refusal.
+                let result = this.irTypeOfSpeculatively(node);
+                if (result !== null) {
+                  if (arithmetic !== null)
+                    result = joinPrimitiveTypes([result, arithmetic]) ?? result;
+                  if (optional) result = this.runtimeOptionalType(result);
+                  siteDependencies?.read(node);
+                  const previous = this.runtimeOptionalReduceTypes.get(node);
+                  if (!previous || !typeEquals(previous, result)) {
+                    this.runtimeOptionalReduceTypes.set(node, result);
+                    changed = true;
+                  }
                 }
               }
             }
@@ -9487,37 +12179,115 @@ export class Lowerer {
           const symbol = callableSymbolOf(node.expression);
           if (!symbol) return;
           const sig = signatureBySymbol.get(symbol);
+          // A read a dominating bound proves in range, of an array that
+          // never holds undefined or holes, is a present element: the slots
+          // widened below keep their declared type for it.
+          const provenPresentRead = (arg: ts.Expression): boolean => {
+            const read = withoutParenthesesAssertionsNonNull(arg);
+            return (
+              ts.isElementAccessExpression(read) &&
+              mappedOrNull(read.expression)?.kind === "array" &&
+              indexReadInBounds(read) &&
+              elementStates.elementsPresent(read.expression, "find")
+            );
+          };
+          // An inline callback's parameter and a loop variable over an array
+          // the analysis could not prove free of holes hold `T | undefined`
+          // as a precaution about the array, not because a read missed. A
+          // slot widened below keeps its declared type for one: the call
+          // checks the value, as it did before, and the functions it reaches
+          // keep their layouts.
+          const precautionary = (arg: ts.Expression): boolean => {
+            const e = withoutParenthesesAssertionsNonNull(arg);
+            if (!ts.isIdentifier(e)) return false;
+            const bound = symbolOf(e);
+            if (!bound) return false;
+            if (holeyIterationSymbols.has(bound) || iterationSymbols.has(bound)) return true;
+            const declaration = bound.valueDeclaration;
+            if (!declaration || !ts.isParameter(declaration)) return false;
+            const owner = declaration.parent;
+            if (!ts.isArrowFunction(owner) && !ts.isFunctionExpression(owner)) return false;
+            let use: ts.Node = owner;
+            while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+            return ts.isCallExpression(use.parent) && use.parent.expression !== use;
+          };
           if (!sig) {
+            // A generic function or member has one signature per instance.
+            // A possibly missing argument at a slot declared as a bare type
+            // parameter binds that parameter with undefined for this call's
+            // instance.
+            const generic = genericCalleeOf(symbol);
+            if (generic) {
+              const slots = bareTypeParameterSlots(generic);
+              if (!slots || node.arguments.nodes.some(ts.isSpreadElement)) return;
+              node.arguments.nodes.forEach((arg, i) => {
+                const parameter = slots.params[i];
+                if (!parameter || !mayBeOptional(arg)) return;
+                if (provenPresentRead(arg) || precautionary(arg)) return;
+                let bound = this.runtimeOptionalGenericArguments.get(node);
+                if (!bound) this.runtimeOptionalGenericArguments.set(node, (bound = new Set()));
+                if (bound.has(parameter)) return;
+                bound.add(parameter);
+                siteDependencies?.changed(node);
+                provenance?.note("generic-argument", node, arg);
+                changed = true;
+              });
+              return;
+            }
             // A direct call of a function-valued const (`const show = (n:
-            // number) => ...`): a possibly missing argument widens that
-            // parameter, as for a callback the same value is passed as.
+            // number) => ...`) or of a function declared inside another
+            // function: a possibly missing argument widens that parameter,
+            // as for a callback the same value is passed as.
             if (!ts.isIdentifier(node.expression) || reassigned.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
             const value =
-              declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
-                ? peel(declaration.initializer)
-                : null;
-            if (!value || !(ts.isArrowFunction(value) || ts.isFunctionExpression(value))) return;
-            // Optional, defaulted and rest parameters keep their own ABI.
+              nestedFunctionDeclaration(symbol) ??
+              (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer
+                ? withoutParenthesesAssertionsNonNull(declaration.initializer)
+                : null);
             if (
-              value.parameters.nodes.some(
-                (parameter) =>
-                  parameter.questionToken !== undefined ||
-                  parameter.initializer !== undefined ||
-                  parameter.dotDotDotToken !== undefined,
+              !value ||
+              !(
+                ts.isArrowFunction(value) ||
+                ts.isFunctionExpression(value) ||
+                ts.isFunctionDeclaration(value)
               )
+            )
+              return;
+            // Optional, defaulted and rest parameters keep their own ABI.
+            // A declaration's signature is its own (lambdaSignature), so
+            // its plain parameters widen beside them; a function-valued
+            // const's binding type is not rebuilt around such a slot.
+            const ownAbi = (parameter: ts.ParameterDeclaration): boolean =>
+              parameter.questionToken !== undefined ||
+              parameter.initializer !== undefined ||
+              parameter.dotDotDotToken !== undefined;
+            if (
+              ts.isFunctionDeclaration(value)
+                ? node.arguments.nodes.some(ts.isSpreadElement)
+                : value.parameters.nodes.some(ownAbi)
             )
               return;
             const indices = node.arguments.nodes.flatMap((arg, i) =>
               !ts.isSpreadElement(arg) &&
               value.parameters.nodes[i] !== undefined &&
-              !value.parameters.nodes[i]!.dotDotDotToken &&
-              mayBeOptional(arg)
+              !ownAbi(value.parameters.nodes[i]!) &&
+              mayBeOptional(arg) &&
+              !(ts.isFunctionDeclaration(value) && (provenPresentRead(arg) || precautionary(arg)))
                 ? [i]
                 : [],
             );
             provenanceSite = node;
-            if (indices.length > 0 && promoteHofCallback(node.expression, indices)) changed = true;
+            if (
+              indices.length > 0 &&
+              promoteHofCallback(
+                node.expression,
+                indices,
+                undefined,
+                ts.isFunctionDeclaration(value) ? value : null,
+              )
+            )
+              changed = true;
             return;
           }
           // JSDoc describes the usual value, not a runtime arity check.
@@ -9594,7 +12364,7 @@ export class Lowerer {
                 // The parameter's layout settles with its flow class once
                 // the fixed point ends. A literal or call argument only adds
                 // fields the declaration calls present.
-                const fresh = !ts.isIdentifier(peel(arg));
+                const fresh = !ts.isIdentifier(withoutParenthesesAssertionsNonNull(arg));
                 for (const field of fields) {
                   const slot = declared?.fields.find((f) => f.name === field);
                   if (!slot || (fresh && admitsUndefined(slot.type))) continue;
@@ -9732,9 +12502,10 @@ export class Lowerer {
       }
       return changed;
     };
-    // A `var` that code can read before its first store holds undefined
-    // there, whatever its declared type.
-    for (const symbol of earlyReadVarSymbols(this, sourceFiles)) {
+    // A `var` or an uninitialized `let` that code can read before its first
+    // store holds undefined there, whatever its declared type.
+    const varReads = analyzeVarReads(this, sourceFiles);
+    for (const [symbol, read] of varReads.early) {
       // Text codec bindings keep their own presence-checked storage.
       const declaration = symbol.valueDeclaration;
       const mapped =
@@ -9745,7 +12516,19 @@ export class Lowerer {
         continue;
       optionalSymbols.add(symbol);
       this.earlyReadVars.add(symbol);
+      if (declaration && ts.isVariableDeclaration(declaration))
+        provenance?.note("unassigned-read", declaration.name, read);
+      // `let f: () => void;` guards its dead zone with the empty function
+      // pointer. The widened slot holds undefined as that pointer, so the
+      // dead zone moves to the binding's initialization flag
+      // (cycle-initialization.ts gives every such binding one) and the slot
+      // keeps its typed storage.
+      const global = this.globalsBySymbol.get(symbol);
+      if (global?.tdz && this.uninitializedLexicalGlobals.has(global.id)) delete global.tdz;
     }
+    // An unannotated JavaScript `var` these reads never see unassigned may
+    // take a type derived from its writes (jsVarWriteType).
+    for (const symbol of varReads.storedBeforeRead) this.storedBeforeReadVars.add(symbol);
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
     // changed (SiteDependencies). When such a pass changes nothing, a full
@@ -9802,12 +12585,48 @@ export class Lowerer {
       for (const fn of tsLambdas) {
         // An annotated return is the author's contract, as for parameters,
         // except that a var read before its first store is undefined
-        // whatever the annotation says.
-        if (fn.type && !returnsEarlyVar(fn)) continue;
-        const mapped = this.mapTypeOf(this.typeOf(fn));
+        // whatever the annotation says. A nested function declaration
+        // widens an annotated result too, as the same declaration does at
+        // module level (scanReturns).
+        const declared = ts.isFunctionDeclaration(fn);
+        if (fn.type && !declared && !returnsEarlyVar(fn)) continue;
+        const mapped = panicSafe(() => this.mapTypeOf(this.typeOf(fn)), null);
         if (mapped?.kind !== "func") continue;
         const previous = this.runtimeOptionalFunctionReturnType(fn, mapped.ret);
-        // Async, generator and void bodies keep their own result shapes.
+        // The name calls of this function go through: a declaration's own,
+        // or the unannotated binding a lambda initializes.
+        const binding = fn.parent;
+        const bindingName = declared
+          ? fn.name
+          : ts.isVariableDeclaration(binding) &&
+              binding.initializer === fn &&
+              !binding.type &&
+              ts.isIdentifier(binding.name)
+            ? binding.name
+            : undefined;
+        // Async, generator and void bodies keep their own result shapes. An
+        // async function called through its name settles its promise with
+        // the missing element, as an async declaration at module level does;
+        // an inline async callback keeps the slot's promise type.
+        if (previous.kind === "promise" && bindingName && bodyReturnsOptional(fn)) {
+          const settled: IrType = {
+            kind: "promise",
+            inner: this.runtimeOptionalType(previous.inner),
+          };
+          if (!typeEquals(previous, settled)) {
+            this.runtimeOptionalFunctionReturns.set(fn, settled);
+            siteDependencies.changed(fn);
+            provenance?.note("lambda-return", fn, fn.body);
+            changed = true;
+          }
+          const symbol = ts.isIdentifier(bindingName) ? symbolOf(bindingName) : null;
+          if (symbol && !optionalReturns.has(symbol)) {
+            optionalReturns.add(symbol);
+            siteDependencies.changed(symbol);
+            changed = true;
+          }
+          continue;
+        }
         if (
           previous.kind === "promise" ||
           previous.kind === "generator" ||
@@ -9830,15 +12649,11 @@ export class Lowerer {
         }
         // Calls through the lambda's own binding (`const get = () => xs[i];
         // get()`) produce the same result as calls of a declared function.
-        const binding = fn.parent;
-        if (
-          next !== previous &&
-          ts.isVariableDeclaration(binding) &&
-          binding.initializer === fn &&
-          !binding.type &&
-          ts.isIdentifier(binding.name)
-        ) {
-          const symbol = symbolOf(binding.name);
+        // The result may have been widened before this pass, with the
+        // function's parameter (promoteHofCallback): the binding answers
+        // the widened result either way.
+        if (!typeEquals(next, mapped.ret) && bindingName && ts.isIdentifier(bindingName)) {
+          const symbol = symbolOf(bindingName);
           if (symbol && next.kind === "union" && this.armTag(next.unionId, UNDEFINED_T) >= 0) {
             if (!optionalReturns.has(symbol)) {
               optionalReturns.add(symbol);
@@ -9926,6 +12741,19 @@ export class Lowerer {
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);
+    for (const [loop, sources] of loopSources)
+      if (sources.length > 0) this.instanceElementLoops.set(loop, sources);
+    this.elementFacts = {
+      sourcesHoldMissing: (sources) => {
+        instanceQuery = true;
+        try {
+          return elementStates.sourcesMayHoldMissing(sources);
+        } finally {
+          instanceQuery = false;
+        }
+      },
+      keyHoldsMissing: (key) => elementStates.keyMayHoldMissing(key),
+    };
     this.foreignElementKeys = elementStates.foreignKeys();
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {
@@ -10075,7 +12903,7 @@ export class Lowerer {
         !isJsSourceFile(ts.getSourceFileOfNode(declaration))
       )
         continue;
-      const value = peel(declaration.right);
+      const value = withoutParenthesesAssertionsNonNull(declaration.right);
       if (!ts.isFunctionExpression(value) && !ts.isArrowFunction(value)) continue;
       global.type = {
         ...global.type,
@@ -10100,6 +12928,16 @@ export class Lowerer {
               ...global.type,
               ret: this.runtimeOptionalFunctionReturnType(node.initializer, global.type.ret),
             };
+          // A binding whose parameter a possibly missing argument widened
+          // (promoteHofCallback) carries its own function type, built from
+          // the checker's result: it takes the widened result as well, so a
+          // call through the binding is typed as the closure it calls.
+          const promoted = this.runtimeOptionalBindingTypes.get(symbol);
+          if (promoted?.kind === "func")
+            this.runtimeOptionalBindingTypes.set(symbol, {
+              ...promoted,
+              ret: this.runtimeOptionalFunctionReturnType(node.initializer, promoted.ret),
+            });
         }
         if (
           !node.type &&
@@ -10195,6 +13033,8 @@ export class Lowerer {
   run(): LowerResult {
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // The coverage remainder deliberately visits every body that reachable
     // emit skipped. Those files are already phase-managed, so an ordinary
     // checker miss would stay a one-node IPC query instead of falling back
@@ -10215,6 +13055,7 @@ export class Lowerer {
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
+      this.analyzeOpenEnumerations(parts);
     });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
@@ -10246,7 +13087,7 @@ export class Lowerer {
         if (fn) functions.push(fn);
         else {
           this.skippedBodies.add(decl);
-          if (this.countsSkips()) {
+          if (this.countsSkips() && this.countsSkipOf(decl)) {
             this.countSkippedBody(decl);
             if (this.remainder) this.reportBlockedBody(decl);
           }
@@ -10291,13 +13132,14 @@ export class Lowerer {
     // index loops run to the joint fixpoint. Same-key recursion re-uses
     // its own entry; polymorphic recursion is cut off by
     // the recursive instantiation demand path.
+    const classDispatch = new ClassDynamicDispatch();
     {
       let ec = 0;
       let gc = 0;
       let gi = 0;
       let es = 0;
       let rd = 0;
-      const classDispatch = new ClassDynamicDispatch();
+      const functionViews = new FunctionViews();
       let dispatchChanged = !this.remainder;
       while (
         dispatchChanged ||
@@ -10362,8 +13204,21 @@ export class Lowerer {
         dispatchChanged =
           !this.remainder &&
           classDispatch.process(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+        // `x.constructor` helpers answer from the class graph, which the
+        // bodies lowered since may have grown (class-instance-constructor.ts).
+        if (settleClassIdentityHelpers(this, (fn) => classDispatch.sites.forget(fn)))
+          dispatchChanged = true;
+        // Every signature adapter the waves above built is in liftedFns
+        // now; a widening adapter learns the views it must look through.
+        if (!this.remainder && functionViews.process(this)) dispatchChanged = true;
       }
       classDispatch.finalize(this);
+      // The adapters finalize built are looked through as well; this adds
+      // adapters and boxing helpers only, which no other worklist reads.
+      if (!this.remainder) {
+        functionViews.process(this);
+        functionViews.finish(this, [...functions, ...this.liftedFns, ...this.implicitFns]);
+      }
     }
     // Lambdas lifted while lowering any of the above (plus synthetic
     // array-HOF loop functions, which ride the same list), and the
@@ -10372,6 +13227,16 @@ export class Lowerer {
     for (const fn of this.liftedFns) functions.push(fn);
     for (const fn of this.implicitFns) functions.push(fn);
     for (const fn of runtimeClassConstructs(this, functions)) functions.push(fn);
+
+    if (this.coverageReached) {
+      // A report without the remainder pass: every declaration this pass
+      // visited is reached, so the body diagnostics of the ones whose
+      // signature blocked are reached diagnostics. Report them once the
+      // flush retries below have settled, as the remainder pass does.
+      for (const decl of this.skippedBodies) {
+        if (ts.isFunctionDeclaration(decl) && this.countsSkipOf(decl)) this.reportBlockedBody(decl);
+      }
+    }
 
     if (this.remainder) {
       // Deferred collection diagnostics nothing flushed — declarations no
@@ -10384,6 +13249,7 @@ export class Lowerer {
       // Coverage visits more bodies; more value instances can only add
       // refusals to the identity comparison check.
       checkGenericIdentityPins(this);
+      refuseSourceFieldDeletes(this, functions);
       return {
         module: null,
         diagnostics: this.diags,
@@ -10394,22 +13260,47 @@ export class Lowerer {
       };
     }
 
-    return this.finishModule(functions);
+    return this.finishModule(functions, false, undefined, classDispatch);
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
-  finishModule(functions: IrFunction[], library = false): LowerResult {
+  finishModule(
+    functions: IrFunction[],
+    library = false,
+    bodies?: FinishedBodies,
+    dispatch?: ClassDynamicDispatch,
+  ): LowerResult {
+    // Whether the program uses workers is final now.
+    settleLoaderShareEnv(this, functions);
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
     checkGenericIdentityPins(this);
+    // Every function value and conversion is in the IR now: a variadic
+    // function must not reach a native call of fixed arity, and one stored
+    // as a fixed signature is exact only if no function of that type is
+    // handed to a caller with a longer argument list. `bodies` (what
+    // devirtualization found in them) answers for a program that holds no
+    // variadic function without another walk of its IR; the one step since,
+    // settleLoaderShareEnv above, stores a boxed symbol and no function.
+    checkVariadicFunctions(this, functions, bodies);
+    // Before the links are pruned to the observed ones: an unlinked copy
+    // is a copy all the same.
+    refuseSourceFieldDeletes(this, functions);
+    // A record built into a class instance, or a union's arm copied into
+    // another union's arm, where the program can tell the copy from the
+    // object is refused while a module can still fail.
+    refuseObservedCopies(this, functions);
     finalizeRecordLinks(this, functions);
+    finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
     if (!library) installBuiltinStatics(this, functions);
+    if (!library) registerIslandIntrinsics(this, functions);
     boxBuiltinValuesChecked(this, functions);
+    shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
@@ -10419,8 +13310,11 @@ export class Lowerer {
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);
+    guardPartialReads(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
+    adoptIslandThenables(this, functions);
+    shareIslandProcessState(this, functions);
     installBufferValue(functions);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
@@ -10517,6 +13411,7 @@ export class Lowerer {
     // reference are untouched — byte-stability holds.
     checkRequireBindingAccesses(this, functions);
     refuseX509DynValues(this, functions);
+    refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
     const sloppyDynWrites = sloppyDynamicWrites(this, functions);
     const module: IrModule | null =
@@ -10549,6 +13444,7 @@ export class Lowerer {
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),
+            ...(this.weakKeys.size > 0 ? { weakKeys: [...this.weakKeys].sort() } : {}),
             ...(this.recordLinks.size > 0 ? { recordLinks: [...this.recordLinks.values()] } : {}),
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
@@ -10559,10 +13455,59 @@ export class Lowerer {
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };
+    // Lowering lifts functions it later stops using: a fused pipeline's
+    // stage loops and their callbacks, a helper a rebuilt call replaced, a
+    // callback lowered once per attempt. The module is the lifted functions
+    // its code and metadata still reach, and every table below is derived
+    // from those.
+    if (module) {
+      const lifted = new Set<string>();
+      for (const fn of this.liftedFns) lifted.add(fn.name);
+      module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      // A program none of whose functions can give a record a kept source
+      // loses its source tests, the checked views they guard, and the lifted
+      // functions only those views reached (record-sources.ts). The answer
+      // is read from the final bodies, since the steps above add conversions
+      // and boxes of their own. A library is not a whole program: its
+      // callers hand it records too.
+      const folded =
+        library || this.recordSourcesPossible
+          ? null
+          : foldRecordSourceTests(this, module.functions);
+      if (folded !== null) {
+        module.recordSourcesFolded = folded;
+        module.functions = withoutUnreachedFunctions(module, lifted).functions;
+      }
+      // A hidden local that a later expression of another statement reads
+      // again (a branch reading what its condition saved) is owned by the
+      // statement list around both, not by the expression that declared it.
+      for (const fn of module.functions) ownEscapingLocals(fn);
+    }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
+    // Before the origin table is compacted: the claims index the lowering's.
+    if (this.typeClaims) {
+      const globals = new Map<string, IrGlobal>();
+      for (const global of this.globalsInTableOrder()) globals.set(global.id, global);
+      this.typeClaimSites = collectTypeClaims({
+        functions,
+        globals,
+        declOrigins: this.declOrigins,
+        islandOrigins: this.islandClaimOrigins,
+        asserted: this.assertedClaims,
+        boundary: this.boundaryClaims,
+        declaredUntyped: declaredUntypedIn(this.program, this.checker),
+        unionArms: (id) => this.unions.get(id)?.arms,
+        fmt: (type) => this.fmt(type),
+      });
+    }
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
     if (module) checkCycleBindingAccesses(this, module);
     if (module) bindCompletionCallbacks(module);
+    // SCRIPTC_DYNAMIC_CLASSES: where the finished program makes instances of
+    // the named classes dynamic values (dynamic-class-report.ts).
+    const watchedClasses = watchedDynamicClasses();
+    if (module && watchedClasses.length > 0)
+      reportDynamicClasses(this, module.functions, dispatch?.boxedClasses(), watchedClasses);
     // Execution tiers from the final bodies (ir/tiers.ts). Assigned with or
     // without a module: coverage reports the dynamic tier of programs that
     // still have blockers.
@@ -10573,28 +13518,20 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
-    // The child wrapper a handle-property table asks for must match the
-    // module fact that links scr_child.c (the emitter's childProcess
-    // feature): the census that requests it scans files the program may not
-    // reach. Aligned on the final module, so both sides read one fact.
-    if (module) alignHandlePropertyChildFact(module);
-    // A program that replaces a process output stream's write method beside
-    // Node islands is refused by the executable planner (SC8006): an
-    // island's process.stdout is its own object. Only island builds pay for
-    // the whole-program scan.
-    const stdioPatches =
-      this.nodeIslands !== null && programPatchesStdio(this)
-        ? [...this.stdioPatchSites]
-        : undefined;
+    // Receiver proofs that took `call` and `apply` for the builtins, in a
+    // program whose finished module gives a function its own.
+    const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];
+    for (const diag of ownCallRefusals) this.pushDiag(diag);
     return {
-      module,
+      module: ownCallRefusals.length > 0 ? null : module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,
-      ...(stdioPatches !== undefined && stdioPatches.length > 0 ? { stdioPatches } : {}),
+      loweredFunctions: functions,
       ...(this.dynamicFunctions.length > 0 ? { dynamicFunctions: this.dynamicFunctions } : {}),
       ...(this.statsByFile.size > 0 ? { statsByFile: this.statsByFile } : {}),
       ...(this.provenanceElided.length > 0 ? { provenanceElided: this.provenanceElided } : {}),
+      ...(this.nodeIslandUse !== undefined ? { nodeIslandUse: this.nodeIslandUse } : {}),
     };
   }
 
@@ -10686,12 +13623,18 @@ export class Lowerer {
   /** Coverage remainder: the body diagnostics of a function whose
    * signature blocked (blockedBodyDiagnostics). A function reachable emit
    * reached (its signature's diagnostics flushed there) reports them with
-   * the reached diagnostics; any other reports them as unreached. */
+   * the reached diagnostics; any other reports them as unreached. A
+   * reached-only report has no remainder: the pass that reached the
+   * declaration reports them, so its own flushed set decides. */
   readonly reachedBlockedBodyDiagnostics: ScrDiagnostic[] = [];
   private reportBlockedBody(decl: ts.FunctionDeclaration): void {
     const diags = blockedBodyDiagnostics(this, decl);
     const symbol = declSymbolOf(this, decl);
-    if (symbol && this.alreadyFlushed.has(symbol)) {
+    const reached =
+      symbol !== undefined &&
+      (this.alreadyFlushed.has(symbol) ||
+        (this.coverageReached && this.flushedSymbols.has(symbol)));
+    if (reached) {
       for (const d of diags) this.reachedBlockedBodyDiagnostics.push(d);
     } else {
       for (const d of diags) this.pushDiag(d);
@@ -10701,9 +13644,23 @@ export class Lowerer {
   /** Whether run() counts a signature-blocked declaration in
    * stats.functionsSkipped: whole-program passes and the coverage
    * remainder do; an externally-gated emit pass leaves the counting to the
-   * remainder (the declaration was never reached). */
+   * remainder (the declaration was never reached). A reached-only report
+   * has no remainder, so its reached pass counts the blocked declarations
+   * it reaches. */
   countsSkips(): boolean {
-    return this.reachable === null || this.remainder;
+    return this.reachable === null || this.remainder || this.coverageReached;
+  }
+
+  /** Whether a declaration whose body did not lower counts as skipped. The
+   * whole-program passes and the coverage remainder count every one of
+   * them; a reached-only report counted only the declarations it reached
+   * (their signature diagnostics flushed) whose signature blocked, since a
+   * signature that compiled counts its own statements as they lower. */
+  private countsSkipOf(decl: ts.ClassDeclaration | ts.FunctionDeclaration): boolean {
+    if (!this.coverageReached) return true;
+    const symbol = declSymbolOf(this, decl);
+    if (symbol === undefined || !this.flushedSymbols.has(symbol)) return false;
+    return !ts.isFunctionDeclaration(decl) || !this.fnSigsBySymbol.has(symbol);
   }
 
   /* ── reachability ─────────────────────────────────────────────────── */
@@ -10760,6 +13717,23 @@ export class Lowerer {
     extraRoots?: readonly string[],
     unitStore: UnitStore | null = null,
   ): { reachable: Set<string>; result: LowerResult } {
+    try {
+      return this.emitReachablePass(extraRoots, unitStore);
+    } catch (e) {
+      if (!(e instanceof StreamFlagsAbort)) throw e;
+      // The pass unwound before it cleared the hooks it installed for the
+      // pass; the next pass must not observe this one's record literals or
+      // feed its edge sink.
+      observeRecordLiteralRebuilds(null);
+      this.onEdge = null;
+      throw e;
+    }
+  }
+
+  private emitReachablePass(
+    extraRoots?: readonly string[],
+    unitStore: UnitStore | null = null,
+  ): { reachable: Set<string>; result: LowerResult } {
     // Frontend passes below rewrite function bodies through the IR mapper
     // (caught-value and class dispatch); key-order notes follow the record
     // literals they rebuild until the witness pass has read them.
@@ -10767,6 +13741,8 @@ export class Lowerer {
     this.deferredModuleInitializers = new DeferredModuleInitializers();
     const parts = this.splitFiles();
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
+    this.programSourceFiles = parts.map((fp) => fp.sf);
+    this.classHierarchyCache = null;
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
@@ -10819,6 +13795,7 @@ export class Lowerer {
         this.analyzeDateJsonResults(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);
+        this.analyzeOpenEnumerations(parts);
       });
       // Decorated classes analyze post-collection here too: the %init seeds
       // lower the decoration calls, whose edges (decorator bodies, construct
@@ -11025,6 +14002,16 @@ export class Lowerer {
     const loweredUnits = new Map<string, IrFunction>();
     const initFunctions: IrFunction[] = [];
     const instanceFunctions: IrFunction[] = [];
+    // Each finished function's long string literals become the one string
+    // of their text (literal-texts.ts), with the functions it lifted.
+    const literalTexts = new LiteralTexts();
+    const internLiteralTexts = (fn: IrFunction | null): void => {
+      if (fn !== null) literalTexts.intern(fn);
+      literalTexts.internAdded(initFunctions);
+      literalTexts.internAdded(instanceFunctions);
+      literalTexts.internAdded(this.liftedFns);
+      literalTexts.internAdded(this.implicitFns);
+    };
     this.onEdge = (name: string): void => {
       if (!this.superConstructorEdge && name.endsWith(".constructor"))
         instantiated.add(name.slice(1, -".constructor".length));
@@ -11150,6 +14137,7 @@ export class Lowerer {
             this.genericClassInstances.slice(clsInstLowered, waveEnd).flatMap(classMemberRoots),
           );
           while (clsInstLowered < waveEnd) {
+            this.settleStreamRequest();
             const info = this.genericClassInstances[clsInstLowered++]!;
             const owner = demandOwner();
             this.genericClassDemandOwner.set(info, owner);
@@ -11164,6 +14152,7 @@ export class Lowerer {
                 ),
               ),
             );
+            internLiteralTexts(null);
             relieveHeapPressure();
           }
         }
@@ -11175,6 +14164,7 @@ export class Lowerer {
               .flatMap(({ info }) => functionRoots(info.decl)),
           );
           while (instLowered < waveEnd) {
+            this.settleStreamRequest();
             const { info, inst } = this.instantiationQueue[instLowered++]!;
             const owner = demandOwner();
             this.genericFunctionDemandOwner.set(inst, owner);
@@ -11193,6 +14183,7 @@ export class Lowerer {
             );
             if (fn !== null) {
               instanceFunctions.push(fn);
+              internLiteralTexts(null);
               relieveHeapPressure();
             }
           }
@@ -11219,6 +14210,7 @@ export class Lowerer {
               ),
           );
           while (specLowered < waveEnd) {
+            this.settleStreamRequest();
             try {
               const fn = this.shapes.withDeclaredOrderPriority([4, instanceMetadataOrder++], () => {
                 const spec = this.emitSpecQueue[specLowered++]!;
@@ -11227,6 +14219,7 @@ export class Lowerer {
                 );
               });
               if (fn) instanceFunctions.push(fn);
+              internLiteralTexts(null);
             } catch (e) {
               if (!(e instanceof PoisonError)) throw e;
             }
@@ -11248,6 +14241,7 @@ export class Lowerer {
       ]),
     ]);
     parts.forEach((fp, index) => {
+      this.settleStreamRequest();
       const priority = [2, index] as const;
       const owner = demandOwner(priority);
       initFunctions.push(
@@ -11276,11 +14270,13 @@ export class Lowerer {
       const unit = units.get(name)!;
       const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
       const owner = demandOwner(priority);
-      return this.withGenericDemandOwner(owner, () =>
+      const fn = this.withGenericDemandOwner(owner, () =>
         this.shapes.withDeclaredOrderPriority(priority, () =>
           this.withClosureRoot(name, unit.lower),
         ),
       );
+      internLiteralTexts(fn);
+      return fn;
     };
     // With a unit store, every unit is recorded as in the serial mode, and
     // a unit applies the record an earlier build stored for it where that
@@ -11358,6 +14354,7 @@ export class Lowerer {
       const held =
         host !== null && recorded !== null ? new HeldTables(host.tables, recorded) : null;
       while (queue.length > 0) {
+        this.settleStreamRequest();
         const wave = queue.splice(0);
         shuffle?.(wave);
         this.checker.prefetchRoots(wave.flatMap((name) => units.get(name)!.roots));
@@ -11373,6 +14370,7 @@ export class Lowerer {
           continue;
         }
         for (const name of wave) {
+          this.settleStreamRequest();
           // A body-level poison outside the per-statement catches (a fenced
           // constructor/method parameter default lowered by declareParams):
           // every edge fired before poisoning remains retained; the diagnostic
@@ -11397,6 +14395,7 @@ export class Lowerer {
     // historical emit order.
     noteDateClassMethods(this);
     const classDispatch = new ClassDynamicDispatch(extraRoots !== undefined);
+    const functionViews = new FunctionViews();
     // Units in declaration order, so the passes below meet functions, and the
     // classes they collect, in an order that does not depend on lowering order.
     const unitsInOrder = (): IrFunction[] =>
@@ -11404,6 +14403,7 @@ export class Lowerer {
         .sort(([left], [right]) => units.get(left)!.order - units.get(right)!.order)
         .map(([, fn]) => fn);
     for (;;) {
+      this.settleStreamRequest();
       drainInstances();
       const declared = unitsInOrder();
       const initializerChanged = this.deferredModuleInitializers.process(
@@ -11424,12 +14424,65 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
-      if (queue.length === 0 && !dispatchChanged && !initializerChanged) break;
+      // `x.constructor` helpers answer from the class graph, which the
+      // bodies lowered since may have grown (class-instance-constructor.ts).
+      const identityChanged = settleClassIdentityHelpers(this, (fn) =>
+        classDispatch.sites.forget(fn),
+      );
+      // Every signature adapter built so far is in liftedFns; a widening
+      // adapter learns the views it must look through (function-views.ts).
+      const viewsChanged = functionViews.process(this);
+      if (
+        queue.length === 0 &&
+        !dispatchChanged &&
+        !initializerChanged &&
+        !identityChanged &&
+        !viewsChanged
+      )
+        break;
       drainUnits();
       this.restoreGenericInstanceOrder(instLowered);
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     classDispatch.finalize(this);
+    // The adapters finalize built are looked through as well; this adds
+    // adapters and boxing helpers only, which no other worklist reads.
+    functionViews.process(this);
+    functionViews.finish(this, [
+      ...unitsInOrder(),
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
+    if (this.coverageReached) {
+      // A report without the remainder pass: no later pass counts and
+      // reports the bodies of the declarations this program reaches whose
+      // signature blocked. Do it here, once every unit has lowered and the
+      // signature answers have settled. A flushed signature is what makes a
+      // declaration reached. The throwaway body walk fires no reachability
+      // edges.
+      const edges = this.onEdge;
+      this.onEdge = null;
+      try {
+        for (const fp of parts) {
+          for (const decl of fp.fnDecls) {
+            if (!decl.body) continue;
+            const symbol = declSymbolOf(this, decl);
+            // A signature that compiled counts its own statements as they
+            // lower; only a blocked one leaves the body uncounted.
+            if (!symbol || this.genericFnsBySymbol.has(symbol)) continue;
+            if (this.mixinFnShapes.get(decl)) continue;
+            if (this.fnSigsBySymbol.has(symbol)) continue;
+            if (!this.flushedSymbols.has(symbol)) continue;
+            this.countSkippedBody(decl);
+            this.reportBlockedBody(decl);
+          }
+        }
+      } finally {
+        this.onEdge = edges;
+      }
+    }
     if (dump !== null) writeRecords(dump, recordLines);
     if (reuse !== null) {
       reuse.finish();
@@ -11458,12 +14511,7 @@ export class Lowerer {
     // consult one keep their static copy (record-sources.ts). Decided before
     // the key-order pass, which reads the fact (a same-shape copy of a kept
     // record keeps its keys; the `"k" in r` sites answer through the view).
-    const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of keyOrderFunctions) {
-      if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
-      this.recordSourcesPossible = true;
-      break;
-    }
+    if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
     // A declared spread merge that kept the copy's own order holds a source
     // view too, so the captures that consult one must be active for it.
@@ -11494,14 +14542,17 @@ export class Lowerer {
     if (this.regexGroupResults) for (const fn of functions) foldRegexSpanReads(this, fn);
     // The worklist can leave a virtual site with a single implementation.
     // Devirtualize after construction/override reachability has settled.
-    devirtualizeVirtualCalls(this, functions, {
+    const bodies = devirtualizeVirtualCalls(this, functions, {
       reachable,
       instantiated,
       library: extraRoots !== undefined,
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    return { reachable, result: this.finishModule(functions, extraRoots !== undefined) };
+    return {
+      reachable,
+      result: this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+    };
   }
 
   /** What the steps before the worklist settled for a top-level
@@ -11545,6 +14596,26 @@ export class Lowerer {
       for (const decl of declaration.declarationList.declarations.nodes)
         globals.push(this.globalsByDeclNode.get(decl) ?? null);
       return JSON.stringify(globals, positionFree);
+    }
+    // An enum's fact is whether its object is built: a use elsewhere
+    // decides it, and the declaration's statement lowers differently. A
+    // namespace statement holds the facts of the enums declared in it.
+    if (
+      this.enumObjectDecls.size > 0 &&
+      (ts.isEnumDeclaration(declaration) || ts.isModuleDeclaration(declaration))
+    ) {
+      const built: IrGlobal[] = [];
+      for (const [decl, info] of this.enumObjectDecls) {
+        if (decl !== info.first || info.object === undefined) continue;
+        if (
+          decl === declaration ||
+          (ts.getSourceFileOfNode(decl) === ts.getSourceFileOfNode(declaration) &&
+            decl.pos >= declaration.pos &&
+            decl.end <= declaration.end)
+        )
+          built.push(info.object);
+      }
+      return built.length === 0 ? "" : JSON.stringify(built, positionFree);
     }
     return "";
   }
@@ -11815,7 +14886,7 @@ export class Lowerer {
 
   /** The runtimeFence statement that throws `first`'s message (or the
    * fallback's) at `node`. */
-  private runtimeFenceStmt(
+  runtimeFenceStmt(
     first: ScrDiagnostic | undefined,
     node: ts.Node,
     fallback: { code: string; message: string } | undefined,
@@ -11868,6 +14939,13 @@ export class Lowerer {
     const d = this.instantiationContext
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
+    // Made after the statement being lowered met a held constructor
+    // (held-constructors.ts). Until the program writes its first
+    // constructor value, values are not looked at, so a diagnostic made
+    // that early is marked too: lowering order is not evaluation order, and
+    // the mark counts only if the program turns out to hold a constructor.
+    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
+      d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in
@@ -11913,8 +14991,79 @@ export class Lowerer {
     for (const { literal, caller, target } of this.nodeIslandSpecifiers)
       literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
     for (const { literal, path } of this.nodeIslandLoads)
-      literal.value = NodeIslandModuleCollector.loadPath(modules, path);
+      literal.value =
+        this.nodeIslandModules.generatedLoadPath(path) ??
+        NodeIslandModuleCollector.loadPath(modules, path);
     return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
+  }
+
+  refuseIslandWorkerUse(node: ts.Node): never {
+    this.pushDiag(nodeIslandWorkerThreadDiag(locOf(node)));
+    throw new PoisonError();
+  }
+
+  /** SC6011 for a Node island module loaded at `node`, when a worker thread
+   * runs the module that loads it. */
+  noteIslandOnWorkerThread(module: string, node: ts.Node): void {
+    if (this.workerModules.size === 0) return;
+    if (!this.workerModules.has(ts.getSourceFileOfNode(node))) return;
+    const diag = nodeIslandWorkerInstanceDiag(module, locOf(node));
+    if (
+      !this.islandWorkerWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.islandWorkerWarnings.push(diag);
+  }
+
+  /** SC6015 for the TypeScript statement at `node`, which compiles to a
+   * throw of `refusal` (deferredRefusalDiag): once per statement. A
+   * JavaScript source has its own report (ir/deferred-fence.ts). */
+  noteDeferredRefusal(node: ts.Node, refusal: string, hint: string): void {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const diag = deferredRefusalDiag(refusal, locOf(node), hint);
+    if (
+      !this.deferredRefusalWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.deferredRefusalWarnings.push(diag);
+  }
+
+  /** SC6015 for the statement at `node`, which takes the record `target` out
+   * of a generic instance's binding that holds `others` further layouts
+   * (strandedInstanceArmDiag): once per site, whatever the number of
+   * instances lowered from it. */
+  noteStrandedInstanceArm(node: ts.Node, target: string, others: number): void {
+    if (isJsSourceFile(ts.getSourceFileOfNode(node))) return;
+    const diag = strandedInstanceArmDiag(target, others, locOf(node));
+    if (
+      !this.deferredRefusalWarnings.some(
+        (w) => w.loc.file === diag.loc.file && w.loc.start === diag.loc.start,
+      )
+    )
+      this.deferredRefusalWarnings.push(diag);
+  }
+
+  /** Whether the value of `node`, lowered as `value`, is a function the
+   * runtime holds as a plain function value: a typed function, or a held
+   * built-in constructor in an untyped slot. */
+  isFunctionValue(node: ts.Expression, value: IrExpr): boolean {
+    return (
+      value.type.kind === "func" ||
+      (value.type.kind === "dyn" && this.holdsBuiltinConstructor(node))
+    );
+  }
+
+  /** Whether every value of `node` is a built-in primitive constructor
+   * (`String`, a slot typed `typeof String | typeof Number`). */
+  holdsBuiltinConstructor(node: ts.Expression): boolean {
+    return holdsPrimitiveConstructors(this.typeOf(node), this.typeCtx);
+  }
+
+  refuseIslandWorkerValue(node: ts.Node, kind: string): never {
+    this.pushDiag(nodeIslandWorkerValueDiag(locOf(node), kind));
+    throw new PoisonError();
   }
 
   unsupported(
@@ -11995,7 +15144,7 @@ export class Lowerer {
       this.diags.splice(i, 1);
     }
     if (committed === undefined) return null;
-    this.degradeType(type, committed.code, committed.message);
+    this.degradeType(type, committed.code, committed.message, committed.loc);
     const canonical = this.isCanonicalDegraded(id);
     const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
     return {
@@ -12012,7 +15161,17 @@ export class Lowerer {
    * dynamic slot too, though only the first such slot failed: record it
    * (outside probes; the lookup is skipped while nothing is degraded). */
   noteDegradedSlot(node: ts.Node, type: ts.Type): void {
-    if (this.diagSink !== null) return;
+    if (this.diagSink !== null) {
+      const notes = this.probedSlotNotes;
+      if (notes !== null) {
+        probedSlotNoteRequests++;
+        let types = notes.get(node);
+        if (types === undefined) notes.set(node, (types = new Map()));
+        const id = (type as { id?: number }).id ?? -1;
+        if (!types.has(id)) types.set(id, type);
+      }
+      return;
+    }
     const degraded = this.degradedTypes.get((type as { id?: number }).id ?? -1);
     // A pushed-down type is one slot, reported where it degraded; only
     // whole-slot dynamic declarations are reported one by one.
@@ -12094,6 +15253,25 @@ export class Lowerer {
    * lowers again (at most MAX_DECLARATION_RETRIES times). Null when it
    * still poisons; its diagnostics are then committed as before. */
   lowerUnitDegrading<T>(lower: () => T): T | null {
+    try {
+      return this.lowerUnitRetrying(lower);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      return null;
+    }
+  }
+
+  /** lowerUnitDegrading for a unit whose caller answers the poison itself
+   * (a method, a constructor: the member is omitted): the same commit
+   * point, and the poison of the last attempt is thrown when the unit
+   * still poisons. The statements of a body have a commit point of their
+   * own (lowerStmts); this one serves what lowers outside every statement,
+   * the bindings and defaults of the parameters (declareParams), so a
+   * binding of a destructured parameter degrades as the same binding in a
+   * declaration statement does. Declared functions, static methods,
+   * constructors and methods lower under it; a function expression's
+   * poison reaches the statement that holds it. */
+  lowerUnitRetrying<T>(lower: () => T): T {
     const slots: DynamicSlot[] = [];
     for (let attempt = 0; ; attempt++) {
       const mark = this.diags.length;
@@ -12104,9 +15282,9 @@ export class Lowerer {
         return result;
       } catch (e) {
         if (!(e instanceof PoisonError)) throw e;
-        if (attempt >= MAX_DECLARATION_RETRIES) return null;
+        if (attempt >= MAX_DECLARATION_RETRIES) throw e;
         const slot = this.degradeAtCommit(e, DECLARATION_SLOTS);
-        if (slot === null && !this.widenPartials(hits)) return null;
+        if (slot === null && !this.widenPartials(hits)) throw e;
         if (slot !== null) slots.push(slot);
         this.dropAttemptDiags(mark);
       }
@@ -12125,6 +15303,9 @@ export class Lowerer {
       ...strict,
       lenient: true,
       canMemoizeType: () => false,
+      // Nothing of it enters the strict memos; the mapping itself still
+      // maps each type it reaches once.
+      canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
       onLenientPiece: (piece) => {
         const id = (piece as { id?: number }).id;
         if (id !== undefined && !this.lenientPieces.has(id)) this.lenientPieces.set(id, owner);
@@ -12136,44 +15317,96 @@ export class Lowerer {
   /** Degrades a type for a commit point: its lenient (pushed-down) form
    * first; a type already degraded that still fails falls back to the
    * whole-slot checked dynamic. False when nothing is left to degrade. */
-  private degradeType(type: ts.Type, code: string, reason: string): boolean {
+  private degradeType(type: ts.Type, code: string, reason: string, loc: SrcLoc): boolean {
     const id = (type as { id?: number }).id;
     if (id === undefined) return false;
     const known = this.degradedTypes.get(id);
     if (known !== undefined) {
       if (known.lenient?.kind === "dyn") return false;
-      this.degradedTypes.set(id, { lenient: DYN, code, reason });
+      this.degradedTypes.set(id, {
+        lenient: DYN,
+        code,
+        reason,
+        ...(known.generatorArray ? { generatorArray: known.generatorArray } : {}),
+      });
       return true;
     }
     // Canonical normalization (stage N2): a type the per-form rules miss
     // maps exactly from its canonical form when that form maps; no dynamic
     // slot then. Otherwise the lenient (pushed-down) form.
-    const canonical = this.canonicalType(type);
+    const notes: CanonMapNotes = { collapsedToDynamic: false };
+    const mapped = this.canonicalType(type, notes);
+    // A form that maps but for an array of generators: the array has no
+    // storage, so the slot takes the lenient form, where the array is a
+    // checked-dynamic value. A build with a Node island keeps the array
+    // type instead, and with it every refusal of its uses
+    // (generator-arrays.ts).
+    const generatorArray =
+      mapped !== null && notes.generatorArray === true
+        ? { generatorArray: { loc, type: this.checker.typeToString(type) } }
+        : {};
+    const canonical =
+      generatorArray.generatorArray !== undefined && !this.hasNodeIslands() ? null : mapped;
     if (canonical !== null) {
-      this.degradedTypes.set(id, { lenient: canonical, code, reason, canonical: true });
+      this.degradedTypes.set(id, {
+        lenient: canonical,
+        code,
+        reason,
+        canonical: true,
+        ...generatorArray,
+      });
       return true;
     }
     this.degradedTypes.set(id, {
       lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
       code,
       reason,
+      ...generatorArray,
     });
     return true;
+  }
+
+  /** Whether the build runs a package or a module in a Node island, so
+   * that a value of the program can cross into one. */
+  hasNodeIslands(): boolean {
+    const islands = this.nodeIslands;
+    return islands !== null && (islands.packages.size > 0 || islands.modules.size > 0);
+  }
+
+  /** Whether code of the program can run in Node.js: the build has an
+   * island set, or a source file imports @scriptc/node. Known before any
+   * unit lowers, which usesNodeIsland is not. */
+  mayRunInNode(): boolean {
+    return (
+      this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
+    );
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when
    * the form is irreducible, unbound, only the checked dynamic, or holds a
    * union that mapped to the checked dynamic (such a slot is dynamic in
    * part, so it degrades like any other). Runs only at localized failure's
-   * commit points, so a program that compiles today never consults it. */
-  canonicalType(type: ts.Type): IrType | null {
+   * commit points, so a program that compiles today never consults it. An
+   * array of generators in the form maps to an array type without storage
+   * and is noted in `notes`: degradeType decides what the slot becomes. */
+  canonicalType(
+    type: ts.Type,
+    notes: CanonMapNotes = { collapsedToDynamic: false },
+  ): IrType | null {
     try {
       const resolve = this.typeCtx.resolveTypeParamTs;
       const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
       if (c.k === "opaque" || c.k === "param") return null;
       const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
-      const notes: CanonMapNotes = { collapsedToDynamic: false };
-      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
+      notes.generatorArraysMap = true;
+      // One walk for the whole form: each object node whose members do not
+      // map structurally asks mapType for its own type.
+      const canonCtx: TypeMapperCtx = {
+        ...strict,
+        canMemoizeType: () => false,
+        canMemoizeWalk: () => strict.canMemoizeType?.() ?? true,
+      };
+      const mapped = withTypeWalk(type, canonCtx, () => mapCanonical(c, canonCtx, 0, notes));
       if (notes.collapsedToDynamic) return null;
       return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
     } catch {
@@ -12292,13 +15525,12 @@ export class Lowerer {
         unsupportedNativeApiDiag(`a value of type '${ts.symbolName(typeSym)}'`, locOf(node)),
       );
     }
-    // ENUM OBJECTS (`typeof e` — a numeric enum's type carries the
-    // reverse-map index signature, a string enum's just its members):
-    // shaped like a hybrid record, but the enum identifier has no value
-    // lowering, so the honest fence names the construct in the same voice
-    // as the per-site identifier fence — never the index-signature
-    // recitation.
+    // ENUM OBJECTS (`typeof e`) whose type did not map: the enum has no
+    // closed layout (enum-object-layout.ts names why), so the honest fence
+    // names the construct in the same voice as the per-site identifier
+    // fence — never the index-signature recitation.
     if (typeSym && (typeSym.flags & ts.SymbolFlags.Enum) !== 0) {
+      const why = enumObjectRefusal(this, typeSym);
       this.typeFail(
         node,
         type,
@@ -12306,7 +15538,7 @@ export class Lowerer {
         unsupportedDiag(
           "SC1090",
           locOf(node),
-          `enum objects as values ('${ts.symbolName(typeSym)}' — member reads like '${ts.symbolName(typeSym)}.X' compile to constants; the object itself has no runtime representation)`,
+          `enum objects as values ('${ts.symbolName(typeSym)}': ${why}; member reads like '${ts.symbolName(typeSym)}.A' compile to constants)`,
         ),
       );
     }
@@ -12363,6 +15595,34 @@ export class Lowerer {
     // could produce.
     {
       const pkg = this.npmPackageOf(widened);
+      // A value a Node island made is a handle: the package's implementation
+      // runs, in the island, and what has no lowering is this native use of
+      // its value. Name that use, not a missing implementation.
+      if (pkg && this.nodeIslands !== null && this.foreignType(widened)) {
+        const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+        const arms = (widened.isUnionType() ? ts.constituentTypes(widened) : [widened]).filter(
+          (arm) => (arm.flags & nullish) === 0,
+        );
+        const callable =
+          arms.length > 0 && arms.every((arm) => this.checker.getCallSignatures(arm).length > 0);
+        const name = ts.isIdentifier(node) ? ` '${node.text}'` : "";
+        // `@types/<name>` declarations type the package `<name>`.
+        const bare = pkg.startsWith("@types/") ? pkg.slice("@types/".length) : null;
+        const island =
+          bare === null ? pkg : bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+        this.typeFail(
+          node,
+          type,
+          "package",
+          nodeIslandNativeUseDiag(
+            callable
+              ? `the function${name} of Node island package '${island}' (type '${this.checker.typeToString(type)}')`
+              : `a value of type '${this.checker.typeToString(type)}' of Node island package '${island}'`,
+            locOf(node),
+            callable,
+          ),
+        );
+      }
       if (pkg) {
         this.typeFail(node, type, "package", unsupportedPackageValueDiag(pkg, locOf(node)));
       }
@@ -12445,13 +15705,30 @@ export class Lowerer {
     // STANDARD-LIBRARY nominal types with no lowering at all: the SC2020
     // story, naming the type — and for the families with a WHY, the same
     // pointed reason the identifier/constructor chokepoints teach.
+    // The library's PromiseLike names no value of its own: it is the type of
+    // every object with a `then` method, a promise or one the program wrote.
+    // A slot declared with it holds such a value as it is, checked-dynamic
+    // (localized failure), and `await`, `Promise.resolve` and `.then` ask
+    // the value.
+    if (stdlibNominal && ts.symbolNameOf(stdlibOwnSym) === "PromiseLike") {
+      this.typeFail(
+        node,
+        type,
+        "thenable",
+        noLoweringDiag(
+          this.checker.typeToString(type),
+          locOf(node),
+          "a PromiseLike value is any object with a then method, so it has no static representation: a declared slot holds it as a checked-dynamic value, and Promise<T> keeps the slot static",
+        ),
+      );
+    }
     if (stdlibNominal) {
       const intlHint =
-        "Intl formatter values have no representation — the COMPOSED forms lower: " +
-        'new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and ' +
-        "x.toLocaleString() with default options, d.toLocaleString(), d.toLocaleTimeString(), " +
-        "and Intl.Segmenter with grapheme or word granularity; the formatter objects " +
-        "themselves (locale negotiation, resolvedOptions, options bags) remain unsupported";
+        "values of this Intl type have no representation — what compiles: Intl.NumberFormat " +
+        "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+        "toLocaleDateString() and toLocaleTimeString() forms with a locale and options, and " +
+        "Intl.Segmenter with grapheme or word granularity; locale negotiation, " +
+        "resolvedOptions and the other Intl constructors remain unsupported";
       const typeHints: Record<string, string | undefined> = {
         ArrayBuffer:
           "fixed ArrayBuffer storage and typed-array views are supported; resizable and detached storage are not modeled",
@@ -12517,6 +15794,13 @@ export class Lowerer {
     const diag = noLoweringDiag(surface, locOf(node), hint, this.nodeTypesOnlySymbol(sym));
     if (reason !== undefined) diag.reason = reason;
     this.pushDiag(diag);
+    throw new PoisonError();
+  }
+
+  /** A JavaScript read of a Node value native code has no value for
+   * (node-values.ts): Node defines it, so the read is refused by name. */
+  nodeValueFence(surface: string, node: ts.Node, hint?: string): never {
+    this.pushDiag(nodeValueDiag(surface, locOf(node), hint));
     throw new PoisonError();
   }
 
@@ -12624,6 +15908,30 @@ export class Lowerer {
   }
 
   typeOf(node: ts.Node): ts.Type {
+    if (this.speculativeTypeQueryDepth === 0 || this.speculativeCollectionDepth > 0)
+      return this.typeOfNode(node);
+    return this.typeOfSpeculatively(node);
+  }
+
+  /** typeOf for a speculative whole-program analysis (speculativeTypeQueries),
+   * which asks about nodes of every file, reached or not. The checker can
+   * panic on one, and no statement or declaration owns that query, so the
+   * panic would end the build with nothing to point at. The query takes
+   * the answer the checker's own sweep gives a node it panics on (`any`,
+   * ts7/checker.ts withPanicFence): the analysis learns nothing from the
+   * node, and a statement that does lower it meets the panic inside its
+   * own fence, which reports it there. Kept out of typeOf so that the
+   * path every lowering takes stays a test and a call. */
+  private typeOfSpeculatively(node: ts.Node): ts.Type {
+    try {
+      return this.typeOfNode(node);
+    } catch (e) {
+      if (isCheckerPanic(e)) return this.checker.getAnyType();
+      throw e;
+    }
+  }
+
+  private typeOfNode(node: ts.Node): ts.Type {
     if (ts.isIdentifier(node)) {
       const inferred = inferredCollectionType(this, node);
       if (inferred) return inferred;
@@ -12762,7 +16070,183 @@ export class Lowerer {
         return bound;
       }
     }
+    if (this.bindingTypedRetry && (t.flags & ts.TypeFlags.Any) !== 0) {
+      const declared = this.typeThroughBindings(node);
+      if (declared !== null) return declared;
+    }
     return t;
+  }
+
+  private typeThroughBindingsDepth = 0;
+
+  /** Starts or ends a binding-typed second lowering (bindingTypedRetry):
+   * while it runs, a member name the checker resolves no symbol for,
+   * because it calls the receiver `any`, resolves to the member of the type
+   * the receiver's bindings declare (CheckerFacade.unresolvedSymbol), so the
+   * forms that ask the checker for the member a call or a read names find
+   * the one a typed receiver has. */
+  setBindingTypedRetry(on: boolean): void {
+    this.bindingTypedRetry = on;
+    this.checker.unresolvedSymbol = on ? (node) => this.memberThroughBindings(node) : null;
+  }
+
+  private memberThroughBindings(node: ts.Node): ts.Symbol | undefined {
+    const access = node.parent;
+    if (
+      !ts.isIdentifier(node) ||
+      access === undefined ||
+      !ts.isPropertyAccessExpression(access) ||
+      access.name !== node
+    )
+      return undefined;
+    const untyped = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+    if ((this.checker.getTypeAtLocation(access.expression).flags & untyped) === 0) return undefined;
+    const receiver = this.typeOf(access.expression);
+    if ((receiver.flags & untyped) !== 0) return undefined;
+    return this.checker.getPropertyOfType(receiver, node.text) ?? undefined;
+  }
+
+  /** Whether lowering `node` again with its reads typed through the
+   * bindings (bindingTypedRetry) can differ from the lowering just refused:
+   * some read under it that the checker calls `any` has a type by what its
+   * bindings declare. False outside an implicit-any instance body (unless
+   * `bindings` names the instance's) and inside such a second lowering. */
+  typedRetryApplies(node: ts.Node, bindings?: Map<ts.Symbol, ts.Type>): boolean {
+    const bound = bindings ?? this.implicitParamTypes;
+    if (this.bindingTypedRetry || bound === null) return false;
+    const previous = this.implicitParamTypes;
+    this.implicitParamTypes = bound;
+    this.bindingTypedRetry = true;
+    try {
+      let found = false;
+      const visit = (n: ts.Node): void => {
+        if (found) return;
+        if (ts.isPropertyAccessExpression(n) || ts.isIdentifier(n)) {
+          try {
+            if (
+              (this.checker.getTypeAtLocation(n).flags & ts.TypeFlags.Any) !== 0 &&
+              this.typeThroughBindings(n) !== null
+            ) {
+              found = true;
+              return;
+            }
+          } catch {
+            // A node the checker has no type for decides nothing.
+          }
+        }
+        ts.forEachChild(
+          n,
+          (child) => {
+            visit(child);
+            return undefined;
+          },
+          (list) => {
+            for (const child of list.nodes) visit(child);
+            return undefined;
+          },
+        );
+      };
+      visit(node);
+      return found;
+    } finally {
+      this.bindingTypedRetry = false;
+      this.implicitParamTypes = previous;
+    }
+  }
+
+  /** The type a read the checker calls `any` has by what its bindings
+   * declare, while a refused statement lowers again (bindingTypedRetry):
+   *
+   * - a member read whose receiver has a type here (a bound parameter, or
+   *   another such read) is the member the receiver's type declares, an
+   *   optional one with its `undefined`;
+   * - a call of a method such a receiver's type declares is the method's
+   *   result, where that is a primitive;
+   * - a `const` initialized from such a read is its initializer.
+   *
+   * The answer stands only where the value already lowers at that type: a
+   * record or class receiver must store the member at exactly the type the
+   * declaration maps to, and a local must be stored at its initializer's.
+   * Anything else keeps the checker's `any` and the lowering it has. */
+  private typeThroughBindings(node: ts.Node): ts.Type | null {
+    if (this.typeThroughBindingsDepth > 32) return null;
+    const untyped = ts.TypeFlags.Any | ts.TypeFlags.Unknown;
+    this.typeThroughBindingsDepth++;
+    try {
+      if (ts.isParenthesizedExpression(node)) {
+        const inner = this.typeOf(node.expression);
+        return (inner.flags & untyped) !== 0 ? null : inner;
+      }
+      if (ts.isPropertyAccessExpression(node) && !ts.isPrivateIdentifier(node.name)) {
+        const receiver = this.typeOf(node.expression);
+        if ((receiver.flags & untyped) !== 0) return null;
+        const present = this.checker.getNonNullableType(receiver);
+        const property = this.checker.getPropertyOfType(present, node.name.text);
+        if (!property) return null;
+        const member = this.checker.getTypeOfSymbol(property);
+        if ((member.flags & untyped) !== 0) return null;
+        const receiverIr = this.mapTypeOf(present);
+        if (receiverIr === null || receiverIr.kind === "dyn" || receiverIr.kind === "union")
+          return null;
+        const stored =
+          receiverIr.kind === "record"
+            ? this.shapes.get(receiverIr.shapeId)?.fields.find((f) => f.name === node.name.text)
+                ?.type
+            : receiverIr.kind === "object"
+              ? this.classes.get(receiverIr.className)?.fields.get(node.name.text)
+              : undefined;
+        if (receiverIr.kind === "record" || receiverIr.kind === "object") {
+          const memberIr = this.mapTypeOf(member);
+          if (!stored || memberIr === null || !typeEquals(stored, memberIr)) return null;
+        }
+        return member;
+      }
+      // The result of a method the receiver's type declares with one
+      // signature and no type parameters of its own, where the result is a
+      // primitive (a value, whatever its lowering held it as).
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const receiver = this.typeOf(node.expression.expression);
+        if ((receiver.flags & untyped) !== 0) return null;
+        const method = this.checker.getPropertyOfType(receiver, node.expression.name.text);
+        if (!method || !this.isStdlibSymbol(method)) return null;
+        const signatures = this.checker.getCallSignatures(this.checker.getTypeOfSymbol(method));
+        if (signatures.length !== 1 || signatures[0]!.getTypeParameters().length > 0) return null;
+        const result = this.checker.getReturnTypeOfSignature(signatures[0]!);
+        if ((result.flags & untyped) !== 0) return null;
+        const primitive = (t: IrType | null): boolean =>
+          t !== null &&
+          (t.kind === "string" ||
+            t.kind === "f64" ||
+            t.kind === "bool" ||
+            t.kind === "bigint" ||
+            isUnitType(t) ||
+            (t.kind === "union" &&
+              (this.unions.get(t.unionId)?.arms.every((arm) => primitive(arm)) ?? false)));
+        return primitive(this.mapTypeOf(result)) ? result : null;
+      }
+      if (ts.isIdentifier(node)) {
+        const symbol = this.checker.getSymbolAtLocation(node);
+        const decl = symbol ? symbol.valueDeclaration : undefined;
+        if (
+          !decl ||
+          !ts.isVariableDeclaration(decl) ||
+          !ts.isIdentifier(decl.name) ||
+          decl.initializer === undefined ||
+          decl.type !== undefined ||
+          (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) === 0
+        )
+          return null;
+        const initializer = this.typeOf(decl.initializer);
+        if ((initializer.flags & untyped) !== 0) return null;
+        const stored = this.peekLocal(node)?.type ?? this.globalOf(node)?.type;
+        const initializerIr = this.mapTypeOf(initializer);
+        if (!stored || initializerIr === null || !typeEquals(stored, initializerIr)) return null;
+        return initializer;
+      }
+      return null;
+    } finally {
+      this.typeThroughBindingsDepth--;
+    }
   }
 
   /** mapType with this Lowerer's registries and (while a generic instance
@@ -12842,6 +16326,47 @@ export class Lowerer {
   arrayValueTags(unionId: string): number[] {
     const def = this.unions.get(unionId);
     return def ? def.arms.flatMap((arm, tag) => (this.isArrayValueType(arm) ? [tag] : [])) : [];
+  }
+
+  /** Whether a checked-dynamic value can flow into a slot of type `t`: the
+   * dynCheck domain — JSON-representable types, undefined-armed unions of
+   * those, bytes<u8>, the %Error root, program classes through their
+   * typed-reference capsule, adaptable function targets, and the handle
+   * kinds. Everything else keeps the checked boundary's refusal. */
+  dynExtractableTo(t: IrType): boolean {
+    if (t.kind === "bytes" && t.elem === "u8") return true;
+    if (t.kind === "object" && t.className === "%Error") return true;
+    if (isDynTypedRefType(t) || DYN_HANDLE_KINDS.has(t.kind)) return true;
+    if (
+      t.kind === "func" &&
+      canAdaptDynFuncTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    if (
+      canDynCheckTo(
+        t,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return true;
+    return (
+      t.kind === "union" &&
+      (this.unions
+        .get(t.unionId)
+        ?.arms.every(
+          (a) =>
+            a.kind === "undefinedT" ||
+            this.jsonSafe(a) ||
+            isDynTypedRefType(a) ||
+            DYN_HANDLE_KINDS.has(a.kind),
+        ) ??
+        false)
+    );
   }
 
   /** Checked JSON conversion excludes undefined array slots because JSON
@@ -12953,6 +16478,21 @@ export class Lowerer {
     return (sym && this.typeParamTsBindings.get(sym)) ?? null;
   };
 
+  /** typeParamTsResolver for the parameters the current instance is keyed
+   * on by their bound literals (pinnedTypeParams): the instance serves no
+   * other binding of them, so a mapping may follow the literal. Null for
+   * every other parameter, whose instance other bindings share. */
+  readonly pinnedTypeParamTsResolver = (t: ts.Type): ts.Type | null => {
+    if (!(t.flags & ts.TypeFlags.TypeParameter)) return null;
+    noteScopeSensitiveMapping();
+    const bindings = this.typeParamTsBindings;
+    if (!bindings) return null;
+    const sym: ts.Symbol | undefined = t.getSymbol();
+    if (!sym) return null;
+    const keyed = this.pinnedTypeParams.find((entry) => entry.tsBindings === bindings);
+    return keyed?.pinned.has(sym) ? (bindings.get(sym) ?? null) : null;
+  };
+
   /** The concrete instantiation of a generic alias reference (`Catalog<G,
    * P>`) the current call-keyed instance's signature declares
    * (boundAliasInstances), or null when its signature never instantiated
@@ -13005,6 +16545,13 @@ export class Lowerer {
 
   irTypeOf(node: ts.Node): IrType {
     const t = this.typeOf(node);
+    // A binding of an untyped empty array (`const mid = o.files` over
+    // `{ files: [] }`) is that array, at the type it was given where it
+    // was written (empty-array-places.ts), not never's f64 element array.
+    {
+      const alias = untypedArrayBindingType(this, node, t);
+      if (alias !== null) return alias;
+    }
     // JS inference can leave mutable fields, accessor parameters and
     // locals at null/undefined despite later writes. Keep mutable native
     // storage instead of a slot restricted to the initializer's unit value.
@@ -13016,7 +16563,7 @@ export class Lowerer {
     // A never-tainted JS type (neverTaintedJsType) maps — never rides as
     // f64 — but must not: pre-empt the mapping so the JS fallback below
     // answers instead.
-    const mapped = neverTaintedJsType(this, node, t) ? null : this.mapTypeOf(t);
+    let mapped = neverTaintedJsType(this, node, t) ? null : this.mapTypeOf(t);
     if (mapped !== null && this.degradedTypes.size > 0) this.noteDegradedSlot(node, t);
     if (!mapped) {
       const argumentsType = jsArgumentsFunctionType(this, t);
@@ -13034,7 +16581,17 @@ export class Lowerer {
       // lower.
       const dyn = dynFallbackType(this, node, t);
       if (dyn) return dyn;
-      this.badType(node, t);
+      // Localized failure: asking the fallbacks above can flush a deferred
+      // declaration (the function the initializer calls), whose retry
+      // degraded this very type. It maps now, as it does for every later
+      // slot that names it.
+      const degraded =
+        this.degradedTypes.size > 0 && !neverTaintedJsType(this, node, t)
+          ? this.mapTypeOf(t)
+          : null;
+      if (degraded === null) this.badType(node, t);
+      this.noteDegradedSlot(node, t);
+      mapped = degraded;
     }
     // A JavaScript binding whose inferred type holds a union of functions
     // and arrays (a test table of `[fn, cases]` rows, or one row
@@ -13044,6 +16601,30 @@ export class Lowerer {
     if (isJsSourceFile(ts.getSourceFileOfNode(node)) && this.mixesFunctionsWithArrays(mapped))
       return DYN;
     return jsOpenObjectType(node, mapped, this.shapes, this.unions);
+  }
+
+  /** irTypeOf for a speculative whole-program analysis
+   * (speculativeTypeQueries): null where the node's type has no lowering.
+   * Such an analysis asks before any body lowers, about every file, reached
+   * or not, so no statement or declaration owns a refusal its query makes.
+   * Reported from here, the refusal would end the pass on a type the
+   * statement that holds the node may lower after all (as a dynamic slot,
+   * or through the form a commit point degraded it to), and in a pass with
+   * no collection fence (the coverage remainder) it would leave the
+   * compiler. So the query reports nothing: the analysis learns nothing
+   * from the node, and the statement that lowers it meets the type at its
+   * own commit point, which reports or degrades it there. */
+  irTypeOfSpeculatively(node: ts.Node): IrType | null {
+    const reports = this.diagSink ?? this.diags;
+    const reported = reports.length;
+    try {
+      return this.irTypeOf(node);
+    } catch (e) {
+      if (!(e instanceof PoisonError)) throw e;
+      reports.length = reported;
+      if (e.failure !== undefined) this.failedTypes.delete(e.failure);
+      return null;
+    }
   }
 
   /** Whether `type`, or an array element type inside it, is a union with
@@ -13107,6 +16688,16 @@ export class Lowerer {
       this.unsupported("SC1101", node);
     }
 
+    // An empty array written with no element type, reaching a typed array
+    // slot that did not decide its type (empty-array-places.ts): it keeps
+    // its identity, so it has no conversion.
+    {
+      const slot = untypedEmptyArraySlot(this, actual, expected, 0);
+      if (slot !== null) {
+        this.pushDiag(emptyArrayDiag(this.fmt(slot), locOf(node)));
+        throw new PoisonError();
+      }
+    }
     // Class-value mismatches: the pointed stories — a widening whose
     // constructor ABIs differ (construction through the slot would
     // dispatch a mismatched signature), or a structural flow between
@@ -13128,12 +16719,51 @@ export class Lowerer {
         `structurally-typed class-value flows ('${this.fmt(actual)}' into a '${this.fmt(expected)}' slot: only a class and its subclasses share a slot — extend the base class)`,
       );
     }
+    // A variadic function beside a slot of another signature that the
+    // checked function boundary does not serve (variadicBoundaryBlocker).
+    // Before the union story: the pair is two function types whatever their
+    // parameters hold, and the plain type spelling drops the rest parameter,
+    // so name it.
+    if (
+      actual.kind === "func" &&
+      expected.kind === "func" &&
+      (actual.rest === true || expected.rest === true)
+    ) {
+      const spell = (t: IrType & { kind: "func" }): string => {
+        if (t.rest !== true) return this.fmt(t);
+        const fixed = t.restAbi === "typed" ? t.params.slice(0, -1) : t.params;
+        const rest = t.restAbi === "typed" ? this.fmt(t.params.at(-1)!) : "unknown[]";
+        return `(${[...fixed.map((p) => this.fmt(p)), `...${rest}`].join(", ")}) => ${this.fmt(t.ret)}`;
+      };
+      const blocker =
+        actual.rest === true && actual.restAbi === undefined
+          ? variadicBoundaryBlocker(this, actual, expected)
+          : null;
+      const why =
+        blocker === "count"
+          ? ": the last parameter of the expected type can hold an omitted argument, which the function would receive as 'undefined' where a call passes nothing"
+          : blocker === "domain"
+            ? ": a parameter or result type has no checked-dynamic form to cross the function boundary in"
+            : "";
+      this.unsupported(
+        "SC1090",
+        node,
+        `variadic function values where another signature is expected ('${spell(actual)}' into '${spell(expected)}'${why})`,
+      );
+    }
     // Union-involving mismatches first: a union flowing into a different
     // union's slot (even a superset) would need a runtime re-tag — its own
     // diagnostic, not the record one. Arm-into-union coercions were already
     // wrapped by coerceToExpected before this check runs.
     if (containsUnion(actual) || containsUnion(expected)) {
-      this.pushDiag(unionMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node)));
+      this.pushDiag(
+        unionMismatchDiag(
+          this.fmt(expected),
+          this.fmt(actual),
+          locOf(node),
+          this.unionWidthAmbiguity(actual, expected) ?? undefined,
+        ),
+      );
       throw new PoisonError();
     }
     if (containsRecord(actual) || containsRecord(expected)) {
@@ -13143,7 +16773,7 @@ export class Lowerer {
       const detail =
         actual.kind === "record" && expected.kind === "record"
           ? (this.describeRecordWidthBlocker(actual.shapeId, expected.shapeId) ?? undefined)
-          : undefined;
+          : this.promiseIntoThenableRecord(actual, expected);
       this.pushDiag(
         recordShapeMismatchDiag(this.fmt(expected), this.fmt(actual), locOf(node), detail),
       );
@@ -13195,37 +16825,22 @@ export class Lowerer {
     );
   }
 
-  /** Unwraps a HYBRID (function-with-properties) record to its callable:
-   * a record whose shape carries the reserved `%call` func field reads
-   * that field; anything else returns unchanged. The consumer half of
-   * type-mapper.ts's chalk-shape mapping — call paths and func-slot coercions
-   * share it. */
+  /** Unwraps a callable CLASS instance to its callable: a class whose
+   * merged interface carries a call signature stores its call behavior in
+   * a `%call` field (the chalk package shim's builder), so calls read the
+   * field. Every other value returns unchanged — a function with
+   * properties IS the function (callable-properties.ts), never a record
+   * carrying the callable in a field. */
   hybridCallUnwrap(expr: IrExpr): IrExpr {
-    // A callable CLASS instance: a class whose merged interface carries a
-    // call signature stores its call behavior in a `%call` field (the
-    // chalk package shim's builder). Calls read the field.
-    if (expr.type.kind === "object") {
-      const callType = this.classes.get(expr.type.className)?.fields.get("%call");
-      if (callType === undefined || callType.kind !== "func") return expr;
-      return {
-        kind: "fieldGet",
-        obj: expr,
-        className: expr.type.className,
-        field: "%call",
-        type: callType,
-        loc: expr.loc,
-      };
-    }
-    if (expr.type.kind !== "record") return expr;
-    const shape = this.shapes.get(expr.type.shapeId);
-    const call = shape?.fields.find((f) => f.name === "%call");
-    if (!call || call.type.kind !== "func") return expr;
+    if (expr.type.kind !== "object") return expr;
+    const callType = this.classes.get(expr.type.className)?.fields.get("%call");
+    if (callType === undefined || callType.kind !== "func") return expr;
     return {
-      kind: "recordGet",
+      kind: "fieldGet",
       obj: expr,
-      shapeId: expr.type.shapeId,
+      className: expr.type.className,
       field: "%call",
-      type: call.type,
+      type: callType,
       loc: expr.loc,
     };
   }
@@ -13270,6 +16885,7 @@ export class Lowerer {
       expr.type.rest === expected.rest &&
       expr.type.restAbi === expected.restAbi &&
       expr.type.argumentsAll === expected.argumentsAll &&
+      expr.type.argumentsPresence === expected.argumentsPresence &&
       expr.type.params.length === expected.params.length &&
       expr.type.params.every((type, i) => typeEquals(type, expected.params[i]!)) &&
       expr.type.ret.kind === "object" &&
@@ -13287,7 +16903,7 @@ export class Lowerer {
    * arm's canonical tag. Same-union values pass through untouched; anything
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
-  coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+  coerceToExpected(expr: IrExpr, expected: IrType, site?: IrType): IrExpr {
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
@@ -13461,16 +17077,6 @@ export class Lowerer {
         const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
       }
-      // A TypeScript source's module namespace as an untyped value: the
-      // runtime's namespace object with live reads, Node's sorted keys and
-      // read-only writes. `node:` builtins have no compiled source or
-      // complete export table here and keep their fence below.
-      if (expr.type.kind === "moduleNs") {
-        const boxed = this.moduleNamespaceDyn(
-          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
-        );
-        if (boxed) return boxed;
-      }
       // A node:path family is its module object (pathModuleValue), the
       // bare module the target platform's family.
       if (
@@ -13510,6 +17116,17 @@ export class Lowerer {
           loc: expr.loc,
         };
       }
+      // A TypeScript source's module namespace as an untyped value: the
+      // runtime's namespace object with live reads, Node's sorted keys and
+      // read-only writes. A `node:` builtin's namespace boxes from the
+      // lowering tables (moduleNamespaceBuiltinDynValue), after the path
+      // families and the events class above.
+      if (expr.type.kind === "moduleNs") {
+        const boxed = this.moduleNamespaceDyn(
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (boxed) return boxed;
+      }
       if (expr.type.kind === "classval" && this.classes.get(expr.type.className)?.def.runtime) {
         // Only the class itself: a slot of the class's type may hold a
         // program subclass, which this constructor would misidentify.
@@ -13525,6 +17142,18 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The empty literal of no element type (`[]` where no array type
+      // reaches it: a default against an `any[]`, the initializer of one)
+      // is the dynamic empty array in a checked-dynamic slot. Boxed live it
+      // would be an array of nothing, which no later `push` could enter.
+      // The literal is fresh, so no typed holder reads it back.
+      if (
+        expr.kind === "arrayLit" &&
+        expr.elems.length === 0 &&
+        expr.type.kind === "array" &&
+        this.unitOnlyElem(expr.type.elem)
+      )
+        return { kind: "dynArrLit", elems: [], type: DYN, loc: expr.loc };
       if (expr.kind === "unitLit" || this.dynConvertible(expr.type)) {
         // Records and arrays keep their identity as untyped values, including
         // when they arrive through a union, so `unknown` views, weak
@@ -13534,10 +17163,21 @@ export class Lowerer {
           const shape = type.kind === "record" ? this.shapes.get(type.shapeId) : undefined;
           return !!shape && (shape.fields.length > 0 || shape.indexValue !== undefined);
         };
+        // The empty literal itself, written with no element type
+        // (`Array.isArray(v) ? v : []` beside an untyped arm): no other
+        // name holds it, so it becomes the untyped slot's own empty array.
+        // A live view of it would be a view of an array of nothing, which
+        // no later push fits (empty-array-places.ts).
+        const freshEmptyLiteral =
+          expr.kind === "arrayLit" &&
+          expr.elems.length === 0 &&
+          expr.type.kind === "array" &&
+          this.unitOnlyElem(expr.type.elem);
         const liveRef =
-          liveReference(expr.type) ||
-          (expr.type.kind === "union" &&
-            (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false));
+          !freshEmptyLiteral &&
+          (liveReference(expr.type) ||
+            (expr.type.kind === "union" &&
+              (this.unions.get(expr.type.unionId)?.arms.some(liveReference) ?? false)));
         return {
           kind: "dynFrom",
           value: this.checkedBuiltinValue(expr),
@@ -13577,6 +17217,13 @@ export class Lowerer {
         );
         throw new PoisonError();
       }
+      // The console object into a record of its members: the members are
+      // read off console by name (console-records.ts). The checked
+      // conversion below reads a property bag, which console is not.
+      if (isConsoleObjectRead(expr)) {
+        const projected = consoleInto(this, expr, expected, expr.loc);
+        if (projected) return projected;
+      }
       if (
         canDynCheckTo(
           expected,
@@ -13584,22 +17231,20 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return { kind: "dynCheck", value: expr, type: expected, loc: expr.loc };
+        return sharedDynConversion(this, expr, expected, expr.loc);
       }
       return expr;
     }
-    // A HYBRID (function-with-properties) record flowing into a plain
-    // func slot extracts its reserved %call field — the chalk shape's
-    // "the value IS callable" half (type-mapper.ts's hybrid mapping).
-    if (expected.kind === "func" && (expr.type.kind === "record" || expr.type.kind === "object")) {
+    // A callable CLASS instance (the chalk shim's variadic builder) flowing
+    // into a plain func slot extracts its reserved %call field; a function
+    // with properties is already the function and needs no extraction.
+    if (expected.kind === "func" && expr.type.kind === "object") {
       const un = this.hybridCallUnwrap(expr);
       if (un !== expr && typeEquals(un.type, expected)) return un;
-      // A callable class instance (the chalk shim's variadic builder) in a
-      // narrower function slot: its call closure crosses the checked
-      // function boundary, which adapts the arity.
+      // ... in a narrower function slot: its call closure crosses the
+      // checked function boundary, which adapts the arity.
       if (
         un !== expr &&
-        expr.type.kind === "object" &&
         un.type.kind === "func" &&
         canBoxFuncIntoDyn(
           un.type,
@@ -13676,6 +17321,30 @@ export class Lowerer {
         return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
       }
     }
+    // A function literal whose result the checker types as an island value
+    // (lower-node-island.ts, returnsIslandValue), in a slot whose result is
+    // a native class: the island's declarations derive the value's class
+    // from it (an island class that extends Error reduces to Error beside
+    // one), but an island object stays an island value, so every call
+    // through the slot would throw the checked conversion's TypeError. A
+    // program that catches everything would take it for its own error:
+    // refused by name instead.
+    if (
+      expr.kind === "closure" &&
+      expected.kind === "func" &&
+      expected.ret.kind === "object" &&
+      expr.type.kind === "func" &&
+      expr.type.ret.kind === "dyn" &&
+      this.islandResultLambdas.has(expr.fnName)
+    ) {
+      this.pushDiag(
+        nodeIslandBoundaryDiag(
+          `a function whose result is an island value, used where its result is the native '${this.fmt(expected.ret)}' (an island object stays an island value: give the slot the island's type or 'unknown')`,
+          expr.loc,
+        ),
+      );
+      throw new PoisonError();
+    }
     const covariant = this.coerceCovariantFunction(expr, expected);
     if (covariant) return covariant;
     // The GENERAL function-value adapter (funcCoerceAdapter): a function
@@ -13688,9 +17357,7 @@ export class Lowerer {
     // their pointed shapes keep winning.
     if (expected.kind === "func" && expr.type.kind === "func" && !typeEquals(expr.type, expected)) {
       const adapter = this.funcCoerceAdapter(expr.type, expected, expr.loc);
-      if (adapter) {
-        return { kind: "call", callee: adapter, args: [expr], type: expected, loc: expr.loc };
-      }
+      if (adapter) return adaptedFunction(adapter, expr, expected, expr.loc);
     }
     // Derived-into-base widening: a legal implicit upcast (prefix layout —
     // a pointer reinterpret). Exactness stays required in every other
@@ -13781,9 +17448,21 @@ export class Lowerer {
       ) {
         // A function's widened inferred return (widenReducedReturn) also
         // holds records with more fields; those convert instead of throwing.
-        const helper = widensReducedRecords(this, expected, expr.type)
+        const widened = widensReducedRecords(this, expected, expr.type);
+        // The arms the checker still sees at this site (`site`, the site's
+        // own type) were not narrowed away: `S | T` flowing whole into `T`
+        // with `S` assignable to `T`. Each is a value of the slot's type
+        // and converts on its own tag; only an arm the checker excluded
+        // throws. A site the checker typed as the arm itself has none.
+        const converts =
+          widened || site === undefined
+            ? []
+            : liftableBesideArm(this, expr.type.unionId, expected, site);
+        const helper = widened
           ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc)
-          : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
+          : converts.length > 0
+            ? widthNarrowHelper(this, expr.type.unionId, expected, expr.loc, converts)
+            : this.narrowedArmHelper(expr.type.unionId, expected, expr.loc);
         if (helper) {
           return this.checkedNarrowCall(helper, expr, expected, expr.loc);
         }
@@ -13813,6 +17492,8 @@ export class Lowerer {
         if (w) return w;
         const asserted = assertedConversion(this, expr, expected);
         if (asserted) return asserted;
+        const errorRecord = this.errorIntoRecord(expr, expected);
+        if (errorRecord) return errorRecord;
         // A UNIT (null/undefined) flowing into a plain non-nullable slot
         // the checker approved (`null!` casts, non-strict assignments):
         // the stranded-source stance (divergence 38) without a union in
@@ -13839,7 +17520,27 @@ export class Lowerer {
         if (checked?.how === "checkedRetag")
           return this.applyWidthLift(checked, expr, expected, expr.loc);
       }
-      return assertedConversion(this, expr, expected) ?? expr;
+      const asserted = assertedConversion(this, expr, expected);
+      if (asserted) return asserted;
+      // The checked retag, asked only after every ordinary route declined:
+      // an arm the destination cannot copy can still enter the one arm it
+      // checked-widens into (a narrowed `{ role: string }` arm claimed as the
+      // wider record its predicate named). It is asked HERE, not inside the
+      // plan, so a program that converted keeps its own route and a program
+      // that refused (this point otherwise returns the value unchanged and
+      // requireExactShape reports SC2003) gains the checked conversion.
+      const checkedHelper = this.unionRetagHelper(
+        expr.type.unionId,
+        expected.unionId,
+        expr.loc,
+        undefined,
+        undefined,
+        true,
+      );
+      if (checkedHelper) {
+        return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
+      }
+      return expr;
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -14003,8 +17704,50 @@ export class Lowerer {
     return widthCoerce(this, expr, expected);
   }
 
+  /** Why a record (alone or beside unit arms) has no place in a union of
+   * records: it converts by width into several arms and the union has no
+   * discriminant to pick one. Null for every other refused conversion.
+   * Diagnostic text only: nothing lowers by it. */
+  private unionWidthAmbiguity(actual: IrType, expected: IrType): UnionWidthAmbiguity | null {
+    if (expected.kind !== "union") return null;
+    const to = this.unions.get(expected.unionId);
+    if (!to || to.discriminant) return null;
+    const sources =
+      actual.kind === "union"
+        ? (this.unions.get(actual.unionId)?.arms ?? []).filter((arm) => !isUnitType(arm))
+        : [actual];
+    const source = sources.length === 1 ? sources[0]! : null;
+    if (source?.kind !== "record") return null;
+    const shape = this.shapes.get(source.shapeId);
+    if (!shape || shape.tuple || shape.indexValue) return null;
+    const fitting: IrRecordShape[] = [];
+    for (const arm of to.arms) {
+      if (arm.kind !== "record") continue;
+      const armShape = this.shapes.get(arm.shapeId);
+      if (armShape && this.widthLiftPlan(source, arm) !== null) fitting.push(armShape);
+    }
+    if (fitting.length < 2) return null;
+    const declares = (arm: IrRecordShape, name: string): boolean =>
+      arm.fields.some((field) => field.name === name);
+    const split: string[] = [];
+    const homeless: string[] = [];
+    for (const field of shape.fields) {
+      const owners = fitting.filter((arm) => declares(arm, field.name)).length;
+      if (owners === 0) homeless.push(field.name);
+      else if (owners < fitting.length) split.push(field.name);
+    }
+    return { arms: fitting.length, split, homeless };
+  }
+
   widthLiftPlan(src: IrType, dst: IrType): WidthLift | null {
     return widthLiftPlan(this, src, dst);
+  }
+
+  /** The checked widening, by name (see checkedWidthLift): only the written
+   * predicate's element conversion asks for it, so widthLiftPlan's answers
+   * — and every program that already converts — stay as they are. */
+  checkedWidthLift(src: IrType, dst: IrType): WidthLift | null {
+    return checkedWidthLift(this, src, dst);
   }
 
   unitOnlyElem(t: IrType): boolean {
@@ -14045,14 +17788,6 @@ export class Lowerer {
     loc: SrcLoc,
   ): string | null {
     return tupleArrayWidthHelper(this, fromId, toT, loc);
-  }
-
-  emptyArrayLiftHelper(
-    fromT: IrType & { kind: "array" },
-    toT: IrType & { kind: "array" },
-    loc: SrcLoc,
-  ): string {
-    return emptyArrayLiftHelper(this, fromT, toT, loc);
   }
 
   arrayWidthHelper(
@@ -14133,8 +17868,14 @@ export class Lowerer {
     return unionRetagMappable(this, fromId, toId);
   }
 
-  narrowedRetagHelper(node: ts.Node, fromId: string, toId: string, loc: SrcLoc): string | null {
-    return narrowedRetagHelper(this, node, fromId, toId, loc);
+  narrowedRetagHelper(
+    node: ts.Node,
+    fromId: string,
+    toId: string,
+    loc: SrcLoc,
+    alsoStored?: ReadonlySet<number>,
+  ): string | null {
+    return narrowedRetagHelper(this, node, fromId, toId, loc, alsoStored);
   }
 
   strandedUnitTrap(expr: IrExpr, expected: IrType, loc: SrcLoc): IrExpr | null {
@@ -14165,14 +17906,18 @@ export class Lowerer {
     return recordUnionRouteHelper(this, source, toId, loc);
   }
 
+  /** `checked` is the conversion's own second question (see
+   * unionRetagHelper): only a call site that already saw the ordinary plan
+   * decline asks it, so no converting program changes route. */
   unionRetagHelper(
     fromId: string,
     toId: string,
     loc: SrcLoc,
     trappable?: ReadonlySet<number>,
     classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
+    checked = false,
   ): string | null {
-    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes);
+    return unionRetagHelper(this, fromId, toId, loc, trappable, classRoutes, checked);
   }
 
   narrowedArmHelper(fromId: string, target: IrType, loc: SrcLoc, message?: string): string | null {
@@ -14194,15 +17939,149 @@ export class Lowerer {
    * directly when the expression was already lowered. In package files, a
    * check this coercion creates names the package declaration that types
    * the slot (decl-origin.ts). */
-  coerceInto(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
-    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected);
+  /** A promise given to one of the program's own types with a `then`
+   * method: what the SC2002 says beside the two shapes. The type is a record
+   * of its members, which a class instance or an object literal becomes with
+   * its identity; a promise does not, since a record made from it would
+   * answer `instanceof Promise` and `===` for a copy. */
+  private promiseIntoThenableRecord(actual: IrType, expected: IrType): string | undefined {
+    if (actual.kind !== "promise" || expected.kind !== "record") return undefined;
+    const then = this.shapes.get(expected.shapeId)?.fields.find((f) => f.name === "then");
+    if (then === undefined || then.type.kind !== "func") return undefined;
+    return "a promise is not a value of the program's own type with a 'then' method (that type is a record of its members and cannot hold the promise itself); declare the slot PromiseLike<T>, which takes promises and the program's own thenables, or Promise<T> | YourType narrowed with instanceof";
+  }
+
+  /** Whether `node` is the key argument of `set`, `get`, `has`, `delete` or
+   * `add` on a WeakMap or a WeakSet. A key with a promise type is boxed as
+   * the promise itself (weakMap.promiseKey in coerceInto). With `makesEntry`,
+   * only of the two that make an entry, `set` and `add`. */
+  private isWeakKeyArgument(node: ts.Node, makesEntry = false): boolean {
+    let key: ts.Node = node;
+    while (
+      key.parent !== undefined &&
+      (ts.isParenthesizedExpression(key.parent) || ts.isSatisfiesExpression(key.parent))
+    )
+      key = key.parent;
+    const call = key.parent;
+    if (call === undefined || !ts.isCallExpression(call) || call.arguments.nodes[0] !== key)
+      return false;
+    const access = call.expression;
+    if (!ts.isPropertyAccessExpression(access) || !ts.isIdentifier(access.name)) return false;
+    const method = access.name.text;
+    if (
+      method !== "set" &&
+      method !== "get" &&
+      method !== "has" &&
+      method !== "delete" &&
+      method !== "add"
+    )
+      return false;
+    if (makesEntry && method !== "set" && method !== "add") return false;
+    const symbol = this.checker.getNonNullableType(this.typeOf(access.expression)).getSymbol();
+    const name = ts.symbolNameOf(symbol);
+    return (
+      symbol !== undefined &&
+      (name === "WeakMap" || name === "WeakSet") &&
+      this.isStdlibSymbol(symbol)
+    );
+  }
+
+  /** Records the type of a key that a WeakMap or WeakSet entry is made for
+   * (IrModule.weakKeys): a record or a class by its unit, every arm of a
+   * union, and `*` for a key that is a checked value already. Functions and
+   * promises always carry the collector header, and a container carries it
+   * exactly when its elements do, so those need no record. */
+  noteWeakKey(type: IrType): void {
+    switch (type.kind) {
+      case "dyn":
+        this.weakKeys.add("*");
+        break;
+      case "record":
+        this.weakKeys.add(`record:${type.shapeId}`);
+        break;
+      case "object":
+        this.weakKeys.add(`object:${type.className}`);
+        break;
+      case "union":
+        for (const arm of this.unions.get(type.unionId)?.arms ?? [])
+          if (arm.kind !== "union") this.noteWeakKey(arm);
+        break;
+    }
+  }
+
+  /** coerceIntoTyped, with the one exception to a typed slot keeping one
+   * object with the dynamic value it takes (sharedDynConversion): a value
+   * the program types itself and the compiler holds dynamically, such as an
+   * evolving empty array that takes another element type later, keeps the
+   * copy. Adoption would hold the source to the slot's type, a claim the
+   * program makes only for a value it left untyped. */
+  coerceInto(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    const out = this.coerceIntoTyped(node, expr, expected, payloadSite);
+    if (out.kind !== "dynCheck" || out.shared !== true) return out;
+    const untyped = (ts.TypeFlags.Any | ts.TypeFlags.Unknown) as number;
+    if ((this.typeOf(node).flags & untyped) !== 0) return out;
+    const copied = { ...out };
+    delete copied.shared;
+    return copied;
+  }
+
+  coerceIntoTyped(node: ts.Node, expr: IrExpr, expected: IrType, payloadSite?: IrType): IrExpr {
+    if (expected.kind === "dyn") {
+      const kind = expr.type.kind;
+      if (
+        (kind === "dyn" || kind === "record" || kind === "object" || kind === "union") &&
+        this.isWeakKeyArgument(node, true)
+      )
+        this.noteWeakKey(expr.type);
+    }
+    // An untyped primitive constructor enters a function-typed slot as the
+    // constructor's own function (held-constructors.ts).
+    if (this.untypedConstructors && expected.kind === "func" && expr.type.kind === "dyn")
+      expr = untypedConstructorAsFunction(this, node, expr) ?? expr;
+    // A typed promise as the key of a weak collection: the collection reads
+    // the key for its identity alone, which is the promise's own. Boxing it
+    // as other checked-dynamic uses do would make an adapter promise for a
+    // value nobody settles through, and the adapter of a rejected promise
+    // would be reported as an unhandled rejection of its own.
+    if (
+      expected.kind === "dyn" &&
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind !== "dyn" &&
+      this.isWeakKeyArgument(node)
+    ) {
+      const loc = expr.loc;
+      const key: IrExpr =
+        expr.type.inner.kind === "void"
+          ? expr
+          : { kind: "promiseVoidWiden", value: expr, type: { kind: "promise", inner: VOID }, loc };
+      return { kind: "libCall", fn: "weakMap.promiseKey", args: [key], type: DYN, loc };
+    }
+    const outerNode = this.slotSiteNode;
+    const outerType = this.slotSiteType;
+    this.slotSiteNode = node;
+    this.slotSiteType = expected;
+    try {
+      return this.coerceIntoOrigin(node, expr, expected, payloadSite);
+    } finally {
+      this.slotSiteNode = outerNode;
+      this.slotSiteType = outerType;
+    }
+  }
+
+  private coerceIntoOrigin(
+    node: ts.Node,
+    expr: IrExpr,
+    expected: IrType,
+    payloadSite?: IrType,
+  ): IrExpr {
+    if (!this.inPackageFileOf(node)) return this.coerceIntoSlot(node, expr, expected, payloadSite);
     const outer = this.coercionOriginNode;
     const outerUnion = this.coercionOriginUnion;
     this.coercionOriginNode = node;
     this.coercionOriginUnion = expr.type.kind === "union" ? expr.type.unionId : null;
     let out: IrExpr;
     try {
-      out = this.coerceIntoSlot(node, expr, expected);
+      out = this.coerceIntoSlot(node, expr, expected, payloadSite);
     } finally {
       this.coercionOriginNode = outer;
       this.coercionOriginUnion = outerUnion;
@@ -14214,20 +18093,67 @@ export class Lowerer {
     return out;
   }
 
-  private coerceIntoSlot(node: ts.Node, expr: IrExpr, expected: IrType): IrExpr {
+  private coerceIntoSlot(
+    node: ts.Node,
+    expr: IrExpr,
+    expected: IrType,
+    payloadSite?: IrType,
+  ): IrExpr {
     refuseInferredCallbackDrops(this, node, expr.type, expected);
-    // A union into one of its record arms extracts that arm, trusting the
-    // checker to have excluded the others. A built-in object arm the checker
-    // still types the site with (`c ?? new Map()` into an interface the
-    // untyped Map satisfies only through `any`) holds a value at run time,
-    // and no conversion makes a record of it, so the flow is refused like
-    // the arm's value would be.
+    // The CommonJS module object is a handle (a number) wherever its type
+    // is known; an untyped slot would hold that number, where Node holds
+    // the object (`typeof` of it is "object", its keys are the module's).
+    // Only a program with a CommonJS module record has such a value, so
+    // every other program skips the type query.
+    if (
+      expected.kind === "dyn" &&
+      this.cjsModuleIdOf.size > 0 &&
+      (expr.type.kind === "f64" || expr.type.kind === "union") &&
+      isNodeModuleHandle(this, node)
+    ) {
+      untypedModuleValueFence(this, node);
+    }
+    // A binding the checker types as the console object (`const c =
+    // console`, a `Console` parameter) into a record of its members: the
+    // same member-by-name copy the direct `console` spelling takes
+    // (console-records.ts), decided here because only the site knows the
+    // checked-dynamic value is console.
+    if (
+      expr.type.kind === "dyn" &&
+      (expected.kind === "record" || expected.kind === "union") &&
+      !isConsoleObjectRead(expr) &&
+      isConsoleTyped(this, node)
+    ) {
+      const projected = consoleInto(this, expr, expected, expr.loc);
+      if (projected) return projected;
+    }
+    // A union into one of its record arms: the checker's type of the value
+    // at this site says which other arms it still holds. Those convert into
+    // the slot instead of throwing (coerceToExpected); a site the checker
+    // narrowed to the arm itself holds none, and the checked extraction
+    // stays as it is, trusting the checker to have excluded the others.
+    let ownArmSite: IrType | undefined = payloadSite;
+    // A built-in object arm the checker still types the site with
+    // (`c ?? new Map()` into an interface the untyped Map satisfies only
+    // through `any`) holds a value at run time, and no conversion makes a
+    // record of it, so the flow is refused like the arm's value would be.
     if (
       expr.type.kind === "union" &&
       expected.kind === "record" &&
       this.armTag(expr.type.unionId, expected) >= 0
     ) {
       const site = this.mapTypeOf(this.typeOf(node));
+      if (ownArmSite === undefined && site) {
+        ownArmSite = site;
+        // In a slot the checker types as this record, an arm it still sees
+        // that has no conversion is refused like that arm's plain flow.
+        if (this.slotTypedAs(node, expected))
+          this.requireSeenArmsConvert(node, expr.type.unionId, site, expected);
+        // A generic instance's binding that kept its arms: the extraction
+        // below throws for each arm the record does not name (SC6015).
+        if (this.typeParamBindings !== null)
+          noteStrandedInstanceFlow(this, node, expr.type, expected);
+      }
       const siteArms =
         site?.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : site ? [site] : [];
       for (const arm of this.unions.get(expr.type.unionId)?.arms ?? []) {
@@ -14325,7 +18251,9 @@ export class Lowerer {
         }
       }
     }
-    let e = this.coerceToExpected(expr, expected);
+    this.noteUntypedVariadicStore(node, expr, expected);
+    this.noteReceiverReadingStore(node, expr, expected);
+    let e = this.coerceToExpected(expr, expected, ownArmSite);
     // Keep storage intact when ordinary widening already accepts it. Only
     // a destination needing a more specific class layout uses the site's
     // refinement and checked extraction.
@@ -14338,6 +18266,47 @@ export class Lowerer {
         (site && narrowStoredClassValue(this, e, site)) ??
         narrowGenericClassValue(this, e, expected);
       if (narrowed) e = this.coerceToExpected(narrowed, expected);
+    }
+    // A union the checker narrowed, at this site, to classes at or below
+    // the expected class (`v instanceof Base` on a union that also holds
+    // records or scalars): the stored value keeps its union, and the arms
+    // the site's type still names all widen to the class without a copy.
+    // The other arms are ruled out by the checker and throw if one arrives.
+    if (!typeEquals(e.type, expected) && expected.kind === "object" && e.type.kind === "union") {
+      const site = this.mapTypeOf(this.typeOf(node));
+      if (
+        site &&
+        (site.kind === "object" || site.kind === "union") &&
+        identityPreservingWidening(this, site, expected)
+      ) {
+        const view = checkedClassAssertion(this, e, expected, e.loc);
+        if (view) e = view;
+      }
+      if (
+        e.type.kind === "union" &&
+        !canAssertClassValue(this, e.type, expected) &&
+        narrowedIntoClass(this, node, expected)
+      ) {
+        // A class test narrowed a union none of whose arms can hold an
+        // instance of the class (the checker types the value `Rec & C`):
+        // the test is false for every value the union has, so the site
+        // cannot run. It is evaluated and throws, as an extraction of an
+        // impossible arm does. A structural flow of records into a class
+        // slot is not this case and keeps its refusal.
+        e = {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: e, loc: e.loc }],
+          result: nodeThrowExpr(
+            1,
+            "",
+            `Value is not an instance of '${this.fmt(expected)}'`,
+            expected,
+            e.loc,
+          ),
+          type: expected,
+          loc: e.loc,
+        };
+      }
     }
     // Existing JavaScript arrays retain mutations and identity across checked
     // slots. Fresh literals have no prior identity and use checked storage
@@ -14356,7 +18325,19 @@ export class Lowerer {
     // from the source node (identifier reads, named function expressions,
     // NamedEvaluation through a variable initializer) — inspect prints
     // [Function: name] and call errors spell it, like Node.
-    if (e.kind === "dynFrom" && e.value.type.kind === "func" && e.fnName === undefined) {
+    // A slot the checker types as a primitive constructor (`column.parse` of
+    // `typeof String`) holds that constructor, whatever the slot is called:
+    // its box takes the function's own name. A constructor written as an
+    // array method's callback is its conversion closure, not the
+    // constructor value, and is named by its spelling like any closure.
+    e = namedConstructorBox(e);
+    if (
+      e.kind === "dynFrom" &&
+      e.value.type.kind === "func" &&
+      e.fnName === undefined &&
+      (!holdsPrimitiveConstructors(this.typeOf(node), this.typeCtx) ||
+        (ts.isExpression(node) && conversionCallbackTypeOf(this, node) !== null))
+    ) {
       const name = jsFuncNameOf(node, this);
       if (name !== null) e = { ...e, fnName: name };
     }
@@ -14417,6 +18398,14 @@ export class Lowerer {
         loc: e.loc,
       };
     }
+    // A union with no discriminant of its own, which the value fits several
+    // arms of: the checker types of this conversion can still name the arm
+    // each discriminant value enters (site-discriminant.ts). Asked last, so
+    // only a conversion that is otherwise refused (SC2003) takes it.
+    if (!typeEquals(e.type, expected) && expected.kind === "union") {
+      const routed = siteDiscriminantConversion(this, node, e, expected);
+      if (routed) e = routed;
+    }
     this.requireExactShape(node, e.type, expected);
     return e;
   }
@@ -14473,7 +18462,7 @@ export class Lowerer {
         units.add("undefined");
       }
     }
-    if (!allConst && !bindingNeverReassigned(this, sym, firstDecl!)) return null;
+    if (!allConst && !bindingNeverReassigned(this.bindingScope(), sym, firstDecl!)) return null;
     return [...units].sort().join(" or ");
   }
 
@@ -14483,10 +18472,10 @@ export class Lowerer {
   lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
-      // An adapting promise changes identity, while the Error boundary
-      // snapshots mutable fields. Neither is a live collection reference.
+      // The Error boundary snapshots mutable fields, so its copy is no live
+      // collection reference. A promise's adapter is one: it shares the
+      // promise's identity, which the collection hashes and compares.
       const copiesReference = (type: IrType): boolean =>
-        (type.kind === "promise" && type.inner.kind !== "dyn") ||
         (type.kind === "object" &&
           (RUNTIME_ERROR_CLASSES.has(type.className) ||
             this.isSubclassOf(type.className, "%Error"))) ||
@@ -14494,7 +18483,7 @@ export class Lowerer {
           (this.unions.get(type.unionId)?.arms.some(copiesReference) ?? false));
       if (value.kind === "dynFrom" && copiesReference(value.value.type)) {
         this.noLowering(
-          "collection slot conversion requiring an Error snapshot or promise adapter",
+          "collection slot conversion requiring an Error snapshot",
           node,
           "use a collection with the original reference type; checked collection slots require identity-preserving conversions",
         );
@@ -14561,6 +18550,13 @@ export class Lowerer {
         }
       }
       asserted = asserted.expression;
+    }
+    // A Node island's function in its typed view is that one function: the
+    // view adopts the function's identity, whatever signature it is viewed
+    // through, so the key is the view at the collection's own key type.
+    {
+      const view = this.islandFunctionViewAt(value, node, expected);
+      if (view !== null) return view;
     }
     const source = (
       value.type.kind === "union" ? (this.unions.get(value.type.unionId)?.arms ?? []) : [value.type]
@@ -14745,6 +18741,16 @@ export class Lowerer {
         ) {
           return lowerDynObjectLiteral(this, x);
         }
+        // The checker names one closed record type as this literal's target
+        // (`{…} satisfies T`, an argument whose declared type the slot keeps
+        // dynamic). The value is read back at that type, so it is built in
+        // that type's layout, as an annotated binding builds it: the checked
+        // conversion back then finds the layout it asks for and hands out
+        // this object instead of converting a copy of it on every read.
+        const declared = this.contextualRecordLayout(x, parts);
+        if (declared) {
+          return this.coerceExistingInto(node, this.lowerObjectLiteral(x, declared), expected);
+        }
       }
     }
     // A fresh array can use the unique array-family destination inside a
@@ -14811,8 +18817,47 @@ export class Lowerer {
         }
       }
     }
-    const e = this.lowerExpr(node);
+    const e = this.lowerAtSlot(node, expected);
     return expected ? this.coerceExistingInto(node, e, expected) : e;
+  }
+
+  /** lowerExpr for a value whose destination has type `expected`, before
+   * any coercion into it. A function literal is used only at the slot it
+   * is written into, so its body can take the slot's parameter list
+   * directly (slotSignatureAdoption): the slot is `expected` when that is
+   * a function type, or the one function arm of a union (an optional
+   * callback). Every other expression and destination lowers as it is. */
+  lowerAtSlot(node: ts.Expression, expected: IrType | undefined): IrExpr {
+    let literal: ts.Expression = node;
+    while (ts.isParenthesizedExpression(literal) || ts.isSatisfiesExpression(literal))
+      literal = literal.expression;
+    let slot: IrType | undefined;
+    if (expected && (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))) {
+      if (expected.kind === "func") slot = expected;
+      else if (expected.kind === "union") {
+        const arms = this.unions.get(expected.unionId)?.arms.filter((arm) => arm.kind === "func");
+        if (arms?.length === 1) slot = arms[0];
+      }
+    }
+    if (slot?.kind !== "func" || slot.rest === true) return this.lowerExpr(node);
+    return this.lowerWithSlot(node, literal, {
+      params: slot.params,
+      ret: slot.ret,
+      passesAll: true,
+    });
+  }
+
+  /** lowerExpr for `node`, whose value is the function literal `literal`
+   * written into `slot`. */
+  lowerWithSlot(node: ts.Expression, literal: ts.Expression, slot: SlotSignature): IrExpr {
+    const previous = this.slotSignatures.get(literal);
+    this.slotSignatures.set(literal, slot);
+    try {
+      return this.lowerExpr(node);
+    } finally {
+      if (previous === undefined) this.slotSignatures.delete(literal);
+      else this.slotSignatures.set(literal, previous);
+    }
   }
 
   /** The conversion lowerExprExpecting applies to `e`, the lowered value
@@ -14830,11 +18875,14 @@ export class Lowerer {
     return this.coerceInto(node, e, expected);
   }
 
-  /** An unannotated empty collection has no existing elements or aliases
-   * that constrain its layout. An explicit type argument still wins. */
-  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+  /** What `node` builds when it is a fresh empty container with no type of
+   * its own: `[]`, or `new Map()` / `new Set()` with no arguments and no
+   * type arguments. Null for every other expression. */
+  freshEmptyContainer(node: ts.Expression): "array" | "map" | "set" | null {
     let value = node;
     while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isArrayLiteralExpression(value))
+      return value.elements.nodes.length === 0 ? "array" : null;
     if (
       !ts.isNewExpression(value) ||
       !ts.isIdentifier(value.expression) ||
@@ -14844,9 +18892,16 @@ export class Lowerer {
       return null;
     const symbol = this.resolveValueSymbol(value.expression);
     if (!symbol || !this.isStdlibSymbol(symbol)) return null;
-    const kind =
-      ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
-    if (!kind) return null;
+    return ts.symbolName(symbol) === "Map" ? "map" : ts.symbolName(symbol) === "Set" ? "set" : null;
+  }
+
+  /** An unannotated empty collection has no existing elements or aliases
+   * that constrain its layout. An explicit type argument still wins. */
+  emptyCollectionFor(node: ts.Expression, expected: IrType): IrExpr | null {
+    let value = node;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    const kind = this.freshEmptyContainer(value);
+    if (kind !== "map" && kind !== "set") return null;
     const arms =
       expected.kind === "union" ? (this.unions.get(expected.unionId)?.arms ?? []) : [expected];
     const candidates = arms.filter((arm) => arm.kind === kind);
@@ -14901,6 +18956,21 @@ export class Lowerer {
     return type;
   }
 
+  /** The join of two IR arm types under the union-mapping rules
+   * (mergePromiseArms), or null when they have none. The checker sometimes
+   * types a conditional by ONE arm: a union of module namespace types
+   * cannot be serialized back from typescript-go, so `c ? import("./a") :
+   * import("./b")` reads as the first arm's promise and the second arm
+   * would be coerced into it (the two namespaces are different modules, not
+   * the same value). The promise-arm merge is exactly the join the union
+   * mapping would have built — several namespace payloads are one
+   * checked-dynamic payload — so the ternary can apply it to the arms it
+   * actually lowered. */
+  mergePromiseArmTypes(arms: readonly IrType[]): IrType | null {
+    const merged = mergePromiseArms([...arms], this.typeCtx);
+    return merged !== null && merged.length === 1 ? merged[0]! : null;
+  }
+
   /** Whether a promise of `from` converts to a promise of `to` through the
    * checked payload widening (coerceToExpected's boxed-settlement rule,
    * which keeps the promise's identity and settlement turn). */
@@ -14923,6 +18993,38 @@ export class Lowerer {
         (id) => this.unions.get(id),
       )
     );
+  }
+
+  /** Whether a property the static type does not declare can be read and
+   * written through the checked-dynamic layer with JavaScript identity: an
+   * array (the native array's named-property table, which its checked view
+   * refreshes from and commits to) or a record with fields or an index
+   * signature (its live view keeps the properties the record cannot
+   * store). The predicate is the dyn coercion's `liveReference`, so a
+   * property added through one conversion is visible through every later
+   * one. Kinds whose conversion copies (bytes) or boxes (handles,
+   * functions, class values) are excluded: the property would land in a
+   * copy or need the handle's own table, and they keep their fences. A
+   * builtin value (`TextEncoder`, a URL, ...) is typed as a record with an
+   * internal slot, but the checked-dynamic layer holds it as a handle and
+   * refuses a property set on it, so the slot excludes it here too. A
+   * tuple is a record layout but views as an array, and its checked view
+   * rebuilds that array from the tuple's fields on every refresh without
+   * keeping added properties, so it keeps its fence as well. */
+  jsDynamicMemberTarget(t: IrType): boolean {
+    if (t.kind === "array") return true;
+    if (t.kind === "record") {
+      const shape = this.shapes.get(t.shapeId);
+      if (!shape || shape.tuple || shape.fields.some((f) => f.name.startsWith("%"))) return false;
+      return shape.fields.length > 0 || shape.indexValue !== undefined;
+    }
+    if (t.kind === "union") {
+      const def = this.unions.get(t.unionId);
+      return (
+        !!def && def.arms.every((a) => a.kind === "undefinedT" || this.jsDynamicMemberTarget(a))
+      );
+    }
+    return false;
   }
 
   /** The first reason `t` lies outside the checked conversion's domain
@@ -15161,9 +19263,81 @@ export class Lowerer {
         this.promisePayloadIsNever(node)
       )
         return this.divergentValue(awaited, expected);
-      return this.coerceInto(node, awaited, expected);
+      return this.returnedPayloadInto(node, awaited, expected);
     }
+    if (this.ctx.isAsync) this.refuseReturnedThenable(node, e);
     return this.coerceInto(node, e, expected);
+  }
+
+  /** The awaited value of a promise an async function returns, converted
+   * into the function's result by the slot conversion. The node is the
+   * promise, so the site's type is the payload's own: nothing narrows a
+   * promise's payload, and every arm of a payload union settles the
+   * function. An arm that is neither the result nor convertible into it
+   * is reported like the plain flow of that arm into the result, instead
+   * of compiling to a conversion that throws when the value arrives. */
+  returnedPayloadInto(node: ts.Expression, awaited: IrExpr, expected: IrType): IrExpr {
+    if (
+      awaited.type.kind === "union" &&
+      expected.kind === "record" &&
+      this.armTag(awaited.type.unionId, expected) >= 0
+    )
+      this.requireSeenArmsConvert(node, awaited.type.unionId, awaited.type, expected);
+    return this.coerceInto(node, awaited, expected, awaited.type);
+  }
+
+  /** Whether the checker types the slot `node` sits in as the record
+   * `expected`: its contextual type, with an async return's
+   * `T | PromiseLike<T>` read as `T`. */
+  private slotTypedAs(node: ts.Node, expected: IrType): boolean {
+    let context = this.checker.getContextualType(node);
+    if (context === undefined) return false;
+    if (
+      context.isUnionType() &&
+      ts.constituentTypes(context).some((t) => ts.symbolNameOf(t.getSymbol()) === "PromiseLike")
+    )
+      context = this.checker.getAwaitedType(context) ?? context;
+    const slot = this.mapTypeOf(context);
+    return !!slot && typeEquals(slot, expected);
+  }
+
+  /** A union flowing into a record slot that is one of its arms, where
+   * the checker types the value `site`: every record or class instance arm
+   * it still sees there is a value of the slot's type, so it is the slot's
+   * own arm or converts into it (coerceToExpected). One that does neither
+   * is reported like the plain flow of that arm into the slot. Arms of
+   * another kind are not this conversion's to judge (a promise beside the
+   * record it settles with is adopted where the slot takes one) and keep
+   * the checked extraction. */
+  private requireSeenArmsConvert(
+    node: ts.Node,
+    unionId: string,
+    site: IrType,
+    expected: IrType,
+  ): void {
+    const seen = site.kind === "union" ? (this.unions.get(site.unionId)?.arms ?? []) : [site];
+    for (const arm of seen) {
+      if (arm.kind !== "record" && arm.kind !== "object") continue;
+      if (typeEquals(arm, expected) || this.armTag(unionId, arm) < 0) continue;
+      if (this.widthLiftPlan(arm, expected) === null) this.requireExactShape(node, arm, expected);
+    }
+  }
+
+  /** `return v` in an async function where `v` is a typed object with a
+   * callable `then` that is not a promise: Node resolves the function's
+   * promise by calling that `then`. Converting `v` into the result as a
+   * plain object would settle with the object itself, so the return is
+   * refused by name. */
+  refuseReturnedThenable(node: ts.Expression, e: IrExpr): void {
+    if (e.type.kind !== "object" && e.type.kind !== "record") return;
+    const then = this.checker.getPropertyOfType(this.typeOf(node), "then");
+    if (then === undefined) return;
+    if (this.checker.getCallSignatures(this.checker.getTypeOfSymbol(then)).length === 0) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning a thenable '${this.fmt(e.type)}' from an async function (Node settles the function's promise through the value's then method, which has no lowering here — return a promise instead, e.g. \`new Promise((resolve, reject) => value.then(resolve, reject))\`)`,
+    );
   }
 
   /** Whether a promise returned here resolves the function's own promise
@@ -15214,11 +19388,26 @@ export class Lowerer {
     const s = this.lowerReturnOf(node, loc);
     const awaited = this.returnAwaitedPromise;
     this.returnAwaitedPromise = saved;
-    if (!awaited) return s;
-    if (s.kind === "return") return { ...s, awaited: true };
+    // A checked-dynamic operand may hold a promise: the same await settles
+    // it, and takes its one turn for any other value.
+    const settled = (ret: IrStmt & { kind: "return" }): IrStmt & { kind: "return" } => {
+      if (awaited) return { ...ret, awaited: true };
+      if (ret.value?.type.kind !== "dyn" || !mayResolveThroughThen(this, this.typeOf(node)))
+        return ret;
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "async.awaitDyn",
+        args: [ret.value],
+        type: DYN,
+        loc: ret.value.loc,
+      };
+      return { ...ret, value, awaited: true };
+    };
+    if (s.kind === "return") return settled(s);
     if (s.kind === "block" && s.body.at(-1)?.kind === "return") {
       const last = s.body.at(-1) as IrStmt & { kind: "return" };
-      return { ...s, body: [...s.body.slice(0, -1), { ...last, awaited: true }] };
+      const ret = settled(last);
+      return ret === last ? s : { ...s, body: [...s.body.slice(0, -1), ret] };
     }
     return s;
   }
@@ -15243,10 +19432,65 @@ export class Lowerer {
     return stmt;
   }
 
+  /** `return v` where the checker types v as checked-dynamic and the async
+   * result is a concrete type: the run-time value decides. A promise adopts
+   * into the result the way a statically typed one does (JS's async
+   * resolution adopts a returned thenable): the function's promise settles
+   * where that one does, one turn later, and its rejection never reaches
+   * the function's own catch clauses. Any other value converts now, as the
+   * ordinary return does. The operand binds to a hidden local because the
+   * branch tests it and then returns it. Null when the return is not that
+   * shape, or when the result holds the value as it is (dyn, promise) or
+   * discards it (void). */
+  dynamicReturnStmt(node: ts.Expression, e: IrExpr, expected: IrType, loc: SrcLoc): IrStmt | null {
+    if (!this.adoptsReturnedPromise()) return null;
+    if (e.type.kind !== "dyn") return null;
+    if (expected.kind === "dyn" || expected.kind === "promise" || expected.kind === "void")
+      return null;
+    const local = this.declareHiddenLocal("%returned", DYN);
+    const read = (): IrExpr => varRef(local.id, DYN, loc);
+    // The test and the cast agree — both look for a native promise — so the
+    // cast cannot fail. A thenable object is a value here, not a promise: it
+    // converts (or fails to convert) like any other.
+    const awaited = this.returnedPromiseAwait({
+      kind: "dynCheck",
+      value: read(),
+      type: { kind: "promise", inner: DYN },
+      loc,
+    });
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: local.id, init: e, loc },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "promise", value: read(), type: BOOL, loc },
+          then: [{ kind: "return", value: this.coerceInto(node, awaited, expected), loc }],
+          else_: [{ kind: "return", value: this.coerceInto(node, read(), expected), loc }],
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+
   private lowerReturnOf(node: ts.Expression, loc: SrcLoc): IrStmt {
     const expected = this.ctx.returnType;
     if (expected.kind === "void") {
+      this.refuseDroppedStaleReturn(node);
       let e = this.lowerExpr(node);
+      // A result declared `undefined` has the void representation: an
+      // untyped value returned into it is checked, as it is in a binding
+      // declared `undefined`, instead of being dropped unseen.
+      if (
+        !this.ctx.isAsync &&
+        (e.type.kind === "dyn" || (this.typeOf(node).flags & ts.TypeFlags.Any) !== 0) &&
+        returnsDeclaredUndefined(this, node)
+      ) {
+        const check = checkedUndefinedResult(this, e, loc);
+        if (check !== null)
+          return { kind: "block", body: [...check, { kind: "return", value: null, loc }], loc };
+      }
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
       if (this.ctx.isAsync && e.type.kind === "promise") {
@@ -15281,13 +19525,33 @@ export class Lowerer {
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
-      // the statement form, which branches between adoption and fulfillment.
+      // the statement form, which branches between adoption and fulfillment,
+      // and so does a checked-dynamic operand, whose run-time promise the
+      // branch adopts.
       const e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
+      const dynamic = this.dynamicReturnStmt(node, e, expected, loc);
+      if (dynamic) return dynamic;
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };
+  }
+
+  /** A function returns nothing when the checker inferred its return type
+   * from a read it narrowed to `undefined`. A call may have stored a value
+   * there since (widenedType restored the read), and returning nothing
+   * would drop it; the caller's types were inferred from the same
+   * narrowing, so only a declared return type can carry the value. */
+  refuseDroppedStaleReturn(node: ts.Expression): void {
+    const stale = this.narrowing.restoredNothingRead(node);
+    if (stale === null) return;
+    this.unsupported(
+      "SC1090",
+      node,
+      `returning '${ts.getTextOfNode(stale)}' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function)`,
+      "declare the function's return type, so the result is the value stored at the return",
+    );
   }
 
   maybeNarrow(expr: IrExpr, node: ts.Node): IrExpr {
@@ -15501,14 +19765,19 @@ export class Lowerer {
       // (the 1e999 JSON-marshal signature crossed collectSignature): the
       // declaration poisons under a source-anchored diagnostic, deferred
       // like any collection fence — never a crashed CLI.
-      if (isCheckerPanic(e)) {
+      // An internal compiler error raised while collecting poisons the
+      // declaration the same way, under SC9001 at the innermost node its
+      // collection had reached (diagnostics/crash-site.ts), unless this
+      // collection runs inside another capture buffer: there it keeps
+      // propagating (see lowerStmts' fence), with the site noted.
+      if (isCompilerCrash(e)) {
         const decl = symbol ? symbol.declarations[0] : undefined;
-        sink.push(
-          checkerPanicDiag(
-            e.message.split("\n", 1)[0]!,
-            decl ? locOf(decl) : { file: this.entry.fileName, start: 0, end: 0 },
-          ),
-        );
+        const declLoc = decl ? locOf(decl) : { file: this.entry.fileName, start: 0, end: 0 };
+        if (e instanceof InternalCompilerError && previousSink !== null) {
+          noteCrashSite(e, () => declLoc);
+          throw e;
+        }
+        sink.push(compilerCrashDiag(e, declLoc));
       } else if (!(e instanceof PoisonError)) {
         throw e;
       }
@@ -15636,6 +19905,30 @@ export class Lowerer {
     }
   }
 
+  /** Whether the declaration flush retry (retryDeferred) can still act on
+   * one of `diags`: a type failure it degrades, or a collection that only
+   * waited for another declaration. A class member refusal with such a
+   * diagnostic is left to that retry (class-member-refusals.ts): the retry
+   * compiles the member where confining it would refuse it. */
+  declarationRetryMayClear(diags: readonly ScrDiagnostic[]): boolean {
+    if (this.tierMode !== "auto") return false;
+    return diags.some((diag) => {
+      if (this.retriableDiags.has(diag)) return true;
+      const failure = diag.typeFailure;
+      if (failure === undefined) return false;
+      if (failure.family === "dyn-field-policy") return true;
+      const type = this.failedTypes.get(failure);
+      const id = (type as { id?: number } | undefined)?.id;
+      return (
+        type !== undefined &&
+        id !== undefined &&
+        failure.degradable &&
+        DECLARATION_SLOTS.has(failure.slot) &&
+        this.degradedTypes.get(id)?.lenient?.kind !== "dyn"
+      );
+    });
+  }
+
   private retryDeferredRounds(
     symbol: ts.Symbol,
     collector: { symbolOf: () => ts.Symbol | undefined; collect: () => void },
@@ -15661,6 +19954,23 @@ export class Lowerer {
         }
         const type = failure === undefined ? undefined : this.failedTypes.get(failure);
         const id = (type as { id?: number } | undefined)?.id;
+        // A type that another declaration's retry degraded to the whole-slot
+        // dynamic after this diagnostic was recorded: the diagnostic is
+        // stale, so the collection runs again once, as for a declaration
+        // that only waited for another. The diagnostics of a later round
+        // come from a collection that already saw the degraded type.
+        if (
+          round === 0 &&
+          failure !== undefined &&
+          id !== undefined &&
+          failure.degradable &&
+          DECLARATION_SLOTS.has(failure.slot) &&
+          this.degradedTypes.get(id)?.lenient?.kind === "dyn"
+        ) {
+          retriable = true;
+          slots.push({ loc: diag.loc, failure, code: diag.code, reason: diag.message });
+          continue;
+        }
         if (
           failure === undefined ||
           type === undefined ||
@@ -15688,9 +19998,10 @@ export class Lowerer {
                   code: prior.code,
                   reason: prior.reason,
                   ...(prior.canonical === true ? { canonical: true as const } : {}),
+                  ...(prior.generatorArray ? { generatorArray: prior.generatorArray } : {}),
                 },
         });
-        this.degradeType(type, diag.code, diag.message);
+        this.degradeType(type, diag.code, diag.message, diag.loc);
         const canonical = this.isCanonicalDegraded(id);
         const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
         slots.push({
@@ -15931,6 +20242,10 @@ export class Lowerer {
    * file before reachability is known (speculativeTypeQueries). */
   private speculativeTypeQueryDepth = 0;
 
+  /** Depth of the class collections a speculative analysis' type query
+   * started (collectLocalClassForType). */
+  private speculativeCollectionDepth = 0;
+
   /** Runs a whole-program analysis whose type queries are speculative: they
    * visit every file, reached or not, and no statement or declaration owns
    * a refusal they trigger (collectLocalClassForType). */
@@ -15951,16 +20266,22 @@ export class Lowerer {
    * an analysis already caught the poison) and the class is unmappable for
    * the query instead of the poison escaping the compiler. */
   collectLocalClassForType(decl: ts.ClassLikeDeclaration): boolean {
-    if (this.speculativeTypeQueryDepth === 0 || this.fnStack.length > 0) {
+    if (this.speculativeTypeQueryDepth === 0) {
       this.lowerClassExpressionInfo(decl);
       return true;
     }
+    // The collection is real work with fences of its own: a checker panic
+    // inside it is reported there, not answered as the analysis' queries
+    // are (typeOf).
+    this.speculativeCollectionDepth++;
     try {
       this.lowerClassExpressionInfo(decl);
       return true;
     } catch (e) {
-      if (e instanceof PoisonError) return false;
+      if (this.fnStack.length === 0 && e instanceof PoisonError) return false;
       throw e;
+    } finally {
+      this.speculativeCollectionDepth--;
     }
   }
 
@@ -15984,6 +20305,35 @@ export class Lowerer {
     };
   } | null {
     return findMethodOn(this, info, name);
+  }
+
+  /** An error handed to a record type (`advice(err)` where the parameter is
+   * `{ message?: string; tag?: string }`): the record is read off the
+   * error's checked-dynamic view, each member as JavaScript reads it from
+   * the error and checked at the member's type. An error class has no field
+   * copy (objToRecordPlan declines the members the runtime holds), so the
+   * pair had no conversion and was refused. Asked only where every other
+   * conversion declined, so a pair that converted keeps its route.
+   *
+   * A record that names `stack` keeps the refusal: the view of a program
+   * subclass's instance does not answer `stack` to the record's member read
+   * (it would read as absent), and a slot typed by a builtin error class can
+   * hold such an instance. */
+  private errorIntoRecord(expr: IrExpr, expected: IrType): IrExpr | null {
+    if (expr.type.kind !== "object" || expected.kind !== "record") return null;
+    if (!this.isErrorRootedClass(expr.type.className) || !this.dynConvertible(expr.type))
+      return null;
+    if (this.shapes.get(expected.shapeId)?.fields.some((field) => field.name === "stack"))
+      return null;
+    if (
+      !canDynCheckTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    )
+      return null;
+    return this.coerceToExpected(this.coerceToExpected(expr, DYN), expected);
   }
 
   /** A class whose root is the runtime's %Error (builtin errors and their
@@ -16166,14 +20516,14 @@ export class Lowerer {
   }
 
   lowerClassCtor(info: ClassInfo): IrFunction {
-    return lowerClassCtor(this, info);
+    return this.lowerUnitRetrying(() => lowerClassCtor(this, info));
   }
 
   lowerClassMethodMember(
     info: ClassInfo,
     fnLike: ts.MethodDeclaration | ts.AccessorDeclaration,
   ): IrFunction | null {
-    return lowerClassMethodMember(this, info, fnLike);
+    return this.lowerUnitRetrying(() => lowerClassMethodMember(this, info, fnLike));
   }
 
   throwingSetterFn(info: ClassInfo, prop: string): IrFunction {
@@ -16199,7 +20549,9 @@ export class Lowerer {
   }
 
   lowerFunction(decl: ts.FunctionDeclaration): IrFunction | null {
-    return lowerFunction(this, decl);
+    // A TypeScript function's body-level poison is thrown to the commit
+    // point here; a JavaScript function answers its own (a runtime fence).
+    return this.lowerUnitDegrading(() => lowerFunction(this, decl));
   }
 
   collectGlobals(sf: ts.SourceFile, topStmts: ts.Statement[]): void {
@@ -16738,8 +21090,28 @@ export class Lowerer {
         });
         return;
       }
+      // A literal lowered at its slot's signature receives the slot's
+      // value in a hidden ABI parameter and binds its own type from it:
+      // the conversion the slot's adapter would have applied per call.
+      const passed = shape.slotType ? this.declareHiddenLocal(name, shape.slotType) : null;
       const local = this.declareLocal(decl.name, name, shape.type, true);
-      params.push({ localId: local.id, name, type: local.type });
+      if (passed) {
+        const loc = locOf(decl);
+        params.push({ localId: passed.id, name, type: passed.type });
+        // A generic instance's slot that holds further records beside the
+        // parameter's own: the conversion throws for each of them (SC6015).
+        if (this.typeParamBindings !== null)
+          noteStrandedInstanceParameter(this, decl.name, passed.type, local.type);
+        const converted = this.coerceToExpected(
+          { kind: "varRef", localId: passed.id, type: passed.type, loc },
+          local.type,
+        );
+        if (!typeEquals(converted.type, local.type))
+          throw new InternalCompilerError("lowerer bug: probed slot parameter stopped coercing");
+        prologue.push({ kind: "varDecl", localId: local.id, init: converted, loc });
+      } else {
+        params.push({ localId: local.id, name, type: local.type });
+      }
       if (
         shape.mode === "required" &&
         shape.type.kind === "union" &&
@@ -17021,7 +21393,18 @@ export class Lowerer {
   }
 
   lowerStmt(stmt: ts.Statement): IrStmt | IrStmt[] | null {
-    return lowerStmt(this, stmt);
+    const outermost = openLoweringBudget(stmt);
+    const frame = this.openRefusedProbeFrame();
+    const operands = this.openOperandFrame();
+    try {
+      const lowered = lowerStmt(this, stmt);
+      if (outermost) refuseSpentLowering(this);
+      return lowered;
+    } finally {
+      this.closeOperandFrame(operands);
+      this.closeRefusedProbeFrame(frame);
+      closeLoweringBudget();
+    }
   }
 
   lowerVarStatement(stmt: ts.VariableStatement): IrStmt[] {
@@ -17113,8 +21496,8 @@ export class Lowerer {
     return lowerTry(this, stmt);
   }
 
-  lowerExprStatement(expr: ts.Expression): IrStmt {
-    return lowerExprStatement(this, expr);
+  lowerExprStatement(expr: ts.Expression, leaf?: (expr: ts.Expression) => IrStmt | null): IrStmt {
+    return lowerExprStatement(this, expr, leaf);
   }
 
   lowerForOf(stmt: ts.ForOfStatement): IrStmt {
@@ -17164,9 +21547,101 @@ export class Lowerer {
       }
     }
     const streamValue = this.valueStreamReceivers.get(expr);
-    if (streamValue)
-      return valueStreamOf(varRef(streamValue.localId, streamValue.type, locOf(expr)));
-    return this.stagedArgument(expr) ?? lowerExpr(this, expr);
+    if (streamValue) {
+      const value = varRef(streamValue.localId, streamValue.type, locOf(expr));
+      return streamValue.writable ? writableStreamOf(value) : valueStreamOf(value);
+    }
+    const staged = this.stagedArgument(expr);
+    if (staged !== null) return staged;
+    const dispatched = this.dispatchedReceiver;
+    if (dispatched !== null && dispatched.node === expr)
+      return this.lowerDispatchedReceiver(dispatched);
+    if (this.operandFrames > 0 && !isCheapOperand(expr)) return this.lowerOperand(expr);
+    return lowerExpr(this, expr);
+  }
+
+  /** The operands the expression or statement on top has lowered and may
+   * ask for again (null until the first), by node, and how many expressions
+   * and statements are open.
+   *
+   * A call's receiver is not the only operand lowered more than once: the
+   * Object statics probe their argument to see what it lowered to and then
+   * lower it for the form they pick (`Object.keys(Object.keys(x))` cost four
+   * lowerings per level), and assignments, updates, `in`, `typeof` and the
+   * member reads of JavaScript sources probe a receiver the same way. Each
+   * expression and statement keeps what it lowered for as long as it is
+   * being lowered (lowerOperand). Keyed by node because only a node's latest
+   * lowering is repeated; the list this replaced held every lowering and was
+   * scanned from its end, so a wide expression's lookups were quadratic in
+   * the operands it had lowered. */
+  private keptOperands: Map<ts.Expression, KeptOperand> | null = null;
+  private operandFrames = 0;
+
+  /** Starts the expression or statement that owns the operands kept until
+   * closeOperandFrame; returns the enclosing owner's. */
+  openOperandFrame(): Map<ts.Expression, KeptOperand> | null {
+    const outer = this.keptOperands;
+    this.keptOperands = null;
+    this.operandFrames++;
+    return outer;
+  }
+
+  closeOperandFrame(outer: Map<ts.Expression, KeptOperand> | null): void {
+    this.keptOperands = outer;
+    this.operandFrames--;
+  }
+
+  /** The lowering of an operand of the expression or statement on top: the
+   * value its earlier lowering produced for the same request, when a new
+   * lowering would produce it again (keptOperandStands), and a lowering
+   * that is kept for the next request otherwise.
+   *
+   * Only a lowering that left nothing behind is kept (probeEffects, and
+   * nothing in the capture buffer), so the output cannot depend on whether
+   * it ran once or twice. The receiver of a call is the one operand that is
+   * kept when it declares something (lowerDispatchedReceiver). */
+  private lowerOperand(node: ts.Expression): IrExpr {
+    if (this.chainRecvByNode.has(node)) return lowerExpr(this, node);
+    const surroundings = this.probeSurroundings();
+    const kept = this.keptOperands;
+    if (kept !== null) {
+      // The node's latest lowering is the one a new lowering repeats.
+      const operand = kept.get(node);
+      keptOperandLookups++;
+      if (
+        operand !== undefined &&
+        operand.value !== null &&
+        this.keptOperandStands(operand, surroundings)
+      )
+        return operand.value;
+    }
+    const effects = this.probeEffects();
+    const sinkMark = this.diagSinkMark();
+    const value = lowerExpr(this, node);
+    if (
+      this.probeEffects() === effects &&
+      this.diagSinkMark() === sinkMark &&
+      this.probeSurroundings() === surroundings
+    ) {
+      // Created and written in separate statements: the compiler compiles
+      // its own source, and it has no lowering for a Map method chained onto
+      // the `??=` that creates the map (SC2020).
+      let operands = this.keptOperands;
+      if (operands === null) {
+        operands = new Map();
+        this.keptOperands = operands;
+      }
+      operands.set(node, {
+        node,
+        value,
+        ctx: this.ctx,
+        bindings: this.typeParamBindings,
+        surroundings,
+        overrides: this.chainRecvByNode.size === 0 ? null : [...this.chainRecvByNode.values()],
+        slotNotes: null,
+      });
+    }
+    return value;
   }
 
   /** The value storedImplicitArgumentType lowered for `expr` in the active
@@ -17180,11 +21655,22 @@ export class Lowerer {
       : null;
   }
 
+  /** Whether a call of member `name` on a record passes the record as the
+   * call's receiver: a function that reads the receiver of its call can be
+   * the member's value (member-call-receivers.ts). */
+  memberCallCarriesReceiver(name: string): boolean {
+    return this.memberCallReceiverCensus().carries(name);
+  }
+
+  memberCallReceiverCensus(): MemberCallReceivers {
+    return (this.memberReceivers ??= memberCallReceivers(this));
+  }
+
   /** The saved value of a staged fs argument (stagedArguments, keyed
    * without type-only wrappers), or null for every other expression. */
   private stagedArgument(node: ts.Expression): IrExpr | null {
     if (this.stagedArguments.size === 0) return null;
-    node = stripTypeWrappers(node);
+    node = withoutParenthesesTypeWrappers(node);
     if (!this.stagedArguments.has(node)) return null;
     const slot = this.stagedArguments.get(node);
     if (!slot)
@@ -17207,7 +21693,51 @@ export class Lowerer {
    * members by name + this provenance, and everything else those files
    * declare hits the SC2020-family fence). The file half of every
    * supported-surface provenance check. */
-  readonly isStdlibFile = (sf: ts.SourceFile): boolean => this.facts.isStdlibFile(sf);
+  // A method, like pathOf below, and not a function-valued field: the
+  // compiler lowers its own source, and while this was a field the Lowerer
+  // itself could stand in for a record with an `isStdlibFile` member (the
+  // os.constants predicates took it that way). Every call of the field then
+  // handed the Lowerer over as a dynamic value, which made the Lowerer and
+  // each class its fields reach a class of the dynamic tier: 9,000 functions
+  // of the compiler's own build. Where a function is wanted, pass
+  // `(sf) => lowerer.isStdlibFile(sf)`.
+  isStdlibFile(sf: ts.SourceFile): boolean {
+    return this.facts.isStdlibFile(sf);
+  }
+
+  /** The slice of the type mapper's context the os.constants predicates
+   * read: a record, not the Lowerer (see isStdlibFile). */
+  osConstantsCtx(): Pick<TypeMapperCtx, "checker" | "isStdlibFile"> {
+    return { checker: this.checker, isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf) };
+  }
+
+  /** What the binding-write scan (binding-writes.ts) reads of a lowering
+   * context: a record, not the Lowerer (see isStdlibFile). Its parameter is
+   * the BindingScope interface, and handing it the Lowerer converted the
+   * Lowerer to a dynamic value at every one of its callers when the
+   * compiler compiles itself. The record shares this Lowerer's cache. */
+  bindingScope(): BindingScope {
+    return {
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
+  }
+
+  /** What the specifier bounder (specifier-bounds.ts) reads of a lowering:
+   * a record, not the Lowerer (see isStdlibFile). The bounder's parameter is
+   * an interface, because the graph walks that run before lowering bound a
+   * site with a context of their own (specifierBoundContextOf), and a
+   * Lowerer handed over there would be a dynamic value when the compiler
+   * compiles itself. The record shares this Lowerer's reassignment cache and
+   * resolves value symbols as the lowering does. */
+  specifierBoundContext(): SpecifierBoundContext {
+    return {
+      program: this.program,
+      checker: this.checker,
+      neverReassignedCache: this.neverReassignedCache,
+      resolveValueSymbol: (ident: ts.Identifier) => this.resolveValueSymbol(ident),
+    };
+  }
 
   /** provenanceOf's answers (type-mapper.ts's SymbolProvenance), keyed by
    * symbol. A symbol's declarations are fixed for one loaded program, and
@@ -17219,7 +21749,7 @@ export class Lowerer {
   /** SCRIPTC_LOWERING_FACTS_VERIFY: the shared provenance memo answered, so
    * recompute it and fail on a disagreement (lowering-facts.ts). */
   private verifySymbolProvenanceAnswer(sym: ts.Symbol, answer: SymbolProvenance): void {
-    const fresh = computeSymbolProvenance(sym, this.isStdlibFile);
+    const fresh = computeSymbolProvenance(sym, (sf: ts.SourceFile) => this.isStdlibFile(sf));
     // The two lazily filled answers (`??=` on a hit) are declaration-only
     // too, so recompute the ones an answer carries. The pass that filled one
     // stored the value it computed, and this comparison catches a later pass
@@ -17227,11 +21757,15 @@ export class Lowerer {
     const freshWebAssembly =
       answer.webAssembly === undefined
         ? undefined
-        : declaresWebAssemblyNamespace(sym.declarations, this.isStdlibFile);
+        : declaresWebAssemblyNamespace(sym.declarations, (sf: ts.SourceFile) =>
+            this.isStdlibFile(sf),
+          );
     const freshLegacyUrl =
       answer.legacyUrl === undefined
         ? undefined
-        : declaresLegacyUrl(sym.declarations, { isStdlibFile: this.isStdlibFile });
+        : declaresLegacyUrl(sym.declarations, {
+            isStdlibFile: (sf: ts.SourceFile) => this.isStdlibFile(sf),
+          });
     const same =
       fresh.stdlibInterface === answer.stdlibInterface &&
       fresh.stdlibClass === answer.stdlibClass &&
@@ -17257,7 +21791,9 @@ export class Lowerer {
 
   /** tsgoPath(resolve(sf.fileName)): the path spelling the module tables
    * key by. A source file's path cannot change while the program lowers. */
-  readonly pathOf = (sf: ts.SourceFile): string => this.facts.pathOf(sf);
+  pathOf(sf: ts.SourceFile): string {
+    return this.facts.pathOf(sf);
+  }
 
   /** Whether values of `type` are island handles (boundary.ts's
    * isForeignType; the answers and their invalidation live in
@@ -17267,13 +21803,45 @@ export class Lowerer {
     return this.facts.foreignType(type, this.nodeIslands, this.checker);
   }
 
+  /** `view`, a Node island function's typed view (islandFunctionView), seen
+   * at the signature `want` instead: the same adapter over the same handle,
+   * so the same function. A consumer whose own calling convention differs
+   * from the slot the checker spelled (an array helper's element layout, a
+   * collection's key type) takes the view at its convention rather than
+   * stacking a second adapter on it. Null when `view` is not such a view of
+   * the expression `node`, or `want` is not a signature the boundary adapts. */
+  islandFunctionViewAt(view: IrExpr, node: ts.Expression, want: IrType): IrExpr | null {
+    if (view.kind !== "dynCheck" || view.type.kind !== "func" || view.value.type.kind !== "dyn")
+      return null;
+    if (want.kind !== "func" || !this.islandFunctionType(this.typeOf(node))) return null;
+    if (typeEquals(view.type, want)) return view;
+    const adapts = canAdaptDynFuncTo(
+      want,
+      (id) => this.shapes.get(id),
+      (id) => this.unions.get(id),
+    );
+    return adapts ? { ...view, type: want } : null;
+  }
+
+  /** Whether values of `type` are functions a Node island made: an object
+   * type an island declares, with a call signature. The memoized island
+   * test runs first; few types pass it. */
+  islandFunctionType(type: ts.Type): boolean {
+    return (
+      this.nodeIslands !== null &&
+      (type.flags & ts.TypeFlags.Object) !== 0 &&
+      this.foreignType(type) &&
+      this.checker.getCallSignatures(type).length > 0
+    );
+  }
+
   nodeTypesOnlySymbol(sym: ts.Symbol | null | undefined): boolean {
     return nodeTypesOnlySymbol(this, sym);
   }
 
   readonly isNpmFile = (sf: ts.SourceFile): boolean =>
     sf.isDeclarationFile &&
-    (sf.fileName.includes("/node_modules/") || workspacePackageOfPath(sf.fileName) !== null) &&
+    (isInstalledPackagePath(sf.fileName) || workspacePackageOfPath(sf.fileName) !== null) &&
     !this.isStdlibFile(sf) &&
     // A bundled copy's forwarder to a package shim types compiled code.
     !isBundledShimForwarder(sf.fileName);
@@ -17425,8 +21993,8 @@ export class Lowerer {
     return lowerLiveWebValue(this, node);
   }
 
-  ensureString(e: IrExpr, node: ts.Node): IrExpr {
-    return ensureString(this, e, node);
+  ensureString(e: IrExpr, node: ts.Node, hint: "string" | "default" = "string"): IrExpr {
+    return ensureString(this, e, node, hint);
   }
 
   lowerTemplate(expr: ts.TemplateExpression): IrExpr {
@@ -17434,7 +22002,22 @@ export class Lowerer {
   }
 
   lowerAsExpression(expr: ts.AsExpression | ts.TypeAssertion): IrExpr {
-    return lowerAsExpression(this, expr);
+    const out = lowerAsExpression(this, expr);
+    // Coverage's type claims: the conversion is what the assertion claims.
+    // A cast that adopts its value converts it in a statement sequence.
+    if (this.typeClaims) {
+      const claims = isDeclBoundaryTypeNode(expr.type) ? this.boundaryClaims : this.assertedClaims;
+      const note = (e: IrExpr): void => {
+        if (e.kind === "dynCheck") claims.add(claimKey(e.loc));
+        else if (e.kind === "seqExpr") {
+          for (const stmt of e.stmts)
+            if (stmt.kind === "varDecl" && stmt.init !== null) note(stmt.init);
+          note(e.result);
+        }
+      };
+      note(out);
+    }
+    return out;
   }
 
   lowerPrefixUnary(expr: ts.PrefixUnaryExpression): IrExpr {
@@ -17610,6 +22193,30 @@ export class Lowerer {
     const webAssembly = lowerWebAssemblyCall(this, expr);
     if (webAssembly !== null) return webAssembly;
     refuseWebAssemblyUse(this, expr.expression);
+    // The forms below lower a method call's receiver once between them
+    // (dispatchedReceiver).
+    const callee = expr.expression;
+    const outerReceiver = this.dispatchedReceiver;
+    this.dispatchedReceiver =
+      ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)
+        ? {
+            node: callee.expression,
+            value: null,
+            ctx: null,
+            bindings: null,
+            surroundings: 0,
+            overrides: null,
+            slotNotes: null,
+          }
+        : null;
+    try {
+      return this.dispatchCall(expr);
+    } finally {
+      this.dispatchedReceiver = outerReceiver;
+    }
+  }
+
+  private dispatchCall(expr: ts.CallExpression): IrExpr {
     return (
       lowerErrorFunctionCall(this, expr) ??
       lowerLifetimeRegionCall(this, expr) ??
@@ -17827,6 +22434,7 @@ export class Lowerer {
     if (read.kind !== "fieldGet" || read.type.kind !== "union") return null;
     if (this.classes.get(read.className)?.deferredInitFields?.has(read.field) !== true) return null;
     return this.coercions.checkedNarrows.has(value.callee) ||
+      this.coercions.deferredRetags.has(value.callee) ||
       value.callee.startsWith("%deferred.read.")
       ? read
       : null;
@@ -17990,6 +22598,25 @@ export class Lowerer {
     // Default and CommonJS process bindings alias the global object, whose
     // methods and properties keep their existing process lowerings.
     if (stdlibGlobalNameOf(this, expr) === "process") return null;
+    // A namespace import binding (`import * as events from "node:events"`)
+    // of a supported builtin: the binding IS that module's ES namespace
+    // object. Answered from the import declaration because a CALLABLE
+    // module's type (node:events, node:assert, node:module, node:test)
+    // maps to the exported function rather than to a module namespace, so
+    // the type-based arms below would miss it.
+    if (ts.isIdentifier(expr)) {
+      const decl = this.checker.getSymbolAtLocation(expr)?.declarations.find(ts.isNamespaceImport);
+      const importDecl: ts.Node | undefined = decl?.parent?.parent;
+      if (importDecl !== undefined && ts.isImportDeclaration(importDecl)) {
+        const spec = importDecl.moduleSpecifier;
+        if (ts.isStringLiteral(spec)) {
+          const module = canonicalBuiltinModule(spec.text);
+          // The platform namespaces stay on their checked-dynamic module
+          // value (the type-based arm below owns them).
+          if (module !== null && module !== "path/posix" && module !== "path/win32") return module;
+        }
+      }
+    }
     const imported = ts.isIdentifier(expr) ? this.builtinImportOf(expr) : null;
     if (imported?.module === "util" && imported.member === "types") return "util/types";
     // path.win32 / path.posix as NAMED import bindings (`import { win32 }
@@ -18008,9 +22635,21 @@ export class Lowerer {
     const stored = ts.isIdentifier(expr)
       ? (this.peekLocal(expr)?.type ?? this.globalOf(expr)?.type)
       : undefined;
-    const mapped = stored ?? this.mapTypeOf(this.typeOf(expr));
+    // A literal `await import("node:fs")` read directly: the checker's
+    // awaited type for the call carries the module namespace, so the
+    // syntax-level resolution answers where the type mapping does not.
+    const mapped =
+      stored ?? staticImportNamespaceType(this, expr) ?? this.mapTypeOf(this.typeOf(expr));
     if (mapped?.kind === "moduleNs" && mapped.moduleId.startsWith("builtin:")) {
       return mapped.moduleId.slice("builtin:".length);
+    }
+    // `(await import("node:crypto")).createHash(...)`: the awaited literal
+    // import's value IS the builtin namespace token, though the checker's
+    // type for the expression is the module's object type — the spelling
+    // names its module directly (parenthesized, through a cast, or not).
+    if (ts.isAwaitExpression(withoutParenthesesAssertionsNonNull(expr))) {
+      const awaited = awaitedBuiltinDynamicImportOf(this, expr);
+      if (awaited !== null) return awaited.module;
     }
     // A nullable namespace binding (`const os: typeof NodeOs | null`, a
     // probed process.getBuiltinModule result) read where the checker
@@ -18036,7 +22675,7 @@ export class Lowerer {
       if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
         const spec = requireSpecOf(decl.initializer);
         if (spec !== null) return canonicalBuiltinModule(spec);
-        const init = stripTypeCasts(decl.initializer);
+        const init = withoutParenthesesTypeWrappers(decl.initializer);
         if (ts.isCallExpression(init)) {
           const cr = createRequireSpecOf(this, init);
           if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -18083,7 +22722,7 @@ export class Lowerer {
     // `require("node:path").join(...)` through a createRequire binding
     // (the fallback-typed cast idiom strips: `(require("x") as T).m`).
     {
-      const inner = stripTypeCasts(expr);
+      const inner = withoutParenthesesTypeWrappers(expr);
       if (ts.isCallExpression(inner)) {
         const cr = createRequireSpecOf(this, inner);
         if (cr !== null && cr.spec !== null) return canonicalBuiltinModule(cr.spec);
@@ -18122,12 +22761,102 @@ export class Lowerer {
     return null;
   }
 
+  /** The runtime SHAPE a builtin module namespace expression evaluates to.
+   * An `import * as ns` binding (directly, or through a binding initialized
+   * from one) and the value a dynamic import resolves to are ECMAScript
+   * module namespace objects; a require() value, a default import, a
+   * sub-namespace such as `fs.promises` and a named import of one are the
+   * CommonJS exports object. A parameter, or a call the compiler does not
+   * trace, holds whatever its caller stored, so its shape is unknown.
+   * Reflection over the shapes answers differently (builtin-module-members),
+   * so the distinction travels with the module name. Null when the
+   * expression is not a builtin module namespace. */
+  builtinNamespaceShapeOf(expr: ts.Expression): {
+    module: string;
+    flavor: BuiltinModuleNamespaceFlavor;
+  } | null {
+    const module = this.builtinNamespaceModuleOf(expr);
+    if (module === null) return null;
+    return { module, flavor: this.builtinNamespaceFlavorOf(expr) };
+  }
+
+  /** The runtime shape the namespace expression names, or "unknown" when its
+   * origin does not fix one. */
+  private builtinNamespaceFlavorOf(
+    expr: ts.Expression,
+    seen = new Set<ts.Node>(),
+  ): BuiltinModuleNamespaceFlavor {
+    const e = withoutParenthesesTypeWrappers(expr);
+    // Awaiting a value answers that value unless it is a promise, so the
+    // shape is the shape of the awaited expression. The traced promise is
+    // the dynamic import call, whose resolved value is an ES module
+    // namespace object; a require() call, a default import or a
+    // sub-namespace member is not a promise, and awaiting it answers the
+    // CommonJS exports object itself. A promise this classification does
+    // not trace holds a value whose shape it cannot name.
+    if (ts.isAwaitExpression(e)) return this.builtinNamespaceFlavorOf(e.expression, seen);
+    if (ts.isCallExpression(e)) {
+      if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return "esm";
+      // require() and process.getBuiltinModule() answer the CommonJS
+      // exports object.
+      if (requireSpecOf(e) !== null) return "cjs";
+      const cr = createRequireSpecOf(this, e);
+      if (cr !== null && cr.spec !== null) return "cjs";
+      if (
+        ts.isPropertyAccessExpression(e.expression) &&
+        e.expression.name.text === "getBuiltinModule" &&
+        this.stdlibGlobalMember(e.expression, "process") === "getBuiltinModule"
+      )
+        return "cjs";
+      return "unknown";
+    }
+    // A member of the module object that is itself a module
+    // (`fs.promises`, `path.win32`, `util.types`) is that module's CommonJS
+    // exports object; any other property holds whatever its owner stored.
+    if (ts.isPropertyAccessExpression(e)) {
+      const outer = this.builtinNamespaceModuleOf(e.expression);
+      return outer !== null && canonicalBuiltinModule(`${outer}/${e.name.text}`) !== null
+        ? "cjs"
+        : "unknown";
+    }
+    if (!ts.isIdentifier(e)) return "unknown";
+    const symbol = this.checker.getSymbolAtLocation(e);
+    const decl = symbol?.declarations[0];
+    // A binding chain that leads back to itself has no module namespace to
+    // report.
+    if (decl === undefined || seen.has(decl)) return "unknown";
+    seen.add(decl);
+    if (ts.isNamespaceImport(decl)) return "esm";
+    // A default import binds the CommonJS module object, a named import one
+    // of its members, and an import-equals binding the require() value.
+    if (ts.isImportClause(decl)) return "cjs";
+    if (ts.isImportSpecifier(decl)) return "cjs";
+    if (ts.isImportEqualsDeclaration(decl)) return "cjs";
+    // A destructured sub-namespace member is the CommonJS exports object.
+    if (ts.isBindingElement(decl)) return "cjs";
+    // A parameter holds whatever value the caller passed; its declared type
+    // names the module, not the shape.
+    if (ts.isParameter(decl)) return "unknown";
+    // A plain binding whose initializer carries the namespace
+    // (`const z = zlib`, `const fs = require("fs")`).
+    if (
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      decl.initializer !== undefined
+    ) {
+      return this.builtinNamespaceFlavorOf(decl.initializer, seen);
+    }
+    return "unknown";
+  }
+
   /** A member access on a supported builtin namespace import —
    * `fs.readFileSync`, `path.sep`, `fs.promises.readFile` — as the same
    * { module, member } shape builtinImportOf gives named imports, so both
    * import forms key the same lowering tables. Null for everything else. */
   builtinMemberOf(access: ts.PropertyAccessExpression): { module: string; member: string } | null {
-    if (access.questionDotToken) return null;
+    // A guarded step keeps its chain lowering, except one the chain lowering
+    // has already found to be a plain access (a namespace is never nullish).
+    if (access.questionDotToken && !this.chainHandled.has(access)) return null;
     // Function-owned builtin members still require import provenance. A
     // user object named realpathSync must retain its ordinary method call.
     if (access.name.text === "native") {
@@ -18189,6 +22918,47 @@ export class Lowerer {
     return ts.isIdentifier(access.name) ? builtinImportOf(this, access.name) : null;
   }
 
+  /** Run the receiver of a builtin member dispatch when it bottoms out in
+   * an awaited literal import: `(await import("node:path")).basename`,
+   * `(await import("node:fs")).promises.readFile`. The dispatch reads only
+   * the module tables, but the source evaluates the await — the import
+   * with it — where the member is used, ahead of the arguments and with
+   * its microtask hop. A module-member step above the await (`fs.promises`
+   * as a namespace, `path.win32`) reads an interned namespace and runs
+   * nothing. Null for every other receiver shape (a namespace binding,
+   * `require("node:path")`, a computed access), which evaluates nothing
+   * of its own. */
+  private awaitedReceiverLoad(receiver: ts.Expression, loc: SrcLoc): IrStmt | null {
+    let base = withoutParenthesesAssertionsNonNull(receiver);
+    while (ts.isPropertyAccessExpression(base) && !base.questionDotToken) {
+      base = withoutParenthesesAssertionsNonNull(base.expression);
+    }
+    const awaited = awaitedBuiltinDynamicImportOf(this, base);
+    return awaited === null
+      ? null
+      : { kind: "exprStmt", expr: this.lowerExpr(awaited.awaited), loc };
+  }
+
+  /** `value`, the member lowering that consumes a dispatched receiver's
+   * namespace, preceded by the receiver's own evaluation when it has one
+   * (awaitedReceiverLoad). */
+  private withReceiverLoad(receiver: ts.Expression, value: IrExpr, loc: SrcLoc): IrExpr {
+    const load = this.awaitedReceiverLoad(receiver, loc);
+    return load === null
+      ? value
+      : { kind: "seqExpr", stmts: [load], result: value, type: value.type, loc };
+  }
+
+  /** The receiver evaluation of a builtin dispatch over an awaited literal
+   * import as a statement of its own. A declaration that resolves through
+   * a baked constants object (`const { A } = (await import("node:crypto")).constants`)
+   * stores nothing, but its source still evaluates the await where the
+   * declaration sits. Null for every receiver that evaluates nothing of
+   * its own. */
+  builtinReceiverLoad(receiver: ts.Expression, loc: SrcLoc): IrStmt | null {
+    return this.awaitedReceiverLoad(receiver, loc);
+  }
+
   /** `ns.member(...)` on a builtin namespace import: exactly the named-
    * import dispatch — the module tables for lowered members, the module-
    * qualified per-member fence for the rest. Null for non-namespace
@@ -18198,7 +22968,10 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     const builtin = this.builtinMemberOf(access);
-    return builtin ? lowerBuiltinCall(this, call, builtin, locOf(access), access.name) : null;
+    if (!builtin) return null;
+    const loc = locOf(access);
+    const value = lowerBuiltinCall(this, call, builtin, loc, access.name);
+    return value === null ? null : this.withReceiverLoad(access.expression, value, loc);
   }
 
   /** `ns.member` on a builtin namespace import as a VALUE: constants
@@ -18206,8 +22979,15 @@ export class Lowerer {
    * access-mode bits bake as numbers exactly like the named-import form;
    * functions have no closure representation (call sites only); members
    * with no lowering fence with the module-qualified name. Null for
-   * non-namespace receivers (the property chain keeps trying). */
+   * non-namespace receivers (the property chain keeps trying). The
+   * receiver is evaluated first when it is an awaited literal import
+   * (`(await import("node:path")).sep`). */
   lowerNamespaceBuiltinProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
+    const value = this.lowerNamespaceBuiltinPropertyValue(expr);
+    return value === null ? null : this.withReceiverLoad(expr.expression, value, locOf(expr));
+  }
+
+  private lowerNamespaceBuiltinPropertyValue(expr: ts.PropertyAccessExpression): IrExpr | null {
     const loc = locOf(expr);
     // fs.constants.X_OK through the namespace: the same four POSIX
     // access-mode bits the named-import form bakes (lowerFsConstantsProperty).
@@ -18230,6 +23010,15 @@ export class Lowerer {
     }
     const bi = this.builtinMemberOf(expr);
     if (!bi) return null;
+    // A TypeScript read through an ES module namespace of a name Node's
+    // namespace object does not export (`zlib.Z_NO_FLUSH`): refused by name.
+    {
+      const refusal = namespaceNonExportRead(this, expr, bi.module, bi.member);
+      if (refusal !== null) {
+        this.pushDiag(refusal);
+        throw new PoisonError();
+      }
+    }
     if (
       (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
       (bi.member === "posix" || bi.member === "win32")
@@ -18242,11 +23031,10 @@ export class Lowerer {
     if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
     // events.defaultMaxListeners READS the process-wide default (its
     // write twin routes through emitter.setDefaultMaxChk). Through an ES
-    // module namespace it reads the namespace's copy instead.
+    // module namespace it reads the namespace's copy instead — the
+    // awaited literal import names one too, as does a `const` bound to it.
     if (bi.module === "events" && bi.member === "defaultMaxListeners") {
-      const esm =
-        ts.isIdentifier(expr.expression) &&
-        esmImportBindingKind(this, expr.expression) === "namespace";
+      const esm = isBuiltinEsmNamespaceOf(this, expr.expression);
       return {
         kind: "libCall",
         fn: esm ? "emitter.esmDefaultMax" : "emitter.getDefaultMax",
@@ -18256,7 +23044,7 @@ export class Lowerer {
       };
     }
     if (bi.module === "worker_threads") {
-      const value = lowerWorkerMetadata(bi.member, loc);
+      const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
     }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
@@ -18285,6 +23073,10 @@ export class Lowerer {
     if (bi.module === "os" && bi.member === "constants") {
       return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
     }
+    // module.constants: the frozen object that holds compileCacheStatus.
+    if (bi.module === "module" && bi.member === "constants") {
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
+    }
     // tls.rootCertificates through the namespace: the same runtime-valued
     // constant the named-import read lowers to.
     {
@@ -18305,7 +23097,7 @@ export class Lowerer {
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const global = globalMemberValue(this, bi, loc);
+      const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
     // A bare `fs.constants` read (not one of the baked bits above).
@@ -18316,7 +23108,8 @@ export class Lowerer {
       const classKind = builtinMemberClassKind(bi.module, bi.member);
       if (classKind !== null) return builtinClassValue(classKind, loc);
     }
-    if (builtinModuleFnOf(this, bi.module, bi.member)) {
+    const js = isJsSourceFile(ts.getSourceFileOfNode(expr));
+    if (!js && builtinModuleFnOf(this, bi.module, bi.member)) {
       this.unsupported(
         "SC1090",
         expr,
@@ -18332,6 +23125,11 @@ export class Lowerer {
         return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
       }
     }
+    // A JavaScript source reads what Node's kind of value calls for
+    // (node-value-reads.ts): a function is a function value that refuses
+    // when it is called, a name the module does not have reads undefined,
+    // any other value is refused by name.
+    if (js) return unloweredModuleMemberValue(this, bi, expr, loc, false);
     this.noLowering(
       `${bi.module}.${bi.member}`,
       expr,
@@ -18374,6 +23172,43 @@ export class Lowerer {
     }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** One builtin module member as a value BY NAME (no expression node): the
+   * value half of the named-import/property surface, for the checked-dynamic
+   * namespace box a bounded dynamic import of a builtin produces
+   * (module-namespace-elements.ts). Null when the member has no value
+   * lowering — the box then leaves it out of its key list, so a read fails
+   * the checked cast instead of answering something Node would not. The
+   * node-based `lowerNamespaceBuiltinProperty` keeps its own order (it also
+   * answers JavaScript-only class/global spellings a box never needs). */
+  lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
+    const bi = { module, member };
+    const c = builtinModuleConstOf(this, module, member);
+    if (c !== undefined) return builtinConstLit(c, loc);
+    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "http" && member === "METHODS")
+      return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
+    if ((module === "http" || module === "https") && member === "globalAgent")
+      return {
+        kind: "libCall",
+        fn: "http.globalAgent",
+        args: [{ kind: "boolLit", value: module === "https", type: BOOL, loc }],
+        type: DYN,
+        loc,
+      };
+    if (module === "http" && member === "STATUS_CODES")
+      return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
+    if (module === "os" && member === "constants")
+      return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
+    const roots = lowerTlsRootCertificates(this, bi, loc);
+    if (roots !== null) return roots;
+    const callable = this.lowerBuiltinCallableValue(bi, loc);
+    if (callable !== null) return callable;
+    if (module === "crypto" && member === "webcrypto")
+      return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    return null;
   }
 
   /** An error-first filesystem function as a value: the checked-dynamic
@@ -18543,6 +23378,11 @@ export class Lowerer {
           : [{ kind: "return", value: call, loc }];
       this.liftedFns.push({
         name: fnName,
+        // The name an untyped box of the value reports when the boxing site
+        // does not know which builtin it holds.
+        ...(fn.valueNameMainThreadOnly
+          ? {}
+          : { displayName: fn.valueName ?? display.slice(display.lastIndexOf(".") + 1) }),
         params,
         returnType: fn.result,
         locals: params.map((param) => ({
@@ -18562,7 +23402,7 @@ export class Lowerer {
       // UnitEvents.touch), and the change is counted here instead of being
       // found by HeldTables.check as an unnamed write.
       if (this.builtinCheckedValues.has(fnName)) this.unitEvents?.touch(fnName);
-      this.builtinCheckedValues.set(fnName, { fn, display, loc });
+      this.builtinCheckedValues.set(fnName, { fn, display, loc, type: funcType });
     }
     return { kind: "closure", fnName, captures: [], type: funcType, loc };
   }
@@ -18848,7 +23688,8 @@ export class Lowerer {
   }
 
   lowerBuiltinConstantsProperty(expr: ts.PropertyAccessExpression): IrExpr | null {
-    return lowerBuiltinConstantsProperty(this, expr);
+    const value = lowerBuiltinConstantsProperty(this, expr);
+    return value === null ? null : this.withReceiverLoad(expr.expression, value, locOf(expr));
   }
 
   builtinConstantBindingOf(ident: ts.Identifier): IrExpr | null {
@@ -19198,6 +24039,27 @@ function droppedMembers(lowerer: Lowerer, from: IrType, to: IrType, seen: Set<st
   return out;
 }
 
+/** Whether an export-table symbol is declared by a type-only export: the
+ * whole declaration (`export type { … }`, `export type * as ns from …`) or
+ * one specifier (`export { type x }`). Such a name exists for the type
+ * system alone and adds no runtime binding. */
+function exportedByTypeOnlyDeclaration(symbol: ts.Symbol): boolean {
+  return symbol.declarations.some((decl) => {
+    let owner: ts.Node | undefined;
+    if (ts.isExportSpecifier(decl)) {
+      if (decl.isTypeOnly) return true;
+      // A specifier sits in the named clause, whose parent is the
+      // declaration that may carry the `type` keyword.
+      owner = decl.parent?.parent;
+    } else if (ts.isNamespaceExport(decl)) {
+      owner = decl.parent;
+    } else {
+      return false;
+    }
+    return owner !== undefined && ts.isExportDeclaration(owner) && owner.isTypeOnly;
+  });
+}
+
 /** A JSDoc `@param` type on a set accessor's parameter is an annotation like
  * a variable's `@type` (hasJsTypeAnnotation, lower-stmts.ts): the setter
  * keeps its declared storage. Setters take exactly one parameter, so any
@@ -19256,4 +24118,36 @@ function fsRealpathValue(lowerer: Lowerer, native: boolean, loc: SrcLoc): IrExpr
     type: DYN,
     loc,
   };
+}
+
+/** Whether the checker types `node` as an intersection with `target`'s
+ * class in every constituent (`Rec & C`, `(A & C) | (B & C)`): what a
+ * class test leaves of a value whose type names no such class. */
+function narrowedIntoClass(
+  lowerer: Lowerer,
+  node: ts.Node,
+  target: IrType & { kind: "object" },
+): boolean {
+  try {
+    const type = lowerer.typeOf(node);
+    const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+    return (
+      parts.length > 0 &&
+      parts.every(
+        (part) =>
+          part.isIntersectionType() &&
+          ts.constituentTypes(part).some((member) => {
+            const mapped = lowerer.mapTypeOf(member);
+            return (
+              mapped?.kind === "object" &&
+              (mapped.className === target.className ||
+                lowerer.isSubclassOf(mapped.className, target.className))
+            );
+          }),
+      )
+    );
+  } catch (e) {
+    if (ts.isUnreadableConstituentsPanic(e)) return false;
+    throw e;
+  }
 }

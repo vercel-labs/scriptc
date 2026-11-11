@@ -2,10 +2,26 @@ Some builtins can be stored and passed as functions:
 
 - Lowered `node:path` functions across the bare, POSIX, and win32 modules, including optional `basename` and variadic `join`/`resolve`.
   Called through an untyped value, they validate their arguments with Node's `ERR_INVALID_ARG_TYPE`.
+  In JavaScript, a direct call whose arguments are not strings, `join` and `resolve` included, validates them the same way.
   A path module held by untyped code is a plain object with Node's members in Node's order.
 - Supported zero-argument `node:os` functions and `querystring.escape`/`unescape`.
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
+
+`String`, `Number`, `Boolean`, and `BigInt` are function values wherever they are stored, in TypeScript and JavaScript: an option table can hold them as type tags (`{ "--port": Number, "--tag": [String] }`), beside strings and arrays.
+A held constructor is the same function everywhere in the program, so `type === Boolean` holds across modules, through `unknown`, and as a `Map` key or `Set` member.
+Called through the value, it converts whatever arguments it is given, as the builtin does.
+A call through a held constructor converts its arguments to untyped values first; a direct call such as `Number(x)`, and a constructor written as the callback of an array method (`xs.map(Number)`), keep their typed conversion.
+A held constructor converts to a function type that has a first parameter (`(value: string, name: string) => unknown`), whoever calls it.
+Under a function type with no parameters it is called with no argument, and the store is refused when the program hands a function of that type to a caller that passes arguments, as for any function that reads its argument list.
+Through a function type whose first parameter is optional or accepts `undefined`, a call that passes `undefined` there, or omits the argument, throws a `TypeError`: a constructor answers a missing argument differently from `undefined` (`String()` is `""`), and the function type does not say which one the call passed.
+The `prototype` of a held constructor and a `Map` or `Set` keyed by a union of several constructor types are refused.
+`new` through a held constructor builds with warning `SC6015`, which names the statement, and the statement throws `SC1090` when it runs.
+In TypeScript, `util.format("%o", f)` of a function value and `Object.getPrototypeOf` of a held constructor build with the same warning and throw when they run.
+A constructor passed into a Node island is the island's own constructor there, and the island's comes back as the program's.
+Converted to a string (`String(c)`, a template, `+`, `c.toString()`, `%s`), a held constructor is Node's `function String() { [native code] }`.
+A program that hands a held constructor, or a table of them, to something the typed form has no lowering for (printing, `JSON.stringify`, `in`, key listing, an `any` slot, `bind`, an assertion) holds its constructors as untyped values instead, in the whole program, and builds as it did before constructors had a typed form.
+`JSON.stringify` and `%j` write a `Map` or `Set` held by an object, an array, or a tuple as `{}`, as Node.js does, whatever it holds.
 
 In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
 Calls through these values bypass `node:test` mock timers.
@@ -14,7 +30,14 @@ In JavaScript, `parseInt` and `parseFloat` are the `Number.parseInt` and `Number
 Calling `eval` through its value throws the `EvalError` its direct calls throw.
 `escape`, `unescape`, `WeakRef`, and `AsyncDisposableStack` have function values with Node's `name` and `length` that throw `SC2020` when called or constructed.
 `globalThis.require`, `module`, `exports`, `__dirname`, and `__filename` are `undefined`, as in Node.
-Other builtin globals stored in JavaScript remain opaque identity values.
+In JavaScript, any other Node function or class stored as a value (a global such as `URL` or `Headers`, a builtin module member such as `module.register` or `dns.lookup`) is a function with Node's `name` and `length`: `typeof` answers `"function"`, identity holds across spellings, and calling or constructing it through that value throws `SC2020`.
+`process` and `performance` stored in JavaScript are objects with Node's members: a function member is the function the spelled member reads (`held.nextTick === process.nextTick`), `argv`, `platform`, `arch`, `pid`, `execPath`, `execArgv`, `versions`, `debugPort`, `sourceMapsEnabled` and `performance.timeOrigin` read their values, and reading any other data member through the stored object throws `SC2020`.
+Assigning a data member through the stored object (`held.exitCode = 1`) throws `SC2020`; the spelled `process.exitCode = 1` is not affected.
+The stored object is frozen: redefining a member with `Object.defineProperty`, replacing a function member or adding a key through it throws a `TypeError`, where Node changes the process object, because the spelled members (`process.pid`, `process.nextTick(f)`) are compiled where they are written and would not follow the change.
+Any other Node value that native code does not provide (`process.finalization`, `performance.nodeTiming`) throws `SC2020` where JavaScript reads it, and `typeof` of it answers Node's type without reading it.
+A global that Node 24 does not define by default (`localStorage`, `sessionStorage`) is not defined: `typeof` answers `"undefined"`, the global object has no such property, and a read throws `ReferenceError`.
+In a JavaScript ES module, `typeof` of `require`, `module`, `exports`, `__dirname`, and `__filename` answers `"undefined"`, as in Node.
+An ES module namespace of a builtin module has only the module's exports, so `zlib.Z_NO_FLUSH` through `import * as zlib` is `undefined` in JavaScript, as in Node, while the default import and `require()` have it.
 In JavaScript, `require("events")` and the `EventEmitter` class assigned to an untyped binding or stored in an object (`ReleaseEmitter = EventEmitter`) are the untyped `EventEmitter` constructor that constructor functions inherit from (see below): `new` through it builds such an emitter object, and identity and `instanceof` agree with the class.
 A class can extend `require("events")` directly.
 

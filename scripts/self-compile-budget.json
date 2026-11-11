@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "heapLimitMb": {
+    "value": 8192,
+    "reason": "The limit every self-compile has run with. At 618fdb8eb a 12288 MB limit builds in the same time (740 s against 744 s) and takes 2.1 GB more memory (10.3 GB peak RSS), so the limit stays. 12288 fits the 16 GB Linux runners; the macOS runners have less memory, so measure there before raising it."
+  },
+  "loweringPasses": {
+    "value": [
+      "reachable-emit"
+    ],
+    "reason": "One pass that runs to its end. cli/mcp.ts pauses a finished child's pipes; #3174 lowers pause(), resume(), isPaused() and readableFlowing on the child stream handle itself, so the first pass no longer ends where it asked for the general stream representation (#3147) and the program is not lowered a second time (#2918). CI's native build of the train that carries #3174 (#3353, at 820b20c698) reported the one pass and failed the old list of two."
+  },
+  "liveHeapBytesPerSourceByte": {
+    "value": 136,
+    "reason": "Measured by CI's --native-build on #3353 at 820b20c698, the first tree with one lowering pass (#3174): 3078 MB reachable at the end of the pass, 136 bytes per source byte; the gate's own self-compile on the same members read 3009 MB (133). It was 146 with the aborted first pass and the relower: 3205 MB at the end of the second pass for 23.0 MB of source (--check), 3249 MB (148) under --native-build at c8767817e. Before that 212 at 618fdb8eb, where the first pass ran to its end and its program stayed reachable through the second; #3147 ended that pass early and #3149 interned the failure messages."
+  },
+  "neverDynamicClasses": {
+    "value": [
+      "Lowerer",
+      "LlEmitter",
+      "CopyScan"
+    ],
+    "reason": "The Lowerer is the receiver of the whole frontend and the LlEmitter of the whole backend, and their fields reach most of the compiler's classes. When one call hands one over where an interface it satisfies is declared, it becomes a dynamic value and the compiler's own build gains thousands of functions: about 9,000 (6%) for the Lowerer, which #2878, #3192 and #2567 each did through one helper's parameter type and #3394 undid; 6,400 (4.6%) for the LlEmitter, through the integer clone emitter's host and one function-valued member called as a method, undone with this entry. tests/harness/compiler-host-arguments.test.ts reads the source for such calls of the Lowerer in every pull request; this is the build's own answer for both. CopyScan (width-copies.ts) is listed because it became one the same way, by a function-valued member called as a method, which that test does not see; it stands for no more than itself, and a class nobody listed is still not checked."
+  },
+  "sourceCostAllowance": {
+    "value": 0,
+    "reason": ""
+  },
+  "outputGrowthAllowance": {
+    "value": 0,
+    "reason": ""
+  }
+}

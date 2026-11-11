@@ -27,6 +27,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { boundedNode } from "../may-throw.js";
 import {
   ALLOCATIONS,
   FRESH_ARRAY_METHODS,
@@ -74,6 +75,13 @@ export interface RegionGroups {
   leakFree: Set<string>;
   /** Functions that allocate, directly or through what they call. */
   allocates: Set<string>;
+  /** The calls and fresh copies in a root's function whose value may hold a
+   * reference into the root's group: a call that keeps the root's value in
+   * its own result (or a reference read out of it, or the value of a local
+   * that shares it), and a copy of its elements. The root's proof keeps
+   * each of them in the frame; it does not say where their own memory
+   * comes from (region-sites.ts decides that). Computed on request. */
+  holders: (root: Node) => Set<Node>;
 }
 
 /** Projections whose result is a reference read out of the operand.
@@ -96,6 +104,9 @@ function projection(child: Node, parent: Node | undefined): boolean {
         same(parent.receiver, child) &&
         (parent.method === "get" || parent.method === "iterKey" || parent.method === "iterValue")
       );
+    // A removed element is still one of the array's values.
+    case "arrIntrinsic":
+      return same(parent.receiver, child) && (parent.method === "pop" || parent.method === "shift");
     default:
       return false;
   }
@@ -187,15 +198,137 @@ export function storeTarget(target: IrExpr | undefined): string | null {
   return null;
 }
 
+/** How `source` answers for each expression kind:
+ * - "allocation": the expression allocates its value (ALLOCATIONS);
+ * - "some": some of its nodes produce a value that they or a callee
+ *   allocated, and `source` decides which;
+ * - "none": `source` does not follow it.
+ *
+ * Every kind is listed, so a new expression kind does not compile until it
+ * is classified here. "none" is no proof that a kind never yields an object
+ * of the group: it records the kinds this analysis has not followed so far.
+ * What keeps them sound is `calleesClean`, whose default is the safe one:
+ * an operation that can run code of the program (anything boundedNode in
+ * may-throw.ts does not list) ends leak-freedom, so a "none" kind in a
+ * leak-free function yields what the runtime allocated on the heap or what
+ * was reachable before. */
+export const SOURCE_KINDS: Record<IrExpr["kind"], "allocation" | "some" | "none"> = {
+  numLit: "none",
+  strLit: "none",
+  moduleNsRef: "none",
+  boolLit: "none",
+  unitLit: "none",
+  varRef: "none",
+  bin: "none",
+  unary: "none",
+  incDec: "none",
+  fieldIncDec: "none",
+  assignExpr: "none",
+  toBool: "none",
+  logical: "none",
+  strConcat: "none",
+  strEq: "none",
+  strCmp: "none",
+  toString: "none",
+  ternary: "none",
+  nullish: "none",
+  orDefault: "none",
+  optChain: "none",
+  chainRecv: "none",
+  strIntrinsic: "some",
+  regexLit: "none",
+  templateStrings: "none",
+  regexIntrinsic: "none",
+  arrayLit: "allocation",
+  arrayNewLen: "allocation",
+  arrayGet: "none",
+  arrayHas: "none",
+  arrayState: "none",
+  constCell: "none",
+  arrIntrinsic: "some",
+  bytesNew: "none",
+  bytesIntrinsic: "none",
+  mapNew: "allocation",
+  mapIntrinsic: "none",
+  setNew: "allocation",
+  setIntrinsic: "none",
+  call: "some",
+  ffiCall: "none",
+  closure: "allocation",
+  callValue: "some",
+  viewOf: "none",
+  viewSource: "none",
+  selfRef: "none",
+  yieldExpr: "none",
+  genResume: "none",
+  awaitExpr: "none",
+  awaitUnionExpr: "none",
+  newPromise: "none",
+  promiseWithResolvers: "none",
+  new: "allocation",
+  classRef: "none",
+  newValue: "none",
+  instanceOfValue: "none",
+  upcast: "none",
+  promiseVoidWiden: "none",
+  downcast: "none",
+  instanceOf: "none",
+  virtualCall: "some",
+  fieldGet: "none",
+  recordLit: "allocation",
+  recordClone: "allocation",
+  recordGet: "none",
+  recordKeyGet: "none",
+  dynFrom: "none",
+  dynCall: "none",
+  dynInvoke: "none",
+  dynArrLit: "none",
+  dynObjLit: "none",
+  dynTest: "none",
+  dynKeyGet: "none",
+  dynHasKey: "none",
+  dynScalarEq: "none",
+  seqExpr: "none",
+  dynDestrCheck: "none",
+  dynIterN: "none",
+  recordOvfKeys: "none",
+  recordOvfHas: "none",
+  recordNullProto: "none",
+  recordHas: "none",
+  fieldAbsent: "none",
+  unionWrap: "none",
+  unionRetype: "none",
+  unionFuncEq: "none",
+  caughtTest: "none",
+  caughtNarrow: "none",
+  caughtCheck: "none",
+  caughtToDyn: "none",
+  unionNarrow: "none",
+  unionDisc: "none",
+  unionKeyGet: "none",
+  unionIsTag: "none",
+  unionEq: "none",
+  intrinsic: "none",
+  libCall: "some",
+  jsonStringify: "none",
+  dynCheck: "some",
+};
+
 /** An expression that produces a value it allocates (a group member). */
 export function source(e: Node): boolean {
   if (!isExpr(e)) return false;
   if (ALLOCATIONS.has(e.kind)) return true;
+  if (SOURCE_KINDS[e.kind] === "none") return false;
   if (e.kind === "arrIntrinsic") return FRESH_ARRAY_METHODS.has(e.method);
   if (e.kind === "strIntrinsic") return e.method === "split";
   if (e.kind === "libCall") return e.fn === "json.parse";
   if (e.kind === "dynCheck") return e.value.kind === "libCall" && e.value.fn === "json.parse";
-  if (e.kind === "call" || e.kind === "callValue") return refType(e.type);
+  // A call's reference result may be an object the callee allocated, so
+  // the caller answers for where it goes. That holds for a virtual call
+  // too: its targets may be fresh, and what they return then lives in the
+  // caller's group.
+  if (e.kind === "call" || e.kind === "callValue" || e.kind === "virtualCall")
+    return refType(e.type);
   return false;
 }
 
@@ -243,11 +376,25 @@ export function contentOf(value: Node, parent: Node): boolean {
 }
 
 /** Whether `parent` is a fresh array holding the elements of `child`, an
- * array of references (`xs.slice()`, `a.concat(b)`): the elements share the
- * fate of the copy. Strings are leaves, not members. */
+ * array of references (`xs.slice()`, `a.concat(b)`, the elements a splice
+ * removed), or a fresh collection holding the keys or values of the Map or
+ * Set `child` (`new Map(m)`, `new Set(m.values())`, `[...s]`): the elements
+ * share the fate of the copy. Strings are leaves, not members. */
 function copiesElements(child: Node, parent: Node | undefined): boolean {
-  if (parent === undefined || parent.kind !== "arrIntrinsic" || !isExpr(child)) return false;
-  if (!FRESH_ARRAY_METHODS.has(parent.method) && !SPREAD_METHODS.has(parent.method)) return false;
+  if (parent === undefined || !isExpr(child)) return false;
+  if (parent.kind === "mapIntrinsic" || parent.kind === "setIntrinsic") {
+    if (!same(parent.receiver, child) || !COLLECTION_COPIES.has(parent.method)) return false;
+    const t = child.type;
+    if (t.kind === "map") return refType(t.key) || refType(t.value);
+    return t.kind === "set" && refType(t.elem);
+  }
+  if (parent.kind !== "arrIntrinsic") return false;
+  if (
+    !FRESH_ARRAY_METHODS.has(parent.method) &&
+    !SPREAD_METHODS.has(parent.method) &&
+    parent.method !== "spliceInsert"
+  )
+    return false;
   if (
     !same(parent.receiver, child) &&
     !(parent.method === "concatSpread" && indexOfNode(parent.args, child) >= 0)
@@ -259,6 +406,138 @@ function copiesElements(child: Node, parent: Node | undefined): boolean {
 
 /** Array intrinsics that copy their array arguments' elements. */
 const SPREAD_METHODS = new Set(["pushSpread", "unshiftSpread", "concatSpread"]);
+
+/** Map and Set intrinsics that answer a fresh collection of what the
+ * receiver holds. */
+const COLLECTION_COPIES = new Set(["clone", "keySet", "valueSet", "toArray"]);
+
+/** What a private array may be the receiver of (privateArrays). */
+const PRIVATE_ARRAY_METHODS = new Set(["push", "length", "join"]);
+
+/** The locals of `fn` that hold an array no other code can reach: unboxed
+ * locals of the function itself (no parameter, capture or module binding),
+ * declared with an empty array literal of strings, numbers or booleans, and mentioned
+ * nowhere else in the function except as the receiver of `push`, `length`
+ * and `join`. The local is never read as a value, assigned, captured or
+ * passed on, so the array has no second reference and no dynamic view.
+ *
+ * Mentions are counted over the raw node records, whatever their shape, so
+ * that a mention this function does not know (a capture list, a new node
+ * kind) disqualifies the local instead of being missed. */
+type PrivateArrays = Map<IrFunction, ReadonlySet<string>>;
+function privateArrays(fn: IrFunction, privateArraysOf: PrivateArrays): ReadonlySet<string> {
+  const known = privateArraysOf.get(fn);
+  if (known !== undefined) return known;
+  // The function's own unboxed locals: a module binding (`%g.…`) is shared
+  // with every function, and a boxed local with the closures that capture it.
+  const own = new Set<string>();
+  for (const local of fn.locals)
+    if (local.boxed !== true && !local.id.startsWith("%")) own.add(local.id);
+  for (const param of fn.params) own.delete(param.localId);
+  for (const capture of fn.captures ?? []) own.delete(capture.localId);
+  // The mentions the rule allows, per candidate local.
+  const allowed = new Map<string, number>();
+  forEachNode(fn.body, (node) => {
+    if (node.kind === "varDecl" && own.has(node.localId)) {
+      const init = node.init;
+      if (
+        init !== null &&
+        init.kind === "arrayLit" &&
+        init.elems.length === 0 &&
+        (init.spreads === undefined || init.spreads.length === 0) &&
+        init.type.kind === "array" &&
+        quietElement(init.type.elem)
+      )
+        allowed.set(node.localId, (allowed.get(node.localId) ?? 0) + 1);
+    }
+  });
+  if (allowed.size > 0) {
+    forEachNode(fn.body, (node, parent) => {
+      if (
+        node.kind === "varRef" &&
+        allowed.has(node.localId) &&
+        parent !== undefined &&
+        parent.kind === "arrIntrinsic" &&
+        same(parent.receiver, node) &&
+        PRIVATE_ARRAY_METHODS.has(parent.method)
+      )
+        allowed.set(node.localId, allowed.get(node.localId)! + 1);
+    });
+    const mentions = new Map<string, number>();
+    const count = (value: unknown): void => {
+      if (typeof value === "string") {
+        if (allowed.has(value)) mentions.set(value, (mentions.get(value) ?? 0) + 1);
+      } else if (Array.isArray(value)) {
+        for (const item of value) count(item);
+      } else if (value !== null && typeof value === "object") {
+        for (const key in value) {
+          if (key !== "loc" && key !== "type") count((value as Record<string, unknown>)[key]);
+        }
+      }
+    };
+    count(fn.body);
+    for (const [id, n] of allowed) if (mentions.get(id) !== n) allowed.delete(id);
+  }
+  const found: ReadonlySet<string> = new Set(allowed.keys());
+  privateArraysOf.set(fn, found);
+  return found;
+}
+
+/** Element types whose `join` text the runtime writes itself. */
+function quietElement(type: IrType): boolean {
+  return type.kind === "string" || type.kind === "f64" || type.kind === "bool";
+}
+
+/** Operations outside may-throw.ts's bounded list that still cannot run
+ * code of the program, for the operand types and receivers named here.
+ * This list is the arena analysis's own: the bounded list also promises
+ * that an operation cannot block and steers the stack checks, so it is not
+ * the place to widen.
+ *
+ * - `recordOvfKeys` lowers to `scr_map_keys_js_order` (scr_map.c): it
+ *   walks the overflow map's entries and retains each key string into a
+ *   fresh `string[]`. Keys are strings; nothing is converted or called.
+ * - `recordKeyGet` of the overflow map alone with a static result
+ *   (keyedRecordReadInto in expr-records.ts): a number or boolean value is
+ *   one `scr_map_get_str_f64` / `scr_map_get_str_bool` lookup and a copy;
+ *   any other value is a string-keyed entry lookup, a retain of the stored
+ *   reference and, for a union result, a wrap of it; a miss stores the
+ *   undefined arm or NaN, or traps. Reads that also cover declared fields
+ *   and reads with a dynamic result stay unlisted: they pass through
+ *   record views and conversions to dynamic values not proven here.
+ * - `join` on a private array (privateArrays) of strings, numbers or
+ *   booleans with a string separator lowers to `scr_arr_join`
+ *   (scr_array.c), which copies string bytes and formats numbers and
+ *   booleans itself, or for string elements to `scr_arr_join_str`
+ *   (scr_arr_join_str.c), which copies a hole-free string array and hands
+ *   any other to `scr_arr_join`. The one path into program code is the string
+ *   conversion of a foreign element (SCR_ARR_FOREIGN), and such an element
+ *   is only ever stored by `scr_arr_set_foreign`, through a dynamic view of
+ *   the array or a stream bridge. A private array has neither: its only
+ *   reference is the local, and the local is only a receiver of `push`
+ *   (typed elements), `length` and `join`. A `string[]` that came from
+ *   anywhere else may hold a foreign element, so `join` on it stays
+ *   unlisted. */
+function quietOperation(
+  node: Node,
+  fn: IrFunction | null,
+  privateArraysOf: PrivateArrays,
+): boolean {
+  if (node.kind === "recordOvfKeys") return true;
+  if (node.kind === "recordKeyGet") return node.overflowOnly === true && node.type.kind !== "dyn";
+  if (node.kind === "arrIntrinsic" && node.method === "join") {
+    const receiver = node.receiver;
+    return (
+      fn !== null &&
+      receiver.kind === "varRef" &&
+      receiver.type.kind === "array" &&
+      quietElement(receiver.type.elem) &&
+      node.args.every((a) => a.type.kind === "string") &&
+      privateArrays(fn, privateArraysOf).has(receiver.localId)
+    );
+  }
+  return false;
+}
 
 /** Array intrinsics that call their function-typed arguments natively. */
 const CALLBACK_INTRINSICS = new Set(["sortDense", "sortValues"]);
@@ -332,7 +611,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         note(callers, ctor);
         note(referrers, ctor);
       } else if (node.kind === "closure") note(referrers, node.fnName);
-      if (source(node) && node.kind !== "call") directAlloc.add(fn.name);
+      // A call allocates through its targets (the edges noted above).
+      if (source(node) && node.kind !== "call" && node.kind !== "virtualCall")
+        directAlloc.add(fn.name);
     });
   }
   /** Runs `step` on the functions named, and again on the referrers of each
@@ -366,6 +647,9 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   // Callback parameters (see below), and the function being analyzed.
   const callbacks = new Map<string, Set<number>>();
   let current: IrFunction | null = null;
+  // Each function's private arrays (see privateArrays), found once per
+  // analysis: the analysis owns the cache, not a weak collection.
+  const privateArraysOf: PrivateArrays = new Map();
   // While finding roots: a value passed to the function's own callback
   // parameter leaves the frame (its callers' callbacks are unknown here).
   let framePass = false;
@@ -401,7 +685,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
 
   /** How the value of `node` (`parents` its ancestors) is used, after the
    * expressions that pass it on (and, with `projections`, the reads of a
-   * reference out of it). */
+   * reference out of it). A reference read out of a value is one of the
+   * values its group holds, so where it goes counts as a use of the value:
+   * only the rule for a root bound to a local asks without `projections`,
+   * because that local must hold the root's own value. */
   const useOf = (node: Node, parents: readonly Node[], projections: boolean, out: UseInfo): Use => {
     let value: Node = node;
     let at = parents.length - 1;
@@ -453,12 +740,18 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   };
 
   /** How the result of the call at `parents[at]` is used, through calls
-   * that keep it in their own results (`report(select(load()))`). */
-  const resultUse = (at: number, parents: readonly Node[], out: UseInfo): Use => {
+   * that keep it in their own results (`report(select(load()))`), and with
+   * `projections` through the reads of a reference out of it. */
+  const resultUse = (
+    at: number,
+    parents: readonly Node[],
+    projections: boolean,
+    out: UseInfo,
+  ): Use => {
     let index = at;
     for (let i = 0; i < 64; i++) {
       const info: UseInfo = {};
-      const use = useOf(parents[index]!, parents.slice(0, index), false, info);
+      const use = useOf(parents[index]!, parents.slice(0, index), projections, info);
       if (use !== "internal") {
         // Field by field: an Object.assign onto a record makes the
         // self-hosted compiler read class and record properties dynamically.
@@ -559,7 +852,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         // (`visited = new Map(); this.visited = visited`). A `slice` of a
         // local in the class holds only what the class held.
         const info: UseInfo = {};
-        const use = useOf(node, parents, false, info);
+        const use = useOf(node, parents, true, info);
         if (use === "stored" && info.target) filled.add(info.target);
         if (use === "bound" && !(node.kind === "arrIntrinsic" && node.method === "slice"))
           filled.add(info.bound!);
@@ -583,7 +876,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         // in this frame while the result does (a module global needs no
         // frame to hold it).
         const result: UseInfo = {};
-        const r = resultUse(info.at!, parents, result);
+        const r = resultUse(info.at!, parents, true, result);
         if (r === "bound" && own.has(result.bound!)) {
           if (own.has(id)) unite(id, result.bound!);
         } else if (r !== "kept") add(id);
@@ -776,7 +1069,23 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     )
       return false;
     if (node.kind === "new") return leakFree.has(`%${node.className}.constructor`);
-    return true;
+    // Resuming a generator (`for...of`, `next()`, a spread, `yield*`) runs
+    // its body with the arena of the function that drives it as the
+    // allocation target, and no edge the analysis follows leads there: what
+    // the body keeps past the resumption would be dropped with the arena.
+    if (node.kind === "genResume") return false;
+    // `JSON.parse(text)` and the checked cast of its value are sources the
+    // analysis follows itself, and neither runs code of the program: a
+    // reviver is a library call of its own, and a checked cast admits plain
+    // data only.
+    if (node.kind === "dynCheck" || (node.kind === "libCall" && node.fn === "json.parse"))
+      return true;
+    // Every other operation is clean only when it cannot run code of the
+    // program. An emitter's listeners, a Promise executor, a replacer, a
+    // `toJSON` or a `toString` the runtime calls run with this function's
+    // arena as the allocation target, like a generator's body, and what
+    // they keep would be dropped with it.
+    return boundedNode(node) || quietOperation(node, current, privateArraysOf);
   };
   /** The values `e` can produce, through casts and conditionals. */
   const leaves = (e: Node, out: Node[] = []): Node[] => {
@@ -791,7 +1100,10 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
   /** A source whose value is a new group member (a call result only when
    * the callee is fresh). */
   const memberSource = (u: Node): boolean =>
-    source(u) && u.kind !== "callValue" && (u.kind !== "call" || fresh.has(u.callee));
+    source(u) &&
+    u.kind !== "callValue" &&
+    u.kind !== "virtualCall" &&
+    (u.kind !== "call" || fresh.has(u.callee));
   /** What analyze reads of `fn` that no summary changes: the values bound
    * to each local, the stores into locals' graphs, and the locals that are
    * not closed (see analyze). */
@@ -975,7 +1287,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       if (!calleesClean(node)) clean = false;
       if (source(node)) {
         const info: UseInfo = {};
-        const use = useOf(node, parents, false, info);
+        const use = useOf(node, parents, true, info);
         if (use === "bound") {
           if (esc.has(info.bound!) || !fn.locals.some((l) => l.id === info.bound)) {
             clean = false;
@@ -1068,7 +1380,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
         const checked = node.kind === "dynCheck" && same(node.value, n);
         if (source(n) && !checked) {
           const info: UseInfo = {};
-          const use = useOf(n, stack, false, info);
+          const use = useOf(n, stack, true, info);
           const at = info.at ?? -1;
           if (
             !(use === "kept" || use === "content" || (use === "internal" && at >= parents.length))
@@ -1085,6 +1397,27 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     };
     visit(node);
     return ok;
+  };
+  /** Whether the value of `node` is, where it is made (or handed back by a
+   * call that keeps it in its result), the array or collection a method
+   * stores a reference into. */
+  const storesInPlace = (node: Node, parents: readonly Node[]): boolean => {
+    let value: Node = node;
+    for (let at = parents.length - 1; at >= 0; at--) {
+      const p = parents[at]!;
+      if (
+        (p.kind === "arrIntrinsic" || p.kind === "mapIntrinsic" || p.kind === "setIntrinsic") &&
+        same(p.receiver, value) &&
+        (ADDING_METHODS.has(p.method) || p.method === "spliceInsert" || p.method === "fill") &&
+        p.args.some((arg) => refType(arg.type))
+      )
+        return true;
+      const handedBack =
+        p.kind === "call" && internal.get(p.callee)?.has(indexOfNode(p.args, value)) === true;
+      if (!transparent(value, p) && !handedBack) return false;
+      value = p;
+    }
+    return false;
   };
   const drops = new Map<Node, string | null>();
   const rootLocals = new Map<Node, Set<string>>();
@@ -1158,7 +1491,20 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
       if (isRoot && clean) {
         const info: UseInfo = {};
         let use = useOf(node, parents, false, info);
-        if (use === "internal") use = resultUse(info.at!, parents, info);
+        if (use === "internal") use = resultUse(info.at!, parents, false, info);
+        // A value used in place is dropped at the end of its statement, and
+        // the references read out of it with it (`new Slot(rows()).held`,
+        // `rows()[1]`): each must be kept in the statement too.
+        if (use === "kept") {
+          const reads: UseInfo = {};
+          let read = useOf(node, parents, true, reads);
+          if (read === "internal") read = resultUse(reads.at!, parents, true, reads);
+          if (read !== "kept") use = "escapes";
+        }
+        // A reference stored into the value where it is made
+        // (`rows().push(row)`, `rows().splice(1, 2, row)`) is held by a
+        // group no local names: nothing would release it with the arena.
+        if (storesInPlace(node, parents)) use = "escapes";
         rootFunction.set(node, fn);
         if (use === "kept" && statementSync(parents)) {
           roots.add(node);
@@ -1229,6 +1575,75 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     for (const st of fn.body) scanAll(st, callees);
   }
   const closed = new Set<Node>();
+  /** Adds to `out` what holds the value of `node` on its way up `parents`,
+   * followed the way useOf and resultUse follow it: through the expressions
+   * that pass it on and the reads of a reference out of it, into each copy
+   * of its elements and into the result of each call that keeps it. */
+  const holdersAbove = (node: Node, parents: readonly Node[], out: Set<Node>): void => {
+    let value: Node = node;
+    let at = parents.length - 1;
+    for (let hops = 0; hops < 64; hops++) {
+      for (; at >= 0; at--) {
+        const p = parents[at]!;
+        if (copiesElements(value, p)) out.add(p);
+        else if (!transparent(value, p) && !projection(value, p)) break;
+        value = p;
+      }
+      const p = at >= 0 ? parents[at]! : undefined;
+      // A callee that only borrows the value keeps nothing of it.
+      if (p === undefined || p.kind !== "call" || keeps(value, p)) return;
+      if (internal.get(p.callee)?.has(indexOfNode(p.args, value)) !== true) return;
+      out.add(p);
+      value = p;
+      at--;
+    }
+  };
+  // Per function, walked once however many roots it has: where each source
+  // is, and what holds the value read from each local.
+  const holderFacts = new Map<
+    string,
+    { sources: Map<Node, number>; byLocal: Map<string, Set<Node>> }
+  >();
+  const holderFactsOf = (
+    fn: IrFunction,
+  ): { sources: Map<Node, number>; byLocal: Map<string, Set<Node>> } => {
+    const memo = holderFacts.get(fn.name);
+    if (memo !== undefined) return memo;
+    const flat = flatOf(fn);
+    const sources = new Map<Node, number>();
+    for (const i of flat.sources) sources.set(flat.nodes[i]!, i);
+    const byLocal = new Map<string, Set<Node>>();
+    const parents: Node[] = [];
+    const above = new Set<Node>();
+    for (const i of flat.refs) {
+      const node = flat.nodes[i]!;
+      if (node.kind !== "varRef") continue;
+      above.clear();
+      holdersAbove(node, ancestors(flat, i, parents), above);
+      if (above.size === 0) continue;
+      let set = byLocal.get(node.localId);
+      if (set === undefined) byLocal.set(node.localId, (set = new Set()));
+      for (const h of above) set.add(h);
+    }
+    const facts = { sources, byLocal };
+    holderFacts.set(fn.name, facts);
+    return facts;
+  };
+  const held = new Map<Node, Set<Node>>();
+  const holders = (root: Node): Set<Node> => {
+    const memo = held.get(root);
+    if (memo !== undefined) return memo;
+    const out = new Set<Node>();
+    held.set(root, out);
+    const fn = rootFunction.get(root);
+    if (fn === undefined) return out;
+    const facts = holderFactsOf(fn);
+    const at = facts.sources.get(root);
+    if (at !== undefined) holdersAbove(root, ancestors(flatOf(fn), at, []), out);
+    for (const id of rootLocals.get(root) ?? new Set<string>())
+      for (const h of facts.byLocal.get(id) ?? new Set<Node>()) out.add(h);
+    return out;
+  };
   return {
     roots,
     calls,
@@ -1240,6 +1655,7 @@ export function analyzeRegionGroups(mod: IrModule): RegionGroups {
     fresh,
     leakFree,
     allocates,
+    holders,
   };
 }
 
@@ -1429,7 +1845,17 @@ export function analyzeClosedGroups(
     siteMemo.set(fn.name, out);
     const walk = (node: Node, parent: Node | undefined): void => {
       if (parent !== undefined && isExpr(node)) {
-        const target = storeOf(node, parent);
+        // An item a splice inserts and the value a fill writes go into their
+        // array too. Elsewhere they count as leaving the frame; here the
+        // array's group holds a reference to them that its arena must release.
+        const target =
+          storeOf(node, parent) ??
+          (parent.kind === "arrIntrinsic" &&
+          (parent.method === "spliceInsert" || parent.method === "fill") &&
+          refType(node.type) &&
+          indexOfNode(parent.args, node) >= 0
+            ? parent.receiver
+            : undefined);
         if (target !== undefined) out.push({ value: node, target: storeTarget(target) });
         else if (contentOf(node, parent) && parent.kind !== "new")
           out.push({ value: node, target: null });

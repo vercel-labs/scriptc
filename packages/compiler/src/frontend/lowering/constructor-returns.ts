@@ -9,12 +9,17 @@
  * the class representation (`if (Single.instance) return
  * Single.instance;`). The return stores that instance in a per-class
  * result slot and every direct `new C()` takes it from there. Any other
- * object has no representation as a `C` instance and refuses at the return
- * statement, deferred to run time in JavaScript like other statement
- * fences. A JavaScript value that is an object only at run time (`any`)
- * is tested when it returns: a primitive answers the constructed
- * instance, an instance of the class takes the result slot, and any other
- * object refuses.
+ * object has no representation as a `C` instance. In TypeScript it refuses
+ * at the return statement. In JavaScript the return stores the object in a
+ * second per-class slot, the foreign result (`return factory(options)`,
+ * the constructor of a builder library that answers a function), and the
+ * construction decides: one whose result is an untyped value (`new
+ * lib.Instance(options)` through a class value) answers the object, as
+ * Node does; one whose result is typed as the class refuses there, at run
+ * time, because that site has nowhere to hold it. A JavaScript value that
+ * is an object only at run time (`any`) is tested when it returns: a
+ * primitive answers the constructed instance, an instance of the class
+ * takes the result slot, and any other object is the foreign result.
  *
  * `super()` from a subclass refuses: Node would rebind the subclass's
  * `this` to the returned instance. In JavaScript the refusal is a run-time
@@ -27,7 +32,8 @@
  * primitive. That TypeError covers every primitive, `null` included, and
  * is decided statically whenever the returned expression's type is one. */
 import * as ts from "../ts7/adapter.js";
-import { nodeThrowExpr, varRef } from "../../ir/build.js";
+import { withoutParentheses } from "../outer-expressions.js";
+import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
@@ -61,6 +67,11 @@ export interface ConstructorReturnPlan {
    * The TypeError is raised where the construction returns (spec 10.2.2
    * raises it in [[Construct]], so a `try` in the body cannot catch it). */
   primitiveFlag: IrGlobal | null;
+  /** JavaScript only: the object a return yielded that is no instance of
+   * the class (`value`, meaningful while `set` holds), for the construction
+   * that ran the constructor to answer or refuse. `at` is the first such
+   * return, where a refusal reports. */
+  foreign: { value: IrGlobal; set: IrGlobal; at: ts.ReturnStatement } | null;
 }
 
 const PRIMITIVE_FLAGS =
@@ -70,12 +81,6 @@ const PRIMITIVE_FLAGS =
  * variables and intersections (a branded `string & { tag }` is a string). */
 const OPEN_FLAGS =
   ts.TypeFlags.AnyOrUnknown | ts.TypeFlags.InstantiableNonPrimitive | ts.TypeFlags.Intersection;
-
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
-}
 
 /** Whether a value of this checker type can be an object: "never",
  * "always", or "maybe" (open types and primitive/object unions). */
@@ -188,14 +193,14 @@ function returnsThis(
     e = e.expression;
   if (e.kind === ts.SyntaxKind.ThisKeyword) return true;
   if (!ts.isCallExpression(e)) return false;
-  const callee = unparenthesized(e.expression);
+  const callee = withoutParentheses(e.expression);
   if (
     !ts.isPropertyAccessExpression(callee) ||
     callee.questionDotToken !== undefined ||
     !ts.isIdentifier(callee.name)
   )
     return false;
-  const receiver = unparenthesized(callee.expression).kind;
+  const receiver = withoutParentheses(callee.expression).kind;
   if (receiver !== ts.SyntaxKind.ThisKeyword && receiver !== ts.SyntaxKind.SuperKeyword)
     return false;
   const name = callee.name.text;
@@ -254,7 +259,7 @@ export function constructorReturnPlan(
   if (ctor?.body !== undefined && info.decl !== null) {
     const returns = new Map<ts.ReturnStatement, ReturnKind>();
     for (const stmt of ownValueReturns(ctor)) {
-      const value = unparenthesized(stmt.expression!);
+      const value = withoutParentheses(stmt.expression!);
       if (returnsThis(lowerer, info, value)) continue;
       const type = lowerer.typeOf(value);
       const shape = objectness(type);
@@ -307,7 +312,37 @@ export function constructorReturnPlan(
         };
         lowerer.globalsList.push(primitiveFlag);
       }
-      plan = { returns, slot, primitiveFlag };
+      // A JavaScript return that may yield an object of another kind keeps
+      // it for the construction. A return inside a `try` with a `finally`
+      // block is not final (the block may replace it), and a local class
+      // constructs through its own environment: both keep the refusal.
+      let foreign: ConstructorReturnPlan["foreign"] = null;
+      const foreignAt =
+        info.localClass === undefined && isJsSourceFile(ts.getSourceFileOfNode(ctor))
+          ? [...returns].find(
+              ([stmt, kind]) =>
+                (kind === "object" || kind === "mixed") && !insideFinallyTry(stmt, ctor),
+            )
+          : undefined;
+      if (foreignAt !== undefined) {
+        foreign = {
+          value: {
+            id: `%g.${info.def.name}.%constructorForeign`,
+            name: `${info.def.name}.%constructorForeign`,
+            type: DYN,
+            mutable: true,
+          },
+          set: {
+            id: `%g.${info.def.name}.%constructorForeignSet`,
+            name: `${info.def.name}.%constructorForeignSet`,
+            type: BOOL,
+            mutable: true,
+          },
+          at: foreignAt[0],
+        };
+        lowerer.globalsList.push(foreign.value, foreign.set);
+      }
+      plan = { returns, slot, primitiveFlag, foreign };
     }
   }
   byClass.set(info.def.name, plan);
@@ -352,10 +387,14 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
     return lowerDerivedPrimitiveReturn(lowerer, stmt, plan.primitiveFlag!, loc);
   }
   const feature = foreignObjectFeature(info);
-  if (kind === "object" || !isJsSourceFile(ts.getSourceFileOfNode(stmt)))
+  // The foreign result slot takes this return's object when the return is
+  // final (constructorReturnPlan).
+  const foreign = plan.foreign !== null && !insideFinallyTry(stmt, info.ctor) ? plan.foreign : null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(stmt)) || (kind === "object" && foreign === null))
     lowerer.unsupported("SC1090", stmt, feature);
   // A JavaScript value that is an object only sometimes: a primitive
-  // still answers the constructed instance, an object refuses.
+  // still answers the constructed instance, an instance of the class takes
+  // the result slot, and any other object is the foreign result.
   const value = lowerer.coerceToExpected(lowerer.lowerExpr(stmt.expression), DYN);
   if (value.type.kind !== "dyn") lowerer.unsupported("SC1090", stmt, feature);
   const held = lowerer.declareHiddenLocal("%returned", DYN);
@@ -369,32 +408,61 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
     type: BOOL,
     loc,
   });
-  const diag = unsupportedDiag("SC1090", loc, feature);
-  lowerer.runtimeFences.push(diag);
-  const sf = ts.getSourceFileOfNode(stmt);
-  const line = ts.getLineAndCharacterOfPosition(sf, loc.start).line + 1;
+  // What an object of another kind does: the foreign result slot keeps it
+  // for the construction, or (a return that is not final) it refuses here.
+  let otherObject: IrStmt[];
+  if (foreign !== null) {
+    otherObject = [
+      { kind: "assign", localId: foreign.value.id, value: read, loc },
+      {
+        kind: "assign",
+        localId: foreign.set.id,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+      ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+      { kind: "return", value: null, loc },
+    ];
+  } else {
+    const diag = unsupportedDiag("SC1090", loc, feature);
+    lowerer.runtimeFences.push(diag);
+    const sf = ts.getSourceFileOfNode(stmt);
+    const line = ts.getLineAndCharacterOfPosition(sf, loc.start).line + 1;
+    otherObject = [
+      {
+        kind: "runtimeFence",
+        code: diag.code,
+        message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+        loc,
+      },
+    ];
+  }
   return {
     kind: "block",
     body: [
       { kind: "varDecl", localId: held.id, init: value, loc },
       {
         kind: "if",
-        // null answers "object" and is falsy; every object is truthy.
-        cond: {
-          kind: "logical",
-          op: "||",
-          left: typeIs("function"),
-          right: {
-            kind: "logical",
-            op: "&&",
-            left: typeIs("object"),
-            right: lowerer.ensureBool(read, stmt.expression),
-            type: BOOL,
-            loc,
-          },
-          type: BOOL,
-          loc,
-        },
+        // null answers "object" and is falsy; every object is truthy. A
+        // value the checker types as an object always is one.
+        cond:
+          kind === "object"
+            ? { kind: "boolLit", value: true, type: BOOL, loc }
+            : {
+                kind: "logical",
+                op: "||",
+                left: typeIs("function"),
+                right: {
+                  kind: "logical",
+                  op: "&&",
+                  left: typeIs("object"),
+                  right: lowerer.ensureBool(read, stmt.expression),
+                  type: BOOL,
+                  loc,
+                },
+                type: BOOL,
+                loc,
+              },
         then: [
           ...(plan.slot !== null && !insideFinallyTry(stmt, info.ctor)
             ? [
@@ -433,12 +501,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
                 },
               ]
             : []),
-          {
-            kind: "runtimeFence",
-            code: diag.code,
-            message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
-            loc,
-          },
+          ...otherObject,
         ],
         else_: null,
         loc,
@@ -500,7 +563,7 @@ function mayReturnPrimitive(lowerer: Lowerer, info: ClassInfo): boolean {
   if (info.base === null || ctor?.body === undefined || info.decl === null) return false;
   const js = isJsSourceFile(ts.getSourceFileOfNode(ctor));
   for (const stmt of ownValueReturns(ctor)) {
-    const value = unparenthesized(stmt.expression!);
+    const value = withoutParentheses(stmt.expression!);
     if (returnsThis(lowerer, info, value)) continue;
     const type = lowerer.typeOf(value);
     const shape = objectness(type);
@@ -568,11 +631,12 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
   const plan = constructorReturnPlan(lowerer, info);
   const slot = plan?.slot ?? null;
   const flag = plan?.primitiveFlag ?? null;
-  if (slot === null && flag === null) return constructed;
+  const foreign = plan?.foreign ?? null;
+  if (slot === null && flag === null && foreign === null) return constructed;
   const loc = constructed.loc;
   const type = instanceType(info);
   const name = `%${info.def.name}.%constructed`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",
@@ -615,6 +679,9 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
                 loc,
               },
             ]),
+        // The result here is typed as the class, which cannot hold an
+        // object of another kind: the construction refuses.
+        ...(foreign === null ? [] : [foreignResultRefusal(lowerer, info, foreign)]),
         {
           kind: "return",
           value:
@@ -636,6 +703,159 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
   return { kind: "call", callee: name, args: [constructed], type, loc };
 }
 
+/** The statements that drop the foreign result a constructor recorded. */
+function clearForeignResult(
+  foreign: NonNullable<ConstructorReturnPlan["foreign"]>,
+  loc: SrcLoc,
+): IrStmt[] {
+  return [
+    {
+      kind: "assign",
+      localId: foreign.set.id,
+      value: { kind: "boolLit", value: false, type: BOOL, loc },
+      loc,
+    },
+    { kind: "assign", localId: foreign.value.id, value: dynUndefinedExpr(loc), loc },
+  ];
+}
+
+/** A construction whose result is typed as the class, after a constructor
+ * that recorded a foreign result: the refusal the return statement used to
+ * carry, raised where the result has nowhere to go. It reports at the
+ * return (once per class), like any refusal deferred to run time. */
+function foreignResultRefusal(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  foreign: NonNullable<ConstructorReturnPlan["foreign"]>,
+  message = foreignObjectFeature(info),
+): IrStmt {
+  const loc = locOf(foreign.at);
+  const diag = unsupportedDiag("SC1090", loc, message);
+  if (!lowerer.runtimeFences.some((d) => d.message === diag.message && d.loc.start === loc.start))
+    lowerer.runtimeFences.push(diag);
+  const line =
+    ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(foreign.at), loc.start).line + 1;
+  return {
+    kind: "if",
+    cond: varRef(foreign.set.id, BOOL, loc),
+    then: [
+      ...clearForeignResult(foreign, loc),
+      {
+        kind: "runtimeFence",
+        code: diag.code,
+        message: `${diag.message} [${diag.code} at ${loc.file}:${line}]`,
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+/** The value of a construction of exactly class `C` where the result is an
+ * untyped value (the dispatchers behind `new value(...)` for a class held
+ * in an untyped binding): the object the constructor returned when it is
+ * of another kind, as in Node, and otherwise the constructed or returned
+ * instance, boxed. Classes without a foreign result slot box
+ * `constructedValue`'s answer. */
+export function constructedDynValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  constructed: IrExpr,
+): IrExpr {
+  const plan = constructorReturnPlan(lowerer, info);
+  const foreign = plan?.foreign ?? null;
+  if (plan === null || foreign === null)
+    return lowerer.coerceToExpected(constructedValue(lowerer, info, constructed), DYN);
+  const slot = plan.slot;
+  const flag = plan.primitiveFlag;
+  const loc = constructed.loc;
+  const type = instanceType(info);
+  const name = `%${info.def.name}.%constructedDyn`;
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const instance = { id: "instance.0", name: "instance", type, mutable: false };
+    const returned = {
+      id: "returned.0",
+      name: "returned",
+      type: slot?.type ?? type,
+      mutable: false,
+    };
+    const other = { id: "other.0", name: "other", type: DYN, mutable: false };
+    const own: IrExpr =
+      slot === null
+        ? varRef(instance.id, type, loc)
+        : {
+            kind: "orDefault",
+            left: varRef(returned.id, slot.type, loc),
+            right: varRef(instance.id, type, loc),
+            type,
+            loc,
+          };
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: instance.id, name: instance.name, type }],
+      returnType: DYN,
+      locals: slot === null ? [instance, other] : [instance, returned, other],
+      body: [
+        ...(slot === null
+          ? []
+          : [
+              {
+                kind: "varDecl" as const,
+                localId: returned.id,
+                init: varRef(slot.id, slot.type, loc),
+                loc,
+              },
+              {
+                kind: "assign" as const,
+                localId: slot.id,
+                value: lowerer.wrappedUndefined(slot.type, loc)!,
+                loc,
+              },
+            ]),
+        ...(flag === null
+          ? []
+          : [
+              {
+                kind: "if" as const,
+                cond: varRef(flag.id, BOOL, loc),
+                then: throwPendingPrimitiveReturn(flag, loc),
+                else_: null,
+                loc,
+              },
+            ]),
+        {
+          kind: "if",
+          cond: varRef(foreign.set.id, BOOL, loc),
+          then: [
+            { kind: "varDecl", localId: other.id, init: varRef(foreign.value.id, DYN, loc), loc },
+            ...clearForeignResult(foreign, loc),
+            { kind: "return", value: varRef(other.id, DYN, loc), loc },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: lowerer.coerceToExpected(own, DYN), loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [constructed], type: DYN, loc };
+}
+
+/** The flag a constructor that can record a foreign result clears on entry,
+ * so that a construction which never reads it (one that unwound) leaves
+ * nothing for the next. Null for every other class; the test is cheap
+ * (JavaScript, and a constructor with a `return <value>` of its own) so
+ * that other classes do not pay for the plan before their body lowers. */
+export function constructorForeignFlag(lowerer: Lowerer, info: ClassInfo): IrGlobal | null {
+  const ctor = info.ctor;
+  if (ctor?.body === undefined || info.decl === null || info.localClass !== undefined) return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(ctor))) return null;
+  if (ownValueReturns(ctor).length === 0) return null;
+  return constructorReturnPlan(lowerer, info)?.foreign?.set ?? null;
+}
+
 /** A construction through a class value whose static class is `info`: the
  * value holds `info` itself or a descendant. Descendants of a class with a
  * result slot refuse at their `super()`, so only `info`'s own slot can
@@ -651,14 +871,20 @@ export function constructedFromValue(
     const sub = pending.pop()!;
     pending.push(...sub.subclasses);
     const plan = constructorReturnPlan(lowerer, sub);
-    if (plan === null || (plan.slot === null && plan.primitiveFlag === null)) continue;
+    if (
+      plan === null ||
+      (plan.slot === null && plan.primitiveFlag === null && plan.foreign === null)
+    )
+      continue;
     const display = sub.def.name.replace(/^%|^%m\d+\./, "");
     lowerer.unsupported(
       "SC1090",
       blame,
-      plan.slot === null
-        ? `constructing through a class value that may hold '${display}', whose constructor can return a primitive`
-        : `constructing through a class value that may hold '${display}', whose constructor can return an existing instance`,
+      plan.slot !== null
+        ? `constructing through a class value that may hold '${display}', whose constructor can return an existing instance`
+        : plan.primitiveFlag !== null
+          ? `constructing through a class value that may hold '${display}', whose constructor can return a primitive`
+          : `constructing through a class value that may hold '${display}', whose constructor can return an object of another kind`,
     );
   }
   return constructedValue(lowerer, info, constructed);
@@ -683,20 +909,24 @@ export function superIntoResultSlot(
   const plan = constructorReturnPlan(lowerer, base);
   const slot = plan?.slot ?? null;
   const flag = plan?.primitiveFlag ?? null;
-  if (plan === null || (slot === null && flag === null)) return call;
+  const foreign = plan?.foreign ?? null;
+  if (plan === null || (slot === null && flag === null && foreign === null)) return call;
   const display = base.def.name.replace(/^%|^%m\d+\./, "");
   const feature =
     slot === null
       ? `extending a class whose constructor can return a primitive ('super()' raises the TypeError Node raises for a derived constructor's non-object result)`
       : `extending a class whose constructor can return an existing instance ('super()' would rebind 'this' to the instance '${display}' returns)`;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(blame))) {
+  // A TypeScript subclass of a class with a result slot or a primitive
+  // return refuses here. A foreign result alone is tested at run time in
+  // either language, as the base's own return was before it had a slot.
+  if (!isJsSourceFile(ts.getSourceFileOfNode(blame)) && (slot !== null || flag !== null)) {
     lowerer.unsupported("SC1090", blame, feature);
     return call;
   }
   const loc = locOf(blame);
   const type = instanceType(base);
   const name = `%${sub.def.name}.%superResult`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
     const returned = {
       id: "returned.0",
@@ -742,6 +972,17 @@ export function superIntoResultSlot(
         },
       );
     }
+    // An object of another kind the base returned: Node rebinds the
+    // subclass's `this` to it, which has no representation.
+    if (foreign !== null)
+      body.push(
+        foreignResultRefusal(
+          lowerer,
+          base,
+          foreign,
+          `extending a class whose constructor returns an object of another kind ('super()' would rebind 'this' to the object '${display}' returns)`,
+        ),
+      );
     // The TypeError a primitive return in the base recorded: [[Construct]]
     // raises it here, at the `super()` call, so the subclass's own body
     // sees (and may catch) it.

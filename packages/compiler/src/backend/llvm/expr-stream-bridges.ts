@@ -121,6 +121,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   const ok = B.newLabel("sra.ok");
   B.condBr(pending, fail, ok);
   B.startBlock(fail);
+  for (const line of host.pendingBailReleaseLines(inner, value)) B.line(line.trimStart());
   B.line(`call void @scr_promise_reject_pending(ptr %dst)`);
   B.terminate(`ret void`);
   B.startBlock(ok);
@@ -625,6 +626,16 @@ export function streamTypedRefCommitAdapter(
   return `@${commit}`;
 }
 
+/** Whether `t` is a class rooted at Error. Such an instance has one
+ * checked-dynamic value, the one its to-dyn helper answers from the error
+ * identity cache (scr_dyn_from_error), wherever the instance is boxed: alone,
+ * as a union arm or as an element. A second capsule built around it would not
+ * be in that cache, and the `Error` check of a value would then rebuild a new
+ * error from the capsule's snapshot instead of answering the instance. */
+function errorClassType(host: LlvmEmitterContext, t: IrType): boolean {
+  return t.kind === "object" && host.shapeHost.isErrorClass(t.className);
+}
+
 export function liveDynUnionRefAdapter(
   host: LlvmEmitterContext,
   t: IrType & { kind: "union" },
@@ -636,21 +647,18 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
-  // Codec records box as their own handles, by reference, through toDynHelper.
-  const codecArm = (arm: IrType): boolean =>
-    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
+  // Codec records box as their own handles, by reference, through toDynHelper,
+  // and an Error-rooted class as its one checked-dynamic value.
+  const selfBoxedArm = (arm: IrType): boolean =>
+    arm.kind === "bytes" ||
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, arm);
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) =>
-        arm.kind !== "bytes" &&
-        !codecArm(arm) &&
-        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) => !selfBoxedArm(arm) && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (
-    mutableArms.length === 0 &&
-    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
-  ) {
+  if (mutableArms.length === 0 && !union.arms.some(selfBoxedArm)) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
@@ -826,10 +834,12 @@ export function streamTypedRefBoxValue(
     return boxed;
   }
   // A codec record boxes as its own handle, by reference (toDynHelper), as
-  // it does outside a live view.
+  // it does outside a live view, and an Error-rooted class as its one
+  // checked-dynamic value.
   if (
     t.kind === "bytes" ||
     textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, t) ||
     (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
   ) {
     const valueTy = host.llType(t);
@@ -859,14 +869,11 @@ export function streamTypedRefMaterializeAdapter(
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
-  const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
-  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
+  const numbered = `sc_ldr_${host.liveDynRefAdapters.size}`;
+  const snapshot = `${numbered}_materialize`;
+  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null", numbered };
   host.liveDynRefAdapters.set(adapterKey, adapter);
-  host.journal?.allocated(
-    snapshot.replace(/_materialize$/, ""),
-    "streamTypedRefMaterializeAdapter",
-    [t],
-  );
+  host.journal?.allocated(numbered, "streamTypedRefMaterializeAdapter", [t]);
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -893,6 +900,10 @@ export function streamTypedRefMaterializeAdapter(
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
+  // Published with the other symbols: see runtimeStreamViewAlone.
+  const streamView =
+    opsMeta !== undefined && runtimeStreamViewAlone(host, opsMeta) ? "scr_stream_ref_view" : null;
+  if (streamView !== null) adapter.snapshot = streamView;
 
   if (isDynTypedRefType(t)) {
     const meta = host.classMeta.get(t.className);
@@ -903,7 +914,9 @@ export function streamTypedRefMaterializeAdapter(
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (adapter.bagClassOps !== undefined) liveBagClassOps(host, snapshot, meta, t);
-    if (meta.hierarchy && meta.children.length) {
+    // Every class below a stream class whose view is the runtime's alone
+    // has that same view.
+    if (streamView === null && meta.hierarchy && meta.children.length) {
       const pre = B.tmp();
       for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
         B.line(line.trimStart());
@@ -1177,6 +1190,7 @@ export function streamTypedRefMaterializeAdapter(
     } else if (shape.tuple) {
       host.declare(`declare ptr @scr_dyn_new_arr()`);
       host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_hole(ptr)`);
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_arr()`);
       const fields = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
@@ -1193,8 +1207,28 @@ export function streamTypedRefMaterializeAdapter(
           field.type,
           host.inlineUnions.record(field.type),
         );
+        // An ABSENT optional element is a HOLE: length counts it, while
+        // `in`, Object.keys and the own-key probes skip it.
+        let hole: string | null = null;
+        if (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) {
+          const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+          hole = B.newLabel("live.tuple.absent");
+          const set = B.newLabel("live.tuple.set");
+          B.condBr(absent, hole, set);
+          B.startBlock(set);
+        }
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
+        if (hole !== null) {
+          // A present element pushed its value and goes on to the next
+          // element; only the absent branch pushes the hole.
+          const next = B.newLabel("live.tuple.next");
+          B.br(next);
+          B.startBlock(hole);
+          B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
+          B.br(next);
+          B.startBlock(next);
+        }
       }
       B.terminate(`ret ptr ${out}`);
     } else {
@@ -1383,6 +1417,27 @@ export function streamTypedRefMaterializeAdapter(
     B.terminate(`ret ptr ${out}`);
   }
 
+  if (streamView !== null) {
+    // The capsule names the runtime's view function, so the body built
+    // above must be that one call: anything more is a view the runtime's
+    // member tables do not describe.
+    const body = B.render()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && line !== "entry:");
+    if (
+      body.length !== 2 ||
+      body[0] !== `%t0 = call ptr @scr_stream_dyn_view(ptr %p)` ||
+      body[1] !== `ret ptr %t0`
+    ) {
+      throw new InternalCompilerError(
+        `llvm emitter bug: the view of stream class ${key} is not the runtime's alone`,
+      );
+    }
+    host.declare(`declare ptr @${streamView}(ptr)`);
+    host.journal?.built();
+    return adapter;
+  }
   host.resolveThunkDefs.push(
     `define internal ptr @${snapshot}(ptr %p) ${FN_ATTRS} { ; materialize live stream value ${key}`,
     B.render(),
@@ -1391,6 +1446,29 @@ export function streamTypedRefMaterializeAdapter(
   );
   host.journal?.built();
   return adapter;
+}
+
+/** A runtime stream class whose instances' views are scr_stream_dyn_view's
+ * object and nothing else, for the class and every class below it: no
+ * program subclass, no property bag, no fields, no prototype of the
+ * program's. Its capsules name the runtime's scr_stream_ref_view as their
+ * snapshot adapter, which is how the runtime knows that it can answer a
+ * question about one member from the stream's tables without building the
+ * view (ScrStreamRefHooks). */
+function runtimeStreamViewAlone(host: LlvmEmitterContext, meta: LlClassMeta): boolean {
+  return (
+    !!meta.def.runtime &&
+    RUNTIME_STREAM_CLASSES.has(meta.def.name) &&
+    !host.usesDynBuiltinStream &&
+    !meta.def.instancePrototypeHelper &&
+    !meta.def.prototypeDataHelper &&
+    !meta.def.tracksOwnFields &&
+    meta.def.fields.length === 0 &&
+    (meta.def.symbolFields?.length ?? 0) === 0 &&
+    !liveClassOpsEligible(meta) &&
+    !liveBagClassOpsEligible(meta) &&
+    meta.children.every((child) => runtimeStreamViewAlone(host, child))
+  );
 }
 
 /** Per-element hooks for a live array capsule (ScrDynTypedArrayOps). The
@@ -1466,6 +1544,7 @@ function liveArrayOps(
   const failed = S.newLabel("live.array.failed");
   S.condBr(pending, failed, write);
   S.startBlock(failed);
+  for (const line of host.pendingBailReleaseLines(elem, next)) S.line(line.trimStart());
   S.terminate(`ret i1 true`);
   S.startBlock(write);
   host.declare(
@@ -1643,7 +1722,16 @@ function liveRecordSet(
     for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
     const write = S.newLabel("live.record.write");
     const done = S.newLabel("live.record.done");
-    S.condBr(pending, done, write);
+    const dropped = host.pendingBailReleaseLines(field.type, next);
+    if (dropped.length === 0) {
+      S.condBr(pending, done, write);
+    } else {
+      const stopped = S.newLabel("live.record.stopped");
+      S.condBr(pending, stopped, write);
+      S.startBlock(stopped);
+      for (const line of dropped) S.line(line.trimStart());
+      S.br(done);
+    }
     S.startBlock(write);
     const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
     const fieldPtr = S.tmp();
@@ -2043,9 +2131,19 @@ export function streamFromArrayAdapter(
   const unionRefArms =
     unionDef?.arms
       .map((arm, tag) => ({ arm, tag }))
-      .filter(({ arm }) => isRefCounted(arm) && arm.kind !== "dyn" && arm.kind !== "string") ?? [];
+      .filter(
+        ({ arm }) =>
+          isRefCounted(arm) &&
+          arm.kind !== "dyn" &&
+          arm.kind !== "string" &&
+          !errorClassType(host, arm),
+      ) ?? [];
   const typedRef =
-    isRefCounted(elem) && elem.kind !== "dyn" && elem.kind !== "string" && elem.kind !== "union";
+    isRefCounted(elem) &&
+    elem.kind !== "dyn" &&
+    elem.kind !== "string" &&
+    elem.kind !== "union" &&
+    !errorClassType(host, elem);
   let snapshot = `${sym}_materialize`;
   let value: string;
   if (elem.kind === "f64") {
@@ -2160,8 +2258,13 @@ registerReplay("streamTypedDesc", (host, args) =>
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );
-registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
-  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+// The numbered name, not the snapshot: a snapshot that is a runtime function
+// (scr_stream_ref_view, scr_dyn_class_view_unavailable) is no name of this
+// module, and a range's text spells the adapter's other symbols (its commit,
+// its ops tables) from the number.
+registerReplay(
+  "streamTypedRefMaterializeAdapter",
+  (host, args) => streamTypedRefMaterializeAdapter(host, args[0] as IrType).numbered,
 );
 registerReplay("streamFromArrayAdapter", (host, args) =>
   streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),

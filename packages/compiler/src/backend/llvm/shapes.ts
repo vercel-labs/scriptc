@@ -17,6 +17,7 @@ import {
   RUNTIME_STREAM_CLASSES,
   DYN,
   STRING,
+  typeKey,
 } from "../../ir/ir.js";
 import {
   mangleClassRelease,
@@ -174,6 +175,22 @@ export interface ShapeHost {
   readonly windowMap?: boolean;
   readonly tracedShapes: Set<string>;
   readonly tracedUnions: Set<string>;
+  /** Present when the program makes weak-collection entries. `cyclic` holds
+   * the shapes that can be on a cycle of counted references
+   * (cycle-analysis.ts, computeCyclic). A traced shape outside it carries
+   * the collector header only for the weak analysis, or for a union or
+   * hierarchy that shares its layout: no object of it is on a cycle the
+   * collector can free. Such a type is emitted as one without cycle-capable
+   * children: its descriptor names scr_cyc_no_children, its objects start
+   * out SCR_CYC_ACYCLIC (no release nominates one, no pass walks into one),
+   * and its gcFree releases every reference by counting. Its trace function
+   * is emitted as for any traced type, and `trace` records it for
+   * scr_weak_traces (alloc.ts, weakTraceTable), where the weak analysis
+   * finds it. */
+  readonly weakOnly?: {
+    readonly cyclic: ReadonlySet<string>;
+    trace(descriptor: string, trace: string): void;
+  };
   /** The zeroed `%ScrUnion` an inline store reads for a NULL dummy. */
   unionNoneRef(): string;
   /** The young-in nursery (backend/young-nursery.ts): `new` hands each
@@ -256,7 +273,7 @@ export interface RegionHooks {
  * emit-module.ts functionAttributes). */
 export const FN_ATTRS = "#0";
 
-export { computeTraced } from "../cycle-analysis.js";
+export { computeCyclic, computeTraced } from "../cycle-analysis.js";
 
 /* ── RC dispatch ──────────────────────────────────────────────────────── */
 
@@ -317,7 +334,11 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
       };
     }
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -593,7 +614,11 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
     case "object":
       return `@${mangleClassRelease(t.className)}`;
     default:
-      throw new LlvmUnsupportedError(`rc:${t.kind}`);
+      throw new LlvmUnsupportedError(
+        `rc:${t.kind}`,
+        undefined,
+        `a counted reference of type ${typeKey(t)}`,
+      );
   }
 }
 
@@ -1125,9 +1150,21 @@ export function emitInlineRcHelpers(host: ShapeHost): string[] {
   return out;
 }
 
+/** What the walk below answers for a nullable union it is already inside:
+ * read by the container around it as "not null" and never returned from
+ * the outermost call, which is always that of a container or of the union
+ * whose arm is one. Not a symbol, so LLVM rejects it if that ever fails. */
+const TRACED_INSIDE_ITSELF = "@<a nullable union inside itself>";
+
 /** The trace entry point for a payload/field type, or null when the type
- * cannot participate in a cycle. */
-export function traceAdapter(host: ShapeHost, t: IrType): string | null {
+ * cannot participate in a cycle.
+ *
+ * A nullable union is the pointer of its one reference arm, and that arm
+ * can be a container of the union (`type Nest = Nest[] | null`). `inside`
+ * holds the nullable unions whose container arm the walk is in. Meeting one
+ * again asks whether a container of itself is on a cycle, which is the
+ * cycle analysis's answer for the union. */
+export function traceAdapter(host: ShapeHost, t: IrType, inside?: Set<string>): string | null {
   switch (t.kind) {
     case "caught":
       host.declare(`declare void @scr_caught_trace_v(ptr, ptr, ptr)`);
@@ -1157,7 +1194,18 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         return host.tracedShapes.has(`object:${nullable.arms[0]!.className}`)
           ? classTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
           : null;
-      if (nullable) return traceAdapter(host, nullable.arm);
+      if (nullable) {
+        const arm = nullable.arm;
+        if (arm.kind !== "array" && arm.kind !== "map" && arm.kind !== "set")
+          return traceAdapter(host, arm);
+        if (inside?.has(t.unionId) === true)
+          return host.tracedUnions.has(t.unionId) ? TRACED_INSIDE_ITSELF : null;
+        const within = inside ?? new Set<string>();
+        within.add(t.unionId);
+        const traced = traceAdapter(host, arm, within);
+        within.delete(t.unionId);
+        return traced;
+      }
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);
       return "@scr_union_trace_v";
@@ -1189,15 +1237,19 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         return null;
       return `@${mangleClassTrace(t.className)}`;
     case "map":
-      if (traceAdapter(host, t.key) === null && traceAdapter(host, t.value) === null) return null;
+      if (
+        traceAdapter(host, t.key, inside) === null &&
+        traceAdapter(host, t.value, inside) === null
+      )
+        return null;
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "set":
-      if (traceAdapter(host, t.elem) === null) return null;
+      if (traceAdapter(host, t.elem, inside) === null) return null;
       host.declare(`declare void @scr_map_trace_v(ptr, ptr, ptr)`);
       return "@scr_map_trace_v";
     case "array":
-      if (traceAdapter(host, t.elem) === null) return null;
+      if (traceAdapter(host, t.elem, inside) === null) return null;
       host.declare(`declare void @scr_arr_trace_v(ptr, ptr, ptr)`);
       return "@scr_arr_trace_v";
     default:
@@ -1253,7 +1305,11 @@ function elemKindNum(elem: IrType): number {
     case "bytes":
       return 4; // SCR_ELEM_BYTES
     default:
-      throw new LlvmUnsupportedError(`arrayElem:${elem.kind}`);
+      throw new LlvmUnsupportedError(
+        `arrayElem:${elem.kind}`,
+        undefined,
+        `an array of ${typeKey(elem)} elements`,
+      );
   }
 }
 
@@ -1386,7 +1442,7 @@ export function boxNewCall(host: ShapeHost, t: IrType): string {
     host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
     return `call ptr @scr_box_new_obj(ptr ${v.retain}, ptr ${v.release}, ptr ${traceArg(host, t)})`;
   }
-  throw new LlvmUnsupportedError(`box:${t.kind}`);
+  throw new LlvmUnsupportedError(`box:${t.kind}`, undefined, `a boxed value of type ${typeKey(t)}`);
 }
 
 /** Box accessor suffix (boxAccess): scalars unboxed, ref kinds pointers. */
@@ -1412,7 +1468,7 @@ export function llFieldType(
     case "bool":
       return "i8";
     default:
-      throw new LlvmUnsupportedError(`type:${t.kind}`);
+      throw new LlvmUnsupportedError(`type:${t.kind}`, undefined, `type ${typeKey(t)}`);
   }
 }
 
@@ -1456,7 +1512,11 @@ export function mapKeyAccess(key: IrType): MapKeyAccess {
     key.kind === "dyn"
   )
     return "ref";
-  throw new LlvmUnsupportedError(`mapKey:${key.kind}`);
+  throw new LlvmUnsupportedError(
+    `mapKey:${key.kind}`,
+    undefined,
+    `a Map or Set keyed by ${typeKey(key)}`,
+  );
 }
 
 export function mapKeyLlType(access: MapKeyAccess): "double" | "i1" | "ptr" {
@@ -2488,8 +2548,14 @@ export function emitRecordShapes(
         refMembers.map((m) => m.type),
         directTargets,
       );
-    // Closed layouts can carry a kept record source (record-sources.ts).
-    const observers = recordMayKeepSource(shape) ? "weak-or-source" : "weak";
+    // Closed layouts can carry a kept record source (record-sources.ts), and
+    // so can the record a partial view views, also one without fields (an
+    // empty literal asserted to a wider type): the properties its views add
+    // are kept by its address, and must go when it is freed.
+    const observers =
+      recordMayKeepSource(shape) || host.recordViews?.partialSources.has(shape.id) === true
+        ? "weak-or-source"
+        : "weak";
     // A segmented teardown loads its fields, releases its own block, and
     // then releases the fields (segmentTeardownLines).
     const loads: string[] = [];
@@ -2571,17 +2637,28 @@ export function emitRecordShapes(
       `entry:`,
     ];
     const cycType = `@${mangleRecordTrace(shape.id)}.cyctype`;
+    // Traced only for the weak analysis (ShapeHost.weakOnly): for the
+    // collector, a type without cycle-capable children.
+    const weakOnly =
+      traced && host.weakOnly !== undefined && !host.weakOnly.cyclic.has(`record:${shape.id}`);
+    if (weakOnly) host.declare(`declare void @scr_cyc_no_children(ptr, ptr, ptr)`);
     if (traced)
       defs.push(
         cycTypeDescriptor(
           cycType,
-          `@${mangleRecordTrace(shape.id)}`,
+          weakOnly ? "@scr_cyc_no_children" : `@${mangleRecordTrace(shape.id)}`,
           `@${mangleRecordGcFree(shape.id)}`,
           host.nextCycKind?.() ?? 0,
         ),
         ``,
       );
-    nw.push(...emitObjectAlloc(host, sizeOf, traced ? { type: cycType } : null));
+    nw.push(
+      ...emitObjectAlloc(
+        host,
+        sizeOf,
+        traced ? (weakOnly ? { type: cycType, acyclic: true } : { type: cycType }) : null,
+      ),
+    );
     nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (shapeNumber !== 0)
       nw.push(
@@ -2665,7 +2742,14 @@ export function emitRecordShapes(
           // viewed record lacks, so the copy stops with the program's own
           // message (a source-level read threw first).
           const partial = host.recordViews.partialTargets.has(shape.id);
-          host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          // A type whose values may be frozen asks about a marked source: a
+          // frozen record answers its own slot.
+          const marked = host.recordViews.marked.has(shape.id);
+          host.declare(
+            marked
+              ? `declare ptr @scr_record_marked_slot(ptr, ${host.sizeType}, ptr)`
+              : `declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`,
+          );
           const fromView = partial
             ? [
                 `  %sn${i} = icmp eq ptr %sw${i}, null`,
@@ -2681,7 +2765,9 @@ export function emitRecordShapes(
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
-            `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
+            marked
+              ? `  %sw${i} = call ptr @scr_record_marked_slot(ptr %src, ${host.sizeType} ${i}, ptr %so${i})`
+              : `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
             ...fromView,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,
@@ -2711,8 +2797,14 @@ export function emitRecordShapes(
       // trace: visit exactly the cycle-capable members; gcFree: release
       // exactly the complement, then free (the trace/teardown complement
       // contract in scr_runtime.h).
+      // A weak-only shape's descriptor names no trace, so for the collector
+      // every reference is the teardown's; its trace is the weak analysis's.
       const tracedMembers = members.filter((m) => traceAdapter(host, m.type) !== null);
-      const untracedRefMembers = refMembers.filter((m) => traceAdapter(host, m.type) === null);
+      const untracedRefMembers = weakOnly
+        ? refMembers
+        : refMembers.filter((m) => traceAdapter(host, m.type) === null);
+      if (weakOnly && tracedMembers.length > 0)
+        host.weakOnly!.trace(cycType, `@${mangleRecordTrace(shape.id)}`);
       const tr: string[] = [
         `define internal void @${mangleRecordTrace(shape.id)}(ptr %o, ptr %visit, ptr %ctx) ${FN_ATTRS} {`,
         `entry:`,

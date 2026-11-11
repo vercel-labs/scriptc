@@ -1,5 +1,11 @@
 import { expect, test } from "vitest";
-import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import {
+  CLASS_NORMALIZER,
+  errorReaderName,
+  exprFunctionReference,
+  moduleFunctionReferences,
+  withoutUnreachedFunctions,
+} from "./function-references.js";
 import { functionCallFacts } from "./int32-slots.js";
 import {
   F64,
@@ -66,9 +72,12 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   chainRecv: { id: "other" },
   regexLit: { pattern: "other", flags: "other" },
   templateStrings: { key: "other", "cooked[]": "other" },
+  constCell: { "strings[]": "other" },
   call: { callee: "callee" },
   ffiCall: { import: "other" },
   closure: { fnName: "reference", "captures[]": "other" },
+  viewOf: { adapter: "reference" },
+  viewSource: { adapter: "reference" },
   new: { className: "other" },
   classRef: { className: "other", "captures[]": "other" },
   instanceOf: { className: "other" },
@@ -229,6 +238,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].sha256": "other",
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
+  "weakKeys[]": "other",
   "foreignElementKeys[]": "other",
   "freezableArrays[]": "other",
   "nodeIsland.libnode": "other",
@@ -237,6 +247,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "nodeIsland.modules.location": "other",
   "nodeIsland.modules.files[].path": "other",
   "nodeIsland.modules.files[].sha256": "other",
+  "nodeIsland.modules.files[].generated": "other",
   "nodeIsland.modules.links[].path": "other",
   "nodeIsland.modules.links[].target": "other",
   "sloppyDynWrites[]": "other",
@@ -246,6 +257,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "recordLinks[].from": "other",
   "recordLinks[].to": "other",
   "recordLinks[].compose": "reference",
+  "recordSourcesFolded[]": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };
@@ -295,6 +307,36 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
         right: { kind: "numLit", value: 1, type: F64, loc },
         retag: TARGET,
         type: F64,
+        loc,
+      }),
+    ]),
+  "viewOf.adapter": () =>
+    module([
+      exprStmt({
+        kind: "viewOf",
+        value: {
+          kind: "varRef",
+          localId: "f",
+          type: { kind: "func", params: [F64], ret: VOID },
+          loc,
+        },
+        adapter: TARGET,
+        type: { kind: "bool" },
+        loc,
+      }),
+    ]),
+  "viewSource.adapter": () =>
+    module([
+      exprStmt({
+        kind: "viewSource",
+        value: {
+          kind: "varRef",
+          localId: "f",
+          type: { kind: "func", params: [F64], ret: VOID },
+          loc,
+        },
+        adapter: TARGET,
+        type: { kind: "func", params: [F64, F64], ret: VOID },
         loc,
       }),
     ]),
@@ -410,4 +452,71 @@ test("direct calls and look-alike strings do not escape a function", () => {
   ]);
   expect(referencesOf(mod).has(TARGET)).toBe(false);
   expect(functionCallFacts(mod, new Map(), (name) => [name]).valueEscaped.has(TARGET)).toBe(false);
+});
+
+const namesOf = (mod: IrModule): string[] => mod.functions.map((fn) => fn.name);
+const removable = new Set([TARGET]);
+
+test.each(Object.keys(REFERENCE_FIXTURES))("%s keeps a removable function", (path) => {
+  const mod = REFERENCE_FIXTURES[path]!();
+  expect(withoutUnreachedFunctions(mod, removable)).toBe(mod);
+});
+
+test("a removable function nothing reaches is removed", () => {
+  const mod = module();
+  expect(namesOf(withoutUnreachedFunctions(mod, removable))).toEqual(["%main"]);
+  // A function outside the removable set stays, reached or not.
+  expect(withoutUnreachedFunctions(mod, new Set())).toBe(mod);
+});
+
+test("a call and a string literal of its name reach a removable function", () => {
+  const called = module([exprStmt({ kind: "call", callee: TARGET, args: [], type: VOID, loc })]);
+  expect(withoutUnreachedFunctions(called, removable)).toBe(called);
+  const spelled = module([
+    exprStmt({ kind: "strLit", value: TARGET, type: { kind: "string" }, loc }),
+  ]);
+  expect(withoutUnreachedFunctions(spelled, removable)).toBe(spelled);
+  // dynFrom's fnName is a display name, not a reference.
+  const displayed = module([
+    exprStmt({
+      kind: "dynFrom",
+      value: { kind: "numLit", value: 0, type: F64, loc },
+      fnName: TARGET,
+      type: { kind: "dyn" },
+      loc,
+    }),
+  ]);
+  expect(namesOf(withoutUnreachedFunctions(displayed, removable))).toEqual(["%main"]);
+});
+
+test("removable functions reach each other only from a reached one", () => {
+  const helper = (name: string, body: IrStmt[]): IrFunction => ({ ...target, name, body });
+  const call = (callee: string): IrStmt =>
+    exprStmt({ kind: "call", callee, args: [], type: VOID, loc });
+  const mod: IrModule = {
+    ...module([call("%live.a")]),
+    functions: [
+      helper("%live.a", [call("%live.b")]),
+      helper("%live.b", []),
+      // A cycle no reached function enters, and a function only it calls.
+      helper("%dead.a", [call("%dead.b"), call("%dead.c")]),
+      helper("%dead.b", [call("%dead.a")]),
+      helper("%dead.c", []),
+      entry([call("%live.a")]),
+    ],
+  };
+  const all = new Set(namesOf(mod));
+  expect(namesOf(withoutUnreachedFunctions(mod, all))).toEqual(["%live.a", "%live.b", "%main"]);
+});
+
+test("the functions the emitter looks up by name and class members stay", () => {
+  const named = [errorReaderName("name"), errorReaderName("message"), CLASS_NORMALIZER];
+  const members = ["%%m0.Cell.constructor", "%%m0.Cell.get:value"];
+  const mod: IrModule = {
+    ...module(),
+    classes: [{ name: "%m0.Cell", fields: [], loc }],
+    functions: [...[...named, ...members].map((name) => ({ ...target, name })), target, entry()],
+  };
+  const kept = withoutUnreachedFunctions(mod, new Set(namesOf(mod)));
+  expect(namesOf(kept)).toEqual([...named, ...members, "%main"]);
 });

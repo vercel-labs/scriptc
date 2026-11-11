@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import type { IrBytesElem } from "../../ir/ir.js";
 import { isIntegerBytesElem } from "../../ir/ir.js";
@@ -45,6 +46,11 @@ export interface NanCodedHost {
   declarationOf(symbol: ts.Symbol): ts.Node | undefined;
   /** The element kind of a typed-array receiver, or null. */
   bytesElemOf(receiver: ts.Expression): IrBytesElem | null;
+  /** The receiver is a `number[]` of a JavaScript source. Its reads past
+   * the end answer undefined like a typed array's, so they are candidates;
+   * nothing else this analysis knows about typed arrays (a fixed length, a
+   * store that converts undefined to NaN) holds for it. */
+  isJsNumberArray(receiver: ts.Expression): boolean;
   /** The read is a keyed read of a record's `number` index signature,
    * which answers undefined for a missing key. */
   isNumberRecordRead(read: ts.ElementAccessExpression): boolean;
@@ -91,19 +97,6 @@ interface BindingSlot extends SlotBase {
 interface ReturnSlot extends SlotBase {
   kind: "return";
   symbol: ts.Symbol;
-}
-
-function peelTransparent(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
 }
 
 /** The node whose consumer decides how `node`'s value is used. */
@@ -202,7 +195,7 @@ const TYPED_ARRAYS = new Set([
 ]);
 
 function nonNegativeIntegerLiteral(node: ts.Expression): boolean {
-  const e = peelTransparent(node);
+  const e = withoutParenthesesTypeWrappers(node);
   if (!ts.isNumericLiteral(e)) return false;
   const value = Number(e.text);
   return Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
@@ -317,7 +310,8 @@ export class NanCodedReads {
     this.analyzed = true;
     const candidates = new Map<ts.ElementAccessExpression, IrBytesElem>();
     for (const sf of this.files) {
-      if (isJsSourceFile(sf) || sf.isDeclarationFile) continue;
+      if (sf.isDeclarationFile) continue;
+      const js = isJsSourceFile(sf);
       ts.walkPreorder(sf, (node) => {
         if (ts.isIdentifier(node)) {
           const list = this.names.get(node.text);
@@ -326,10 +320,16 @@ export class NanCodedReads {
           return;
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
-          // A record's number values may hold a genuine NaN, like f64 elements.
-          const elem =
-            this.host.bytesElemOf(node.expression) ??
-            (this.host.isNumberRecordRead(node) ? "f64" : null);
+          // A record's number values may hold a genuine NaN, like f64
+          // elements. A JavaScript source contributes only its `number[]`
+          // reads: its typed-array and record reads lower through the
+          // dynamic key path, never to the plain number a candidate needs.
+          const elem = js
+            ? this.host.isJsNumberArray(node.expression)
+              ? "f64"
+              : null
+            : (this.host.bytesElemOf(node.expression) ??
+              (this.host.isNumberRecordRead(node) ? "f64" : null));
           if (elem) candidates.set(node, elem);
         }
       });
@@ -421,7 +421,7 @@ export class NanCodedReads {
     return symbol;
   }
 
-  /** An element read (never a write target) of a TypeScript file. */
+  /** An element read that is never a write target. */
   private isReadCandidate(read: ts.ElementAccessExpression): boolean {
     if (read.questionDotToken) return false;
     let n: ts.Node = read;
@@ -459,7 +459,7 @@ export class NanCodedReads {
    * function and that a dominating `i < xs.length` guard bounds by the
    * length: the read names an existing index. */
   counterIndexInBounds(read: ts.ElementAccessExpression): boolean {
-    const index = peelTransparent(read.argumentExpression);
+    const index = withoutParenthesesTypeWrappers(read.argumentExpression);
     if (!ts.isIdentifier(index)) return false;
     const symbol = this.symbolOf(index);
     if (!symbol || !this.nonNegativeCounter(symbol)) return false;
@@ -477,8 +477,8 @@ export class NanCodedReads {
    * operand: `t` is a fixed-length typed array no other code can reach, and
    * only the reading function itself writes `i`. */
   private presentRead(read: ts.ElementAccessExpression): boolean {
-    const array = peelTransparent(read.expression);
-    const index = peelTransparent(read.argumentExpression);
+    const array = withoutParenthesesTypeWrappers(read.expression);
+    const index = withoutParenthesesTypeWrappers(read.argumentExpression);
     if (!ts.isIdentifier(array) || !ts.isIdentifier(index)) return false;
     const arraySymbol = this.symbolOf(array);
     if (!arraySymbol || !this.stableReceiver(arraySymbol)) return false;
@@ -548,8 +548,8 @@ export class NanCodedReads {
    * `array` is the same stable typed-array binding: it always holds the
    * length. */
   private lengthAlias(bound: ts.Expression, array: ts.Expression): boolean {
-    const b = peelTransparent(bound);
-    const a = peelTransparent(array);
+    const b = withoutParenthesesTypeWrappers(bound);
+    const a = withoutParenthesesTypeWrappers(array);
     if (!ts.isIdentifier(b) || !ts.isIdentifier(a)) return false;
     const symbol = this.symbolOf(b);
     const decl = symbol ? this.host.declarationOf(symbol) : undefined;
@@ -561,14 +561,14 @@ export class NanCodedReads {
       !(decl.parent.flags & ts.NodeFlags.Const)
     )
       return false;
-    const init = peelTransparent(decl.initializer);
+    const init = withoutParenthesesTypeWrappers(decl.initializer);
     if (
       !ts.isPropertyAccessExpression(init) ||
       init.questionDotToken ||
       init.name.text !== "length"
     )
       return false;
-    const owner = peelTransparent(init.expression);
+    const owner = withoutParenthesesTypeWrappers(init.expression);
     if (!ts.isIdentifier(owner)) return false;
     const ownerSymbol = this.symbolOf(owner);
     return (
@@ -628,8 +628,8 @@ export class NanCodedReads {
 
   /** Two typed arrays whose lengths are equal for their whole lifetime. */
   private sameFixedLength(array: ts.Expression, other: ts.Expression): boolean {
-    const a = peelTransparent(array);
-    const b = peelTransparent(other);
+    const a = withoutParenthesesTypeWrappers(array);
+    const b = withoutParenthesesTypeWrappers(other);
     if (!ts.isIdentifier(a) || !ts.isIdentifier(b)) return false;
     const sa = this.symbolOf(a);
     const sb = this.symbolOf(b);
@@ -641,14 +641,14 @@ export class NanCodedReads {
     const lb = nb.arguments!.nodes[0]!;
     // The same literal length.
     const literal = (e: ts.Expression): number | null => {
-      const x = peelTransparent(e);
+      const x = withoutParenthesesTypeWrappers(e);
       return ts.isNumericLiteral(x) ? Number(x.text) : null;
     };
     const literalA = literal(la);
     if (literalA !== null) return literalA === literal(lb);
     // The same `const` binding.
-    const ia = peelTransparent(la);
-    const ib = peelTransparent(lb);
+    const ia = withoutParenthesesTypeWrappers(la);
+    const ib = withoutParenthesesTypeWrappers(lb);
     if (ts.isIdentifier(ia) && ts.isIdentifier(ib)) {
       const symbol = this.symbolOf(ia);
       if (!symbol || symbol !== this.symbolOf(ib)) return false;
@@ -671,12 +671,13 @@ export class NanCodedReads {
       !ib.questionDotToken &&
       ia.name.text === "length" &&
       ib.name.text === "length" &&
-      ts.isIdentifier(peelTransparent(ia.expression)) &&
-      ts.isIdentifier(peelTransparent(ib.expression)) &&
+      ts.isIdentifier(withoutParenthesesTypeWrappers(ia.expression)) &&
+      ts.isIdentifier(withoutParenthesesTypeWrappers(ib.expression)) &&
       this.host.hasLength(ia.expression)
     ) {
-      const owner = this.symbolOf(peelTransparent(ia.expression));
-      if (!owner || owner !== this.symbolOf(peelTransparent(ib.expression))) return false;
+      const owner = this.symbolOf(withoutParenthesesTypeWrappers(ia.expression));
+      if (!owner || owner !== this.symbolOf(withoutParenthesesTypeWrappers(ib.expression)))
+        return false;
       const ownerDecl = this.host.declarationOf(owner);
       if (
         !ownerDecl ||
@@ -717,7 +718,7 @@ export class NanCodedReads {
       this.host.bytesElemOf(decl.name) === null
     )
       return null;
-    const init = peelTransparent(decl.initializer);
+    const init = withoutParenthesesTypeWrappers(decl.initializer);
     if (
       !ts.isNewExpression(init) ||
       !ts.isIdentifier(init.expression) ||
@@ -1049,7 +1050,7 @@ export class NanCodedReads {
       const k = p.operatorToken.kind;
       if (k === ts.SyntaxKind.CommaToken && p.right === e) return this.sinkOf(p);
       if (k === ts.SyntaxKind.EqualsToken && p.right === e) {
-        const target = peelTransparent(p.left);
+        const target = withoutParenthesesTypeWrappers(p.left);
         if (!ts.isIdentifier(target)) return null;
         const symbol = this.symbolOf(target);
         return symbol ? this.bindingSlot(symbol) : null;
@@ -1164,7 +1165,7 @@ export class NanCodedReads {
 
   /** A value allowed into a NaN-coded slot, or null. */
   private sourceInfo(node: ts.Expression): ValueInfo | null {
-    const e = peelTransparent(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isConditionalExpression(e)) {
       const a = this.sourceInfo(e.whenTrue);
       const b = a && this.sourceInfo(e.whenFalse);
@@ -1214,7 +1215,7 @@ export class NanCodedReads {
    * for undefined, and a comparison guarding the read excludes NaN. */
   private nanFreeArithmetic(node: ts.Expression, depth: number): boolean {
     if (depth > 6) return false;
-    const e = peelTransparent(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isNumericLiteral(e))
       return Number.isFinite(Number(e.text)) && Math.abs(Number(e.text)) < 2 ** 53;
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken)
@@ -1229,8 +1230,8 @@ export class NanCodedReads {
       }
       if (k === ts.SyntaxKind.AsteriskToken)
         return (
-          (ts.isNumericLiteral(peelTransparent(e.left)) ||
-            ts.isNumericLiteral(peelTransparent(e.right))) &&
+          (ts.isNumericLiteral(withoutParenthesesTypeWrappers(e.left)) ||
+            ts.isNumericLiteral(withoutParenthesesTypeWrappers(e.right))) &&
           this.nanFreeArithmetic(e.left, depth + 1) &&
           this.nanFreeArithmetic(e.right, depth + 1)
         );
@@ -1359,7 +1360,7 @@ export class NanCodedReads {
     condition: ts.Expression,
     symbol: ts.Symbol,
   ): ts.BinaryExpression | null {
-    const e = peelTransparent(condition);
+    const e = withoutParenthesesTypeWrappers(condition);
     if (!ts.isBinaryExpression(e)) return null;
     const k = e.operatorToken.kind;
     if (k === ts.SyntaxKind.AmpersandAmpersandToken)
@@ -1367,8 +1368,8 @@ export class NanCodedReads {
         this.relationalComparison(e.left, symbol) ?? this.relationalComparison(e.right, symbol)
       );
     if (!RELATIONAL.has(k)) return null;
-    const left = peelTransparent(e.left);
-    const right = peelTransparent(e.right);
+    const left = withoutParenthesesTypeWrappers(e.left);
+    const right = withoutParenthesesTypeWrappers(e.right);
     const names = (x: ts.Expression): boolean => ts.isIdentifier(x) && this.symbolOf(x) === symbol;
     if (names(left) && this.host.isNumber(right)) return e;
     if (names(right) && this.host.isNumber(left)) return e;
@@ -1395,7 +1396,7 @@ export class NanCodedReads {
   }
 
   private conditionExcludesUndefined(condition: ts.Expression, symbol: ts.Symbol): boolean {
-    const e = peelTransparent(condition);
+    const e = withoutParenthesesTypeWrappers(condition);
     if (!ts.isBinaryExpression(e)) return false;
     const k = e.operatorToken.kind;
     if (k === ts.SyntaxKind.AmpersandAmpersandToken)
@@ -1404,8 +1405,8 @@ export class NanCodedReads {
         this.conditionExcludesUndefined(e.right, symbol)
       );
     if (!RELATIONAL.has(k) && k !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false;
-    const left = peelTransparent(e.left);
-    const right = peelTransparent(e.right);
+    const left = withoutParenthesesTypeWrappers(e.left);
+    const right = withoutParenthesesTypeWrappers(e.right);
     const names = (x: ts.Expression): boolean => ts.isIdentifier(x) && this.symbolOf(x) === symbol;
     const literal = (x: ts.Expression): boolean => {
       const info = this.plainNumber(x, 0);
@@ -1417,7 +1418,7 @@ export class NanCodedReads {
   /** How the value lowers once the analysis is final: NaN-coded (a numeric
    * read or a read of a NaN-coded slot) or not. */
   private loweredInfo(node: ts.Expression): ValueInfo {
-    const e = peelTransparent(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isConditionalExpression(e)) {
       const a = this.loweredInfo(e.whenTrue);
       const b = this.loweredInfo(e.whenFalse);
@@ -1651,7 +1652,7 @@ export class NanCodedReads {
 
   /** `t[k]` on a number typed array, as an assignment target. */
   private typedArrayStoreTarget(target: ts.Expression): boolean {
-    const e = peelTransparent(target);
+    const e = withoutParenthesesTypeWrappers(target);
     return (
       ts.isElementAccessExpression(e) &&
       !e.questionDotToken &&

@@ -13,6 +13,11 @@
  *   projected alias instead;
  * - package-produced expressions (`S.parse(x)`, `r.data`) are wrapped in
  *   `(<expr> as __scriptc_decl_N)`, the boundary cast;
+ * - so is a call that selects one of several declared signatures where the
+ *   JavaScript body's inferred result holds more arms than the selected
+ *   signature declares (`weigh("3kg")` declared `number`, body `number |
+ *   string | undefined`): the cast is the checked extraction of the
+ *   declared arms;
  * - untyped parameters of user callbacks the package calls gain the alias.
  *
  * The lowering world is then rebuilt from the rewritten text, so the
@@ -27,7 +32,9 @@
  * scriptc-perf/results/design-decl-boundary/DESIGN.md. */
 
 import * as ts from "./ts7/adapter.js";
+import { withoutParenthesesNonNullAwait } from "./outer-expressions.js";
 import { declarationSelector, originAt } from "./lowering/decl-origin.js";
+import { isInstalledPackagePath } from "./resolve.js";
 
 /** Per user file, the origin (lowering/decl-origin.ts) of each boundary
  * cast in source order: the package declaration the cast's type comes
@@ -139,8 +146,11 @@ function isPackageDeclarationFile(sf: ts.SourceFile | undefined): boolean {
   const f = sf.fileName.split("\\").join("/");
   // The TypeScript standard library ships inside node_modules too.
   if (/(^|\/)lib(\.[\w.-]+)?\.d\.ts$/.test(f) || f.startsWith("bundled:")) return false;
+  // scriptc's shipped declarations are compiler-owned code wherever scriptc
+  // is installed; an install under node_modules does not make them a
+  // package's declarations.
+  if (!isInstalledPackagePath(sf.fileName)) return false;
   return (
-    f.includes("/node_modules/") &&
     !f.includes("/node_modules/@types/node/") &&
     !f.includes("/node_modules/typescript/") &&
     !f.includes("/node_modules/@typescript/")
@@ -223,7 +233,10 @@ function declaredInUserFile(symbol: ts.Symbol | undefined): boolean {
     decls.length > 0 &&
     decls.every((d) => {
       const sf = ts.getSourceFileOfNode(d);
-      return !sf.isDeclarationFile && !sf.fileName.split("\\").join("/").includes("/node_modules/");
+      // scriptc's package shims are compiler-owned program code, wherever
+      // scriptc is installed: an install under node_modules does not make
+      // their declarations a package's.
+      return !sf.isDeclarationFile && !isInstalledPackagePath(sf.fileName);
     })
   );
 }
@@ -269,6 +282,19 @@ class TypePrinter {
       this.declarations.push(`type ${name} = ${text};`);
     }
     return name;
+  }
+
+  /** The printed arms of a type (its own print when it is no union), with
+   * null for an arm that is not pure data. Registers no alias. */
+  arms(type: ts.Type): (string | null)[] {
+    const was = this.dry;
+    this.dry = true;
+    try {
+      const parts = type.isUnionType() ? type.getTypes() : [type];
+      return parts.map((part) => (part.flags & ANYISH ? null : this.print(part, 1)));
+    } finally {
+      this.dry = was;
+    }
   }
 
   private print(type: ts.Type, depth: number): string | null {
@@ -533,13 +559,6 @@ function inTypeContext(node: ts.Node): boolean {
   return false;
 }
 
-function unwrapTransparent(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAwaitExpression(e))
-    e = e.expression;
-  return e;
-}
-
 /** Whether the walk reads an expression's own type in the JavaScript world:
  * considerExpr's gate, which needs no checker answer. The syntactic pass
  * below selects the same nodes, so the batch it issues is exactly the walk's
@@ -698,6 +717,38 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       return false;
     }
   };
+  const jsPrinter = new TypePrinter(jsChecker);
+  /** Whether a call selects one of several declared signatures whose result
+   * is some, and not all, of the arms the JavaScript world infers for the
+   * call. The JavaScript body's result is the union over every way the
+   * function is called; the declaration world's overload resolution chose
+   * one, which the body cannot say. The declared arms must all be data,
+   * and each must be an arm the body can return: a declared type the body
+   * does not hold at all is left to the body's own type. */
+  const selectsNarrowerResult = (
+    call: ts.Expression,
+    jsType: ts.Type,
+    declType: ts.Type,
+  ): boolean => {
+    if (!jsType.isUnionType()) return false;
+    let signatures = 0;
+    try {
+      if (ts.isCallExpression(call)) {
+        const callee = typeAt(declChecker, call.expression);
+        signatures = callee === null ? 0 : declChecker.getCallSignatures(callee).length;
+      } else if (ts.isNewExpression(call)) {
+        const callee = typeAt(declChecker, call.expression);
+        signatures = callee === null ? 0 : declChecker.getConstructSignatures(callee).length;
+      }
+    } catch {
+      return false;
+    }
+    if (signatures < 2) return false;
+    const declared = printer.arms(declType);
+    if (declared.some((arm) => arm === null || arm === "unknown")) return false;
+    const inferred = new Set(jsPrinter.arms(jsType));
+    return declared.every((arm) => inferred.has(arm)) && inferred.size > new Set(declared).size;
+  };
   const namesPackageSymbol = (node: ts.Node): boolean => {
     let found = false;
     const visit = (n: ts.Node): void => {
@@ -715,7 +766,13 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
   for (const file of input.userFiles) {
     const jsSf = input.jsProgram.getSourceFile(file);
     const declSf = input.declProgram.getSourceFile(file);
-    if (jsSf === undefined || declSf === undefined || jsSf.text !== declSf.text) continue;
+    // Both programs must have loaded the same content; nothing is taken from it here.
+    if (
+      jsSf === undefined ||
+      declSf === undefined ||
+      ts.carriedSourceText(jsSf) !== ts.carriedSourceText(declSf)
+    )
+      continue;
     const fileEdits: Edit[] = [];
     const fileOrigins: (string | null)[] = [];
     /** Candidate expressions (by js node) with their declared type, named
@@ -772,11 +829,18 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       const jsType = typeAt(jsChecker, jsNode);
       if (jsType === null) return;
       // A typed JavaScript value crosses only where its object type lacks a
-      // member the declaration promises (missesDeclaredMembers).
+      // member the declaration promises (missesDeclaredMembers), or where a
+      // call selected a declared signature narrower than the body's result
+      // (selectsNarrowerResult).
       const typedJs = !isAnyish(jsType);
       if (typedJs) {
         const declType = typeAt(declChecker, declNode);
-        if (declType === null || !missesDeclaredMembers(jsType, declType)) return;
+        if (declType === null) return;
+        if (
+          !missesDeclaredMembers(jsType, declType) &&
+          !selectsNarrowerResult(declNode as ts.Expression, jsType, declType)
+        )
+          return;
       }
       // Package-produced?
       const d = declNode as ts.Expression;
@@ -812,7 +876,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
           deferred.add(jsNode);
         }
       } else if (ts.isAwaitExpression(d)) {
-        const inner = unwrapTransparent(d.expression);
+        const inner = withoutParenthesesNonNullAwait(d.expression);
         produced =
           (ts.isCallExpression(inner) || ts.isPropertyAccessExpression(inner)) &&
           (declaredInPackage(
@@ -885,7 +949,10 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       try {
         const ctxFn = declChecker.getContextualType(declNode.parent as ts.Expression);
         if (ctxFn === undefined) return;
-        const sigs = declChecker.getCallSignatures(ctxFn);
+        // An optional member's contextual type carries `| undefined`, which
+        // has no call signatures as a union: the callback is typed by the
+        // function arm, as the checker itself types it.
+        const sigs = declChecker.getCallSignatures(declChecker.getNonNullableType(ctxFn));
         if (
           !sigs.some(
             (s) =>
@@ -1013,7 +1080,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
     /** A receiver that stays `any` after the rewrite: a package call whose
      * type does not project, or a user const bound to one. */
     const staysUntyped = (e: ts.Node): boolean => {
-      const u = unwrapTransparent(e as ts.Expression);
+      const u = withoutParenthesesNonNullAwait(e as ts.Expression);
       if (unprojected.has(u)) return true;
       if (!ts.isIdentifier(u)) return false;
       let sym: ts.Symbol | undefined;
@@ -1032,7 +1099,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         decl.parent !== undefined &&
         ts.isVariableDeclarationList(decl.parent) &&
         (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
-        unprojected.has(unwrapTransparent(decl.initializer))
+        unprojected.has(withoutParenthesesNonNullAwait(decl.initializer))
       );
     };
     for (const e of exprOrder) {
@@ -1071,7 +1138,7 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
         const recv = receiverOf(e);
         if (
           recv !== null &&
-          (keptSet.has(unwrapTransparent(recv as ts.Expression)) || willBeTyped(recv))
+          (keptSet.has(withoutParenthesesNonNullAwait(recv as ts.Expression)) || willBeTyped(recv))
         )
           continue;
       }

@@ -1,12 +1,26 @@
 `process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2.
 In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag: it is kept out of `process.argv` and appears in `process.execArgv`, which is otherwise `[]`.
 `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
+The `process.features` object cannot be changed: under Node nine of its flags are writable and a program may add keys, but a compiled binary reads a flag as a constant, so a write to the object throws the `TypeError` of a frozen object and `Object.isFrozen(process.features)` is `true`.
 
 Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value.
+An uncaught Error and an unhandled rejection with an Error reason also print the stack frames the Error carries, one `at` line each under that first line.
+A release build keeps stack frames only in programs that read an error's `stack`; in every other program its report is the first line alone.
+A build with `--optimization dev` and without `--strip` keeps a frame in every function that can raise an error, and each frame names the file, line, and column of the statement that was running: `at decode (/app/src/user.ts:8:3)`.
+A function that only computes, and so could fail in no other way than by exhausting the stack, keeps no frame in either build: a stack overflow in it is reported at the statement that called it.
+A build with `--sanitize` keeps the frames of a release build.
+A frame takes 16 bytes of stack per call, so the deepest recursion of the functions that keep one is slightly lower in a `dev` build.
+The position is the start of the statement, where Node.js reports the call or `new` expression inside it.
+Such a build also lists constructors, methods, and accessors (`at new Shape`, `at Shape.area`, `at Shape.get sides`) and the top-level code of a module (`at /app/src/main.ts:12:1`), which a release build leaves out.
+The frames of an async function or a generator end at that function: the functions awaiting or iterating it are not listed.
+On Linux and macOS, a 64-bit `dev` executable that aborts, for example on an array index that a non-null assertion wrongly promised was in range, prints the same frame lines under the runtime's message.
 Exit codes and output written before the exception are preserved.
 Runtime errors expose `message` and Node's `code` as typed members.
 The other own properties Node gives them, such as a system error's `errno`, `syscall`, and `path`, a child process error's `status`, `stdout`, and `stderr`, or an assertion error's `actual` and `expected`, are readable through an untyped view of the error (for example a cast of a caught value) and appear in `util.inspect` output.
 
-Errors carry stack frames that name the function and the source file, without Node.js's `file:line:column` positions or internal frames.
+Errors carry stack frames that name the function and the source file, without Node.js's internal frames; `file:line:column` positions appear only in the `dev` builds described above.
+An error's `stack` text therefore differs between a `dev` build and a release build of one program, and so does what `console.log` prints for an Error: a `dev` build shows its frames where a release build of a program that reads no `stack` prints `[Error: message]`.
+A function passed to `Error.captureStackTrace` as the frame to stop at keeps a frame without a position.
+A class constructor that passes `this.constructor`, `new.target`, or its own class to `Error.captureStackTrace` keeps no frame, and neither do the constructors of its subclasses, so the trace starts at the function that ran `new`.
 `console.log`, `util.format`, and `util.inspect` print an Error from its stack the way Node.js does: the frames under the `name: message` heading, brackets when the stack has no frame line, and a subclass's header named after its class (for example `Bailable [Error]: message`).
 Only the frames themselves diverge, so the output agrees with Node.js when `Error.stackTraceLimit` is `0`.

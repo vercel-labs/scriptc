@@ -215,7 +215,10 @@ declare module "util" {
    * gzip, gunzip, unzip) share one type. */
   export function promisify(
     fn: typeof import("node:zlib").gzip,
-  ): (data: string | Uint8Array, options?: import("node:zlib").ZlibOptions) => Promise<Buffer>;
+  ): (
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: import("node:zlib").ZlibOptions,
+  ) => Promise<Buffer>;
   export function promisify(
     fn: typeof import("node:stream").finished,
   ): typeof import("node:stream/promises").finished;
@@ -259,7 +262,7 @@ declare module "util" {
   export function promisify(fn: (callback: (err?: any) => void) => void): () => Promise<void>;
   export function promisify(
     fn: typeof import("node:crypto").randomFill,
-  ): <T extends ArrayBufferView | ArrayBufferLike>(
+  ): <T extends ScriptcBufferView | ArrayBufferLike>(
     buffer: T,
     offset?: number,
     size?: number,

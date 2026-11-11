@@ -32,6 +32,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "nod
 import { builtinModules } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  isVirtualSource,
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
@@ -40,6 +41,13 @@ import {
   trackedRealpath,
 } from "../frontend/input-tracker.js";
 import type { IrNodeIslandModules } from "../ir/ir.js";
+import {
+  generatedModuleName,
+  generatedModuleText,
+  generatedTreeFile,
+  generatedTreePath,
+  type GeneratedModule,
+} from "./generated.js";
 import { packageDirOf } from "./origin.js";
 
 export type NodeIslandModuleTree = IrNodeIslandModules;
@@ -164,6 +172,11 @@ function portable(path: string): string {
 }
 
 export class NodeIslandModuleCollector {
+  /** The specifier scans of the files this collector reads. Every pass of a
+   * round builds a collector and collects the same packages, so the round's
+   * passes share one (LoweringFacts.moduleSpecifierScans). */
+  constructor(private readonly scans: ModuleSpecifierScans = new ModuleSpecifierScans()) {}
+
   /** Real paths of collected files. */
   private readonly files = new Set<string>();
   /** Link path (its directory real) → real target. */
@@ -178,6 +191,10 @@ export class NodeIslandModuleCollector {
   private readonly provided = new Set<string>();
   /** The problems addNamedData reported (isDataFileProblem). */
   private readonly dataProblems = new Set<string>();
+  /** Modules the build writes (addGenerated), by key. */
+  private readonly generated = new Map<string, GeneratedModule>();
+  /** Their tree paths, once tree() placed them. */
+  private readonly generatedPaths = new Map<string, string>();
 
   /** Whether `problem`, returned by add or addLoaded, is a data file the
    * build does not ship (addNamedData) rather than a module. */
@@ -222,6 +239,44 @@ export class NodeIslandModuleCollector {
     }
   }
 
+  /** Collects a module the build writes (generated.ts): the tree holds its
+   * text under GENERATED_DIRECTORY. The files it imports are loads of the
+   * program, collected by addLoaded. */
+  addGenerated(key: string, module: GeneratedModule): void {
+    this.generated.set(key, module);
+  }
+
+  /** The name a load gives the generated module `key` once tree() placed
+   * it, or null when `key` names none. */
+  generatedLoadPath(key: string): string | null {
+    const path = this.generatedPaths.get(key);
+    return path === undefined ? null : `./${path}`;
+  }
+
+  /** The tree's entries of the generated modules, placed under `root`. */
+  private generatedFiles(root: string): NodeIslandModuleFile[] {
+    const names = new Map<string, string>();
+    for (const [key, module] of this.generated)
+      names.set(key, generatedModuleName(portable(relative(root, module.source)), module.index));
+    const files: NodeIslandModuleFile[] = [];
+    for (const [key, module] of this.generated) {
+      const name = names.get(key)!;
+      const file = generatedTreeFile(root, name);
+      const specifiers = module.imports.map((entry) => {
+        const other = names.get(entry.target);
+        return other !== undefined
+          ? `./${other}`
+          : NodeIslandModuleCollector.relativeSpecifier(file, entry.target);
+      });
+      const text = generatedModuleText(module, specifiers);
+      const bytes = new TextEncoder().encode(text);
+      const path = generatedTreePath(name);
+      this.generatedPaths.set(key, path);
+      files.push({ path, size: bytes.length, sha256: sha256(bytes), generated: text });
+    }
+    return files;
+  }
+
   /** The collected tree, or null when no call loads a file. */
   tree(): NodeIslandModuleTree | null {
     if (this.files.size === 0 && this.links.size === 0) return null;
@@ -249,6 +304,11 @@ export class NodeIslandModuleCollector {
       const bytes = trackedReadBytes(file);
       if (bytes === null) continue;
       files.push({ path, size: bytes.length, sha256: sha256(bytes) });
+    }
+    if (this.generated.size > 0) {
+      // The manifest lists files in path order.
+      files.push(...this.generatedFiles(root));
+      files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     }
     const links: NodeIslandModuleLink[] = [...this.links]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -334,7 +394,9 @@ export class NodeIslandModuleCollector {
     if (text === null) return `cannot read ${file}`;
     const dataProblem = this.addNamedData(file, text);
     if (dataProblem !== null) return dataProblem;
-    const scan = scanModuleSpecifiers(text);
+    // The program's own code names its modules as far as its syntax does
+    // (SPEC §5.3): a bounded argument's values are traced specifiers.
+    const scan = this.scans.of(file, text, true);
     if (scan.computed.length > 0) {
       const first = scan.computed[0]!;
       const line = text.slice(0, first.at).split("\n").length;
@@ -436,7 +498,7 @@ export class NodeIslandModuleCollector {
     for (const file of scripts) {
       const text = trackedReadFile(file);
       if (text === null) continue;
-      for (const specifier of scanModuleSpecifiers(text).specifiers) {
+      for (const specifier of this.scans.of(file, text).specifiers) {
         if (isBuiltin(specifier) || isPathSpecifier(specifier)) continue;
         if (specifier.startsWith("#") || /^[a-z][a-z0-9+.-]*:/i.test(specifier)) continue;
         const other = packageDirectory(dirname(file), packageName(specifier));
@@ -478,6 +540,11 @@ export class NodeIslandModuleCollector {
     const entries = trackedAccessibleEntries(dir);
     if (entries === null) return;
     for (const file of entries.files) {
+      // A source the compiler synthesized beside the package's files (the
+      // native compile's generated declarations, a bundle's split chunks)
+      // is listed with them and is on no disk: Node loads the package's
+      // own files, so the tree ships only those.
+      if (isVirtualSource(join(dir, file))) continue;
       this.files.add(join(dir, file));
       if (SCRIPT.test(file)) scripts.push(join(dir, file));
     }
@@ -490,7 +557,7 @@ export class NodeIslandModuleCollector {
 
 /* ── module specifiers in JavaScript source ───────────────────────────── */
 
-interface Token {
+export interface Token {
   kind: "name" | "string" | "punct" | "other";
   value: string;
   at: number;
@@ -689,6 +756,187 @@ export interface ModuleSpecifierScan {
   computed: { at: number; form: string }[];
 }
 
+export interface ModuleSpecifierScanOptions {
+  /** Report the SYNTACTICALLY bounded forms of a computed argument — string
+   * literals joined by `+`, `||` and `??`, both branches of `?:`, and
+   * parentheses around any of them — as specifiers instead of as a computed
+   * load. A program module that runs in an island (SPEC §5.3) needs it: the
+   * values are what the module may load, so they join its traced specifiers
+   * and a native module they name is served by the shared-module hooks.
+   * Package JavaScript keeps the default scan, where a computed load is
+   * neither refused nor traced. */
+  bounds?: boolean;
+}
+
+/** At most this many values for a bounded island argument (the frontend
+ * bounder's cap, specifier-bounds.ts). */
+const MAX_BOUNDED_VALUES = 256;
+
+/** The specifier values a call's first argument may take, or null when the
+ * source does not name them with string literals. */
+function boundedCallArgument(tokens: readonly Token[], open: number): string[] | null {
+  const close = closingParen(tokens, open);
+  if (close < 0) return null;
+  // The first argument: up to a top-level comma (import(spec, options)).
+  let end = close;
+  let depth = 0;
+  for (let j = open + 1; j < close; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (t.value === "," && depth === 0) {
+      end = j;
+      break;
+    }
+  }
+  return boundTokenRange(tokens, open + 1, end);
+}
+
+/** The index of the `)` that closes the `(` at `open`, or -1. */
+function closingParen(tokens: readonly Token[], open: number): number {
+  let depth = 0;
+  for (let j = open; j < tokens.length; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(") depth++;
+    else if (t.value === ")") {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+/** The values of the token range [lo, hi), or null when it is not a bounded
+ * form. Grammar: string literals, parentheses, `a ? b : c` (the condition is
+ * not evaluated), and left-associative `+`, `||` and `??` chains. `+` binds
+ * tighter than `||` and `??`, so a range that concatenates after a union
+ * (`a || b + c`) is not one of these chains. */
+function boundTokenRange(tokens: readonly Token[], lo: number, hi: number): string[] | null {
+  if (lo >= hi) return null;
+  const question = topLevelQuestion(tokens, lo, hi);
+  if (question >= 0) {
+    const colon = matchingColon(tokens, question + 1, hi);
+    if (colon < 0) return null;
+    const whenTrue = boundTokenRange(tokens, question + 1, colon);
+    const whenFalse = boundTokenRange(tokens, colon + 1, hi);
+    return whenTrue === null || whenFalse === null ? null : unionValues(whenTrue, whenFalse);
+  }
+  let term = boundTokenTerm(tokens, lo, hi);
+  if (term === null) return null;
+  let values = term.values;
+  let cursor = term.next;
+  let unionSeen = false;
+  while (cursor < hi) {
+    const op = operatorAt(tokens, cursor);
+    if (op === null) return null;
+    // `+` binds tighter than `||` and `??`, so `a || b + c` is no flat
+    // chain: its values are not this list's. (Parenthesized, it is one:
+    // `(a || b) + c` bounds through the term's parentheses.)
+    if (op.kind === "concat" && unionSeen) return null;
+    term = boundTokenTerm(tokens, op.next, hi);
+    if (term === null) return null;
+    const combined =
+      op.kind === "concat" ? concatValues(values, term.values) : unionValues(values, term.values);
+    if (combined === null) return null;
+    if (op.kind === "union") unionSeen = true;
+    values = combined;
+    cursor = term.next;
+  }
+  return values;
+}
+
+function boundTokenTerm(
+  tokens: readonly Token[],
+  lo: number,
+  hi: number,
+): { values: string[]; next: number } | null {
+  if (lo >= hi) return null;
+  const t = tokens[lo]!;
+  if (t.kind === "string") return { values: [t.value], next: lo + 1 };
+  if (t.kind === "punct" && t.value === "(") {
+    const close = closingParen(tokens, lo);
+    if (close < 0 || close >= hi) return null;
+    const values = boundTokenRange(tokens, lo + 1, close);
+    return values === null ? null : { values, next: close + 1 };
+  }
+  return null;
+}
+
+/** The index of the first `?` of a conditional in [lo, hi), or -1. A `??`
+ * operator is not one (and `?.` is a single token). */
+function topLevelQuestion(tokens: readonly Token[], lo: number, hi: number): number {
+  let depth = 0;
+  for (let j = lo; j < hi; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (depth === 0 && t.value === "?") {
+      const next = tokens[j + 1];
+      if (next !== undefined && next.kind === "punct" && next.value === "?") {
+        j++;
+        continue;
+      }
+      return j;
+    }
+  }
+  return -1;
+}
+
+/** The `:` that closes the conditional whose `?` precedes [lo, hi). */
+function matchingColon(tokens: readonly Token[], lo: number, hi: number): number {
+  let depth = 0;
+  let nested = 0;
+  for (let j = lo; j < hi; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (depth !== 0) continue;
+    else if (t.value === "?") {
+      const next = tokens[j + 1];
+      if (next !== undefined && next.kind === "punct" && next.value === "?") j++;
+      else nested++;
+    } else if (t.value === ":") {
+      if (nested === 0) return j;
+      nested--;
+    }
+  }
+  return -1;
+}
+
+/** The `+`, `||` or `??` operator at `k`, with the index after it. */
+function operatorAt(
+  tokens: readonly Token[],
+  k: number,
+): { kind: "concat" | "union"; next: number } | null {
+  const t = tokens[k];
+  if (t === undefined || t.kind !== "punct") return null;
+  if (t.value === "+") return { kind: "concat", next: k + 1 };
+  const next = tokens[k + 1];
+  if (next === undefined || next.kind !== "punct" || next.value !== t.value) return null;
+  if (t.value === "|" || t.value === "?") return { kind: "union", next: k + 2 };
+  return null;
+}
+
+/** The deduplicated union of two value lists (source order), or null over
+ * the cap. */
+function unionValues(left: readonly string[], right: readonly string[]): string[] | null {
+  const out = [...left];
+  for (const value of right) if (!out.includes(value)) out.push(value);
+  return out.length > MAX_BOUNDED_VALUES ? null : out;
+}
+
+/** The cartesian concatenation of two value lists, or null over the cap. */
+function concatValues(left: readonly string[], right: readonly string[]): string[] | null {
+  if (left.length * right.length > MAX_BOUNDED_VALUES) return null;
+  const out: string[] = [];
+  for (const l of left) for (const r of right) out.push(l + r);
+  return out;
+}
+
 /** The relative paths a module's source names by string literals, with the
  * offset of the first literal that names each: each
  * literal (`"data/table.json"`), and the literals passed as consecutive
@@ -829,8 +1077,30 @@ function clauseContinues(prev: Token | undefined, next: Token): boolean {
   );
 }
 
-export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
-  const tokens = moduleTokens(text);
+/** scanModuleSpecifiers' answers by file, for readers that scan the same
+ * files more than once. An answer stands only for the text it was scanned
+ * from: a file whose text differs is scanned again. A scan that also takes
+ * the values of bounded arguments (`bounds`) names more specifiers than a
+ * plain one, so the two are kept apart. */
+export class ModuleSpecifierScans {
+  private readonly byFile = new Map<string, { text: string; scan: ModuleSpecifierScan }>();
+  private readonly boundedByFile = new Map<string, { text: string; scan: ModuleSpecifierScan }>();
+
+  of(file: string, text: string, bounds = false): ModuleSpecifierScan {
+    const answers = bounds ? this.boundedByFile : this.byFile;
+    const known = answers.get(file);
+    if (known !== undefined && known.text === text) return known.scan;
+    const scan = scanModuleSpecifiers(text, undefined, bounds ? { bounds: true } : {});
+    answers.set(file, { text, scan });
+    return scan;
+  }
+}
+
+export function scanModuleSpecifiers(
+  text: string,
+  tokens: Token[] = moduleTokens(text),
+  options: ModuleSpecifierScanOptions = {},
+): ModuleSpecifierScan {
   const specifiers: string[] = [];
   const computed: { at: number; form: string }[] = [];
   const at = (k: number): Token | undefined => tokens[k];
@@ -838,13 +1108,17 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     const t = tokens[k];
     return t !== undefined && t.kind === kind && (value === undefined || t.value === value);
   };
-  /** A call `(` at k whose single argument is a string literal. */
-  const literalCall = (k: number): string | null =>
-    is(k, "punct", "(") &&
-    is(k + 1, "string") &&
-    (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
-      ? at(k + 1)!.value
-      : null;
+  /** The values a call `(` at k passes as its module: the literal argument,
+   * or (options.bounds) every value of a syntactically bounded expression. */
+  const callArguments = (k: number): string[] | null => {
+    if (!is(k, "punct", "(")) return null;
+    if (options.bounds === true) return boundedCallArgument(tokens, k);
+    const literal =
+      is(k + 1, "string") && (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
+        ? at(k + 1)!.value
+        : null;
+    return literal === null ? null : [literal];
+  };
   /** The last token of a type-only clause that starts at `k` (an `import`
    * or `export` followed by `type`): the `from "..."` specifier it names,
    * or the `;` that ends an import-equals. Type stripping erases such a
@@ -914,9 +1188,9 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
         computed.push({ at: t.at, form: "require as a value" });
         continue;
       }
-      const literal = literalCall(call);
-      if (literal === null) computed.push({ at: t.at, form: `${form} with a computed specifier` });
-      else specifiers.push(literal);
+      const values = callArguments(call);
+      if (values === null) computed.push({ at: t.at, form: `${form} with a computed specifier` });
+      else specifiers.push(...values);
       continue;
     }
     if (t.value === "createRequire" && !member && is(k + 1, "punct", "(")) {
@@ -936,18 +1210,18 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       if (is(k + 1, "punct", ".")) {
         // import.meta.resolve() names a module, as require.resolve() does.
         if (is(k + 2, "name", "meta") && is(k + 3, "punct", ".") && is(k + 4, "name", "resolve")) {
-          const literal = literalCall(k + 5);
-          if (literal !== null) specifiers.push(literal);
+          const values = callArguments(k + 5);
+          if (values !== null) specifiers.push(...values);
           else if (is(k + 5, "punct", "("))
             computed.push({ at: t.at, form: "import.meta.resolve() with a computed specifier" });
         }
         continue;
       }
       if (is(k + 1, "punct", "(")) {
-        const literal = literalCall(k + 1);
-        if (literal === null)
+        const values = callArguments(k + 1);
+        if (values === null)
           computed.push({ at: t.at, form: "import() with a computed specifier" });
-        else specifiers.push(literal);
+        else specifiers.push(...values);
         continue;
       }
       if (is(k + 1, "string")) {
@@ -1008,24 +1282,46 @@ export function providedModulePlaceholder(path: string): Uint8Array {
 }
 
 /** The manifest the executable records (scr_node_island.c reads it):
- * `{"files":[[path,size,sha256],...],"links":[[path,target],...]}`. Its
- * SHA-256 names the tree. */
+ * `{"tree":name,"files":[[path,size,sha256],...],"links":[[path,target],...]}`.
+ * `tree` is the tree's name (nodeIslandTreeName), taken here and written
+ * first so that a start reads it without parsing or hashing the manifest.
+ * Programs that ship the same files share one installed tree. */
 export function nodeIslandManifest(modules: IrNodeIslandModules): string {
-  return JSON.stringify({
+  const { files, links } = manifestTables(modules);
+  return JSON.stringify({ tree: nodeIslandTreeName(modules), files, links });
+}
+
+function manifestTables(modules: IrNodeIslandModules): { files: unknown[]; links: unknown[] } {
+  return {
     files: modules.files.map((file) => [file.path, file.size, file.sha256]),
     links: modules.links.map((link) => [link.path, link.target]),
-  });
+  };
+}
+
+/** The tree's name: 64 hexadecimal digits, the SHA-256 of its files and
+ * links as JSON. It names the directory an executable installs its tree
+ * in, and the build writes it beside a tree it places itself. */
+export function nodeIslandTreeName(modules: IrNodeIslandModules): string {
+  return sha256(new TextEncoder().encode(JSON.stringify(manifestTables(modules))));
 }
 
 /** The tree's files concatenated in manifest order, each checked against
- * the digest the build recorded, or the reason one no longer matches. */
-export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array | string {
+ * the digest the build recorded, or the reason one no longer matches.
+ * `generated` holds the files the build made for the tree itself (the load
+ * plan, load-plan.ts), by path: they are on no disk. */
+export function readNodeIslandModules(
+  modules: IrNodeIslandModules,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
+): Uint8Array | string {
   const parts: Uint8Array[] = [];
   let total = 0;
   for (const file of modules.files) {
     const path = join(modules.root, ...file.path.split("/"));
     let bytes: Uint8Array;
-    if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    const made = generated.get(file.path);
+    if (made !== undefined) bytes = made;
+    else if (file.placeholder === true) bytes = providedModulePlaceholder(file.path);
+    else if (file.generated !== undefined) bytes = new TextEncoder().encode(file.generated);
     else
       try {
         bytes = new Uint8Array(readFileSync(path));
@@ -1047,12 +1343,15 @@ export function readNodeIslandModules(modules: IrNodeIslandModules): Uint8Array 
 }
 
 /** Writes the tree to `target` (replacing it), for `--libnode=beside`, or
- * returns the reason it cannot. */
+ * returns the reason it cannot. The tree's name goes into `<target>.tree`:
+ * a start compares it with the name in the executable's manifest and uses
+ * the tree without hashing it when they agree (scr_node_island.c). */
 export function placeNodeIslandModules(
   modules: IrNodeIslandModules,
   target: string,
+  generated: ReadonlyMap<string, Uint8Array> = new Map(),
 ): string | null {
-  const data = readNodeIslandModules(modules);
+  const data = readNodeIslandModules(modules, generated);
   if (typeof data === "string") return data;
   // Every path, and every link's target, stays inside the tree.
   const inside = resolve(target) + sep;
@@ -1067,6 +1366,7 @@ export function placeNodeIslandModules(
       return `the island module tree links outside it ('${entry.path}' to '${entry.target}')`;
   }
   rmSync(target, { recursive: true, force: true });
+  rmSync(`${target}.tree`, { force: true });
   mkdirSync(target, { recursive: true });
   let offset = 0;
   for (const file of modules.files) {
@@ -1080,5 +1380,7 @@ export function placeNodeIslandModules(
     mkdirSync(dirname(path), { recursive: true });
     symlinkSync(link.target, path);
   }
+  // Last: the name says that the tree beside it is complete.
+  writeFileSync(`${target}.tree`, `${nodeIslandTreeName(modules)}\n`);
   return null;
 }

@@ -3,6 +3,7 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
+import { fsStreamOptionsMayHoldSignal } from "./fs-streams.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   builtinModuleFnOf,
@@ -414,9 +415,16 @@ export function lowerFsLadderCall(
       const a = dynArgs([args[0], args[1]]);
       if (a && args.length <= 2) {
         const readable = bi.member === "createReadStream";
+        const signal = fsStreamOptionsMayHoldSignal(lowerer, args[1]);
         return {
           kind: "libCall",
-          fn: readable ? "fs.createReadStream" : "fs.createWriteStream",
+          fn: readable
+            ? signal
+              ? "fs.createReadStreamSignal"
+              : "fs.createReadStream"
+            : signal
+              ? "fs.createWriteStreamSignal"
+              : "fs.createWriteStream",
           args: a,
           type: { kind: "object", className: readable ? "%Readable" : "%Writable" },
           loc,
@@ -440,6 +448,7 @@ export function lowerStringOrBytesWrite(
   dataType: Extract<IrType, { kind: "union" }>,
   arms: readonly IrType[],
   append: boolean,
+  staged?: { path: IrExpr; data: IrExpr },
 ): IrExpr {
   const loc = locOf(call);
   const key = `fs.${append ? "append" : "write"}:${dataType.unionId}`;
@@ -516,10 +525,14 @@ export function lowerStringOrBytesWrite(
   return {
     kind: "call",
     callee: helper,
-    args: [
-      lowerFsPath(lowerer, call.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
-    ],
+    // A caller that already staged the operands (to evaluate an option
+    // expression between them and the write) passes them in.
+    args: staged
+      ? [staged.path, staged.data]
+      : [
+          lowerFsPath(lowerer, call.arguments.nodes[0]!),
+          lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
+        ],
     type: VOID,
     loc,
   };
@@ -772,11 +785,16 @@ export function lowerFileHandleMethodCall(
         loc,
       };
     }
-    lowerer.noLowering(
-      `FileHandle.${name} of '${dataT ? lowerer.fmt(dataT) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
-      dataNode,
-      "string and Uint8Array data are supported",
-    );
+    // Data the static type does not pin down — a typed array of another
+    // element, the ArrayBufferView alias, a checked-dynamic value — takes
+    // the checked-data unit, which validates and writes a string or a view.
+    return {
+      kind: "libCall",
+      fn: "fileHandle.writeFileData",
+      args: [receiver(), lowerer.lowerExprExpecting(dataNode, DYN), encoding],
+      type: promise(VOID),
+      loc,
+    };
   }
 
   if (name === "read" || name === "write") {
@@ -986,9 +1004,16 @@ function lowerFileHandleStreamCall(
     }
   }
   const writable = name === "createWriteStream";
+  const signal = fsStreamOptionsMayHoldSignal(lowerer, args[0]);
   const stream: IrExpr = {
     kind: "libCall",
-    fn: writable ? "fileHandle.createWriteStream" : "fileHandle.createReadStream",
+    fn: writable
+      ? signal
+        ? "fileHandle.createWriteStreamSignal"
+        : "fileHandle.createWriteStream"
+      : signal
+        ? "fileHandle.createReadStreamSignal"
+        : "fileHandle.createReadStream",
     args: [receiver, options],
     type: { kind: "object", className: writable ? "%Writable" : "%Readable" },
     loc,
@@ -1008,16 +1033,16 @@ function lowerFileHandleStreamCall(
   };
 }
 
-/** fs.Dir's members: path, and the sync and promise read/close forms (the
- * callback overloads have no lowering; for-await lowers in
- * lower-async-iteration.ts). */
+/** fs.Dir's members: path, the sync, promise, and callback read/close
+ * forms, and disposal (for-await lowers in lower-async-iteration.ts). */
 export const DIR_METHODS = new Set(["readSync", "read", "closeSync", "close"]);
 export const DIR_MEMBERS =
-  "path, readSync(), read(), closeSync(), close(), and for-await iteration are the supported Dir members (no callbacks)";
+  "path, readSync(), read([callback]), closeSync(), close([callback]), disposal, and for-await iteration are the supported Dir members";
 
 /** Method calls on Dir-typed receivers. readSync answers the call site's
- * `Dirent | null` (the emitter builds the row); read is its promise twin.
- * Null for non-Dir receivers. */
+ * `Dirent | null` (the emitter builds the row); read is its promise twin;
+ * either takes an error-first callback instead. Null for non-Dir
+ * receivers. */
 export function lowerDirMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1028,6 +1053,18 @@ export function lowerDirMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  if ((name === "read" || name === "close") && call.arguments.nodes.length === 1) {
+    const callback = call.arguments.nodes[0]!;
+    if (ts.isSpreadElement(callback)) lowerer.noLowering(`${name} with spread arguments`, call);
+    const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+    return {
+      kind: "libCall",
+      fn: name === "read" ? "dir.readCb" : "dir.closeCb",
+      args: [receiver, lowerer.lowerExprExpecting(callback, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
   if (DIR_METHODS.has(name) && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
     if (name === "closeSync")
@@ -1066,6 +1103,35 @@ export function lowerDirMethodCall(
     DIR_MEMBERS,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** `dir[Symbol.dispose]()` closes synchronously; `dir[Symbol.asyncDispose]()`
+ * closes through the promise form. Null for other element-access calls. */
+export function lowerDirDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  const member = lowerer.stdlibGlobalMember(key, "Symbol");
+  if (member !== "dispose" && member !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "dir") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`Dir[Symbol.${member}] with arguments`, call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+  const loc = locOf(call);
+  return member === "dispose"
+    ? { kind: "libCall", fn: "dir.dispose", args: [receiver], type: VOID, loc }
+    : {
+        kind: "libCall",
+        fn: "dir.asyncDispose",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
 }
 
 /** The Stats type tests, each a read of the snapshot's mode. */
@@ -2063,11 +2129,8 @@ export function lowerFsStatFdOptionsCall(
   };
 }
 
-/** `d.isFile()` / `d.isDirectory()` / `d.isSymbolicLink()` on a Dirent-
- * typed receiver (the interned record — provenance via the checker's
- * Dirent symbol, the StringDecoder pattern): a read of the hidden
- * %dtype field compared against libuv's UV_DIRENT code. Node's other
- * type probes (isBlockDevice, ...) fence with the supported list. */
+/** The `d.is*()` probes on a Dirent-typed receiver: one read of the hidden
+ * %dtype field compared against libuv's UV_DIRENT code. */
 export function lowerDirentMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -2085,12 +2148,26 @@ export function lowerDirentMethodCall(
   const loc = locOf(call);
   // libuv's UV_DIRENT encoding (scr_fs_scandir answers it).
   const code =
-    name === "isFile" ? 1 : name === "isDirectory" ? 2 : name === "isSymbolicLink" ? 3 : -1;
+    name === "isFile"
+      ? 1
+      : name === "isDirectory"
+        ? 2
+        : name === "isSymbolicLink"
+          ? 3
+          : name === "isFIFO"
+            ? 4
+            : name === "isSocket"
+              ? 5
+              : name === "isCharacterDevice"
+                ? 6
+                : name === "isBlockDevice"
+                  ? 7
+                  : -1;
   if (code < 0) {
     lowerer.noLowering(
       `Dirent.${name}`,
       call,
-      "name, parentPath, isFile(), isDirectory(), and isSymbolicLink() are the supported Dirent members",
+      "name, parentPath, and the seven entry-type probes are the supported Dirent members",
       lowerer.checker.getSymbolAtLocation(access.name),
     );
   }

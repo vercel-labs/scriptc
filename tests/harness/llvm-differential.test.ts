@@ -6,17 +6,20 @@
  * SCRIPTC_TARGET_CPU=<level> builds for that `--target-cpu` level. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { globSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { recentCrashReport } from "./crash-report.js";
+import { spawnFailure } from "./spawn-failure.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 type TargetCpu = NonNullable<NonNullable<Parameters<typeof compile>[1]>["targetCpu"]>;
 
@@ -48,6 +51,16 @@ if (requestedMode !== undefined && requestedMode !== "release" && requestedMode 
 // packaged-artifact runs retain both modes unless one is explicitly selected.
 const optimizationModes: readonly ("release" | "dev")[] =
   requestedMode === undefined ? ["release", "dev"] : [requestedMode];
+
+// A case is a sequence of steps, and every step already carries its own
+// deadline (step-timeout.ts): the Node oracle, then one compile and one run
+// per optimization mode per CPU level. The test timeout is the case's hang
+// detector, so it has to cover the whole sequence — with the 240 s step
+// deadline and two modes, the five steps together can outlast the shared
+// 300 s default while every one of them is still inside its own deadline
+// (5015-lifetime-region-publish, arm64, 2026-11-04). A stalled step still
+// reports itself at the step deadline, with the processes it left behind.
+const CASE_TIMEOUT_MS = STEP_TIMEOUT_MS * (1 + optimizationModes.length * (1 + cpuLevels.length));
 
 // Same known-env contract as the main differential suite.
 process.env["SCRIPTC_TEST_ENV"] = "from-harness";
@@ -100,6 +113,13 @@ function icuAvailable(): boolean {
   return process.platform === "linux" && process.arch === "x64";
 }
 
+/** `// @skip-darwin` (differential.test.ts's twin): the Node oracle itself
+ * does not finish on macOS (it aborts while exiting), so there is no
+ * reference output for the LLVM-built program to match. */
+function skipsDarwin(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @skip-darwin\s*$/.test(l));
+}
+
 async function runBinary(
   cmd: string,
   args: string[],
@@ -115,6 +135,7 @@ async function runBinary(
   for (let attempt = 0; ; attempt++) {
     const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
     if (cpuLevel !== undefined) env["SCRIPTC_CPU_LEVEL"] = cpuLevel;
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       ...(cpuLevel === undefined && Object.keys(extraEnv).length === 0 ? {} : { env }),
@@ -131,7 +152,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -171,7 +194,7 @@ function wantsTscDecorators(file: string): boolean {
 }
 
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -223,15 +246,20 @@ function nodeOracleArgs(file: string): string[] {
 
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 async function build(file: string, optimization: "release" | "dev") {
-  const hash = createHash("sha256");
+  const defines = programDefines(directiveHead(file));
+  // The entry joins the key: a directory can hold several entries.
+  const hash = createHash("sha256").update(file).update("\0");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")
@@ -251,6 +279,7 @@ async function build(file: string, optimization: "release" | "dev") {
     sanitize,
     optimization,
     ...(cpuDispatch ? { cpuDispatch } : {}),
+    ...(defines ? { define: defines.define } : {}),
     ...(targetCpu === undefined ? {} : { targetCpu }),
   });
 }
@@ -258,12 +287,18 @@ async function build(file: string, optimization: "release" | "dev") {
 describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${targetCpu === undefined ? "" : `, ${targetCpu}`}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
+    { timeout: CASE_TIMEOUT_MS },
     async ([rel, file], { skip }) => {
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      if (skipsDarwin(file) && process.platform === "darwin") skip();
+      const oracleEnv = {
+        ...programEnv(file),
+        ...programDefines(directiveHead(file))?.env,
+      };
       const oracle = await runStep(`${rel}: node oracle`, (track) =>
-        runBinary(process.execPath, nodeOracleArgs(file), undefined, programEnv(file), track),
+        runBinary(process.execPath, nodeOracleArgs(file), undefined, oracleEnv, track),
       );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);

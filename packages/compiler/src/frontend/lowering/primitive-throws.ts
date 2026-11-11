@@ -23,10 +23,12 @@ import {
 import { numLit, strLit } from "../../ir/build.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
-import { denotesEnvironment } from "./builtins/environment.js";
+import { denotesEnvironment, refuseDefinedEnvWrite } from "./builtins/environment.js";
 import {
+  DELETE_NULLISH_RECEIVER,
   erasedDeletePlan,
   lowerDeleteKey,
+  lowerErasedDeleteOperand,
   lowerRecordDeleteExpr,
 } from "./expressions/erased-delete.js";
 import { lowerEnvironmentKey } from "./expressions/element-access.js";
@@ -109,7 +111,7 @@ export function inOperatorTypeError(
 /** `delete`'s ToObject refusal: Node names neither the property nor the
  * receiver here (`delete (null).x` and `delete (null)[k]` both throw it). */
 export function deleteToObjectTypeError(type: IrType, loc: SrcLoc): IrExpr {
-  return throwTypeError(strLit("Cannot convert undefined or null to object", loc), type, loc);
+  return throwTypeError(strLit(DELETE_NULLISH_RECEIVER, loc), type, loc);
 }
 
 /** `null`/`undefined` when the expression IS one of them by construction —
@@ -171,44 +173,6 @@ export function nullishReadTypeError(
   );
 }
 
-/** The text every builtin identity token carries: the identifier chokepoint
- * and the JavaScript destructuring rule intern `[builtin <name>]`
- * (identifiers.ts, property-access.ts, global-values.ts, lower-stmts.ts). */
-const BUILTIN_TOKEN_PREFIX = "[builtin ";
-const BUILTIN_TOKEN_SUFFIX = "]";
-
-/** A builtin identity token, which is NOT a primitive the program can
- * observe. The identifier chokepoint represents a JavaScript source's
- * unsupported builtin value (`import { AsyncResource } from
- * "node:async_hooks"`) as an IR string whose text Node never produces, so
- * identity flows (`===`, Set membership) agree between spellings. The
- * object-coercion lowerings throw Node's TypeError for a primitive and
- * spell it from the value, which for a token would report the carrier as if
- * the program could see it ("AsyncResource is not a constructor" for a
- * class Node constructs), so those branches leave the site to the
- * reference's own fence instead.
- *
- * A token is recognized by its interned TEXT, not by its type alone: a
- * program's own string casts to `any` as readily as an unsupported builtin
- * export does, and `new ("hello" as any)()` is a Node TypeError to run, not
- * a lowering fence. The checker test stays as a second condition, so a
- * string the checker types as a string keeps its Node answer even when it
- * spells a token. */
-export function isBuiltinIdentityToken(
-  lowerer: Lowerer,
-  node: ts.Expression,
-  value: IrExpr,
-): boolean {
-  if (value.kind !== "strLit") return false;
-  if (!value.value.startsWith(BUILTIN_TOKEN_PREFIX)) return false;
-  if (!value.value.endsWith(BUILTIN_TOKEN_SUFFIX)) return false;
-  function stringLike(t: ts.Type): boolean {
-    if ((t.flags & ts.TypeFlags.StringLike) !== 0) return true;
-    return t.isUnionType() && ts.constituentTypes(t).every(stringLike);
-  }
-  return !stringLike(lowerer.typeOf(node));
-}
-
 /** The statements that evaluate `expr` for its effects alone. A value the
  * IR cannot spell (a unit — JavaScript's null/undefined has no standalone
  * runtime value, so a bare unit literal fails validation) contributes only
@@ -263,6 +227,7 @@ function lowerEnvironmentDeleteExpr(
       expr,
       `'delete' of environment keys of '${lowerer.fmt(key.type)}' values (env keys are strings; a Symbol key removes nothing)`,
     );
+  refuseDefinedEnvWrite(lowerer, key, target);
   return {
     kind: "seqExpr",
     stmts: [
@@ -291,7 +256,12 @@ export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpressio
       if ("refuse" in erased) lowerer.unsupported("SC1090", expr, erased.refuse);
       if (isEnvironmentReceiver(lowerer, erased.operand))
         return lowerEnvironmentDeleteExpr(lowerer, expr, target);
-      return lowerRecordDeleteExpr(lowerer, expr, target, lowerer.lowerExpr(erased.operand));
+      return lowerRecordDeleteExpr(
+        lowerer,
+        expr,
+        target,
+        lowerErasedDeleteOperand(lowerer, erased, target),
+      );
     }
     // The environment is one live object in Node: the delete unsets the
     // variable rather than removing a member from a snapshot of it.
@@ -299,12 +269,8 @@ export function lowerDeleteExpression(lowerer: Lowerer, expr: ts.DeleteExpressio
       return lowerEnvironmentDeleteExpr(lowerer, expr, target);
     const obj = lowerer.lowerExpr(target.expression);
     if (obj.type.kind === "record") return lowerRecordDeleteExpr(lowerer, expr, target, obj);
-    if (
-      isPrimitiveValueType(obj.type) &&
-      !isBuiltinIdentityToken(lowerer, target.expression, obj)
-    ) {
+    if (isPrimitiveValueType(obj.type))
       return lowerPrimitiveBaseDelete(lowerer, expr, target, obj, BOOL);
-    }
     // `const ok = delete fn.k` on a typed callable: the closure table entry's
     // removal, answering true like Node's configurable own property.
     if (obj.type.kind === "func" && callableDeleteKey(lowerer, target)) {

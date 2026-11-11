@@ -77,9 +77,14 @@ void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg) {
   scr_dyn_release(fn);
 }
 
+/* The box is traced: a stream keeps these adapters in its listener registry
+ * for as long as it lives, and a listener that captures the stream's owner
+ * closes a cycle through the function value held here (stream -> registry
+ * -> adapter -> function -> owner -> stream). Behind an untraced box the
+ * collector would count the function as referenced from outside forever. */
 static ScrClosure *scr_dyn_listener_closure(const ScrDyn *cb, void *fire) {
   ScrClosure *clo = scr_closure_new(fire, 1);
-  ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
   scr_box_set_ref(box, scr_dyn_retain((ScrDyn *)cb));
   clo->caps[0] = box;
   return clo;

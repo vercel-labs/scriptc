@@ -1,9 +1,21 @@
 - **Function values:** Immutable aliases of overloaded program functions retain per-call overload resolution and identity.
   A function stored in a slot with a different signature remains the same function for equality, array searches, `length`, and own properties.
+  A method value's `length` is the length of the method its object's class declares, whatever type the receiver is read through.
+  The `length` of a function declaration, a static method, or a method of a JavaScript class counts a parameter with a default, where Node.js stops counting at the first one.
   Typed rest-parameter functions can be stored and called indirectly, including through a slot with fixed parameters, where the slot's arguments arrive in the rest array.
+  That store is refused with `SC1090` when the program hands a function of the slot's type to a caller that passes more arguments than the type names, because the rest array would not receive them.
   Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).
+  A function called as a member of an object, a tuple, or an array (`holder.fn()`, `holder["fn"]()`, `holder.fn?.()`, `list[0]()`) receives that object as `this`, as in Node.js, and writes through `this` reach it.
+  A timer calls its callback without a `this`, where Node.js passes the timer object.
+  In a TypeScript source, a callback whose own body reads `this`, or whose signature declares a `this` parameter, is refused with `SC1090` when it is passed to a timer, a `process` listener, a `node:crypto` or `node:zlib` callback, or a stream option as a function value, where Node.js passes an object of its own.
+  A function stored under a type that declares no `this` parameter is called without a `this` by a timer, an event emitter, a `process` listener, and a stream, where Node.js passes the timer, the emitter, `process`, or the stream.
 - **JavaScript parameters:** In a JavaScript file TypeScript does not check, a prototype method (`C.prototype.m = function (...) {}`) takes whatever values its callers pass; its JSDoc types document the usual values without constraining them.
   A sloppy-mode function with named parameters may read `arguments` only where the aliasing of its parameters cannot show: it reads `arguments.length`, or reads elements and never writes a parameter or an element.
   Other uses of `arguments` in such a function are refused with `SC1090`; ES modules, `'use strict'` code, classes, and functions with default, rest, or destructured parameters have no such restriction.
+  The `arguments` object is the list of the call's arguments, an array, where Node.js has an object that is not one.
+  For the name itself or a constant that holds it, `Array.isArray` answers `false` as in Node.js, and the `concat` of an array or a string, or `JSON.stringify`, over it is refused with `SC1090`.
+  `instanceof Array` and `Object.prototype.toString.call` answer as in Node.js in a function that only reads the object.
+  These answers are the built-in functions' only: a method named `concat`, `isArray`, `stringify`, `toString`, `call`, or `apply` that the program defines, a binding that shadows `Array`, `Object`, or `JSON`, and a method called through an untyped receiver are called with the array.
+  Converted to a string, printed, read for a member such as `constructor` or `slice`, tested with `instanceof` or for its tag in a function that also writes to it or passes it on, or tested by the code it was passed to, it is the array.
   A sloppy-mode function called with `undefined` or `null` as its receiver gets the global object as `this`, as in Node.
   Called with a primitive receiver, its `this` is the primitive itself, where Node passes the primitive's wrapper object (`typeof this` is `"object"` there).

@@ -65,8 +65,13 @@ export default defineConfig({
     // hang detector, not a performance bound: under a merge gate sharing
     // the box with lane compiles, a legitimately compile-heavy corpus
     // entry can starve past 120s (1751 timed out twice on 2026-07-20 while
-    // passing in 3s isolated and uncached).
-    testTimeout: 300_000,
+    // passing in 3s isolated and uncached). The sanitized lane gets twice
+    // that: ASan runs the heavy tests at up to twice their plain time, and on
+    // 2026-11-04 five sanitized self-hosting tests that had been passing at
+    // 259 to 296 s on the shared 300 s went past it on slower runners (the
+    // same test varies by 20 to 40% from run to run). The longest sanitized
+    // test on this default now takes 186 s.
+    testTimeout: process.env["SCRIPTC_SAN"] === "1" ? 600_000 : 300_000,
     hookTimeout: 300_000,
     ...(effectConcurrency === "2" ? { maxConcurrency: 2 } : {}),
     env: {
@@ -82,6 +87,19 @@ export default defineConfig({
       // that session; cc.test.ts removes this flag to keep exercising
       // production's fresh-probe invalidation guarantees.
       SCRIPTC_TEST_STABLE_TOOLCHAIN: process.env["SCRIPTC_TEST_STABLE_TOOLCHAIN"] ?? "1",
+      // A compiled program names a deferred diagnostic on stderr the first
+      // time its site fires (scr_deferred_fence.c). The suites compare a
+      // binary's stderr with Node's, or with the error a fence throws, byte
+      // for byte, so the binaries they spawn run with the report off;
+      // tests/harness/deferred-fence-report.test.ts turns it back on.
+      SCRIPTC_DEFERRED_REPORT: "0",
+      // The variadic check that runs when lowering ends is skipped for a
+      // program lowering knows to hold no variadic function
+      // (variadic-functions.ts). With this, every build of the suites walks
+      // such a program anyway and fails when the walk finds what the skip
+      // would have missed, so a pass that breaks the skip's premise fails
+      // here first. The walk is the one every build ran before the skip.
+      SCRIPTC_CHECK_VARIADIC_SKIP: "1",
     },
     ...(workers !== undefined && workers !== ""
       ? { maxWorkers: Number(workers), minWorkers: 1 }

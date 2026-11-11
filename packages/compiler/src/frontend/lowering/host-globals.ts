@@ -1,7 +1,8 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { arrayOf, type IrExpr, STRING, type SrcLoc, VOID } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
-import { stdlibGlobalNameOf, withoutTypeCasts } from "./surfaces.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
 
 /* Node 24 globals the native runtime does not implement. Reading one is NOT
  * a feature probe for an absent capability: Node has the value, so answering
@@ -53,44 +54,9 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "PerformanceObserver",
   "PerformanceObserverEntryList",
   "PerformanceResourceTiming",
-  "ReadableByteStreamController",
-  "ReadableStreamBYOBReader",
-  "ReadableStreamBYOBRequest",
   "URLPattern",
   "WebSocket",
 ]);
-
-/** Node 24's `length` for each listed global's constructor — the `Function`
- * length of the class (`WebSocket.length` is 1, `FormData.length` 0). A read
- * answers a constructor carrying it, so a program reading `name`, `length` or
- * `typeof` off the value sees what Node shows. Values are pinned against the
- * running Node in packages/compiler/test/host-globals.test.ts. */
-const HOST_GLOBAL_LENGTHS: ReadonlyMap<string, number> = new Map([
-  ["BroadcastChannel", 1],
-  ["CloseEvent", 1],
-  ["CompressionStream", 1],
-  ["DecompressionStream", 1],
-  ["FormData", 0],
-  ["Navigator", 0],
-  ["Performance", 0],
-  ["PerformanceEntry", 0],
-  ["PerformanceMark", 1],
-  ["PerformanceMeasure", 0],
-  ["PerformanceObserver", 1],
-  ["PerformanceObserverEntryList", 0],
-  ["PerformanceResourceTiming", 0],
-  ["ReadableByteStreamController", 0],
-  ["ReadableStreamBYOBReader", 1],
-  ["ReadableStreamBYOBRequest", 0],
-  ["URLPattern", 0],
-  ["WebSocket", 1],
-]);
-
-/** Node's `length` for the listed global `name`, or undefined when the table
- * does not know it (the value is then built with the closure's own arity). */
-export function hostGlobalLength(name: string): number | undefined {
-  return HOST_GLOBAL_LENGTHS.get(name);
-}
 
 /** Whether the read is the callee of a call or `new` — the one use a listed
  * global's value refuses. A bare read answers the constructor (see
@@ -175,7 +141,7 @@ export function isGlobalObjectRead(
   name = stdlibGlobalNameOf(lowerer, receiver),
 ): boolean {
   if (name === "globalThis") return true;
-  const uncast = withoutTypeCasts(receiver);
+  const uncast = withoutParenthesesTypeWrappers(receiver);
   if (uncast !== receiver) return isGlobalObjectRead(lowerer, uncast, seen);
   if (!ts.isIdentifier(uncast)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(uncast);
@@ -243,7 +209,7 @@ function hostGlobalPrototypeOfSeen(
   node: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const uncast = withoutTypeCasts(node);
+  const uncast = withoutParenthesesTypeWrappers(node);
   // A constant holding the prototype object is the same object: member
   // reads off it are as unsupported as off the read itself.
   if (ts.isIdentifier(uncast)) {
@@ -268,7 +234,7 @@ export function hostGlobalConstructorOfPrototype(
   lowerer: Lowerer,
   node: ts.Expression,
 ): string | null {
-  const uncast = withoutTypeCasts(node);
+  const uncast = withoutParenthesesTypeWrappers(node);
   if (ts.isPropertyAccessExpression(uncast))
     return uncast.name.text === "constructor"
       ? hostGlobalPrototypeOf(lowerer, uncast.expression)
@@ -289,7 +255,7 @@ export function hostGlobalPrototypeMemberOf(
   lowerer: Lowerer,
   callee: ts.Expression,
 ): string | null {
-  const uncast = withoutTypeCasts(callee);
+  const uncast = withoutParenthesesTypeWrappers(callee);
   if (ts.isPropertyAccessExpression(uncast))
     return HOST_GLOBAL_PROTOTYPE_MEMBERS.has(uncast.name.text)
       ? null
@@ -314,7 +280,7 @@ function hostGlobalNameOfReadSeen(
   operand: ts.Expression,
   seen: Set<ts.Symbol>,
 ): string | null {
-  const unwrapped = withoutTypeCasts(operand);
+  const unwrapped = withoutParenthesesTypeWrappers(operand);
   if (ts.isIdentifier(unwrapped)) {
     const global = hostGlobalNameOfIdentifier(lowerer, unwrapped);
     if (global !== null) return global;

@@ -13,6 +13,10 @@ import {
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
+import {
+  probeHardeningSupport,
+  runtimeHardeningFlags,
+} from "../../runtime-pack-common/scripts/hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
@@ -53,6 +57,11 @@ async function build() {
   const compiler = process.env.CC ?? "clang";
   const archiver = process.env.AR ?? "ar";
   const compilerVersion = (await run(compiler, ["--version"])).stdout.split("\n", 1)[0].trim();
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: ["-target", RUNTIME_PACK_MATRIX.target.llvm_triple],
+  });
   const commonFlags = [
     "-target",
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -76,7 +85,6 @@ async function build() {
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
-  const QJS_SOURCES = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
   const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
@@ -185,6 +193,10 @@ async function build() {
               flavorSpec.optimization,
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
+              ...runtimeHardeningFlags(
+                { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+                { optimized: flavorSpec.optimization !== "-O0", ...hardeningSupport },
+              ),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             if (
@@ -232,6 +244,12 @@ async function build() {
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
       .sort();
+    // zlib, brotli, zstd and mbedtls parse untrusted input and get every
+    // protection; libregexp keeps its flags (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(
+      { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+      { optimized: true, vendor: true, ...hardeningSupport },
+    );
     const brotliSources = (
       await Promise.all(
         ["common", "dec", "enc"].map(async (dir) =>
@@ -244,20 +262,6 @@ async function build() {
       .flat()
       .sort();
     const archives = [
-      await archive("quickjs", QJS_SOURCES, quickjs, [
-        "-target",
-        RUNTIME_PACK_MATRIX.target.llvm_triple,
-        "-std=gnu11",
-        "-fvisibility=hidden",
-        "-funsigned-char",
-        "-DQUICKJS_NG_BUILD",
-        "-D_GNU_SOURCE",
-        "-DNDEBUG",
-        "-Os",
-        ...codeAlignment,
-        "-I",
-        quickjs,
-      ]),
       await archive("libregexp", LRE_SOURCES, quickjs, [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -274,6 +278,7 @@ async function build() {
         "-O3",
         ...ZLIB_BUILD.defines.map((define) => `-D${define}`),
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         zlib,
       ]),
@@ -283,6 +288,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         join(brotli, "include"),
       ]),
@@ -294,6 +300,7 @@ async function build() {
         ...ZSTD_BUILD.defines.map((define) => `-D${define}`),
         ...ZSTD_BUILD.compileFlags,
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         zstd,
       ]),
@@ -303,6 +310,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         join(mbedtls, "include"),
         "-I",
@@ -356,13 +364,13 @@ async function build() {
         executable: [
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
-          "SCR_STDIO_EXTENDED",
           "SCR_STREAM_WRITE_ERRORS",
-          "SCR_STDIO_WRITE_SLOT",
-          "SCR_NATIVE_REACTIONS",
+          "SCR_FS_STREAM_SIGNAL",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
           "SCR_CHILD_ERR_FIELDS",
+          "SCR_CHILD_STREAM_FLOW",
+          "SCR_TTY_COLORS",
         ],
         excluded: ["SCR_RC_AUDIT", "SCR_ASAN_FIBERS"],
         sanitizer: "external-toolchain-required",

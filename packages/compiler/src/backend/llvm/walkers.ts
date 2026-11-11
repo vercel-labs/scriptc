@@ -262,8 +262,19 @@ export class LlWalkers {
       case "union":
         this.emitUnionWriter(B, t.unionId);
         break;
+      case "map":
+      case "set":
+        // A Map or a Set held by a record, an array or a tuple has no own
+        // enumerable property and no toJSON: the empty object, whatever it
+        // holds (isJsonSafeAt admits it in those positions only).
+        this.puts(B, "%b", "{}");
+        break;
       default:
-        throw new LlvmUnsupportedError(`jsonStringify:${t.kind}`);
+        throw new LlvmUnsupportedError(
+          `jsonStringify:${t.kind}`,
+          undefined,
+          `JSON.stringify reaching a value of type ${typeKey(t)}`,
+        );
     }
     B.terminate("ret void");
     this.defs.push(
@@ -298,6 +309,7 @@ export class LlWalkers {
         this.host.rcMode === undefined,
         (text) => this.host.cstr(text),
         this.host.recordViews?.partialTargets.has(shapeId) === true,
+        this.host.recordViews?.marked.has(shapeId) === true,
       );
     } else {
       p = B.tmp();
@@ -594,10 +606,16 @@ export class LlWalkers {
         return true;
       case "array":
         return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
-      case "union":
+      case "union": {
+        // A union can reach itself through an array arm; its other arms
+        // are already being asked.
+        const key = `union:${t.unionId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
         );
+      }
       case "record": {
         if (seen.has(t.shapeId)) return false;
         seen.add(t.shapeId);
@@ -1098,7 +1116,11 @@ export class LlWalkers {
             break;
           }
           default:
-            throw new LlvmUnsupportedError(`unionJoin:${arm.kind}`);
+            throw new LlvmUnsupportedError(
+              `unionJoin:${arm.kind}`,
+              undefined,
+              `Array.prototype.join over a union with an arm of type ${typeKey(arm)}`,
+            );
         }
         B.br(written);
       });

@@ -663,6 +663,27 @@ static bool scr_bv_append(ScrJsonBuf *b, const ScrDyn *value) {
   return true;
 }
 
+/* Reads `key` off the value a builtin received, the way a property read in
+ * the program does. A checked record or class instance boxed as a dynamic
+ * value answers from its native fields or its view, which the plain object
+ * read does not reach (it knows only plain object kinds). */
+static ScrDyn *scr_bv_object_member(const ScrDyn *object, const char *key, size_t key_len) {
+  if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *value = scr_dyn_typed_ref_own_get(object, name);
+  if (!value) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (!view) {
+      scr_str_release(name);
+      return NULL;
+    }
+    value = scr_dyn_obj_read(view, key, key_len);
+    scr_dyn_release(view);
+  }
+  scr_str_release(name);
+  return value;
+}
+
 /* format(pathObject): lib/path.js's _format and formatExt over any object,
  * reading each property as Node does. The result is `base` itself when
  * there is no dir, so it need not be a string. */
@@ -674,24 +695,24 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
     scr_dyn_arg_type_fail("pathObject", "of type object", object);
     return NULL;
   }
-  ScrDyn *dir = scr_dyn_obj_read(object, "dir", 3);
+  ScrDyn *dir = scr_bv_object_member(object, "dir", 3);
   if (!dir) return NULL;
   if (!scr_dyn_truthy(dir)) {
     scr_dyn_release(dir);
-    dir = scr_dyn_obj_read(object, "root", 4);
+    dir = scr_bv_object_member(object, "root", 4);
     if (!dir) return NULL;
   }
-  ScrDyn *base = scr_dyn_obj_read(object, "base", 4);
+  ScrDyn *base = scr_bv_object_member(object, "base", 4);
   if (!base) goto fail_dir;
   if (!scr_dyn_truthy(base)) {
     scr_dyn_release(base);
     base = NULL;
     ScrJsonBuf b;
     scr_jb_init(&b);
-    ScrDyn *name = scr_dyn_obj_read(object, "name", 4);
+    ScrDyn *name = scr_bv_object_member(object, "name", 4);
     bool ok = name != NULL && (!scr_dyn_truthy(name) || scr_bv_append(&b, name));
     if (name) scr_dyn_release(name);
-    ScrDyn *ext = ok ? scr_dyn_obj_read(object, "ext", 3) : NULL;
+    ScrDyn *ext = ok ? scr_bv_object_member(object, "ext", 3) : NULL;
     ok = ext != NULL;
     if (ok && scr_dyn_truthy(ext)) {
       /* `${ext[0] === '.' ? '' : '.'}${ext}` */
@@ -720,7 +741,7 @@ ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
     scr_dyn_release(dir);
     return base;
   }
-  ScrDyn *root = scr_dyn_obj_read(object, "root", 4);
+  ScrDyn *root = scr_bv_object_member(object, "root", 4);
   if (!root) goto fail_base;
   bool same = scr_dyn_strict_eq(dir, root);
   scr_dyn_release(root);

@@ -4,6 +4,8 @@ A package that requires an addon needs a JavaScript implementation that compiles
 
 A package that looks for an optional addon at run time compiles with `--npm-static`.
 In JavaScript dependencies, a `createRequire` require call with a computed specifier, and `require.resolve` called with a computed request or read as a value, resolve the specifier with the Node.js algorithm when the program runs.
+A `createRequire` loader held as a value, stored in an object or passed to a function, in TypeScript or JavaScript, is a function that resolves its request the same way when it is called.
+It has none of the properties that the Node.js `require` function carries: in TypeScript, a statement that reads `resolve`, `cache`, `main`, or `extensions` through a held loader builds with warning `SC6015` and throws an error that names SC2020 when it runs.
 `require.resolve` returns the path Node.js returns.
 When nothing resolves, both throw the `MODULE_NOT_FOUND` error that Node.js throws, so a package that probes for a missing addon takes the same branch as in Node.js.
 When the specifier of a require call resolves to a native addon, a builtin, or a file that is not part of the compiled program, the program prints an SC2020 error that names it and exits with status 1, because Node.js would load that module.

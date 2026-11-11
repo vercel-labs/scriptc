@@ -7,12 +7,22 @@ node_modules/
 !tests/diagnostics/npm-program-type-error/node_modules/
 !tests/diagnostics/retired-engine-import-refusal/node_modules/
 !tests/diagnostics/package-value-shape-refusal/node_modules/
+!tests/diagnostics/types-only-workspace-package-value-import/node_modules/
+!tests/diagnostics/types-only-workspace-package-class-type/node_modules/
+!tests/diagnostics/node-island-function-value/node_modules/
+!tests/diagnostics/package-built-object-member/node_modules/
+!tests/diagnostics/umd-export-forced-native/node_modules/
+!tests/diagnostics/worker-island-value/node_modules/
+!tests/diagnostics/node-island-timer-native-use/node_modules/
 !tests/fixtures/commander-calc/node_modules/
 !tests/fixtures/npm/node_modules/
 !tests/corpus/*/node_modules/
 !tests/fixtures/npm-static/node_modules/
 !tests/coverage-fixtures/wasm/node_modules/
 !tests/coverage-fixtures/node-islands*/node_modules/
+!tests/coverage-fixtures/workspace-declared-rows/node_modules/
+!tests/fixtures/node-island/*/node_modules/
+!tests/fixtures/node-island/*/*/node_modules/
 !tests/coverage-fixtures/dynamic-tier/package/node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
 !tests/fixtures/npm-static/node_modules/*/node_modules/
@@ -25,6 +35,7 @@ node_modules/
 !tests/fixtures/fetch/node_modules/
 !tests/fixtures/gateway-e2e/node_modules/
 !tests/fixtures/node-types/node_modules/
+!tests/fixtures/island-conformance/node_modules/
 dist/
 output/
 /packages/llvm-darwin-arm64/bin/
@@ -51,6 +62,7 @@ output/
 !tests/fixtures/provenance/node_modules/*/dist/
 !tests/fixtures/npm-static/node_modules/*/dist/
 !tests/corpus/*/node_modules/*/dist/
+!tests/fixtures/island-conformance/node_modules/*/dist/
 .scriptc/
 *.log
 .DS_Store
@@ -67,3 +79,6 @@ tmp-*/
 # the vendored fs-extra corpus package: its lib/output module and jsonfile's own universalify
 !tests/corpus/fs-extra-package/node_modules/fs-extra/lib/output/
 !tests/corpus/fs-extra-package/node_modules/jsonfile/node_modules/
+
+# the island start-up benchmark's fixture packages are committed on purpose
+!benchmarks/startup/islands/node_modules/

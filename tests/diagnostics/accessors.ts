@@ -1,7 +1,7 @@
 // Accessor edges the compiler rejects (tsc-clean, outside the subset).
 
-// static members don't poison the class — their USES fence (the class
-// name has no value form)
+// a static accessor of a TypeScript class compiles: the read calls the
+// getter
 class Config {
   static get version(): number {
     return 1;
@@ -118,7 +118,9 @@ new S().probe();
 // them relevant; these references are what makes them count.
 new Config();
 new Auto();
-new Mixed();
-new DogKennel();
+// A refused accessor half does not reject its class: the construction
+// compiles, and the use of the half is what reports it.
+new Mixed().m = "x";
+console.log(new DogKennel().pet.breed);
 new WriteOnlyCell();
 new Computed();

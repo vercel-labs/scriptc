@@ -1,4 +1,5 @@
 import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
+import type { CoverageMode } from "../compile-types.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -22,6 +23,7 @@ import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
 import {
   renderConfigWarnings,
+  renderStartupWarnings,
   renderTypePatchWarnings,
   renderWarnings,
 } from "../diagnostics/render.js";
@@ -37,11 +39,13 @@ import {
   type TargetCpu,
 } from "../backend/target-cpu.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
+import { isLoweredDependency, LOWERED_DEPENDENCIES } from "../executable/lowered.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { serveMcp } from "./mcp.js";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { CLI_OPTIONS, firstUnacceptedOption, USAGE } from "./usage.js";
+import type { Defines } from "../frontend/defines.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -59,6 +63,37 @@ class CliExit extends Error {
 function fail(msg: string): never {
   process.stderr.write(msg + "\n");
   throw new CliExit(1);
+}
+
+/** `--define` arguments: `process.env.NAME=<JSON string>`. */
+function parseDefines(args: readonly string[]): Defines | undefined {
+  if (args.length === 0) return undefined;
+  const define: Record<string, string> = {};
+  for (const arg of args) {
+    const at = arg.indexOf("=");
+    if (at < 0) fail(`--define=${arg}: expected <name>=<value>`);
+    const key = arg.slice(0, at);
+    const text = arg.slice(at + 1);
+    if (!/^process\.env\.[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      fail(`--define=${arg}: defining '${key}' is not supported yet (only process.env.NAME)`);
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = undefined;
+    }
+    if (typeof value !== "string") {
+      fail(
+        `--define=${arg}: ${key} is a string, so its value must be a JSON string: --define='${key}=${JSON.stringify(text)}'`,
+      );
+    }
+    if (define[key] !== undefined && define[key] !== value) {
+      fail(`--define: ${key} is defined twice with different values`);
+    }
+    define[key] = value;
+  }
+  return define;
 }
 
 /** parseArgs, with its throw turned into the CLI's own one-line error.
@@ -104,6 +139,26 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
 
   const [command, inputArg] = positionals;
+  if (
+    (values["emit-lowered"] !== undefined ||
+      values["from-lowered"] !== undefined ||
+      (values["from-lowered-accept"] ?? []).length > 0) &&
+    (command !== "build" || values.lib)
+  ) {
+    fail(
+      `--emit-lowered, --from-lowered and --from-lowered-accept are options of an executable scriptc build\n\n${USAGE}`,
+    );
+  }
+  const loweredAccept = (values["from-lowered-accept"] ?? [])
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+  for (const kind of loweredAccept) {
+    if (!isLoweredDependency(kind))
+      fail(
+        `unknown --from-lowered-accept value "${kind}" (supported: ${LOWERED_DEPENDENCIES.join(", ")})\n\n${USAGE}`,
+      );
+  }
   if (command === "mcp") {
     if (args.length !== 1) fail(`scriptc mcp takes no arguments\n\n${USAGE}`);
     return serveMcp(host);
@@ -112,34 +167,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
     if (inputArg !== "warm")
       fail(`unknown cache command "${inputArg ?? ""}" (supported: warm)\n\n${USAGE}`);
     if (
-      values.lib ||
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.ffi !== undefined ||
-      values.profile !== undefined ||
-      values.strip ||
-      values.static ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      values.sparse ||
-      (values["npm-static"] ?? []).length > 0 ||
-      values["provenance-sources"] ||
-      externalTypeArgs.length > 0 ||
-      values.out !== undefined ||
-      values["emit-ir"] ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values) ||
-      !values["keep-llvm"]
+      // The command table says which options `cache warm` takes (cli/usage.ts).
+      firstUnacceptedOption("cache-warm", values) !== undefined
     ) {
       fail(
         `scriptc cache warm takes only native optimization/sanitizer options and profile names\n\n${USAGE}`,
@@ -174,36 +203,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   }
   if (command === "merge-profiles") {
     const inputs = positionals.slice(1);
-    const others =
-      values.lib ||
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.optimization !== undefined ||
-      values.ffi !== undefined ||
-      values.profile !== undefined ||
-      values.strip ||
-      values.static ||
-      values.sanitize ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      (values["npm-static"] ?? []).length > 0 ||
-      values["provenance-sources"] ||
-      externalTypeArgs.length > 0 ||
-      (values.wasm ?? []).length > 0 ||
-      values["emit-ir"] ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values) ||
-      !values["keep-llvm"];
+    const others = firstUnacceptedOption("merge-profiles", values) !== undefined;
     if (values.out === undefined || inputs.length === 0 || others) {
       fail(
         `scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles\n\n${USAGE}`,
@@ -273,32 +273,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
     if (inputArg) {
       fail("scriptc build --lib takes no input positional: the profile names the entry module");
     }
-    if (
-      values.backend !== undefined ||
-      values.emit !== undefined ||
-      values.print !== undefined ||
-      values["fail-on"] !== undefined ||
-      values.optimization !== undefined ||
-      values.strip ||
-      values.static ||
-      values.ffi !== undefined ||
-      values["windows-subsystem"] !== undefined ||
-      values["detached-exit"] ||
-      values["large-pages"] ||
-      values["stdout-buffering"] ||
-      values.exceptions !== undefined ||
-      values["target-cpu"] !== undefined ||
-      values["cpu-dispatch"] !== undefined ||
-      values["profile-generate"] !== undefined ||
-      values["profile-use"] !== undefined ||
-      (values["npm-static"] ?? []).length > 0 ||
-      externalTypeArgs.length > 0 ||
-      values.tier !== undefined ||
-      values["explain-dynamic"] !== undefined ||
-      hasNodeIslandFlags(values)
-    ) {
+    if (firstUnacceptedOption("build-lib", values) !== undefined) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--stdout-buffering/--exceptions/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -397,6 +374,16 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (failOnRaw === "dynamic" && !dynamicTierWarning) {
     fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
   }
+  // --no-copy-warning leaves out SC6001 (frontend/lowering/width-copies.ts).
+  const copyWarning = values["copy-warning"] !== false;
+  if (failOnRaw === "divergences" && !copyWarning) {
+    fail(`--fail-on=divergences checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
+  }
+  // --no-key-order-warning leaves out SC6014 (frontend/lowering/key-order-witness.ts).
+  const keyOrderWarning = values["key-order-warning"] !== false;
+  if (failOnRaw === "divergences" && !keyOrderWarning) {
+    fail(`--fail-on=divergences checks the warning --no-key-order-warning leaves out\n\n${USAGE}`);
+  }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
@@ -409,6 +396,23 @@ async function main(args: string[], host: CliHost): Promise<number> {
   const explainDynamic = values["explain-dynamic"];
   if (explainDynamic !== undefined && command !== "coverage") {
     fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+  }
+  const coverageModeRaw = values.coverage;
+  if (
+    coverageModeRaw !== undefined &&
+    coverageModeRaw !== "full" &&
+    coverageModeRaw !== "reached"
+  ) {
+    fail(`unknown --coverage value "${coverageModeRaw}" (supported: full, reached)\n\n${USAGE}`);
+  }
+  const coverageMode = coverageModeRaw as CoverageMode | undefined;
+  if (coverageMode !== undefined && command !== "coverage") {
+    fail(`--coverage is a coverage option\n\n${USAGE}`);
+  }
+  if (coverageMode === "reached" && explainDynamic !== undefined) {
+    fail(
+      `--coverage=reached cannot be combined with --explain-dynamic: the explanation needs the unreached remainder\n\n${USAGE}`,
+    );
   }
   const explainIsland = values["explain-island"];
   if (explainIsland !== undefined && command !== "coverage") {
@@ -557,6 +561,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (output !== null && !output.ok) fail(`${output.message}\n\n${USAGE}`);
   const backend = output === null ? undefined : output.backend;
 
+  // An option the command does not take is refused by name above. This refuses
+  // one that has no check of its own, so a new option is never silently ignored.
+  const stray = firstUnacceptedOption(command, values);
+  if (stray !== undefined) fail(`--${stray} is not a ${command} option\n\n${USAGE}`);
+
   // --npm-static: repeatable and comma-splittable; the literal "auto"
   // switches to eligibility-based detection (mixing "auto" with names
   // is rejected — the shapes answer different questions).
@@ -572,6 +581,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   } else if (npmStaticRaw.length > 0) {
     npmStatic = npmStaticRaw;
   }
+  const define = parseDefines(values.define ?? []);
 
   // --provenance-sources resolves BEFORE the program loads (tsgo needs the
   // source "paths" at creation): attestations and source trees fetch (or
@@ -593,14 +603,20 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage") {
     const { coverage, sourceTexts } = await host.analyze(input, {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
       ...(tier !== undefined ? { tier } : {}),
       ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
       ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
+      ...(coverageMode === "reached" ? { coverage: "reached" as const } : {}),
     });
     if (!dynamicTierWarning) delete coverage.performance;
+    if (!copyWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+    if (!keyOrderWarning && coverage.divergences !== undefined)
+      coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -689,11 +705,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(nodeIslands !== undefined ? { nodeIslands } : {}),
       ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),
+      ...(values["emit-lowered"] === undefined
+        ? {}
+        : { emitLowered: resolve(values["emit-lowered"]) }),
+      ...(values["from-lowered"] === undefined
+        ? {}
+        : { fromLowered: resolve(values["from-lowered"]) }),
+      ...(loweredAccept.length === 0 ? {} : { fromLoweredAccept: loweredAccept }),
     });
     if (!result.ok) {
       if (printDiagnostics) {
@@ -716,7 +740,10 @@ async function main(args: string[], host: CliHost): Promise<number> {
       throw new CliExit(1);
     }
     const warnings = (result.warnings ?? []).filter(
-      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
+      (d) =>
+        (dynamicTierWarning || !isPerformanceCode(d.code)) &&
+        (copyWarning || d.code !== "SC6001") &&
+        (keyOrderWarning || d.code !== "SC6014"),
     );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
@@ -736,8 +763,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
       const color = process.stderr.isTTY ?? false;
       const config = warnings.filter((d) => d.code === "SC8004");
       const patches = warnings.filter((d) => isTypePatchCode(d.code));
+      const startup = warnings.filter((d) => d.code === "SC6201");
       const divergences = warnings.filter(
-        (d) => !isPerformanceCode(d.code) && d.code !== "SC8004" && !isTypePatchCode(d.code),
+        (d) =>
+          !isPerformanceCode(d.code) &&
+          d.code !== "SC8004" &&
+          d.code !== "SC6201" &&
+          !isTypePatchCode(d.code),
       );
       const performance = warnings.filter((d) => isPerformanceCode(d.code));
       if (config.length > 0)
@@ -750,14 +782,21 @@ async function main(args: string[], host: CliHost): Promise<number> {
           renderTypePatchWarnings(patches, result.sourceTexts ?? new Map(), { color }) + "\n",
         );
       }
-      if (divergences.length > 0) {
+      if (startup.length > 0) {
         if (config.length > 0 || patches.length > 0) process.stderr.write("\n");
+        process.stderr.write(
+          renderStartupWarnings(startup, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      }
+      if (divergences.length > 0) {
+        if (config.length > 0 || patches.length > 0 || startup.length > 0)
+          process.stderr.write("\n");
         process.stderr.write(
           renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
         );
       }
       if (performance.length > 0) {
-        if (divergences.length > 0 || config.length > 0 || patches.length > 0)
+        if (divergences.length > 0 || config.length > 0 || patches.length > 0 || startup.length > 0)
           process.stderr.write("\n");
         process.stderr.write(renderPerformanceWarnings(performance) + "\n");
       }
@@ -796,19 +835,6 @@ async function main(args: string[], host: CliHost): Promise<number> {
     process.stdout.write(`${binary}\n`);
   }
   return 0;
-}
-
-/** Whether any Node island flag is present (they belong to build, run and
- * coverage). */
-function hasNodeIslandFlags(values: ReturnType<typeof parseCli>["values"]): boolean {
-  return (
-    values["node-islands"] !== undefined ||
-    (values["node-island"] ?? []).length > 0 ||
-    (values.native ?? []).length > 0 ||
-    values.node !== undefined ||
-    values["explain-island"] !== undefined ||
-    values["strict-user-js"]
-  );
 }
 
 /** Both installed and seed commands use this argument and diagnostic contract. */

@@ -178,6 +178,8 @@ function withSlowPath(
   fast: (slow: string) => string,
   slow: () => string,
   mayThrow: boolean,
+  /** Runs on the slow path's unwind (emitPendingCheck's onUnwind). */
+  onUnwind?: () => void,
 ): string {
   const B = host.B;
   const slot = B.slot();
@@ -190,7 +192,7 @@ function withSlowPath(
   B.startBlock(slowLabel);
   const slowValue = slow();
   B.line(`store ${ty} ${slowValue}, ptr ${slot}`);
-  if (mayThrow) host.emitPendingCheck();
+  if (mayThrow) host.emitPendingCheck(undefined, false, undefined, onUnwind);
   B.br(done);
   B.startBlock(done);
   const out = B.tmp();
@@ -399,6 +401,8 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
           return d;
         },
         true,
+        // A checked conversion to a number: a dev build reports its failure.
+        host.conversionTraceAt(e.loc),
       );
       return { name: out, type: e.type };
     }
@@ -508,6 +512,21 @@ export function emitJsLibCall(host: Host, e: LibCallExpr): LlValue {
       );
       return { name: out, type: e.type };
     }
+    case "js.negate": {
+      const a = operand(host, e.args[0]!);
+      const out = withSlowPath(
+        host,
+        "ptr",
+        (slow) => {
+          const negated = B.tmp();
+          B.line(`${negated} = fneg double ${a.number(slow)}`);
+          return boxDouble(host, negated);
+        },
+        () => call(host, "ptr", "scr_js_negate", [["ptr", a.word()]]),
+        true,
+      );
+      return jsval(out);
+    }
     case "js.bitwise": {
       const op = literalOp(e.args[2]!);
       const inst = op !== null ? BITWISE_OPS[op] : undefined;
@@ -602,7 +621,9 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
       const helper = host.dyn.dynCheckHelper(e.type, undefined);
       const d = B.tmp();
       B.line(`${d} = call double @${helper}(ptr ${v}, ptr null)`);
-      return throwing({ name: d, type: e.type });
+      // A checked conversion to a number: a dev build reports its failure.
+      host.emitPendingCheck(undefined, false, undefined, host.conversionTraceAt(e.loc));
+      return { name: d, type: e.type };
     }
     case "js.add": {
       const [a, b] = args();
@@ -656,6 +677,8 @@ function emitBoxedJsLibCall(host: Host, e: LibCallExpr): LlValue {
         name: call(host, "double", "scr_js_to_number", [["ptr", args()[0]!.name]]),
         type: e.type,
       });
+    case "js.negate":
+      return throwing(owned(call(host, "ptr", "scr_js_negate", [["ptr", args()[0]!.name]])));
     default:
       throw new InternalCompilerError(`llvm emitter bug: unknown jsval builtin ${e.fn}`);
   }

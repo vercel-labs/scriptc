@@ -14,18 +14,29 @@
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  globSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
-import { runStep, type Track } from "./step-timeout.js";
+import { recentCrashReport } from "./crash-report.js";
+import { spawnFailure } from "./spawn-failure.js";
+import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
-import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -144,7 +155,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
-  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
+  if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -190,6 +201,14 @@ function icuAvailable(): boolean {
   return process.platform === "linux" && process.arch === "x64";
 }
 
+/** `// @skip-darwin` in the directive head: the Node oracle itself does not
+ * finish on macOS (it aborts while exiting), so there is no reference
+ * output to compare a compiled program against. The program still runs on
+ * every other platform. A program states the abort in its own comment. */
+function skipsDarwin(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @skip-darwin\s*$/.test(l));
+}
+
 /** `// @normalize-pid` in the directive head: Node's process warnings
  * ("(node:<pid>) [DEP0040] ...") are compared with the pid replaced on both
  * sides — for island programs, where Node itself prints the warning in the
@@ -232,7 +251,8 @@ function nodeOracleArgs(file: string): string[] {
  * child's stdin closes immediately: corpus programs may read fd 0 to EOF
  * (readFileSync(0)), and the default open pipe would block both sides
  * forever — this way Node and the native binary see the same empty,
- * closed stream. */
+ * closed stream. `env` adds variables to the inherited environment (the
+ * oracle's `// @define` variables). */
 async function runBinary(
   cmd: string,
   args: string[],
@@ -246,6 +266,7 @@ async function runBinary(
   // briefly, the npm/cargo stance. (No-op on macOS: exec there never
   // answers ETXTBSY.)
   for (let attempt = 0; ; attempt++) {
+    const startedAt = Date.now();
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
       // The program's `// @env:` pins layer over the inherited environment,
@@ -265,7 +286,9 @@ async function runBinary(
         continue;
       }
       if (typeof e.code !== "number" || !Buffer.isBuffer(e.stdout) || !Buffer.isBuffer(e.stderr)) {
-        throw err;
+        // Darwin leaves a crash report for a signal death: it names the
+        // exception and the crashing stack, which the child's error cannot.
+        throw spawnFailure(err, await recentCrashReport(cmd, startedAt));
       }
       return { stdout: e.stdout, stderr: e.stderr, exitCode: e.code };
     }
@@ -301,11 +324,14 @@ const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs"
  * package.json module-format detection). */
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
+  // Files only: a package directory may be named like one (node_modules/widget.js).
   return [
     ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
-  ].sort();
+  ]
+    .filter((f) => statSync(f).isFile())
+    .sort();
 }
 
 // ---- oracle result cache ---------------------------------------------------
@@ -372,7 +398,11 @@ function usesVolatileHostState(inputs: string[]): boolean {
 async function runNode(file: string, track?: Track): Promise<RunResult> {
   let cachePath: string | null = null;
   if (oracleDir !== null && !usesVolatileHostState(programInputs(file))) {
-    const h = createHash("sha256").update(await oracleKeyBase());
+    // A directory can hold several entries over the same inputs.
+    const h = createHash("sha256")
+      .update(await oracleKeyBase())
+      .update(file.slice(repoRoot.length))
+      .update("\0");
     for (const f of programInputs(file)) {
       h.update(f.slice(repoRoot.length)).update("\0").update(readFileSync(f)).update("\0");
     }
@@ -407,7 +437,8 @@ async function runNode(file: string, track?: Track): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file), programEnv(file), track);
+  const oracleEnv = { ...programEnv(file), ...programDefines(directiveHead(file))?.env };
+  const res = await runBinary("node", nodeOracleArgs(file), oracleEnv, track);
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -432,7 +463,9 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
-  const hash = createHash("sha256");
+  const defines = programDefines(directiveHead(file));
+  // The entry joins the key: a directory can hold several entries.
+  const hash = createHash("sha256").update(file).update("\0");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")
@@ -451,6 +484,7 @@ async function compileAndRun(rel: string, file: string): Promise<RunResult> {
       sanitize,
       backend: "llvm",
       ...(speed ? { optimization: "speed" as const } : {}),
+      ...(defines ? { define: defines.define } : {}),
     }),
   );
   if (!result.ok) {
@@ -470,14 +504,21 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   // live-spawned Node itself can hang under heavy box load (1751's
   // fs.watch stalled five gates on 2026-07-20 while the compiled binary
   // answered in milliseconds every time).
+  //
+  // timeout: the case's hang detector, above the longest chain of steps it
+  // runs — the oracle starts beside the compile, whose run follows it, so two
+  // step deadlines deep. The shared 300 s default is not a bound for a case
+  // that can spend a full deadline in each of two steps; a step that stalls
+  // still reports itself at its own deadline, naming the processes it left.
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    { retry: 1 },
+    { retry: 1, timeout: STEP_TIMEOUT_MS * 2 },
     async ([rel, file], { skip }) => {
       // `// @requires-libnode`: the binary loads Node from a libnode pack,
       // required in the Linux CI lanes (libnode.ts), else skipped without one.
       if (requiresLibnode(file) && libnodePack() === null) skip();
       if (requiresIcu(file) && !icuAvailable()) skip();
+      if (skipsDarwin(file) && process.platform === "darwin") skip();
       const [nodeRes, nativeRes] = await Promise.all([
         runStep(`${rel}: node oracle`, (track) => runNode(file, track)),
         compileAndRun(rel, file),

@@ -1,13 +1,16 @@
 /// <reference path="./fs-promises.d.ts" />
 /// <reference path="./stream.d.ts" />
 
-/* The synchronous node:fs surface — utf8-only, no options objects, no
- * Buffers. Importing "node:fs" resolves here (preflight allowlists exactly
- * the ambient-declared node: modules); every function lowers to a `libCall`
- * with a scr_fs_* runtime implementation. Failures throw CATCHABLE string
- * values formatted like Node's error messages ("ENOENT: no such file or
- * directory, open 'x'"). `rmSync` removes FILES only (like Node without
- * `recursive`); empty directories go through `rmdirSync`. */
+/* The synchronous node:fs surface — the subset that compiles natively:
+ * utf8 path strings, string, Buffer, TypedArray and DataView data, and
+ * the documented option records that have a lowering. Importing "node:fs"
+ * resolves here (preflight allowlists exactly the ambient-declared node:
+ * modules); every function lowers to a `libCall` with a scr_fs_* runtime
+ * implementation.
+ * Failures throw CATCHABLE string values formatted like Node's error
+ * messages ("ENOENT: no such file or directory, open 'x'"). `rmSync`
+ * removes FILES only (like Node without `recursive`); empty directories go
+ * through `rmdirSync`. */
 declare module "node:fs" {
   import { Readable, Writable } from "stream";
   export function readFileSync(path: string | number | URL, encoding: BufferEncoding): string;
@@ -25,32 +28,68 @@ declare module "node:fs" {
     callback: (error: Error | null, data: string | Buffer) => void,
   ): void;
   /* The options form carries the mode (applied at CREATION only, like
-   * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+   * Node — an existing file keeps its permissions), the encoding the
+   * string data is written with, and/or the open(2) flag. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | ScriptcBufferView,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
-     * Node. The lowered flags are "w" (truncate-or-create) and "wx"
-     * (exclusive create). */
+     * Node. The flag names are Node's ("w", "wx", "a", "as+", ...). */
     options?: {
       mode?: number;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding;
       flag?: string;
       [option: string]: unknown;
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
-  export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    encoding: BufferEncoding,
+  ): void;
+  export function writeFileSync(path: string | URL, data: string | ScriptcBufferView): void;
+  /* Buffer and TypedArray data with the mode and/or flag options; the
+   * bytes are written as they are, and Node ignores an encoding key here. */
+  export function writeFileSync(
+    path: string | URL,
+    data: ScriptcBufferView,
+    options: { mode?: number; encoding?: BufferEncoding; flag?: string; [option: string]: unknown },
+  ): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
    * the write lands at the descriptor's current offset). */
-  export function writeFileSync(fd: number, data: string): void;
-  export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
-  export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
-  export function existsSync(path: string | URL): boolean;
+  export function writeFileSync(fd: number, data: string | ScriptcBufferView): void;
+  export function writeFileSync(
+    fd: number,
+    data: string | ScriptcBufferView,
+    encoding: "utf8" | "utf-8",
+  ): void;
+  /* appendFileSync opens with the "a" flag by default; the options record
+   * and the bare encoding replace the encoding and can name another flag
+   * (and the creation mode). */
+  export function appendFileSync(path: string | URL, data: string | ScriptcBufferView): void;
+  /* The bare-encoding spelling is the options record's encoding key alone. */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    encoding: BufferEncoding,
+  ): void;
+  /* The options record: `encoding` names the encoding the string data is
+   * appended with; `mode` and `flag` change what an append creates (see the
+   * writeFileSync stance). */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options?: {
+      mode?: number;
+      encoding?: BufferEncoding;
+      flag?: string;
+      [option: string]: unknown;
+    },
+  ): void;
+  export function existsSync(path: string | Uint8Array | URL): boolean;
   export function mkdirSync(path: string | URL): void;
   export function mkdirSync(
     path: string | URL,
@@ -178,6 +217,17 @@ declare module "node:fs" {
     path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): void;
+  /* The callback forms of rmSync: the removal runs when called and the
+   * callback receives the error, or null. */
+  export function rm(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function rm(
+    path: string | URL,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
   /* The recursive form: every entry below the path, relative to it. */
@@ -191,16 +241,19 @@ declare module "node:fs" {
     },
   ): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
-   * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
-   * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
-   * reads of it in builtins/process.ts). */
+   * probes). The type is interned explicitly in type-mapper.ts (the
+   * record's hidden %dtype field carries the entry kind; the probes lower
+   * as reads of it in builtins/filesystem.ts). */
   export interface Dirent {
     name: string;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    isCharacterDevice(): boolean;
+    isBlockDevice(): boolean;
   }
   export function readdirSync(
     path: string | URL,
@@ -244,20 +297,35 @@ declare module "node:fs" {
     readonly path: string;
     readSync(): Dirent | null;
     read(): Promise<Dirent | null>;
+    read(callback: (err: NodeJS.ErrnoException | null, dirent: Dirent | null) => void): void;
     closeSync(): void;
     close(): Promise<void>;
+    close(callback: (err: NodeJS.ErrnoException | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+    [Symbol.dispose](): void;
+    [Symbol.asyncDispose](): Promise<void>;
   }
   export interface OpenDirOptions {
     encoding?: "utf8" | "utf-8";
     bufferSize?: number;
   }
+  export function opendir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
+  export function opendir(
+    path: string | URL,
+    options: OpenDirOptions,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
   export function opendirSync(path: string | URL, options?: OpenDirOptions): Dir;
   /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
    * over a file (scr_fs_stream.c). The options are checked at runtime
    * with Node's rules; flags and mode are checked when the file opens, so
    * their errors arrive as 'error' events. Instances also emit 'open'
-   * (with the fd) and 'ready'. */
+   * (with the fd) and 'ready'. `signal` destroys the stream with an
+   * AbortError when it aborts, as stream.addAbortSignal does; null is in
+   * the type as in @types/node, and Node throws for it. */
   export interface StreamOptions {
     flags?: string;
     encoding?: BufferEncoding;
@@ -266,6 +334,7 @@ declare module "node:fs" {
     autoClose?: boolean;
     emitClose?: boolean;
     start?: number;
+    signal?: AbortSignal | null;
     highWaterMark?: number;
   }
   export interface ReadStreamOptions extends StreamOptions {

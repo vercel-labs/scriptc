@@ -123,6 +123,11 @@ ScrStr *scr_env_get(const ScrStr *name);
  * children observe the write, like Node. Both borrowed. Never throws. */
 void scr_env_set(const ScrStr *name, const ScrStr *value);
 void scr_env_unset(const ScrStr *name); /* delete process.env.NAME */
+/* The process environment's value for one UTF-8, NUL-terminated name, copied:
+ * +1 for the caller to free, NULL when the variable is absent. The Win32
+ * environment on Windows, getenv(3) elsewhere, so a worker that shares the
+ * process environment reads what either thread wrote. Never throws. */
+char *scr_env_process_copy(const char *name);
 /* NODE_DEBUG as the process started (NULL when unset), for util.debuglog. */
 const char *scr_node_debug_initial(void);
 /* The whole environment as alternating [k, v, k, v, ...] strings in
@@ -276,6 +281,9 @@ ScrStr *scr_process_argv0(void);
 /* process.release: the stable { name, lts, sourceUrl, headersUrl[,
  * libUrl] } object of the compatibility target's release. +1. */
 ScrDyn *scr_process_release(void);
+/* process.features: the stable object of Node's feature flags, holding
+ * the compiled binary's values. +1. */
+ScrDyn *scr_process_features(void);
 /* geteuid(2) / getegid(2) / getgroups(2) (with the effective gid added
  * when missing, like Node). Windows has no such members: the calls throw
  * the TypeError Node's missing member does. */
@@ -308,8 +316,17 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data);
  * descriptor's current offset; the descriptor stays open (closeSync owns
  * it). Errors carry the fd operation's errno shape. */
 void scr_fs_write_file_fd(double fd, ScrStr *data);
+/* The descriptor form over a checked data argument (string or view):
+ * scr_fs_bytes_write.c's entry writes the string or the view's bytes. */
+void scr_fs_write_file_fd_data(double fd, const ScrDyn *data);
 void scr_fs_append_file(ScrStr *path, ScrStr *data);
+/* One write(2) of raw bytes at `position` (-1: the current offset), with
+ * the fd validation and errno shape the other fd writes report. */
+double scr_fs_write_mem(double fd, const void *data, size_t length, double position);
 bool scr_fs_exists(ScrStr *path);
+/* existsSync over a statically typed byte path: the bytes decode as a string
+ * and the probe runs on it, the conversion the value form also does. */
+bool scr_fs_exists_bytes(ScrBytes *path);
 void scr_fs_mkdir(ScrStr *path);
 /* Files only, like Node's rmSync without `recursive` (a directory throws an
  * EISDIR-coded error; use scr_fs_rmdir for empty directories). */
@@ -387,6 +404,25 @@ void scr_fs_rename_error(int error, const ScrStr *oldpath, const ScrStr *newpath
 void scr_fs_write_file_mode(ScrStr *path, ScrStr *data, double mode);
 /* writeFileSync(path, data, { mode, flag }): `exclusive` is "wx" (O_EXCL). */
 void scr_fs_write_file_flags(ScrStr *path, ScrStr *data, double mode, double exclusive);
+/* writeFileSync(p, data, { encoding, mode, flag }) and appendFileSync's
+ * three-argument form: the string data encoded with `encoding` (an empty
+ * name is utf8) and written through Node's open(2) flag table, or the
+ * bytes of a Buffer/TypedArray argument written the same way (their
+ * encoding name is validated and otherwise ignored, as in Node). */
+void scr_fs_write_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                               ScrStr *flags);
+void scr_fs_append_file_options(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
+                                ScrStr *flags);
+void scr_fs_write_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                     double mode, ScrStr *flags);
+void scr_fs_append_file_bytes_options(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                      double mode, ScrStr *flags);
+/* The same two writes over a checked data argument: the string arm encodes
+ * with `encoding`; the view arm writes the bytes as they are. */
+void scr_fs_write_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                    double mode, ScrStr *flags);
+void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                     double mode, ScrStr *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL
@@ -559,6 +595,13 @@ ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_bytes(ScrStr *path, ScrBytes *data);
+ScrPromise *scr_fsp_write_file_flags_bytes(ScrStr *path, ScrBytes *data, double mode,
+                                           double exclusive);
+ScrPromise *scr_fsp_write_file_data(ScrStr *path, const ScrDyn *data);
+ScrPromise *scr_fsp_append_file_data(ScrStr *path, const ScrDyn *data);
+ScrPromise *scr_fsp_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
+                                          double exclusive);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
@@ -586,6 +629,8 @@ ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding
 ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h, ScrStr *data, ScrStr *encoding);
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h, ScrBytes *data, ScrStr *encoding);
+ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h, const ScrDyn *data,
+                                                    ScrStr *encoding);
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h);
 
 /* Raw fd operations for worker-pool steps (scr_lib.c): no runtime state

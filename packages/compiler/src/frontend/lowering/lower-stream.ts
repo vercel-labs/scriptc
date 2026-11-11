@@ -1,6 +1,12 @@
+import { refuseCallbackThis } from "./callback-arg.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
-import { isValueStream, valueStreamOf } from "./builtins/hash-stream.js";
+import {
+  isValueStream,
+  isWritableValueStream,
+  valueStreamOf,
+  writableStreamOf,
+} from "./builtins/hash-stream.js";
 import { InternalCompilerError } from "../../errors.js";
 /* The node:stream lowering (the spoke-module pattern, like
  * lower-event-emitter.ts): construction of the five runtime stream classes
@@ -205,6 +211,9 @@ export const STREAM_PROP_MEMBERS: ReadonlySet<string> = new Set([
   "readableLength",
   "readableHighWaterMark",
   "readableObjectMode",
+  "readableAborted",
+  "readableDidRead",
+  "readableEncoding",
   "writable",
   "writableEnded",
   "writableFinished",
@@ -213,10 +222,32 @@ export const STREAM_PROP_MEMBERS: ReadonlySet<string> = new Set([
   "writableHighWaterMark",
   "writableCorked",
   "writableObjectMode",
+  "writableAborted",
   "destroyed",
   "closed",
   "errored",
   "allowHalfOpen",
+]);
+
+/** The getters whose presence Node decides by prototype: the readable
+ * ones are undefined on a Writable, and writableAborted is undefined on a
+ * Duplex. The runtime answers by the stream's class (scr_stream_state_dyn's
+ * selector). */
+export const STREAM_STATE_GETTERS: ReadonlyMap<string, number> = new Map([
+  ["readableAborted", 0],
+  ["readableDidRead", 1],
+  ["readableEncoding", 2],
+  ["writableAborted", 3],
+]);
+
+/** stream.isDestroyed and the other utility predicates
+ * (scr_stream_util_is's selector). */
+const STREAM_PREDICATES: ReadonlyMap<string, number> = new Map([
+  ["isDestroyed", 0],
+  ["isErrored", 1],
+  ["isDisturbed", 2],
+  ["isReadable", 3],
+  ["isWritable", 4],
 ]);
 
 /** The underscore methods each runtime base consumes at construction
@@ -368,6 +399,14 @@ function lowerStreamCallback(
   if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
     lowerer.unsupported("SC1090", node, `async stream '${which}' callbacks`);
   }
+  // The stream calls the closure with the parameters it names.
+  if (funcType.rest === true || lowerer.typedArgumentsLambdas.has(node)) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `a stream '${which}' callback that takes a rest parameter or reads 'arguments' (name the parameters the callback uses)`,
+    );
+  }
   if (funcType.params.length > fullTuple.length) {
     lowerer.noLowering(
       `a '${which}' callback declaring ${funcType.params.length} parameters where Node passes ${fullTuple.length}`,
@@ -486,6 +525,10 @@ interface StreamOptions {
    * ReadableState builds the decoder up front; the buffer is empty at
    * that point, so the two are equivalent). */
   encoding: string | null;
+  /** The option's literal spelling when it is not the canonical name
+   * ("binary", "ucs2", "utf-8"): readableEncoding answers the option as
+   * written until setEncoding() replaces the decoder. */
+  encodingName: string | null;
   /** A LITERAL encoding/defaultEncoding spelling Node does not know: the
    * construction lowers to Node's runtime ERR_UNKNOWN_ENCODING TypeError
    * (the state constructors validate encodings up front). */
@@ -970,6 +1013,7 @@ function parseStreamOptions(
     readableSide: true,
     writableSide: true,
     encoding: null,
+    encodingName: null,
     badEncoding: null,
     pushEncoding: null,
     signal: null,
@@ -1067,6 +1111,14 @@ function parseStreamOptions(
             "write the callback inline (method shorthand or an inline function/arrow), or pass a function value",
           );
         }
+        // A callback written in place is bound to the stream; a value is
+        // called through the function boundary, without one.
+        refuseCallbackThis(
+          lowerer,
+          valueNode,
+          `the ${ctorName} option '${name}' as a function value`,
+          "the stream",
+        );
         present.set(
           name,
           lowerStreamCallbackValue(lowerer, ctorName, name, valueNode, tuples[name]!.length),
@@ -1197,6 +1249,10 @@ function parseStreamOptions(
           }
         }
         out.encoding = bufEncoding(lowerer, `the ${ctorName} option 'encoding'`, value);
+        {
+          const t = lowerer.typeOf(value);
+          if (t.isStringLiteralType() && t.value !== out.encoding) out.encodingName = t.value;
+        }
         break;
       }
       case "defaultEncoding":
@@ -1361,6 +1417,7 @@ function streamCtorArgs(
 ): {
   args: IrExpr[];
   encoding: string | null;
+  encodingName: string | null;
   badEncoding: string | null;
   pushEncoding: string | null;
   signal: IrExpr | null;
@@ -1398,6 +1455,7 @@ function streamCtorArgs(
   return {
     args: [...head, ...o.cbs],
     encoding: o.encoding,
+    encodingName: o.encodingName,
     badEncoding: o.badEncoding,
     pushEncoding: o.pushEncoding,
     signal: o.signal,
@@ -1557,6 +1615,15 @@ export function lowerStreamNew(lowerer: Lowerer, expr: ts.NewExpression, info: C
       type: thisType,
       loc,
     };
+    if (parsed.encodingName !== null) {
+      built = {
+        kind: "libCall",
+        fn: "readable.encodingName",
+        args: [built, strLit(parsed.encodingName, loc)],
+        type: thisType,
+        loc,
+      };
+    }
   }
   if (parsed.signal !== null) {
     // { signal }: addAbortSignal over the fresh stream (answers it +1).
@@ -1973,6 +2040,19 @@ export function lowerStreamSuperCall(
       },
       loc,
     });
+    if (parsed.encodingName !== null) {
+      out.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "readable.encodingName",
+          args: [thisRef(), strLit(parsed.encodingName, loc)],
+          type: thisType,
+          loc,
+        },
+        loc,
+      });
+    }
   }
   if (parsed.signal !== null) {
     out.push({
@@ -2149,6 +2229,11 @@ export function lowerStreamStaticCall(
     }
   }
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
+  // Readable.isDisturbed is stream.isDisturbed, which every stream class
+  // inherits from the module's legacy Stream.
+  if (member === "isDisturbed") {
+    return lowerStreamPredicate(lowerer, call, `${cls.slice(1)}.isDisturbed`, 2, loc);
+  }
   if (member !== "from") {
     lowerer.noLowering(`${cls.slice(1)}.${member}`, call);
   }
@@ -2200,6 +2285,7 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
   let objectMode = false;
   let hwm: IrExpr = numLit(-1, loc);
   let encoding = "";
+  let encodingName: string | null = null;
   let signal: IrExpr | null = null;
   const options = args[1];
   if (options !== undefined) {
@@ -2248,6 +2334,10 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
           );
         }
         encoding = bufEncoding(lowerer, "the Readable.fromWeb option 'encoding'", value);
+        {
+          const t = lowerer.typeOf(value);
+          encodingName = t.isStringLiteralType() && t.value !== encoding ? t.value : null;
+        }
         continue;
       }
       if (key === "signal" && value) {
@@ -2270,13 +2360,23 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
       );
     }
   }
-  const built: IrExpr = {
+  let built: IrExpr = {
     kind: "libCall",
     fn: "fetch.readableFromWeb",
     args: [web, boolLit(objectMode, loc), hwm, strLit(encoding, loc)],
     type: readable,
     loc,
   };
+  if (encodingName !== null) {
+    // readableEncoding answers the option as written.
+    built = {
+      kind: "libCall",
+      fn: "readable.encodingName",
+      args: [built, strLit(encodingName, loc)],
+      type: readable,
+      loc,
+    };
+  }
   if (signal === null) return built;
   return {
     kind: "libCall",
@@ -2356,14 +2456,33 @@ function lowerFromSource(
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
   const opts0 = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
   const opts = opts0 ? { ...opts0, flags: opts0.flags | duplexFlag } : opts0;
+  // The source as an instance of `t`, the class the checker gives it. The
+  // value can be held another way: a JavaScript source infers the class of
+  // `this.inner.make()` while the call goes through an untyped member and
+  // answers a checked-dynamic value. That value crosses the checked boundary
+  // into its class here, as at any typed slot (a value of another class
+  // throws a TypeError). Null when it has no checked conversion to the class:
+  // the source then takes the checked-dynamic form below.
+  const sourceInstance = (node: ts.Expression, t: IrType & { kind: "object" }): IrExpr | null => {
+    const held = lowerer.lowerExpr(node);
+    if (held.type.kind !== "dyn") return held;
+    const checked = lowerer.coerceToExpected(held, t);
+    return checked.type.kind === "object" ? checked : null;
+  };
   // A class whose [Symbol.iterator]() or [Symbol.asyncIterator]() is a
   // generator method: from.js calls the method when the stream is built,
   // then reads the generator like any other.
   const genMethod = srcT?.kind === "object" ? classGeneratorMethodOf(lowerer, srcT) : null;
   const genT = srcT?.kind === "generator" ? srcT : (genMethod?.gen ?? null);
-  if (srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)) {
-    // A compiled generator: the runtime pulls it through interned helpers.
-    const recv = lowerer.lowerExpr(srcNode);
+  // A compiled generator: the runtime pulls it through interned helpers.
+  const genRecv =
+    srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
+      ? genMethod && srcT?.kind === "object"
+        ? sourceInstance(srcNode, srcT)
+        : lowerer.lowerExpr(srcNode)
+      : null;
+  if (genRecv && genT && opts) {
+    const recv = genRecv;
     const gen =
       genMethod && srcT?.kind === "object"
         ? accessorCall(lowerer, srcT.className, genMethod.method, recv, [], genT, loc)
@@ -2387,12 +2506,16 @@ function lowerFromSource(
     lowerer.classes.has(srcT.className) &&
     lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
   const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
-  if (srcNode && cit && opts && fromGenChunk(lowerer, cit.valueT)) {
+  const citRecv =
+    srcNode && srcT?.kind === "object" && cit && opts && fromGenChunk(lowerer, cit.valueT)
+      ? sourceInstance(srcNode, srcT)
+      : null;
+  if (citRecv && cit && opts) {
     // A class iterable: from.js takes the iterator when the stream is
     // built (the typed [Symbol.iterator]() call here), and the runtime
     // pulls it through a checked-dynamic { next } object. Class iterators
     // declare no return() or throw(), so destroy calls neither.
-    const recv = lowerer.lowerExpr(srcNode);
+    const recv = citRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return {
       kind: "libCall",
@@ -2407,8 +2530,12 @@ function lowerFromSource(
     };
   }
   const acit = srcT?.kind === "object" && asyncOpen ? classAsyncIteratorOf(lowerer, srcT) : null;
-  if (srcNode && acit && opts && fromGenChunk(lowerer, acit.valueT)) {
-    const recv = lowerer.lowerExpr(srcNode);
+  const acitRecv =
+    srcNode && srcT?.kind === "object" && acit && opts && fromGenChunk(lowerer, acit.valueT)
+      ? sourceInstance(srcNode, srcT)
+      : null;
+  if (acitRecv && acit && opts) {
+    const recv = acitRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     return {
       kind: "libCall",
@@ -3431,6 +3558,140 @@ function pipelineOptions(
   return out;
 }
 
+/** stream.isDestroyed, isErrored, isDisturbed, isReadable and isWritable
+ * (and Readable.isDisturbed): Node's duck-typed predicates. A value typed
+ * as a stream class answers from the stream's state; an untyped value, a
+ * union and a primitive are judged at run time, where a native stream
+ * answers the same way, a primitive answers as Node's property reads do,
+ * and any other value throws by name. Values of other static types are
+ * refused here: Node would judge them by properties this lowering does
+ * not read. The answer converts to the type the checker gives the call
+ * (boolean, or boolean | null where Node answers null for a value
+ * without that side). */
+function lowerStreamPredicate(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  which: number,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length > 1) {
+    lowerer.noLowering(
+      `${what} with ${args.length} arguments`,
+      call,
+      `the form is ${what}(stream)`,
+    );
+  }
+  const argNode = args[0];
+  // The argument's static type picks the form before it is lowered: a
+  // stream class is asked directly; an untyped value, a union (a nullable
+  // stream, several stream classes) and a primitive lower as a
+  // checked-dynamic value and are judged at run time.
+  let argType: IrType | null = argNode ? null : UNDEFINED_T;
+  if (argNode && !isValueStream(lowerer, argNode)) {
+    try {
+      argType = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+    } catch {
+      argType = null;
+    }
+  }
+  const runtimeJudged =
+    argType !== null &&
+    (argType.kind === "dyn" ||
+      argType.kind === "union" ||
+      argType.kind === "string" ||
+      argType.kind === "f64" ||
+      argType.kind === "bool" ||
+      argType.kind === "bigint" ||
+      argType.kind === "symbol" ||
+      argType.kind === "nullT" ||
+      argType.kind === "undefinedT");
+  let answer: IrExpr;
+  if (runtimeJudged) {
+    const kind = argType!.kind;
+    const folded = kind === "bigint" || kind === "symbol";
+    if (folded) {
+      // A bigint or a symbol holds none of the properties Node's predicates
+      // read, so each predicate answers the same constant for every such
+      // value: false, or null where it reports a missing side. The index is
+      // the runtime's order, used by `stream.is` below: 1 is isErrored,
+      // 2 is isDisturbed.
+      const stmts: IrStmt[] = [];
+      if (argNode !== undefined) {
+        const value = lowerer.lowerExpr(argNode);
+        const pure =
+          value.kind === "strLit" ||
+          value.kind === "numLit" ||
+          value.kind === "boolLit" ||
+          value.kind === "unitLit" ||
+          value.kind === "varRef";
+        if (!pure) stmts.push({ kind: "exprStmt", expr: value, loc });
+      }
+      const result: IrExpr =
+        which === 1 || which === 2
+          ? boolLit(false, loc)
+          : { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc };
+      answer =
+        stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
+    } else {
+      const value = argNode ? lowerer.lowerExprExpecting(argNode, DYN) : dynUndefinedExpr(loc);
+      answer = {
+        kind: "libCall",
+        fn: "stream.isDyn",
+        args: [value, numLit(which, loc)],
+        type: DYN,
+        loc,
+      };
+    }
+  } else {
+    const node = argNode!;
+    const value = isValueStream(lowerer, node)
+      ? valueStreamOf(lowerer.lowerExpr(node))
+      : lowerer.lowerExpr(node);
+    const info =
+      value.type.kind === "object" ? lowerer.classes.get(value.type.className) : undefined;
+    const primitive =
+      value.type.kind === "string" ||
+      value.type.kind === "f64" ||
+      value.type.kind === "bool" ||
+      value.type.kind === "bigint" ||
+      value.type.kind === "symbol" ||
+      value.type.kind === "nullT" ||
+      value.type.kind === "undefinedT";
+    if (streamSidesOf(lowerer, info)) {
+      answer = {
+        kind: "libCall",
+        fn: "stream.is",
+        args: [value, numLit(which, loc)],
+        type: DYN,
+        loc,
+      };
+    } else if (
+      value.type.kind === "dyn" ||
+      ((primitive || value.type.kind === "union") && lowerer.dynConvertible(value.type))
+    ) {
+      // The checker's type and the lowered value's can differ (a literal
+      // `undefined`, a narrowed binding): the lowered value decides.
+      answer = {
+        kind: "libCall",
+        fn: "stream.isDyn",
+        args: [lowerer.coerceToExpected(value, DYN), numLit(which, loc)],
+        type: DYN,
+        loc,
+      };
+    } else {
+      lowerer.noLowering(
+        `${what} over a '${lowerer.fmt(value.type)}'`,
+        node,
+        "the predicates answer for the node:stream classes, for untyped values that hold one, and for primitives",
+      );
+    }
+  }
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return expected ? lowerer.coerceToExpected(answer, expected) : answer;
+}
+
 /** `finished(...)` / `pipeline(...)` / `getDefaultHighWaterMark(...)`
  * imported from node:stream (named imports, destructured requires, and
  * namespace-member calls all land here). Null for members this spoke
@@ -3602,6 +3863,7 @@ function lowerStreamModuleCallbackCall(
       bi.member === "text" ||
       bi.member === "json" ||
       bi.member === "buffer" ||
+      bi.member === "bytes" ||
       bi.member === "arrayBuffer"
     ) {
       if (args.length !== 1) {
@@ -3630,8 +3892,31 @@ function lowerStreamModuleCallbackCall(
           "Node rejects the promise with 'stream is not async iterable' — pass a readable stream",
         );
       }
-      const recv: IrExpr = argV;
-      const inner: IrType = bi.member === "text" ? STRING : bi.member === "buffer" ? BYTES : DYN;
+      // An untyped argument unwraps to the native stream it holds; any
+      // other value is refused by name there (Node reads every async
+      // iterable, a web ReadableStream included).
+      const recv: IrExpr =
+        argV.type.kind === "dyn"
+          ? {
+              kind: "libCall",
+              fn: "stream.unboxDyn",
+              args: [
+                argV,
+                strLit(
+                  `stream/consumers.${bi.member} over an untyped value that is not a native stream is not supported yet`,
+                  locOf(args[0]!),
+                ),
+              ],
+              type: { kind: "object", className: "%Duplex" },
+              loc: locOf(args[0]!),
+            }
+          : argV;
+      const inner: IrType =
+        bi.member === "text"
+          ? STRING
+          : bi.member === "buffer" || bi.member === "bytes"
+            ? BYTES
+            : DYN;
       return {
         kind: "libCall",
         fn: `sc.${bi.member}` as IrLibFn,
@@ -3659,6 +3944,11 @@ function lowerStreamModuleCallbackCall(
       call,
       "the objectMode flag must be a compile-time boolean",
     );
+  }
+
+  const predicate = STREAM_PREDICATES.get(bi.member);
+  if (predicate !== undefined) {
+    return lowerStreamPredicate(lowerer, call, `stream.${bi.member}`, predicate, loc);
   }
 
   if (bi.member === "addAbortSignal") {
@@ -3859,7 +4149,7 @@ function pipelineStageFunction(lowerer: Lowerer, node: ts.Expression): StageFunc
   const decl = bodies[0]!;
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return null;
   if (ts.isFunctionDeclaration(decl)) {
-    return bindingNeverReassigned(lowerer, symbol, decl, resolve) ? decl : null;
+    return bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, resolve) ? decl : null;
   }
   if (
     ts.isVariableDeclaration(decl) &&
@@ -6666,6 +6956,89 @@ export function lowerStreamMethodCall(
     }
   };
 
+  // Whether an end() chunk's static type admits null or undefined: the
+  // null and undefined literals, and a union with either. A chunk typed
+  // `any` or `unknown` is not asked here: it keeps the dynamic write.
+  const chunkAdmitsNullish = (node: ts.Expression): boolean => {
+    if (node.kind === ts.SyntaxKind.NullKeyword) return true;
+    const nullish = ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
+    const t = lowerer.typeOf(node);
+    if ((t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+    if ((t.flags & nullish) !== 0) return true;
+    return t.isUnionType() && ts.constituentTypes(t).some((arm) => (arm.flags & nullish) !== 0);
+  };
+  // end(chunk[, encoding][, cb]) for such a chunk. Node evaluates the
+  // receiver and the arguments in order, then looks at the chunk: each is
+  // bound once, and the two endings (with the chunk, through the dynamic
+  // write that takes a string or bytes; without it) read the bound values.
+  const lowerEndOfNullableChunk = (
+    receiver: IrExpr,
+    chunkNode: ts.Expression,
+    encNode: ts.Expression | undefined,
+    cbArg: ts.Expression | undefined,
+  ): IrExpr => {
+    const stmts: IrStmt[] = [];
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    const stream = bind("%endStream", receiver);
+    const chunk = bind("%endChunk", lowerer.lowerExprExpecting(chunkNode, DYN));
+    const encoding =
+      encNode === undefined ? null : bind("%endEncoding", lowerer.lowerExprExpecting(encNode, DYN));
+    let callback: IrExpr | null = null;
+    if (cbArg !== undefined) {
+      const cb = callbackDeclaresParameters(cbArg)
+        ? null
+        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
+      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
+        lowerer.noLowering(
+          "end callbacks with parameters",
+          cbArg,
+          "() => void callbacks are supported",
+        );
+      }
+      callback = bind("%endCallback", cb);
+    }
+    const ending = (withChunk: boolean): IrExpr => {
+      const tail: IrExpr[] = [];
+      let flags = 0;
+      if (withChunk) {
+        flags |= 8;
+        tail.push(chunk);
+        if (encoding !== null) {
+          flags |= 16;
+          tail.push(encoding);
+        }
+      }
+      if (callback !== null) {
+        flags |= 4;
+        tail.push(callback);
+      }
+      return {
+        kind: "libCall",
+        fn: "writable.end",
+        args: [stream, numLit(flags, loc), ...tail],
+        type: receiver.type,
+        loc,
+      };
+    };
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "nullish", value: chunk, type: BOOL, loc },
+        then: ending(false),
+        else_: ending(true),
+        type: receiver.type,
+        loc,
+      },
+      type: receiver.type,
+      loc,
+    };
+  };
   // Chunk classification for push/unshift/write/end. Union-typed chunks
   // over {Buffer, string, null} dispatch by tag at runtime — the
   // `push(more ? next : null)` idiom.
@@ -6887,15 +7260,18 @@ export function lowerStreamMethodCall(
         "the supported forms are (destination) and (destination, { end })",
       );
     }
-    // A Hash, Hmac, Cipheriv or Decipheriv destination pipes into its
-    // Transform, and pipe() answers the value itself (the receiver
-    // evaluates first, as in JS).
-    if (isValueStream(lowerer, args[0]!)) {
+    // A Hash, Hmac, Cipheriv, Decipheriv, Sign or Verify destination pipes
+    // into its native stream, and pipe() answers the value itself (the
+    // receiver evaluates first, as in JS).
+    const writableDst = isWritableValueStream(lowerer, args[0]!);
+    if (writableDst || isValueStream(lowerer, args[0]!)) {
       const receiverValue = streamReceiverExpr(lowerer, access.expression);
       const source = lowerer.declareHiddenLocal("%pipeSource", receiverValue.type);
       const hashValue = lowerer.lowerExpr(args[0]!);
       const hash = lowerer.declareHiddenLocal("%pipeHash", hashValue.type);
       const end = pipeEndOption(lowerer, args[1], loc);
+      const destination: IrExpr = { kind: "varRef", localId: hash.id, type: hashValue.type, loc };
+      const stream = writableDst ? writableStreamOf(destination) : valueStreamOf(destination, true);
       return {
         kind: "seqExpr",
         stmts: [
@@ -6908,13 +7284,10 @@ export function lowerStreamMethodCall(
               fn: "readable.pipe",
               args: [
                 { kind: "varRef", localId: source.id, type: receiverValue.type, loc },
-                valueStreamOf(
-                  { kind: "varRef", localId: hash.id, type: hashValue.type, loc },
-                  true,
-                ),
+                stream,
                 end,
               ],
-              type: { kind: "object", className: "%Transform" },
+              type: stream.type,
               loc,
             },
             loc,
@@ -7222,13 +7595,24 @@ export function lowerStreamMethodCall(
       cbArg = args[2];
     }
     const receiver = streamReceiverExpr(lowerer, access.expression);
+    // end(chunk) where the chunk's TYPE admits null or undefined
+    // (`string | null`, `Buffer | undefined`, the literals): Node writes the
+    // chunk only when it is neither (`if (chunk !== null && chunk !==
+    // undefined) this.write(chunk, encoding)`), so the stream ends with or
+    // without it by the value the call finds.
+    if (chunkNode !== undefined && chunkAdmitsNullish(chunkNode)) {
+      return lowerEndOfNullableChunk(receiver, chunkNode, encNode, cbArg);
+    }
     let flags = 0;
     const tail: IrExpr[] = [];
     if (chunkNode !== undefined) {
       // end(chunk, encoding[, cb]) writes the chunk with the encoding
       // argument as passed (flags 16), through the dyn write
-      const kind = encNode !== undefined ? "dyn" : chunkKind(chunkNode);
-      if (kind === "null" || kind === "union") lowerer.noLowering("end(null)", call);
+      // A `string | Buffer` chunk rides the dynamic write, which takes
+      // either (a union that admits null took the path above).
+      const classified = encNode !== undefined ? "dyn" : chunkKind(chunkNode);
+      const kind = classified === "union" ? "dyn" : classified;
+      if (kind === "null") lowerer.noLowering("end(null)", call);
       flags |= kind === "bytes" ? 1 : kind === "dyn" ? 8 : 2;
       tail.push(
         kind === "bytes"
@@ -7316,6 +7700,120 @@ export function lowerStreamMethodCall(
   }
 
   return null;
+}
+
+/** `stream[Symbol.asyncDispose]()` on a receiver the checker types as a
+ * stream class: Node's Readable.prototype and Writable.prototype define
+ * it (a Duplex inherits Readable's). Null for other element-access calls;
+ * a class that declares the method itself is the caller's earlier case,
+ * and a subclass declaring it below the receiver's class is dispatched in
+ * streamAsyncDisposeExpr. */
+export function lowerStreamAsyncDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncDispose") return null;
+  let classT: IrType | null;
+  try {
+    classT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  } catch {
+    return null;
+  }
+  if (classT?.kind !== "object") return null;
+  const info = lowerer.classes.get(classT.className);
+  if (!streamSidesOf(lowerer, info)) return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("a stream's [Symbol.asyncDispose] with arguments", call);
+  }
+  return streamAsyncDisposeExpr(
+    lowerer,
+    info!,
+    streamReceiverExpr(lowerer, access.expression),
+    locOf(call),
+    call,
+  );
+}
+
+/** The stream subclasses below `info` that declare their own concrete
+ * [Symbol.asyncDispose], most-derived first. */
+function streamAsyncDisposeOverriders(info: ClassInfo): ClassInfo[] {
+  const out: ClassInfo[] = [];
+  const visit = (parent: ClassInfo): void => {
+    for (const child of parent.subclasses) {
+      visit(child);
+      const sig = child.methods.get("sym:asyncDispose");
+      if (sig !== undefined && sig.abstract !== true) out.push(child);
+    }
+  };
+  visit(info);
+  return out;
+}
+
+/** `value[Symbol.asyncDispose]()` for a value typed as a stream class, or
+ * the call a `using` statement makes: the runtime's destroy-and-wait,
+ * unless a stream subclass below the value's static class declares its own
+ * [Symbol.asyncDispose]. Node dispatches the symbol method on the prototype
+ * chain, so a value typed as a base class can hold a subclass whose
+ * override runs instead of the runtime teardown. The runtime cannot answer
+ * this, so the value's class is tested here, the receiver bound once when
+ * any such subclass exists. The call passes no argument, as Node's does:
+ * an override's optional and defaulted parameters take what an omitted
+ * argument gives them (`site` is blamed for one that cannot be omitted). */
+export function streamAsyncDisposeExpr(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: IrExpr,
+  loc: SrcLoc,
+  site: ts.Node,
+): IrExpr {
+  const type: IrType = { kind: "promise", inner: VOID };
+  const runtime = (recv: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "stream.asyncDispose",
+    args: [recv],
+    type,
+    loc,
+  });
+  const overriders = streamAsyncDisposeOverriders(info);
+  if (overriders.length === 0) return runtime(receiver);
+  const slot = lowerer.declareHiddenLocal("%disposeRecv", receiver.type);
+  const recv = (): IrExpr => varRef(slot.id, receiver.type, loc);
+  let answer = runtime(recv());
+  // Least-derived first, so the most-derived class is tested first.
+  for (let i = overriders.length - 1; i >= 0; i--) {
+    const child = overriders[i]!;
+    const sig = child.methods.get("sym:asyncDispose")!;
+    const call = lowerer.accessorCall(
+      child.def.name,
+      "sym:asyncDispose",
+      { kind: "downcast", value: recv(), type: { kind: "object", className: child.def.name }, loc },
+      lowerer.completeArgs([], sig.params, loc, site),
+      sig.ret,
+      loc,
+    );
+    answer = {
+      kind: "ternary",
+      cond: { kind: "instanceOf", value: recv(), className: child.def.name, type: BOOL, loc },
+      then: lowerer.coerceToExpected(call, type),
+      else_: answer,
+      type,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: slot.id, init: receiver, loc }],
+    result: answer,
+    type,
+    loc,
+  };
 }
 
 /* ── the internal-state read surface (_readableState/_writableState) ──── */
@@ -7509,6 +8007,26 @@ export function lowerStreamProperty(
   }
   if (name === "allowHalfOpen" && sides === "rw") {
     return propCall(BOOL);
+  }
+  const getter = STREAM_STATE_GETTERS.get(name);
+  if (getter !== undefined && (name === "writableAborted" ? writableSide : readableSide)) {
+    // The runtime answers by the stream's class: a binding typed Writable
+    // can hold a Duplex, whose prototype has no writableAborted, and the
+    // read is undefined there as in Node. The typed result converts
+    // checked, so that read throws instead of answering a boolean.
+    const read: IrExpr = {
+      kind: "libCall",
+      fn: "stream.stateDyn",
+      args: [streamReceiverExpr(lowerer, expr.expression), numLit(getter, loc)],
+      type: DYN,
+      loc,
+    };
+    if (name === "writableAborted" && sides === "rw") return read;
+    if (name === "readableEncoding") {
+      const type: IrType = unionOf(lowerer, [STRING, { kind: "nullT" }]);
+      return lowerer.maybeNarrow(lowerer.coerceToExpected(read, type), expr);
+    }
+    return lowerer.coerceToExpected(read, BOOL);
   }
   return null;
 }

@@ -42,13 +42,16 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["spawnRes.", "the child_process surface"],
   ["process.on", "process signal/exit listeners"],
   ["process.off", "process signal/exit listeners"],
+  // The flags object lives in a gated runtime unit (scr_process_features.c)
+  // that library archives do not carry. A flag read by name
+  // (process.features.tls) is a constant and links nothing.
+  ["process.features", "process.features as a value (read a flag by name instead)"],
   ["stdin.", "the stdin event surface"],
   ["rl.", "the node:readline surface"],
   ["net.", "the node:net surface"],
   ["http.", "the node:http surface"],
   ["https.", "the node:https surface"],
   ["http2.", "the node:http2 surface"],
-  ["h2.", "the node:http2 surface"],
   ["dgram.", "the node:dgram surface"],
   ["dns.", "the node:dns surface"],
   ["tls.", "the node:tls surface"],
@@ -85,7 +88,6 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["passthrough.", "the node:stream surface"],
   ["stream.", "the node:stream surface"],
   ["als.", "AsyncLocalStorage"],
-  ["urj.", "unhandled-rejection tracking"],
   ["dc.", "the diagnostics_channel surface"],
   ["worker.new", "native worker threads"],
   ["worker.channel", "native worker threads"],

@@ -26,13 +26,17 @@ import { noLoweringDiag } from "../../diagnostics/diagnostic.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerNumberParserValue } from "./lower-builtin-values.js";
 import { CODE_GENERATION_DISALLOWED } from "./code-generation.js";
+import { globalFunctionFenceValue } from "./builtin-function-fences.js";
 
-/** The globals without a lowering, with Node's length for each. */
-const UNLOWERED: ReadonlyMap<string, number> = new Map([
-  ["escape", 1],
-  ["unescape", 1],
-  ["WeakRef", 1],
-  ["AsyncDisposableStack", 0],
+/** The globals without a lowering whose values every source language reads
+ * through this file (the others a JavaScript source reads are answered by
+ * the same builder at the identifier and member reads). Node's length for
+ * each comes from the census of the pinned Node (node-values.ts). */
+const UNLOWERED: ReadonlySet<string> = new Set([
+  "escape",
+  "unescape",
+  "WeakRef",
+  "AsyncDisposableStack",
 ]);
 
 /** Whether `name` is a global without a lowering, whose value throws the
@@ -50,7 +54,7 @@ const GLOBAL_VALUE_NAMES: ReadonlySet<string> = new Set([
   "isFinite",
   "Symbol",
   "eval",
-  ...UNLOWERED.keys(),
+  ...UNLOWERED,
 ]);
 
 /** Whether a JavaScript source reads `name` as one of the function values
@@ -80,10 +84,8 @@ export function globalFunctionValue(
       return symbolValue(lowerer, loc);
     case "eval":
       return evalValue(lowerer, loc);
-    default: {
-      const length = UNLOWERED.get(name);
-      return length === undefined ? null : unloweredValue(lowerer, name, length, loc, reportFences);
-    }
+    default:
+      return UNLOWERED.has(name) ? unloweredValue(lowerer, name, loc, reportFences) : null;
   }
 }
 
@@ -99,7 +101,7 @@ function oneArgumentValue(
   length?: number,
 ): IrExpr {
   const fnName = `%builtin.global.${name}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === fnName))
+  if (lowerer.liftedFnNamed(fnName) === undefined)
     lowerer.liftedFns.push({
       name: fnName,
       params: [{ localId: "value.0", name: "value", type: DYN }],
@@ -212,37 +214,10 @@ function evalValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
 function unloweredValue(
   lowerer: Lowerer,
   name: string,
-  length: number,
   loc: SrcLoc,
   reportFences: boolean,
 ): IrExpr {
-  const fnName = `%builtin.fence.global.${name}`;
   const diag = noLoweringDiag(name, loc);
-  if (!lowerer.liftedFns.some((fn) => fn.name === fnName)) {
-    lowerer.liftedFns.push({
-      name: fnName,
-      params: [],
-      locals: [],
-      returnType: DYN,
-      body: [
-        { kind: "runtimeFence", code: diag.code, message: `${diag.message} [${diag.code}]`, loc },
-      ],
-      loc,
-    });
-  }
   if (reportFences) lowerer.runtimeFences.push(diag);
-  return {
-    kind: "dynFrom",
-    value: {
-      kind: "closure",
-      fnName,
-      captures: [],
-      type: { kind: "func", params: [], ret: DYN },
-      loc,
-    },
-    fnName: name,
-    fnLength: length,
-    type: DYN,
-    loc,
-  };
+  return globalFunctionFenceValue(lowerer, name, loc, diag);
 }

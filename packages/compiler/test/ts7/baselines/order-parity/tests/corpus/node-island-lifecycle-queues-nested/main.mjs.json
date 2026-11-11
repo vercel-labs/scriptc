@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-queues-nested/main.mjs"
+ ],
+ "diags": []
+}

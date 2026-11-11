@@ -1,3 +1,4 @@
+import { refuseCallbackThis } from "../callback-arg.js";
 import { keyedHelperName } from "../stable-names.js";
 import {
   BYTES_U8,
@@ -171,23 +172,6 @@ export function lowerBuiltinOptionalDefault(
   return lowerer.coerceInto(node, value, expected);
 }
 
-/** Strips the type-only wrappers the require pattern rides in typed
- * code (`require("node:os") as typeof import("node:os")` — the
- * fallback declarations answer `unknown`, so the cast IS the idiom),
- * plus parens, legacy assertions, and non-null suffixes. */
-export function stripTypeCasts(e: ts.Expression): ts.Expression {
-  let cur = e;
-  while (
-    ts.isParenthesizedExpression(cur) ||
-    ts.isAsExpression(cur) ||
-    ts.isTypeAssertion(cur) ||
-    ts.isNonNullExpression(cur)
-  ) {
-    cur = cur.expression;
-  }
-  return cur;
-}
-
 /** The literal `{ flag: true/false }` options shape: every property a
  * plain assignment with an identifier name from `allowed` and a boolean
  * LITERAL value (nothing to evaluate, so folding it away preserves JS
@@ -281,6 +265,7 @@ export function errorFirstCallback(
   acceptValue: (value: IrType) => boolean,
   values: string,
 ): IrExpr {
+  refuseCallbackThis(lowerer, node, `a ${api} callback`, "an object of its own");
   // A literal here is called only by the callback adapter, which passes
   // null as the error whenever it passes a result (lowerUndefinedResultBody).
   // A named function expression can also call itself, and a function
@@ -325,7 +310,18 @@ export function lowerBuiltinByteInput(
   module: "crypto" | "zlib",
 ): IrExpr {
   const value = lowerer.lowerExpr(node);
-  if (value.type.kind === "bytes" && value.type.elem === "u8") return value;
+  if (value.type.kind === "bytes") {
+    if (value.type.elem === "u8") return value;
+    // Another view's bytes: Node reads the view's memory, not its
+    // elements, so a no-copy u8 view of the same range is the input.
+    return {
+      kind: "libCall",
+      fn: "bytes.bufferSource",
+      args: [lowerer.coerceInto(node, value, DYN)],
+      type: BYTES_U8,
+      loc,
+    };
+  }
   if (value.type.kind === "string") {
     return {
       kind: "libCall",
@@ -338,6 +334,6 @@ export function lowerBuiltinByteInput(
   lowerer.noLowering(
     `${module} byte input of '${lowerer.fmt(value.type)}' values`,
     node,
-    "string and Buffer/Uint8Array values are supported",
+    "strings, Buffers, TypedArrays and DataViews are supported",
   );
 }

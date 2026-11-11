@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load, JSON_SCHEMA } from "js-yaml";
-import ts from "typescript";
+import ts from "typescript5";
 
 export const directory = fileURLToPath(new URL(".", import.meta.url));
 export const vendorRoot = join(directory, "vendor");
@@ -611,14 +611,29 @@ export function matchesParseNegative(outcome, source, variant = "strict") {
   return parseDiagnostics(source, variant).some(matches) || earlyErrorDiagnostics(source, variant).some(matches);
 }
 
+/** The outcome histogram, the exclusion reasons, and the same histogram
+ * split by the island-rule marker (island-marker.ts). `counts` is the
+ * denominator of record and includes marked variants; `islandRules` lets a
+ * reader see both views: `marked` and `unmarked` add up to `counts`, and
+ * `byRule` names the rule and reason of every marked variant. */
 export function summarize(results) {
   const counts = {};
   const exclusions = {};
+  const marked = {};
+  const unmarked = {};
+  const byRule = {};
   for (const result of results) {
     counts[result.status] = (counts[result.status] ?? 0) + 1;
     if (result.status === "excluded") exclusions[result.reason] = (exclusions[result.reason] ?? 0) + 1;
+    const marker = result.islandRule ?? null;
+    const side = marker ? marked : unmarked;
+    side[result.status] = (side[result.status] ?? 0) + 1;
+    if (marker) {
+      const rule = (byRule[`${marker.rule} ${marker.reason}`] ??= {});
+      rule[result.status] = (rule[result.status] ?? 0) + 1;
+    }
   }
-  return { counts, exclusions };
+  return { counts, exclusions, islandRules: { marked, unmarked, byRule } };
 }
 
 export function compileFailureStatus(diagnostics) {

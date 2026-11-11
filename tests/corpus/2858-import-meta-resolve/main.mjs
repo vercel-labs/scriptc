@@ -9,7 +9,7 @@ console.log("missing", import.meta.resolve("./missing.mjs"));
 console.log("builtins", import.meta.resolve("fs"), import.meta.resolve("node:path"));
 console.log("url", import.meta.resolve("https://example.com/a/../b"));
 console.log("data", import.meta.resolve("data:text/javascript,export default 1"));
-console.log("package", import.meta.resolve("typescript").endsWith("/typescript/lib/typescript.js"));
+console.log("package", import.meta.resolve("typescript").endsWith("/typescript/lib/version.cjs"));
 const require = createRequire(import.meta.url);
 console.log("createRequire", require.resolve("./module with space.mjs"));
 console.log("createRequire core paths", require.resolve.paths("fs"));

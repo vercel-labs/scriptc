@@ -102,16 +102,27 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       // The class's references from code that can run before its
       // statement check its initialization flag: Node's ReferenceError
       // only when the class is actually reached early.
+      // A class whose collection was deferred (a field type that only a
+      // reference's retry admits) has no record yet. This check is such a
+      // reference: the class registers now, or reports its own diagnostics
+      // and is refused as a class, not as a cycle.
+      const deferred = lowerer.deferredDiags.has(binding.symbol);
+      if (deferred) lowerer.flushDeferred(binding.symbol);
       const info = lowerer.classBySymbol.get(binding.symbol);
       const heritage = earlyHeritageReference(lowerer, binding);
       if (info !== undefined && !info.generic && heritage === null)
         registerClassInitFlag(lowerer, binding, info, true);
-      else refuse(heritage ?? binding.reference, `the class ${where}`);
+      else if (!deferred || info !== undefined)
+        refuse(heritage ?? binding.reference, `the class ${where}`);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
     if (global === undefined) {
-      refuse(binding.reference, `the binding ${where}, and it has no module storage to check`);
+      // A binding the lowering resolves without storage (a promisified
+      // library function: its calls lower directly). When every reference
+      // to it is a call, each call checks a flag of its own first.
+      if (binding.kind !== "lexical" || !registerCalledBindingFlag(lowerer, binding))
+        refuse(binding.reference, `the binding ${where}, and it has no module storage to check`);
       continue;
     }
     if (binding.folded !== undefined) {
@@ -161,6 +172,67 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
     }
     lowerer.cycleInitFlags.get(id)!.uninitialized = true;
   }
+}
+
+/** A cycle binding with no module storage whose every reference is the
+ * callee of a call (`const read = promisify(fs.readFile)` and `read(path)`
+ * in the module's functions): the flag is set when the declaring statement
+ * completed, and the IR of each call checks it before anything else of the
+ * call runs, as Node reads the callee before the arguments. False when a
+ * reference is in any other position: its IR has no one form to check. */
+function registerCalledBindingFlag(lowerer: Lowerer, binding: CycleEarlyBinding): boolean {
+  const stmt = declaringStatement(binding.name);
+  if (stmt === null) return false;
+  const declaration = binding.name.parent;
+  const references: ClassReference[] = [];
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    const names = classLocalNames(lowerer, sf, binding.symbol, binding.name.text, true);
+    if (names.size === 0) continue;
+    const identifiers = fileIdentifiers(lowerer, sf);
+    for (const text of names) {
+      for (const { node } of identifiers.get(text) ?? []) {
+        if (within(node, declaration) || !resolvesTo(lowerer, node, binding.symbol, true)) continue;
+        const parent = node.parent;
+        // Import and export lists name the binding without reading it.
+        if (
+          parent !== undefined &&
+          (ts.isImportSpecifier(parent) ||
+            ts.isExportSpecifier(parent) ||
+            ts.isImportClause(parent))
+        )
+          continue;
+        if (parent === undefined || !ts.isCallExpression(parent) || parent.expression !== node)
+          return false;
+        references.push({ loc: locOf(parent), name: node.text });
+      }
+    }
+  }
+  const index = lowerer.calledBindingInitFlags.length;
+  const flagId = `%g.called.${index}.${binding.name.text}%initialized`;
+  const global: IrGlobal = { id: flagId, name: "%initialized", type: BOOL, mutable: true };
+  lowerer.globalsList.push(global);
+  const flag: CycleInitFlag = {
+    global,
+    flagId,
+    name: binding.name.text,
+    module: binding.module,
+    settled: binding.settled,
+    cycle: true,
+    references,
+  };
+  lowerer.calledBindingInitFlags.push(flag);
+  const list = lowerer.cycleInitDeclarations.get(stmt) ?? [];
+  list.push(flag);
+  lowerer.cycleInitDeclarations.set(stmt, list);
+  return true;
+}
+
+/** The call of a storage-less binding that `loc`'s IR is, or undefined. */
+function calledReference(flag: CycleInitFlag, loc: SrcLoc): ClassReference | undefined {
+  return (flag.references ?? []).find(
+    (r) => r.loc.file === loc.file && r.loc.start === loc.start && r.loc.end === loc.end,
+  );
 }
 
 /** A class that its module's early-running code can reach before the class
@@ -290,7 +362,7 @@ function classLocalNames(
   aliases: boolean,
 ): Set<string> {
   const names = new Set<string>();
-  if (sf.text.includes(declared)) names.add(declared);
+  if (ts.sourceTextIncludes(sf, declared)) names.add(declared);
   if (!aliases) return names;
   for (const statement of sf.statements.nodes) {
     if (!ts.isImportDeclaration(statement)) continue;
@@ -487,7 +559,12 @@ export function withCycleInitFlags(
  * `K.x = v`, but after the left operand of `x instanceof K`. The
  * declaration's own store is never checked. */
 export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void {
-  if (lowerer.cycleInitFlags.size === 0 && lowerer.classInitFlags.size === 0) return;
+  if (
+    lowerer.cycleInitFlags.size === 0 &&
+    lowerer.classInitFlags.size === 0 &&
+    lowerer.calledBindingInitFlags.length === 0
+  )
+    return;
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
   for (const fn of mod.functions) rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
@@ -554,7 +631,9 @@ function rewriteFunction(
     for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
       statics.set(id, [...(statics.get(id) ?? []), flag]);
   }
-  if (active.size === 0 && classes.size === 0) return;
+  // Bindings without storage, by the calls that name them.
+  const called = lowerer.calledBindingInitFlags.filter(runsEarly);
+  if (active.size === 0 && classes.size === 0 && called.length === 0) return;
   const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
     active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
   const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
@@ -593,7 +672,7 @@ function rewriteFunction(
     const name =
       flag.className !== undefined
         ? (coveredReference(flag, loc)?.name ?? flag.name)
-        : (flag.localNames?.get(loc.file) ?? flag.name);
+        : (calledReference(flag, loc)?.name ?? flag.localNames?.get(loc.file) ?? flag.name);
     const expr: IrExpr = {
       kind: "intrinsic",
       name: "module.tdzCheck",
@@ -652,6 +731,18 @@ function rewriteFunction(
           type: e.type,
           loc: e.loc,
         };
+      }
+      // The IR of a call of a storage-less binding: the callee is read
+      // before the arguments, so the check comes first.
+      for (const flag of called) {
+        if (calledReference(flag, e.loc) !== undefined)
+          return {
+            kind: "seqExpr",
+            stmts: [check(flag, e.loc)],
+            result: e,
+            type: e.type,
+            loc: e.loc,
+          };
       }
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = flagOf(e.localId, e.loc);
@@ -714,7 +805,7 @@ function rewriteFunction(
       stmt: (inner) => !(inner.kind === "assign" && inner.localId === flag.flagId),
     });
   fn.body = fn.body.map((s) => {
-    if (active.size === 0 && classes.size === 0) return s;
+    if (active.size === 0 && classes.size === 0 && called.length === 0) return s;
     // A class statement's own static initialization sees the inner
     // binding: its flag stops applying before that statement.
     for (const [className, flag] of [...classes]) {

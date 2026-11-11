@@ -305,12 +305,102 @@ static size_t insp_entry_len(const ScrStr *s) {
 
 /* ── number rendering ────────────────────────────────────────────────── */
 
-/* formatNumber: JS ToString EXCEPT -0 renders as '-0'. */
+/* ctx.numericSeparator: digits group in threes (formatNumber). Set for the
+ * length of an inspect render, by the static layout wrapper the lowered
+ * calls run in or by the runtime reader; the setters answer the previous
+ * value so a wrapper can restore it. */
+static SCR_TL bool g_numeric_separator;
+
+bool scr_insp_numeric_separator(bool enabled) {
+  bool previous = g_numeric_separator;
+  g_numeric_separator = enabled;
+  return previous;
+}
+
+/* addNumericSeparator: three-digit groups from the right, the leading
+ * minus outside them; fewer than four digits stay as they are. */
+static void insp_group_int_into(InspBuf *b, const char *digits, size_t len) {
+  size_t lead = len % 3 ? len % 3 : 3;
+  for (size_t i = 0; i < len; i++) {
+    if (i >= lead && (i - lead) % 3 == 0) ib_char(b, '_');
+    ib_char(b, digits[i]);
+  }
+}
+
+/* addNumericSeparatorEnd: three-digit groups from the left; the last
+ * group may be shorter. */
+static void insp_group_frac_into(InspBuf *b, const char *digits, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (i > 0 && i % 3 == 0) ib_char(b, '_');
+    ib_char(b, digits[i]);
+  }
+}
+
+/* A built-in numeric property (`[length]: 12_345`): the digits group in
+ * threes under the render's numericSeparator, as formatNumber gives them
+ * for values the walk prints; a value with fewer than four digits is the
+ * same either way. Writes `key: value` into buf and answers its length.
+ * The numbers that are not property values -- a class name's `(N)`, the
+ * `<N empty items>`, `<ref *N>` and `... N more ...` counts -- stay
+ * ungrouped, as Node's template strings render them. */
+static int insp_fmt_num_prop(char *buf, size_t size, const char *key, double value) {
+  if (!g_numeric_separator) return snprintf(buf, size, "%s: %.0f", key, value);
+  char digits[32];
+  int dn = snprintf(digits, sizeof digits, "%.0f", value);
+  if (dn < 4) return snprintf(buf, size, "%s: %s", key, digits);
+  InspBuf out = {0};
+  insp_group_int_into(&out, digits, (size_t)dn);
+  ScrStr *grouped = ib_take(&out);
+  int n = snprintf(buf, size, "%s: %.*s", key, (int)grouped->len, grouped->data);
+  scr_str_release(grouped);
+  return n;
+}
+
+/* formatNumber: JS ToString EXCEPT -0 renders as '-0'. Under the render's
+ * numericSeparator, finite numbers whose text has no exponent group their
+ * digits: the integer part from the right and the fractional part from
+ * the left (Infinity, NaN and the exponent forms stay as ToString gives
+ * them). */
 ScrStr *scr_insp_f64(double x) {
   if (x == 0.0 && signbit(x)) return scr_str_new("-0", 2);
   char buf[40];
   size_t n = scr_f64_to_str(x, buf);
-  return scr_str_new(buf, n);
+  if (!g_numeric_separator || !isfinite(x) || memchr(buf, 'e', n) != NULL)
+    return scr_str_new(buf, n);
+  size_t start = buf[0] == '-' ? 1 : 0;
+  size_t dot = n;
+  if (trunc(x) != x) {
+    for (size_t i = start; i < n; i++) {
+      if (buf[i] == '.') {
+        dot = i;
+        break;
+      }
+    }
+  }
+  InspBuf out = {0};
+  ib_bytes(&out, buf, start);
+  insp_group_int_into(&out, buf + start, dot - start);
+  if (dot < n) {
+    ib_char(&out, '.');
+    insp_group_frac_into(&out, buf + dot + 1, n - dot - 1);
+  }
+  return ib_take(&out);
+}
+
+/* formatBigInt: the decimal digits group like formatNumber's integers.
+ * The renders that are not inspect's (assert messages) keep the plain
+ * scr_bigint_inspect. */
+ScrStr *scr_insp_bigint(ScrBigInt *v) {
+  ScrStr *text = scr_bigint_inspect(v);
+  size_t digits = text->len ? text->len - 1 : 0; /* the trailing 'n' */
+  if (!g_numeric_separator || digits == 0) return text;
+  size_t start = text->data[0] == '-' ? 1 : 0;
+  InspBuf out = {0};
+  ib_bytes(&out, text->data, start);
+  insp_group_int_into(&out, text->data + start, digits - start);
+  ib_char(&out, 'n');
+  scr_str_release(text);
+  return ib_take(&out);
 }
 
 /* ── string quoting (strEscape) ──────────────────────────────────────── */
@@ -572,6 +662,20 @@ ScrStr *scr_insp_circular(double id) {
   char buf[32];
   int n = snprintf(buf, sizeof buf, "[Circular *%.0f]", id);
   return insp_styled_lit(buf, (size_t)n, INSP_SPECIAL);
+}
+
+/* The native value behind a checked view the walk is about to render (a
+ * typed array or record held by reference): the key its container entry
+ * uses, which is the key the compiled inspect helpers push for the same
+ * value. Consumed by the next container. */
+static SCR_TL const void *g_seen_alias;
+
+/* The seen-stack key of an untyped array or object: itself, or the native
+ * value it is a view of. */
+static const void *insp_container_key(const ScrDyn *d) {
+  const void *key = g_seen_alias ? g_seen_alias : d;
+  g_seen_alias = NULL;
+  return key;
 }
 
 /* Pops the value's seen entry after its frame closed. scr_insp_end already
@@ -1241,7 +1345,7 @@ static ScrStr *scr_insp_array_buffer(const ScrBytes *h, const char *cls, double 
   }
   ib_char(&contents, '>');
   char byte_length[48];
-  int bn = snprintf(byte_length, sizeof byte_length, "[byteLength]: %zu", len);
+  int bn = insp_fmt_num_prop(byte_length, sizeof byte_length, "[byteLength]", (double)len);
   scr_insp_begin(recurse + 1);
   ScrStr *entry = ib_take(&contents);
   scr_insp_entry(entry, false);
@@ -1272,11 +1376,11 @@ static ScrStr *insp_data_view_body(const ScrBytes *b, double recurse, double dep
   const ScrBytes *owner = b->backing ? b->backing : b;
   char line[64];
   scr_insp_begin(recurse + 1);
-  int n = snprintf(line, sizeof line, "[byteLength]: %.0f", scr_bytes_byte_len(b));
+  int n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", scr_bytes_byte_len(b));
   ScrStr *entry = scr_str_new(line, (size_t)n);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
-  n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+  n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
   entry = scr_str_new(line, (size_t)n);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
@@ -2157,7 +2261,7 @@ static ScrStr *scr_insp_generator(const ScrDyn *d) {
   const char *tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
   if (tag[0] == '!') {
     static const char message[] = "util.inspect of this iterator object is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
   InspBuf out = {0};
@@ -2597,7 +2701,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
  * n suffix (no color; the caller styles it). */
 static ScrStr *insp_bytes_bigint(const ScrBytes *b, size_t i) {
   ScrDyn *element = scr_bytes_get_bigint(b, (double)i);
-  ScrStr *text = scr_bigint_inspect(element->v.bigint);
+  ScrStr *text = scr_insp_bigint(element->v.bigint);
   scr_dyn_release(element);
   return text;
 }
@@ -2666,19 +2770,19 @@ static ScrStr *insp_typed_array_body(ScrBytes *b, double recurse, double depth,
     /* Node's extraKeys for a typed array, after the elements. */
     char line[64];
     size_t elem = scr_bytes_elem_size(b->elem);
-    int n = snprintf(line, sizeof line, "[BYTES_PER_ELEMENT]: %zu", elem);
+    int n = insp_fmt_num_prop(line, sizeof line, "[BYTES_PER_ELEMENT]", (double)elem);
     ScrStr *s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[length]: %zu", b->len);
+    n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)b->len);
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[byteLength]: %zu", b->len * elem);
+    n = insp_fmt_num_prop(line, sizeof line, "[byteLength]", (double)(b->len * elem));
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
-    n = snprintf(line, sizeof line, "[byteOffset]: %.0f", scr_bytes_byte_offset(b));
+    n = insp_fmt_num_prop(line, sizeof line, "[byteOffset]", scr_bytes_byte_offset(b));
     s = scr_str_new(line, (size_t)n);
     scr_insp_entry(s, false);
     scr_str_release(s);
@@ -2765,6 +2869,7 @@ typedef struct {
   bool custom_inspect;
   bool sorted;
   bool no_break;
+  bool numeric_separator;
   int getters;
   int depth_kind;
   double depth_number;
@@ -2813,6 +2918,7 @@ double scr_insp_custom_call_begin(void) {
   sv->custom_inspect = g_custom_inspect;
   sv->sorted = g_sorted;
   sv->no_break = g_no_break;
+  sv->numeric_separator = g_numeric_separator;
   sv->getters = g_getters;
   sv->depth_kind = g_depth_kind;
   sv->depth_number = g_depth_number;
@@ -2825,6 +2931,7 @@ double scr_insp_custom_call_begin(void) {
   g_show_hidden = false;
   g_custom_inspect = true;
   g_no_break = false;
+  g_numeric_separator = false;
   g_getters = 0;
   g_depth_kind = 1;
   g_depth_number = 0;
@@ -2844,6 +2951,7 @@ static InspCallSaved *insp_call_options_restore(size_t depth) {
   g_show_hidden = sv->show_hidden;
   g_custom_inspect = sv->custom_inspect;
   g_no_break = sv->no_break;
+  g_numeric_separator = sv->numeric_separator;
   g_getters = sv->getters;
   g_depth_kind = sv->depth_kind;
   g_depth_number = sv->depth_number;
@@ -3024,7 +3132,7 @@ static ScrDyn *insp_user_options(double depth) {
     scr_str_release(set);
     insp_opt_set(options, "getters", getters);
   }
-  insp_opt_set(options, "numericSeparator", scr_dyn_new_bool(false));
+  insp_opt_set(options, "numericSeparator", scr_dyn_new_bool(g_numeric_separator));
   if (g_user_options && g_user_options->kind == SCR_DYN_OBJ) {
     for (size_t i = 0; i < scr_dyn_obj_count(g_user_options); i++) {
       ScrDynProp ent = scr_dyn_obj_prop_at(g_user_options, i);
@@ -3250,12 +3358,16 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
       name = own_name->v.str->data;
       name_len = own_name->v.str->len;
     }
+    /* The tag names the function's call kind as Node does: a generator
+     * is [GeneratorFunction: name], an async function [AsyncFunction: name]. */
+    static const char *const kinds[] = {"[Function", "[GeneratorFunction", "[AsyncFunction", "[AsyncGeneratorFunction"};
+    ib_cstr(&out, kinds[owner->function_kind & SCR_CLOSURE_KIND_CALL_MASK]);
     if (name_len) {
-      ib_cstr(&out, "[Function: ");
+      ib_cstr(&out, ": ");
       ib_bytes(&out, name, name_len);
       ib_char(&out, ']');
     } else {
-      ib_cstr(&out, "[Function (anonymous)]");
+      ib_cstr(&out, " (anonymous)]");
     }
   }
   ScrStr *tag = ib_take(&out);
@@ -3264,7 +3376,7 @@ static ScrStr *scr_insp_dyn_func(ScrDyn *d, double recurse, double depth) {
      * does not hold them (the reflection fence's stance). */
     scr_str_release(tag);
     static const char message[] = "util.inspect of a class with static fields through unknown is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
   size_t shown = 0;
@@ -3388,6 +3500,21 @@ static ScrStr *scr_insp_search_params(ScrSearchParams *sp, double recurse, doubl
   return ib_take(&indented);
 }
 
+/* Whether the program gave runtime handle `d` properties of its own (the
+ * handle-property tables, linked by programs that add any): a string-keyed
+ * or symbol-keyed entry util.inspect would list after the value. */
+static bool insp_handle_has_own(const ScrDyn *d) {
+#ifdef SCR_JS_OBJECT_MODEL
+  const ScrDyn *table = scr_dyn_handle_props_hooks ? scr_dyn_handle_props_hooks->table(d) : NULL;
+  if (table == NULL) return false;
+  return scr_dyn_obj_count(table) > 0 || table->symbol_properties != NULL;
+#else
+  /* Only the JavaScript object model build gives a handle such a table. */
+  (void)d;
+  return false;
+#endif
+}
+
 ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
   if (d->kind == SCR_DYN_PROXY) return scr_insp_dyn(d->v.proxy.target, recurse, depth);
   if ((d->kind == SCR_DYN_TYPED_REF ? g_ncustom_classes > 0 : scr_dyn_inspect_custom_symbol() != NULL) &&
@@ -3411,7 +3538,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_BOOL:
       return d->v.b ? insp_styled_lit("true", 4, INSP_BOOLEAN) : insp_styled_lit("false", 5, INSP_BOOLEAN);
     case SCR_DYN_BIGINT:
-      return insp_styled(scr_bigint_inspect(d->v.bigint), INSP_BIGINT);
+      return insp_styled(scr_insp_bigint(d->v.bigint), INSP_BIGINT);
     case SCR_DYN_SYMBOL:
       return insp_styled(d->v.symbol.render(d->v.symbol.value), INSP_SYMBOL);
     case SCR_DYN_NUM:
@@ -3419,6 +3546,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
     case SCR_DYN_STR:
       return scr_insp_str(d->v.str);
     case SCR_DYN_ARR: {
+      /* An array already on the traversal stack (it holds itself, directly
+       * or through other values) is Node's [Circular *N], decided before
+       * the empty and depth answers. */
+      const void *self = insp_container_key(d);
+      double circular = scr_insp_circ_check(self);
+      if (circular > 0) return scr_insp_circular(circular);
       size_t len = d->v.arr.len;
       /* Named and noncanonical numeric properties follow the elements as
        * `key: value` entries (Node's array extras); under showHidden the
@@ -3458,6 +3591,8 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ib_char(&eb, ']');
         return insp_styled(ib_take(&eb), INSP_SPECIAL);
       }
+      size_t seen_before = g_nseen;
+      g_pending_seen = self;
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength counts output entries; a run of holes is
        * one `<n empty items>` entry (formatSpecialArray). */
@@ -3497,7 +3632,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
          * grouping reads value[k] for every output position k, this one
          * included. */
         char line[48];
-        int n = snprintf(line, sizeof line, "[length]: %zu", len);
+        int n = insp_fmt_num_prop(line, sizeof line, "[length]", (double)len);
         ScrStr *s = scr_str_new(line, (size_t)n);
         scr_insp_entry(s, entries < len && (!presence || presence[entries]) &&
                               d->v.arr.items[entries]->kind == SCR_DYN_NUM);
@@ -3572,6 +3707,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ScrStr *b0 = ib_take(&ob);
       ScrStr *b1 = scr_str_new("]", 1);
       ScrStr *out = insp_end_tail(base, b0, b1, recurse + 1, true, last_out, sort_tail);
+      if (g_nseen > seen_before) g_nseen = seen_before;
       scr_str_release(base);
       scr_str_release(b0);
       scr_str_release(b1);
@@ -3589,7 +3725,15 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * with "[Object: null prototype]" (formatValue's constructor-less
        * base), the empty form included, and the beyond-depth answer IS
        * the bare marker (where a plain object says [Object]). */
-      return scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      const void *self = insp_container_key(d);
+      double circular = scr_insp_circ_check(self);
+      if (circular > 0) return scr_insp_circular(circular);
+      size_t seen_before = g_nseen;
+      g_pending_seen = self;
+      ScrStr *out = scr_insp_obj(d, recurse, depth, scr_dyn_class_name(d));
+      g_pending_seen = NULL;
+      if (g_nseen > seen_before) g_nseen = seen_before;
+      return out;
     }
     case SCR_DYN_FUNC:
       return scr_insp_dyn_func(d, recurse, depth);
@@ -3604,23 +3748,39 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER) {
         return scr_insp_array_buffer(d->v.handle.ptr, scr_dyn_handle_cls(d), recurse, depth);
       }
-      if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP)
-        return scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
+      if (d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP) {
+        /* The native collection is the key, as for the compiled helpers. */
+        double circular = scr_insp_circ_check(d->v.handle.ptr);
+        if (circular > 0) return scr_insp_circular(circular);
+        size_t seen_before = g_nseen;
+        g_pending_seen = d->v.handle.ptr;
+        ScrStr *out = scr_insp_dyn_collection(d, recurse, depth, d->v.handle.tag == SCR_DYNH_MAP);
+        g_pending_seen = NULL;
+        if (g_nseen > seen_before) g_nseen = seen_before;
+        return out;
+      }
       if (d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET)
         return scr_insp_weak_collection(d->v.handle.tag == SCR_DYNH_WEAK_MAP ? "WeakMap" : "WeakSet",
                                         recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_DATE)
         return insp_styled(scr_insp_date(scr_dyn_native_date_value(d)), INSP_DATE);
+      /* A RegExp prints its pattern and flags at any depth. showHidden adds
+       * `[lastIndex]`, and a RegExp the program gave properties of its own
+       * prints them after the pattern (`/a/ { extra: 1 }`): neither has a
+       * rendering here, and both keep the refusal below. */
+      if (d->v.handle.tag == SCR_DYNH_REGEXP && !g_show_hidden && !insp_handle_has_own(d))
+        return scr_insp_regex(d->v.handle.ptr);
       if (d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS)
         return scr_insp_search_params(d->v.handle.ptr, recurse, depth);
       if (d->v.handle.tag == SCR_DYNH_ITERATOR) {
         ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
         if (iterator) return iterator;
       }
-#ifdef SCR_NODE_ISLANDS
-      /* An island object prints as Node's util.inspect prints it. */
-      if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
-#endif
+      /* An island object prints as Node's util.inspect prints it; only a
+       * program that links the island units, which install the table, can
+       * hold one. */
+      if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND)
+        return scr_ni_dyn_ops->inspect(d, recurse, depth);
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_custom_only && !g_custom_inspect) {
         if (recurse > depth) return insp_bracketed_class(ops->cls);
@@ -3628,7 +3788,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ib_cstr(&out, "util.inspect of a ");
         ib_cstr(&out, ops->cls);
         ib_cstr(&out, " with customInspect: false is not supported yet");
-        scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+        { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
         return scr_str_new("", 0);
       }
       if (ops->inspect_text)
@@ -3686,7 +3846,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       ib_cstr(&out, "util.inspect of a dynamic ");
       ib_cstr(&out, scr_dyn_handle_cls(d));
       ib_cstr(&out, " is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+      { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return scr_str_new("", 0);
     }
 
@@ -3804,7 +3964,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         scr_str_release(stack);
         scr_error_release(owner);
       } else {
+        g_seen_alias = instance;
         out = scr_insp_dyn(materialized, recurse, depth);
+        g_seen_alias = NULL;
       }
       scr_dyn_release(materialized);
       return out;
@@ -3816,7 +3978,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * handle stance). */
       InspBuf out = {0};
       ib_cstr(&out, "util.inspect of a promise value is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, ib_take(&out));
+      { ScrStr *refused = ib_take(&out); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return scr_str_new("", 0);
     }
     case SCR_DYN_BYTES: {
@@ -3899,13 +4061,15 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->compact = 3;
   o->sorted = false;
   o->max_array_length = 100;
+  o->numeric_separator = false;
   o->max_string_length = 10000;
   o->getters = 0;
   o->user_options = NULL;
 }
 
 /* inspect(value, options) at the given depth, compact and colors, with
- * the options' breakLength, sorted and maxStringLength; the previous
+ * the options' breakLength, sorted, maxStringLength and numericSeparator;
+ * the previous
  * layout returns afterwards. +1, or NULL with the exception pending. */
 static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, double depth,
                                 double compact, bool colors) {
@@ -3913,6 +4077,7 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   double saved_max_array_length = g_max_array_length;
   double saved_max_string_length = g_max_string_length;
   bool sorted = g_sorted, saved_colors = g_colors, saved_custom = g_custom_inspect;
+  bool saved_separator = g_numeric_separator;
   bool saved_hidden = g_show_hidden;
   const char *saved_hidden_surface = g_hidden_surface;
   bool saved_hidden_spec = g_hidden_spec;
@@ -3930,8 +4095,10 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
   g_getters = o->getters;
   g_user_options = o->user_options;
   g_max_string_length = o->max_string_length;
+  g_numeric_separator = o->numeric_separator;
   ScrStr *text = scr_insp_dyn(value, 0, depth);
   g_max_string_length = saved_max_string_length;
+  g_numeric_separator = saved_separator;
   g_getters = saved_getters;
   g_colors = saved_colors;
   g_custom_inspect = saved_custom;
@@ -3955,24 +4122,45 @@ static ScrStr *insp_fmt_inspect(ScrDyn *value, const ScrInspFormatOptions *o, do
  * class instance whose class defines toString as -2: its methods are
  * compiled for the class's own calls, which this runtime cannot make. */
 static int insp_fmt_custom_to_string(const ScrDyn *value) {
+  ScrDyn *view = NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrStr *to_string = scr_str_new("toString", 8);
     bool has = scr_dyn_typed_ref_class_has(value, to_string);
     scr_str_release(to_string);
-    return has ? -2 : 0;
+    if (has) return -2;
+    /* A record that typed code built can hold a toString function of its
+     * own, and answers from the object it shows untyped code. A class
+     * instance is left alone: its view is not asked for here, since
+     * building it can throw (fields with no checked form) where the
+     * instance's own inspector would have answered. */
+    if (!value->v.typed_ref.record) return 0;
+    view = scr_dyn_typed_ref_materialize(value);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return 0;
+    }
+    value = view;
   }
+  int custom = 0;
   for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) return -1;
+    if (current->symbol_properties) {
+      custom = -1;
+      break;
+    }
     const ScrDyn *member = scr_dyn_obj_get(current, "toString", 8);
-    if (member) return member->kind == SCR_DYN_FUNC;
+    if (member) {
+      custom = member->kind == SCR_DYN_FUNC;
+      break;
+    }
   }
-  return 0;
+  scr_dyn_release(view);
+  return custom;
 }
 
 static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
   if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
-  if (value->kind == SCR_DYN_BIGINT) return scr_bigint_inspect(value->v.bigint);
+  if (value->kind == SCR_DYN_BIGINT) return scr_insp_bigint(value->v.bigint);
   if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MIME_TYPE || value->v.handle.tag == SCR_DYNH_MIME_PARAMS))
     return scr_dyn_string_coerce_js(value);
   if (value->kind == SCR_DYN_FUNC) {
@@ -3982,6 +4170,7 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if ((value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) == NULL) ||
       value->kind == SCR_DYN_TYPED_REF) {
     int custom = insp_fmt_custom_to_string(value);
+    if (scr_exc_pending()) return NULL;
     if (custom == -2) {
       insp_fmt_fence(o, "%s of a class instance whose class defines toString has no lowering");
       return NULL;
@@ -3998,7 +4187,7 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
 }
 
 static ScrStr *insp_fmt_number(ScrDyn *value, int spec) {
-  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_bigint_inspect(value->v.bigint);
+  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_insp_bigint(value->v.bigint);
   if (value->kind == SCR_DYN_SYMBOL) return scr_str_new("NaN", 3);
   double number;
   if (spec == 'd') {
@@ -4106,6 +4295,18 @@ static ScrStr *insp_fmt_inspect_full(ScrDyn *value, const ScrInspFormatOptions *
   return insp_fmt_inspect(value, o, depth, o->compact, o->colors);
 }
 
+/* The conversions run with the options' numericSeparator, which format's
+ * %s, %d, %i and %f and the joined arguments take (formatNumber,
+ * formatBigInt); the previous value returns afterwards. */
+static ScrStr *insp_format_run(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o,
+                               const InspFmtOps *ops) {
+  bool saved = g_numeric_separator;
+  g_numeric_separator = o->numeric_separator;
+  ScrStr *out = insp_format_loop(args, argc, o, ops);
+  g_numeric_separator = saved;
+  return out;
+}
+
 /* The conversion tables are filled where they run: a constant table is a
  * global, and sanitized builds keep instrumented globals (and the
  * conversions they point at) through --gc-sections. */
@@ -4115,7 +4316,7 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
   ops.j = scr_util_format_j;
   ops.number = insp_fmt_number;
   ops.inspect = insp_fmt_inspect_full;
-  return insp_format_loop(args, argc, o, &ops);
+  return insp_format_run(args, argc, o, &ops);
 }
 
 /* new StringDecoder(encoding) with an encoding that may not be a string:
@@ -4251,7 +4452,7 @@ ScrStr *scr_insp_format_primitives(ScrArr *list) {
   ops.j = insp_prim_j;
   ops.number = insp_prim_number;
   ops.inspect = insp_prim_inspect;
-  ScrStr *out = insp_format_loop(pack->v.arr.items, pack->v.arr.len, &o, &ops);
+  ScrStr *out = insp_format_run(pack->v.arr.items, pack->v.arr.len, &o, &ops);
   scr_dyn_release(pack);
   return out;
 }
@@ -4406,13 +4607,15 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
       goto done;
     }
   }
+  INSP_OPT("numericSeparator");
+  if (present) o->numeric_separator = scr_dyn_truthy(value);
   /* The options whose non-default values change renderings this runtime
    * does not produce. */
   static const struct {
     const char *key;
     int kind; /* 0: falsy, 1: true */
   } fixed[] = {
-      {"showProxy", 0}, {"numericSeparator", 0}, {"stylize", 0},
+      {"showProxy", 0}, {"stylize", 0},
   };
   for (size_t i = 0; i < sizeof fixed / sizeof *fixed; i++) {
     INSP_OPT(fixed[i].key);

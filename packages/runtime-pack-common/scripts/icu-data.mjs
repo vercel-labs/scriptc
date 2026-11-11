@@ -4,15 +4,17 @@
  * source tarball and ships its data as a FILE the executable loads at run
  * time — never embedded in the binary. The release's data file is 31.6 MiB;
  * the pack's copy keeps the locale data, break rules and dictionaries,
- * currency data and time-zone rules the Intl forms read, 11.1 MiB, and
+ * currency data, unit, time-zone and region names and time-zone rules the
+ * Intl forms read, 18.7 MiB, and
  * leaves out the categories in ICU_DATA_DROPPED (filterIcuData below,
  * pinned by ICU_PACK_DATA_SHA256). Neither input is vendored:
  * both come from unicode-org/icu's official GitHub release for the pinned
  * version, each downloaded once into a cache and reused after that, and each
  * verified against a pinned sha256 on every use (the source by the tarball's,
  * the data twice: the zip and the extracted `.dat`). A bad download fails
- * here with both hashes, never later in a build. Offline builds work from a
- * pre-populated cache.
+ * here with both hashes, never later in a build. A request the release host
+ * answers with a gateway error, or that never reaches it, is repeated
+ * (download.mjs). Offline builds work from a pre-populated cache.
  *
  * The pack build writes that copy of `icudt78l.dat` to artifacts/icu/ and
  * lists it in runtime-pack.json's `data`, so the compiler can install it
@@ -28,6 +30,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { inflateRawSync, crc32 } from "node:zlib";
+import { download } from "./download.mjs";
 import {
   ICU_DATA_FILE,
   ICU_DATA_SHA256,
@@ -68,21 +71,9 @@ export async function ensureIcuSources(cacheDir) {
     if (archive.length !== ICU_SOURCE_SIZE || sha256(archive) !== ICU_SOURCE_SHA256)
       throw new Error("cached ICU source tarball does not match its pin");
   } catch {
-    let response;
-    try {
-      response = await fetch(ICU_SOURCE_URL);
-    } catch (cause) {
-      throw new Error(
-        `could not download ICU's sources (${ICU_SOURCE_URL}); ` +
-          `populate ${tarball} or allow network access`,
-        { cause },
-      );
-    }
-    if (!response.ok)
-      throw new Error(
-        `could not download ICU's sources (${ICU_SOURCE_URL}): ${response.status} ${response.statusText}`,
-      );
-    archive = Buffer.from(await response.arrayBuffer());
+    archive = await download(ICU_SOURCE_URL, "ICU's sources", {
+      hint: `populate ${tarball} or allow network access`,
+    });
     if (archive.length !== ICU_SOURCE_SIZE || sha256(archive) !== ICU_SOURCE_SHA256)
       throw new Error(
         `ICU source tarball from ${ICU_SOURCE_URL} is ${archive.length} bytes with sha256 ` +
@@ -194,12 +185,9 @@ export async function ensureIcuData(cacheDir) {
     if (zip.length !== ICU_DATA_ZIP_SIZE || sha256(zip) !== ICU_DATA_ZIP_SHA256)
       throw new Error("cached ICU data zip does not match its pin");
   } catch {
-    const response = await fetch(ICU_DATA_URL);
-    if (!response.ok)
-      throw new Error(
-        `could not download ICU's data (${ICU_DATA_URL}): ${response.status} ${response.statusText}`,
-      );
-    zip = Buffer.from(await response.arrayBuffer());
+    zip = await download(ICU_DATA_URL, "ICU's data", {
+      hint: `populate ${zipPath} or allow network access`,
+    });
     if (zip.length !== ICU_DATA_ZIP_SIZE || sha256(zip) !== ICU_DATA_ZIP_SHA256)
       throw new Error(
         `ICU data zip from ${ICU_DATA_URL} is ${zip.length} bytes with sha256 ${sha256(zip)}, ` +

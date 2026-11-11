@@ -8,8 +8,10 @@
  * the standard library or an external type surface, a symbol's declaration
  * provenance, whether a type is an island handle, the admitted-opinion site
  * index, the package-file and declaration-boundary flags, the JavaScript
- * dynamic-declaration set, and the class protocol index) would be computed
- * again identically in every pass.
+ * dynamic-declaration set, the class protocol index, the names each file's
+ * identifiers spell, the module an import specifier names, and the module
+ * specifiers a file of an island package holds) would be computed again
+ * identically in every pass.
  *
  * This object computes each of them once per round. The rule for what may
  * live here: the answer must be a pure function of (program, island set,
@@ -37,11 +39,15 @@ import {
 } from "../dts-paths.js";
 import {
   isForeignType,
+  islandOwnerOfFile,
   islandSubclassCount,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
+import { npmStaticDepSf7, resolveImport } from "../program.js";
+import { ModuleSpecifierScans } from "../../node-islands/modules.js";
 import { type AdmittedOpinion } from "../tsc-codes.js";
 import { newSymbolProvenanceMemo, type SymbolProvenance } from "../type-mapper.js";
+import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { inPackageFile } from "./decl-origin.js";
 import { jsDynamicDeclarations } from "./js-dynamic-objects.js";
@@ -126,6 +132,21 @@ export class LoweringFacts {
   private opinionIndexVerified = false;
   private jsDynamicVerified = false;
   private protocols: ClassProtocols | null = null;
+  private asyncProtocols: AsyncProtocolHolders | null = null;
+  /** maySpellIdentifier's index: by file, the hashes of the names its
+   * identifiers spell. */
+  private readonly identifierNames = new Map<ts.SourceFile, Set<number>>();
+  /** importedModule's and npmStaticModule's answers, by importing file and
+   * then by resolution kind and specifier. */
+  private readonly importedModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
+  private readonly npmStaticModules = new Map<ts.SourceFile, Map<string, ts.SourceFile | null>>();
+
+  /** The module specifiers of the files Node loads (the island packages
+   * and what they require): every pass collects those packages again
+   * (NodeIslandModuleCollector) and plans the modules they share
+   * (lower-shared-modules.ts) from the same files. Each answer is checked
+   * against the file's text when it is used. */
+  readonly moduleSpecifierScans = new ModuleSpecifierScans();
 
   /** Whether hits are recomputed and compared (SCRIPTC_LOWERING_FACTS_VERIFY). */
   readonly verify: boolean;
@@ -311,6 +332,85 @@ export class LoweringFacts {
     );
   }
 
+  /** False only when no identifier of `sf` is spelled `name`. A search for
+   * every use of one name over the whole program (deadUnmappableBinding)
+   * asks each file before it walks it: the walk of a file that answers false
+   * meets no identifier of that name, so it reads nothing and decides
+   * nothing. The index holds a hash per name, and two names can share one,
+   * so true means only that the file must be walked.
+   *
+   * A file is indexed by the walk those searches make (forEachChild from the
+   * file), so the index sees exactly the identifiers they see. */
+  maySpellIdentifier(sf: ts.SourceFile, name: string): boolean {
+    let names = this.identifierNames.get(sf);
+    if (names === undefined) {
+      names = identifierNameHashes(sf);
+      this.identifierNames.set(sf, names);
+    }
+    if (names.has(nameHash(name))) return true;
+    if (this.verify) {
+      this.countVerified("maySpellIdentifier");
+      if (spellsIdentifier(sf, name))
+        throw new InternalCompilerError(
+          `shared lowering fact maySpellIdentifier does not match a fresh walk: ` +
+            `'${name}' is spelled in ${sf.fileName}`,
+        );
+    }
+    return false;
+  }
+
+  /** The program module `specifier` names when `from` imports or requires
+   * it (program.ts's resolveImport), or null. Every reference to an imported
+   * binding asks (Lowerer.resolveValueSymbol), and an answer walks the
+   * candidate paths of the specifier: the program, its packages and the
+   * files on disk do not change while a round lowers, so each (file, kind,
+   * specifier) is resolved once. */
+  importedModule(
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require" = "import",
+  ): ts.SourceFile | null {
+    return this.moduleAnswer("importedModule", this.importedModules, from, specifier, kind, () =>
+      resolveImport(this.program, from, specifier, kind),
+    );
+  }
+
+  /** The module of a natively compiled package `specifier` names from `from`
+   * (program.ts's npmStaticDepSf7), or null: resolved once, as importedModule
+   * is. */
+  npmStaticModule(
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require" = "import",
+  ): ts.SourceFile | null {
+    return this.moduleAnswer("npmStaticModule", this.npmStaticModules, from, specifier, kind, () =>
+      npmStaticDepSf7(this.program, from, specifier, kind),
+    );
+  }
+
+  private moduleAnswer(
+    fact: string,
+    answers: Map<ts.SourceFile, Map<string, ts.SourceFile | null>>,
+    from: ts.SourceFile,
+    specifier: string,
+    kind: "import" | "require",
+    resolveModule: () => ts.SourceFile | null,
+  ): ts.SourceFile | null {
+    let ofFile = answers.get(from);
+    if (ofFile === undefined) {
+      ofFile = new Map();
+      answers.set(from, ofFile);
+    }
+    const key = kind === "require" ? `r:${specifier}` : `i:${specifier}`;
+    const known = ofFile.get(key);
+    if (known === undefined) {
+      const module = resolveModule();
+      ofFile.set(key, module);
+      return module;
+    }
+    return this.verifyHit(fact, known, resolveModule);
+  }
+
   /** The program's class protocol index (class-protocols.ts). Each pass
    * asking its own questions must get the same answers; the Lowerer's verify
    * mode compares them against a fresh index per pass, so a pass that
@@ -318,8 +418,45 @@ export class LoweringFacts {
    * changed an answer fails there instead of lowering a stale one. Nothing
    * may edit the program while a round lowers. */
   classProtocols(): ClassProtocols {
-    this.protocols ??= new ClassProtocols(this.program.getTypeChecker(), this.moduleOrder);
+    this.protocols ??= new ClassProtocols(
+      this.program.getTypeChecker(),
+      this.moduleOrder,
+      this.isStdlibFile,
+    );
     return this.protocols;
+  }
+
+  /** The async-iteration protocol types that hold a checked-dynamic value
+   * (async-protocol-holders.ts): a pure analysis of the checker and the
+   * program's modules (the round's entry and moduleOrder), so every pass of
+   * the round maps a protocol type the same way. */
+  asyncProtocolHolders(entry: ts.SourceFile, islands: NodeIslandSet | null): AsyncProtocolHolders {
+    this.asyncProtocols ??= new AsyncProtocolHolders(
+      this.program.getTypeChecker(),
+      this.moduleOrder.includes(entry) ? this.moduleOrder : [...this.moduleOrder, entry],
+      this.isStdlibFile,
+      () => this.islandProtocolFiles(islands),
+    );
+    return this.asyncProtocols;
+  }
+  /** The files of the round's Node islands (their declarations, and island
+   * modules of the program) whose text names an async-iteration protocol
+   * interface. The names and the text are read without a syntax tree, so a
+   * program whose islands never name one fetches none of their files. */
+  islandProtocolFiles(islands: NodeIslandSet | null): readonly ts.SourceFile[] {
+    if (islands === null) return [];
+    const files: ts.SourceFile[] = [];
+    for (const name of this.program.getSourceFileNames()) {
+      if (islandOwnerOfFile(islands, name) === null) continue;
+      if (this.program.getSourceText(name)?.includes("AsyncItera") !== true) continue;
+      const file = this.program.getSourceFile(name);
+      if (file !== undefined) files.push(file);
+    }
+    return files;
+  }
+  /** The analysis, once a pass has asked it (the timing line reads it). */
+  get askedAsyncProtocolHolders(): AsyncProtocolHolders | null {
+    return this.asyncProtocols;
   }
 
   private verifyHit<T>(fact: string, known: T, recompute: () => T): T {
@@ -348,6 +485,36 @@ export class LoweringFacts {
   verifiedHits(fact: string): number {
     return this.verified.get(fact) ?? 0;
   }
+}
+
+/** FNV-1a over the name's UTF-16 code units, as a 32-bit integer. */
+function nameHash(name: string): number {
+  let hash = 0x811c9dc5 | 0;
+  for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 0x01000193);
+  return hash;
+}
+
+/** The hashes of the names `sf`'s identifiers spell. */
+function identifierNameHashes(sf: ts.SourceFile): Set<number> {
+  const hashes = new Set<number>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) hashes.add(nameHash(node.text));
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+  return hashes;
+}
+
+/** Whether an identifier of `sf` is spelled `name`, by the same walk. */
+function spellsIdentifier(sf: ts.SourceFile, name: string): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(node) && node.text === name) found = true;
+    else ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sf, visit);
+  return found;
 }
 
 function buildOpinionIndex(opinions: readonly AdmittedOpinion[]): OpinionIndex {

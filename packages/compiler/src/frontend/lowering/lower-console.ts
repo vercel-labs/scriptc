@@ -269,9 +269,10 @@ export function lowerConsoleArg(
     };
   }
   // A function VALUE prints Node's [Function: name] form by boxing
-  // across the checked-dynamic boundary (the box carries the
-  // best-effort reference-site name — the documented naming stance)
-  // and rendering through the same dyn arm.
+  // across the checked-dynamic boundary and rendering through the same
+  // dyn arm. The box carries the name of the definition the argument
+  // reaches; any other argument (a parameter, a member) is named by the
+  // function it holds, at run time.
   if (
     lowered.type.kind === "func" &&
     canBoxFuncIntoDyn(
@@ -280,7 +281,7 @@ export function lowerConsoleArg(
       (id) => lowerer.unions.get(id),
     )
   ) {
-    const name = jsFuncNameOf(node);
+    const name = jsFuncNameOf(node, lowerer);
     const boxed: IrExpr = {
       kind: "dynFrom",
       value: lowered,

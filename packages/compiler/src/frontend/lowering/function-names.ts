@@ -1,31 +1,84 @@
-/* The JavaScript names of object literals' methods.
+/* The JavaScript names of methods and of the anonymous functions that
+ * initialize class fields.
  *
  * A function boxed into a checked value inside a record, an array or
  * another converted value has no static name at the box, so the backend
  * takes it from the function (LlEmitter.closureNames): its sourceName, or
- * for an object literal's method, whose stack-frame name differs, its
- * displayName. displayName is set only in modules that box such a
- * function, so other modules lower as before. */
+ * its displayName where the stack-frame name differs. That is a method of
+ * an object literal or of a class, a class field's initializer, and the
+ * function that stands for a class method read as a value
+ * (class-method-values.ts): each is named by the key it is declared
+ * under. displayName is set only in modules that box such a function, so
+ * other modules lower as before. */
 import * as ts from "../ts7/adapter.js";
 import type { IrFunction, IrType } from "../../ir/ir.js";
 import { typeKey } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
 
+/** The `name` of a function declared under `key`, as Node gives it: an
+ * identifier, a string or a private name as written, a number in its
+ * canonical spelling, `[Symbol.iterator]` for a well-known symbol. Null
+ * for a key computed at run time. */
+export function methodJsName(key: ts.PropertyName): string | null {
+  if (ts.isIdentifier(key) || ts.isStringLiteral(key) || ts.isPrivateIdentifier(key))
+    return key.text;
+  if (ts.isNumericLiteral(key)) return String(Number(key.text));
+  if (ts.isComputedPropertyName(key)) {
+    const expression = key.expression;
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression))
+      return expression.text;
+    if (
+      ts.isPropertyAccessExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      expression.expression.text === "Symbol"
+    )
+      return `[Symbol.${expression.name.text}]`;
+  }
+  return null;
+}
+
 /** Notes the name of the lifted function `fnName` when `node` is a method
- * of an object literal with a static key. */
+ * of an object literal or of a class, or an anonymous function that
+ * initializes a class field (`read = (x) => x + 1` is named "read", as a
+ * `const` binding names its initializer), with a static key. */
 export function noteObjectMethodName(lowerer: Lowerer, node: ts.Node, fnName: string): void {
-  if (!ts.isMethodDeclaration(node) || !ts.isObjectLiteralExpression(node.parent)) return;
-  const name = node.name;
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name))
-    lowerer.objectMethodNames.set(fnName, name.text);
-  else if (ts.isNumericLiteral(name))
-    lowerer.objectMethodNames.set(fnName, String(Number(name.text)));
+  const key = namingKey(node);
+  if (key === null) return;
+  const name = methodJsName(key);
+  if (name !== null) lowerer.objectMethodNames.set(fnName, name);
+}
+
+/** The property key that names the function `node` defines; null when no
+ * key does. A class field names its initializer only when that is an
+ * anonymous function definition, through the parentheses and type
+ * assertions JavaScript does not see. */
+function namingKey(node: ts.Node): ts.PropertyName | null {
+  if (ts.isMethodDeclaration(node)) return node.name;
+  if (!ts.isArrowFunction(node) && !(ts.isFunctionExpression(node) && node.name === undefined))
+    return null;
+  let outer: ts.Node = node;
+  for (let p = outer.parent; p !== undefined; p = outer.parent) {
+    if (
+      !ts.isParenthesizedExpression(p) &&
+      !ts.isAsExpression(p) &&
+      !ts.isTypeAssertion(p) &&
+      !ts.isSatisfiesExpression(p) &&
+      !ts.isNonNullExpression(p)
+    )
+      break;
+    outer = p;
+  }
+  const field = outer.parent;
+  return field !== undefined && ts.isPropertyDeclaration(field) && field.initializer === outer
+    ? field.name
+    : null;
 }
 
 /** Gives the noted methods their displayName when the module boxes a
  * function without a static name, or a value that can hold one. */
 export function finalizeFunctionNames(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  finalizeHeldFunctionNames(lowerer, functions);
   if (lowerer.objectMethodNames.size === 0) return;
   const seen = new Map<string, boolean>();
   let boxes = false;
@@ -50,6 +103,41 @@ export function finalizeFunctionNames(lowerer: Lowerer, functions: readonly IrFu
   for (const fn of functions) {
     const name = lowerer.objectMethodNames.get(fn.name);
     if (name !== undefined) fn.displayName = name;
+  }
+}
+
+/** Gives the function the compiler lifts for a primitive constructor held
+ * as a typed value its displayName in a program that prints a function
+ * held in a typed slot: the inspector renders such a function through a
+ * box without a static name (lower-inspect.ts), which the backend names
+ * from the function. A program that prints none keeps its functions as
+ * they were. A method read as a value, static or not, is named with the
+ * other methods above. */
+function finalizeHeldFunctionNames(lowerer: Lowerer, functions: readonly IrFunction[]): void {
+  if (lowerer.heldFunctionNames.size === 0) return;
+  let prints = false;
+  for (const fn of functions) {
+    everyStmtList(fn.body, {
+      stmt: () => !prints,
+      expr: (e) => {
+        if (e.kind === "libCall" && (e.fn === "insp.dyn" || e.fn === "insp.dynS")) {
+          const boxed = e.args[0];
+          if (
+            boxed?.kind === "dynFrom" &&
+            boxed.value.type.kind === "func" &&
+            (boxed.fnName === undefined || boxed.fnName === "")
+          )
+            prints = true;
+        }
+        return !prints;
+      },
+    });
+    if (prints) break;
+  }
+  if (!prints) return;
+  for (const fn of functions) {
+    const name = lowerer.heldFunctionNames.get(fn.name);
+    if (name !== undefined && fn.displayName === undefined) fn.displayName = name;
   }
 }
 

@@ -1,5 +1,6 @@
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
@@ -11,6 +12,7 @@ import {
 import { bindingNeverReassigned } from "../binding-analysis.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import { pairsSnapshotHelper } from "../pairs-snapshot.js";
+import { definedEnvValue } from "../../defines.js";
 import {
   BOOL,
   DYN,
@@ -31,7 +33,21 @@ import {
  * drops undefined env entries). Reuses the interned overflow-keys/read
  * machinery. */
 export function recordToEnvPairs(lowerer: Lowerer, node: ts.Expression): IrExpr {
-  const v = lowerer.lowerExpr(node);
+  let v = lowerer.lowerExpr(node);
+  // A checked-dynamic value (the result of a function the program does not
+  // compile, a value typed `any`): the `env` slot is declared as the
+  // environment record, a string-keyed object of `string | undefined`, so
+  // the value takes the slot's checked conversion into the record its own
+  // type names, or into that one, and a value the slot's type does not
+  // admit throws there.
+  if (v.type.kind === "dyn") {
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(node));
+    const slot: IrType =
+      declared?.kind === "record"
+        ? declared
+        : { kind: "record", shapeId: lowerer.shapes.intern([], false, lowerer.envValueType()) };
+    v = lowerer.coerceInto(node, v, slot);
+  }
   if (v.type.kind !== "record") {
     lowerer.noLowering(
       `an env option of '${lowerer.fmt(v.type)}' values`,
@@ -137,7 +153,7 @@ function reassignedBinding(
 ): boolean {
   const list = declaration.parent;
   if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.Const) !== 0) return false;
-  return !bindingNeverReassigned(lowerer, symbol, declaration);
+  return !bindingNeverReassigned(lowerer.bindingScope(), symbol, declaration);
 }
 
 /** True iff `node` is THE ambient `process.env` object, looking through
@@ -146,7 +162,7 @@ function reassignedBinding(
  * read, write and delete from the environment exactly as the bare form
  * does. */
 export function isAmbientProcessEnv(lowerer: Lowerer, node: ts.Expression): boolean {
-  return isProcessEnv(lowerer, unwrapped(node));
+  return isProcessEnv(lowerer, withoutParenthesesTypeWrappers(node));
 }
 
 /** Whether an expression is the environment object to Node: the ambient
@@ -154,18 +170,6 @@ export function isAmbientProcessEnv(lowerer: Lowerer, node: ts.Expression): bool
  * (holdsEnvSnapshot). */
 export function denotesEnvironment(lowerer: Lowerer, node: ts.Expression): boolean {
   return isAmbientProcessEnv(lowerer, node) || holdsEnvSnapshot(lowerer, node);
-}
-
-function unwrapped(node: ts.Expression): ts.Expression {
-  let inner = node;
-  while (
-    ts.isParenthesizedExpression(inner) ||
-    ts.isAsExpression(inner) ||
-    ts.isNonNullExpression(inner) ||
-    ts.isSatisfiesExpression(inner)
-  )
-    inner = inner.expression;
-  return inner;
 }
 
 /** `a === b`, `a == b` and their negations where an operand is the
@@ -330,6 +334,22 @@ export function lowerProcessEnvGet(
     loc: locOf(expr.name),
   };
   return { kind: "libCall", fn: "process.envGet", args: [key], type: lowerer.envValueType(), loc };
+}
+
+/** Refuses a write or delete of a defined environment variable: the
+ * conditions its value decides were resolved at build time (the `if`
+ * statements of JavaScript text, define-branches.ts, and the constant
+ * conditions of TypeScript, constant-conditions.ts), so they could not
+ * follow the change. */
+export function refuseDefinedEnvWrite(lowerer: Lowerer, key: IrExpr, node: ts.Node): void {
+  if (key.kind === "strLit" && definedEnvValue(lowerer.define, key.value) !== undefined) {
+    lowerer.unsupported(
+      "SC1090",
+      node,
+      `changing process.env.${key.value} when --define fixes its value`,
+      "the conditions it decides were resolved at build time, so they would not follow the change",
+    );
+  }
 }
 
 export function lowerProcessLoadEnvFile(lowerer: Lowerer, call: ts.CallExpression): IrExpr {

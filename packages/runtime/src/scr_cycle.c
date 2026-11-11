@@ -316,8 +316,10 @@ static void scr_rc_destroy_defer(void *obj, void (*destroy)(void *)) {
   scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
 }
 
-/* Runs the queued disposals once the outermost one has returned. */
-static void scr_rc_destroy_drain(void) {
+/* Runs the queued disposals once the outermost one has returned. The queue's
+ * storage exists exactly while a disposal is queued (the first deferral
+ * allocates it, the drain frees it), so the callers test that one pointer. */
+static SCR_COLD void scr_rc_destroy_drain(void) {
   while (scr_destroy_count) {
     ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
     scr_destroy_depth = 1;
@@ -341,7 +343,7 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
   scr_destroy_depth++;
   destroy(obj);
   scr_destroy_depth--;
-  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  if (scr_destroy_depth == 0 && scr_destroy_pending) scr_rc_destroy_drain();
 }
 
 void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
@@ -353,7 +355,7 @@ void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
   scr_destroy_depth++;
   tail = destroy_seg(obj, tail);
   scr_destroy_depth--;
-  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  if (scr_destroy_depth == 0 && scr_destroy_pending) scr_rc_destroy_drain();
   return tail;
 }
 
@@ -797,26 +799,39 @@ static size_t scr_cyc_buffered(void) {
  * trigger or would need the buffer to grow. While a pass runs, every
  * release takes the call. Recomputed wherever the buffers, the nursery
  * buffer's capacity or the trigger change in bulk; the release and death
- * paths adjust it by one (scr_cyc_window_shrink). */
+ * paths adjust it by one (scr_cyc_window_shrink).
+ *
+ * The window is the smaller of two numbers: what the trigger leaves (the
+ * formula) and the nursery buffer's capacity. window_slack (it lives beside
+ * the window, in scr_cyc_buffers) is how far the formula lies above the
+ * window, which is above zero only where the capacity is the smaller one. */
 static inline void scr_cyc_window_update(void) {
 #if SCR_CYC_INLINE_BUFFERING
-  size_t window = 0;
+  size_t window = 0, slack = 0;
   if (!scr_collecting) {
     size_t older = scr_roots[SCR_CYC_MATURE].n + scr_roots[SCR_CYC_OLD].n;
     if (scr_cyc_trigger > older + 1) window = scr_cyc_trigger - older - 1;
-    if (window > scr_roots[SCR_CYC_NURSERY].cap) window = scr_roots[SCR_CYC_NURSERY].cap;
+    if (window > scr_roots[SCR_CYC_NURSERY].cap) {
+      slack = window - scr_roots[SCR_CYC_NURSERY].cap;
+      window = scr_roots[SCR_CYC_NURSERY].cap;
+    }
   }
   scr_cyc_buffers.window = window;
+  scr_cyc_buffers.window_slack = slack;
 #endif
 }
 
 /* One step of the window's formula going down by one: an older candidate
- * was buffered, or a nursery death lowered the trigger. A window below the
- * formula only sends more releases through the call, so the clamp to the
- * capacity can stay where it is. */
+ * was buffered, or a nursery death lowered the trigger. The step comes out
+ * of the slack first: while the capacity is what bounds the window, a
+ * candidate that is buffered and then dies leaves the window where it was,
+ * so a program whose candidates die young keeps appending inline until the
+ * trigger itself is reached. A window below the formula would only send
+ * more releases through the call. */
 static inline void scr_cyc_window_shrink(void) {
 #if SCR_CYC_INLINE_BUFFERING
-  if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
+  if (scr_cyc_buffers.window_slack) scr_cyc_buffers.window_slack--;
+  else if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
 #endif
 }
 
@@ -2680,3 +2695,6 @@ void scr_cyc_context_cleanup(void) {
 #endif
   scr_cyc_window_update();
 }
+
+/* Last in this file, so that nothing before it moves (see scr_rc.h). */
+const ScrCycType *scr_cyc_type_of(const void *obj) { return &scr_cyc_types[((const ScrCycHdr *)obj - 1)->id]; }

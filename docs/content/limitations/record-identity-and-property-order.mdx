@@ -1,11 +1,29 @@
 A record converted to a record type with a different set of properties, such as a narrower shape or one that adds optional properties, is copied.
 Mutations through the converted reference do not affect the original, and the copy is not `===` to it.
 Empty record layouts are also snapshots because they have no property storage.
-`scriptc coverage` and `scriptc build` report `SC6001` where a copied value is then written or compared, whether the record was passed as an argument, stored in a typed binding, asserted with `as`, assigned to a typed binding later, or stored as an element of a typed array literal.
+`scriptc coverage` and `scriptc build` report `SC6001` at each conversion that copies a value something else can still reach, in any position: an argument, a return value, a field, an array element, a collection value, a callback parameter.
+The report is made when the program writes a field or element of either type, compares values of the converted type by identity (including `includes`, `indexOf`, and Set or Map keys), or passes either type to code scriptc cannot follow.
+It is made from the compiled program, so a program that builds without it does not lose such a write or comparison.
+It judges types rather than the path one value takes, so it can name a conversion whose copy the program never tells from the original.
+A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
+The same holds for an array converted to an array of another element type and for a tuple converted to an array.
+A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.
+A union value that something else can still reach is refused with `SC2003` under the same condition where one of its members fits several members of the destination union and enters the one its own discriminant names, because that conversion builds a new object where Node.js has one.
+Two conversions are not covered and copy without a report.
+A promise used as a promise of another record type, such as a `Promise<Wide>` stored as a `Promise<Narrow>`, copies its payload when it settles.
+A class stored in a record type, such as `const counter: { count: number } = Counter`, holds copies of the class's static fields.
 An `as` assertion that only adds optional members to the properties a record type declares is not such a copy: it is erased, so the value keeps its identity and reading an added member answers what the object carries, as in Node.js.
 `scriptc build` reports `SC1031` where such a member is assigned, because a record's layout has no storage for it.
+Declaring a record value with a record type that names the same properties, where every declared field fits the value's storage, keeps the value's own layout instead: both names are the same object, as in Node.js.
+When a declared field cannot store the values its type admits, such as a declared field that is a wider union type than the value's field, the declaration, a call that passes the value to a parameter the callee writes, or a literal that stores the value in that field is refused with `SC2021` if the program writes through the binding, because the copy would take the write instead of the original.
+Assigning an existing value to a binding that keeps its initializer's layout, to one of its fields, or to an element of one of its arrays, is refused with `SC2021`, because the kept layout rebuilds the assigned value, so a later write through it would reach only the copy.
+The refusal covers a short-circuit assignment that stores the value (`&&=`, or `??=` on a binding that can be nullish) like the plain assignment it stands for.
+A member of another binding that kept its initializer's layout carries that layout into the store, so no refusal is reported when the two layouts already match.
+Bracket writes such as `alias["k"] = v` write the field in the kept layout, like their dotted spelling.
 
 Typed records with declared fields, indexed records, and arrays retain identity and mutations through native checked storage.
+An empty array literal with no element type of its own, such as the `files` of `{ files: [] }` or `const NONE = [] as const`, takes its element type from the declared types its value reaches and is the same array under every name.
+`scriptc build` reports `SC2015` where one such array is used at two element types or reaches a typed array through a computed key; writing the type at the literal (`[] as string[]`) compiles.
 A record or class instance converted to a string-keyed dictionary type such as `Record<string, string>`, directly, through a `{}`, `object` or `unknown` binding or parameter, or as an element of a constant `unknown[]` array that holds such records, keeps its identity when the program writes through, compares or inspects values of that dictionary type.
 Every dictionary type with the same value type then uses checked dynamic storage, which is slower than a native dictionary.
 Class instances retain identity at their exact type or a base class, and at any interface or object type that a class instance is passed, stored, returned, or asserted as when the program could tell a copy from the instance: values of such a type are checked views of the original object, so writes, identity comparisons, Set and Map keys, `util.inspect`, and `JSON.stringify` through them reach the instance, as in Node.js.
@@ -13,11 +31,16 @@ These types use checked dynamic storage, which is slower than native record fiel
 A type whose values are only read field by field, from fields the class does not write after construction and does not implement as accessors, stays a native record and holds a copy.
 Object spread of a class instance is refused.
 Dense array literals created directly in checked storage preserve identity, and supported native handles pass by reference.
+A type derived from a built-in class whose values are native handles, such as an interface that extends `Response` or an `Omit` or `Pick` of it, an intersection with it, or a subset alias, names the built-in object itself and uses checked dynamic storage, also for an object the program makes for the type.
+A member such a type adds or declares again is read from the object by name and checked against its declared type, so reading a required member that the built-in object does not have throws a `TypeError`, where Node.js answers `undefined`.
+Assigning a member that the built-in object does not have throws, where Node.js stores it on the object.
 
 `Object.keys`, `Object.values`, `Object.entries`, `for...in`, `JSON.stringify`, and `util.inspect` enumerate a record's keys in the order the object created them, as in Node.js.
 scriptc chooses one order per record type from the order in which the program's object literals create the keys, follows object spread, rest destructuring, and record conversions back to the values they copy, and places an optional key that the program assigns after construction after the keys the object was built with.
 When the object literals of one record type create its keys in different orders, including literals of two types with the same properties and property types, each value records the order its literal used: copies made by object spread, rest destructuring, and record conversions keep their source's order, and assigning an optional key the object lacks, including after `delete`, moves the key last.
 A type keeps the declaration order of its first type, and `SC6002` reports object literals whose order differs where the program observes it, when one of its values gets its keys from a spread whose source order is not known, from a spread that also sets an optional key the source lacks, or from a copy of a value scriptc cannot trace, or when the type's values can take more than 16 orders.
+`SC6014` reports such a type once, at a construction its order depends on, when the program observes the type's key order, although the objects the program builds may still list their keys as in Node.js.
+`Object.assign` adds its source's properties to a record in the order the source object created them, and `SC6014` reports a call that adds two or more optional properties from a value converted at run time.
 
 A record converted from a checked value, such as `const rows: { score: number }[] = JSON.parse(text)`, keeps the properties its type does not declare.
 So does a record converted from an object with more properties, such as `const p: { a: number } = { a: 1, b: 2 }` or an argument passed to a parameter of a narrower type.
@@ -27,11 +50,26 @@ Calling `valueOf` or `isPrototypeOf` by name on a record type that such an objec
 `Object.values` and `Object.entries` check those values against their static result type and throw a `TypeError` if one does not fit.
 For a record converted from an object with more properties, these surfaces read the object's other properties when they run, so later writes to those properties are visible; the declared fields are a copy taken at the conversion.
 Copies of such a record made by object spread, `Object.assign` or rest destructuring contain only the declared fields; a conversion to another record type keeps the properties too.
+A record converted from an object keeps a property non-enumerable when the object held it as a non-enumerable data property that is writable and configurable, whether or not the record's type declares it.
+`Object.keys`, `Object.values`, `Object.entries`, `for...in`, `JSON.stringify`, `util.inspect`, and untyped views of the record leave the property out, `in`, `Object.hasOwn`, and `Object.getOwnPropertyNames` include it, and its descriptor read through an untyped view reports `enumerable: false`.
+A copy of such a record made by object spread, rest destructuring, or `structuredClone` holds a declared non-enumerable property as an ordinary enumerable one, where Node.js leaves it out of the copy, and `Object.assign` from the record throws a `TypeError` when the result's type requires the property.
+`propertyIsEnumerable` called through the record's type answers `true` for a declared property that is not enumerable.
+A conversion does not keep a declared property's read-only or non-configurable attribute or its accessor: it reads the property once, and typed writes to the field succeed.
+A value that a compiled npm package returns into a type its declarations give it is refused with a `TypeError` when the object has an accessor, a read-only or non-configurable property, symbol-keyed properties, or a prototype, or when it is frozen, sealed, or not extensible, or when it has a non-enumerable property and the type keeps its keys without property attributes (an index-signature record).
 Index-signature records list declared fields before the other keys.
 A rest binding over an index-signature source copies its source's key order, so it lists the remaining declared fields before the other keys even when the source object created the other keys first.
 
+An object literal asserted with `as` to a record type whose required properties it does not write, such as `const point = {} as Point`, keeps its identity, and the properties the program assigns afterwards complete it.
+Reading a required property that nothing wrote throws a `TypeError`, where Node.js answers `undefined`.
+The same holds for a read through a computed key, the read of a compound assignment such as `row[key] ??= value`, and an object spread of the value, which reads every property.
+Freezing such an object freezes it for every reference, whether or not it is complete.
+`scriptc build` reports `SC3001` at such an assertion when the object cannot be completed in place: when values of the asserted type may be part of a reference cycle, are one arm of a union of object types, are published or keep more than one property order, or when the literal holds a function.
+Write every required property in the literal instead, or collect the properties in a `Record<string, T>` or `Partial<T>` value and assert that value once it is complete.
+
 Optional fields and properties added through a record's `unknown` view can be deleted.
 A required field has no absent state, so deleting it through the view throws `TypeError: Cannot delete property 'x' of #<Object>` and leaves the record unchanged, where Node.js removes the property.
+A property that a record keeps but its type does not declare can be deleted through an `as` assertion that adds it as an optional member, such as `delete (entry as Entry & { legacy?: number }).legacy`.
+`scriptc build` reports `SC1090` for such a delete when a record of a type that declares the property can be converted to the operand's type, because the property is then that record's field, which the delete cannot remove.
 
 Records inherit `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf` and `propertyIsEnumerable` from `Object.prototype`.
 A call of one of these methods by name runs the built-in with the record as its receiver, unless the record holds an own function under that name.

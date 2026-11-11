@@ -47,14 +47,14 @@
  * super.emit as the prototype chain). */
 import { keyedHelperName } from "./stable-names.js";
 import { checkKeypressListener } from "./builtins/readline.js";
-import { stripTypeCasts } from "./builtins/arguments.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
-import { nullishExprUnitOf, stripValueWrappers } from "./binding-analysis.js";
+import { nullishExprUnitOf } from "./binding-analysis.js";
 import { isPureReference } from "./effect-free.js";
 import { functionUsesThis } from "./cjs-exports-object.js";
 import { isThisParameter } from "./call-signatures.js";
@@ -74,14 +74,16 @@ import {
   type IrStmt,
   type IrType,
   isUnitType,
+  NULL_T,
   STRING,
   type SrcLoc,
+  UNDEFINED_T,
   typeEquals,
   typeKey,
   VOID,
 } from "../../ir/ir.js";
 import { STREAM_FORCED_EVENT_NAMES, streamForcedTuple, streamSidesOf } from "./lower-stream.js";
-import { boolLit, dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerAddAbortListener } from "./builtin-calls.js";
 import { requestGeneralStreamSurface } from "./general-streams.js";
@@ -439,9 +441,10 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbT = lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, cbNode, cbCt);
           typed =
             cbT?.kind === "func" &&
-            !ts.isCallExpression(stripTypeCasts(cbNode)) &&
+            !ts.isCallExpression(withoutParenthesesTypeWrappers(cbNode)) &&
             !(cbT.params.length === 0 && isJsSourceFile(sf)) &&
             !cbT.params.some((p) => p.kind === "dyn") &&
+            !takesEveryArgument(cbT) &&
             !readsArgumentsPack(lowerer, cbNode);
         } catch {
           typed = false;
@@ -484,8 +487,13 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           // registers without the adapter, so an untyped emit reaches it
           // only through the event's fixed ABI. A JavaScript function
           // without parameters can still read `arguments`.
+          // A variadic function (a rest parameter, `arguments`) takes
+          // every argument the event carries, however many it names: it is
+          // called through the adapter with the event's whole tuple.
+          const variadic = cbT?.kind === "func" && takesEveryArgument(cbT);
           if (
             !pack &&
+            !variadic &&
             cbT?.kind !== "dyn" &&
             (cbT?.kind !== "func" ||
               (cbT.params.length === 0 && !isJsSourceFile(sf)) ||
@@ -501,6 +509,7 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           if (
             cbT?.kind === "dyn" ||
             (cbT?.kind === "func" && cbT.params.some((p) => p.kind === "dyn")) ||
+            variadic ||
             pack
           ) {
             const sig = sigOf(name);
@@ -550,6 +559,36 @@ export const ERROR_MONITOR_EVENT = "\u0000events.errorMonitor";
  * then a non-NUL (ERROR_MONITOR_EVENT) belongs to no string. */
 function literalEventKey(name: string): string {
   return name.startsWith("\u0000") ? `\u0000${name}` : name;
+}
+
+/** The event name's own VALUE for the leak warning, when it is not the
+ * registry key: Node keys the listener table with `String(name)` but the
+ * warning carries the argument as given, so `on(null)` warns with
+ * `type: null` and `on(5)` with `type: 5`. A literal's static type holds
+ * the value, so no expression runs twice, and a string name needs nothing
+ * (the key is the name) and keeps the plain registration. */
+function literalNameValue(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr | null {
+  const unit = nullishExprUnitOf(lowerer, arg);
+  if (unit !== null) {
+    const value: IrExpr = {
+      kind: "unitLit",
+      unit,
+      type: unit === "null" ? NULL_T : UNDEFINED_T,
+      loc,
+    };
+    return lowerer.coerceToExpected(value, DYN);
+  }
+  const expression = withoutParenthesesTypeWrappers(arg);
+  if (
+    expression.kind === ts.SyntaxKind.TrueKeyword ||
+    expression.kind === ts.SyntaxKind.FalseKeyword
+  ) {
+    const value = boolLit(expression.kind === ts.SyntaxKind.TrueKeyword, loc);
+    return lowerer.coerceToExpected(value, DYN);
+  }
+  const t = lowerer.typeOf(arg);
+  if (t.isNumberLiteralType()) return lowerer.coerceToExpected(numLit(t.value, loc), DYN);
+  return null;
 }
 
 /** The string name of a key that is not ERROR_MONITOR_EVENT. */
@@ -610,7 +649,7 @@ function isErrorMonitorRef(lowerer: Lowerer, arg: ts.Expression): boolean {
  * field or record entry read. A call or an accessor lowers as a run-time
  * name so its effects still run. */
 function staticNameExpr(lowerer: Lowerer, arg: ts.Expression): boolean {
-  const expression = stripValueWrappers(arg);
+  const expression = withoutParenthesesTypeWrappers(arg);
   if (
     ts.isStringLiteral(expression) ||
     ts.isNoSubstitutionTemplateLiteral(expression) ||
@@ -664,32 +703,56 @@ function literalEventName(lowerer: Lowerer, arg: ts.Expression): string | null {
   return null;
 }
 
-/** An event-name argument as the string Node's listener table keys it by:
- * a compile-time key, or a string, number or boolean value (or a union of
- * those with null and undefined) converted as a property key
- * (`String(name)`). An untyped value converts with the dynamic ToString,
- * as the untyped emitter entries do. Other names are refused at the
- * argument. */
+/** A symbol event name as its registry key: Node's listener table is keyed
+ * by property keys, so the symbol itself is the key and matches by
+ * identity. */
+function symbolNameExpr(value: IrExpr): IrExpr {
+  return { kind: "libCall", fn: "emitter.symName", args: [value], type: STRING, loc: value.loc };
+}
+
+/** An untyped event name as its registry key: a symbol keeps its identity,
+ * every other value is the property key `String(name)` gives it. */
+function dynNameExpr(value: IrExpr): IrExpr {
+  return { kind: "libCall", fn: "emitter.nameDyn", args: [value], type: STRING, loc: value.loc };
+}
+
+/** An event-name argument as the key Node's listener table uses: a
+ * compile-time key, a string, or a symbol converted by identity (Node keys
+ * the table by the symbol itself). A number, boolean or null/undefined
+ * value (or a union of those with strings) converts as a property key
+ * (`String(name)`); an untyped value converts through the checked-dynamic
+ * name, which is the same two rules at run time. Other names are refused at
+ * the argument. */
 function eventNameArg(lowerer: Lowerer, member: string, arg: ts.Expression): IrExpr {
   const key = literalEventName(lowerer, arg);
   if (key !== null) return eventNameExpr(key, locOf(arg));
   const value = lowerer.lowerExpr(arg);
   if (value.type.kind === "string") return value;
+  if (value.type.kind === "symbol") return symbolNameExpr(value);
+  if (value.type.kind === "dyn") return dynNameExpr(value);
   const converts = (t: IrType): boolean =>
     t.kind === "string" || t.kind === "f64" || t.kind === "bool" || isUnitType(t);
   const union = value.type.kind === "union" ? lowerer.unions.get(value.type.unionId) : undefined;
   if (
     value.type.kind === "f64" ||
     value.type.kind === "bool" ||
-    value.type.kind === "dyn" ||
     (union !== undefined && union.arms.every(converts))
   ) {
     return { kind: "toString", operand: value, type: STRING, loc: value.loc };
   }
+  // A union with a symbol arm keeps symbols by identity and stringifies
+  // the other arms: the checked-dynamic conversion does both.
+  if (union !== undefined && union.arms.some((arm) => arm.kind === "symbol")) {
+    const getRecord = (id: string) => lowerer.shapes.get(id);
+    const getUnion = (id: string) => lowerer.unions.get(id);
+    if (canConvertToDyn(value.type, getRecord, getUnion)) {
+      return dynNameExpr(lowerer.coerceToExpected(value, DYN));
+    }
+  }
   lowerer.noLowering(
     `${member} with a '${lowerer.fmt(value.type)}' event name`,
     arg,
-    "event names lower as strings, numbers and booleans (symbol names have no lowering)",
+    "event names lower as strings, numbers, booleans, symbols and checked-dynamic values",
   );
 }
 
@@ -720,7 +783,7 @@ function eventNameOf(lowerer: Lowerer, member: string, arg: ts.Expression): stri
   lowerer.noLowering(
     `${member} with a non-literal event name`,
     arg,
-    "this operation needs a compile-time string literal (symbol names have no lowering)",
+    "this operation needs a compile-time string literal",
   );
 }
 
@@ -1062,10 +1125,20 @@ function readsArgumentsPack(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
+/** Whether a function type takes its arguments through the hidden argument
+ * array (a rest parameter of untyped values, or `arguments`): a listener of
+ * such a type observes every argument the event carries, so it registers
+ * through the adapter that passes the whole tuple, never as a typed
+ * listener of the parameters it names. */
+function takesEveryArgument(type: IrType & { kind: "func" }): boolean {
+  return type.rest === true && type.restAbi === undefined;
+}
+
 /** How a listener argument is dyn-flavored: "dyn" for a checked-dynamic
  * VALUE (a mustCall wrapper, a listener that rode an untyped binding),
  * "func" for a function whose parameters include dyn (the JS lane's
- * unannotated listeners — their checker type is any). Null for everything
+ * unannotated listeners — their checker type is any) and for a variadic
+ * function (takesEveryArgument). Null for everything
  * else (the static path, with its own diagnostics). */
 function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func" | null {
   let t: IrType | null;
@@ -1082,6 +1155,7 @@ function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func
   if (t?.kind === "dyn") return "dyn";
   if (t?.kind === "func") {
     if (t.params.some((p) => p.kind === "dyn")) return "func";
+    if (takesEveryArgument(t)) return "func";
     if (readsArgumentsPack(lowerer, node)) return "func";
     // The inferred signature of a wrapper can omit its runtime arguments
     // pack. Register the checked callable produced by the factory itself.
@@ -1581,6 +1655,12 @@ function lowerListenerArg(
     lowerer.noLowering(`'${member}' with a non-function listener`, node);
   }
   const cbT = cb.type as IrType & { kind: "func" };
+  // A typed listener is called with the parameters its type names, of the
+  // arguments the event carries.
+  lowerer.noteLongerCall(node, cbT, `'${member}'`, tuple.length);
+  // The emitter is passed as `this` only to a listener whose own type
+  // shows that it reads it.
+  if (!listenerReadsThis(lowerer, node)) lowerer.noteReceiverCall(node, `'${member}'`);
   // Node ignores listener return values, so value-returning listeners
   // (expression-body arrows, mustCall wrappers) register fine — the
   // emitted invoke adapter calls through the listener's true signature
@@ -1805,9 +1885,9 @@ export function lowerEmitterMethodCall(
         );
       }
       const receiver = lowerReceiver();
-      const name = anyName
-        ? eventNameArg(lowerer, member, args[0]!)
-        : lowerer.lowerExprExpecting(args[0]!, STRING);
+      // Both paths key the registry the same way (Node's property-key
+      // rules); they differ in the runtime entry point below.
+      const name = eventNameArg(lowerer, member, args[0]!);
       return lowerFlexListenerCall(
         lowerer,
         member,
@@ -1977,12 +2057,16 @@ export function lowerEmitterMethodCall(
       );
     }
     const cb = lowerListenerArg(lowerer, member, name, args[1]!, tuple);
+    const nameValue = registering ? literalNameValue(lowerer, args[0]!, loc) : null;
+    const nameKey = eventNameExpr(name, loc);
     return {
       kind: "libCall",
-      fn: registering ? "emitter.on" : "emitter.off",
+      fn: registering ? (nameValue ? "emitter.onNamed" : "emitter.on") : "emitter.off",
       args: registering
-        ? [receiver, eventNameExpr(name, loc), cb, boolLit(once, loc), boolLit(prepend, loc)]
-        : [receiver, eventNameExpr(name, loc), cb],
+        ? nameValue
+          ? [receiver, nameKey, nameValue, cb, boolLit(once, loc), boolLit(prepend, loc)]
+          : [receiver, nameKey, cb, boolLit(once, loc), boolLit(prepend, loc)]
+        : [receiver, nameKey, cb],
       type: receiver.type,
       loc,
       ...(registering && listenerReadsThis(lowerer, args[1]!) ? { bindsThis: true as const } : {}),
@@ -2008,7 +2092,7 @@ export function lowerEmitterMethodCall(
         );
       if (!mayBeObserved) {
         const receiver = lowerReceiver();
-        const dynamicName = lowerer.lowerExprExpecting(args[0]!, STRING);
+        const dynamicName = eventNameArg(lowerer, member, args[0]!);
         const payload = args.slice(1).map((arg) => lowerer.lowerExpr(arg));
         return {
           kind: "seqExpr",
@@ -2027,7 +2111,7 @@ export function lowerEmitterMethodCall(
         return lowerFlexEmit(name, "computed-name", true);
       }
       computedEventPattern(lowerer, info, member, args[0]!);
-      const name = lowerer.lowerExprExpecting(args[0]!, STRING);
+      const name = eventNameArg(lowerer, member, args[0]!);
       return lowerFlexEmit(name);
     }
     const name = eventNameOf(lowerer, member, args[0]!);
@@ -2246,7 +2330,9 @@ export function lowerEmitterMethodCall(
   if (member === "eventNames") {
     if (args.length !== 0) lowerer.noLowering(`eventNames with ${args.length} arguments`, call);
     const receiver = lowerReceiver();
-    return { kind: "libCall", fn: "emitter.names", args: [receiver], type: arrayOf(STRING), loc };
+    /* The registered keys: Node answers `(string | symbol)[]`, and a symbol
+     * cannot ride a string array — the checked-dynamic array carries both. */
+    return { kind: "libCall", fn: "emitter.names", args: [receiver], type: DYN, loc };
   }
 
   if (member === "setMaxListeners") {

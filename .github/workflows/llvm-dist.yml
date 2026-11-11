@@ -38,11 +38,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: pnpm
@@ -51,10 +51,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes ninja-build zlib1g-dev libzstd-dev
           base=https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "$base/${{ matrix.llvm_asset }}.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm.tar.xz" "$base/${{ matrix.llvm_asset }}.tar.xz"
+          sh scripts/verify-toolchain.sh "$RUNNER_TEMP/llvm.tar.xz" "${{ matrix.llvm_asset }}.tar.xz"
           tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm-src.tar.xz" "$base/llvm-project-22.1.8.src.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm-src.tar.xz" "$base/llvm-project-22.1.8.src.tar.xz"
+          sh scripts/verify-toolchain.sh "$RUNNER_TEMP/llvm-src.tar.xz" llvm-project-22.1.8.src.tar.xz
           tar -xJf "$RUNNER_TEMP/llvm-src.tar.xz" -C "$RUNNER_TEMP"
           rm "$RUNNER_TEMP/llvm.tar.xz" "$RUNNER_TEMP/llvm-src.tar.xz"
           echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"

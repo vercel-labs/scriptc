@@ -46,10 +46,12 @@ import {
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
+  isJsonStringifyDynamicType,
   accessorSlotProp,
   recordTextCodecClass,
   shapeKeyOrders,
   typeKey,
+  canBoxFuncIntoDyn,
 } from "../../ir/ir.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -67,6 +69,8 @@ import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
 import { errorConstructionOrder } from "./error-name-order.js";
+import { classFieldWithoutJsonView } from "./builtins/json.js";
+import { builtinConstructorText } from "./held-constructors.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -1353,7 +1357,16 @@ function inspectSupport(
       return null;
     }
     case "func":
-      return "function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)";
+      // A function value prints through its checked-dynamic box, which
+      // names it from the function itself (`[Function: name]`, `[Function
+      // (anonymous)]`) wherever it sits in the printed value.
+      return canBoxFuncIntoDyn(
+        t,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+        ? null
+        : "function values of this signature have no inspect lowering (a parameter or result type has no checked-dynamic form to box the function with; pass the function's declared identifier directly to util.inspect for the baked form)";
     case "object": {
       const info = lowerer.classes.get(t.className);
       if (!info) return `class '${t.className}' has no inspect lowering`;
@@ -1410,6 +1423,26 @@ function inspectSupport(
       }
       visiting.delete(t.className);
       return null;
+    }
+    // A class value prints through its checked-dynamic form: `[class C]`,
+    // `[class D extends C]` for whichever class the slot holds. Static
+    // fields print after the tag in Node, which that form does not hold
+    // (the runtime refuses it there): a class that has them, or a subclass
+    // that does, keeps the refusal here.
+    case "classval": {
+      const info = lowerer.classes.get(t.className);
+      // A runtime-provided class (EventEmitter, a stream class) has no
+      // checked-dynamic value in typed code.
+      if (!info || info.def.runtime || !lowerer.dynConvertible(t))
+        return `'${lowerer.fmt(t)}' values have no inspect lowering`;
+      const family = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(family),
+      ];
+      const withStatics = family(info).find((member) => member.staticFields.length > 0);
+      return withStatics
+        ? `'${lowerer.fmt(t)}' values have no inspect lowering (class '${withStatics.def.name}' has static fields, which Node prints after the class tag)`
+        : null;
     }
     // Generator objects print through their checked capsule: Node's
     // `Object [Generator] {}`, or the tag of the iterator they implement.
@@ -1631,6 +1664,25 @@ function inspectExprBody(
       };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
+    // A function value held in a typed slot (a union arm, a tuple position,
+    // a record member): its box has no static name, so the runtime names it
+    // from the function it is (inspectSupport admitted the signature).
+    case "func":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [{ kind: "dynFrom", value, type: DYN, loc }, recurse, depth],
+        type: STRING,
+        loc,
+      };
+    case "classval":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
     // URLs and URLSearchParams render through their checked-dynamic
     // handles: Node's `URL { href: ..., hash: ... }` and
     // `URLSearchParams { 'a' => '1' }`.
@@ -1761,6 +1813,20 @@ export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
     if (seen.has(k)) return false;
     seen.add(k);
     if (typeReachesItself(lowerer, u)) return true;
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+/** True when a value of `t` can hold an untyped value: a type reachable
+ * from it is the checked dynamic. */
+function typeReachesUntyped(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "dyn") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
     return typeConstituents(lowerer, u).some(walk);
   };
   return walk(t);
@@ -2195,9 +2261,14 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // An accessor's getter answers any value — the walked value itself
   // included — which no declared field type shows, so a shape with a
   // getter keeps Node's circular bookkeeping on.
+  // An untyped value holds any object by reference, the walked value
+  // included, so a container that reaches one keeps the bookkeeping on too.
   const onCycle =
-    (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    (typeReachesItself(lowerer, t) || (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)));
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
+      (typeReachesItself(lowerer, t) ||
+        (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)))) ||
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "set") &&
+      typeReachesUntyped(lowerer, t));
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -3733,14 +3804,15 @@ function isDataViewTypeName(tname: string): boolean {
 /** The parsed options literal: the resolved depth (numeric; Infinity for
  * `null`), breakLength (numeric; default 80), compact (numeric, -1 for
  * false; default 3), maxArrayLength and maxStringLength (a non-negative
- * integer; Infinity for `null`; defaults 100 and 10000), with every other
- * non-default knob fenced by name. */
+ * integer; Infinity for `null`; defaults 100 and 10000) and
+ * numericSeparator, with every other non-default knob fenced by name. */
 interface InspectOptions {
   depth: number;
   breakLength: number;
   compact: number;
   sorted: boolean;
   maxArrayLength: number;
+  numericSeparator: boolean;
   maxStringLength: number;
   /** Set by the `atRunTime` parse: colors or a computed knob value, which
    * the runtime reads. */
@@ -3775,6 +3847,7 @@ function parseInspectOptions(
     compact: 3,
     sorted: false,
     maxArrayLength: 100,
+    numericSeparator: false,
     maxStringLength: 10000,
     runtime: false,
     depthKind: 0,
@@ -3977,6 +4050,21 @@ function parseInspectOptions(
           "getters must be true, false, 'get' or 'set'",
         );
       }
+    } else if (key === "numericSeparator") {
+      const literal =
+        value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword;
+      if (!literal && atRunTime) {
+        options.runtime = true;
+        continue;
+      }
+      if (!literal) {
+        lowerer.noLowering(
+          `${surface} with this numericSeparator option`,
+          value,
+          "numericSeparator must be true or false",
+        );
+      }
+      options.numericSeparator = value.kind === ts.SyntaxKind.TrueKeyword;
     } else if (
       !dir &&
       key === "customInspect" &&
@@ -4016,7 +4104,7 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), numericSeparator (true or false), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
@@ -4024,8 +4112,9 @@ function parseInspectOptions(
 }
 
 /** A render under non-default breakLength/compact/sorted/maxArrayLength/
- * maxStringLength/getters: the value is evaluated first, the options apply
- * to this render only, and the defaults return however the render ends, an
+ * maxStringLength/getters/numericSeparator: the value is evaluated first,
+ * the options apply to this render only, and the defaults return however the
+ * render ends, an
  * inspection refusal included. The render runs in a lifted function,
  * `(v) => { set...; try { return render(v); } finally { restore...; } }`,
  * since a seqExpr cannot hold the try; `tag` names the render for the
@@ -4044,10 +4133,11 @@ function withInspectLayout(
     !options.sorted &&
     options.maxArrayLength === 100 &&
     options.maxStringLength === 10000 &&
-    options.getters === 0
+    options.getters === 0 &&
+    !options.numericSeparator
   )
     return render(value);
-  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.depth}`;
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${options.depth}`;
   let name = lowerer.inspectHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%util.inspLayout", key);
@@ -4121,6 +4211,24 @@ function withInspectLayout(
       restore.unshift({
         kind: "exprStmt",
         expr: getters(varRef(previous, F64, loc)),
+        loc,
+      });
+    }
+    if (options.numericSeparator) {
+      // insp.numericSeparator answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: BOOL, mutable: false });
+      const separator = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.numericSeparator",
+        args: [arg],
+        type: BOOL,
+        loc,
+      });
+      apply.push({ kind: "varDecl", localId: previous, init: separator(boolLit(true, loc)), loc });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: separator(varRef(previous, BOOL, loc)),
         loc,
       });
     }
@@ -4318,7 +4426,7 @@ export function lowerInspectValue(
     isJsSourceFile(valueNode.getSourceFile()) &&
     lowerer.dynConvertible(value.type)
   ) {
-    const name = jsFuncNameOf(valueNode);
+    const name = jsFuncNameOf(valueNode, lowerer);
     value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
   }
   if (dirPreview?.showHidden) {
@@ -4396,7 +4504,16 @@ export function lowerInspectValue(
       );
     }
     // Buffers render fully at any depth and on one line (custom inspect).
-    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
+    // Their named properties render as an object's members, so the layout
+    // options -- numericSeparator among them -- apply to those entries.
+    return withInspectLayout(
+      lowerer,
+      options,
+      value,
+      "buffer",
+      (input) => ({ kind: "libCall", fn: "insp.buffer", args: [input], type: STRING, loc }),
+      loc,
+    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);
@@ -4420,7 +4537,7 @@ export function lowerInspectValue(
     // render(v); } finally { restore; } }`, so the previous ones return on
     // every exit, an inspection refusal's throw included (a seqExpr cannot
     // hold the try).
-    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${depth}`;
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${depth}`;
     let name = lowerer.inspectHelpers.get(key);
     if (name === undefined) {
       name = keyedHelperName(lowerer, "%util.inspContext", key);
@@ -4515,6 +4632,12 @@ function formatSValue(
 ): IrExpr {
   const t = value.type;
   if (t.kind === "string") return value;
+  // %s of a primitive constructor held as a value is the constructor's text
+  // (programs that hold none skip it).
+  if (lowerer.constructorFunctionTypes && (t.kind === "func" || t.kind === "dyn")) {
+    const text = builtinConstructorText(lowerer, node, value, false);
+    if (text) return text;
+  }
   if (t.kind === "f64")
     return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };
@@ -4535,6 +4658,16 @@ function formatSValue(
       loc,
     };
   }
+  // %s of a function or a class is String(fn), its source text, which a
+  // compiled program does not carry: such a value, alone or as an arm,
+  // keeps the refusal (inside a record or an array it inspects as a member).
+  const callable = (arm: IrType): boolean => arm.kind === "func" || arm.kind === "classval";
+  if (callable(t) || (t.kind === "union" && lowerer.unions.get(t.unionId)?.arms.some(callable)))
+    lowerer.noLowering(
+      `util.format %s of '${lowerer.fmt(t)}' values`,
+      node,
+      "Node prints a function's or a class's source text for %s (String(fn)); pass util.inspect(value) for the '[Function: name]' form",
+    );
   // A UNION argument dispatches per arm at runtime: a string arm prints
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
   // quoting never applies at the top level), every other arm inspects.
@@ -4585,6 +4718,14 @@ function formatSValue(
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
   if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
+    // The runtime's %o refuses every function value when it runs: the
+    // build names the statement (SC6015).
+    if (lowerer.isFunctionValue(node, value))
+      lowerer.noteDeferredRefusal(
+        node,
+        "util.format %o of function values is not supported yet",
+        "format the function's name instead (`%s` of `f.name`)",
+      );
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
@@ -4959,6 +5100,21 @@ export function lowerFormatCall(
             type: STRING,
             loc,
           };
+        }
+        // A JSON-shaped container with untyped payloads (a record with an
+        // `unknown` member, an array of such records): the runtime walk
+        // over the value's live view, as JSON.stringify takes for the same
+        // type (builtins/json.ts), with %j's "[Circular]".
+        if (
+          isJsonStringifyDynamicType(
+            value.type,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ) &&
+          classFieldWithoutJsonView(lowerer, value.type, new Set()) === null
+        ) {
+          const boxed: IrExpr = { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
+          return { kind: "libCall", fn: "insp.jsonDyn", args: [boxed], type: STRING, loc };
         }
         if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(

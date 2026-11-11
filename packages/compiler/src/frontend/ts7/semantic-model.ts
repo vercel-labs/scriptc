@@ -6,7 +6,7 @@ import type {
 import { AstNode } from "./ast-node.js";
 import type { __String } from "./ast-types.js";
 import type * as enums from "./enums.generated.js";
-import { parseAstNodeHandle, syntaxKind71 } from "./ast-wire.js";
+import { parseAstNodeHandle, syntaxKind70 } from "./ast-wire.js";
 import type { SemanticChecker, SemanticJsDocTag } from "./semantic-checker.js";
 import { decodeSemanticObject, decodeSemanticObjects, parseSemanticJson } from "./semantic-json.js";
 import {
@@ -168,37 +168,66 @@ const OBJECT_ID_METHODS_7_1 = new Map<string, "type" | "signature">([
  * reference gets the local id of the symbol it names, so a later response
  * with that symbol's full reference finds the same id. */
 export class Ts71SymbolTable {
-  private readonly locals = new Map<string, number>();
+  /** Local ids by owner, then by the symbol's id within it: a source file's
+   * symbols by the file's node ID, a project's by the project. */
+  private readonly fileSymbols = new Map<string, Map<number, number>>();
+  private readonly projectSymbols = new Map<string, Map<number, number>>();
   private readonly references: (Ts71SymbolReference | undefined)[] = [undefined];
+  /** One descriptor per source file, by its node ID. Every reference to a
+   * file's symbol carries the file's whole descriptor, and the references
+   * live as long as the snapshot: kept as sent, the compiler's own source
+   * holds 1.4 million copies of 889 descriptors. */
+  private readonly files = new Map<string, Ts71SourceFileDescriptor>();
 
-  private allocate(key: string): number {
-    let local = this.locals.get(key);
+  private allocate(owners: Map<string, Map<number, number>>, owner: string, id: number): number {
+    let locals = owners.get(owner);
+    if (locals === undefined) {
+      locals = new Map<number, number>();
+      owners.set(owner, locals);
+    }
+    let local = locals.get(id);
     if (local === undefined) {
       local = this.references.length;
       this.references.push(undefined);
-      this.locals.set(key, local);
+      locals.set(id, local);
     }
     return local;
   }
 
+  /** The descriptor the table keeps for `file`: the one it already holds
+   * when that says the same, field for field. */
+  private sharedFile(file: Ts71SourceFileDescriptor): Ts71SourceFileDescriptor {
+    const known = this.files.get(file.nodeId);
+    if (
+      known !== undefined &&
+      known.fileName === file.fileName &&
+      known.path === file.path &&
+      known.contentHash === file.contentHash &&
+      known.parseOptionsKey === file.parseOptionsKey &&
+      known.scriptKind === file.scriptKind
+    )
+      return known;
+    this.files.set(file.nodeId, file);
+    return file;
+  }
+
   /** The local id of `reference`, which requests then name it by. */
   fromReference(reference: Ts71SymbolReference): number {
-    const key =
+    const file = reference.file;
+    if (file !== undefined) reference.file = this.sharedFile(file);
+    const local =
       reference.kind === 0
-        ? `f${reference.file?.nodeId ?? ""}:${reference.id}`
-        : `s${reference.project ?? ""}:${reference.id}`;
-    const local = this.allocate(key);
+        ? this.allocate(this.fileSymbols, file?.nodeId ?? "", reference.id)
+        : this.allocate(this.projectSymbols, reference.project ?? "", reference.id);
     this.references[local] = reference;
     return local;
   }
 
   /** The local id of a compact reference in a response for `project`. */
   fromCompact(reference: Ts71CompactReference, project: string): number {
-    return this.allocate(
-      reference.file !== undefined
-        ? `f${reference.file}:${reference.id}`
-        : `s${project}:${reference.id}`,
-    );
+    return reference.file !== undefined
+      ? this.allocate(this.fileSymbols, reference.file, reference.id)
+      : this.allocate(this.projectSymbols, project, reference.id);
   }
 
   /** The reference of local id `local`. Throws for a symbol no response has
@@ -386,9 +415,6 @@ export class SemanticProject {
         query.symbol = references.reference(query.objectId);
         query.objectId = undefined;
       }
-      // signatureToSignatureDeclaration's kind is a SyntaxKind.
-      if (method === "signatureToSignatureDeclaration" && query.kind !== undefined)
-        query.kind = syntaxKind71(query.kind);
       const field = OBJECT_ID_METHODS_7_1.get(method);
       if (field === "type") {
         query.objectId = query.type;
@@ -397,6 +423,10 @@ export class SemanticProject {
         query.objectId = query.signature;
         query.signature = undefined;
       }
+    } else if (method === "signatureToSignatureDeclaration" && query.kind !== undefined) {
+      // The kind is a SyntaxKind, which a 7.0 server numbers one lower from
+      // SourceKeyword up.
+      query.kind = syntaxKind70(query.kind);
     }
     return JSON.stringify(query);
   }
@@ -409,10 +439,24 @@ export class SemanticProject {
     return this.snapshot.transport.binary(method, this.encode(method, query));
   }
 
-  /** A type a TypeScript 7.1 reply holds. */
+  /** A type a TypeScript 7.1 reply holds.
+   *
+   * An empty tuple cloned as an array literal (the `[]` of
+   * `const [first = 7] = [];`, of `s.match(re) || []`) keeps its target's
+   * tuple flag and has no tuple data of its own. A 7.0 server and tsc-ts
+   * panic serializing it, and every reader of such a reply treats that
+   * panic as an unanswered query. tsgo 7.1 serializes it instead, flagged
+   * as a tuple without a length. Such a type reads as the same panic, so a
+   * program compiles the same way with either server. */
   type71(data: Ts71TypeData): SemanticType {
     const references = this.snapshot.references;
     if (references === undefined) throw new Error("TypeScript 7.1 type from a 7.0 server");
+    if (
+      (data.flags & TypeFlags.Object) !== 0 &&
+      ((data.objectFlags ?? 0) & ObjectFlags.Tuple) !== 0 &&
+      data.fixedLength === undefined
+    )
+      throw new Error("panic: a type has the tuple flag and no tuple data");
     this.tupleTypes.set(data.id, data.isTupleType === true);
     return this.type(references.typeData(data, this.id));
   }

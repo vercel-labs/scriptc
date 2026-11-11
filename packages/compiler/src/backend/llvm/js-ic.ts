@@ -34,6 +34,7 @@
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
+import { CLASS_NORMALIZER } from "../../ir/function-references.js";
 import { inertValue } from "../../ir/js-groups.js";
 import { jsIcMethodSites, DYN_INDEX_FASTPATH, type JsIcSite } from "../../ir/js-ic.js";
 import { jsObjectModelFact } from "../../ir/runtime-features.js";
@@ -426,9 +427,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
   if (!body.some(isClassHashSwitch)) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassHashSwitch(stmt))
-      for (const { body: caseBody } of stmt.cases) branches.push(...caseBody);
-    else branches.push(stmt);
+    if (isClassHashSwitch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
   }
   return branches;
 }
@@ -436,7 +439,11 @@ function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
 /** The switch the compiler builds over a generated class table's branches
  * (frontend/lowering/class-dynamic-dispatch.ts). */
 function isClassHashSwitch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
-  return stmt.kind === "switch" && stmt.disc.kind === "libCall" && stmt.disc.fn === "dyn.classHash";
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
 }
 
 /** `p = %dyn.class.normalize(p)`. */
@@ -497,7 +504,7 @@ function capsuleRead(
  * may rebox to; null when the normalization has another form. */
 function normalizationTargets(host: Host): Map<string, string[]> | null {
   const targets = new Map<string, string[]>();
-  const normalize = host.fnByName.get("%dyn.class.normalize");
+  const normalize = host.fnByName.get(CLASS_NORMALIZER);
   if (normalize === undefined) return targets;
   const value = normalize.params[0]?.localId;
   if (value === undefined) return null;
@@ -933,6 +940,8 @@ export function emitJsIcCall(
       return emitKeyed(host, e, callee);
     case "keyedSet":
       return emitKeyedSet(host, e, callee);
+    case "namedSet":
+      return emitNamedSet(host, e, callee, site.write);
   }
 }
 
@@ -1582,6 +1591,53 @@ function emitKeyedSet(host: Host, e: ExprOf<"call">, callee: IrFunction): LlValu
     B.line(`store ptr ${keyCell}, ptr ${keySlot}`);
   }
   helperCall(host, e, callee, [receiver, { name: keyCell, type: DYN }, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
+}
+
+/** A write under a run-time name (`receiver[name] = value`, the name a
+ * string): an ordinary object takes the helper's generic write here, with
+ * the site's borrowed operands, and every other receiver (a class
+ * instance, a class object, an array, a proxy, a primitive) calls the
+ * helper. A plain record's member is assigned through its layout by the
+ * site's own runtime entry (scr_json.c scr_dyn_key_set_record), which only
+ * these sites call, so a program without one links none of it; it throws
+ * nothing. Every other ordinary object takes the runtime entry the
+ * helper's own tail calls, the sloppy-mode one for a sloppy helper, so the
+ * assignment is the one the helper defines. */
+function emitNamedSet(
+  host: Host,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  write: IrExpr & { kind: "libCall" },
+): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const key = emitBorrowedInput(host, e.args[1]!);
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const object = B.newLabel("ins.obj");
+  const general = B.newLabel("ins.gen");
+  const slow = B.newLabel("ins.slow");
+  const join = B.newLabel("ins.j");
+  const operands = `ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name}`;
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, slow);
+  B.startBlock(object);
+  host.declare(`declare zeroext i1 @scr_dyn_key_set_record(ptr, ptr, ptr)`);
+  const assigned = B.tmp();
+  B.line(`${assigned} = call zeroext i1 @scr_dyn_key_set_record(${operands})`);
+  B.condBr(assigned, join, general);
+  B.startBlock(general);
+  const sloppy = host.sloppyDynWrites.has(
+    `${write.loc.file}\0${write.loc.start}\0${write.loc.end}`,
+  );
+  const entry = sloppy ? "scr_dyn_key_set_sloppy" : "scr_dyn_key_set";
+  host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
+  B.line(`call void @${entry}(${operands})`);
+  host.emitPendingCheck();
+  B.br(join);
+  B.startBlock(slow);
+  helperCall(host, e, callee, [receiver, key, value]);
   B.br(join);
   B.startBlock(join);
   return { name: "", type: e.type };

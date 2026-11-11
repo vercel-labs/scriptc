@@ -25,6 +25,8 @@ typedef struct WsReadable WsReadable;
 typedef struct WsReader WsReader;
 typedef struct WsRController WsRController;
 typedef struct WsReadRequest WsReadRequest;
+typedef struct WsPullInto WsPullInto;
+typedef struct WsByob WsByob;
 typedef struct WsTee WsTee;
 
 static void ws_oom(void) { scr_trap("scriptc: out of memory\n"); }
@@ -113,6 +115,9 @@ static void ws_release(void *obj) {
 static const ScrDynHandleAccessor ws_readable_accessors[] = {{"locked", false}, {NULL, false}};
 static const ScrDynHandleAccessor ws_reader_accessors[] = {{"closed", true}, {NULL, false}};
 static const ScrDynHandleAccessor ws_rcontroller_accessors[] = {{"desiredSize", false}, {NULL, false}};
+static const ScrDynHandleAccessor ws_byob_controller_accessors[] = {
+    {"byobRequest", false}, {"desiredSize", false}, {NULL, false}};
+static const ScrDynHandleAccessor ws_byob_request_accessors[] = {{"view", false}, {NULL, false}};
 static const ScrDynHandleAccessor ws_writable_accessors[] = {{"locked", false}, {NULL, false}};
 static const ScrDynHandleAccessor ws_writer_accessors[] = {
     {"closed", true}, {"desiredSize", false}, {"ready", true}, {NULL, false}};
@@ -188,9 +193,13 @@ static bool ws_validate_object(const ScrDyn *value, const char *name, bool allow
 }
 
 /* value[name] through Get (getters run); +1, or NULL with the exception
- * pending. undefined and null answer undefined, as optional chaining does. */
+ * pending. undefined and null answer undefined, as optional chaining does,
+ * and so does a primitive, whose own members JavaScript reads as absent. */
 static ScrDyn *ws_get(const ScrDyn *object, const char *name) {
   if (object->kind == SCR_DYN_UNDEF || object->kind == SCR_DYN_NULL) return ws_undef();
+  if (object->kind == SCR_DYN_BOOL || object->kind == SCR_DYN_NUM || object->kind == SCR_DYN_STR ||
+      object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL)
+    return ws_undef();
   if (object->kind == SCR_DYN_HANDLE || object->kind == SCR_DYN_BYTES) {
     ScrStr *key = scr_str_new(name, strlen(name));
     ScrDyn *value = object->kind == SCR_DYN_HANDLE ? scr_dyn_handle_key_get(object, key)
@@ -506,6 +515,30 @@ static void ws_queue_push(WsQueue *q, ScrDyn *value, double size) {
   q->length++;
 }
 
+/* Puts a value back at the front: a chunk a read only partly consumed. */
+static void ws_queue_unshift(WsQueue *q, ScrDyn *value, double size) {
+  if (q->length == q->capacity) {
+    size_t capacity = q->capacity ? q->capacity * 2 : 8;
+    ScrDyn **values = malloc(capacity * sizeof *values);
+    double *sizes = malloc(capacity * sizeof *sizes);
+    if (!values || !sizes) ws_oom();
+    for (size_t i = 0; i < q->length; i++) {
+      values[i] = q->values[(q->head + i) % q->capacity];
+      sizes[i] = q->sizes[(q->head + i) % q->capacity];
+    }
+    free(q->values);
+    free(q->sizes);
+    q->values = values;
+    q->sizes = sizes;
+    q->head = 0;
+    q->capacity = capacity;
+  }
+  q->head = q->length ? (q->head + q->capacity - 1) % q->capacity : 0;
+  q->values[q->head] = scr_dyn_retain(value);
+  q->sizes[q->head] = size;
+  q->length++;
+}
+
 /* The front value (+1 moves out) and its size. */
 static ScrDyn *ws_queue_shift(WsQueue *q, double *size) {
   ScrDyn *value = q->values[q->head];
@@ -580,6 +613,19 @@ static void ws_default_error(WsReadRequest *r, ScrDyn *error) {
 
 static const WsReadRequestOps ws_default_request_ops = {ws_default_chunk, ws_default_close, ws_default_error};
 
+/* A read into a byte stream's destination buffer: a BYOB reader's view, or
+ * the buffer a default reader's autoAllocateChunkSize read makes. The
+ * controller holds the pending descriptors in order, and the first is the
+ * one a pull sees through its BYOB request. */
+struct WsPullInto {
+  WsPullInto *next;
+  ScrBytes *view;      /* +1: the destination */
+  size_t filled;       /* bytes of view written so far */
+  size_t min;          /* the read answers once this many bytes are written */
+  bool byob;           /* the result keeps view's element type */
+  ScrPromise *promise; /* +1 */
+};
+
 /* ── ReadableStream state ──────────────────────────────────────────── */
 
 typedef enum { WS_STATE_READABLE, WS_STATE_CLOSED, WS_STATE_ERRORED } WsState;
@@ -619,6 +665,19 @@ struct WsRController {
   const WsSourceOps *native;
   void *native_ctx; /* +1 */
   int native_branch; /* a tee branch's number */
+  /* A byte stream (source.type "bytes"): reads fill buffers instead of
+   * taking chunks, and its requests wait here. */
+  bool bytes;
+  double auto_allocate; /* source.autoAllocateChunkSize, 0 = none */
+  WsPullInto *into_head, *into_tail;
+  WsByob *byob; /* +1: the request the current pull answers, or NULL */
+};
+
+/* A ReadableStreamBYOBRequest: a view of what the pending read still needs.
+ * One handle per pending request, invalidated when it is answered. */
+struct WsByob {
+  WsObj obj;
+  WsRController *controller; /* +1 while attached */
 };
 
 struct WsReader {
@@ -705,6 +764,8 @@ static void ws_rcontroller_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   ws_visit(c->cancel_fn, visit, ctx);
   ws_visit(c->size_fn, visit, ctx);
   ws_visit(c->native_ctx, visit, ctx);
+  ws_visit(c->byob, visit, ctx);
+  for (WsPullInto *d = c->into_head; d; d = d->next) ws_visit(d->promise, visit, ctx);
 }
 
 static void ws_rcontroller_drop(void *obj, bool gc) {
@@ -715,10 +776,31 @@ static void ws_rcontroller_drop(void *obj, bool gc) {
   ws_drop_dyn(c->cancel_fn, gc);
   ws_drop_dyn(c->size_fn, gc);
   ws_drop_obj(c->native_ctx, gc);
+  ws_drop_obj(c->byob, gc);
+  while (c->into_head) {
+    WsPullInto *d = c->into_head;
+    c->into_head = d->next;
+    ws_drop_promise(d->promise, gc);
+    if (d->view) scr_bytes_release(d->view);
+    free(d);
+  }
   ws_drop_obj(c->stream, gc);
 }
 
 static const WsObjType ws_rcontroller_type = {ws_rcontroller_trace, ws_rcontroller_drop, "ReadableStreamDefaultController", ws_rcontroller_accessors};
+
+static void ws_byob_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  WsByob *b = obj;
+  ws_visit(b->controller, visit, ctx);
+}
+
+static void ws_byob_drop(void *obj, bool gc) {
+  WsByob *b = obj;
+  ws_drop_obj(b->controller, gc);
+}
+
+static const WsObjType ws_byob_type = {ws_byob_trace, ws_byob_drop, "ReadableStreamBYOBRequest", ws_byob_request_accessors};
+static const WsObjType ws_byob_controller_type = {ws_rcontroller_trace, ws_rcontroller_drop, "ReadableByteStreamController", ws_byob_controller_accessors};
 
 static void ws_reader_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   WsReader *r = obj;
@@ -746,6 +828,7 @@ static void ws_reader_drop(void *obj, bool gc) {
 }
 
 static const WsObjType ws_reader_type = {ws_reader_trace, ws_reader_drop, "ReadableStreamDefaultReader", ws_reader_accessors};
+static const WsObjType ws_byob_reader_type = {ws_reader_trace, ws_reader_drop, "ReadableStreamBYOBReader", ws_reader_accessors};
 
 /* ── handles ───────────────────────────────────────────────────────── */
 
@@ -759,13 +842,24 @@ static ScrDyn *ws_box(void *state, ScrDynHandleTag tag) {
 
 static ScrDyn *ws_stream_box(WsReadable *s) { return ws_box(s, SCR_DYNH_WS_READABLE); }
 static ScrDyn *ws_reader_box(WsReader *r) { return ws_box(r, SCR_DYNH_WS_READER); }
-static ScrDyn *ws_rcontroller_box(WsRController *c) { return ws_box(c, SCR_DYNH_WS_RCONTROLLER); }
+static ScrDyn *ws_byob_reader_box(WsReader *r) { return ws_box(r, SCR_DYNH_WS_BYOB_READER); }
+static ScrDyn *ws_rcontroller_box(WsRController *c) {
+  return ws_box(c, c->bytes ? SCR_DYNH_WS_BYOB_CONTROLLER : SCR_DYNH_WS_RCONTROLLER);
+}
+static ScrDyn *ws_byob_box(WsByob *b) { return ws_box(b, SCR_DYNH_WS_BYOB_REQUEST); }
 
 static WsReadable *ws_stream_of(const ScrDyn *d) {
   return d && d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_WS_READABLE ? d->v.handle.ptr : NULL;
 }
 
 static void ws_install(void);
+
+/* Byte streams (below): their pending reads are buffers, so closing or
+ * erroring the stream settles them here. */
+static void ws_bytes_settle(WsRController *c, ScrDyn *error, bool done);
+static void ws_bytes_before_pull(WsRController *c);
+static ScrDyn *ws_bytes_read(WsReader *r);
+static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view, ScrDyn *options);
 
 /* ── ReadableStream abstract operations ───────────────────────────── */
 
@@ -788,6 +882,7 @@ static void ws_rcontroller_clear_algorithms(WsRController *c) {
 static void ws_readable_close(WsReadable *s) {
   s->state = WS_STATE_CLOSED;
   if (s->closed_materialized) ws_deferred_resolve_undefined(&s->closed);
+  if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, NULL, true);
   WsReader *r = s->reader;
   if (!r) return;
   if (r->closed && r->closed_live) {
@@ -812,6 +907,7 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error);
 static void ws_readable_error(WsReadable *s, ScrDyn *error) {
   s->state = WS_STATE_ERRORED;
   s->stored_error = scr_dyn_retain(error);
+  if (s->controller && s->controller->bytes) ws_bytes_settle(s->controller, error, false);
   if (s->closed_materialized) {
     ws_set_handled(s->closed.promise);
     ws_deferred_reject(&s->closed, error);
@@ -919,6 +1015,9 @@ static void ws_reader_generic_release(WsReader *r) {
 
 /* readableStreamDefaultReaderRelease. */
 static void ws_reader_release_lock(WsReader *r) {
+  WsReadable *s = r->stream;
+  if (s && s->controller && s->controller->bytes)
+    ws_bytes_settle(s->controller, ws_reader_releasing_error(), false);
   ws_reader_retain(r);
   ws_reader_generic_release(r);
   while (r->head) {
@@ -934,12 +1033,12 @@ static void ws_reader_release_lock(WsReader *r) {
 /* setupReadableStreamDefaultReader: false with the exception pending. */
 /* setupReadableStreamDefaultReader: the new reader (+1), or NULL with the
  * exception pending. */
-static WsReader *ws_reader_new(WsReadable *s) {
+static WsReader *ws_reader_new(WsReadable *s, bool byob) {
   if (ws_readable_locked(s)) {
     ws_state_error("ReadableStream is locked");
     return NULL;
   }
-  WsReader *r = ws_obj_new(sizeof *r, &ws_reader_type);
+  WsReader *r = ws_obj_new(sizeof *r, byob ? &ws_byob_reader_type : &ws_reader_type);
   r->stream = ws_readable_retain(s);
   s->reader = ws_reader_retain(r);
   return r;
@@ -956,7 +1055,7 @@ static void ws_rcontroller_pull(WsRController *c);
 static bool ws_rcontroller_should_call_pull(WsRController *c) {
   WsReadable *s = c->stream;
   if (c->close_requested || s->state != WS_STATE_READABLE || !c->started) return false;
-  if (s->reader && s->reader->requests) return true;
+  if (s->reader && (s->reader->requests || c->into_head)) return true;
   return c->high_water_mark - c->queue_total_size > 0;
 }
 
@@ -980,6 +1079,24 @@ static void ws_rcontroller_close(WsRController *c) {
     ws_rcontroller_clear_algorithms(c);
     ws_readable_close(c->stream);
   }
+}
+
+/* ReadableByteStreamControllerClose: a read that already holds bytes answers
+ * with them before the stream ends (a partial destination errors the stream
+ * instead, since a BYOB read cannot return half an element). */
+static void ws_bytes_close(WsRController *c) {
+  if (!ws_rcontroller_can_close_or_enqueue(c)) return;
+  WsPullInto *d = c->into_head;
+  if (d && d->filled) {
+    size_t width = scr_bytes_elem_size(d->view->elem);
+    if (d->byob && width && d->filled % width) {
+      ScrDyn *error = ws_state_error_value("Insufficient bytes to fill elements in the given buffer");
+      ws_rcontroller_error(c, error);
+      scr_dyn_release(error);
+      return;
+    }
+  }
+  ws_rcontroller_close(c);
 }
 
 /* readableStreamDefaultControllerEnqueue: false with the exception pending
@@ -1051,6 +1168,7 @@ static void ws_rcontroller_pull(WsRController *c) {
     return;
   }
   c->pulling = true;
+  if (c->bytes) ws_bytes_before_pull(c);
   ScrDyn *result;
   if (c->native) {
     result = c->native->pull(c->native_ctx, c);
@@ -1127,6 +1245,398 @@ static void ws_rcontroller_pull_steps(WsRController *c, WsReadRequest *q) {
   if (c->started) ws_rcontroller_pull(c);
 }
 
+/* ── byte streams ──────────────────────────────────────────────────── */
+
+/* Defined below: the read path's boxes and the reader's own read request. */
+static ScrDyn *ws_promise_box(ScrPromise *p);
+static ScrDyn *ws_rejected_pending_box(void);
+static ScrDyn *ws_reader_detached(void);
+static void ws_reader_read_request(WsReader *r, WsReadRequest *q);
+
+/* The public way to spell the error a byte stream's reads answer with. */
+
+/* `count` bytes of `view`'s range, from `from`, as a Uint8Array (+1). The
+ * BYOB request's view is always a Uint8Array, whatever the reader's own
+ * view's element type is. */
+static ScrBytes *ws_u8_window(const ScrBytes *view, size_t from, size_t count) {
+  ScrBytes *owner = view->backing ? view->backing : (ScrBytes *)view;
+  double offset = (double)(view->data - owner->data) + (double)from;
+  return scr_bytes_buffer_view(owner, SCR_BYTES_U8, offset, true, (double)count);
+}
+
+/* The first `bytes` bytes of a read destination, in its own element type:
+ * what a BYOB read answers with (a DataView stays a DataView). +1. */
+static ScrBytes *ws_view_prefix(const ScrBytes *view, size_t bytes) {
+  size_t width = scr_bytes_elem_size(view->elem);
+  ScrBytes *prefix = scr_bytes_subarray((ScrBytes *)view, 0, (double)(width ? bytes / width : bytes));
+  if (prefix && view->is_data_view) {
+    prefix->is_data_view = true;
+    prefix->elem = SCR_BYTES_U8;
+    prefix->len = bytes;
+  }
+  return prefix;
+}
+
+static void ws_copy_bytes(ScrBytes *dst, size_t dst_off, const ScrBytes *src, size_t src_off, size_t n) {
+  if (src->shared || dst->shared) {
+    uint8_t block[512];
+    while (n) {
+      size_t take = n < sizeof block ? n : sizeof block;
+      scr_bytes_read(src, src_off, block, take);
+      scr_bytes_write(dst, dst_off, block, take);
+      src_off += take;
+      dst_off += take;
+      n -= take;
+    }
+  } else if (n) {
+    memcpy(dst->data + dst_off, src->data + src_off, n);
+  }
+}
+
+static WsPullInto *ws_pull_into_new(ScrBytes *view, size_t min, bool byob, ScrPromise *promise) {
+  WsPullInto *d = ws_alloc(sizeof *d);
+  d->view = scr_bytes_retain(view);
+  d->min = min;
+  d->byob = byob;
+  d->promise = scr_promise_retain(promise);
+  return d;
+}
+
+static void ws_pull_into_enqueue(WsRController *c, WsPullInto *d) {
+  d->next = NULL;
+  if (c->into_tail) c->into_tail->next = d;
+  else c->into_head = d;
+  c->into_tail = d;
+}
+
+/* The bytes the pending read still needs. */
+static size_t ws_pull_into_remaining(const WsPullInto *d) {
+  size_t size = (size_t)scr_bytes_byte_len(d->view);
+  return d->filled < size ? size - d->filled : 0;
+}
+
+/* Writes up to `n` bytes of `src` (from `offset`) into the pending read:
+ * how many it took. */
+static size_t ws_pull_into_write(WsPullInto *d, const ScrBytes *src, size_t offset, size_t n) {
+  size_t take = ws_pull_into_remaining(d);
+  if (take > n) take = n;
+  if (take) {
+    ws_copy_bytes(d->view, d->filled, src, offset, take);
+    d->filled += take;
+  }
+  return take;
+}
+
+/* Answers the read: the bytes written, or the stream's end (an empty view of
+ * the destination's element type for a BYOB read, undefined for a default
+ * read's own buffer). */
+static void ws_pull_into_finish(WsPullInto *d, bool done) {
+  ScrDyn *result;
+  if (done && !d->filled) {
+    ScrDyn *value;
+    if (d->byob) {
+      ScrBytes *empty = ws_view_prefix(d->view, 0);
+      if (!empty) return;
+      value = scr_dyn_new_bytes(empty);
+      scr_bytes_release(empty); /* the value holds its own reference */
+    } else {
+      value = ws_undef();
+    }
+    result = ws_read_result(value, true);
+    scr_dyn_release(value);
+  } else {
+    ScrBytes *bytes = ws_view_prefix(d->view, d->filled);
+    if (!bytes) return;
+    ScrDyn *value = scr_dyn_new_bytes(bytes);
+    scr_bytes_release(bytes); /* the value holds its own reference */
+    result = ws_read_result(value, false);
+    scr_dyn_release(value);
+  }
+  ws_fulfill(d->promise, result);
+  scr_dyn_release(result);
+  scr_promise_release(d->promise);
+  d->promise = NULL;
+}
+
+static void ws_pull_into_fail(WsPullInto *d, ScrDyn *error) {
+  ws_reject(d->promise, error);
+  scr_promise_release(d->promise);
+  d->promise = NULL;
+}
+
+/* Takes the request out of the controller's hands: a handle the program kept
+ * stops answering, as Node's invalidated request does. */
+static void ws_byob_invalidate(WsRController *c) {
+  WsByob *b = c->byob;
+  if (!b) return;
+  c->byob = NULL;
+  if (b->controller) {
+    ws_release(b->controller);
+    b->controller = NULL;
+  }
+  ws_release(b);
+}
+
+static void ws_bytes_process_queue(WsRController *c);
+static void ws_bytes_commit(WsRController *c);
+
+/* ReadableByteStreamControllerHandleQueueDrain: a close that waited for the
+ * queued bytes takes effect once they are handed out. A read still waiting
+ * for more than they hold is its own answer (Node's pull-into errors the
+ * stream with "ReadableStream closed" for it), so it keeps the stream as it
+ * is. */
+static void ws_bytes_handle_queue_drain(WsRController *c) {
+  if (c->queue.length || !c->close_requested || c->into_head) return;
+  if (c->stream->state != WS_STATE_READABLE) return;
+  ws_rcontroller_clear_algorithms(c);
+  ws_readable_close(c->stream);
+}
+
+/* Fills pending reads from the queued chunks, oldest first. A read takes
+ * every queued byte its view can hold before it answers, as Node's fill from
+ * the queue does, so the bytes a later chunk leaves for the next read stay
+ * after the bytes this read already holds. */
+static void ws_bytes_process_queue(WsRController *c) {
+  while (c->into_head) {
+    WsPullInto *d = c->into_head;
+    while (c->queue.length && ws_pull_into_remaining(d) > 0) {
+      double size;
+      ScrDyn *value = ws_queue_shift(&c->queue, &size);
+      c->queue_total_size = fmax(0, c->queue_total_size - size);
+      ScrBytes *bytes = value->v.bytes;
+      size_t total = (size_t)scr_bytes_byte_len(bytes);
+      size_t used = ws_pull_into_write(d, bytes, 0, total);
+      if (used < total) {
+        ScrBytes *rest = scr_bytes_subarray(bytes, (double)used, (double)total);
+        double rest_size = scr_bytes_byte_len(rest);
+        ScrDyn *entry = scr_dyn_new_bytes(rest);
+        scr_bytes_release(rest); /* the entry holds its own reference */
+        ws_queue_unshift(&c->queue, entry, rest_size);
+        scr_dyn_release(entry);
+        c->queue_total_size += rest_size;
+      }
+      scr_dyn_release(value);
+    }
+    if (d->filled < d->min) break;
+    ws_bytes_commit(c);
+  }
+  ws_bytes_handle_queue_drain(c);
+}
+
+/* Answers the head read with what it holds and starts the next one. */
+static void ws_bytes_commit(WsRController *c) {
+  WsPullInto *d = c->into_head;
+  c->into_head = d->next;
+  if (!c->into_head) c->into_tail = NULL;
+  ws_byob_invalidate(c);
+  /* A BYOB read answers whole elements only. The bytes past the last whole
+   * element go back to the front of the queue as a copy, where the read that
+   * follows takes them before any chunk queued after them. */
+  if (d->byob && d->filled) {
+    size_t width = scr_bytes_elem_size(d->view->elem);
+    size_t remainder = width > 1 ? d->filled % width : 0;
+    if (remainder) {
+      ScrBytes *rest = scr_bytes_new(SCR_BYTES_U8, (double)remainder);
+      if (!rest) return;
+      ws_copy_bytes(rest, 0, d->view, d->filled - remainder, remainder);
+      ScrDyn *entry = scr_dyn_new_bytes(rest);
+      scr_bytes_release(rest); /* the entry holds its own reference */
+      ws_queue_unshift(&c->queue, entry, (double)remainder);
+      scr_dyn_release(entry);
+      c->queue_total_size += (double)remainder;
+      d->filled -= remainder;
+    }
+  }
+  ws_pull_into_finish(d, false);
+  scr_bytes_release(d->view);
+  free(d);
+  ws_bytes_process_queue(c);
+}
+
+/* Settles every pending read: with `error`, or as the stream's end. */
+static void ws_bytes_settle(WsRController *c, ScrDyn *error, bool done) {
+  WsPullInto *d = c->into_head;
+  c->into_head = c->into_tail = NULL;
+  ws_byob_invalidate(c);
+  while (d) {
+    WsPullInto *next = d->next;
+    if (error) ws_pull_into_fail(d, error);
+    else ws_pull_into_finish(d, done);
+    scr_bytes_release(d->view);
+    free(d);
+    d = next;
+  }
+}
+
+/* ReadableByteStreamControllerEnqueue: false with the exception pending. */
+static bool ws_bytes_enqueue(WsRController *c, ScrDyn *chunk) {
+  if (!ws_rcontroller_can_close_or_enqueue(c)) {
+    ws_state_error("Controller is already closed");
+    return false;
+  }
+  if (chunk->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", chunk);
+    return false;
+  }
+  ScrBytes *source = scr_bytes_buffer_source(chunk);
+  if (!source) return false;
+  size_t total = (size_t)scr_bytes_byte_len(source);
+  if (!total) {
+    scr_bytes_release(source);
+    ws_state_error("chunk ArrayBuffer is zero-length or detached");
+    return false;
+  }
+  /* The controller's copy: a later write through the enqueued view is not
+   * visible in the stream, and a read answers bytes of its own. */
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)total);
+  if (!bytes) {
+    scr_bytes_release(source);
+    return false;
+  }
+  ws_copy_bytes(bytes, 0, source, 0, total);
+  scr_bytes_release(source);
+  WsReadable *s = c->stream;
+  size_t used = 0;
+  while (used < total && c->into_head) {
+    used += ws_pull_into_write(c->into_head, bytes, used, total - used);
+    if (c->into_head->filled >= c->into_head->min) ws_bytes_commit(c);
+    else break;
+  }
+  if (used < total && s->reader && s->reader->requests) {
+    /* A default reader waiting for data takes the whole rest as one chunk. */
+    ScrBytes *rest = scr_bytes_subarray(bytes, (double)used, (double)total);
+    ScrDyn *value = scr_dyn_new_bytes(rest);
+    scr_bytes_release(rest); /* the value holds its own reference */
+    ws_readable_fulfill_read_request(s, value);
+    scr_dyn_release(value);
+    used = total;
+  }
+  if (used < total) {
+    ScrBytes *rest = scr_bytes_subarray(bytes, (double)used, (double)total);
+    double size = scr_bytes_byte_len(rest);
+    ScrDyn *value = scr_dyn_new_bytes(rest);
+    scr_bytes_release(rest); /* the value holds its own reference */
+    ws_queue_push(&c->queue, value, size);
+    scr_dyn_release(value);
+    c->queue_total_size += size;
+  }
+  scr_bytes_release(bytes);
+  ws_rcontroller_call_pull_if_needed(c);
+  return true;
+}
+
+/* The request a pull answers: the head read's view, as a Uint8Array over
+ * what is left. */
+static void ws_bytes_before_pull(WsRController *c) {
+  WsPullInto *d = c->into_head;
+  if (!d || c->byob) return;
+  WsByob *b = ws_obj_new(sizeof *b, &ws_byob_type);
+  b->controller = ws_rcontroller_retain(c);
+  c->byob = b;
+}
+
+/* The default reader's read on a byte stream: the queued chunks are gone by
+ * now (the caller's fast path), so the read waits for the source. */
+static ScrDyn *ws_bytes_read(WsReader *r) {
+  WsReadable *s = r->stream;
+  WsRController *c = s->controller;
+  s->disturbed = true;
+  if (c->auto_allocate > 0 && s->state == WS_STATE_READABLE) {
+    ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, c->auto_allocate);
+    if (!view) return NULL;
+    ScrPromise *p = scr_promise_new();
+    WsPullInto *d = ws_pull_into_new(view, 1, false, p);
+    scr_bytes_release(view);
+    ws_pull_into_enqueue(c, d);
+    ScrPromise *result = scr_promise_retain(p);
+    scr_promise_release(p);
+    ws_bytes_process_queue(c);
+    if (c->into_head) ws_rcontroller_call_pull_if_needed(c);
+    return ws_promise_box(result);
+  }
+  WsReadRequest *q = ws_alloc(sizeof *q);
+  q->ops = &ws_default_request_ops;
+  q->promise = scr_promise_new();
+  ScrPromise *result = scr_promise_retain(q->promise);
+  ws_reader_read_request(r, q);
+  return ws_promise_box(result);
+}
+
+/* ReadableStreamBYOBReaderRead: read(view, { min }). */
+static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
+  WsReadable *s = r->stream;
+  if (!s) return ws_reader_detached();
+  if (view_arg->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("view", "an instance of Buffer, TypedArray, or DataView", view_arg);
+    return ws_rejected_pending_box();
+  }
+  ScrBytes *view = view_arg->v.bytes;
+  if (scr_bytes_byte_len(view) == 0) {
+    ws_state_error("View or Viewed ArrayBuffer is zero-length or detached");
+    return ws_rejected_pending_box();
+  }
+  double min = 1;
+  ScrDyn *m = ws_get(options, "min");
+  if (m) {
+    if (m->kind != SCR_DYN_UNDEF) {
+      min = scr_dyn_number_coerce(m);
+      if (!scr_exc_pending() && (!(min >= 0) || min != trunc(min) || min > (double)view->len)) {
+        char insp[64];
+        const char *text = scr_dyn_inspect_lite(m, insp, sizeof insp);
+        char buf[192];
+        int n = snprintf(buf, sizeof buf,
+                         "The value of \"options.min\" is out of range. It must be <= view.length. Received %s",
+                         text);
+        scr_throw_error_msg_code(SCR_ERR_RANGE, buf, (size_t)n, "ERR_OUT_OF_RANGE");
+      }
+      if (scr_exc_pending()) {
+        scr_dyn_release(m);
+        return ws_rejected_pending_box();
+      }
+    }
+    scr_dyn_release(m);
+  }
+  if (s->state == WS_STATE_CLOSED) {
+    ScrBytes *empty = ws_view_prefix(view, 0);
+    if (!empty) return ws_rejected_pending_box();
+    ScrDyn *value = scr_dyn_new_bytes(empty);
+    scr_bytes_release(empty); /* the value holds its own reference */
+    ScrDyn *result = ws_read_result(value, true);
+    scr_dyn_release(value);
+    ScrPromise *p = ws_promise_resolved(result);
+    scr_dyn_release(result);
+    return ws_promise_box(p);
+  }
+  WsRController *c = s->controller;
+  if (s->state == WS_STATE_ERRORED) {
+    ScrPromise *rejected = ws_promise_rejected(s->stored_error);
+    ws_set_handled(rejected);
+    return ws_promise_box(rejected);
+  }
+  ScrPromise *p = scr_promise_new();
+  /* `min` counts elements of the destination's type (bytes for a DataView),
+   * as Node's read does: minimumFill = min * elementSize. */
+  size_t min_elements = min > 0 ? (size_t)min : 1;
+  size_t min_count = min_elements * scr_bytes_elem_size(view->elem);
+  WsPullInto *d = ws_pull_into_new(view, min_count, true, p);
+  ScrPromise *result = scr_promise_retain(p);
+  scr_promise_release(p);
+  ws_pull_into_enqueue(c, d);
+  s->disturbed = true;
+  ws_bytes_process_queue(c);
+  if (c->into_head && c->close_requested) {
+    /* The bytes still queued cannot fill this read and the stream already
+     * asked to close: Node's pull-into errors the stream instead of
+     * leaving the read waiting for a source that will never be asked. */
+    ScrDyn *error = ws_state_error_value("ReadableStream closed");
+    ws_rcontroller_error(c, error);
+    scr_dyn_release(error);
+  } else if (c->into_head) {
+    ws_rcontroller_call_pull_if_needed(c);
+  }
+  return ws_promise_box(result);
+}
+
 /* readableStreamDefaultReaderRead. */
 static void ws_reader_read_request(WsReader *r, WsReadRequest *q) {
   WsReadable *s = r->stream;
@@ -1168,20 +1678,22 @@ static WsReadable *ws_readable_alloc(void) {
   return s;
 }
 
-static WsRController *ws_rcontroller_attach(WsReadable *s, double high_water_mark) {
-  WsRController *c = ws_obj_new(sizeof *c, &ws_rcontroller_type);
+static WsRController *ws_rcontroller_attach(WsReadable *s, double high_water_mark, bool bytes) {
+  WsRController *c = ws_obj_new(sizeof *c, bytes ? &ws_byob_controller_type : &ws_rcontroller_type);
   c->stream = ws_readable_retain(s);
   c->high_water_mark = high_water_mark;
+  c->bytes = bytes;
   s->controller = c; /* the stream's reference */
   return c;
 }
 
 /* createReadableStream with native algorithms and the nonOp start: the new
  * stream (+1). The native context's reference moves in. */
-static WsReadable *ws_readable_create_native(const WsSourceOps *ops, void *ctx, int branch, double high_water_mark) {
+static WsReadable *ws_readable_create_native(const WsSourceOps *ops, void *ctx, int branch, double high_water_mark,
+                                             bool bytes) {
   ws_install();
   WsReadable *s = ws_readable_alloc();
-  WsRController *c = ws_rcontroller_attach(s, high_water_mark);
+  WsRController *c = ws_rcontroller_attach(s, high_water_mark, bytes);
   c->native = ops;
   c->native_ctx = ctx;
   c->native_branch = branch;
@@ -1219,25 +1731,50 @@ static ScrDyn *ws_readable_construct(ScrDyn *const *args, size_t argc) {
   ScrDyn *result = NULL;
   ScrDyn *size = NULL, *hwm = NULL, *type = NULL, *start = NULL, *pull = NULL, *cancel = NULL;
   if (!ws_validate_object(source, "source", false) || !ws_validate_object(strategy, "strategy", true)) goto done;
-  if (!(size = ws_get(strategy, "size"))) goto done;
-  if (!(hwm = ws_get(strategy, "highWaterMark"))) goto done;
   if (!(type = ws_get(source, "type"))) goto done;
+  bool bytes = false;
   if (type->kind != SCR_DYN_UNDEF) {
     ScrStr *text = scr_dyn_string_coerce_js(type);
     if (!text) goto done;
-    bool bytes = text->len == 5 && memcmp(text->data, "bytes", 5) == 0;
+    bytes = text->len == 5 && memcmp(text->data, "bytes", 5) == 0;
     scr_str_release(text);
-    if (bytes) {
-      static const char message[] = "ReadableStream byte streams ({ type: 'bytes' }) are not supported yet";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    if (!bytes) {
+      scr_dyn_arg_value_fail("source.type", NULL, type);
       goto done;
     }
-    scr_dyn_arg_value_fail("source.type", NULL, type);
-    goto done;
   }
+  double auto_allocate = 0;
+  if (bytes) {
+    /* A byte stream sizes its queue in bytes: Node refuses a size algorithm
+     * outright, and its high-water mark counts bytes. */
+    size = ws_undef();
+    ScrDyn *size_arg = ws_get(strategy, "size");
+    if (!size_arg) goto done;
+    if (size_arg->kind != SCR_DYN_UNDEF) {
+      ws_range_arg_value("strategy.size", size_arg);
+      scr_dyn_release(size_arg);
+      goto done;
+    }
+    scr_dyn_release(size_arg);
+    ScrDyn *alloc = ws_get(source, "autoAllocateChunkSize");
+    if (!alloc) goto done;
+    if (alloc->kind != SCR_DYN_UNDEF) {
+      auto_allocate = scr_dyn_number_coerce(alloc);
+      if (!scr_exc_pending() && (!(auto_allocate > 0) || auto_allocate != trunc(auto_allocate)))
+        scr_dyn_arg_value_fail("source.autoAllocateChunkSize", NULL, alloc);
+      if (scr_exc_pending()) {
+        scr_dyn_release(alloc);
+        goto done;
+      }
+    }
+    scr_dyn_release(alloc);
+  } else {
+    if (!(size = ws_get(strategy, "size"))) goto done;
+    if (size->kind != SCR_DYN_UNDEF && !ws_validate_function(size, "strategy.size")) goto done;
+  }
+  if (!(hwm = ws_get(strategy, "highWaterMark"))) goto done;
   double high_water_mark;
-  if (!ws_extract_high_water_mark(hwm, 1, &high_water_mark)) goto done;
-  if (size->kind != SCR_DYN_UNDEF && !ws_validate_function(size, "strategy.size")) goto done;
+  if (!ws_extract_high_water_mark(hwm, bytes ? 0 : 1, &high_water_mark)) goto done;
   if (!(start = ws_get(source, "start"))) goto done;
   if (!(pull = ws_get(source, "pull"))) goto done;
   if (!(cancel = ws_get(source, "cancel"))) goto done;
@@ -1246,7 +1783,8 @@ static ScrDyn *ws_readable_construct(ScrDyn *const *args, size_t argc) {
   if (has_cancel && !ws_validate_function(cancel, "source.cancel")) goto done;
   ws_install();
   WsReadable *s = ws_readable_alloc();
-  WsRController *c = ws_rcontroller_attach(s, high_water_mark);
+  WsRController *c = ws_rcontroller_attach(s, high_water_mark, bytes);
+  c->auto_allocate = auto_allocate;
   c->source = scr_dyn_retain(source);
   if (has_pull) c->pull_fn = scr_dyn_retain(pull);
   if (has_cancel) c->cancel_fn = scr_dyn_retain(cancel);
@@ -1320,15 +1858,27 @@ static const WsObjType ws_tee_type = {ws_tee_trace, ws_tee_drop};
 
 static void ws_tee_release(WsTee *t) { ws_release(t); }
 
+/* Hands a chunk to a branch: through its byte controller when the source is
+ * a byte stream, so a branch reads as one. */
+static void ws_rcontroller_deliver(WsRController *c, ScrDyn *chunk) {
+  if (c->bytes) ws_bytes_enqueue(c, chunk);
+  else ws_rcontroller_enqueue(c, chunk);
+}
+
+static void ws_rcontroller_deliver_end(WsRController *c) {
+  if (c->bytes) ws_bytes_close(c);
+  else ws_rcontroller_close(c);
+}
+
 static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
   (void)unused;
   WsTee *t = ctx;
   t->reading = false;
   ScrDyn *value = t->pending_chunk;
   t->pending_chunk = NULL;
-  if (!t->canceled1) ws_rcontroller_enqueue(t->branch1->controller, value);
+  if (!t->canceled1) ws_rcontroller_deliver(t->branch1->controller, value);
   if (scr_exc_pending()) scr_exc_clear();
-  if (!t->canceled2) ws_rcontroller_enqueue(t->branch2->controller, value);
+  if (!t->canceled2) ws_rcontroller_deliver(t->branch2->controller, value);
   if (scr_exc_pending()) scr_exc_clear();
   scr_dyn_release(value);
 }
@@ -1345,8 +1895,8 @@ static void ws_tee_close_tick(void *ctx, ScrDyn *unused) {
   (void)unused;
   WsTee *t = ctx;
   t->reading = false;
-  if (!t->canceled1) ws_rcontroller_close(t->branch1->controller);
-  if (!t->canceled2) ws_rcontroller_close(t->branch2->controller);
+  if (!t->canceled1) ws_rcontroller_deliver_end(t->branch1->controller);
+  if (!t->canceled2) ws_rcontroller_deliver_end(t->branch2->controller);
   if (!t->canceled1 || !t->canceled2) ws_deferred_resolve_undefined(&t->cancel_promise);
 }
 
@@ -1428,15 +1978,16 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error) {
 
 /* readableStreamDefaultTee: false with the exception pending. */
 static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2) {
-  WsReader *reader = ws_reader_new(s);
+  WsReader *reader = ws_reader_new(s, false);
   if (!reader) return false;
   WsTee *t = ws_obj_new(sizeof *t, &ws_tee_type);
   t->reader = reader;
   ws_deferred_init(&t->cancel_promise);
   /* Each branch's controller holds the tee as its source until it clears
    * its algorithms, and the tee holds the branches. */
-  t->branch1 = ws_readable_create_native(&ws_tee_source_ops, ws_retain(t), 1, 1);
-  t->branch2 = ws_readable_create_native(&ws_tee_source_ops, ws_retain(t), 2, 1);
+  bool bytes = s->controller && s->controller->bytes;
+  t->branch1 = ws_readable_create_native(&ws_tee_source_ops, ws_retain(t), 1, 1, bytes);
+  t->branch2 = ws_readable_create_native(&ws_tee_source_ops, ws_retain(t), 2, 1, bytes);
   reader->tee = ws_retain(t);
   if (s->state == WS_STATE_ERRORED) ws_tee_source_error(t, s->stored_error);
   *out1 = ws_readable_retain(t->branch1);
@@ -1446,6 +1997,67 @@ static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2)
 }
 
 /* ── ReadableStream.from (readableStreamFromIterable) ─────────────── */
+
+/* A compiled program that boxes generators registers the checked functions
+ * that read a generator capsule's next and return members
+ * (scr_dyn_set_generator_members); the ordinary read of a capsule has no
+ * lowering, so the iterator protocol reads them through them. */
+extern SCR_TL ScrDyn *(*scr_generator_member_hook)(const ScrDyn *, const char *, size_t);
+
+/* A generator capsule: its next and return members are the program's
+ * getters, and a synchronous one is not an object as far as the ordinary
+ * view of a capsule goes. */
+static bool ws_is_generator(const ScrDyn *v) {
+  if (!v || v->kind != SCR_DYN_TYPED_REF) return false;
+  const char *key = v->v.typed_ref.type_key;
+  size_t len = v->v.typed_ref.type_key_len;
+  return (len >= 10 && !memcmp(key, "generator<", 10)) ||
+         (len >= 16 && !memcmp(key, "async-generator<", 16));
+}
+
+/* A generator capsule's type key is "generator<yield,return,next>"; the
+ * middle segment is the return channel. A void one carries no value, so the
+ * body has no way to observe a completion value and the generator's own
+ * .return(value) is refused. */
+static bool ws_generator_return_takes_value(const ScrDyn *v) {
+  size_t i, start;
+  int depth = 0, commas = 0;
+  if (!ws_is_generator(v)) return false;
+  const char *key = v->v.typed_ref.type_key;
+  size_t len = v->v.typed_ref.type_key_len;
+  i = key[0] == 'a' ? 16 : 10;
+  start = i;
+  for (; i < len; i++) {
+    char c = key[i];
+    if (c == '<' || c == '(') depth++;
+    else if (c == '>') {
+      /* A function type spells its arrow "=>". */
+      if (i && key[i - 1] == '=') continue;
+      if (!depth) break;
+      depth--;
+    } else if (c == ')') {
+      if (!depth) break;
+      depth--;
+    } else if (c == ',' && !depth) {
+      commas++;
+      if (commas == 1) start = i + 1;
+      else break;
+    }
+  }
+  if (commas < 2) return false;
+  return !(i - start == 4 && !memcmp(key + start, "void", 4));
+}
+
+/* The iterator's own next or return method: a generator capsule answers
+ * through the program's getters, every other iterator through the ordinary
+ * member read. */
+static ScrDyn *ws_iterator_member(const ScrDyn *iterator, const char *name) {
+  if (scr_generator_member_hook && ws_is_generator(iterator)) {
+    ScrDyn *member = scr_generator_member_hook(iterator, name, strlen(name));
+    if (member || scr_exc_pending()) return member;
+  }
+  return ws_get(iterator, name);
+}
 
 typedef struct WsFrom {
   WsObj obj;
@@ -1556,7 +2168,7 @@ static void ws_from_process_pending(void *ctx, ScrDyn *unused) {
 static ScrDyn *ws_from_pull(void *ctx, WsRController *c) {
   (void)c;
   WsFrom *f = ctx;
-  /* A native iterator (an array's) answers next as a member call. */
+  /* The protocol calls next() with no arguments. */
   ScrDyn *next = scr_dyn_is_callable(f->next_method)
                      ? ws_call(f->next_method, f->iterator, NULL, 0, "iterator.next")
                      : scr_dyn_invoke(f->iterator, "next", NULL, 0, "iterator.next");
@@ -1608,7 +2220,7 @@ static void ws_from_cancel_failed(void *ctx, ScrDyn *error) {
 static ScrPromise *ws_from_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
   (void)c;
   WsFrom *f = ctx;
-  ScrDyn *method = ws_get(f->iterator, "return");
+  ScrDyn *method = ws_iterator_member(f->iterator, "return");
   if (!method) return ws_promise_rejected_pending();
   if (method->kind == SCR_DYN_UNDEF) {
     scr_dyn_release(method);
@@ -1617,7 +2229,12 @@ static ScrPromise *ws_from_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
     scr_dyn_release(u);
     return p;
   }
-  ScrDyn *returned = ws_call(method, f->iterator, &reason, 1, "iterator.return");
+  /* A compiled generator whose return channel is void refuses a completion
+   * value, and its body cannot observe one, so the call drops the reason the
+   * way Node drops the result value it would have carried. */
+  size_t argc =
+      ws_is_generator(f->iterator) && !ws_generator_return_takes_value(f->iterator) ? 0 : 1;
+  ScrDyn *returned = ws_call(method, f->iterator, argc ? &reason : NULL, argc, "iterator.return");
   scr_dyn_release(method);
   if (!returned) return ws_promise_rejected_pending();
   /* `await returned`, then the check. */
@@ -1666,12 +2283,14 @@ static ScrDyn *ws_readable_from(ScrDyn *iterable) {
     free(buf);
     return NULL;
   }
-  if (!ws_is_object(iterator)) {
+  /* A generator capsule is not an object to the checked-dynamic view (that
+   * read would reflect on it), and the generator test answers without one. */
+  if (!ws_is_generator(iterator) && !ws_is_object(iterator)) {
     scr_dyn_release(iterator);
     ws_state_error("The iterator method must return an object");
     return NULL;
   }
-  ScrDyn *next = ws_get(iterator, "next");
+  ScrDyn *next = ws_iterator_member(iterator, "next");
   if (!next) {
     scr_dyn_release(iterator);
     return NULL;
@@ -1679,7 +2298,7 @@ static ScrDyn *ws_readable_from(ScrDyn *iterable) {
   WsFrom *f = ws_obj_new(sizeof *f, &ws_from_type);
   f->iterator = iterator;
   f->next_method = next;
-  WsReadable *s = ws_readable_create_native(&ws_from_source_ops, f, 0, 0);
+  WsReadable *s = ws_readable_create_native(&ws_from_source_ops, f, 0, 0, false);
   f->stream = ws_readable_retain(s);
   ScrDyn *box = ws_stream_box(s);
   ws_readable_release(s);
@@ -1774,7 +2393,7 @@ ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx)
   WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
   o->source = source;
   o->ctx = ctx;
-  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0);
+  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0, false);
   o->stream = ws_readable_retain(s);
   ScrDyn *box = ws_stream_box(s);
   ws_readable_release(s);
@@ -1922,7 +2541,8 @@ static ScrDyn *ws_iter_next(ScrClosure *closure, ScrDyn *const *args, size_t arg
     ws_iter_set_current(it, chained);
     result = scr_promise_retain(chained);
   } else if (!it->done && ws_dequeue_fast(it->reader->stream, &chunk)) {
-    ScrDyn *record = ws_read_result(chunk, false);
+    /* the buffered fast path's { done, value }, as in the reader's */
+    ScrDyn *record = ws_iter_result(false, chunk);
     scr_dyn_release(chunk);
     result = ws_promise_resolved(record);
     scr_dyn_release(record);
@@ -2070,7 +2690,7 @@ static ScrDyn *ws_readable_values(WsReadable *s, ScrDyn *options) {
   if (!prevent) return NULL;
   bool prevent_cancel = scr_dyn_truthy(prevent);
   scr_dyn_release(prevent);
-  WsReader *reader = ws_reader_new(s);
+  WsReader *reader = ws_reader_new(s, false);
   if (!reader) return NULL;
   WsIter *it = ws_obj_new(sizeof *it, &ws_iter_type);
   it->reader = reader;
@@ -3145,6 +3765,10 @@ struct WsTransform {
   bool pull_pending;
   bool pending_write_parked;
   ScrDyn *pending_write_chunk; /* +1 */
+  /* The handle each side's getter answers. JavaScript reads the same object
+   * every time, so the box is made once and kept. */
+  ScrDyn *readable_box; /* +1 */
+  ScrDyn *writable_box; /* +1 */
 };
 
 struct WsTController {
@@ -3164,6 +3788,8 @@ static void ws_transform_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   ws_visit(t->writable, visit, ctx);
   ws_visit(t->controller, visit, ctx);
   ws_visit(t->pending_write_chunk, visit, ctx);
+  ws_visit(t->readable_box, visit, ctx);
+  ws_visit(t->writable_box, visit, ctx);
 }
 
 static void ws_transform_drop(void *obj, bool gc) {
@@ -3172,6 +3798,8 @@ static void ws_transform_drop(void *obj, bool gc) {
   ws_drop_obj(t->writable, gc);
   ws_drop_obj(t->controller, gc);
   ws_drop_dyn(t->pending_write_chunk, gc);
+  ws_drop_dyn(t->readable_box, gc);
+  ws_drop_dyn(t->writable_box, gc);
 }
 
 static const WsObjType ws_transform_type = {ws_transform_trace, ws_transform_drop, "TransformStream", ws_transform_accessors};
@@ -3575,7 +4203,7 @@ static ScrDyn *ws_transform_construct(ScrDyn *const *args, size_t argc) {
   if (wsize->kind != SCR_DYN_UNDEF) wc->size_fn = scr_dyn_retain(wsize);
   ws_wcontroller_started_with(wc, start_box);
   t->readable = ws_readable_alloc();
-  WsRController *rc = ws_rcontroller_attach(t->readable, readable_hwm);
+  WsRController *rc = ws_rcontroller_attach(t->readable, readable_hwm, false);
   rc->native = &ws_transform_source_ops;
   rc->native_ctx = ws_retain(t);
   if (rsize->kind != SCR_DYN_UNDEF) rc->size_fn = scr_dyn_retain(rsize);
@@ -4041,7 +4669,7 @@ static ScrDyn *ws_pipe_abort_listener(ScrClosure *closure, ScrDyn *const *args, 
 /* readableStreamPipeTo: +1 promise. The streams are unlocked. */
 static ScrPromise *ws_readable_pipe_to(WsReadable *source, WsWritable *dest, bool prevent_close, bool prevent_abort,
                                        bool prevent_cancel, ScrDyn *signal) {
-  WsReader *reader = ws_reader_new(source);
+  WsReader *reader = ws_reader_new(source, false);
   if (!reader) return ws_promise_rejected_pending();
   WsWriter *writer = ws_writer_new(dest);
   if (!writer) {
@@ -4248,32 +4876,49 @@ static ScrDyn *ws_rejected_pending_box(void) { return ws_promise_box(ws_promise_
 
 /* ReadableStream */
 
+/* setupReadableStreamBYOBReader's refusal: Node names the stream it got. */
+static void ws_byte_stream_required(const WsReadable *s) {
+  const char *state = s->state == WS_STATE_READABLE ? "readable" : s->state == WS_STATE_CLOSED ? "closed" : "errored";
+  char buf[192];
+  int n = snprintf(buf, sizeof buf,
+                   "The argument 'stream' must be a byte stream. Received ReadableStream { locked: %s, state: '%s', supportsBYOB: false }",
+                   ws_readable_locked((WsReadable *)s) ? "true" : "false", state);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_VALUE");
+}
+
 static ScrDyn *ws_readable_get_reader(WsReadable *s, ScrDyn *options) {
   if (!ws_validate_object(options, "options", true)) return NULL;
   ScrDyn *mode = ws_get(options, "mode");
   if (!mode) return NULL;
+  bool byob = false;
   if (mode->kind != SCR_DYN_UNDEF) {
     ScrStr *text = scr_dyn_string_coerce_js(mode);
     if (!text) {
       scr_dyn_release(mode);
       return NULL;
     }
-    bool byob = text->len == 4 && memcmp(text->data, "byob", 4) == 0;
+    byob = text->len == 4 && memcmp(text->data, "byob", 4) == 0;
     scr_str_release(text);
-    if (byob) {
+    if (!byob) {
+      scr_dyn_arg_value_fail("options.mode", NULL, mode);
       scr_dyn_release(mode);
-      static const char message[] = "ReadableStreamBYOBReader is not supported yet";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
-    scr_dyn_arg_value_fail("options.mode", NULL, mode);
-    scr_dyn_release(mode);
-    return NULL;
   }
   scr_dyn_release(mode);
-  WsReader *r = ws_reader_new(s);
+  if (byob) {
+    if (ws_readable_locked(s)) {
+      ws_state_error("ReadableStream is locked");
+      return NULL;
+    }
+    if (!s->controller->bytes) {
+      ws_byte_stream_required(s);
+      return NULL;
+    }
+  }
+  WsReader *r = ws_reader_new(s, byob);
   if (!r) return NULL;
-  ScrDyn *box = ws_reader_box(r);
+  ScrDyn *box = byob ? ws_byob_reader_box(r) : ws_reader_box(r);
   ws_reader_release(r);
   return box;
 }
@@ -4431,7 +5076,7 @@ static ScrDyn *ws_reader_construct(ScrDyn *const *args, size_t argc) {
     scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
     return NULL;
   }
-  WsReader *r = ws_reader_new(s);
+  WsReader *r = ws_reader_new(s, false);
   if (!r) return NULL;
   ScrDyn *box = ws_reader_box(r);
   ws_reader_release(r);
@@ -4449,12 +5094,14 @@ static ScrDyn *ws_reader_read(WsReader *r) {
   if (!r->stream) return ws_reader_detached();
   ScrDyn *chunk;
   if (ws_dequeue_fast(r->stream, &chunk)) {
-    ScrDyn *record = ws_read_result(chunk, false);
+    /* Node's fast path builds { done, value }; a read request { value, done } */
+    ScrDyn *record = ws_iter_result(false, chunk);
     scr_dyn_release(chunk);
     ScrPromise *p = ws_promise_resolved(record);
     scr_dyn_release(record);
     return ws_promise_box(p);
   }
+  if (r->stream->controller && r->stream->controller->bytes) return ws_bytes_read(r);
   WsReadRequest *q = ws_alloc(sizeof *q);
   q->ops = &ws_default_request_ops;
   q->promise = scr_promise_new();
@@ -4501,6 +5148,68 @@ static const ScrDynHandleClass ws_reader_class = {
     "ReadableStreamDefaultReader", 1, ws_reader_construct, ws_reader_accessors, NULL, ws_reader_order, ws_reader_method,
 };
 
+/* ReadableStreamBYOBReader */
+
+static ScrDyn *ws_byob_reader_construct(ScrDyn *const *args, size_t argc) {
+  ScrDyn *stream = ws_arg(args, argc, 0);
+  WsReadable *s = ws_stream_of(stream);
+  if (!s) {
+    scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
+    return NULL;
+  }
+  if (ws_readable_locked(s)) {
+    ws_state_error("ReadableStream is locked");
+    return NULL;
+  }
+  if (!s->controller->bytes) {
+    ws_byte_stream_required(s);
+    return NULL;
+  }
+  WsReader *r = ws_reader_new(s, true);
+  if (!r) return NULL;
+  ScrDyn *box = ws_byob_reader_box(r);
+  ws_reader_release(r);
+  return box;
+}
+
+static ScrDyn *ws_byob_reader_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                                     const char *what) {
+  (void)self;
+  (void)what;
+  WsReader *r = ptr;
+  size_t len = strlen(method);
+  if (ws_name(method, len, "read")) return ws_byob_read(r, ws_arg(args, argc, 0), ws_arg(args, argc, 1));
+  if (ws_name(method, len, "releaseLock")) {
+    if (r->stream) ws_reader_release_lock(r);
+    return ws_undef();
+  }
+  if (ws_name(method, len, "cancel")) {
+    if (!r->stream) return ws_reader_detached();
+    return ws_promise_box(ws_readable_cancel(r->stream, ws_arg(args, argc, 0)));
+  }
+  return ws_invoke_member(self, method, args, argc, what);
+}
+WS_MEMBER_INVOKE(ws_byob_reader)
+
+static ScrDyn *ws_byob_reader_get(void *ptr, const char *key, size_t len) {
+  WsReader *r = ptr;
+  if (ws_name(key, len, "closed")) return scr_dyn_new_promise(ws_reader_closed_promise(r));
+  ScrDyn *own = ws_own_get(ptr, key, len);
+  if (own) return own;
+  return scr_dyn_handle_class_member(SCR_DYNH_WS_BYOB_READER, ptr, key, len);
+}
+
+static const ScrDynHandleMethod ws_byob_reader_methods[] = {
+    {"read", 0, true, NULL}, {"releaseLock", 0, false, NULL}, {"cancel", 0, true, NULL}, {NULL, 0, false, NULL},
+};
+
+static const char *const ws_byob_reader_order[] = {"read", "releaseLock", "closed", "cancel", NULL};
+
+static const ScrDynHandleClass ws_byob_reader_class = {
+    "ReadableStreamBYOBReader", 1, ws_byob_reader_construct, ws_reader_accessors, NULL, ws_byob_reader_order,
+    ws_byob_reader_method,
+};
+
 /* ReadableStreamDefaultController */
 
 static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
@@ -4514,13 +5223,18 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
       ws_state_error("Controller is already closed");
       return NULL;
     }
-    ws_rcontroller_close(c);
+    if (c->bytes) ws_bytes_close(c);
+    else ws_rcontroller_close(c);
     return ws_undef();
   }
   if (ws_name(method, len, "enqueue")) {
     if (!ws_rcontroller_can_close_or_enqueue(c)) {
       ws_state_error("Controller is already closed");
       return NULL;
+    }
+    if (c->bytes) {
+      if (!ws_bytes_enqueue(c, ws_arg(args, argc, 0))) return NULL;
+      return ws_undef();
     }
     if (!ws_rcontroller_enqueue(c, ws_arg(args, argc, 0))) return NULL;
     return ws_undef();
@@ -4534,10 +5248,23 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
 WS_MEMBER_INVOKE(ws_rcontroller)
 
 static ScrDyn *ws_rcontroller_get(void *ptr, const char *key, size_t len) {
-  if (ws_name(key, len, "desiredSize")) return ws_rcontroller_desired_size(ptr);
+  WsRController *c = ptr;
+  if (ws_name(key, len, "desiredSize")) return ws_rcontroller_desired_size(c);
   ScrDyn *own = ws_own_get(ptr, key, len);
   if (own) return own;
   return scr_dyn_handle_class_member(SCR_DYNH_WS_RCONTROLLER, ptr, key, len);
+}
+
+/* The byte controller answers a byobRequest getter (null when no read is
+ * waiting) on top of the default controller's members. */
+static ScrDyn *ws_byob_controller_get(void *ptr, const char *key, size_t len) {
+  WsRController *c = ptr;
+  if (ws_name(key, len, "desiredSize")) return ws_rcontroller_desired_size(c);
+  if (ws_name(key, len, "byobRequest"))
+    return c->byob ? ws_byob_box(c->byob) : scr_dyn_new_null();
+  ScrDyn *own = ws_own_get(ptr, key, len);
+  if (own) return own;
+  return scr_dyn_handle_class_member(SCR_DYNH_WS_BYOB_CONTROLLER, ptr, key, len);
 }
 
 static const ScrDynHandleMethod ws_rcontroller_methods[] = {
@@ -4549,6 +5276,125 @@ static const char *const ws_rcontroller_order[] = {"desiredSize", "close", "enqu
 
 static const ScrDynHandleClass ws_rcontroller_class = {
     "ReadableStreamDefaultController", 0, NULL, ws_rcontroller_accessors, NULL, ws_rcontroller_order, ws_rcontroller_method,
+};
+
+/* ReadableByteStreamController */
+
+static const ScrDynHandleMethod ws_byob_controller_methods[] = {
+    {"close", 0, false, NULL}, {"enqueue", 0, false, NULL}, {"error", 0, false, NULL}, {NULL, 0, false, NULL},
+};
+
+static const char *const ws_byob_controller_order[] = {"byobRequest", "desiredSize", "close", "enqueue", "error", NULL};
+
+static const ScrDynHandleClass ws_byob_controller_class = {
+    "ReadableByteStreamController", 0, NULL, ws_byob_controller_accessors, NULL, ws_byob_controller_order,
+    ws_rcontroller_method,
+};
+
+/* ReadableStreamBYOBRequest */
+
+static ScrDyn *ws_byob_request_view(WsByob *b) {
+  WsRController *c = b->controller;
+  WsPullInto *d = c ? c->into_head : NULL;
+  if (!d) return scr_dyn_new_null();
+  ScrBytes *window = ws_u8_window(d->view, d->filled, ws_pull_into_remaining(d));
+  if (!window) return NULL;
+  ScrDyn *value = scr_dyn_new_bytes(window);
+  scr_bytes_release(window); /* the value holds its own reference */
+  return value;
+}
+
+static ScrDyn *ws_byob_respond(WsByob *b, ScrDyn *value) {
+  WsRController *c = b->controller;
+  WsPullInto *d = c ? c->into_head : NULL;
+  if (!d) {
+    ws_state_error("This BYOB request has been invalidated");
+    return NULL;
+  }
+  double written = scr_dyn_number_coerce(value);
+  if (scr_exc_pending()) return NULL;
+  size_t remaining = ws_pull_into_remaining(d);
+  if (!(written > 0)) {
+    scr_dyn_arg_value_fail("bytesWritten", NULL, value);
+    return NULL;
+  }
+  if (written > (double)remaining) {
+    ws_range_arg_value("bytesWritten", value);
+    return NULL;
+  }
+  d->filled += (size_t)written;
+  if (d->filled >= d->min) ws_bytes_commit(c);
+  ws_rcontroller_call_pull_if_needed(c);
+  return ws_undef();
+}
+
+/* ReadableByteStreamControllerRespondWithNewView: the new view starts exactly
+ * where the read's fill stopped, and its bytes are that many more written
+ * into the destination the read already holds. The read keeps its own view,
+ * so a partial response leaves the rest of the destination for the responses
+ * that follow. Node detaches a read's buffer when the read starts, so the view
+ * can only be made over the same buffer there after the fact; this runtime
+ * does not detach, and accepts exactly the views the specification allows. */
+static ScrDyn *ws_byob_respond_with_new_view(WsByob *b, ScrDyn *value) {
+  WsRController *c = b->controller;
+  WsPullInto *d = c ? c->into_head : NULL;
+  if (!d) {
+    ws_state_error("This BYOB request has been invalidated");
+    return NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("view", "an instance of Buffer, TypedArray, or DataView", value);
+    return NULL;
+  }
+  ScrBytes *view = value->v.bytes;
+  size_t written = (size_t)scr_bytes_byte_len(view);
+  if (!written) {
+    ws_state_error("View is zero-length");
+    return NULL;
+  }
+  ScrBytes *want_owner = d->view->backing ? d->view->backing : d->view;
+  ScrBytes *got_owner = view->backing ? view->backing : view;
+  double begin = (double)(d->view->data - want_owner->data);
+  double want = begin + (double)d->filled;
+  double got = (double)(view->data - got_owner->data);
+  double end = begin + (double)scr_bytes_byte_len(d->view);
+  if (got_owner != want_owner || got != want || want + (double)written > end) {
+    ws_range_arg_value("view", value);
+    return NULL;
+  }
+  d->filled += written;
+  if (d->filled >= d->min) ws_bytes_commit(c);
+  ws_rcontroller_call_pull_if_needed(c);
+  return ws_undef();
+}
+
+static ScrDyn *ws_byob_request_method(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                                      const char *what) {
+  WsByob *b = ptr;
+  size_t len = strlen(method);
+  if (ws_name(method, len, "respond")) return ws_byob_respond(b, ws_arg(args, argc, 0));
+  if (ws_name(method, len, "respondWithNewView")) return ws_byob_respond_with_new_view(b, ws_arg(args, argc, 0));
+  return ws_invoke_member(self, method, args, argc, what);
+}
+WS_MEMBER_INVOKE(ws_byob_request)
+
+static ScrDyn *ws_byob_request_get(void *ptr, const char *key, size_t len) {
+  WsByob *b = ptr;
+  if (ws_name(key, len, "view")) return ws_byob_request_view(b);
+  ScrDyn *own = ws_own_get(ptr, key, len);
+  if (own) return own;
+  return scr_dyn_handle_class_member(SCR_DYNH_WS_BYOB_REQUEST, ptr, key, len);
+}
+
+static const ScrDynHandleMethod ws_byob_request_methods[] = {
+    {"respond", 0, false, NULL}, {"respondWithNewView", 0, false, NULL}, {NULL, 0, false, NULL},
+};
+
+static const char *const ws_byob_request_order[] = {"view", "respond", "respondWithNewView", NULL};
+
+static const ScrDynHandleClass ws_byob_request_class = {
+    "ReadableStreamBYOBRequest", 0, NULL, ws_byob_request_accessors, NULL, ws_byob_request_order,
+    ws_byob_request_method,
 };
 
 /* WritableStream */
@@ -4698,10 +5544,22 @@ static const ScrDynHandleClass ws_wcontroller_class = {
 };
 
 /* TransformStream */
+/* A transform's two sides, made once: JavaScript reads the same object from a
+ * getter every time, so the identity a program compares holds. */
+static ScrDyn *ws_transform_readable_box(WsTransform *t) {
+  if (!t->readable_box) t->readable_box = ws_stream_box(t->readable);
+  return scr_dyn_retain(t->readable_box);
+}
+
+static ScrDyn *ws_transform_writable_box(WsTransform *t) {
+  if (!t->writable_box) t->writable_box = ws_writable_box(t->writable);
+  return scr_dyn_retain(t->writable_box);
+}
+
 static ScrDyn *ws_transform_get(void *ptr, const char *key, size_t len) {
   WsTransform *t = ptr;
-  if (ws_name(key, len, "readable")) return ws_stream_box(t->readable);
-  if (ws_name(key, len, "writable")) return ws_writable_box(t->writable);
+  if (ws_name(key, len, "readable")) return ws_transform_readable_box(t);
+  if (ws_name(key, len, "writable")) return ws_transform_writable_box(t);
   ScrDyn *own = ws_own_get(ptr, key, len);
   if (own) return own;
   return scr_dyn_handle_class_member(SCR_DYNH_WS_TRANSFORM, ptr, key, len);
@@ -4893,7 +5751,11 @@ static ScrDyn *ws_text_decoder_transform(ScrClosure *closure, ScrDyn *const *arg
     ws_release(t);
     return NULL;
   }
-  ScrBytes *bytes = scr_bytes_buffer_source(chunk);
+  /* The decoder's own input conversion: a buffer source is the bytes, and
+   * any other value throws the message TextDecoder.decode throws for it
+   * (which names utf-8's streaming decode, a single-byte decoder, or the
+   * other encodings differently). */
+  ScrBytes *bytes = scr_text_decoder_input(chunk, t->encoding, t->state, true);
   if (!bytes) {
     ws_release(t);
     return NULL;
@@ -4974,11 +5836,9 @@ static ScrDyn *ws_text_encoder_construct(ScrDyn *const *args, size_t argc) {
 static ScrDyn *ws_text_decoder_construct(ScrDyn *const *args, size_t argc) {
   ScrDyn *label = argc > 0 && args[0]->kind != SCR_DYN_UNDEF ? args[0] : NULL;
   ScrDyn *options = argc > 1 && args[1]->kind != SCR_DYN_UNDEF ? args[1] : NULL;
-  double encoding = -1;
-  if (label) {
-    encoding = scr_text_decoder_encoding(label);
-    if (scr_exc_pending()) return NULL;
-  }
+  /* The arguments convert in order: the options dictionary before the label
+   * reaches the decoder that validates it, so a bad label with bad options
+   * reports the options. */
   bool fatal = false, ignore_bom = false;
   if (options) {
     if (!ws_validate_object(options, "options", true)) return NULL;
@@ -4991,14 +5851,10 @@ static ScrDyn *ws_text_decoder_construct(ScrDyn *const *args, size_t argc) {
     ignore_bom = scr_dyn_truthy(b);
     scr_dyn_release(b);
   }
-  if (encoding >= 0) {
-    ScrStr *name = scr_text_decoder_name(encoding);
-    char buf[160];
-    int n = snprintf(buf, sizeof buf, "TextDecoderStream for the '%.*s' encoding is not supported yet", (int)name->len,
-                     name->data);
-    scr_str_release(name);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, buf, (size_t)n, "SC2020");
-    return NULL;
+  double encoding = -1;
+  if (label) {
+    encoding = scr_text_decoder_encoding(label);
+    if (scr_exc_pending()) return NULL;
   }
   ws_install();
   WsTextStream *t = ws_obj_new(sizeof *t, &ws_text_decoder_type);
@@ -5023,8 +5879,8 @@ static ScrDyn *ws_text_get(void *ptr, const char *key, size_t len) {
     scr_str_release(name);
     return value;
   }
-  if (ws_name(key, len, "readable")) return ws_stream_box(t->transform->readable);
-  if (ws_name(key, len, "writable")) return ws_writable_box(t->transform->writable);
+  if (ws_name(key, len, "readable")) return ws_transform_readable_box(t->transform);
+  if (ws_name(key, len, "writable")) return ws_transform_writable_box(t->transform);
   if (t->decoder && ws_name(key, len, "fatal")) return scr_dyn_new_bool(t->fatal);
   if (t->decoder && ws_name(key, len, "ignoreBOM")) return scr_dyn_new_bool(t->ignore_bom);
   ScrDyn *own = ws_own_get(ptr, key, len);
@@ -5070,10 +5926,19 @@ static ScrDyn *ws_count_size(ScrClosure *closure, ScrDyn *const *args, size_t ar
   return scr_dyn_new_num(1);
 }
 
-/* (chunk) => chunk.byteLength */
+/* (chunk) => chunk.byteLength: a property read, which throws the way one on
+ * undefined or null does. */
 static ScrDyn *ws_byte_size(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
-  return ws_get(ws_arg(args, argc, 0), "byteLength");
+  const ScrDyn *chunk = ws_arg(args, argc, 0);
+  if (chunk->kind == SCR_DYN_UNDEF || chunk->kind == SCR_DYN_NULL) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'byteLength')",
+                     chunk->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  return ws_get(chunk, "byteLength");
 }
 
 static SCR_TL ScrDyn *ws_size_functions[2];
@@ -5198,6 +6063,12 @@ WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_r
        "Value of \"this\" must be of type ReadableStreamDefaultReader");
 WS_OPS(ws_rcontroller_ops, "ReadableStreamDefaultController", ws_retain, ws_release, ws_rcontroller_invoke, ws_rcontroller_get, ws_own_set, ws_rcontroller_methods,
        "Value of \"this\" must be of type ReadableStreamDefaultController");
+WS_OPS(ws_byob_controller_ops, "ReadableByteStreamController", ws_retain, ws_release, ws_rcontroller_invoke, ws_byob_controller_get, ws_own_set,
+       ws_byob_controller_methods, "Value of \"this\" must be of type ReadableByteStreamController");
+WS_OPS(ws_byob_reader_ops, "ReadableStreamBYOBReader", ws_retain, ws_release, ws_byob_reader_invoke, ws_byob_reader_get, ws_own_set,
+       ws_byob_reader_methods, "Value of \"this\" must be of type ReadableStreamBYOBReader");
+WS_OPS(ws_byob_request_ops, "ReadableStreamBYOBRequest", ws_retain, ws_release, ws_byob_request_invoke, ws_byob_request_get, ws_own_set,
+       ws_byob_request_methods, "Value of \"this\" must be of type ReadableStreamBYOBRequest");
 WS_OPS(ws_writable_ops, "WritableStream", ws_retain, ws_release, ws_writable_invoke, ws_writable_get, ws_own_set,
        ws_writable_methods, "Value of \"this\" must be of type WritableStream");
 WS_OPS(ws_writer_ops, "WritableStreamDefaultWriter", ws_retain, ws_release, ws_writer_invoke, ws_writer_get, ws_own_set,
@@ -5247,6 +6118,9 @@ static void ws_install(void) {
   scr_dyn_handle_class_install(SCR_DYNH_WS_READABLE, &ws_readable_ops, &ws_readable_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_READER, &ws_reader_ops, &ws_reader_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_RCONTROLLER, &ws_rcontroller_ops, &ws_rcontroller_class);
+  scr_dyn_handle_class_install(SCR_DYNH_WS_BYOB_CONTROLLER, &ws_byob_controller_ops, &ws_byob_controller_class);
+  scr_dyn_handle_class_install(SCR_DYNH_WS_BYOB_READER, &ws_byob_reader_ops, &ws_byob_reader_class);
+  scr_dyn_handle_class_install(SCR_DYNH_WS_BYOB_REQUEST, &ws_byob_request_ops, &ws_byob_request_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_COUNT_STRATEGY, &ws_count_strategy_ops, &ws_count_strategy_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_BYTE_STRATEGY, &ws_byte_strategy_ops, &ws_byte_strategy_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_WRITABLE, &ws_writable_ops, &ws_writable_class);
@@ -5273,6 +6147,7 @@ static ScrDynHandleTag ws_class_tag(double kind) {
       SCR_DYNH_WS_COUNT_STRATEGY, SCR_DYNH_WS_BYTE_STRATEGY, SCR_DYNH_WS_WRITABLE,
       SCR_DYNH_WS_WRITER,        SCR_DYNH_WS_WCONTROLLER,  SCR_DYNH_WS_TRANSFORM,
       SCR_DYNH_WS_TCONTROLLER,   SCR_DYNH_WS_TEXT_ENCODER, SCR_DYNH_WS_TEXT_DECODER,
+      SCR_DYNH_WS_BYOB_CONTROLLER, SCR_DYNH_WS_BYOB_READER, SCR_DYNH_WS_BYOB_REQUEST,
   };
   int index = (int)kind;
   if (index < 0 || index >= (int)(sizeof tags / sizeof tags[0])) scr_trap("scriptc: unknown web stream class\n");
@@ -5293,7 +6168,13 @@ ScrDyn *scr_webstream_class(double kind) {
 bool scr_webstream_instanceof(ScrDyn *value, double kind) {
   ws_install();
   ScrDynHandleTag tag = ws_class_tag(kind);
-  if (value->kind == SCR_DYN_HANDLE) return scr_dyn_handle_class_tag_of(value) == tag;
+  if (value->kind == SCR_DYN_HANDLE) {
+    ScrDynHandleTag actual = scr_dyn_handle_class_tag_of(value);
+    // fetch's body streams are native ReadableStreams under the fetch tier
+    // (scr_fetch.c's WEB_STREAM), and Node answers true for them here.
+    if (tag == SCR_DYNH_WS_READABLE && actual == SCR_DYNH_WEB_STREAM) return true;
+    return actual == tag;
+  }
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC) return false;
   ScrDyn *prototype = scr_dyn_handle_class_prototype(tag);
   bool found = false;
@@ -5311,4 +6192,12 @@ bool scr_webstream_instanceof(ScrDyn *value, double kind) {
   if (scr_exc_pending()) scr_exc_clear();
   scr_dyn_release(prototype);
   return found;
+}
+
+/* `ReadableStream.from(iterable)` (webstream.from): the class's static for
+ * a call site the compiler lowers directly, so the class value's member
+ * lookup is not needed. The iterable is borrowed. */
+ScrDyn *scr_webstream_from(ScrDyn *iterable) {
+  ws_install();
+  return ws_readable_from(iterable);
 }

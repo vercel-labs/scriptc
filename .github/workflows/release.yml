@@ -8,6 +8,12 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+# The token of a job that declares no permissions of its own (the native and mobile package builds) can read the
+# repository and nothing else. The jobs that read other runs' artifacts, publish to npm or write the GitHub release
+# declare what they need.
+permissions:
+  contents: read
+
 jobs:
   check-release:
     name: Check for new version
@@ -27,12 +33,12 @@ jobs:
       receipt_run: ${{ steps.reuse.outputs.receipt_run }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -66,11 +72,17 @@ jobs:
           import { appendFileSync } from 'node:fs';
           const api = (path) => JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }));
           const repo = process.env.GITHUB_REPOSITORY;
+          // Every payload the release publishes from a build artifact: the
+          // platform helper/runtime/CLI packages and the four libnode packs
+          // (libnode-packs job, named libnode-<platform>).
           const expected = [
             'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64',
             'linux-x64-musl', 'linux-arm64-musl', 'windows-x64', 'wasm32-wasi',
             'runtime-ios-arm64', 'runtime-ios-simulator-arm64', 'runtime-android-arm64',
-          ].map((platform) => `native-${platform}`);
+          ].map((platform) => `native-${platform}`).concat([
+            'libnode-linux-x64-gnu', 'libnode-linux-arm64-gnu',
+            'libnode-darwin-arm64', 'libnode-darwin-x64',
+          ]);
           const runs = api(`repos/${repo}/actions/workflows/release.yml/runs?branch=main&status=completed&per_page=100`).workflow_runs;
           let artifactRun;
           let receiptRun;
@@ -117,11 +129,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: pnpm
@@ -151,7 +163,7 @@ jobs:
         run: >-
           node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4 --context-sensitive
           --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cli-profile
           path: |
@@ -234,11 +246,11 @@ jobs:
     # The Intel macOS build took 24 minutes for 0.3.2, 40 for 0.4.5, and passed 45 for 0.4.6.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: pnpm
@@ -254,7 +266,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes g++ zlib1g-dev libzstd-dev
-          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
+          sh scripts/verify-toolchain.sh "$RUNNER_TEMP/llvm.tar.xz" "${{ matrix.llvm_asset }}.tar.xz"
           tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
           echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
@@ -281,10 +294,18 @@ jobs:
           else
             echo "::warning::$asset is not available from release $tag; the helper links LLVM's release archive"
           fi
-      - uses: vercel-labs/setup-zig@v1
+      - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
         if: matrix.use_zig == true
         with:
           version: 0.16.0
+      # The archive is checked against its pinned digest (scripts/toolchain.sha256) before anything unpacks it.
+      - name: Download pinned LLVM development distribution (Windows)
+        if: matrix.platform == 'windows-x64'
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
+          curl -fL --retry 4 --retry-delay 30 -o "$archive" https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
+          sh scripts/verify-toolchain.sh "$archive"
       - name: Install pinned LLVM development distribution (Windows)
         if: matrix.platform == 'windows-x64'
         shell: pwsh
@@ -301,7 +322,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
-          curl.exe -fL --retry 3 -o $archive https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
           & $sevenZip x -y "-o$expanded" $archive
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
@@ -345,7 +365,7 @@ jobs:
         id: cli-profile
         if: matrix.cli != ''
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cli-profile
           path: ${{ runner.temp }}/cli-profile
@@ -394,7 +414,7 @@ jobs:
           TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
           node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
       - name: Upload native packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-${{ matrix.platform }}
           path: |
@@ -420,7 +440,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/mobile-runtime-pack
         with:
           runtime: ${{ matrix.runtime }}
@@ -428,19 +448,31 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/mobile-pack/${{ matrix.runtime }}"
           cp -R packages/${{ matrix.runtime }}/. "$RUNNER_TEMP/mobile-pack/${{ matrix.runtime }}/"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-${{ matrix.runtime }}
           path: ${{ runner.temp }}/mobile-pack
           retention-days: 7
 
+  # The four @scriptc/libnode-<platform> packs ship with the release as
+  # opt-in packages: scriptc does not depend on them, and a program that
+  # calls into Node.js installs its host's pack. libnode-packs builds and
+  # smoke-tests each one (it is also its own workflow, so a pin or bridge
+  # change can rebuild them without a release).
+  build-libnode-packs:
+    name: Build libnode packs
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
+    uses: ./.github/workflows/libnode-packs.yml
+
   publish:
     name: Publish to npm
-    needs: [check-release, build-native-packages, build-mobile-runtime-packs]
+    needs: [check-release, build-native-packages, build-mobile-runtime-packs, build-libnode-packs]
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' &&
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
-      (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success'))
+      (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success' &&
+      needs.build-libnode-packs.result == 'success'))
     runs-on: ubuntu-latest
     # Two waits for npm availability of at most 25 minutes each.
     timeout-minutes: 70
@@ -453,14 +485,26 @@ jobs:
       uploads: ${{ steps.publish.outputs.uploads }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Download native packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: native-*
           path: native-artifacts
           merge-multiple: true
+          run-id: ${{ needs.check-release.outputs.artifact_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # One artifact per pack, each holding the contents of its package
+      # directory. Downloaded one directory per artifact (no merge) so the
+      # four packs keep their own files, and the packs' compressed-library
+      # artifacts (libnode-<platform>-zst) stay out of the packages.
+      - name: Download libnode packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: libnode-*
+          path: libnode-artifacts
           run-id: ${{ needs.check-release.outputs.artifact_run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -483,12 +527,12 @@ jobs:
           done
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -507,16 +551,22 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           cp -R native-artifacts/. packages/
+          # The packs publish from their package directories, beside the
+          # package.json that lists the files they carry.
+          for platform in linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64; do
+            test -f "libnode-artifacts/libnode-$platform/manifest.json"
+            cp -R "libnode-artifacts/libnode-$platform/." "packages/libnode-$platform/"
+          done
           # upload-artifact does not preserve executable bits. Restore the
-          # helper mode before pnpm runs its prepack checks.
-          find packages -type f -path '*/bin/scriptc-llvm-codegen' -exec chmod 755 {} +
-          find packages -type f \( -path '*/dist/bin/scriptc' -o -path '*/dist/lib/typescript/lib/tsc' -o -path '*/dist/lib/scriptc-comptime' \) -exec chmod 755 {} +
+          # helper and evaluator modes before pnpm runs its prepack checks.
+          find packages -type f \( -path '*/bin/scriptc-llvm-codegen' -o -path '*/bin/scriptc-comptime' \) -exec chmod 755 {} +
+          find packages -type f \( -path '*/dist/bin/scriptc' -o -path '*/dist/lib/typescript/lib/tsc' \) -exec chmod 755 {} +
           pnpm -r build
 
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-*; do
+          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-* packages/libnode-*; do
             if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then
               continue
             fi
@@ -617,6 +667,13 @@ jobs:
           publish_dir packages/runtime-wasm32-wasi
           publish_dir packages/runtime-win32-x64-msvc
           publish_dir packages/llvm-win32-x64-msvc
+          # The libnode packs are opt-in: nothing in this release depends on
+          # them, and a program that calls into Node.js installs its host's
+          # pack, so they publish with the platform payload above.
+          publish_dir packages/libnode-darwin-arm64
+          publish_dir packages/libnode-darwin-x64
+          publish_dir packages/libnode-linux-x64-gnu
+          publish_dir packages/libnode-linux-arm64-gnu
           # A native CLI package depends on its platform's LLVM helper and
           # runtime pack packages, and scriptc on the native CLI packages.
           # Each group publishes only once the packages it depends on
@@ -650,7 +707,7 @@ jobs:
 
       - name: Save accepted upload receipts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-accepted-${{ needs.check-release.outputs.version }}-${{ github.run_attempt }}
           path: |
@@ -675,10 +732,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -705,15 +762,15 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
 
@@ -739,7 +796,7 @@ jobs:
           echo "Extracted release notes for $VERSION ($LINES lines)"
 
       - name: Download native distributions and runtime packs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: native-*
           path: packages

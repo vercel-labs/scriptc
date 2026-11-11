@@ -97,7 +97,17 @@ test("sloppy script source executes through a CommonJS entry", async () => {
   const context = createContext({});
   runInContext(upstreamHarness, context, { timeout: 5000 });
   runInContext(source, context, { timeout: 5000 });
-  const result = await runSource(source, { sanitize, variant: "sloppy" });
+  // The sanitized compile is this test's whole time, and every shard of a
+  // sanitized lane runs it beside its corpus workers: 47 s at the median,
+  // 67 s at the 90th percentile and 115 s at most over 382 runs in twelve
+  // Sandbox lane rounds of 2026-11-07, and ten runs of that day's 113 rounds
+  // went past the runner's default 120 s. 240 s stays inside this test's own
+  // timeout.
+  const result = await runSource(source, {
+    sanitize,
+    variant: "sloppy",
+    compileTimeoutMs: 240_000,
+  });
   expect(result, JSON.stringify(result, null, 2)).toMatchObject({ status: "pass" });
 });
 

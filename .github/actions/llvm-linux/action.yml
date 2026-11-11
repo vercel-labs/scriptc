@@ -3,11 +3,12 @@ description: Reuse the pinned LLVM development distribution across CI jobs
 runs:
   using: composite
   steps:
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: llvm
       with:
         path: ${{ runner.temp }}/llvm-22.1.8
-        key: llvm-22.1.8-linux-x64-v1
+        # The pin file is part of the key, so a cache never outlives the digest its archive was checked against.
+        key: llvm-22.1.8-linux-x64-${{ hashFiles('scripts/toolchain.sha256') }}
     - name: Install LLVM system libraries
       shell: bash
       run: |
@@ -20,8 +21,9 @@ runs:
       shell: bash
       run: |
         curl -fL --connect-timeout 20 --max-time 300 --speed-limit 102400 --speed-time 30 \
-          --retry 2 --retry-max-time 600 -o "$RUNNER_TEMP/llvm.tar.xz" \
+          --retry 4 --retry-delay 30 --retry-max-time 600 -o "$RUNNER_TEMP/llvm.tar.xz" \
           https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz
+        sh scripts/verify-toolchain.sh "$RUNNER_TEMP/llvm.tar.xz" LLVM-22.1.8-Linux-X64.tar.xz
         tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
         mv "$RUNNER_TEMP/LLVM-22.1.8-Linux-X64" "$RUNNER_TEMP/llvm-22.1.8"
     - name: Select LLVM
@@ -31,7 +33,7 @@ runs:
         echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
         echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
     # Publish setup work before the long tests, including when a later test fails.
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.llvm.outputs.cache-hit != 'true'
       with:
         path: ${{ runner.temp }}/llvm-22.1.8

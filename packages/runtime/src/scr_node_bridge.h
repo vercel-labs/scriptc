@@ -3,7 +3,8 @@
  * includes a Node or V8 header: it loads the bridge library of a libnode
  * pack with dlopen on first use and talks to it only through this table.
  * The bridge links libnode and pins the Node ABI; the runtime pins only
- * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs.
+ * SCR_NODE_BRIDGE_ABI, which changes with any change to these structs and
+ * with any change to what an entry does that the runtime relies on.
  *
  * Conventions: strings are UTF-8 and borrowed unless noted. Call outcomes
  * are "R<json>" (returned; "R" alone is undefined) or "T<json>" (threw;
@@ -17,11 +18,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 10u
+#define SCR_NODE_BRIDGE_ABI 21u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
-/* Operations on Map and Set exports (host->export_op, NI-5b). */
+/* Operations on exports (host->export_op): on Map and Set exports (NI-5b),
+ * and on a native error's export. */
 enum {
   SCR_NODE_COLLECTION_GET = 0,
   SCR_NODE_COLLECTION_SET = 1, /* Map#set, Set#add */
@@ -30,6 +32,25 @@ enum {
   SCR_NODE_COLLECTION_CLEAR = 4,
   SCR_NODE_COLLECTION_SIZE = 5,
   SCR_NODE_COLLECTION_ENTRIES = 6,
+  /* A native error's own string-keyed data properties, in order, as
+   * SCR_NV_JSON: [name, attributes, name, attributes, ..., state].
+   * attributes: 1 writable, 2 enumerable, 4 configurable. state: 1 when the
+   * error is not extensible. `stack` is not listed: it is every error's
+   * accessor, read and written through export_get and export_set. */
+  SCR_NODE_EXPORT_OWN = 7,
+};
+
+/* Operations on twin exports (host->export_op, SCR_NVF_TWIN): the island
+ * object asks its native object. GET: args[0] names a property, the answer
+ * is its value. INVOKE: args[0] names a method, the rest are its arguments,
+ * the answer is its result. Both are the native handle's own property read
+ * and method call. TELL: the island object changed; args[0] names the
+ * event and args[1] is its value (an island signal aborted: "abort" and
+ * the reason). */
+enum {
+  SCR_NODE_TWIN_GET = 16,
+  SCR_NODE_TWIN_INVOKE = 17,
+  SCR_NODE_TWIN_TELL = 18,
 };
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
@@ -77,9 +98,11 @@ typedef struct ScrNodeIoState {
  * table of V8 references, one id per V8 object while the runtime
  * holds it (the bridge answers the same id for the same object), released
  * with `drop`. The table holds v8::TracedReferences that V8 marks only
- * while the runtime may still use them (NI-8, gc_analyze). Typed arrays and
- * Buffers coming out of V8 also carry their backing store's memory (BYTES),
- * which the runtime aliases.
+ * while the runtime may still use them (NI-8, gc_analyze). Typed arrays,
+ * Buffers, DataViews and ArrayBuffers cross as their memory (BYTES), which
+ * both sides alias, and symbols as symbols: for these each side has an
+ * object of its own, and the two are bound one to one (host->bind) for as
+ * long as the runtime holds its half, so either crosses as the other.
  *
  * Out-values the bridge writes hold bridge-owned string data valid until
  * the next bridge entry; the runtime copies it at once. In-values are
@@ -92,16 +115,22 @@ enum {
   SCR_NV_STRING = 4, /* WTF-8: lone surrogates as their 3-byte forms */
   SCR_NV_BIGINT = 5, /* str: decimal text with an optional leading '-' */
   SCR_NV_HANDLE = 6, /* handle: an import-table id; flags: SCR_NVF_* */
-  SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory */
-  SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
+  SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory, or
+                        (SCR_NVF_ARRAYBUFFER) the ArrayBuffer itself */
+  SCR_NV_ERROR = 8,  /* into V8 only: a native Error, by reference: one V8 Error of its
+                        intrinsic class per export id, which is SCR_NV_EXPORT when it crosses
+                        back. Its own properties are the export's (SCR_NODE_EXPORT_OWN,
+                        export_get, export_set, export_delete) */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
   SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
-                         SCR_NVF_PROMISE, SCR_NVF_ARRAY or 0 for an object */
+                         SCR_NVF_PROMISE, SCR_NVF_ARRAY, SCR_NVF_MAP, SCR_NVF_SET, SCR_NVF_TWIN
+                         or 0 for an object */
+  SCR_NV_SYMBOL = 11, /* into V8 only: sym, a runtime symbol that has no V8 symbol bound yet */
 };
 /* What a handle is, reported with every handle the bridge answers. */
 enum {
   SCR_NVF_FUNCTION = 1,
-  SCR_NVF_SYMBOL = 2,
+  SCR_NVF_SYMBOL = 2, /* the runtime pairs it with a symbol of its own (symbol_info) */
   SCR_NVF_ERROR = 4,
   SCR_NVF_ARRAY = 8,
   SCR_NVF_PROMISE = 16,
@@ -110,6 +139,49 @@ enum {
   SCR_NVF_DATAVIEW = 128,
   SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
   SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
+  /* EXPORT: a native object of a platform class whose island receivers
+   * brand-check it (an AbortSignal). Its representative is a real object of
+   * the island's own class, the twin: made by the bootstrap's makeTwin from
+   * the class name in exp.name, or, when exp.length names an import, that
+   * island object, which the export adopts (adoptTwin). The runtime keeps
+   * the two objects' state in step.
+   * HANDLE: an island object of a class the bootstrap lists in
+   * twinPrototypes: the runtime may answer it with a native object that
+   * adopts it. */
+  SCR_NVF_TWIN = 1024,
+  SCR_NVF_ARRAYBUFFER = 2048, /* BYTES: the ArrayBuffer itself, not a view of it */
+  /* A built-in constructor (String, Number, Boolean, BigInt, Map, Date, ...).
+   * EXPORT: the native value of the one `exp.name` names; its representative
+   * is the island's own intrinsic of that name, so island code compares it
+   * equal to its `String` and the island hands the same object back.
+   * HANDLE: the function is one of the island's intrinsic constructors: the
+   * runtime answers it with the native value of that name when the program
+   * holds one. */
+  SCR_NVF_INTRINSIC = 32768,
+};
+/* A handle with this bit names a "young" view: the V8 view of a runtime
+ * view that crossed for the first time since the runtime's last
+ * young_flush. Most such views cross once and are dropped (a chunk of a
+ * stream), so until the flush the bridge only keeps them alive, in the
+ * order it made them (the handle's other bits are the position), and the
+ * runtime holds its halves in the same order. The flush gives the views
+ * the program still holds real handles and lets the others go. */
+#define SCR_NODE_YOUNG 0x80000000u
+
+/* What a runtime object bound to a V8 value is (host->bound, host->bind). */
+enum {
+  SCR_NODE_BIND_VIEW = 1,   /* a typed array, Buffer or DataView */
+  SCR_NODE_BIND_BUFFER = 2, /* the storage an ArrayBuffer stands for */
+  SCR_NODE_BIND_SYMBOL = 3,
+};
+/* Kinds of symbol (SCR_NV_SYMBOL, ScrNodeSymbolInfo): the text is the
+ * description (SCR_NODE_SYMBOL_NO_DESCRIPTION: none), the Symbol.for key, or
+ * the well-known symbol's property name on Symbol ("iterator"). */
+enum {
+  SCR_NODE_SYMBOL_UNIQUE = 0,
+  SCR_NODE_SYMBOL_NO_DESCRIPTION = 1,
+  SCR_NODE_SYMBOL_REGISTERED = 2,
+  SCR_NODE_SYMBOL_WELL_KNOWN = 3,
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {
@@ -123,22 +195,42 @@ typedef struct ScrNodeValue {
       size_t len;
     } str;
     uint32_t handle;
+    /* One ArrayBuffer per storage and one view object per view, on both
+     * sides. A value names the view by `handle` once the two are bound;
+     * the first crossing carries what the other side needs to make its
+     * half: out of V8 the ArrayBuffer's handle and extent, into V8 the
+     * runtime's objects, which the bridge binds (host->bind) to the V8
+     * values it makes. With SCR_NVF_ARRAYBUFFER the value is the buffer:
+     * `buffer`, `data` and `buffer_len` describe it and the view fields
+     * are unused. */
     struct {
-      uint8_t *data; /* first element */
+      uint8_t *data; /* the view's first byte */
       size_t len;    /* elements */
       uint32_t elem; /* ScrBytesElem */
-      uint32_t handle; /* out of V8: the view's handle (keeps the store alive) */
-      void *owner;   /* into V8: the runtime ScrBytes root that owns data */
+      uint32_t handle; /* the view's handle; 0 into V8: none is bound yet */
+      void *owner;   /* into V8, handle 0: the runtime's view object */
+      uint32_t buffer; /* the ArrayBuffer's handle; 0: out of V8 the runtime already
+                          holds the view, into V8 none is bound yet */
+      size_t offset;     /* the view's byteOffset in its ArrayBuffer */
+      size_t buffer_len; /* the ArrayBuffer's byteLength */
+      void *root;    /* into V8, buffer 0: the runtime's storage owner */
     } bytes;
     struct {
+      uint32_t kind;    /* SCR_NODE_SYMBOL_* */
+      const char *text; /* WTF-8 */
+      size_t len;
+      void *owner;      /* the runtime's symbol (host->bind) */
+    } sym;
+    struct {
       uint32_t kind; /* scr_error.h SCR_ERR_* (intrinsic class) */
-      const char *name, *message, *stack, *code; /* code NULL: none */
-      size_t name_len, message_len, stack_len, code_len;
+      uint32_t export_id; /* the runtime's export-table id of the error */
+      uint32_t class_instance; /* an instance of a program class: the export also
+                                  answers its class's members */
     } error;
     struct {
       uint32_t id;     /* the runtime's export-table id */
-      uint32_t length; /* functions: their `length` */
-      const char *name; /* functions: their `name` (NULL: anonymous) */
+      uint32_t length; /* functions: their `length`; twins: the import the export adopts (0: none) */
+      const char *name; /* functions: their `name` (NULL: anonymous); twins: their class */
       size_t name_len;
     } exp;
   } u;
@@ -157,6 +249,14 @@ typedef struct ScrNodeErrorInfo {
   const char *arrow;
   size_t arrow_len;
 } ScrNodeErrorInfo;
+
+/* What an island symbol is, read by `symbol_info` (bridge-owned text,
+ * valid until the next entry). */
+typedef struct ScrNodeSymbolInfo {
+  uint32_t kind; /* SCR_NODE_SYMBOL_* */
+  const char *text;
+  size_t len;
+} ScrNodeSymbolInfo;
 
 /* ── cross-heap cycle collection (scope-B NI-8) ────────────────────────────
  * Before V8's major GC marks, the runtime answers which exports its own
@@ -227,8 +327,8 @@ typedef struct ScrNodeBridgeHost {
   /* NI-4: a thenable the runtime awaits (`then`) settled; `value` is the
    * fulfillment or (rejected=1) the reason. Runs as a V8 reaction job. */
   void (*settle_value)(uint32_t token, int rejected, const ScrNodeValue *value);
-  /* NI-4: V8 freed a backing store over runtime bytes (`owner` of a BYTES
-   * value that went into V8). May run on any thread: the runtime queues
+  /* NI-4: V8 freed a backing store over runtime bytes (the `root` the
+   * bridge bound with store=1). May run on any thread: the runtime queues
    * the release for its own thread. */
   void (*bytes_free)(void *owner);
   /* Native values in Node (NI-5): the V8 representative of export `id`
@@ -270,9 +370,10 @@ typedef struct ScrNodeBridgeHost {
   /* The exports in their temporal dead zone now, as SCR_NV_STRING JSON
    * [[mod, slot], ...]. */
   void (*shared_tdz)(ScrNodeValue *out);
-  /* A Map or Set export's operation (SCR_NODE_COLLECTION_*): 0 returned
-   * (*out), 1 threw. ENTRIES answers an array export: [key, value] pairs
-   * of a Map, the values of a Set. */
+  /* An export's operation: a Map's or Set's (SCR_NODE_COLLECTION_*), a twin
+   * export's (SCR_NODE_TWIN_*), or a native error's own properties
+   * (SCR_NODE_EXPORT_OWN). 0 returned (*out), 1 threw. ENTRIES answers an
+   * array export: [key, value] pairs of a Map, the values of a Set. */
   int (*export_op)(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
                    ScrNodeValue *out);
   /* NI-8: the analysis before a major GC, over the `nexports` exports that
@@ -280,6 +381,26 @@ typedef struct ScrNodeBridgeHost {
    * answer now (V8 then treats every handle as a root for this GC). Runs
    * inside V8's GC prologue: it must not call into the bridge. */
   int (*gc_analyze)(const uint32_t *exports, size_t nexports, ScrNodeGcResult *out);
+  /* One V8 value per runtime view, storage and symbol (SCR_NODE_BIND_*).
+   * `bound` answers the handle bound to `owner`, or 0. `bind`: the bridge
+   * made the V8 value for `owner` and names it `handle` (a view: a young
+   * handle, see SCR_NODE_YOUNG); the runtime holds that handle for as long
+   * as it holds `owner`, so the same value crosses next time. store=1: a
+   * V8 backing store over the runtime's memory now holds `owner`, until
+   * bytes_free(owner). It comes with the storage's ArrayBuffer, or with
+   * the view of a typed array that is its own storage: then the
+   * ArrayBuffer has no handle of its own, and the runtime knows it by the
+   * view while that is young and by the store's memory afterwards.
+   * Neither may call into the bridge. */
+  uint32_t (*bound)(uint32_t kind, void *owner);
+  void (*bind)(uint32_t kind, void *owner, uint32_t handle, int store);
+  /* Whether the runtime holds its own object for the V8 value `handle` (a
+   * view or a symbol): such a view crosses out of V8 as its handle alone,
+   * and such a symbol is a key the runtime's objects answer. */
+  int (*holds)(uint32_t handle);
+  /* The index-th own symbol key of export `id` (0, *out), or 2 when it has
+   * no such key: what its representative lists beside its own. */
+  int (*export_symbol)(uint32_t id, uint32_t index, ScrNodeValue *out);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -334,9 +455,14 @@ typedef struct ScrNodeBridge {
    * starts at the poll phase instead of the timers phase. */
   int (*run_loop)(int continue_turn);
   /* Calls island listener `listener` of a process event: a signal (`name`,
-   * signal number `arg`) or exit (code `arg`). */
+   * signal number `arg`) or exit (code `arg`). A signal listener runs in a
+   * callback scope (ticks and microtasks drain after it); an exit listener
+   * is a plain call, after which nothing drains. Exit with listener 0 calls
+   * no listener: it tells island code that the exit sequence began
+   * (process._exiting). */
   void (*emit)(uint32_t event, uint32_t listener, const char *name, int arg);
-  /* Tears Node down at process exit. */
+  /* Tears Node down at process exit. No JavaScript runs from here on: the
+   * timers and immediates still due are dropped. */
   void (*stop)(void);
   /* ── object handles (NI-4). Each operation answers 0 (returned: *out is
    * the result) or 1 (threw: *out is the thrown value). ── */
@@ -375,6 +501,13 @@ typedef struct ScrNodeBridge {
   void (*shared_push)(uint32_t mod, uint32_t slot, const ScrNodeValue *value);
   /* NI-8: the cross-heap collector's counters. */
   void (*gc_stats)(ScrNodeGcStats *out);
+  /* What symbol handle h is: its kind and description, registry key or
+   * well-known name. */
+  void (*symbol_info)(uint32_t h, ScrNodeSymbolInfo *out);
+  /* Ends the young views: view i gets a real handle (ids[i]) when keep[i]
+   * is set, and is the bridge's to forget otherwise. `n` is the number of
+   * young views the runtime was told of. */
+  void (*young_flush)(const uint8_t *keep, size_t n, uint32_t *ids);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

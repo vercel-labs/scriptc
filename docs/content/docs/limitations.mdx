@@ -16,6 +16,8 @@ title: "Limitations"
 
 <include>../limitations/language-features/class-reflection.mdx</include>
 
+<include>../limitations/language-features/class-members.mdx</include>
+
 <include>../limitations/language-features/method-values.mdx</include>
 
 <include>../limitations/language-features/loose-equality.mdx</include>
@@ -52,6 +54,8 @@ title: "Limitations"
 
 <include>../limitations/types-and-class-definitions/null-and-optional-values.mdx</include>
 
+<include>../limitations/types-and-class-definitions/runtime-optional-storage.mdx</include>
+
 <include>../limitations/types-and-class-definitions/static-field-updates.mdx</include>
 
 <include>../limitations/types-and-class-definitions/array-subclasses.mdx</include>
@@ -61,6 +65,10 @@ title: "Limitations"
 <include>../limitations/types-and-class-definitions/constructor-function-inheritance.mdx</include>
 
 <include>../limitations/types-and-class-definitions/symbol-fields.mdx</include>
+
+<include>../limitations/types-and-class-definitions/unassigned-fields.mdx</include>
+
+<include>../limitations/types-and-class-definitions/class-index-signatures.mdx</include>
 
 <include>../limitations/types-and-class-definitions.mdx</include>
 
@@ -75,6 +83,8 @@ title: "Limitations"
 <include>../limitations/builtin-apis/asynclocalstorage.mdx</include>
 
 <include>../limitations/builtin-apis/streams-and-readline.mdx</include>
+
+<include>../limitations/builtin-apis/http-2.mdx</include>
 
 <include>../limitations/builtin-apis/commonjs-metadata.mdx</include>
 
@@ -120,11 +130,19 @@ title: "Limitations"
 
 <include>../limitations/builtin-apis/builtin-module-lookup.mdx</include>
 
+<include>../limitations/builtin-apis/compile-cache.mdx</include>
+
+<include>../limitations/builtin-apis/single-executable-applications.mdx</include>
+
 <include>../limitations/builtin-apis/arraybuffers-and-typed-arrays.mdx</include>
 
 <include>../limitations/builtin-apis/blob-and-file.mdx</include>
 
 <include>../limitations/builtin-apis/prototypes.mdx</include>
+
+<include>../limitations/builtin-apis/built-in-members.mdx</include>
+
+<include>../limitations/builtin-apis/intl-numberformat-and-intl-datetimeformat.mdx</include>
 
 <include>../limitations/builtin-apis/intl-segmenter.mdx</include>
 
@@ -175,6 +193,20 @@ title: "Limitations"
 <include>../limitations/runtime-differences-from-node-js.mdx</include>
 
 <include>../limitations/runtime-differences-from-node-js/event-order-across-native-code-and-islands.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/island-packages-that-read-the-machine-when-they-load.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/timers-across-native-code-and-islands.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/abort-listeners-across-native-code-and-islands.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/compile-cache-in-node-islands.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/child-process-event-order.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/objects-converted-from-node-islands.mdx</include>
+
+<include>../limitations/runtime-differences-from-node-js/child-processes-from-node-islands.mdx</include>
 
 ### Array bounds and runtime errors
 
@@ -252,6 +284,10 @@ title: "Limitations"
 
 <include>../limitations/dns-lookup-errors.mdx</include>
 
+### Server and socket errors
+
+<include>../limitations/server-and-socket-errors.mdx</include>
+
 ### Socket data encoding
 
 <include>../limitations/socket-data-encoding.mdx</include>
@@ -272,11 +308,19 @@ title: "Limitations"
 
 <include>../limitations/module-path-globals.mdx</include>
 
+### Defined environment variables
+
+<include>../limitations/defined-environment-variables.mdx</include>
+
 <span id="embedded-javascript-engine" />
 
 ## Runtime code evaluation
 
 <include>../limitations/runtime-code-evaluation.mdx</include>
+
+## Build-time evaluation
+
+<include>../limitations/build-time-evaluation.mdx</include>
 
 ## Process events
 

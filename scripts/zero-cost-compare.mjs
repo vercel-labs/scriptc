@@ -364,6 +364,7 @@ export const DYNAMIC_TIER_PREFIXES = [
   "scr_dyn_builtin_method_value",
   "scr_dyn_construct",
   "scr_dyn_function_apply",
+  "scr_dyn_fn_own_",
   "scr_dyn_fn_get",
   "scr_dyn_this_get",
   // Dynamic operators and coercions.
@@ -408,8 +409,10 @@ export const ICU_CPP_NAMESPACE = "6icu_78";
 
 /** The ICU archive: no program that answers its Intl forms without
  * ICU — that is, every program whose IR has no `icu.*` libCall — may define
- * a symbol from it. The test is exact because ICU builds with symbol
- * renaming on: every C API symbol carries the `_78` version suffix
+ * a symbol from it. The gate holds a change to that by comparing with the
+ * baseline (`symbolCheck`): a program may not gain a symbol from the
+ * archive. The test is exact because ICU builds with symbol renaming on:
+ * every C API symbol carries the `_78` version suffix
  * (`ubrk_open_78`), its data symbol is `icudt78_dat`, and every C++ symbol
  * is an Itanium mangling that names namespace `icu_78`, which the mangling
  * spells `6icu_78` wherever the name occurs — as the function's own
@@ -445,6 +448,45 @@ export function nodeIslandSymbols(names) {
     .sort();
 }
 
+/** Up to five names, and how many there are when there are more. */
+const someNames = (names) =>
+  names.slice(0, 5).join(", ") + (names.length > 5 ? `, ... (${names.length} in all)` : "");
+
+/** The symbol rules for one program, from the functions its baseline and
+ * candidate executables define. Each rule compares with the baseline: a
+ * program may not gain dynamic-tier, Node island or ICU symbols it did not
+ * define before, unless it is `allowed`. A program that links ICU or the
+ * Node island runtime on both sides gained nothing, whatever else made its
+ * executable differ. A fully typed program (`typed`) may define no
+ * dynamic-tier symbol at all. A program with Node islands (`island`) calls
+ * into Node.js, so the Node island rule does not apply to it. */
+export function symbolCheck({ typed, allowed, island = false, baseline, candidate }) {
+  const gained = (classify) => {
+    const before = new Set(classify(baseline));
+    return classify(candidate).filter((name) => !before.has(name));
+  };
+  const after = dynamicTierSymbols(candidate);
+  const added = gained(dynamicTierSymbols);
+  const nodeIsland = gained(nodeIslandSymbols);
+  const icu = gained(icuSymbols);
+  const failures = [];
+  // No good-code program calls into Node.js, so none may start linking its
+  // runtime; the island workloads are the programs that do.
+  if (nodeIsland.length > 0 && !allowed && !island)
+    failures.push(`gained Node island symbols: ${someNames(nodeIsland)}`);
+  // Intl over ICU is linked only into programs whose IR lowers to it. A
+  // change that makes a program call it names the program in --allow or
+  // --allow-programs.
+  if (icu.length > 0 && !allowed) failures.push(`gained ICU symbols: ${someNames(icu)}`);
+  if (typed && after.length > 0)
+    failures.push(
+      `fully typed program links dynamic-tier symbols: ${after.slice(0, 5).join(", ")}`,
+    );
+  if (added.length > 0 && !allowed)
+    failures.push(`gained dynamic-tier symbols: ${added.slice(0, 5).join(", ")}`);
+  return { typed, count: after.length, added, nodeIsland, icu, failures };
+}
+
 /* Bench workloads whose release binaries link dynamic-tier symbols on
  * b14377864: JSON.parse trees, worker messages, regex exec metadata
  * (two-tier §3.3 L5), and a shared scr_dyn_call/scr_dyn_define_property core
@@ -461,9 +503,18 @@ export function nodeIslandSymbols(names) {
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
  * views. bench/layered-errors, also added later, constructs and throws
- * Error subclass instances, as bench/validate-errors does.
+ * Error subclass instances, as bench/validate-errors does: the root in both
+ * is the dynamic view registered at start-up for every program class that
+ * extends Error (scr_error_register_dyn), whose snapshot reaches
+ * scr_error_dyn_fields. Their constructors are not a root: `super(message)`
+ * with a string message takes the typed entry.
  * bench/stream-buffered-drain, also added later, drains an object-mode
- * Readable, whose chunks are checked-dynamic values. Every other bench
+ * Readable, whose chunks are checked-dynamic values. bench/catalog-tables,
+ * also added later, walks dictionaries of `object` values from JSON.parse.
+ * bench/regex-tokenizer, also added later, calls `exec` as bench/regex-logs
+ * does (regex exec metadata). bench/untyped-handoff, also added later, keeps
+ * typed records in `unknown` slots and calls their handlers through
+ * `(order: any) => number`: untyped slots are its subject. Every other bench
  * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
@@ -478,9 +529,11 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/intern-table",
   "bench/thread-slots",
   "bench/channel-messages",
+  "bench/dynamic-class-tests",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
   "bench/dynamic-properties-json",
+  "bench/untyped-record-probes",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
@@ -493,6 +546,9 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/layered-errors",
   "bench/stream-buffered-drain",
   "bench/untyped-validate",
+  "bench/catalog-tables",
+  "bench/regex-tokenizer",
+  "bench/untyped-handoff",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
@@ -596,11 +652,83 @@ export function linkedRuntimeFiles(diff) {
   );
 }
 
+/** The private constants of an ELF64 little-endian relocatable object, as
+ * label → `section:bytes in hex`: every local `.L` label in a mergeable
+ * section, which is where the compiler puts a function's constant-pool
+ * entries (`.LCPI<function>_<n>` in `.rodata.cst8`) and the unit's string
+ * literals (`.L.str.<n>` in `.rodata.str1.1`). Those names count functions
+ * and literals from the start of the unit, so adding or removing a function
+ * or a literal renumbers every later one while the bytes they name stay the
+ * same. An object in another format has none. */
+export function elfPrivateConstants(bytes) {
+  const constants = new Map();
+  if (bytes.length < 64 || bytes.readUInt32BE(0) !== 0x7f454c46 || bytes[4] !== 2 || bytes[5] !== 1)
+    return constants;
+  const shoff = Number(bytes.readBigUInt64LE(0x28));
+  const shentsize = bytes.readUInt16LE(0x3a);
+  const section = (index) => {
+    const at = shoff + index * shentsize;
+    return {
+      name: bytes.readUInt32LE(at),
+      type: bytes.readUInt32LE(at + 4),
+      flags: Number(bytes.readBigUInt64LE(at + 8)),
+      offset: Number(bytes.readBigUInt64LE(at + 24)),
+      size: Number(bytes.readBigUInt64LE(at + 32)),
+      link: bytes.readUInt32LE(at + 40),
+      entsize: Number(bytes.readBigUInt64LE(at + 56)),
+    };
+  };
+  if (shoff === 0) return constants;
+  // An object with 0xff00 sections or more keeps the count and the index of
+  // the section name table in section 0.
+  const shnum = bytes.readUInt16LE(0x3c) || section(0).size;
+  const shstrndx = bytes.readUInt16LE(0x3e) === 0xffff ? section(0).link : bytes.readUInt16LE(0x3e);
+  const name = (table, offset) => {
+    const start = table.offset + offset;
+    return bytes.toString("latin1", start, bytes.indexOf(0, start));
+  };
+  const sectionNames = section(shstrndx);
+  const SHT_SYMTAB = 2;
+  const SHT_NOBITS = 8;
+  const SHF_MERGE = 0x10;
+  const SHF_STRINGS = 0x20;
+  for (let index = 1; index < shnum; index++) {
+    const table = section(index);
+    if (table.type !== SHT_SYMTAB) continue;
+    const names = section(table.link);
+    for (let at = table.offset; at + 24 <= table.offset + table.size; at += 24) {
+      const local = bytes[at + 4] >> 4 === 0;
+      const shndx = bytes.readUInt16LE(at + 6);
+      if (!local || shndx === 0 || shndx >= 0xff00) continue;
+      const label = name(names, bytes.readUInt32LE(at));
+      if (!label.startsWith(".L")) continue;
+      const home = section(shndx);
+      if ((home.flags & SHF_MERGE) === 0 || home.type === SHT_NOBITS) continue;
+      const start = home.offset + Number(bytes.readBigUInt64LE(at + 8));
+      // A constant-pool label has no size: it names one entry of its section.
+      // A string without one runs to its terminator.
+      let size = Number(bytes.readBigUInt64LE(at + 16)) || home.entsize;
+      if (size === 1 && (home.flags & SHF_STRINGS) !== 0)
+        size = bytes.indexOf(0, start) + 1 - start;
+      if (size <= 0 || start + size > home.offset + home.size) continue;
+      constants.set(
+        label,
+        `${name(sectionNames, home.name)}:${bytes.toString("hex", start, start + size)}`,
+      );
+    }
+  }
+  return constants;
+}
+
 /** Functions of an object's disassembly (llvm-objdump -d -r
  * --no-show-raw-insn --no-leading-addr) as name → hash of the body. Branch
  * targets and relocations keep their symbol and offset but drop addresses,
- * so a function that only moved within its section is not a change. */
-export function objectFunctionHashes(text) {
+ * so a function that only moved within its section is not a change. A
+ * relocation against a private constant (`constants`, from
+ * `elfPrivateConstants`) names the constant's bytes instead of its label, so
+ * a function whose constants were only renumbered is not a change either,
+ * and one that reads another constant is. */
+export function objectFunctionHashes(text, constants = new Map()) {
   const functions = new Map();
   let name = null;
   let body = [];
@@ -621,7 +749,10 @@ export function objectFunctionHashes(text) {
         line
           .trim()
           .replace(/^[0-9a-f]+:\s+/, "")
-          .replace(/\b(?:0x)?[0-9a-f]+ <([^>]+)>/g, "<$1>"),
+          .replace(/\b(?:0x)?[0-9a-f]+ <([^>]+)>/g, "<$1>")
+          .replace(/^(R_\S+\s+)(\.L\S*?)([-+]0x[0-9a-f]+)?$/, (whole, type, label, addend = "") =>
+            constants.has(label) ? `${type}{${constants.get(label)}}${addend}` : whole,
+          ),
       );
     }
   }
@@ -664,6 +795,8 @@ export function programLines(entry) {
     nondeterministic: "nondet   ",
     "build-error": "ERROR    ",
     "both-fail": "both-fail",
+    "changed-by-pr": "PR-change",
+    "removed-by-pr": "PR-remove",
   }[entry.verdict];
   const notes = [];
   for (const [kind, result] of Object.entries(entry.artifacts))
@@ -699,6 +832,13 @@ export function programLines(entry) {
   }
   if (entry.nondeterministic)
     notes.push(`the baseline's own rebuild differs in ${entry.nondeterministic.join(", ")}`);
+  if (entry.pr === "changed" || entry.pr === "added")
+    notes.push(
+      `source ${entry.pr === "added" ? "added" : "changed"} by the PR, built from the candidate checkout`,
+    );
+  if (entry.verdict === "changed-by-pr")
+    notes.push("the baseline compiler cannot build it, so the gate did not compare it");
+  if (entry.verdict === "removed-by-pr") notes.push("the candidate checkout removed it");
   for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
   lines.push(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
   // A build error's first line is often a warning; print all of it.
@@ -716,10 +856,66 @@ export function programLines(entry) {
   return lines;
 }
 
+/* ── allow list by program ─────────────────────────────────────────────── */
+
+/** The program ids an --allow-programs file lists: one id per line, as the
+ * gate prints it (`corpus/…`, `bench/…`, `self/cli`, `fixture/…`), without
+ * the white space around it. Blank lines and lines that start with `#` are
+ * skipped, and a repeated id counts once. */
+export function parseAllowPrograms(text) {
+  const ids = new Set();
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line !== "" && !line.startsWith("#")) ids.add(line);
+  }
+  return [...ids];
+}
+
+/** What became of the listed programs, from the report entries of the
+ * programs a run compared: the ids that differ, the ids that are identical
+ * and so need not be listed, the ids that did not build, and the ids no
+ * entry names because the run did not select them (another shard, set or
+ * corpus selection). */
+export function allowProgramsSummary(ids, programs) {
+  const verdicts = new Map(programs.map((p) => [p.id, p.verdict]));
+  const summary = { listed: ids.length, differ: [], identical: [], unbuilt: [], unselected: [] };
+  for (const id of ids) {
+    const verdict = verdicts.get(id);
+    if (verdict === undefined) summary.unselected.push(id);
+    else if (verdict === "identical") summary.identical.push(id);
+    else if (verdict === "both-fail" || verdict === "build-error") summary.unbuilt.push(id);
+    else summary.differ.push(id);
+  }
+  return summary;
+}
+
+/** The report lines for an --allow-programs summary: the counts, then the
+ * listed programs that are identical, which shows a list that is broader
+ * than the change needs. `merged` also names the ids no shard compared. */
+export function allowProgramsLines(summary, { merged = false } = {}) {
+  const names = (ids) =>
+    ids.slice(0, 20).join(", ") + (ids.length > 20 ? `, ... (${ids.length} in all)` : "");
+  const counts = [`${summary.differ.length} differ`, `${summary.identical.length} identical`];
+  if (summary.unbuilt.length > 0) counts.push(`${summary.unbuilt.length} did not build`);
+  if (summary.unselected.length > 0)
+    counts.push(
+      `${summary.unselected.length} not compared ${merged ? "by any shard" : "in this run"}`,
+    );
+  const lines = [
+    `listed     ${summary.listed} program${summary.listed === 1 ? "" : "s"} in --allow-programs: ${counts.join(", ")}`,
+  ];
+  if (summary.identical.length > 0)
+    lines.push(`listed     identical, so the list need not name: ${names(summary.identical)}`);
+  if (merged && summary.unselected.length > 0)
+    lines.push(`listed     not compared by any shard: ${names(summary.unselected)}`);
+  return lines;
+}
+
 /* ── verdicts ──────────────────────────────────────────────────────────── */
 
 /** One program's verdict from its build results and artifact comparisons.
- * `allowed` marks programs that match the change's pattern signature. */
+ * `allowed` marks programs that match the change's pattern signature
+ * (--allow) or that --allow-programs lists. */
 /** `required` programs must build with both checkouts: a failure both share
  * means the gate compared nothing for them. Other programs may fail the same
  * way on both sides, as a corpus program the compiler refuses does. */
@@ -729,7 +925,10 @@ export function programLines(entry) {
  * A difference the baseline also shows when it builds the program again is
  * "nondeterministic": `nondeterministic` lists the artifact kinds whose
  * baseline rebuild differs, and every differing artifact must be among
- * them. Neither fails the gate unless `strict` is set. */
+ * them. Neither fails the gate unless `strict` is set.
+ * `changedSource` says both checkouts built the source the change itself
+ * provides, so the baseline compiler refusing it is the change's own
+ * source, not a regression in what the baseline used to build. */
 export function programVerdict({
   baseline,
   candidate,
@@ -739,8 +938,11 @@ export function programVerdict({
   runtimeOnly = false,
   nondeterministic = [],
   strict = false,
+  changedSource = false,
 }) {
   if (!baseline.ok || !candidate.ok) {
+    if (!baseline.ok && candidate.ok && changedSource)
+      return { verdict: "changed-by-pr", fails: false };
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
       return { verdict: "both-fail", fails: required };
     return { verdict: "build-error", fails: true };
@@ -753,6 +955,55 @@ export function programVerdict({
   if (differing.every(([kind]) => nondeterministic.includes(kind)))
     return { verdict: "nondeterministic", fails: strict };
   return { verdict: "differs", fails: true };
+}
+
+/* ── programs the change rewrites or deletes ───────────────────────────── */
+
+/** One row per program id out of the programs of the checkout the gate reads
+ * its programs from (`own`) and those of the other compared checkout
+ * (`counterpart`): `own`'s programs in their order, each with the
+ * counterpart's program of the same id (null when it has none), then the
+ * programs only the counterpart has. Programs pair by id, not by entry path:
+ * a benchmark that keeps its workload name while its entry moves is one
+ * program whose source changed, and no id appears twice (mergeReports
+ * refuses a report that repeats one). */
+export function pairPrograms(own, counterpart) {
+  const theirs = new Map(counterpart.map((program) => [program.id, program]));
+  const ids = new Set(own.map((program) => program.id));
+  return [
+    ...own.map((program) => ({ own: program, counterpart: theirs.get(program.id) ?? null })),
+    ...counterpart
+      .filter((program) => !ids.has(program.id))
+      .map((program) => ({ own: null, counterpart: program })),
+  ];
+}
+
+/** What a change does to one program, from the program's source in each
+ * checkout: `{ entry, files }` with the entry's path relative to its
+ * checkout and a Map from each file the program reads (relative path) to
+ * its content hash, or null where the checkout has no such program.
+ * "removed" (only the baseline has it), "added" (only the candidate has
+ * it), or "changed" (both have it, at another entry path or with different
+ * files or contents); undefined when the two copies match. */
+export function programChange(before, after) {
+  if (after === null) return before === null ? undefined : "removed";
+  if (before === null) return "added";
+  if (before.entry !== after.entry || before.files.size !== after.files.size) return "changed";
+  for (const [file, hash] of before.files) if (after.files.get(file) !== hash) return "changed";
+  return undefined;
+}
+
+/** What both compilers build of a program the change rewrites: everything
+ * the gate reads from the program's source and definition comes from the
+ * candidate checkout's copy, not only the entry. The optimization level is
+ * named in the entry's head and the workload carries the arguments, so
+ * either can change with the source. */
+export function changedProgram(candidate) {
+  return {
+    entry: candidate.entry,
+    optimization: candidate.optimization,
+    workload: candidate.workload,
+  };
 }
 
 export function median(values) {
@@ -878,7 +1129,8 @@ export function cachedComparison(entry, candidate, hashes) {
 /** Merge the --json reports of gate shards that split one good-code set
  * (--shard, --set) into a single report with one verdict. Program entries
  * and their failures are concatenated; the compile-time groups and the
- * "nothing was compared" check are recomputed over all shards. */
+ * "nothing was compared" check are recomputed over all shards, and so is
+ * what became of the programs --allow-programs lists. */
 export function mergeReports(reports) {
   assert(reports.length > 0, "no gate reports to merge");
   const [first] = reports;
@@ -891,8 +1143,17 @@ export function mergeReports(reports) {
       );
   }
   const globals = new Set(reports.flatMap((r) => r.globalFailures ?? []));
+  const listed = reports.filter((r) => r.allowPrograms);
   const merged = {
     ...first,
+    ...(listed.length > 0
+      ? {
+          allowPrograms: {
+            ...listed[0].allowPrograms,
+            ids: [...new Set(listed.flatMap((r) => r.allowPrograms.ids))],
+          },
+        }
+      : {}),
     shards: reports.length,
     programs: reports.flatMap((r) => r.programs),
     failures: reports.flatMap((r) => r.failures.filter((f) => !globals.has(f))),
@@ -928,5 +1189,10 @@ export function mergeReports(reports) {
   merged.failures.push(...merged.globalFailures);
   merged.counts = counts;
   merged.verdict = merged.failures.length > 0 ? "fail" : "pass";
-  return { report: merged, timingLines: lines };
+  const allowLines = merged.allowPrograms
+    ? allowProgramsLines(allowProgramsSummary(merged.allowPrograms.ids, merged.programs), {
+        merged: true,
+      })
+    : [];
+  return { report: merged, timingLines: lines, allowLines };
 }

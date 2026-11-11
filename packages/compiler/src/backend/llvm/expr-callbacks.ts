@@ -309,7 +309,12 @@ export function genResultThunkFor(
     host.journal?.built();
     return sym;
   }
-  if (valueT.kind !== "union") throw new LlvmUnsupportedError(`genResume:${valueT.kind}`);
+  if (valueT.kind !== "union")
+    throw new LlvmUnsupportedError(
+      `genResume:${valueT.kind}`,
+      undefined,
+      `a generator resumed with a value of type ${typeKey(valueT)}`,
+    );
   const def = host.unionsById.get(valueT.unionId);
   if (!def) throw new InternalCompilerError("llvm emitter bug: genResume value union unknown");
   const tagOf = (t: IrType): number => {
@@ -468,7 +473,48 @@ export function genResultThunkFor(
   return sym;
 }
 
+/** What a held 'exit'/'close' listener that declares its code as `number`
+ * is told when Node passes null (a signal ended the child). */
+const CHILD_EXIT_NULL_CODE =
+  "an 'exit' or 'close' listener declaring a number exit code received null (a signal ended the child; declare the parameter as 'number | null')";
+
+/** The block that throws CHILD_EXIT_NULL_CODE and returns: the listener is
+ * not called with a number it does not have. */
+function childExitNullCodeLines(host: LlvmEmitterContext, label: string): string[] {
+  host.declare(`declare void @scr_throw_error_msg(i32, ptr, ${host.sizeType})`);
+  return [
+    `${label}:`,
+    `  call void @scr_throw_error_msg(i32 1, ptr ${host.cstr(CHILD_EXIT_NULL_CODE)}, ${host.sizeType} ${Buffer.byteLength(CHILD_EXIT_NULL_CODE, "utf8")})`,
+    `  ret void`,
+  ];
+}
+
 export function childExitThunkFor(host: LlvmEmitterContext, param: IrType): string {
+  if (param.kind === "f64") {
+    // A held listener typed `(code: number) => void`: the code as it is,
+    // a TypeError for the null of a signal's end.
+    const f64Key = "cx:f64";
+    let f64Sym = host.resolveThunks.get(f64Key);
+    if (f64Sym) return f64Sym;
+    f64Sym = host.contentSymbol("sc_cx_", f64Key);
+    host.resolveThunks.set(f64Key, f64Sym);
+    host.journal?.allocated(f64Sym, "childExitThunkFor", [param]);
+    host.resolveThunkDefs.push(
+      `define internal void @${f64Sym}(ptr %cb, i1 zeroext %has, double %code, ptr %sig) ${FN_ATTRS} { ; child exit → number`,
+      `entry:`,
+      `  br i1 %has, label %go, label %none`,
+      ...childExitNullCodeLines(host, "none"),
+      `go:`,
+      `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+      `  %fn = load ptr, ptr %fnp`,
+      `  call void %fn(ptr %cb, double %code)`,
+      `  ret void`,
+      `}`,
+      ``,
+    );
+    host.journal?.built();
+    return f64Sym;
+  }
   if (param.kind !== "union")
     throw new InternalCompilerError("llvm emitter bug: exit listener param not a union");
   const key = `cx:${param.unionId}`;
@@ -513,22 +559,25 @@ export function childExitSignalThunkFor(
   codeParam: IrType,
   sigParam: IrType,
 ): string {
-  if (codeParam.kind !== "union" || sigParam.kind !== "union") {
+  if ((codeParam.kind !== "union" && codeParam.kind !== "f64") || sigParam.kind !== "union") {
     throw new InternalCompilerError("llvm emitter bug: exit listener params not unions");
   }
-  const key = `cx2:${codeParam.unionId}+${sigParam.unionId}`;
+  // A code declared `number` (a held listener) passes as it is; its null
+  // is a TypeError (childExitThunkFor).
+  const bareCode = codeParam.kind === "f64";
+  const key = `cx2:${bareCode ? "f64" : codeParam.unionId}+${sigParam.unionId}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
   sym = host.contentSymbol("sc_cx_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "childExitSignalThunkFor", [codeParam, sigParam]);
-  const codeDef = host.unionsById.get(codeParam.unionId);
+  const codeDef = bareCode ? undefined : host.unionsById.get(codeParam.unionId);
   const f64Tag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "f64") : -1;
   const codeNullTag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "nullT") : -1;
   const sigDef = host.unionsById.get(sigParam.unionId);
   const strTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "string") : -1;
   const sigNullTag = sigDef ? sigDef.arms.findIndex((a) => a.kind === "nullT") : -1;
-  if (f64Tag < 0 || codeNullTag < 0 || strTag < 0 || sigNullTag < 0) {
+  if ((!bareCode && (f64Tag < 0 || codeNullTag < 0)) || strTag < 0 || sigNullTag < 0) {
     throw new InternalCompilerError("llvm emitter bug: exit listener unions lack their arms");
   }
   host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
@@ -542,14 +591,18 @@ export function childExitSignalThunkFor(
     `entry:`,
     `  %uslot = alloca ptr`,
     `  %sslot = alloca ptr`,
-    `  br i1 %has, label %num, label %nonum`,
-    `num:`,
-    `  %u1 = call ptr @scr_union_new_f64(i32 ${f64Tag}, double %code)`,
-    `  store ptr %u1, ptr %uslot`,
-    `  br label %sigq`,
-    `nonum:`,
-    `  store ptr ${host.unitInstanceRef(codeParam.unionId, codeNullTag)}, ptr %uslot`,
-    `  br label %sigq`,
+    ...(bareCode
+      ? [`  br i1 %has, label %sigq, label %nonum`, ...childExitNullCodeLines(host, "nonum")]
+      : [
+          `  br i1 %has, label %num, label %nonum`,
+          `num:`,
+          `  %u1 = call ptr @scr_union_new_f64(i32 ${f64Tag}, double %code)`,
+          `  store ptr %u1, ptr %uslot`,
+          `  br label %sigq`,
+          `nonum:`,
+          `  store ptr ${host.unitInstanceRef(codeParam.unionId, codeNullTag)}, ptr %uslot`,
+          `  br label %sigq`,
+        ]),
     `sigq:`,
     `  %hassig = icmp ne ptr %sig, null`,
     `  br i1 %hassig, label %sigs, label %signull`,
@@ -563,11 +616,13 @@ export function childExitSignalThunkFor(
     `  store ptr ${host.unitInstanceRef(sigParam.unionId, sigNullTag)}, ptr %sslot`,
     `  br label %go`,
     `go:`,
-    `  %u = load ptr, ptr %uslot`,
+    ...(bareCode ? [] : [`  %u = load ptr, ptr %uslot`]),
     `  %s = load ptr, ptr %sslot`,
     `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
     `  %fn = load ptr, ptr %fnp`,
-    `  call void %fn(ptr %cb, ptr %u, ptr %s)`,
+    bareCode
+      ? `  call void %fn(ptr %cb, double %code, ptr %s)`
+      : `  call void %fn(ptr %cb, ptr %u, ptr %s)`,
     `  ret void`,
     `}`,
     ``,

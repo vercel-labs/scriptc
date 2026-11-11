@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9885-node-island-child-outlives-reference/main.ts"
+ ],
+ "diags": []
+}

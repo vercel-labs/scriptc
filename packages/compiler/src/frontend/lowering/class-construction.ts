@@ -1,5 +1,6 @@
+import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
-import { constructedValue } from "./constructor-returns.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import {
   BOOL,
   DYN,
@@ -15,6 +16,7 @@ import {
 } from "../../ir/ir.js";
 import { transformExpr, transformStmtList } from "../../ir/traverse.js";
 import type { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, EMPTY_DEPS, FixpointWorklist } from "./fixpoint-worklist.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
@@ -36,7 +38,7 @@ export function checkedClassInstanceOf(
   refusal: string,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === INSTANCEOF)) {
+  if (lowerer.liftedFnNamed(INSTANCEOF) === undefined) {
     const params = [
       { localId: "value", name: "value", type: DYN },
       { localId: "callee", name: "callee", type: DYN },
@@ -89,7 +91,7 @@ export function checkedClassConstruction(
 ): IrExpr {
   const name =
     calleeText === undefined ? `${PREFIX}${args.length}` : `${PREFIX}${args.length}:${calleeText}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [callee, ...args].map((_, index) => ({
       localId: `p.${index}`,
       name: `p${index}`,
@@ -154,7 +156,7 @@ export function primitiveCheckedConstruction(
   packed?: IrExpr,
 ): IrExpr {
   const name = `${PRIMITIVE}:${packed === undefined ? args.length : "spread"}`;
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "message", type: STRING },
@@ -239,7 +241,7 @@ export function checkedClassConstructionPacked(
   packed: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  if (!lowerer.liftedFns.some((fn) => fn.name === PACKED)) {
+  if (lowerer.liftedFnNamed(PACKED) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "arguments", type: DYN },
@@ -378,12 +380,15 @@ export class ClassConstructionDispatch {
   private readonly completed = new Map<string, Set<string>>();
   private prototypeHelper: IrFunction | null = null;
   private readonly prototypes = new Set<string>();
+  /** The bodies still to rewrite; see FixpointWorklist. */
+  private worklist: FixpointWorklist | null = null;
 
   process(lowerer: Lowerer, functions: readonly IrFunction[], sites: DispatchSites): boolean {
     const discover = (type: IrType): void => {
       if (type.kind === "classval") this.constructors.add(type.className);
       else if (type.kind === "union") lowerer.unions.get(type.unionId)?.arms.forEach(discover);
     };
+    const worklist = (this.worklist ??= new FixpointWorklist(sites));
     const prototypeReads = new Set<IrFunction>();
     for (const fn of functions) {
       const found = sites.of(fn);
@@ -393,7 +398,10 @@ export class ClassConstructionDispatch {
     let changed = false;
     for (const fn of functions) {
       if (fn === this.prototypeHelper || !prototypeReads.has(fn)) continue;
-      fn.body = transformStmtList(fn.body, {
+      const settled = !worklist.needsRewrite(fn, () => "");
+      if (settled && !checkIncremental) continue;
+      let touched = false;
+      const body = transformStmtList(fn.body, {
         stmt: (stmt) => stmt,
         expr: (expr) => {
           if (expr.kind !== "libCall" || expr.fn !== "dyn.classBasePrototype") return expr;
@@ -412,6 +420,7 @@ export class ClassConstructionDispatch {
             lowerer.liftedFns.push(this.prototypeHelper);
             changed = true;
           }
+          touched = true;
           return {
             kind: "call",
             callee: this.prototypeHelper.name,
@@ -421,6 +430,16 @@ export class ClassConstructionDispatch {
           };
         },
       });
+      if (settled) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(
+            `the settled class-construction rewrite of ${fn.name} changed its body`,
+          );
+        continue;
+      }
+      if (touched) fn.body = body;
+      worklist.record(fn, EMPTY_DEPS);
     }
     if (this.prototypeHelper)
       for (const name of this.constructors) {
@@ -538,16 +557,16 @@ export class ClassConstructionDispatch {
           fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
-        const value = constructedValue(lowerer, info, {
+        // The result is an untyped value, so a constructor that returns an
+        // object of another kind answers that object (constructedDynValue).
+        const value = constructedDynValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
           args,
           type: { kind: "object", className: name },
           loc,
         });
-        const body: IrStmt[] = [
-          { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
-        ];
+        const body: IrStmt[] = [{ kind: "return", value, loc }];
         // A spread call's argument count is known only at run time.
         if (fence !== null && fn.name === PACKED)
           body.unshift({

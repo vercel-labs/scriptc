@@ -15,4 +15,9 @@ Messages use newline-delimited JSON, so their static types must be JSON-stringif
 
 A `'data'` listener on a child's `stdout` or `stderr` whose chunk is `unknown` or `any` receives strings when a `setEncoding()` statement on the same stream precedes it in its block or an enclosing block, and Buffers when the function never calls `setEncoding()` on that stream.
 Any other placement of `setEncoding()` is refused at compile time, and a `setEncoding()` call that runs elsewhere afterwards makes the listener throw a TypeError instead of receiving strings.
+`pause()`, `resume()`, `isPaused()` and `readableFlowing` on a child's `stdout` or `stderr` follow Node: a paused stream holds up to 64 KiB, then stops reading, which blocks the child once the pipe is full, and the child's exit resumes the stream.
+Pausing the output of an `exec()` or `execFile()` child that has a callback holds back its `'data'` listeners, but the output is still read for the callback, so that child is not blocked.
+The call's `maxBuffer` is counted while the stream is paused, so a child that writes past it is ended with the `maxBuffer` error at that point, where Node ends it once the stream is resumed.
+A child's output arrives over a pipe where Node uses a socket pair, so the number of bytes a child can write to an unread or paused stream before it blocks differs from Node's.
 An inline `'exit'` or `'close'` listener may declare `(code: number, signal: string)`, which TypeScript accepts through the catch-all `on` overload; it receives the `null` values Node passes, and a typed use of a `null` value throws a TypeError.
+A function passed by name as an `'exit'` or `'close'` listener may declare its first parameter as `number`; when a signal ended the child, where Node calls it with `null`, it is not called and a TypeError is thrown instead, and a `string` signal parameter of such a function is refused at compile time.

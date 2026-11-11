@@ -171,6 +171,18 @@ const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" }
 const notPrivateName = (node: ts.Node, d: ts.Diagnostic): boolean =>
   !ts.isPrivateIdentifier(node) && !ts.getSourceFileOfNode(node).text.startsWith("#", d.pos ?? -1);
 
+/** TS1533/TS1534 report a decimal escape (`\1`, `\8`) that names no
+ * capture group, and TS1536 one inside a character class (`[\1]`). Without
+ * the `u` or `v` flag, JavaScript reads such an escape as a legacy octal or
+ * identity escape (Annex B), so `/\1/` matches "\x01" and its source can
+ * be reused in a pattern that has the group. With either flag the escape
+ * is a SyntaxError, and the grammar row stays. */
+const nonUnicodeRegexLiteral = (node: ts.Node): boolean => {
+  if (!ts.isRegularExpressionLiteral(node)) return false;
+  const flags = node.text.slice(node.text.lastIndexOf("/") + 1);
+  return !flags.includes("u") && !flags.includes("v");
+};
+
 /** TS2362/2363/2365 fire on an operator whose other operand is bigint-ish;
  * plain JavaScript admits the `any` operand, a primitive wrapper operand
  * (`new Number(1) * 2`) converts with ToPrimitive like any object, and a
@@ -277,6 +289,32 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
   return false;
 };
 
+/** TS1345 at a PREFIX `!` whose boolean is discarded (`!register();`,
+ * `!function () { … }();`): the operand still evaluates once for its
+ * effects and any exception, while the value the negation would read is
+ * never consumed. A negation whose result is used — an initializer, a
+ * condition, a logical operand — keeps the diagnostic, because converting a
+ * value the checker types `void` needs a runtime value the lowering does
+ * not model. */
+const discardedVoidNegation = (node: ts.Node): boolean => {
+  // The diagnostic's span is the void-typed OPERAND (the call), so climb
+  // to the `!` that tests it, then out of any parentheses.
+  let operand: ts.Node = node;
+  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
+    operand = operand.parent;
+  const negation = operand.parent;
+  if (
+    negation === undefined ||
+    !ts.isPrefixUnaryExpression(negation) ||
+    negation.operator !== ts.SyntaxKind.ExclamationToken
+  )
+    return false;
+  let outer: ts.Node = negation;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+};
+
 /* ---- family reasons ---- */
 
 const IMPLICIT_ANY =
@@ -288,7 +326,19 @@ const DYNAMIC_SHAPE =
 const JSDOC_CLAIM =
   "a JSDoc type-space claim is documentation Node never reads: the values keep their runtime behavior and every use meets the per-site fences";
 
+const LEGACY_REGEX_ESCAPE = at(
+  nonUnicodeRegexLiteral,
+  CHECKER(
+    "a decimal escape without a matching group, or inside a character class, is a legacy octal or identity escape in a regex literal without the u or v flag",
+    ["tests/corpus/regexp-legacy-decimal-escapes.mjs"],
+  ),
+);
+
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  // legacy decimal escapes in non-Unicode regex literals
+  [1533, LEGACY_REGEX_ESCAPE],
+  [1534, LEGACY_REGEX_ESCAPE],
+  [1536, LEGACY_REGEX_ESCAPE],
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index signature —
   // typeof globalThis)
@@ -768,10 +818,13 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // lowerer turns the read into `scr_undef_global_read` (exact Node text and
   // behavior) and refuses the write with SC1091, which names the Node-island
   // route the sloppy semantics need. TypeScript input keeps the compile
-  // error: an undeclared name there is a bug, not a runtime path. 2552 is
-  // 2304's did-you-mean spelling, and 18004 is the same unresolved name in
-  // SHORTHAND position (`{ x }`), which the checker reports against the
-  // property instead of the reference.
+  // error: an undeclared name there is a bug, not a runtime path, unless a
+  // library the project's `lib` names declares it and Node defines no such
+  // global (program.ts, projectLibraryName admits those sites). 2552 is
+  // 2304's did-you-mean spelling, 2584 its spelling for a name another
+  // library declares (`document`, `window`: Node defines neither), and
+  // 18004 is the same unresolved name in SHORTHAND position (`{ x }`), which
+  // the checker reports against the property instead of the reference.
   [
     2304,
     THROW(
@@ -783,6 +836,13 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     2552,
     THROW(
       "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+    ),
+  ],
+  [
+    2584,
+    THROW(
+      "a read of an undeclared name throws Node's ReferenceError at the access (typeof answers 'undefined'); a sloppy write is SC1091",
+      ["tests/corpus/8941-js-host-name-read.js", "tests/corpus/global-detection-typeof.cjs"],
     ),
   ],
   [
@@ -1048,6 +1108,23 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // 1345, a discarded negation of a void-typed operand (`!register();`):
+  // Node evaluates the operand once and throws the boolean away, and the
+  // operand's ordinary lowering does exactly that. A consumed negation
+  // keeps the triage row below, and a checked project keeps the diagnostic:
+  // it asked tsc to judge the test.
+  [
+    1345,
+    inCheckedJs(
+      at(
+        discardedVoidNegation,
+        CHECKER(
+          "a discarded negation's boolean is never consumed: Node evaluates the operand once for its effects, and the operand's ordinary lowering does the same",
+          ["tests/corpus/discarded-void-negation.mjs"],
+        ),
+      ),
+    ),
+  ],
   // ---- The checker's OPINIONS that need no lowering (TS2629 and friends) ----
   // Each row below is a `checker` row: at the admitted site the checker's
   // type is still a truthful bound on every runtime value, so the ordinary
@@ -1284,6 +1361,16 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   ],
   [1329, KEEP(KEEP_GRAMMAR)],
   [1341, KEEP(KEEP_GRAMMAR)],
+  // The discarded `!voidCall();` sites are admitted by the 1345 opinion row;
+  // every site whose boolean is consumed needs a runtime value for a
+  // void-typed operand, which the lowering does not model.
+  [
+    1345,
+    REWRITE(
+      "a truthiness test of a void-typed expression whose boolean is used",
+      "the checker types the operand 'void', but a callback typed that way can return a value at run time; the test needs a runtime value that the lowering does not model",
+    ),
+  ],
   [1359, KEEP(KEEP_GRAMMAR)],
   [1368, KEEP(KEEP_GRAMMAR)],
   [1451, KEEP(KEEP_GRAMMAR)],
@@ -1498,15 +1585,15 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [
     2629,
     REWRITE(
-      "assigning to a class name binding",
-      "Node throws a TypeError at the assignment; the class binding is read-only",
+      "assigning to a class binding",
+      "a class declaration's outer binding is mutable, so Node replaces it; only a named class expression's inner binding is immutable, where strict code throws a TypeError. The class lowering does not model either assignment",
     ),
   ],
   [
     2630,
     REWRITE(
-      "assigning to a function declaration name",
-      "Node throws a TypeError at the assignment in strict mode and modules",
+      "assigning to a function binding",
+      "a function declaration's binding is mutable, so Node replaces it; only a named function expression's inner binding is immutable, where strict code throws a TypeError. The function lowering does not model either assignment",
     ),
   ],
   [2660, KEEP(KEEP_GRAMMAR)],
@@ -1557,8 +1644,8 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
   [
     2739,
     REFUSE(
-      "a set-like argument the checker cannot prove implements 'has' and 'size'",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
+      "a value lacking a required property of its declared type",
+      "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
     ),
   ],
   [

@@ -21,3 +21,21 @@ export function getTextOfNode(node: Node): string {
 export function getSourceFileOfNode(node: Node): SourceFile {
   return (node as AstNode).getSourceFile();
 }
+
+/* Reads of a source file's raw text that say what they take from it
+ * (SourceTextObserver). A read of `sourceFile.text` itself counts as a read
+ * of all of it. */
+export {
+  FULL_SPAN,
+  LEADING_SPAN,
+  TOKEN_SPAN,
+  UP_TO_TOKEN_SPAN,
+  carriedSourceText,
+  sourceTextIncludes,
+  sourceTextMatches,
+  sourceTextRange,
+  sourceTextRangeIncludes,
+  sourceTextRangeMatches,
+  sourceTextRewritten,
+} from "./ast-node.js";
+export type { SourceTextBlank, SourceTextSpan } from "./ast-node.js";

@@ -1,0 +1,52 @@
+process-stream-pattern-members.ts:5:16 - error SC1031: rest bindings over a process stream (its properties belong to the stream object, which a rest element would have to copy) is not supported yet
+
+  4 | // stay refused, each by name.
+  5 | const { isTTY, ...others } = process.stdout;
+    |                ^~~~~~~~~
+  6 | const { write } = process.stderr;
+
+process-stream-pattern-members.ts:5:19 - error SC2009: values of type '{ writable: boolean; end(callback?: (() => void) | undefined): void; end(data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; end(data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: ... | undefined): void; ... 14 more ...; hasColors?(count?: number | undefined): bo...' cannot be compiled: the record shape is supported, but its member 'end' has type '{ (callback?: (() => void) | undefined): void; (data: string | Uint8Array<ArrayBufferLike>, callback?: (() => void) | undefined): void; (data: string | Uint8Array<...>, encoding: BufferEncoding, callback?: ... | undefined): void; }', which does not compile
+
+  4 | // stay refused, each by name.
+  5 | const { isTTY, ...others } = process.stdout;
+    |                   ^~~~~~
+  6 | const { write } = process.stderr;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+process-stream-pattern-members.ts:6:9 - error SC1031: destructuring 'write' from a process stream (isTTY, columns, rows, fd, isRaw, writableLength, writableHighWaterMark, writableNeedDrain are the members a stream value answers; call methods through the stream) is not supported yet
+
+  5 | const { isTTY, ...others } = process.stdout;
+  6 | const { write } = process.stderr;
+    |         ^~~~~
+  7 | const { writable } = process.stdout;
+
+process-stream-pattern-members.ts:7:9 - error SC1031: destructuring 'writable' from a process stream (isTTY, columns, rows, fd, isRaw, writableLength, writableHighWaterMark, writableNeedDrain are the members a stream value answers; call methods through the stream) is not supported yet
+
+  6 | const { write } = process.stderr;
+  7 | const { writable } = process.stdout;
+    |         ^~~~~~~~
+  8 | const key: "rows" | "columns" = process.argv.length > 5 ? "rows" : "columns";
+
+process-stream-pattern-members.ts:9:9 - error SC1031: destructuring with computed keys that do not fold to one property name is not supported yet
+
+   8 | const key: "rows" | "columns" = process.argv.length > 5 ? "rows" : "columns";
+   9 | const { [key]: extent } = process.stdout;
+     |         ^~~~~~~~~~~~~
+  10 | let fd: number;
+
+process-stream-pattern-members.ts:11:11 - error SC1031: destructuring assignment from non-record values (the source is procStream-typed) are not supported yet
+
+  10 | let fd: number;
+  11 | ({ fd } = process.stderr);
+     |           ^~~~~~~~~~~~~~
+  12 | console.log(isTTY, others, write, writable, extent, fd);
+
+process-stream-pattern-members.ts:12:20 - error SC2004: uses of 'others' inherit the blocker on its declaration
+
+  11 | ({ fd } = process.stderr);
+  12 | console.log(isTTY, others, write, writable, extent, fd);
+     |                    ^~~~~~
+  13 | 
+
+  hint: the declaration of 'others' did not compile — fix the diagnostic reported there and these sites clear with it

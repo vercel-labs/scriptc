@@ -1,19 +1,23 @@
+import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import {
   isJsonStringifyDynamicType,
+  isJsonStringifyRuntimeScalarType,
   BOOL,
   DYN,
   type IrType,
   classDynViewSupported,
   isClassOwnEnumerableFieldName,
   isDynTypedRefType,
+  isLiveDynRefType,
   type IrExpr,
   STRING,
   type SrcLoc,
@@ -21,7 +25,6 @@ import {
   isUnitType,
 } from "../../../ir/ir.js";
 import { optionalStringTags } from "./arguments.js";
-import { constituentTypes } from "../../ts7/checker.js";
 
 /** JSON parse produces checked-dynamic data; a native reviver walks it
  * bottom-up before any checked cast. Stringify without a callback keeps
@@ -182,6 +185,11 @@ export function lowerJsonMethodCall(
         value.type,
         (id) => lowerer.shapes.get(id),
         (id) => lowerer.unions.get(id),
+      ) ||
+      isJsonStringifyRuntimeScalarType(
+        value.type,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
       )
     ) {
       const unreadable = classFieldWithoutJsonView(lowerer, value.type, new Set());
@@ -196,14 +204,18 @@ export function lowerJsonMethodCall(
       }
       // Keep the original containers live while the runtime visits them:
       // a toJSON callback can mutate a later field, and shared/cyclic
-      // references must retain their identities throughout traversal.
+      // references must retain their identities throughout traversal. A
+      // union of scalars only (`bigint | number`, `symbol | string`) holds
+      // no container: it converts by value.
       const boxed: IrExpr =
         value.type.kind === "dyn"
           ? value
           : {
               kind: "dynFrom",
               value,
-              ...(value.type.kind === "url" ? {} : { liveRef: true }),
+              ...(isLiveDynRefType(value.type, (id) => lowerer.unions.get(id))
+                ? { liveRef: true }
+                : {}),
               type: DYN,
               loc,
             };
@@ -215,10 +227,10 @@ export function lowerJsonMethodCall(
         loc,
       };
       // A dyn root can serialize to undefined (undefined, a function, a
-      // symbol). Where the program can observe that (jsonResultObserved),
-      // keep the actual undefined; elsewhere the dyn-root string ABI
-      // stays, whose undefined result prints the same text.
-      return (value.type.kind === "dyn" || toJsonClass) && !jsonResultObserved(lowerer, call)
+      // symbol). The result keeps the actual undefined unless every use
+      // reads it as the text "undefined" (jsonResultTextOnly); those keep
+      // the dyn-root string ABI.
+      return (value.type.kind === "dyn" || toJsonClass) && jsonResultTextOnly(lowerer, call)
         ? { kind: "toString", operand: raw, type: STRING, loc }
         : { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
     }
@@ -315,104 +327,90 @@ function lowerOptionalStringifyRoot(
   return { kind: "call", callee: helper, args: [value], type: resultT, loc };
 }
 
-/** True when a `JSON.stringify` result is used where JavaScript can tell
- * undefined from the text "undefined": compared with undefined/null,
- * `typeof`, `??`, `?.`, truth tests, a return from a function declaring
- * an undefined result, or an unannotated local binding whose references
- * do one of these. The lib types say `string`, so other uses (concatenation,
- * printing, string parameters) cannot tell the difference. */
-function jsonResultObserved(lowerer: Lowerer, call: ts.CallExpression): boolean {
+/** True when no use of a `JSON.stringify` result can tell undefined from
+ * the text "undefined": the call is itself such a use (textOnlyUse), or it
+ * initializes an unannotated `const` or `let` binding whose every
+ * reference is one. The lib types say `string`, but the result is
+ * undefined for a root that is undefined, a function or a symbol; every
+ * other use (a comparison, `typeof`, a truth test, an array element, an
+ * argument, a return value, a field) keeps the actual undefined. */
+export function jsonResultTextOnly(lowerer: Lowerer, call: ts.CallExpression): boolean {
   let node: ts.Node = call;
   while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
-  if (observesUndefined(node as ts.Expression)) return true;
+  if (textOnlyUse(lowerer, node as ts.Expression)) return true;
   const parent = node.parent;
-  if (ts.isReturnStatement(parent)) {
-    let fn: ts.Node | undefined = parent.parent;
-    while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
-    const annotation = fn && ts.isFunctionLike(fn) ? fn.type : undefined;
-    if (!annotation) return false;
-    const type = lowerer.checker.getTypeAtLocation(annotation);
-    const parts = type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
-    return parts.some((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
-  }
-  // Module-scope bindings are globals whose slot type comes from the
-  // checker's `string`; only function- and block-scoped locals adopt the
-  // initializer's checked `string | undefined`.
   if (
     !ts.isVariableDeclaration(parent) ||
     parent.initializer !== node ||
     parent.type ||
     !ts.isIdentifier(parent.name) ||
-    (ts.isVariableDeclarationList(parent.parent) &&
-      ts.isVariableStatement(parent.parent.parent) &&
-      ts.isSourceFile(parent.parent.parent.parent))
+    !ts.isVariableDeclarationList(parent.parent) ||
+    !ts.isVariableStatement(parent.parent.parent) ||
+    (ts.getModifiers(parent.parent.parent) ?? []).some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    )
   )
     return false;
   const name = parent.name;
   const symbol = lowerer.checker.getSymbolAtLocation(name);
   if (!symbol) return false;
-  let scope: ts.Node = parent;
-  while (!ts.isBlock(scope.parent) && !ts.isSourceFile(scope.parent) && scope.parent)
-    scope = scope.parent;
-  let observed = false;
+  let textOnly = true;
   const visit = (current: ts.Node): void => {
-    if (observed) return;
+    if (!textOnly) return;
     if (ts.isIdentifier(current)) {
       if (
         current !== name &&
         current.text === name.text &&
         lowerer.checker.getSymbolAtLocation(current) === symbol &&
-        observesUndefined(current)
+        !textOnlyUse(lowerer, current)
       )
-        observed = true;
+        textOnly = false;
       return;
     }
     ts.forEachChild(current, visit);
   };
+  // The binding's references all lie in the block that declares it.
+  let scope: ts.Node = parent;
+  while (scope.parent && !ts.isBlock(scope.parent) && !ts.isSourceFile(scope.parent))
+    scope = scope.parent;
   visit(scope.parent ?? scope);
-  return observed;
+  return textOnly;
 }
 
-function observesUndefined(expr: ts.Expression): boolean {
+/** A use that reads undefined and the text "undefined" alike: a discarded
+ * value, a template span, a string literal's `+` operand, the argument of
+ * `String(...)`, or a console argument that no format specifier renders. */
+function textOnlyUse(lowerer: Lowerer, expr: ts.Expression): boolean {
   let node: ts.Node = expr;
   while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
   const parent = node.parent;
-  if (ts.isTypeOfExpression(parent)) return true;
-  if (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken)
-    return true;
+  if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+  if (ts.isTemplateSpan(parent)) return ts.isTemplateExpression(parent.parent);
+  const text = (other: ts.Node): boolean => {
+    while (ts.isParenthesizedExpression(other)) other = other.expression;
+    return (
+      ts.isStringLiteral(other) ||
+      ts.isNoSubstitutionTemplateLiteral(other) ||
+      ts.isTemplateExpression(other)
+    );
+  };
+  if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken)
+    return text(parent.left === node ? parent.right : parent.left);
+  if (!ts.isCallExpression(parent) || !parent.arguments.nodes.includes(node as ts.Expression))
+    return false;
+  const callee = parent.expression;
+  if (ts.isIdentifier(callee))
+    return parent.arguments.nodes.length === 1 && lowerer.isStdlibGlobal(callee, "String");
   if (
-    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
-    parent.expression === node &&
-    parent.questionDotToken
+    !ts.isPropertyAccessExpression(callee) ||
+    !ts.isIdentifier(callee.expression) ||
+    !lowerer.isStdlibGlobal(callee.expression, "console") ||
+    !["log", "error", "warn", "info", "debug"].includes(callee.name.text)
   )
-    return true;
-  if (
-    (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) &&
-    parent.expression === node
-  )
-    return true;
-  if (ts.isConditionalExpression(parent) && parent.condition === node) return true;
-  if (ts.isBinaryExpression(parent)) {
-    const op = parent.operatorToken.kind;
-    if (op === ts.SyntaxKind.QuestionQuestionToken) return parent.left === node;
-    if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken)
-      return parent.left === node;
-    if (
-      op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-      op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-      op === ts.SyntaxKind.EqualsEqualsToken ||
-      op === ts.SyntaxKind.ExclamationEqualsToken
-    ) {
-      let other: ts.Node = parent.left === node ? parent.right : parent.left;
-      while (ts.isParenthesizedExpression(other)) other = other.expression;
-      return (
-        other.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(other) && other.text === "undefined") ||
-        ts.isVoidExpression(other)
-      );
-    }
-  }
-  return false;
+    return false;
+  // A leading string with a specifier formats the arguments after it.
+  const first = parent.arguments.nodes[0]!;
+  return first === node || !text(first) || !ts.getTextOfNode(first).includes("%");
 }
 
 /** True when a class field type holds a RegExp or a Promise outside a
@@ -451,7 +449,7 @@ function holdsUnwritable(lowerer: Lowerer, t: IrType, visiting: Set<string>): bo
  * a Promise, which the runtime JSON traversal cannot write. The traversal
  * reads class instances through that view, so such a class is refused at
  * compile time instead of throwing when the view is built or written. */
-function classFieldWithoutJsonView(
+export function classFieldWithoutJsonView(
   lowerer: Lowerer,
   t: IrType,
   visiting: Set<string>,
@@ -532,14 +530,22 @@ function lowerJsonCallback(
   role: "replacer" | "reviver",
 ): IrExpr {
   const callback = lowerer.lowerExpr(node);
-  if (callback.type.kind === "dyn") return callback;
+  // Node passes a reviver three arguments: the key, the value and the
+  // source context, which has no native form. A reviver that names two
+  // parameters cannot tell; one that takes every argument can, whatever
+  // type its value arrives as (held untyped by a constant, or lowered
+  // against the two-parameter signature), so it takes the refusal below.
+  const context = role === "reviver" && callbackTakesEveryArgument(lowerer, node);
+  if (callback.type.kind === "dyn" && !context) return callback;
   if (
+    !context &&
     role === "replacer" &&
     callback.type.kind === "array" &&
     lowerer.dynConvertible(callback.type)
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "union" &&
     lowerer.dynConvertible(callback.type) &&
     lowerer.unions
@@ -555,6 +561,7 @@ function lowerJsonCallback(
   )
     return lowerer.coerceToExpected(callback, DYN);
   if (
+    !context &&
     callback.type.kind === "func" &&
     callback.type.params.length <= 2 &&
     (role !== "reviver" || (!callback.type.rest && !callback.type.argumentsAll)) &&
@@ -585,11 +592,9 @@ function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string
       "the serializer is type-directed — shape the value before stringifying",
     );
   if (call.arguments.nodes.length <= 1) return "";
-  const unwrap = (e: ts.Expression): ts.Expression =>
-    ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
   const isUndefined = (e: ts.Expression): boolean => jsonNullishArgument(lowerer, e);
   if (call.arguments.nodes.length === 2) return "";
-  const space = unwrap(call.arguments.nodes[2]!);
+  const space = withoutParentheses(call.arguments.nodes[2]!);
   if (space.kind === ts.SyntaxKind.NullKeyword || isUndefined(space)) return "";
   if (ts.isNumericLiteral(space)) {
     const n = Number(space.text.replace(/_/g, ""));
@@ -599,7 +604,7 @@ function stringifySpaceIndent(lowerer: Lowerer, call: ts.CallExpression): string
   if (
     ts.isPrefixUnaryExpression(space) &&
     space.operator === ts.SyntaxKind.MinusToken &&
-    ts.isNumericLiteral(unwrap(space.operand))
+    ts.isNumericLiteral(withoutParentheses(space.operand))
   ) {
     return "";
   }

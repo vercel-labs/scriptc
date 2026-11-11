@@ -2,7 +2,9 @@ import { keyedHelperName } from "../stable-names.js";
 import { isBuiltinClassInstance } from "./receiver-types.js";
 import { strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import { staticTextDecoderEncoding } from "../text-decoder-encoding.js";
+import { checkedIterableSpread } from "../checked-iterable-spread.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -18,11 +20,7 @@ import {
   STRING,
   type SrcLoc,
 } from "../../../ir/ir.js";
-import {
-  lowerBuiltinValuePreservingUndefined,
-  checkedOptionalBuiltinArm,
-  stripTypeCasts,
-} from "./arguments.js";
+import { lowerBuiltinValuePreservingUndefined, checkedOptionalBuiltinArm } from "./arguments.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 
 /** The input of `decoder.decode(input)`. An undefined input decodes no bytes,
@@ -437,6 +435,33 @@ type TextCodecCtor = {
   ctor: ts.NewExpression;
 };
 
+/** The arguments of `new TextEncoder(...)`. Node's constructor takes no
+ * parameters: each argument is evaluated in order and its value is
+ * discarded, so `new TextEncoder("utf-8")` is `new TextEncoder()`. A
+ * spread argument is iterated, and throws Node's TypeError when it is not
+ * iterable. */
+function textEncoderArgumentEffects(lowerer: Lowerer, ctor: ts.NewExpression): IrStmt[] {
+  const stmts: IrStmt[] = [];
+  for (const arg of ctor.arguments?.nodes ?? []) {
+    if (ts.isSpreadElement(arg)) {
+      const source = lowerer.lowerExpr(arg.expression);
+      const spelling = ts.getTextOfNode(arg.expression);
+      const iterated = checkedIterableSpread(lowerer, source, spelling, locOf(arg));
+      stmts.push({ kind: "exprStmt", expr: iterated, loc: locOf(arg) });
+      continue;
+    }
+    const value = lowerer.lowerExpr(arg);
+    if (
+      value.kind !== "unitLit" &&
+      value.kind !== "strLit" &&
+      value.kind !== "numLit" &&
+      value.kind !== "boolLit"
+    )
+      stmts.push({ kind: "exprStmt", expr: value, loc: locOf(arg) });
+  }
+  return stmts;
+}
+
 /** Box a codec's immutable encoding in an owned record. Unlike erased
  * aliases, this value can live in fields, arguments, and closure captures. */
 export function lowerTextCodecNew(
@@ -448,8 +473,9 @@ export function lowerTextCodecNew(
   const loc = locOf(ctor);
   let encoding: IrExpr = { kind: "numLit", value: -1, type: F64, loc };
   let label: IrExpr | null = null;
+  const before: IrStmt[] = [];
   if (cls === "TextEncoder") {
-    if (args.length !== 0) lowerer.noLowering("new TextEncoder with arguments", ctor);
+    before.push(...textEncoderArgumentEffects(lowerer, ctor));
   } else if (args.length !== 0) {
     const labelT = lowerer.typeOf(args[0]!);
     const parsed = labelT.isStringLiteralType() ? staticTextDecoderEncoding(labelT.value) : null;
@@ -467,11 +493,10 @@ export function lowerTextCodecNew(
       label = lowerer.lowerExprExpecting(args[0]!, STRING);
     }
   }
-  const options = args[1] ? stripTypeCasts(args[1]) : null;
+  const options = cls === "TextDecoder" && args[1] ? withoutParenthesesTypeWrappers(args[1]) : null;
   const flags = new Map<string, IrExpr>();
   for (const name of ["fatal", "ignoreBOM"])
     flags.set(name, { kind: "boolLit", value: false, type: BOOL, loc });
-  const before: IrStmt[] = [];
   if (options && !ts.isObjectLiteralExpression(options)) {
     // Node's order: the label and the options evaluate, String(label) runs,
     // the options are checked (null, objects and functions pass), the label
@@ -567,7 +592,7 @@ function lowerStoredTextCodecCall(
   let stream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   let optionsNode: ts.Expression | null = null;
   if (cls === "TextDecoder" && call.arguments.nodes[1]) {
-    const options = stripTypeCasts(call.arguments.nodes[1]);
+    const options = withoutParenthesesTypeWrappers(call.arguments.nodes[1]);
     // Options outside an object literal are checked and read after the
     // input evaluates (below).
     if (!ts.isObjectLiteralExpression(options)) optionsNode = options;
@@ -689,9 +714,9 @@ function lowerStoredTextCodecCall(
  * type-only wrappers. Name alone is never enough: a user class with the
  * same spelling keeps the ordinary class lowering. */
 function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
-  const ctor = stripTypeCasts(expr);
+  const ctor = withoutParenthesesTypeWrappers(expr);
   if (!ts.isNewExpression(ctor)) return null;
-  const callee = stripTypeCasts(ctor.expression);
+  const callee = withoutParenthesesTypeWrappers(ctor.expression);
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "TextDecoder" && callee.text !== "TextEncoder") return null;
   const sym = lowerer.resolveValueSymbol(callee);
@@ -727,7 +752,9 @@ export function lowerTextCodecCall(
     const result: IrExpr = {
       kind: "libCall",
       fn: "text.encodeInto",
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(stripTypeCasts(arg), DYN)),
+      args: call.arguments.nodes.map((arg) =>
+        lowerer.lowerExprExpecting(withoutParenthesesTypeWrappers(arg), DYN),
+      ),
       type: DYN,
       loc,
     };
@@ -826,9 +853,7 @@ export function lowerTextCodecCall(
           };
     return afterLabel(decoded);
   }
-  if (ctorArgs.length > 0) {
-    lowerer.noLowering("new TextEncoder with arguments", recv);
-  }
+  const ctorEffects = textEncoderArgumentEffects(lowerer, recv);
   if (call.arguments.nodes.length > 1) {
     lowerer.noLowering(`TextEncoder.encode with ${call.arguments.nodes.length} arguments`, call);
   }
@@ -837,7 +862,16 @@ export function lowerTextCodecCall(
       ? strLit("", loc)
       : lowerEncodeInput(lowerer, call.arguments.nodes[0]!, loc);
   const enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
-  return { kind: "libCall", fn: "buffer.fromStr", args: [s, enc], type: BYTES_U8, loc };
+  const encoded: IrExpr = {
+    kind: "libCall",
+    fn: "buffer.fromStr",
+    args: [s, enc],
+    type: BYTES_U8,
+    loc,
+  };
+  return ctorEffects.length === 0
+    ? encoded
+    : { kind: "seqExpr", stmts: ctorEffects, result: encoded, type: BYTES_U8, loc };
 }
 
 export function lowerBufferEncodingCall(
@@ -852,7 +886,10 @@ export function lowerBufferEncodingCall(
   const arity = bi.member === "transcode" ? 3 : 1;
   const args = Array.from({ length: arity }, (_, index) =>
     expr.arguments.nodes[index]
-      ? lowerer.lowerExprExpecting(stripTypeCasts(expr.arguments.nodes[index]!), DYN)
+      ? lowerer.lowerExprExpecting(
+          withoutParenthesesTypeWrappers(expr.arguments.nodes[index]!),
+          DYN,
+        )
       : dynUndefinedExpr(loc),
   );
   if (expr.arguments.nodes.length > arity)

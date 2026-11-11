@@ -1,23 +1,39 @@
 import * as ts from "../../ts7/adapter.js";
 import { locOf } from "../../program.js";
 import { resolve } from "node:path";
-import { isWorkerConstructor, workerModulePath, workerSourcePath } from "../../worker-target.js";
+import {
+  isWorkerConstructor,
+  workerEntryValuePath,
+  workerModulePath,
+  workerSourcePath,
+} from "../../worker-target.js";
+import { boundLoadValues } from "../../specifier-bounds.js";
 import { tsgoPath } from "../../dts-paths.js";
+import { isIslandProgramModule } from "../../../node-islands/boundary.js";
+import { varRef } from "../../../ir/build.js";
 import {
   BOOL,
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
   UNDEFINED_T,
   VOID,
   isFfiCallbackParam,
   type IrExpr,
+  type IrStmt,
   type SrcLoc,
 } from "../../../ir/ir.js";
 import type { Lowerer } from "../lowerer.js";
 
-export function lowerWorkerMetadata(member: string, loc: SrcLoc): IrExpr | null {
+export function lowerWorkerMetadata(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   switch (member) {
+    case "SHARE_ENV":
+      // The env option's "share the parent's environment" marker. The worker
+      // unit owns its identity (scr_worker_share_env), so reading it links
+      // that unit like any other worker API.
+      lowerer.usesWorkers = true;
+      return { kind: "libCall", fn: "worker.shareEnv", args: [], type: SYMBOL_T, loc };
     case "isMainThread":
       return { kind: "libCall", fn: "worker.isMainThread", args: [], type: BOOL, loc };
     case "threadId":
@@ -50,16 +66,23 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
   }
   const filename = args[0]!;
   const path = workerModulePath(lowerer.program, filename);
-  const root =
-    path === null
-      ? undefined
-      : lowerer.workerTargetIdByPath.get(tsgoPath(resolve(workerSourcePath(path))));
-  if (root === undefined) {
-    lowerer.noLowering(
-      "this Worker entry point",
-      filename,
-      "the worker entry must resolve to a statically compiled source file",
-    );
+  if (path !== null) return lowerStaticWorkerNew(lowerer, expression, path, args);
+  return lowerBoundedWorkerNew(lowerer, expression, filename, args);
+}
+
+/** The checks every Worker construction shares: an island a worker thread
+ * may not reach (SC8012), the targets that cannot host a thread, foreign
+ * native callbacks, and the V8 heap fields the runtime refuses. */
+function refuseWorkerShape(
+  lowerer: Lowerer,
+  expression: ts.NewExpression,
+  entryPaths: readonly string[],
+  args: readonly ts.Expression[],
+): void {
+  if (lowerer.nodeIslands !== null) {
+    for (const path of entryPaths)
+      if (isIslandProgramModule(lowerer.nodeIslands, workerSourcePath(path)))
+        lowerer.refuseIslandWorkerUse(expression);
   }
   if (lowerer.targetPlatform === "wasi") {
     lowerer.noLowering(
@@ -82,28 +105,206 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
     );
   }
   refuseHeapLimits(lowerer, args[1]);
-  lowerer.usesWorkers = true;
-  const loc = locOf(expression);
-  const options: IrExpr = args[1]
-    ? lowerer.lowerExprExpecting(args[1], DYN)
-    : {
-        kind: "dynFrom",
-        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-        type: DYN,
-        loc,
-      };
-  const create: IrExpr = {
+}
+
+/** The worker root a compiled entry path names, or undefined when the path
+ * is not part of the compiled program. */
+function workerRootOf(lowerer: Lowerer, path: string): number | undefined {
+  return lowerer.workerTargetIdByPath.get(tsgoPath(resolve(workerSourcePath(path))));
+}
+
+function workerUndefinedOptions(loc: SrcLoc): IrExpr {
+  return {
+    kind: "dynFrom",
+    value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+    type: DYN,
+    loc,
+  };
+}
+
+/** `worker.new(root, filename, options)`. */
+function workerCreate(root: number, path: string, options: IrExpr, loc: SrcLoc): IrExpr {
+  return {
     kind: "libCall",
     fn: "worker.new",
     args: [
       { kind: "numLit", value: root, type: F64, loc },
-      { kind: "strLit", value: path!, type: STRING, loc },
+      { kind: "strLit", value: path, type: STRING, loc },
       options,
     ],
     type: DYN,
     loc,
   };
+}
+
+/** A literal (or statically folded) entry: the single root it names. */
+function lowerStaticWorkerNew(
+  lowerer: Lowerer,
+  expression: ts.NewExpression,
+  path: string,
+  args: readonly ts.Expression[],
+): IrExpr {
+  const root = workerRootOf(lowerer, path);
+  if (root === undefined) {
+    lowerer.noLowering(
+      "this Worker entry point",
+      expression,
+      "the worker entry must resolve to a statically compiled source file",
+    );
+  }
+  refuseWorkerShape(lowerer, expression, [path], args);
+  lowerer.usesWorkers = true;
+  const loc = locOf(expression);
+  const options = args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : workerUndefinedOptions(loc);
+  const create = workerCreate(root, path, options, loc);
   if (!capturesStdio(args[1])) return create;
+  return workerStdioSequence(create, loc);
+}
+
+/** The native arms a computed entry names (wave2 §4.2): every bounded value
+ * that resolves to a compiled file. A bounded value with no compiled file —
+ * and the Top residual — takes the run-time ERR_SCRIPTC_WORKER_ENTRY arm. */
+function boundedWorkerArms(
+  lowerer: Lowerer,
+  filename: ts.Expression,
+): { path: string; root: number }[] {
+  const bound = boundLoadValues(lowerer.specifierBoundContext(), filename);
+  if (bound.kind === "top") return [];
+  const arms: { path: string; root: number }[] = [];
+  for (const value of bound.values) {
+    const path = workerEntryValuePath(value);
+    if (path === null || arms.some((arm) => arm.path === path)) continue;
+    const root = workerRootOf(lowerer, path);
+    if (root !== undefined) arms.push({ path, root });
+  }
+  return arms;
+}
+
+/** A computed entry the build can bound: a selector over the native arms on
+ * Node's normalized path, with the residual arm throwing by name. */
+function lowerBoundedWorkerNew(
+  lowerer: Lowerer,
+  expression: ts.NewExpression,
+  filename: ts.Expression,
+  args: readonly ts.Expression[],
+): IrExpr {
+  const arms = boundedWorkerArms(lowerer, filename);
+  if (arms.length === 0) {
+    lowerer.noLowering(
+      "this Worker entry point",
+      filename,
+      "the worker entry must resolve to a statically compiled source file",
+    );
+  }
+  refuseWorkerShape(
+    lowerer,
+    expression,
+    arms.map((arm) => arm.path),
+    args,
+  );
+  lowerer.usesWorkers = true;
+  const loc = locOf(expression);
+  const entry = lowerer.declareHiddenLocal("%workerEntry", DYN);
+  const entryPath = lowerer.declareHiddenLocal("%workerEntryPath", STRING);
+  const options = lowerer.declareHiddenLocal("%workerOptions", DYN);
+  const entryRef = (): IrExpr => varRef(entry.id, DYN, loc);
+  const pathRef = (): IrExpr => varRef(entryPath.id, STRING, loc);
+  // Node takes the filename as a string OR a URL: the selector compares the
+  // path Node would load, so a URL value converts through fileURLToPath.
+  const resolvedPath: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "dynTest", test: "string", value: entryRef(), type: BOOL, loc },
+    then: { kind: "dynCheck", value: entryRef(), type: STRING, loc },
+    else_: {
+      kind: "libCall",
+      fn: "url.fileURLToPathChecked",
+      args: [entryRef()],
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+  let result: IrExpr = {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [
+      { kind: "numLit", value: 0, type: F64, loc },
+      { kind: "strLit", value: "ERR_SCRIPTC_WORKER_ENTRY", type: STRING, loc },
+      {
+        kind: "strConcat",
+        left: { kind: "strLit", value: "the Worker entry point '", type: STRING, loc },
+        right: {
+          kind: "strConcat",
+          left: pathRef(),
+          right: {
+            kind: "strLit",
+            value: "' is not a statically compiled source file",
+            type: STRING,
+            loc,
+          },
+          type: STRING,
+          loc,
+        },
+        type: STRING,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!;
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        // Node resolves a string filename before it loads it, so
+        // `/dir/./worker.ts` and `/dir/sub/../worker.ts` name the arm's
+        // file too (a URL's path arrives without dot segments).
+        left: { kind: "libCall", fn: "path.normalize", args: [pathRef()], type: STRING, loc },
+        right: { kind: "strLit", value: arm.path, type: STRING, loc },
+        type: BOOL,
+        loc,
+      },
+      then: workerCreate(arm.root, arm.path, varRef(options.id, DYN, loc), loc),
+      else_: result,
+      type: DYN,
+      loc,
+    };
+  }
+  // Both arguments are evaluated before the constructor reads either, as in
+  // Node: a filename the constructor rejects (a URL that is not a file URL)
+  // throws after the options expression has run, not instead of it.
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: entry.id,
+      init: lowerer.lowerExprExpecting(filename, DYN),
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: options.id,
+      init: args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : workerUndefinedOptions(loc),
+      loc,
+    },
+    { kind: "varDecl", localId: entryPath.id, init: resolvedPath, loc },
+  ];
+  if (capturesStdio(args[1])) {
+    stmts.unshift({
+      kind: "exprStmt",
+      expr: { kind: "libCall", fn: "stream.workerStdio", args: [], type: VOID, loc },
+      loc,
+    });
+  }
+  return { kind: "seqExpr", stmts, result, type: DYN, loc };
+}
+
+/** `create` after the worker-stdio capture: the streams unit is entered
+ * before the worker starts. */
+function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "seqExpr",
     stmts: [

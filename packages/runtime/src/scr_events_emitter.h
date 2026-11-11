@@ -5,6 +5,14 @@
 
 #include "scr_closure.h"
 
+/* scr_dyn.h's checked-dynamic call entry (the closure-to-dynamic adapter a
+ * function value carries), spelled here so these declarations need no
+ * inclusion of the dyn unit; scr_dyn.h repeats both typedefs unchanged
+ * (C11 repeat, as its own header notes), and scr_dyn.h reaches this header
+ * through scr_stream.h before its body defines them. */
+typedef struct ScrDyn ScrDyn;
+typedef ScrDyn *(*ScrDynThunk)(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+
 /* ── node:events EventEmitter (scr_events_emitter.c, link-gated) ──────
  * The runtime-provided emitter base class — the ScrError precedent:
  * ScrEmitter lays out exactly like a compiler-emitted hierarchy class
@@ -130,10 +138,14 @@ extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 /* The adapter-mediated registration (the LLVM backend's listeners): the
  * ADAPTER closure is what emit invokes, the ORIGINAL closure is the
  * entry's identity (the on_dyn split, with a plain-closure identity).
- * Both MOVE in; returns em +1 (chaining). */
+ * Both MOVE in; returns em +1 (chaining). `fallback` (may be NULL) is the
+ * checked-dynamic call thunk over the original closure: an untyped emit
+ * that carries no tuple for the event invokes the listener through it,
+ * converting the arguments to the listener's parameters. */
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
-                                ScrEeInvoke inv, bool once, bool prepend);
+                                ScrEeInvoke inv, ScrDynThunk fallback /*may be NULL*/, bool once,
+                                bool prepend);
 /* The same registrations for a listener that can read `this`: each call of
  * the listener runs with the emitter as the receiver (scr_dyn_this_push_typed
  * with `recv`, the typed-ref recipe of the registration's receiver type), as
@@ -141,8 +153,25 @@ ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*
  * constant. */
 typedef struct ScrDynTypedRefRecipe ScrDynTypedRefRecipe; /* scr_dyn.h */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                    ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                    const ScrDynTypedRefRecipe *recv);
+/* scr_emitter_on_via and _this for an event name whose ARGUMENT value is
+ * not the registry key it converts to: Node's listener table keys `null`
+ * and `"null"` alike, but the leak warning's `type` carries the argument
+ * as given, so the registration hands the value across beside the key
+ * (borrowed; the warning takes its own reference when it fires). */
+ScrEmitter *scr_emitter_on_via_named(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                     ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                     const ScrDyn *name_value /*borrowed*/);
+ScrEmitter *scr_emitter_on_via_this_named(ScrEmitter *em, ScrStr *name,
+                                          ScrClosure *orig /*moves*/,
+                                          ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                          ScrDynThunk fallback /*may be NULL*/, bool once,
+                                          bool prepend,
+                                          const ScrDynTypedRefRecipe *recv,
+                                          const ScrDyn *name_value /*borrowed*/);
 ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv);
@@ -207,14 +236,41 @@ bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
  * the unhandled form throws its +1. */
 bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
                                   ScrDyn *const *args, size_t argc);
+/* emit('error') of a value that is not an Error where the emitting unit
+ * holds it as one: args[0] is the value and `err` stands for it. Typed
+ * listeners with a checked-dynamic call receive the value through it; only
+ * the runtime's own listeners receive `err`. Both borrowed. */
+bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                    ScrDyn *const *args, size_t argc);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);
-ScrArr *scr_emitter_event_names(ScrEmitter *em);          /* +1 string[] */
+ScrDyn *scr_emitter_event_names(ScrEmitter *em); /* +1 checked-dynamic array */
 /* events.errorMonitor's event key (immortal). Every name parameter above
  * accepts it; the registry matches it by identity, so no string name,
  * whatever its bytes, reaches the errorMonitor listeners. */
 ScrStr *scr_emitter_error_monitor(void);
+/* A symbol event name's argument for every name parameter above: +1
+ * scr_str_symbol_key of `sym` (scr_string.h), matched by symbol identity
+ * like the errorMonitor key. The compiler's `emitter.symName`, and the
+ * conversion `emitter.nameDyn` applies to an untyped name that is a
+ * symbol. */
+ScrStr *scr_emitter_symbol_name(ScrSym *sym);
+ScrStr *scr_emitter_name_dyn(const ScrDyn *name); /* +1 name key of an untyped name */
+/* The checked-dynamic member dispatch of the capsule this unit creates over
+ * an emitter (the leak warning's `emitter` value): EventEmitter's own
+ * instance members, answered over the registry with the entries the
+ * compiler's untyped-emitter dispatch uses. invoke answers whether it
+ * handled the member, with *out a +1 value — or with the exception pending
+ * when the member threw. Installed beside the capsule's creation, so it is
+ * NULL in programs that never build one; the variable lives in the
+ * always-linked dyn core so emitter-free binaries link no more than
+ * before. */
+typedef struct ScrEmitterRefHooks {
+  bool (*invoke)(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                 const char *what, ScrDyn **out);
+} ScrEmitterRefHooks;
+extern SCR_TL const ScrEmitterRefHooks *scr_emitter_ref_hooks;
 /* Pre-create a name's eventNames() rank with no listener (Node's stream
  * classes pre-create their known _events keys; empty = absent for every
  * other read). The stream constructors call this. */

@@ -33,10 +33,16 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     dynInvoke: options.dynInvoke ?? false,
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
+    ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
+    ...(options.arrJoinStr === true ? { arrJoinStr: true } : {}),
     // A program that resizes, grows or detaches a buffer names the views
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.
     ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    // A function's inherited member shadowed by an own data property selects
+    // the SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, the
+    // same pair the executable lane links.
+    ...(options.fnMemberProps === true ? { fnMemberProps: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,

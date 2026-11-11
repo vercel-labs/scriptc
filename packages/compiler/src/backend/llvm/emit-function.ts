@@ -68,6 +68,8 @@ import { beginFunctionLanes } from "./lanes.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
 import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
+import { frameText } from "./frame-positions.js";
+import { isLazyGroupRun } from "../lazy-initializers.js";
 
 /** The function attribute of a fallback body that the LLVM helper's
  * partitioner places by its own name (isPlacedByName, partition.cpp): it
@@ -122,6 +124,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.frames = [];
   emitter.scopes = [];
   emitter.unwindCleanups.clear();
+  emitter.unwindReleases.length = 0;
+  emitter.unwindReleaseLabels.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
   emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
@@ -129,12 +133,32 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.lazyStackBoxes.clear();
   // An unchanged captured parameter keeps its value in a plain slot; the
   // binding is boxed only for closures (captureBox).
-  const lazyParameters = emitter.lazyCaptures.parameters(fn);
-  for (const id of lazyParameters) {
+  // A stable binding whose every capture copies its value has no box, and
+  // neither has a capture this body receives by value (value-captures.ts):
+  // both are plain locals here. A capture received by value that a
+  // box-holding environment captures in turn gets its box like an unchanged
+  // parameter does.
+  const environment = emitter.valueCaptures.layout(fn.name);
+  const plainBindings = emitter.valueCaptures.plain(fn);
+  const valueBindings = new Set(plainBindings);
+  if (environment !== null)
+    fn.captures!.forEach((capture, index) => {
+      if (environment.slots[index]!.kind !== "box") valueBindings.add(capture.localId);
+    });
+  emitter.valueBindings = valueBindings;
+  for (const id of valueBindings) {
+    const { boxed: _boxed, ...plain } = emitter.currentLocals.get(id)!;
+    emitter.currentLocals.set(id, plain);
+  }
+  const lazyParameters = new Set<string>();
+  for (const id of emitter.lazyCaptures.parameters(fn)) {
+    if (plainBindings.has(id)) continue;
+    lazyParameters.add(id);
     const { boxed: _boxed, ...plain } = emitter.currentLocals.get(id)!;
     emitter.currentLocals.set(id, plain);
     emitter.lazyCaptureBoxes.set(id, "");
   }
+  for (const id of emitter.valueCaptures.boxedOnDemand(fn)) emitter.lazyCaptureBoxes.set(id, "");
   emitter.runningExtrema = emitter.debug === null ? runningExtremumUpdates(fn) : new Set();
   emitter.currentConstantCallbacks =
     emitter.debug === null ? (emitter.constantCallbacks.get(fn.name) ?? new Map()) : new Map();
@@ -144,7 +168,13 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // functions keep the established array lifetime across continuations.
   emitter.streamingSplitsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   emitter.stackCallbacks.reset(emitter.streamingSplitsEnabled);
-  emitter.stackCaptures.reset(fn, emitter.streamingSplitsEnabled, lazyParameters);
+  emitter.stackCaptures.reset(
+    fn,
+    emitter.streamingSplitsEnabled,
+    lazyParameters,
+    plainBindings,
+    emitter.valueCaptures,
+  );
   emitter.privateSplitLocals = emitter.streamingSplitsEnabled
     ? findPrivateSplitLocals(fn)
     : new Map();
@@ -457,7 +487,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     // local is a catch binding: its slot holds the ScrCaught snapshot
     // box the catch prologue takes (scr_exc_take).
     const slotTy =
-      local.boxed || emitter.captureIds.has(local.id) || local.type.kind === "caught"
+      local.boxed ||
+      (emitter.captureIds.has(local.id) && !valueBindings.has(local.id)) ||
+      local.type.kind === "caught"
         ? "ptr"
         : emitter.int32Locals.has(local.id)
           ? "i32"
@@ -467,7 +499,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       local,
       `%${mangleLocal(local.id)}`,
       fn.params.findIndex((p) => p.localId === local.id) + 1,
-      emitter.captureIds.has(local.id),
+      emitter.captureIds.has(local.id) && !valueBindings.has(local.id),
     );
     // A localized initializer binding starts at its global's zero value.
     if (localizedGlobals.has(local.id)) B.line(`store i32 0, ptr %${mangleLocal(local.id)}`);
@@ -484,19 +516,40 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   if (unoptimized) {
     const slots = new Set<string>();
     for (const local of emitter.currentLocals.values())
-      if (local.boxed || emitter.captureIds.has(local.id)) slots.add(`%${mangleLocal(local.id)}`);
+      if (local.boxed || emitter.captureIds.has(local.id) || valueBindings.has(local.id))
+        slots.add(`%${mangleLocal(local.id)}`);
     B.volatileSlots = slots;
     // Without optimization a versioned copy only adds code.
     LOOPS.of(emitter).bytesLoopVersionsEnabled = false;
   }
   // Captured bindings come in through the environment — borrowed for the
   // whole call (the closure owns them): bound here, never released here.
+  // A capture received by value is the environment's own reference, lent
+  // for the call in the same way.
   (fn.captures ?? []).forEach((c, i) => {
+    const slot = environment?.slots[i];
+    if (slot !== undefined && slot.kind !== "box") {
+      const from = emitter.environmentValue(environment!, "%sc_env", i);
+      const stored = B.tmp();
+      B.line(`${stored} = load ${from.type}, ptr ${from.ptr}`);
+      let value = stored;
+      if (from.type === "i8") {
+        value = B.tmp();
+        B.line(`${value} = icmp ne i8 ${stored}, 0`);
+      }
+      B.line(
+        `store ${emitter.llType(c.type)} ${value}, ptr %${mangleLocal(c.localId)} ; captured value ${c.name}`,
+      );
+      return;
+    }
+    const index = slot?.index ?? i;
     const caps = B.tmp();
     const p = B.tmp();
     const box = B.tmp();
     B.line(`${caps} = getelementptr inbounds %ScrClosure, ptr %sc_env, i64 1 ; caps`);
-    B.line(`${p} = getelementptr inbounds ptr, ptr ${caps}, ${emitter.sizeType} ${i} ; caps[${i}]`);
+    B.line(
+      `${p} = getelementptr inbounds ptr, ptr ${caps}, ${emitter.sizeType} ${index} ; caps[${index}]`,
+    );
     B.line(`${box} = load ptr, ptr ${p}`);
     B.line(`store ptr ${box}, ptr %${mangleLocal(c.localId)} ; captured ${c.name}`);
   });
@@ -581,19 +634,32 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
+  emitter.framePositions = null;
+  emitter.currentFrameName = emitter.conversionTrace ? emitter.frameNameOf(fn) : undefined;
+  const positions = emitter.framePositionsOf(fn);
   if (
     emitter.stackTraces &&
     !emitter.wasi &&
-    fn.sourceName !== undefined &&
+    (fn.sourceName !== undefined || positions !== null) &&
     !emitter.unframedFunctions.has(fn.name)
   ) {
     B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
-    const frame = emitter.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+    // Until its first statement runs, a positioned frame names the function
+    // itself (the stack guard's RangeError is raised there).
+    const frame = emitter.cstr(
+      positions?.textAt(fn.loc) ??
+        (fn.sourceName === undefined
+          ? `    at ${fn.loc.file}`
+          : frameText(fn.sourceName, fn.loc.file)),
+    );
     if (
       B.excCellInvariant &&
       emitter.mod.lib === undefined &&
       emitter.mod.workers !== true &&
-      emitter.sizeType === "i64"
+      emitter.sizeType === "i64" &&
+      // Unoptimized code would keep the inline push's values in stack
+      // slots of their own; the calls add the frame's 16 bytes and no more.
+      !emitter.positionedFrames
     ) {
       // Executables link the active-cell pointer as a plain global, and a
       // synchronous body sees one cell from entry to every return: push
@@ -614,10 +680,12 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       B.line(`call void @scr_stack_enter(ptr %source_frame, ptr ${frame})`);
       B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
     }
+    emitter.framePositions = positions;
   }
   if (emitter.stackChecks?.has(fn.name)) emitter.emitStackCheck();
   if (emitter.workerEntryPolls?.has(fn.name)) emitter.emitPendingCheck(undefined, true);
   emitter.emitStmts(fn.body, true);
+  emitter.framePositions = null;
   // Implicit exit of a void function: release the function scope unless
   // the body already terminated its final block (return, or a throw
   // whose unwind released everything down to depth 0).
@@ -677,6 +745,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // Shared blocks have multiple source locations. Keep the location on
   // each incoming exception check instead of assigning one to the cleanup.
   B.debugLocation = null;
+  // A throw site's shared release blocks (emitUnwind) release its values
+  // newest first; the statement's ordinary end releases them oldest first,
+  // and a function that ends there reaches the same return. LLVM would sink
+  // the two paths' release calls into shared blocks one call at a time,
+  // choosing each operand with a phi per value still to release: n values
+  // become n²/2 phi nodes, which cost it minutes at a few hundred values.
+  // Calls marked `nomerge` stay in their blocks.
+  B.unmergedCalls = true;
+  for (const release of emitter.unwindReleases) {
+    B.startBlock(release.label);
+    emitter.releaseTemps([release.value]);
+    B.br(release.next);
+  }
+  B.unmergedCalls = false;
   for (const cleanup of emitter.unwindCleanups.values()) {
     B.startBlock(cleanup.label);
     emitter.releaseScope(cleanup.entries);
@@ -722,6 +804,11 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // A keyed record read's inherited-method miss path (record-inherited.ts)
   // stays out of line, so the hit path keeps its own small frame.
   else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
+  // A deferred group's run (lazy-initializers.ts) is called once, from
+  // whichever guard fires first, and holds the loops that walk the group's
+  // list. Inlined into a guard it would put those loops inside every loop
+  // around a guarded read; out of line, a guard is a flag test and a call.
+  else if (isLazyGroupRun(fn.name)) attrs = `noinline cold ${attrs}`;
   // The original body of a function versioned for int32 loop bounds runs
   // only for a bound that is not an int32 (parameter-versions.ts). It stays
   // out of line, and FALLBACK_PLACEMENT_ATTR lets the helper's partitioner
@@ -750,13 +837,14 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
-    body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
+    const cloneHost = emitter.integerCloneHost();
+    body += "\n" + emitIntegerClone(fn, cloneHost, emitter.stackChecks?.has(fn.name) === true);
     if (emitter.integerClones.dispatched.has(fn.name))
       body +=
         "\n" +
         emitIntegerDispatcher(
           fn,
-          emitter,
+          cloneHost,
           `${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}`,
           int32Abi?.params ?? [],
           int32Abi?.result === true,
@@ -933,6 +1021,10 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       ...argPackLines,
     ];
     if (fn.generator.bindAtCall === true) emitter.declare(`declare void @scr_gen_bind(ptr)`);
+    // A generator body that reads `this` runs after the call returned: the
+    // spawn records the call's receiver for it (RuntimeFeatures.genReceiver).
+    const capturesReceiver = emitter.runtimeFeatures.genReceiver;
+    if (capturesReceiver) emitter.declare(`declare void @scr_gen_capture_receiver(ptr)`);
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
     const asyncGenNew =
@@ -943,6 +1035,7 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
         : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+      ...(capturesReceiver ? [`  call void @scr_gen_capture_receiver(ptr %gg)`] : []),
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),
@@ -1469,10 +1562,11 @@ export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
  * body always completes before the call returns, which is exactly the
  * behavior of a fiber that never suspends. Excluded conservatively:
  * wasm32 (its coroutine lowering owns async bodies), module-evaluation
- * bodies (their promise caches),
- * `dyn` results (resolution may adopt a thenable), and every program
- * that uses node:test subtests — `t.test()` runs a subtest inline and
- * awaits it on the CURRENT fiber even from synchronous code. Worker
+ * bodies (their promise caches), and every program that uses node:test
+ * subtests — `t.test()` runs a subtest inline and awaits it on the CURRENT
+ * fiber even from synchronous code. A `dyn` result qualifies: its
+ * resolution settles the promise or leaves it to a reaction on the promise
+ * the result holds, and parks nothing (scr_promise_resolve_dyn). Worker
  * programs keep fibers too: their fiber epilogue owns context
  * termination (a stopping worker rejects and observes the promise), which
  * the fiberless wrapper does not reproduce. A missed suspension still

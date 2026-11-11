@@ -1866,6 +1866,14 @@ static void scr_dgram_dispatch(void) {
       if (scr_exc_pending()) return;
       continue;
     }
+    if ((evs[i].events & SCRP_TIMER) != 0) {
+      /* Timers on this poller belong to the dns queries. One whose query no
+       * longer owns the key was copied by the same drain that delivered the
+       * response finishing that query; its key is gone, so there is nothing
+       * to deliver. Reading the pointer as a socket would touch freed
+       * memory. */
+      continue;
+    }
     ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
     if (!s || s->fd < 0) continue; /* closed earlier in this batch */
     scr_dgram_read(s);

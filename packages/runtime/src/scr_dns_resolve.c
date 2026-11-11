@@ -583,7 +583,8 @@ typedef struct ScrDnsqQuery {
   bool connecting;
   unsigned char *rbuf; /* TCP: the accumulated stream */
   size_t rlen, rcap;
-  size_t want; /* TCP: total bytes expected, 0 until the length prefix */
+  size_t want;      /* TCP: the frame's payload length, valid once have_len */
+  bool have_len;    /* TCP: the two-byte length prefix has been read */
   int attempt;
   bool done;
 } ScrDnsqQuery;
@@ -1188,18 +1189,19 @@ static ScrDyn *scr_dnsq_build_result(const ScrDnsqParsed *parsed, int qtype, boo
     }
     default: {
       /* NS and PTR are ENODATA without a record of their type; MX, TXT,
-       * SRV, NAPTR, TLSA and CAA parse to an empty array. */
-      ScrDyn *arr = scr_dyn_new_arr();
+       * SRV, NAPTR, TLSA and CAA parse to an empty array. The answer is
+       * counted first so the ENODATA path allocates nothing to leak. */
       size_t matched = 0;
-      for (size_t i = 0; i < parsed->rrs.n; i++) {
-        const ScrDnsRR *rr = &parsed->rrs.items[i];
-        if (rr->type != qtype) continue;
-        matched++;
-        scr_dyn_arr_push(arr, scr_dnsq_rr_value(rr, qtype, ttl_option, -1, false));
-      }
+      for (size_t i = 0; i < parsed->rrs.n; i++)
+        if (parsed->rrs.items[i].type == qtype) matched++;
       if (matched == 0 && (qtype == T_NS || qtype == T_PTR)) {
         *code = "ENODATA";
         return NULL;
+      }
+      ScrDyn *arr = scr_dyn_new_arr();
+      for (size_t i = 0; i < parsed->rrs.n; i++) {
+        const ScrDnsRR *rr = &parsed->rrs.items[i];
+        if (rr->type == qtype) scr_dyn_arr_push(arr, scr_dnsq_rr_value(rr, qtype, ttl_option, -1, false));
       }
       return arr;
     }
@@ -1372,6 +1374,10 @@ static void scr_dnsq_start_attempt(ScrDnsqQuery *q) {
     return;
   }
   if (q->tcp) {
+    /* A fresh connection: nothing of an earlier frame carries over. */
+    q->rlen = 0;
+    q->want = 0;
+    q->have_len = false;
     int fd = socket(ss.ss_family, SOCK_STREAM, 0);
     if (fd < 0) {
       q->attempt++;
@@ -1522,16 +1528,39 @@ static void scr_dnsq_tcp_send(ScrDnsqQuery *q) {
   scr_dgram_poll_read(q->fd, q, true);
 }
 
+/* A frame carries a two-byte length prefix and that many payload bytes. The
+ * buffer is sized to the advertised frame and never grows past it, so a
+ * responder cannot make the query accumulate memory; a frame shorter than
+ * the DNS header is a protocol error (an empty frame would otherwise read as
+ * "length not known yet" and leave the buffer growing with the stream).
+ * Reads per readiness callback are bounded; the poller is level-triggered
+ * and calls back while the socket has more. */
+enum { SCR_DNSQ_TCP_READS = 16, SCR_DNSQ_TCP_FIRST = 4096, SCR_DNSQ_HDR = 12 };
+
 static void scr_dnsq_tcp_read(ScrDnsqQuery *q) {
-  for (;;) {
+  for (int reads = 0; reads < SCR_DNSQ_TCP_READS; reads++) {
+    if (!q->have_len && q->rlen >= 2) {
+      q->want = ((size_t)q->rbuf[0] << 8) | q->rbuf[1];
+      if (q->want < SCR_DNSQ_HDR) {
+        scr_dnsq_finish(q, "EBADRESP", NULL);
+        return;
+      }
+      q->have_len = true;
+    }
+    if (q->have_len && q->rlen >= q->want + 2) {
+      scr_dnsq_response(q, q->rbuf + 2, q->want);
+      return;
+    }
+    size_t cap = q->have_len ? q->want + 2 : SCR_DNSQ_TCP_FIRST;
     if (q->rlen == q->rcap) {
-      size_t cap = q->rcap ? q->rcap * 2 : 4096;
+      if (q->rcap >= cap) return; /* full: the frame itself is due next call */
       unsigned char *buf = realloc(q->rbuf, cap);
       if (buf == NULL) scr_trap("scriptc: out of memory\n");
       q->rbuf = buf;
       q->rcap = cap;
     }
-    ssize_t n = recv(q->fd, (char *)q->rbuf + q->rlen, q->rcap - q->rlen, 0);
+    size_t room = q->rcap - q->rlen < cap - q->rlen ? q->rcap - q->rlen : cap - q->rlen;
+    ssize_t n = recv(q->fd, (char *)q->rbuf + q->rlen, room, 0);
     if (n < 0) {
 #ifdef _WIN32
       int e = WSAGetLastError();
@@ -1547,11 +1576,6 @@ static void scr_dnsq_tcp_read(ScrDnsqQuery *q) {
       return;
     }
     q->rlen += (size_t)n;
-    if (q->want == 0 && q->rlen >= 2) q->want = ((size_t)q->rbuf[0] << 8) | q->rbuf[1];
-    if (q->want != 0 && q->rlen >= q->want + 2) {
-      scr_dnsq_response(q, q->rbuf + 2, q->want);
-      return;
-    }
   }
 }
 
@@ -1564,6 +1588,7 @@ static void scr_dnsq_event(void *udata, unsigned events) {
     q->tcp = false;
     q->rlen = 0;
     q->want = 0;
+    q->have_len = false;
     q->attempt++;
     scr_dnsq_start_attempt(q);
     return;
@@ -1600,24 +1625,38 @@ static int scr_dnsq_start(ScrDnsResolver *r, const ScrStr *binding, const ScrDyn
   ScrStr *ptrname = NULL;
   if (strcmp(bname, "getHostByAddr") == 0) {
     char tmp[80];
-    if (err_name->len >= sizeof tmp || scr_dnsq_ip_version(err_name->data, err_name->len) == 0) {
+    unsigned char a[16];
+    int fam = scr_dnsq_ip_version(err_name->data, err_name->len);
+    if (fam == 0 && err_name->len >= 2 && err_name->data[err_name->len - 1] == '%') {
+      /* c-ares also takes an empty zone on the reverse path ("fe80::1%"),
+       * which isIP and setServers reject; only IPv6 can carry one. */
+      int base = scr_dnsq_ip_version(err_name->data, err_name->len - 1);
+      if (base == 6) fam = base;
+    }
+    bool ok = fam != 0 && err_name->len < sizeof tmp;
+    size_t alen = err_name->len;
+    if (ok && fam == 6) {
+      /* A zone is not part of the address: Node encodes and looks up the
+       * address without it. */
+      const char *pct = memchr(err_name->data, '%', err_name->len);
+      if (pct != NULL && pct != err_name->data) alen = (size_t)(pct - err_name->data);
+    }
+    if (ok) {
+      memcpy(tmp, err_name->data, alen);
+      tmp[alen] = '\0';
+      ok = inet_pton(fam == 4 ? AF_INET : AF_INET6, tmp, a) == 1;
+    }
+    if (!ok) {
       /* Nothing is queued, so the caller's retained callback or promise
        * comes back to it here; the caller throws instead. */
       if (callback != NULL) scr_dyn_release(callback);
       if (promise != NULL) scr_promise_release(promise);
       return SCR_DNSQ_INVALID;
     }
-    memcpy(tmp, err_name->data, err_name->len);
-    tmp[err_name->len] = '\0';
-    int fam = scr_dnsq_ip_version(tmp, strlen(tmp));
     char text[128];
     if (fam == 4) {
-      unsigned char a[4];
-      inet_pton(AF_INET, tmp, a);
       snprintf(text, sizeof text, "%u.%u.%u.%u.in-addr.arpa", a[3], a[2], a[1], a[0]);
     } else {
-      unsigned char a[16];
-      inet_pton(AF_INET6, tmp, a);
       char hex[96];
       size_t hn = 0;
       for (int i = 15; i >= 0; i--) hn += (size_t)snprintf(hex + hn, sizeof hex - hn, "%x.%x.", a[i] & 0xf, a[i] >> 4);

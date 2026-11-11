@@ -32,10 +32,19 @@
  *
  * The scan reads a source only when its text can spell one of those writes:
  * `globalThis` and `global` contain "global", and a sloppy-mode `this`
- * write — the one spelling that does not — contains "this". */
+ * write — the one spelling that does not — contains "this".
+ *
+ * The same census answers a TypeScript question: a bare reference to a
+ * DECLARED global (`declare var document: T` in a script-style declaration
+ * file, `declare const`, a `declare global` block) has no run-time variable
+ * either, because TypeScript erases the declaration, so Node resolves the
+ * reference through the global object too. Such a read keeps its static
+ * lowering unless the census can give the name a value
+ * (erasedGlobalBindingOf, programMayWriteGlobalName). */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isStrictCode } from "./strict-mode.js";
+import { inGlobalScope } from "./lower-namespaces.js";
 import { globalObjectType } from "./global-object-names.js";
 import type { Lowerer } from "./lowerer.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -74,6 +83,49 @@ export function programMayWriteGlobalName(lowerer: Lowerer, name: string, node: 
   if (globalType === undefined) return true;
   const writes = globalObjectWrites(lowerer, globalType);
   return writes.computed || writes.unknownNames || writes.names.has(name);
+}
+
+/** Whether `id` reads a GLOBAL binding the program declares and TypeScript
+ * erases: an ambient variable declaration with no initializer (`declare
+ * var/let/const`, also the module form `declare global { const x: T }`).
+ * The declaration never exists at run time, so Node resolves the reference
+ * through the global object, exactly as it resolves a name nothing declares.
+ * A merged value declaration that is not such a declaration (a real `var` in
+ * a script file, an import alias) answers false, as does a member of an
+ * ambient namespace or a `.d.ts` module.
+ *
+ * The read keeps that answer only where the program may have written the
+ * name on the global object (programMayWriteGlobalName); every other read
+ * keeps its static answer, so a program that never writes the name pays
+ * nothing for the rule. */
+export function erasedGlobalBindingOf(lowerer: Lowerer, id: ts.Identifier): boolean {
+  // An import of the same name is the program's binding of an export, not
+  // the global object's property.
+  const symbol = lowerer.checker.getSymbolAtLocation(id);
+  if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Alias) !== 0) return false;
+  const declarations = lowerer.resolveValueSymbol(id)?.declarations ?? [];
+  let sawValue = false;
+  for (const declaration of declarations) {
+    // Type-world partners (the interface a global's declaration merges
+    // with) declare no value.
+    if (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)) continue;
+    if (!ts.isVariableDeclaration(declaration) || declaration.initializer !== undefined)
+      return false;
+    if (!inGlobalScope(declaration) || !isAmbientDeclaration(declaration)) return false;
+    sawValue = true;
+  }
+  return sawValue;
+}
+
+/** Whether the declaration is ambient (or in a `.d.ts`): TypeScript emits
+ * nothing for it, so no runtime binding exists. `declare global` passes the
+ * modifier down to the declarations inside it. */
+function isAmbientDeclaration(declaration: ts.Node): boolean {
+  for (let node: ts.Node | undefined = declaration; node !== undefined; node = node.parent) {
+    if ((ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Ambient) !== 0) return true;
+    if (ts.isSourceFile(node)) return node.isDeclarationFile;
+  }
+  return false;
 }
 
 /** The census, made on first use. `globalType` is the checker's type of

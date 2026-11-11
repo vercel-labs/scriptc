@@ -91,3 +91,59 @@ test("a sloppy-mode this write by a computed key can name any property", async (
   );
   expect(BINDING_CALLS.test(ir)).toBe(true);
 });
+
+/** A script-style declaration file: the globals it declares exist only as
+ * types, so a bare reference to one is Node's read of the global object. */
+const DECLARED_GLOBALS = `interface Doc { label: string }
+declare var document: Doc;
+declare const untouched: string;
+`;
+
+test("a declared global the program never writes keeps its static read", async () => {
+  const ir = await irOf(
+    {
+      "main.ts": `/// <reference path="./globals.d.ts" />
+console.log(document.label);
+console.log(typeof untouched);
+`,
+      "globals.d.ts": DECLARED_GLOBALS,
+    },
+    "main.ts",
+  );
+  expect(BINDING_CALLS.test(ir)).toBe(false);
+  expect(/"fn":"global\.undefRead"/.test(ir)).toBe(true);
+});
+
+test("a declared global the program writes on the global object is a runtime read", async () => {
+  const ir = await irOf(
+    {
+      "main.ts": `/// <reference path="./globals.d.ts" />
+(globalThis as any).document = { label: "installed" };
+console.log(document.label, typeof document);
+`,
+      "globals.d.ts": DECLARED_GLOBALS,
+    },
+    "main.ts",
+  );
+  expect(/"fn":"global\.bindingRead"/.test(ir)).toBe(true);
+  expect(/"fn":"global\.bindingValue"/.test(ir)).toBe(true);
+});
+
+test("a `declare global` block's binding is read the same way", async () => {
+  const ir = await irOf(
+    {
+      "main.ts": `/// <reference path="./globals.d.ts" />
+(globalThis as any).document = { label: "installed" };
+console.log(document.label);
+`,
+      "globals.d.ts": `export {};
+interface Doc { label: string }
+declare global {
+  const document: Doc;
+}
+`,
+    },
+    "main.ts",
+  );
+  expect(/"fn":"global\.bindingRead"/.test(ir)).toBe(true);
+});

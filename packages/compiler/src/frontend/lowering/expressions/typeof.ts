@@ -50,7 +50,7 @@ import { nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
-import { programMayWriteGlobalName } from "../global-object-writes.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import { staticTypeofAnswer } from "../static-typeof.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
@@ -330,6 +330,31 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         cond: { kind: "libCall", fn: "global.bindingHas", args: [name], type: BOOL, loc },
         then: own,
         else_: fallback,
+        type: STRING,
+        loc,
+      };
+    }
+    // A global binding the program declares and TypeScript erases: when
+    // the program may have written the name on the global object, the
+    // answer is that property's (`typeof` of an absent one is
+    // "undefined"), exactly as for an undeclared name in JavaScript. Every
+    // other declared global keeps the static answer below.
+    if (
+      erasedGlobalBindingOf(lowerer, tested) &&
+      programMayWriteGlobalName(lowerer, tested.text, tested)
+    ) {
+      return {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [
+          {
+            kind: "libCall",
+            fn: "global.bindingValue",
+            args: [{ kind: "strLit", value: tested.text, type: STRING, loc }],
+            type: DYN,
+            loc,
+          },
+        ],
         type: STRING,
         loc,
       };

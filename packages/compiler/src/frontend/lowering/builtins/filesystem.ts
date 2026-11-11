@@ -676,6 +676,23 @@ export function lowerFileHandleMethodCall(
       loc,
     };
   }
+  // chown(uid, gid): fchown(2) over the handle's descriptor. Node checks
+  // the closed handle first, then validates the ids.
+  if (name === "chown") {
+    if (call.arguments.nodes.length !== 2 || call.arguments.nodes.some(ts.isSpreadElement))
+      lowerer.noLowering(`FileHandle.chown with ${call.arguments.nodes.length} arguments`, call);
+    return {
+      kind: "libCall",
+      fn: "fileHandle.chown",
+      args: [
+        receiver(),
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64),
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64),
+      ],
+      type: promise(VOID),
+      loc,
+    };
+  }
   if (name === "truncate" || name === "chmod") {
     if (call.arguments.nodes.length > 1 || (name === "chmod" && call.arguments.nodes.length !== 1))
       lowerer.noLowering(`FileHandle.${name} with ${call.arguments.nodes.length} arguments`, call);

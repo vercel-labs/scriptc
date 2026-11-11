@@ -1978,6 +1978,27 @@ ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* fs.promises.lchmod(path, mode) with the typed operands: Node's stub
+ * rejects with ERR_METHOD_NOT_IMPLEMENTED before any validation where
+ * O_SYMLINK does not exist (Linux), and macOS applies chmod's ladder and
+ * the real lchmod(2). */
+ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode) {
+#ifndef __APPLE__
+  (void)path;
+  (void)mode;
+  static const char ni[] = "The lchmod() method is not implemented";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, ni, sizeof ni - 1, "ERR_METHOD_NOT_IMPLEMENTED");
+  return scr_promise_settled_void();
+#else
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  ScrDyn *value = scr_dyn_new_num(mode);
+  bool ok = scr_fs_mode_chk(value, "mode");
+  scr_dyn_release(value);
+  if (ok && lchmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "lchmod", path);
+  return scr_promise_settled_void();
+#endif
+}
+
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode) {
 #ifndef __APPLE__
   (void)path;

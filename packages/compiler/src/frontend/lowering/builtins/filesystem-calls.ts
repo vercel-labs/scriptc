@@ -1409,6 +1409,97 @@ export function lowerFsWriteOptionsCall(
   return finishWrite(optionValues);
 }
 
+/** fs.promises.writeFile/appendFile(p, data, options): Node's general
+ * options record, validated by scr_fs_flags.c in Node's order — the
+ * encoding (any BufferEncoding name, "buffer", or a name Node rejects),
+ * flag (the full open(2) table), mode, flush and signal, plus the data's
+ * own type check before the path. Answers null for the utf8-only spellings
+ * the plain writes already cover (writeFile's bare "utf8" and its
+ * { encoding: "utf8" } record), so their IR is unchanged. */
+export function lowerFsPromisesWriteOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  append: boolean,
+): IrExpr | null {
+  const optsNode = expr.arguments.nodes[2]!;
+  if (!append) {
+    const t = lowerer.typeOf(optsNode);
+    if (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")) return null;
+    const literal = optionsLiteralOf(lowerer, optsNode);
+    if (
+      literal !== null &&
+      literal.properties.nodes.every((property) => {
+        const m = optionMember(property);
+        if (!m || m.name !== "encoding") return false;
+        const et = lowerer.typeOf(m.value);
+        return et.isStringLiteralType() && (et.value === "utf8" || et.value === "utf-8");
+      })
+    )
+      return null;
+  }
+  const dataNode = expr.arguments.nodes[1]!;
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+  const dataType: IrType =
+    dataIr?.kind === "string"
+      ? STRING
+      : dataIr?.kind === "bytes" && dataIr.elem === "u8"
+        ? BYTES_U8
+        : DYN;
+  const dataKind: "string" | "bytes" | "data" =
+    dataType.kind === "string" ? "string" : dataType.kind === "bytes" ? "bytes" : "data";
+  const resultType: IrType = { kind: "promise", inner: VOID };
+  const fn: IrLibFn = append
+    ? dataKind === "string"
+      ? "fsp.appendFileOptions"
+      : dataKind === "bytes"
+        ? "fsp.appendFileOptionsBytes"
+        : "fsp.appendFileOptionsData"
+    : dataKind === "string"
+      ? "fsp.writeFileOptions"
+      : dataKind === "bytes"
+        ? "fsp.writeFileOptionsBytes"
+        : "fsp.writeFileOptionsData";
+  // Node evaluates the arguments left to right; stage them in that order,
+  // then the runtime runs its validation ladder over the record.
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
+  const dataLocal = lowerer.declareHiddenLocal("%writeData", dataType);
+  const optionsLocal = lowerer.declareHiddenLocal("%writeOptions", DYN);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+    {
+      kind: "varDecl",
+      localId: dataLocal.id,
+      init: lowerer.lowerExprExpecting(dataNode, dataType),
+      loc: locOf(dataNode),
+    },
+    {
+      kind: "varDecl",
+      localId: optionsLocal.id,
+      init: lowerer.lowerExprExpecting(optsNode, DYN),
+      loc: locOf(optsNode),
+    },
+  ];
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn,
+      args: [
+        varRef(pathLocal.id, pathLocal.type, loc),
+        varRef(dataLocal.id, dataLocal.type, loc),
+        varRef(optionsLocal.id, optionsLocal.type, loc),
+      ],
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
 /** writeFileSync/appendFileSync with the options the plain forms do not
  * cover: an encoding other than utf8, a flag from Node's wider table, a
  * Buffer/TypedArray data argument, or any options at all on appendFileSync

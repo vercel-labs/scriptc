@@ -59,6 +59,7 @@ declare module "fs/promises" {
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
     chmod(mode: number): Promise<void>;
+    chown(uid: number, gid: number): Promise<void>;
     utimes(atime: number | string | Date, mtime: number | string | Date): Promise<void>;
     readv<T extends Uint8Array[]>(
       buffers: T,
@@ -102,6 +103,31 @@ declare module "fs/promises" {
     appendFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
+  }
+  /* The options record fs.promises.writeFile/appendFile accept: Node
+   * validates encoding, flag, flush, mode and signal in that order, before
+   * the first byte is written. */
+  export interface WriteFileOptions {
+    encoding?: BufferEncoding | null;
+    mode?: number;
+    flag?: string;
+    flush?: boolean;
+    signal?: AbortSignal;
+    [option: string]: unknown;
+  }
+  export interface AppendFileOptions {
+    encoding?: BufferEncoding | null;
+    mode?: number;
+    flag?: string;
+    flush?: boolean;
+    signal?: AbortSignal;
+    [option: string]: unknown;
+  }
+  export interface RmdirOptions {
+    recursive?: boolean;
+    retryDelay?: number;
+    maxRetries?: number;
+    [option: string]: unknown;
   }
   export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;
   export function link(
@@ -149,17 +175,7 @@ declare module "fs/promises" {
   export function writeFile(
     path: string | URL,
     data: string | ScriptcBufferView,
-    options?: {
-      mode?: number;
-      encoding?: "utf8" | "utf-8";
-      flag?: string;
-      [option: string]: unknown;
-    },
-  ): Promise<void>;
-  export function writeFile(
-    path: string | URL,
-    data: string | ScriptcBufferView,
-    encoding: "utf8" | "utf-8",
+    options?: WriteFileOptions | BufferEncoding | null,
   ): Promise<void>;
   export function mkdir(
     path: string | URL,
@@ -210,10 +226,16 @@ declare module "fs/promises" {
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
-  export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
+  export function appendFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options?: AppendFileOptions | BufferEncoding | null,
+  ): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
   export function rmdir(path: string | URL): Promise<void>;
+  export function rmdir(path: string | URL, options: RmdirOptions): Promise<void>;
+  export function lchmod(path: string | URL, mode: number): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
     path: string | URL,

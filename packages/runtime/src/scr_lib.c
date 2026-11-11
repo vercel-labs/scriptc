@@ -4397,8 +4397,12 @@ void scr_fs_unlink(ScrStr *path) {
   if (unlink(path->data) != 0) scr_fs_throw(errno, "unlink", path);
 }
 
+/* Node's parseFileMode for chmod: validateUint32(mode, "mode"), the same
+ * check open(2)'s paths make. The path is validated first, as Node's
+ * getValidatedPath runs before the mode check. */
 void scr_fs_chmod(ScrStr *path, double mode) {
   if (!scr_fs_path_ok(path, "path")) return;
+  if (!scr_fs_file_mode_valid(mode)) return;
   if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
 }
 

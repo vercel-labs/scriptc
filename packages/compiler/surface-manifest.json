@@ -1450,6 +1450,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.lchmod",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchmod",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.lchown",
       "kind": "node-builtin",
       "name": "fs/promises.lchown",

@@ -45,6 +45,7 @@ ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);
 ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode);
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid);
 double scr_file_handle_readv(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,

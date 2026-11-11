@@ -25,6 +25,7 @@ import {
   lowerFsRemoveCall,
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
+  lowerFsPromisesWriteOptionsCall,
   lowerFsWriteOptionsCall,
   lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
@@ -35,6 +36,7 @@ import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { locOf } from "../../program.js";
 import * as ts from "../../ts7/adapter.js";
 import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
@@ -46,7 +48,9 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   STRING,
+  VOID,
   type SrcLoc,
   arrayOf,
 } from "../../../ir/ir.js";
@@ -444,8 +448,57 @@ export function lowerBuiltinModuleCall(
   // utf8 the runtime writes anyway.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
+  // fs.promises.writeFile(vs appendFile): the general options record —
+  // every encoding name, the full flag table, mode, flush and signal —
+  // validated by the runtime in Node's order. writeFile's utf8-only
+  // spellings keep the plain-write lowerings below; appendFile's options
+  // always take the record (its default flag is "a").
+  if (promiseWriteOptions && expr.arguments.nodes.length === 3) {
+    const lowered = lowerFsPromisesWriteOptionsCall(lowerer, expr, loc, false);
+    if (lowered) return lowered;
+  }
+  if (
+    bi.module === "fs/promises" &&
+    bi.member === "appendFile" &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsPromisesWriteOptionsCall(lowerer, expr, loc, true);
+    if (lowered) return lowered;
+  }
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
+  }
+  // fs.promises.rmdir(p, options): the validateRmdirOptions record.
+  if (bi.module === "fs/promises" && bi.member === "rmdir" && expr.arguments.nodes.length === 2) {
+    const options = expr.arguments.nodes[1]!;
+    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+    const pathLocal = lowerer.declareHiddenLocal("%rmdirPath", STRING);
+    const optionsLocal = lowerer.declareHiddenLocal("%rmdirOptions", DYN);
+    const resultType: IrType = { kind: "promise", inner: VOID };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        {
+          kind: "varDecl",
+          localId: optionsLocal.id,
+          init: lowerer.lowerExprExpecting(options, DYN),
+          loc: locOf(options),
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "fsp.rmdirOptions",
+        args: [
+          varRef(pathLocal.id, pathLocal.type, loc),
+          varRef(optionsLocal.id, optionsLocal.type, loc),
+        ],
+        type: resultType,
+        loc,
+      },
+      type: resultType,
+      loc,
+    };
   }
   // appendFileSync(p, data, options): only the encoding can be lowered
   // here (utf8 is what the runtime appends anyway; the flag a plain append

@@ -1482,6 +1482,14 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: { kind: "promise", inner: VOID },
         valueParams: exactValueParams(STRING, F64, F64),
       },
+      // Node's stub rejects with ERR_METHOD_NOT_IMPLEMENTED where O_SYMLINK
+      // does not exist (Linux); macOS runs the real lchmod(2).
+      lchmod: {
+        fn: "fsp.lchmod",
+        params: [STRING, F64],
+        result: { kind: "promise", inner: VOID },
+        valueParams: exactValueParams(STRING, F64),
+      },
       // access' omitted mode and truncate's omitted len complete to 0 in
       // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
       // fixed (path plus one optional number), so they box as function values

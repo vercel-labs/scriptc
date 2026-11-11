@@ -4111,6 +4111,33 @@ function buildLibFnSignatures() {
       argTypes: [STRING, DYN, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
+    /** fs.promises.writeFile/appendFile(path, data, options) over the
+     * general options record: the runtime validates encoding, flag, flush,
+     * mode and signal in Node's order and rejects with Node's error. */
+    "fsp.writeFileOptions": {
+      argTypes: [STRING, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileOptionsBytes": {
+      argTypes: [STRING, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileOptionsData": {
+      argTypes: [STRING, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptions": {
+      argTypes: [STRING, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptionsBytes": {
+      argTypes: [STRING, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.appendFileOptionsData": {
+      argTypes: [STRING, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
@@ -4119,6 +4146,12 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: STRING },
     },
     "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    /** fs.promises.rmdir(path, options): validateRmdirOptions and the
+     * recursive form's DEP0147 report, in the dyn-async unit. */
+    "fsp.rmdirOptions": { argTypes: [STRING, DYN], result: { kind: "promise", inner: VOID } },
+    /** fs.promises.lchmod(path, mode): Node's stub on Linux (where
+     * O_SYMLINK does not exist) and the real lchmod(2) on macOS. */
+    "fsp.lchmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.cp": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
@@ -4166,6 +4199,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.chmod": { argTypes: [FILEHANDLE_T, F64], result: { kind: "promise", inner: VOID } },
+    "fileHandle.chown": {
+      argTypes: [FILEHANDLE_T, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.utimes": {
       argTypes: [FILEHANDLE_T, DYN, DYN],
       result: { kind: "promise", inner: VOID },

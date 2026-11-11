@@ -234,6 +234,372 @@ static void scr_fs_write_blob(ScrStr *path, const ScrBytes *data, ScrStr *encodi
                         bits);
 }
 
+/* ── the general options record of fs.promises.writeFile ─────────────────
+ *
+ * fs.promises.writeFile reads its third argument through getOptions — null,
+ * undefined and functions are the defaults, a string is the encoding alone,
+ * and any other primitive is ERR_INVALID_ARG_TYPE — and then, in this order:
+ * the encoding (assertEncoding unless it is "buffer"), the signal's type,
+ * `options.flag || "w"`, `options.flush ?? false` (a boolean), the data (a
+ * string encoded with `options.encoding || "utf8"`, a view as its bytes),
+ * the abort check, and only then open(): the path, stringToFlags(flag) and
+ * parseFileMode(options.mode, "mode", 0666). Each step reports its own
+ * error before the next, so the checks below run in that order; a failure
+ * leaves the exception pending and the promise mint turns it into the
+ * rejection. appendFile funnels into the same write with its own default
+ * flag ("a") and the same options. */
+
+/* What one call reads out of the record. The dyn values are owned and
+ * released by scr_fs_write_opts_clear; `encoding` borrows its string from
+ * the record, which stays alive for the call. */
+typedef struct {
+  const ScrDyn *options; /* borrowed; open() reads `mode` from it last */
+  ScrStr *encoding;      /* NULL for utf8 */
+  bool buffer_encoding;  /* encoding === "buffer" */
+  ScrDyn *flag;
+  ScrDyn *flush;
+  ScrDyn *signal; /* NULL when absent or undefined */
+  bool flush_on;
+} ScrFsWriteOpts;
+
+static void scr_fs_write_opts_clear(ScrFsWriteOpts *o) {
+  scr_dyn_release(o->flag);
+  scr_dyn_release(o->flush);
+  scr_dyn_release(o->signal);
+}
+
+static bool scr_fs_write_opts_encoding(ScrFsWriteOpts *o, const ScrDyn *options) {
+  ScrDyn *value =
+      options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options)
+                                   : scr_fs_option_get(options, "encoding");
+  if (!value) return false;
+  bool ok = true;
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *name = value->v.str;
+    if (name->len > 0) {
+      if (name->len == 6 && memcmp(name->data, "buffer", 6) == 0) {
+        /* assertEncoding skips exactly this name; Buffer.from reports it
+         * when the data is a string (see scr_fs_write_opts_run). */
+        o->buffer_encoding = true;
+      } else if (scr_bytes_is_encoding(name)) {
+        o->encoding = name;
+      } else {
+        scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+        ok = false;
+      }
+    }
+  } else if (scr_dyn_truthy(value)) {
+    /* assertEncoding: only falsy non-strings pass unvalidated. */
+    scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+    ok = false;
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* getOptions' own gate: a string is the encoding-only spelling and any
+ * other primitive is Node's ERR_INVALID_ARG_TYPE. */
+static bool scr_fs_write_opts_type_ok(const ScrDyn *options) {
+  switch (options->kind) {
+    case SCR_DYN_NULL:
+    case SCR_DYN_UNDEF:
+    case SCR_DYN_FUNC:
+    case SCR_DYN_STR:
+      return true;
+    case SCR_DYN_NUM:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL:
+      scr_dyn_arg_type_fail("options", "one of type string or object", options);
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool scr_fs_write_opts_read(ScrFsWriteOpts *o, const ScrDyn *options) {
+  memset(o, 0, sizeof *o);
+  o->options = options;
+  if (!scr_fs_write_opts_type_ok(options)) return false;
+  if (!scr_fs_write_opts_encoding(o, options)) return false;
+  o->flag = scr_fs_option_get(options, "flag");
+  if (!o->flag) return false;
+  /* `options.flush ?? false` through validateBoolean: null and undefined
+   * are the false default, every other non-boolean throws. */
+  o->flush = scr_fs_option_get(options, "flush");
+  if (!o->flush) return false;
+  if (o->flush->kind != SCR_DYN_NULL && o->flush->kind != SCR_DYN_UNDEF) {
+    if (o->flush->kind != SCR_DYN_BOOL) {
+      scr_dyn_prop_type_fail("options.flush", "of type boolean", o->flush);
+      return false;
+    }
+    o->flush_on = o->flush->v.b;
+  }
+  /* getOptions validates the signal's type (`!== undefined`), and
+   * checkAborted reads `aborted` later, after the data. */
+  o->signal = scr_fs_option_get(options, "signal");
+  if (!o->signal) return false;
+  if (o->signal->kind != SCR_DYN_UNDEF) {
+    if (o->signal->kind != SCR_DYN_HANDLE ||
+        o->signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+      scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", o->signal);
+      return false;
+    }
+  } else {
+    scr_dyn_release(o->signal);
+    o->signal = NULL;
+  }
+  return true;
+}
+
+/* checkAborted: an aborted signal rejects with Node's AbortError (the
+ * signal's reason as `cause`) before the path is opened. */
+static bool scr_fs_write_opts_aborted(const ScrFsWriteOpts *o) {
+  if (!o->signal) return false;
+  ScrStr *key = scr_str_new("aborted", 7);
+  ScrDyn *aborted = scr_dyn_handle_key_get(o->signal, key);
+  scr_str_release(key);
+  bool cancelled = aborted && scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (!cancelled) return false;
+  ScrStr *reason_key = scr_str_new("reason", 6);
+  ScrDyn *reason = scr_dyn_handle_key_get(o->signal, reason_key);
+  scr_str_release(reason_key);
+  ScrError *error = scr_error_abort(reason);
+  scr_dyn_release(reason);
+  scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
+  return true;
+}
+
+/* stringToFlags over the record's flag: the default when the value is
+ * absent or falsy (`options.flag || "w"`), the name table for a string, and
+ * validateInt32 for a number. Every other value is ERR_INVALID_ARG_VALUE
+ * with the value's inspect, the same message the string table's miss
+ * reports. */
+static bool scr_fs_write_opts_bits(const ScrFsWriteOpts *o, const char *dflt, int *bits) {
+  if (o->flag->kind == SCR_DYN_STR)
+    return scr_fs_write_flags_ok(o->flag->v.str, dflt, bits);
+  if (!scr_dyn_truthy(o->flag)) {
+    *bits = scr_fs_write_flag_bits(dflt, strlen(dflt));
+    return true;
+  }
+  if (o->flag->kind == SCR_DYN_NUM) {
+    double flags = o->flag->v.num;
+    char recv[48], msg[192];
+    scr_num_received(flags, recv);
+    if (!(isfinite(flags) && trunc(flags) == flags)) {
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"flags\" is out of range. It must be an integer. Received %s",
+                         recv);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return false;
+    }
+    if (flags < -2147483648.0 || flags > 2147483647.0) {
+      int len = snprintf(
+          msg, sizeof msg,
+          "The value of \"flags\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
+          recv);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return false;
+    }
+    *bits = (int)flags;
+    return true;
+  }
+  scr_dyn_arg_value_fail("flags", NULL, o->flag);
+  return false;
+}
+
+/* parseFileMode(options.mode, "mode", 0666): an octal string or a number,
+ * validated as a 32-bit unsigned integer. Read here because open() reads
+ * the record's mode last, after the data and the abort check. */
+static bool scr_fs_write_opts_mode(const ScrFsWriteOpts *o, double *mode) {
+  ScrDyn *value = scr_fs_option_get(o->options, "mode");
+  if (!value) return false;
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    *mode = 0666;
+    return true;
+  }
+  double out;
+  bool ok = true;
+  if (value->kind == SCR_DYN_STR) {
+    const ScrStr *text = value->v.str;
+    bool octal = text->len > 0;
+    for (size_t i = 0; octal && i < text->len; i++)
+      if (text->data[i] < '0' || text->data[i] > '7') octal = false;
+    if (!octal) {
+      scr_dyn_arg_value_fail("mode", "must be a 32-bit unsigned integer or an octal string", value);
+      ok = false;
+    } else {
+      out = 0;
+      for (size_t i = 0; i < text->len; i++) out = out * 8 + (double)(text->data[i] - '0');
+    }
+  } else if (value->kind == SCR_DYN_NUM) {
+    out = value->v.num;
+  } else {
+    scr_dyn_arg_type_fail("mode", "of type number", value);
+    ok = false;
+  }
+  if (ok && !scr_fs_write_mode_ok(out)) ok = false;
+  if (ok) *mode = out;
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* The open(2) write with the flush option: fsync before the close. The
+ * write, fsync and close syscalls report without a path, as Node's
+ * descriptor-based ones do. */
+static void scr_fs_write_bytes_flush(ScrStr *path, const uint8_t *bytes, size_t len, mode_t mode,
+                                     int flags, bool flush) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  int fd = open(path->data, flags | O_BINARY, mode);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", path);
+    return;
+  }
+  size_t at = 0;
+  while (at < len) {
+    ssize_t wrote = write(fd, bytes + at, len - at);
+    if (wrote < 0) {
+      if (errno == EINTR) continue;
+      int e = errno;
+      close(fd);
+      scr_fs_throw(e, "write", NULL);
+      return;
+    }
+    at += (size_t)wrote;
+  }
+  if (flush && fsync(fd) != 0) {
+    int e = errno;
+    close(fd);
+    scr_fs_throw(e, "fsync", NULL);
+    return;
+  }
+  if (close(fd) != 0) scr_fs_throw(errno, "close", NULL);
+}
+
+/* The data of the general form: exactly one of the three spellings. */
+typedef struct {
+  ScrStr *str;           /* borrowed */
+  const ScrBytes *bytes; /* borrowed */
+  const ScrDyn *dyn;     /* borrowed; the checked-data spelling */
+} ScrFsWritePayload;
+
+/* One general options write. Node's step order runs first (encoding and
+ * signal in the record, flag, flush, data, abort, path, flag bits, mode);
+ * only then is the file opened. The encoded data and the byte snapshot are
+ * released on every exit. */
+static void scr_fs_write_options_run(ScrStr *path, const ScrFsWritePayload *payload,
+                                     const ScrDyn *options, const char *default_flag) {
+  ScrFsWriteOpts o;
+  if (!scr_fs_write_opts_read(&o, options)) {
+    scr_fs_write_opts_clear(&o);
+    return;
+  }
+  ScrFsWritePayload data = *payload;
+  if (!data.str && !data.bytes) {
+    if (data.dyn->kind == SCR_DYN_STR) {
+      data.str = data.dyn->v.str;
+    } else if (data.dyn->kind == SCR_DYN_BYTES) {
+      data.bytes = data.dyn->v.bytes;
+    } else {
+      scr_dyn_arg_type_fail("data", "of type string or an instance of Buffer, TypedArray, or DataView",
+                            data.dyn);
+      scr_fs_write_opts_clear(&o);
+      return;
+    }
+  }
+  const uint8_t *bytes = NULL;
+  size_t len = 0;
+  ScrBytes *encoded = NULL;
+  char *owned = NULL;
+  if (data.str) {
+    if (o.encoding != NULL) {
+      /* Buffer.from(data, encoding): the requested encoding, or the
+       * ERR_UNKNOWN_ENCODING "buffer" carries when it was named as the
+       * record's encoding for string data. */
+      encoded = scr_bytes_from_str_checked(data.str, o.encoding);
+      if (!encoded) {
+        scr_fs_write_opts_clear(&o);
+        return;
+      }
+      bytes = encoded->data;
+      len = encoded->len * scr_bytes_elem_size(encoded->elem);
+    } else if (o.buffer_encoding) {
+      ScrStr *name = scr_str_new("buffer", 6);
+      encoded = scr_bytes_from_str_checked(data.str, name);
+      scr_str_release(name);
+      if (!encoded) {
+        scr_fs_write_opts_clear(&o);
+        return;
+      }
+      bytes = encoded->data;
+      len = encoded->len * scr_bytes_elem_size(encoded->elem);
+    } else {
+      bytes = (const uint8_t *)scr_str_utf8(data.str, &owned);
+      len = data.str->len;
+    }
+  } else {
+    const ScrBytes *view = data.bytes;
+    SCR_BYTES_SNAPSHOT(view);
+    bytes = view->data;
+    len = view->len * scr_bytes_elem_size(view->elem);
+  }
+  int bits = 0;
+  double mode = 0666;
+  if (!scr_fs_write_opts_aborted(&o) && scr_fs_path_ok(path, "path") &&
+      scr_fs_write_opts_bits(&o, default_flag, &bits) && scr_fs_write_opts_mode(&o, &mode))
+    scr_fs_write_bytes_flush(path, bytes, len, (mode_t)mode, bits, o.flush_on);
+  scr_str_utf8_end(owned);
+  scr_bytes_release(encoded);
+  scr_fs_write_opts_clear(&o);
+}
+
+/* fs.promises.writeFile(path, data, options): every documented option
+ * (encoding, mode, flag, flush, signal) over a string, a view or a value
+ * whose type the call site did not pin down. */
+ScrPromise *scr_fsp_write_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options) {
+  ScrFsWritePayload payload = {data, NULL, NULL};
+  scr_fs_write_options_run(path, &payload, options, "w");
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_write_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                             const ScrDyn *options) {
+  ScrFsWritePayload payload = {NULL, data, NULL};
+  scr_fs_write_options_run(path, &payload, options, "w");
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_write_file_options_data(ScrStr *path, const ScrDyn *data,
+                                            const ScrDyn *options) {
+  ScrFsWritePayload payload = {NULL, NULL, data};
+  scr_fs_write_options_run(path, &payload, options, "w");
+  return scr_promise_settled_void();
+}
+
+/* fs.promises.appendFile reads the same record and writes it with append's
+ * default flag: the flag option may still pick truncation, exactly Node. */
+ScrPromise *scr_fsp_append_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options) {
+  ScrFsWritePayload payload = {data, NULL, NULL};
+  scr_fs_write_options_run(path, &payload, options, "a");
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                              const ScrDyn *options) {
+  ScrFsWritePayload payload = {NULL, data, NULL};
+  scr_fs_write_options_run(path, &payload, options, "a");
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_fsp_append_file_options_data(ScrStr *path, const ScrDyn *data,
+                                             const ScrDyn *options) {
+  ScrFsWritePayload payload = {NULL, NULL, data};
+  scr_fs_write_options_run(path, &payload, options, "a");
+  return scr_promise_settled_void();
+}
+
 /* writeFileSync(p, data, { encoding, mode, flag }) and appendFileSync's
  * three-argument form: the same open(2) write with the option names Node
  * documents. */

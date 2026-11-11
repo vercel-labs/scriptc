@@ -1710,9 +1710,11 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.ecdhNew",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
-      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
-      // this unit's warning queue.
+      // existsSync's DEP0187 report (scr_fs_exists_dyn.c) and
+      // fs.promises.rmdir's DEP0147 report defer through this unit's
+      // warning queue.
       "fs.existsSyncValue",
+      "fsp.rmdirOptions",
       // A rejected entry's reason crosses as a checked-dynamic value
       // (Promise.allSettled's tuple form).
       "promise.entryReason",
@@ -2400,6 +2402,12 @@ const RUNTIME_FEATURE_RULES = {
       "fs.appendFileDataOptionsSync",
       "fsp.copyFileFlags",
       "fsp.writeFileFlags",
+      "fsp.writeFileOptions",
+      "fsp.writeFileOptionsBytes",
+      "fsp.writeFileOptionsData",
+      "fsp.appendFileOptions",
+      "fsp.appendFileOptionsBytes",
+      "fsp.appendFileOptionsData",
     ],
   }),
   /** existsSync over a path value that is not statically a string:

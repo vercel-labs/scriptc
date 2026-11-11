@@ -12750,8 +12750,10 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
     if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   } else {
-    /* errno rides fs errors (with syscall) and zlib errors (without). */
-    if (e->system_call || e->system_errno != 0)
+    /* errno rides fs errors (with syscall) and zlib errors (without). An
+     * error can carry a syscall without one: FileHandle's closed-handle
+     * Error names the native call but has no errno, like Node's. */
+    if (e->system_errno != 0)
       scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
     if (e->code) {
       scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));

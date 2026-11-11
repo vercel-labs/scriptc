@@ -271,10 +271,18 @@ void scr_file_handle_release_v(void *p) { scr_file_handle_release(p); }
 
 double scr_file_handle_fd(ScrFileHandle *h) { return (double)h->fd; }
 
-static bool scr_file_handle_require_open(ScrFileHandle *h) {
+/* fsCall's closed-handle gate: Node's own Error ("file closed", code
+ * EBADF) carrying the native call's name as `syscall` and, unlike an
+ * ErrnoException, no `errno` at all. */
+static bool scr_file_handle_require_open(ScrFileHandle *h, const char *syscall) {
   if (h->fd >= 0) return true;
   static const char msg[] = "file closed";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "EBADF");
+  ScrStr *text = scr_str_new(msg, sizeof msg - 1);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_code(error, "EBADF");
+  error->system_call = scr_str_new(syscall, strlen(syscall));
+  scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
   return false;
 }
 
@@ -363,7 +371,7 @@ void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook) {
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
                             double length, double position,
                             bool length_default) {
-  if (!scr_file_handle_require_open(h)) return 0;
+  if (!scr_file_handle_require_open(h, "read")) return 0;
   if (buf->len == 0) {
     /* FileHandle.read's empty-buffer ladder differs from readSync's generic
      * window check: validate offset intrinsically first, then a zero request
@@ -392,7 +400,7 @@ double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
 double scr_file_handle_write_bytes(ScrFileHandle *h, ScrBytes *buf,
                                    double offset, double length,
                                    double position, bool length_default) {
-  if (!scr_file_handle_require_open(h)) return 0;
+  if (!scr_file_handle_require_open(h, "write")) return 0;
   /* Node completes an empty Buffer write before validating offset/length/
    * position or testing whether the descriptor is writable. */
   if (buf->len == 0) return 0;
@@ -405,23 +413,23 @@ double scr_file_handle_write_bytes(ScrFileHandle *h, ScrBytes *buf,
 
 double scr_file_handle_write_str(ScrFileHandle *h, ScrStr *data,
                                  double position, ScrStr *encoding) {
-  if (!scr_file_handle_require_open(h)) return 0;
+  if (!scr_file_handle_require_open(h, "write")) return 0;
   return scr_fs_write_str_sync((double)h->fd, data, position, encoding);
 }
 
 ScrStr *scr_file_handle_read_file(ScrFileHandle *h) {
-  if (!scr_file_handle_require_open(h)) return NULL;
+  if (!scr_file_handle_require_open(h, "readFile")) return NULL;
   return scr_fs_read_fd((double)h->fd);
 }
 
 ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h) {
-  if (!scr_file_handle_require_open(h)) return NULL;
+  if (!scr_file_handle_require_open(h, "readFile")) return NULL;
   return scr_fs_read_fd_bytes((double)h->fd);
 }
 
 static void scr_file_handle_write_all(ScrFileHandle *h, const void *data,
                                       size_t length) {
-  if (!scr_file_handle_require_open(h)) return;
+  if (!scr_file_handle_require_open(h, "writeFile")) return;
   ScrBytes bytes = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = (uint8_t *)data};
   size_t at = 0;
   while (at < length) {
@@ -466,7 +474,7 @@ static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data
 }
 
 ScrStats *scr_file_handle_stat(ScrFileHandle *h) {
-  if (!scr_file_handle_require_open(h)) return NULL;
+  if (!scr_file_handle_require_open(h, "fstat")) return NULL;
   int err = 0;
   ScrStats *out = scr_stats_of_fd(h->fd, &err);
   if (!out) {
@@ -493,28 +501,35 @@ ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h) {
 }
 
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h) {
-  if (scr_file_handle_require_open(h)) scr_fs_fsync((double)h->fd);
+  if (scr_file_handle_require_open(h, "fsync")) scr_fs_fsync((double)h->fd);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h) {
-  if (scr_file_handle_require_open(h)) scr_fs_fdatasync((double)h->fd);
+  if (scr_file_handle_require_open(h, "fdatasync")) scr_fs_fdatasync((double)h->fd);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length) {
-  if (scr_file_handle_require_open(h)) scr_fs_ftruncate((double)h->fd, length);
+  if (scr_file_handle_require_open(h, "ftruncate")) scr_fs_ftruncate((double)h->fd, length);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode) {
-  if (scr_file_handle_require_open(h) && scr_file_handle_mode_valid(mode))
+  if (scr_file_handle_require_open(h, "fchmod") && scr_file_handle_mode_valid(mode))
     scr_fs_fchmod((double)h->fd, mode);
   return scr_promise_settled_void();
 }
 
+/* FileHandle.chown(uid, gid): the closed check, then Node's uid/gid range
+ * validation, then fchown — all before the promise settles, like chmod. */
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid) {
+  if (scr_file_handle_require_open(h, "fchown")) scr_fs_fchown((double)h->fd, uid, gid);
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_file_handle_utimes_promise(ScrFileHandle *h, const ScrDyn *atime, const ScrDyn *mtime) {
-  if (scr_file_handle_require_open(h)) {
+  if (scr_file_handle_require_open(h, "futimes")) {
     double access = scr_fs_timestamp_value(atime, "atime");
     if (!scr_exc_pending()) {
       double modified = scr_fs_timestamp_value(mtime, "mtime");
@@ -525,12 +540,12 @@ ScrPromise *scr_file_handle_utimes_promise(ScrFileHandle *h, const ScrDyn *atime
 }
 
 double scr_file_handle_readv(ScrFileHandle *h, ScrArr *buffers, double position) {
-  if (!scr_file_handle_require_open(h)) return 0;
+  if (!scr_file_handle_require_open(h, "readv")) return 0;
   return scr_fs_readv_sync((double)h->fd, buffers, position);
 }
 
 double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position) {
-  if (!scr_file_handle_require_open(h)) return 0;
+  if (!scr_file_handle_require_open(h, "writev")) return 0;
   return scr_fs_writev_sync((double)h->fd, buffers, position);
 }
 

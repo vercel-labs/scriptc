@@ -14,8 +14,10 @@
 #include "scr_node_island.h"
 #endif
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1613,6 +1615,126 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+/* fs.promises.rmdir(path, options): Node's validateRmdirOptions
+ * (internal/fs/utils.js) over the record. The defaults
+ * { retryDelay: 100, maxRetries: 0, recursive: false } are spread with the
+ * record's OWN enumerable keys, so an own key whose value is undefined
+ * still replaces the default and then fails validation. The path is
+ * validated first (getValidatedPath runs before the options). The
+ * recursive form reports DEP0147 once per process, stats the path (a
+ * missing one rejects with the stat error), removes a directory with the
+ * retry walk Node's rimraf uses, and hands anything else to plain rmdir
+ * (ENOTDIR). */
+static SCR_TL bool scr_fsp_rmdir_warned = false;
+
+/* The record's own key `name`: +1 when it is present, NULL when absent (the
+ * default stands). A present key whose value is undefined reads as
+ * undefined, which its validator rejects — exactly Node's spread. */
+static ScrDyn *scr_fsp_rmdir_option(const ScrDyn *options, const char *name) {
+  ScrStr *key = scr_str_new(name, strlen(name));
+  bool present = scr_dyn_has_own(options, key);
+  scr_str_release(key);
+  if (!present) return NULL;
+  ScrDyn *object =
+      options->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(options) : NULL;
+  ScrDyn *value = object ? scr_dyn_obj_read(object, name, strlen(name))
+                         : scr_dyn_obj_read(options, name, strlen(name));
+  scr_dyn_release(object);
+  return value;
+}
+
+static bool scr_fsp_rmdir_options_ok(const ScrDyn *options, bool *recursive, double *max_retries,
+                                     double *retry_delay) {
+  *recursive = false;
+  *max_retries = 0;
+  *retry_delay = 100;
+  if (options->kind == SCR_DYN_UNDEF) return true;
+  /* validateObject(options, 'options'): a non-null, non-array object. */
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF &&
+      options->kind != SCR_DYN_BYTES && options->kind != SCR_DYN_HANDLE &&
+      options->kind != SCR_DYN_PROMISE) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return false;
+  }
+  ScrDyn *value = scr_fsp_rmdir_option(options, "recursive");
+  if (value) {
+    if (value->kind != SCR_DYN_BOOL) {
+      scr_dyn_prop_type_fail("options.recursive", "of type boolean", value);
+      scr_dyn_release(value);
+      return false;
+    }
+    *recursive = value->v.b;
+    scr_dyn_release(value);
+  }
+  value = scr_fsp_rmdir_option(options, "retryDelay");
+  if (value) {
+    if (value->kind != SCR_DYN_NUM) {
+      scr_dyn_prop_type_fail("options.retryDelay", "of type number", value);
+      scr_dyn_release(value);
+      return false;
+    }
+    double delay = value->v.num;
+    scr_dyn_release(value);
+    if (!scr_bytes_validate_off("options.retryDelay", delay, 2147483647.0)) return false;
+    *retry_delay = delay;
+  }
+  value = scr_fsp_rmdir_option(options, "maxRetries");
+  if (value) {
+    if (value->kind != SCR_DYN_NUM) {
+      scr_dyn_prop_type_fail("options.maxRetries", "of type number", value);
+      scr_dyn_release(value);
+      return false;
+    }
+    double retries = value->v.num;
+    scr_dyn_release(value);
+    if (!scr_bytes_validate_off("options.maxRetries", retries, 4294967295.0)) return false;
+    *max_retries = retries;
+  }
+  return true;
+}
+
+/* emitRecursiveRmdirWarning: the report is claimed at the first recursive
+ * call whether or not it reaches stderr (a noDeprecation-suppressed report
+ * still claims it, as in Node). */
+static void scr_fsp_rmdir_deprecate(void) {
+  if (scr_fsp_rmdir_warned) return;
+  static const char text[] =
+      "In future versions of Node.js, fs.rmdir(path, { recursive: true }) will be removed. "
+      "Use fs.rm(path, { recursive: true }) instead";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0147", 7);
+  ScrDyn *warning = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(warning);
+  scr_dyn_release(warning);
+  scr_str_release(code);
+  scr_str_release(message);
+  scr_fsp_rmdir_warned = true;
+}
+
+ScrPromise *scr_fsp_rmdir_options(ScrStr *path, const ScrDyn *options) {
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  bool recursive = false;
+  double max_retries = 0;
+  double retry_delay = 100;
+  if (!scr_fsp_rmdir_options_ok(options, &recursive, &max_retries, &retry_delay))
+    return scr_promise_settled_void();
+  if (recursive) {
+    scr_fsp_rmdir_deprecate();
+    struct stat st;
+    if (stat(path->data, &st) != 0) {
+      scr_fs_throw(errno, "stat", path);
+      return scr_promise_settled_void();
+    }
+    if (S_ISDIR(st.st_mode)) {
+      /* rimraf with the record's retry pair; ENOENT is a success. */
+      scr_fs_rm_opts_retry(path, true, true, max_retries, retry_delay);
+      return scr_promise_settled_void();
+    }
+  }
+  if (rmdir(path->data) != 0) scr_fs_throw(errno, "rmdir", path);
+  return scr_promise_settled_void();
 }
 
 static SCR_TL bool scr_punycode_loaded = false;

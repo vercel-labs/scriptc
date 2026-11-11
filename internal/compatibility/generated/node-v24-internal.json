@@ -45459,9 +45459,14 @@
           "tests/corpus/compat-fs-dirent-realpath.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-file-handle-chown.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-promises-lchmod.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-rmdir-options.ts",
+          "tests/corpus/fs-promises-write-file-dynamic-options.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-write-options.ts",
@@ -45679,8 +45684,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.filehandle.chown",
+        "tests": [
+          "tests/corpus/fs-file-handle-chown.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46381,7 +46389,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.access",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46408,7 +46417,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.appendFile",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-write-file-dynamic-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46434,12 +46444,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.chmod",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46466,7 +46471,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.chown",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46494,7 +46500,8 @@
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
           "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46577,8 +46584,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.fs.promises.lchmod",
+        "tests": [
+          "tests/corpus/fs-promises-lchmod.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -46604,7 +46614,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.lchown",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46631,7 +46642,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.lutimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-promises.ts",
-          "tests/corpus/node24-fs-timestamps-symlinks.ts"
+          "tests/corpus/node24-fs-timestamps-symlinks.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46659,7 +46671,8 @@
         "tests": [
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
-          "tests/fixtures/node-types/fs-links.ts"
+          "tests/fixtures/node-types/fs-links.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46909,7 +46922,8 @@
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
-          "tests/fixtures/node-types/fs-links.ts"
+          "tests/fixtures/node-types/fs-links.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46961,12 +46975,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.rename",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46993,7 +47002,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.rmdir",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-rmdir-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47019,12 +47029,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.rm",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47113,7 +47118,8 @@
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
-          "tests/fixtures/node-types/fs-links.ts"
+          "tests/fixtures/node-types/fs-links.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47140,7 +47146,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.truncate",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47166,12 +47173,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.unlink",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47197,7 +47199,8 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.utimes",
         "tests": [
-          "tests/corpus/node24-fs-timestamps-promises.ts"
+          "tests/corpus/node24-fs-timestamps-promises.ts",
+          "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47250,7 +47253,8 @@
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/8427-fs-copyfile-writefile-flags.ts"
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-promises-write-file-dynamic-options.ts"
         ]
       },
       "anchorSource": "exact"

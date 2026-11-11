@@ -783,6 +783,11 @@ function buildLibFnSignatures() {
      * encodings throw the "not supported yet" Error, unknown names throw
      * ERR_UNKNOWN_ENCODING. */
     "fs.readFileSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    /** readFileSync(path, { encoding, flag }) answering a string or a
+     * Buffer: the options ladder (getOptions, stringToFlags, open(2)) runs
+     * at run time; the call site's type selected the arm. */
+    "fs.readFileSyncStrOpts": { argTypes: [STRING, DYN], result: STRING },
+    "fs.readFileSyncBytesOpts": { argTypes: [STRING, DYN], result: BYTES_U8 },
     "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.existsSync": { argTypes: [STRING], result: BOOL },
@@ -1786,6 +1791,36 @@ function buildLibFnSignatures() {
     },
     "fs.appendFileDataOptionsSync": {
       argTypes: [STRING, DYN, STRING, F64, STRING],
+      result: VOID,
+    },
+    /** The same option writes with a `mode` whose static type is not a
+     * number (an octal string, or a value the call site did not pin down)
+     * and/or a `flag` whose static type is not a string (open(2) bits, or a
+     * value the call site did not pin down): the runtime runs parseFileMode's
+     * mode ladder and stringToFlags on the dynamic slots, keeping Node's
+     * encoding, flag, mode, path validation order. */
+    "fs.writeFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
       result: VOID,
     },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },

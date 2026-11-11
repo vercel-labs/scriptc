@@ -1,4 +1,5 @@
 - **Filesystem flags:** `fs.openSync` accepts a string flag name, an inline bitwise OR of `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_NONBLOCK`, `O_TRUNC` and `O_APPEND`, or a number the program computes from `fs.constants`, which are the target's own `open(2)` bits.
-  The creation mode is a number or an octal string.
+  The creation mode is a number or an octal string, and the `mode` option of `fs.writeFileSync` and `fs.appendFileSync` takes the same forms.
+  The `flag` option of those two writes takes the same flag name, `open(2)` bits or computed number.
   `fstatSync`, `fchmodSync`, `fsyncSync`, and `linkSync` support direct calls.
   On Windows, numeric opens with `O_NOFOLLOW` and calls to `fchmodSync` throw `ENOSYS`; use a POSIX target if you require these operations.

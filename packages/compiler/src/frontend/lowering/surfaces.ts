@@ -1398,6 +1398,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Node's own message shape).
       realpathSync: { fn: "fs.realpathSync", params: [STRING], result: STRING },
       "realpathSync.native": { fn: "fs.realpathNativeSync", params: [STRING], result: STRING },
+      // fs.realpath.native is Node's same realpath binding as fs.realpath
+      // (the native spelling just skips JS normalization); the callback
+      // lowering maps both onto the one dispatcher op.
+      "realpath.native": { fn: "fs.callbackCall", params: [], result: DYN },
       // The fd pair behind spawn's fd-stdio form (the daemon-log idiom:
       // openSync(logPath, "a") → spawn stdio ["ignore", fd, fd] →
       // closeSync). Both forms take an optional creation mode as the third
@@ -2473,6 +2477,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.readFileSyncBuf",
       "fs.readFileSyncBytes",
       "fs.readFileSyncDyn",
+      "fs.readFileSyncStrOpts",
+      "fs.readFileSyncBytesOpts",
       "fs.readFileEncoded",
       "fs.readFdEncoded",
       "fs.readFdSync",
@@ -2503,6 +2509,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.writeFileOptionsSync",
       "fs.writeFileBytesOptionsSync",
       "fs.writeFileDataOptionsSync",
+      "fs.writeFileOptionsDynModeSync",
+      "fs.writeFileBytesOptionsDynModeSync",
+      "fs.writeFileDataOptionsDynModeSync",
     ],
     // The data forms (bytes, and the checked argument whose type the call
     // site did not pin down) and the { encoding, mode, flag } option-record
@@ -2513,6 +2522,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.appendFileOptionsSync",
       "fs.appendFileBytesOptionsSync",
       "fs.appendFileDataOptionsSync",
+      "fs.appendFileOptionsDynModeSync",
+      "fs.appendFileBytesOptionsDynModeSync",
+      "fs.appendFileDataOptionsDynModeSync",
     ],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close),
     // and the constructor's spelling for options that can hold a signal.
@@ -3485,6 +3497,7 @@ export const FS_CALLBACK_VALUE_LENGTHS: Readonly<Record<string, number | undefin
   writev: 4,
   readlink: 3,
   realpath: 3,
+  "realpath.native": 3,
   rename: 3,
   stat: 1,
   lstat: 1,

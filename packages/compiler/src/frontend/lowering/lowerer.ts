@@ -22870,6 +22870,13 @@ export class Lowerer {
       if (imported?.module === "fs" && imported.member === "realpathSync") {
         return { module: "fs", member: "realpathSync.native" };
       }
+      // Node's fs.realpath and fs.realpath.native are the same C++ binding
+      // (the native spelling skips JS's normalization, which realpath(3)
+      // already does), so the callback member maps onto the same dispatcher
+      // op.
+      if (imported?.module === "fs" && imported.member === "realpath") {
+        return { module: "fs", member: "realpath.native" };
+      }
     }
     // timers/promises scheduler.wait / scheduler.yield: methods of the
     // module's scheduler object, dispatched as module members.
@@ -23219,6 +23226,9 @@ export class Lowerer {
    * function the runtime dispatches every argument through, carrying Node's
    * own name and length for the member. */
   lowerFsCallbackValue(member: string, loc: SrcLoc): IrExpr {
+    // fs.realpath.native is the realpath binding itself in Node, so the
+    // runtime folds the spelling into the realpath op and leaves its name
+    // empty.
     return {
       kind: "libCall",
       fn: "fs.callbackValue",

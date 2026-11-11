@@ -434,6 +434,23 @@ void scr_fs_write_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *en
                                     double mode, ScrStr *flags);
 void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
                                      double mode, ScrStr *flags);
+/* The same option writes with a `mode` and/or a `flag` whose static type the
+ * call site did not pin down: parseFileMode's and stringToFlags' ladders over
+ * the dynamic values (octal string, open(2) bits, nullish or falsy default),
+ * validated in Node's encoding, flag, mode order. */
+void scr_fs_write_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                        const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_options_dyn_mode(ScrStr *path, ScrStr *data, ScrStr *encoding,
+                                         const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_write_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_bytes_options_dyn_mode(ScrStr *path, const ScrBytes *data,
+                                               ScrStr *encoding, const ScrDyn *mode,
+                                               const ScrDyn *flags);
+void scr_fs_write_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                             const ScrDyn *mode, const ScrDyn *flags);
+void scr_fs_append_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* mkdirSync's resolved options object: the mode parses under

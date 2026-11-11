@@ -39,6 +39,42 @@ fs.writeFileSync("scratch.json", "{}", OPTS);
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
 });
 
+test("a readonly const record with an octal-string mode keeps lowering", async () => {
+  const result = await compileSource(`import * as fs from "node:fs";
+const OPTS = { encoding: "utf-8", mode: "600" } as const;
+fs.writeFileSync("scratch.json", "{}", OPTS);
+`);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+});
+
+test("a mode the call site did not pin down lowers through the runtime ladder", async () => {
+  const result = await compileSource(`import * as fs from "node:fs";
+const mode: number | string = "600";
+fs.writeFileSync("scratch.json", "{}", { mode });
+fs.appendFileSync("scratch.json", "{}", { mode });
+`);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+});
+
+test("an open(2) numeric flag lowers through the runtime ladder", async () => {
+  const result = await compileSource(`import * as fs from "node:fs";
+const bits = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC;
+fs.writeFileSync("scratch.json", "{}", { flag: bits });
+fs.appendFileSync("scratch.json", "{}", { flag: fs.constants.O_WRONLY | fs.constants.O_CREAT });
+fs.writeFileSync("scratch.bin", Buffer.from("{}"), { mode: "600", flag: bits });
+`);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+});
+
+test("a flag the call site did not pin down lowers through the runtime ladder", async () => {
+  const result = await compileSource(`import * as fs from "node:fs";
+const flag: number | string = "a";
+fs.writeFileSync("scratch.json", "{}", { flag });
+fs.appendFileSync("scratch.json", "{}", { flag, mode: 0o600 });
+`);
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+});
+
 test("a MUTABLE const record fences: its mode may change before the call", async () => {
   const result = await compileSource(`import * as fs from "node:fs";
 const OPTS: { encoding: "utf-8"; mode: number } = { encoding: "utf-8", mode: 0o600 };

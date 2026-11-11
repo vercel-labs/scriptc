@@ -25736,7 +25736,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45461,11 +45463,16 @@
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-close-callback.cjs",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-read-file-sync-option-errors.cjs",
+          "tests/corpus/fs-read-file-sync-options-typed.ts",
+          "tests/corpus/fs-realpath-native-callback.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-write-options.ts",
@@ -45488,6 +45495,8 @@
           "tests/corpus/node24-fs-timestamps-promises.ts",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
           "tests/corpus/node24-fs-timestamps.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/fixtures/node-types/fs-glob.ts",
           "tests/fixtures/node-types/fs-links.ts",
@@ -46451,7 +46460,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46732,7 +46743,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46817,7 +46830,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46904,7 +46919,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46994,7 +47011,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47056,7 +47075,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47091,7 +47112,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47211,7 +47234,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47492,8 +47517,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.close",
+        "tests": [
+          "tests/corpus/fs-close-callback.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47743,7 +47771,8 @@
         "evidence": "compiler-feature:fs.fs.fstat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47988,7 +48017,8 @@
         "evidence": "compiler-feature:fs.fs.lstat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48406,8 +48436,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.realpath.native",
+        "tests": [
+          "tests/corpus/fs-realpath-native-callback.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48441,7 +48474,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48522,7 +48557,8 @@
         "evidence": "compiler-feature:fs.fs.stat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48724,7 +48760,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49058,7 +49096,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49093,7 +49133,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49128,7 +49170,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49163,7 +49207,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49198,7 +49244,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49640,7 +49688,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49675,7 +49725,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49785,7 +49837,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49820,7 +49874,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49846,7 +49902,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.readFileSync",
         "tests": [
-          "tests/corpus/5545-fs-options-encoding.cjs"
+          "tests/corpus/5545-fs-options-encoding.cjs",
+          "tests/corpus/fs-read-file-sync-option-errors.cjs",
+          "tests/corpus/fs-read-file-sync-options-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49910,7 +49968,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49945,7 +50005,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50006,7 +50068,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50067,7 +50131,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50102,7 +50168,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50137,7 +50205,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50172,7 +50242,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50292,7 +50364,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50351,7 +50425,9 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50386,7 +50462,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50421,7 +50499,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50456,7 +50536,9 @@
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts"
+          "tests/corpus/node24-fs-open-sync.ts",
+          "tests/corpus/node24-fs-write-modes-sync.ts",
+          "tests/corpus/node24-fs-write-options-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51530,7 +51612,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.Stats",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51579,7 +51662,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isBlockDevice",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51605,7 +51689,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isCharacterDevice",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51631,7 +51716,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isDirectory",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51657,7 +51743,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isFIFO",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51683,7 +51770,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isFile",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51709,7 +51797,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isSocket",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51735,7 +51824,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.stats.isSymbolicLink",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51813,7 +51903,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.mode",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51839,7 +51930,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.nlink",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51865,7 +51957,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.uid",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51891,7 +51984,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.gid",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51917,7 +52011,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.rdev",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51943,7 +52038,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.size",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51969,7 +52065,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.blksize",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -51995,7 +52092,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.blocks",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52021,7 +52119,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.atimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52047,7 +52146,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.mtimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52099,7 +52199,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.birthtimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52125,7 +52226,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.atimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52151,7 +52253,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.mtimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52177,7 +52280,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.ctimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52203,7 +52307,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.birthtimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52229,7 +52334,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.atime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52255,7 +52361,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.mtime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52281,7 +52388,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.ctime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -52307,7 +52415,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.birthtime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stat-callback-options.cjs"
         ]
       },
       "anchorSource": "ancestor"

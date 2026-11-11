@@ -216,6 +216,28 @@ void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *e
   else scr_fs_append_file_bytes_options(path, arg.bytes, encoding, mode, flags);
 }
 
+/* The same checked-data option writes with a mode and/or a flag whose static
+ * type the call site did not pin down: the string and byte writers in
+ * scr_fs_flags.c parse them through parseFileMode's and stringToFlags'
+ * ladders, after the encoding and the data kind, as Node validates them. */
+void scr_fs_write_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                             const ScrDyn *mode, const ScrDyn *flags) {
+  if (!scr_fs_bytes_write_encoding_ok(encoding)) return;
+  ScrFsWriteData arg;
+  if (!scr_fs_write_data_arg(data, &arg)) return;
+  if (arg.str) scr_fs_write_file_options_dyn_mode(path, arg.str, encoding, mode, flags);
+  else scr_fs_write_file_bytes_options_dyn_mode(path, arg.bytes, encoding, mode, flags);
+}
+
+void scr_fs_append_file_data_options_dyn_mode(ScrStr *path, const ScrDyn *data, ScrStr *encoding,
+                                              const ScrDyn *mode, const ScrDyn *flags) {
+  if (!scr_fs_bytes_write_encoding_ok(encoding)) return;
+  ScrFsWriteData arg;
+  if (!scr_fs_write_data_arg(data, &arg)) return;
+  if (arg.str) scr_fs_append_file_options_dyn_mode(path, arg.str, encoding, mode, flags);
+  else scr_fs_append_file_bytes_options_dyn_mode(path, arg.bytes, encoding, mode, flags);
+}
+
 /* writeFileSync(fd, data): the descriptor form over the checked data. The
  * descriptor stays open and its offset advances, like the string form. */
 void scr_fs_write_file_fd_data(double fd, const ScrDyn *data) {

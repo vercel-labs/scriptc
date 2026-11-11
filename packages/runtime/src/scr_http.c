@@ -3741,6 +3741,16 @@ static bool scr_http_method_match(const char *buf, size_t n, bool whole) {
   return false;
 }
 
+/* Whether p[0..n) spells `word` in ASCII without regard to case. */
+static bool scr_http_name_ci(const char *p, const char *word, size_t n) {
+  for (size_t k = 0; k < n; k++) {
+    char ch = p[k];
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + ('a' - 'A'));
+    if (ch != word[k]) return false;
+  }
+  return true;
+}
+
 /* "HTTP/x.y" at buf[i..]: llhttp accepts 0.9, 1.0, 1.1 and 2.0, and only
  * 1.1 keeps a connection alive and frames bodies by default (*http10 is
  * false only for 1.1). Answers MORE, DONE (i advanced past the version)
@@ -3811,9 +3821,18 @@ static int scr_http_scan_fields(const char *buf, size_t len, size_t i, bool firs
       while (i < len && scr_http_token_char((unsigned char)buf[i])) i++;
     if (i >= len) return SCR_HTTP_SCAN_MORE;
     if (buf[i] != ':') {
-      bool field = (buf[i] == ' ' && i > name) || (buf[i] == '\n' && i == name);
+      /* llhttp tracks Content-Length and Transfer-Encoding through their
+       * own states: a space where the colon belongs in one of those names
+       * reports "Invalid header field char", while any other unfinished
+       * name reports "Invalid header token" (a tab is the token message
+       * even for the two special names). */
+      size_t name_len = i - name;
+      bool special =
+          buf[i] == ' ' &&
+          ((name_len == 14 && scr_http_name_ci(buf + name, "content-length", 14)) ||
+           (name_len == 17 && scr_http_name_ci(buf + name, "transfer-encoding", 17)));
       return scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN",
-                                field ? "Invalid header field char" : "Invalid header token");
+                                special ? "Invalid header field char" : "Invalid header token");
     }
     if (i == name) return scr_http_scan_fail(err, "HPE_INVALID_HEADER_TOKEN", "Invalid header token");
     i++;
@@ -8527,14 +8546,12 @@ ScrDyn *scr_http_global_agent_value(bool secure) {
  * sockets too; there is no free pool here. */
 static void scr_http_agent_destroy(ScrHttpAgent *a) {
   a->destroyed = true;
-  /* idle pooled sockets close; their 'close' removes each from the list */
-  while (a->free_socks) {
-    ScrNetSocket *sock = scr_net_sock_retain(a->free_socks->sock);
-    struct ScrHttpConn *conn = a->free_socks->conn;
-    scr_http_agent_free_remove(a, conn);
-    scr_net_sock_destroy(sock);
-    scr_net_sock_release(sock);
-  }
+  /* Idle pooled sockets close, but their entries stay listed until the
+   * close arrives: Node's destroy() destroys the sockets in its maps and
+   * leaves the maps for the closed sockets' own cleanup, so freeSockets
+   * still holds the socket right after the call. The close sweep removes
+   * each entry here (scr_http_agent_free_remove). */
+  for (ScrHttpAgentFree *f = a->free_socks; f; f = f->next) scr_net_sock_destroy(f->sock);
   /* destroying sockets detaches entries re-entrantly — walk a snapshot */
   for (;;) {
     ScrHttpClientReq *victim = NULL;

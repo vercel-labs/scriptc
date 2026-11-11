@@ -119,4 +119,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_util_transferable_abort_controller allocates a controller and its
+  // signal state; running out of memory ends the process, and no argument
+  // is read (surplus arguments are evaluated by the call site).
+  "util.transferableAbortController",
 ]);

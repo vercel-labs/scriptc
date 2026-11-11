@@ -24,6 +24,11 @@ declare module "util" {
   /** Marks a promise as handled: its rejection never reaches
    * 'unhandledRejection'. Any other value throws ERR_INVALID_ARG_TYPE. */
   export function markPromiseAsHandled<T>(promise: Promise<T>): void;
+  /** Marks the signal transferable and answers the same signal. Any other
+   * value throws ERR_INVALID_ARG_TYPE. */
+  export function transferableAbortSignal(signal: AbortSignal): AbortSignal;
+  /** Creates an AbortController whose signal is marked transferable. */
+  export function transferableAbortController(): AbortController;
   export function styleText(
     format: string | readonly string[],
     text: string,

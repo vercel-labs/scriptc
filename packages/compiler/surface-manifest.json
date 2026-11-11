@@ -3135,6 +3135,18 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.transferableAbortController",
+      "kind": "node-builtin",
+      "name": "util.transferableAbortController",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.transferableAbortSignal",
+      "kind": "node-builtin",
+      "name": "util.transferableAbortSignal",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types",
       "kind": "node-builtin",
       "name": "util/types",

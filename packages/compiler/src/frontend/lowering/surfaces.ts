@@ -1887,6 +1887,21 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: VOID,
         valueParams: exactValueParams(DYN),
       },
+      // The argument is checked at runtime and the same signal answers
+      // (a non-signal throws ERR_INVALID_ARG_TYPE); the controller is an
+      // ordinary AbortController whose signal is marked the same way.
+      transferableAbortSignal: {
+        fn: "util.transferableAbortSignal",
+        params: [DYN],
+        result: DYN,
+        valueParams: exactValueParams(DYN),
+      },
+      transferableAbortController: {
+        fn: "util.transferableAbortController",
+        params: [],
+        result: DYN,
+        valueParams: exactValueParams(),
+      },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
       aborted: {
         fn: "util.aborted",

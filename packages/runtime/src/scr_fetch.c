@@ -700,6 +700,26 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* util.transferableAbortSignal(signal): node checks the argument and
+ * answers the same signal. The transfer marking it leaves on the signal is
+ * read only by structuredClone/postMessage, which copy any AbortSignal the
+ * same way, so the same box (+1) is the whole observable behavior. */
+ScrDyn *scr_util_transferable_abort_signal(ScrDyn *signal) {
+  if (signal == NULL) signal = scr_dyn_undefined();
+  if (signal->kind != SCR_DYN_HANDLE ||
+      signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
+  return scr_dyn_retain(signal);
+}
+
+/* util.transferableAbortController(): an ordinary AbortController (+1),
+ * whose signal carries the same (unobserved) transfer marking. */
+ScrDyn *scr_util_transferable_abort_controller(void) {
+  return scr_fetch_abort_controller_new();
+}
+
 static ScrDyn *sf_abort_controller_invoke(
     void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
     size_t argc, const char *what) {

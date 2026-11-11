@@ -105176,6 +105176,8 @@
           "tests/corpus/util-system-errors.ts",
           "tests/corpus/util-text-codecs.ts",
           "tests/corpus/util-timing-function-shape.ts",
+          "tests/corpus/util-transferable-abort-args.cjs",
+          "tests/corpus/util-transferable-abort.ts",
           "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/util-types-brand-matrix.ts",
           "tests/corpus/util-types-module-namespace-brand.ts",
@@ -107193,8 +107195,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.transferableAbortController",
+        "tests": [
+          "tests/corpus/util-transferable-abort.ts",
+          "tests/corpus/util-transferable-abort-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107216,8 +107222,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.transferableAbortSignal",
+        "tests": [
+          "tests/corpus/util-transferable-abort.ts",
+          "tests/corpus/util-transferable-abort-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

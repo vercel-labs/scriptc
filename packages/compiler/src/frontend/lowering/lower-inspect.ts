@@ -5883,6 +5883,59 @@ export function lowerUtilModuleCall(
         loc,
       };
     }
+    case "transferableAbortSignal": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortSignal with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [input],
+          type: DYN,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [varRef(saved.id, DYN, loc)],
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+    case "transferableAbortController": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortController with spread arguments", expr);
+      const result: IrExpr = {
+        kind: "libCall",
+        fn: "util.transferableAbortController",
+        args: [],
+        type: DYN,
+        loc,
+      };
+      const stmts: IrStmt[] = expr.arguments.nodes.map((arg) => ({
+        kind: "exprStmt",
+        expr: lowerer.lowerExpr(arg),
+        loc,
+      }));
+      // Node ignores surplus arguments; they are still evaluated.
+      return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+    }
     case "inherits":
     case "deprecate":
     case "callbackify":

@@ -101,6 +101,11 @@ struct ScrDyn *scr_util_throttle(struct ScrDyn *fn, struct ScrDyn *limit, struct
 /* util.markPromiseAsHandled(promise) (scr_util_mark_handled.c): marks the
  * promise's rejection observed, or throws ERR_INVALID_ARG_TYPE. */
 void scr_util_mark_promise_as_handled(struct ScrDyn *promise);
+/* util.transferableAbortSignal(signal) and util.transferableAbortController()
+ * (scr_fetch.c, beside the abort handles): the same signal (+1), or the
+ * ERR_INVALID_ARG_TYPE throw, and an ordinary AbortController (+1). */
+struct ScrDyn *scr_util_transferable_abort_signal(struct ScrDyn *signal);
+struct ScrDyn *scr_util_transferable_abort_controller(void);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);

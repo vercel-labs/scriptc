@@ -3605,6 +3605,9 @@ function buildLibFnSignatures() {
     "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
+    /** ChildProcess[Symbol.dispose](): Node's dispose sends SIGTERM only
+     * while `killed` is false. */
+    "child.dispose": { argTypes: [CHILD_T], result: VOID },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
     "child.ref": { argTypes: [CHILD_T], result: VOID },
     /** subprocess.channel: the checked-dynamic Control handle (undefined

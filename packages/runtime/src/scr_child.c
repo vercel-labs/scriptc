@@ -3228,6 +3228,13 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
   return scr_child_kill_signo(c, (int)signum);
 }
 
+/* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
+ * is false (a child that already received a signal is left alone). */
+void scr_child_dispose(ScrChild *c) {
+  if (scr_child_killed(c)) return;
+  (void)scr_child_kill_num(c, (double)SIGTERM);
+}
+
 void scr_child_unref(ScrChild *c) {
   bool before = scr_child_liveness(c);
   c->reffed = false; /* settle/teardown clear the flags first */
@@ -7084,6 +7091,15 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
 bool scr_child_kill_num(ScrChild *c, double signum) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, NULL, signum));
   return scr_child_kill_signo(c, (int)signum);
+}
+
+/* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
+ * is false (a child that already received a signal is left alone). */
+void scr_child_dispose(ScrChild *c) {
+  SCR_IF_ISLAND(c, if (scr_child_island_ops->boolean(c->island, SCR_CHILD_PROP_KILLED)) return;
+                (void)scr_child_island_ops->kill(c->island, NULL, (double)SIGTERM); return);
+  if (scr_child_killed(c)) return;
+  (void)scr_child_kill_num(c, (double)SIGTERM);
 }
 
 /* child.unref() — drops the child from the loop's keep-alive set (Node's

@@ -1513,6 +1513,35 @@ function stdioModeExpr(
   };
 }
 
+/** `child[Symbol.dispose]()`: Node's ChildProcess dispose, which sends
+ * SIGTERM only while `killed` is false. The receiver must type as a child
+ * handle; any other element-access call is not ours. */
+export function lowerChildDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "dispose"
+  ) {
+    return null;
+  }
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("child[Symbol.dispose] with arguments", call);
+  }
+  return {
+    kind: "libCall",
+    fn: "child.dispose",
+    args: [lowerer.lowerExpr(access.expression)],
+    type: VOID,
+    loc: locOf(call),
+  };
+}
+
 /** `spawn(command, args?, options)` → one cp.spawn / cp.spawnOpts
  * libCall. Computed options use native runtime normalization. Inline
  * stdio accepts "ignore", "inherit", or "pipe" as the scalar, or the

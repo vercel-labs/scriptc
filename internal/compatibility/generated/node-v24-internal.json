@@ -43136,6 +43136,8 @@
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/event-target-surface.ts",
           "tests/corpus/events-add-abort-listener.ts",
+          "tests/corpus/events-capture-rejection-symbol.cjs",
+          "tests/corpus/events-capture-rejection-symbol.ts",
           "tests/corpus/events-erased-emit-args.ts",
           "tests/corpus/events-module-helpers.ts",
           "tests/corpus/events-node-event-target-port.mjs",
@@ -45483,8 +45485,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "supported",
+        "evidence": "compiler-feature:events.captureRejectionSymbol",
+        "tests": [
+          "tests/corpus/events-capture-rejection-symbol.ts",
+          "tests/corpus/events-capture-rejection-symbol.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },

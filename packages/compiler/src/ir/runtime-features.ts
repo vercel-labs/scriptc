@@ -2006,7 +2006,7 @@ const RUNTIME_FEATURE_RULES = {
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
-  /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
+  /** events.once(emitter, name, options) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),

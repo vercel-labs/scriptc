@@ -76,6 +76,7 @@ import {
   isUnitType,
   NULL_T,
   STRING,
+  SYMBOL_T,
   type SrcLoc,
   UNDEFINED_T,
   typeEquals,
@@ -602,6 +603,20 @@ function eventNameExpr(key: string, loc: SrcLoc): IrExpr {
     return { kind: "libCall", fn: "emitter.errorMonitor", args: [], type: STRING, loc };
   }
   return strLit(eventKeyName(key), loc);
+}
+
+/** `EventEmitter.captureRejectionSymbol` / `events.captureRejectionSymbol`:
+ * Node's `Symbol.for('nodejs.rejection')`, the key of an emitter's
+ * rejection handler. The registry interns it per key, so every read is the
+ * same symbol, as Node's module property is. */
+export function captureRejectionSymbolValue(loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "sym.for",
+    args: [strLit("nodejs.rejection", loc)],
+    type: SYMBOL_T,
+    loc,
+  };
 }
 
 /** `errorMonitor` / `EventEmitter.errorMonitor` / `events.errorMonitor`:
@@ -3094,51 +3109,25 @@ function eventsOnceBoxer(
   return { kind: "closure", fnName: name, captures: [], type: fnType, loc };
 }
 
-/** The `signal` of an events.once options object literal (a checked-
- * dynamic AbortSignal or undefined), or null when the literal names none.
- * Other options forms are refused. */
-function eventsOnceSignal(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
-  if (!ts.isObjectLiteralExpression(node)) {
-    lowerer.noLowering(
-      "events.once options that are not an object literal",
-      node,
-      "pass the options as an object literal: { signal }",
-    );
-    return null;
-  }
-  let signal: IrExpr | null = null;
-  for (const prop of node.properties.nodes) {
-    const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
-    if (
-      name === "signal" &&
-      signal === null &&
-      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
-    ) {
-      signal = lowerer.lowerExprExpecting(
-        ts.isPropertyAssignment(prop) ? prop.initializer : (prop.name as ts.Identifier),
-        DYN,
-      );
-    } else {
-      lowerer.noLowering(
-        "events.once options other than one signal",
-        prop,
-        "the lowered options object takes signal: AbortSignal",
-      );
-    }
-  }
-  return signal;
+/** events.once's options argument as the checked-dynamic value Node's
+ * once() receives (undefined when the call passes none): the runtime
+ * validates it the way Node's validateObject/validateAbortSignal do, so any
+ * expression is admitted and only the `signal` property is read. */
+function eventsOnceOptions(lowerer: Lowerer, args: readonly ts.Expression[]): IrExpr | null {
+  return args.length > 2 ? lowerer.lowerExprExpecting(args[2]!, DYN) : null;
 }
 
-/** events.once(emitter, name[, { signal }]): a promise of the next `name`
+/** events.once(emitter, name[, options]): a promise of the next `name`
  * event's arguments as an array, rejected by an earlier 'error' event
- * (unless the awaited event is 'error') or by the signal's abort with an
- * AbortError. The emitter's listeners are typed by the program-wide event
- * table (a stream's runtime-emitted events by their fixed tuples), so the
- * runtime registers one-shot typed listeners whose compiler-built boxers
- * turn the event's tuple into the array. Everything else — an EventTarget,
- * a NodeEventTarget or any other value — resolves at runtime (event.*
- * libCalls). A stream's 'data' event, computed names and options other
- * than a literal { signal } are refused. */
+ * (unless the awaited event is 'error') or by the options signal's abort
+ * with an AbortError. The emitter's listeners are typed by the program-wide
+ * event table (a stream's runtime-emitted events by their fixed tuples), so
+ * the runtime registers one-shot typed listeners whose compiler-built
+ * boxers turn the event's tuple into the array. Everything else — an
+ * EventTarget, a NodeEventTarget or any other value — resolves at runtime
+ * (event.* libCalls), and the options value crosses as it is: the runtime
+ * validates it as Node's validateObject/validateAbortSignal do. A stream's
+ * 'data' event and computed names are refused. */
 export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
@@ -3241,11 +3230,11 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
         args[1]!,
       );
     }
-    const targetSignal = args.length > 2 ? eventsOnceSignal(lowerer, args[2]!) : null;
+    const targetOptions = eventsOnceOptions(lowerer, args);
     return {
       kind: "libCall",
-      fn: targetSignal === null ? "event.onceTarget" : "event.onceTargetSignal",
-      args: targetSignal === null ? [target, targetName] : [target, targetName, targetSignal],
+      fn: targetOptions === null ? "event.onceTarget" : "event.onceTargetSignal",
+      args: targetOptions === null ? [target, targetName] : [target, targetName, targetOptions],
       type: resultT,
       loc,
     };
@@ -3278,7 +3267,7 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   const errorTuple: IrType[] = [{ kind: "object", className: "%Error" }];
   const boxer = eventsOnceBoxer(lowerer, call, tuple, arrayT, loc);
   const errorBoxer = eventsOnceBoxer(lowerer, call, errorTuple, arrayT, loc);
-  const signal = args.length > 2 ? eventsOnceSignal(lowerer, args[2]!) : null;
+  const options = eventsOnceOptions(lowerer, args);
   const common = [
     receiver,
     eventNameExpr(event, loc),
@@ -3288,8 +3277,8 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   ];
   return {
     kind: "libCall",
-    fn: signal === null ? "events.once" : "events.onceSignal",
-    args: signal === null ? common : [...common, signal],
+    fn: options === null ? "events.once" : "events.onceSignal",
+    args: options === null ? common : [...common, options],
     type: resultT,
     loc,
   };

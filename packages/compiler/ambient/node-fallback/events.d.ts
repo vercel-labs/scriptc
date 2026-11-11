@@ -16,6 +16,9 @@ declare module "events" {
     /* Listeners registered under this symbol observe 'error' emits first
      * (an emit with no 'error' listener still throws). */
     static readonly errorMonitor: unique symbol;
+    /* The key an emitter's rejection handler is registered under:
+     * Symbol.for('nodejs.rejection'), the same symbol `events` exports. */
+    static readonly captureRejectionSymbol: unique symbol;
     static addAbortListener(signal: AbortSignal, listener: (event: Event) => void): Disposable;
     on(eventName: string | symbol, listener: (...args: any[]) => void): this;
     addListener(eventName: string | symbol, listener: (...args: any[]) => void): this;

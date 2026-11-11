@@ -2510,10 +2510,20 @@ static ScrPromise *scr_eot_adopt(ScrPromise *inner) {
   return outer;
 }
 
-static ScrPromise *scr_events_once_target_impl(ScrDyn *target, ScrStr *name, ScrDyn *signal) {
-  /* `signal != null`: Node takes an undefined options.signal as none, a
-   * null one as the wrong type. */
-  bool has_signal = signal != NULL && signal->kind != SCR_DYN_UNDEF;
+static ScrPromise *scr_events_once_target_impl(ScrDyn *target, ScrStr *name, ScrDyn *options) {
+  /* Node's async body: validateObject(options, 'options') and
+   * validateAbortSignal(options.signal, 'options.signal') run before the
+   * promise's executor. */
+  ScrDyn *signal = scr_events_once_options(options);
+  if (signal == NULL) {
+    ScrPromise *rejected = scr_promise_new();
+    scr_promise_reject_pending(rejected);
+    return rejected;
+  }
+  /* Node takes an undefined options.signal as none; the helper reports a
+   * null or non-AbortSignal one, and a value that only claims `aborted`
+   * fails the core lookup below. */
+  bool has_signal = signal->kind != SCR_DYN_UNDEF;
   bool aborted = false;
   ScrEventTargetCore *sig_core = NULL;
   if (has_signal) {
@@ -2535,6 +2545,7 @@ static ScrPromise *scr_events_once_target_impl(ScrDyn *target, ScrStr *name, Scr
      * promise's executor runs. */
     ScrPromise *rejected = scr_promise_new();
     scr_promise_reject_pending(rejected);
+    scr_dyn_release(signal);
     return rejected;
   }
   ScrPromise *inner = scr_promise_new();
@@ -2585,6 +2596,7 @@ static ScrPromise *scr_events_once_target_impl(ScrDyn *target, ScrStr *name, Scr
     scr_dyn_release(abort_listener);
   }
   scr_eot_state_release(st); /* the creator's reference */
+  scr_dyn_release(signal);
   return scr_eot_adopt(scr_promise_retain(inner));
 }
 
@@ -2593,9 +2605,9 @@ ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name) {
   return scr_events_once_target_impl(target, name, NULL);
 }
 
-/* events.once(target, name, { signal }) */
-ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal) {
-  return scr_events_once_target_impl(target, name, signal);
+/* events.once(target, name, options) */
+ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *options) {
+  return scr_events_once_target_impl(target, name, options);
 }
 
 /* ── events.on(emitter, name[, options]) ──────────────────────────────
@@ -2876,6 +2888,43 @@ static ScrDyn *scr_eon_prop(const ScrDyn *object, const char *key, size_t len) {
 static ScrDyn *scr_eon_opt(const ScrDyn *options, const char *key, size_t len) {
   if (options == NULL) return scr_dyn_retain(scr_dyn_undefined());
   return scr_eon_prop(options, key, len);
+}
+
+/* events.once's options argument: Node's `validateObject(options,
+ * 'options'); const { signal } = options; validateAbortSignal(signal,
+ * 'options.signal')`, in that order. An explicit undefined is the default
+ * options object. Other properties are not read. An array is not an
+ * options object, including the view an empty literal typed `never[]`
+ * reaches the runtime as. +1, or NULL with the exception pending (a
+ * throwing signal getter stays pending). */
+ScrDyn *scr_events_once_options(ScrDyn *options) {
+  if (options != NULL && options->kind == SCR_DYN_UNDEF) options = NULL;
+  if (options != NULL && (options->kind == SCR_DYN_NULL || options->kind == SCR_DYN_ARR ||
+                          scr_dyn_ref_is_array(options) || !scr_dyn_is_object(options))) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  ScrDyn *signal = scr_eon_opt(options, "signal", 6);
+  if (!signal) return NULL;
+  if (signal->kind == SCR_DYN_UNDEF) return signal;
+  /* validateAbortSignal: null and a non-object are not AbortSignals, and
+   * neither is an object without an `aborted` member (Node's `in` probe). */
+  bool carries = false;
+  if (signal->kind != SCR_DYN_NULL && scr_dyn_is_object(signal)) {
+    ScrStr *aborted = scr_str_new("aborted", 7);
+    carries = scr_dyn_in(signal, aborted);
+    scr_str_release(aborted);
+    if (scr_exc_pending()) {
+      scr_dyn_release(signal);
+      return NULL;
+    }
+  }
+  if (!carries) {
+    scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+    scr_dyn_release(signal);
+    return NULL;
+  }
+  return signal;
 }
 
 /* The value of a registry key: a symbol key keeps its symbol, any other key
@@ -3544,7 +3593,7 @@ static ScrEonState *scr_eon_begin(ScrDyn *recv, ScrDyn *options) {
   /* validateObject(options, 'options'): null, an array, a function, or a
    * primitive. */
   if (options != NULL && (options->kind == SCR_DYN_NULL || options->kind == SCR_DYN_ARR ||
-                          !scr_dyn_is_object(options))) {
+                          scr_dyn_ref_is_array(options) || !scr_dyn_is_object(options))) {
     scr_dyn_arg_type_fail("options", "of type object", options);
     return NULL;
   }

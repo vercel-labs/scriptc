@@ -136,12 +136,18 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d);
 ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
-/* events.once(target, name) and events.once(target, name, { signal }) over
- * a receiver resolved at runtime: an EventTarget, an EventEmitter (a
+/* events.once(target, name) and events.once(target, name, options) over a
+ * receiver resolved at runtime: an EventTarget, an EventEmitter (a
  * NodeEventTarget handle, through its own once()) or any other value.
  * Never throw; +1, and every failure rejects the promise. */
 ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name);
-ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal);
+ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *options);
+/* events.once's options argument: Node's validateObject(options, 'options')
+ * and validateAbortSignal(options.signal, 'options.signal'), in that order,
+ * with the signal property read between them. `options` NULL or undefined
+ * is the default (no options). Answers the signal +1 (undefined for the
+ * plain form), or NULL with the exception pending. */
+ScrDyn *scr_events_once_options(ScrDyn *options);
 /* events.on(emitter, name, options): the async iterator over a receiver's
  * events, resolved at runtime (`recv`: any value, with `options` undefined
  * when not passed) or from a receiver compiled as an emitter (`em`, its

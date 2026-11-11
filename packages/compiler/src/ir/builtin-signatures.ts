@@ -115,10 +115,10 @@ function buildLibFnSignatures() {
     "event.targetGetMax": { argTypes: [DYN], result: F64 },
     "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
     /** events.once over an EventTarget (scr_event_target.c): [target,
-     * name] → a pending promise of the event's arguments, and the signal
-     * form with the checked-dynamic options.signal last. Never throws: a
-     * receiver that is not an EventTarget and a bad or aborted signal
-     * reject it. */
+     * name] → a pending promise of the event's arguments, and the options
+     * form with the checked-dynamic options value last. Never throws: a
+     * receiver that is not an EventTarget, invalid options or a bad or
+     * aborted options.signal reject it. */
     "event.onceTarget": {
       argTypes: [DYN, STRING],
       result: { kind: "promise", inner: arrayOf(DYN) },
@@ -6001,9 +6001,9 @@ function buildLibFnSignatures() {
      * errorBoxer, listenForError] → a pending promise of any[]; the boxers
      * turn the event's and the 'error' tuple into that array. */
     "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
-    /** events.once(emitter, name, { signal }) (scr_events_once_signal.c):
-     * events.once's arguments plus the checked-dynamic signal (an
-     * AbortSignal or undefined). */
+    /** events.once(emitter, name, options) (scr_events_once_signal.c):
+     * events.once's arguments plus the checked-dynamic options value, whose
+     * `signal` the runtime validates as Node does. */
     "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
     /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
      * value's type that copies the borrowed already-resolved `value` promise

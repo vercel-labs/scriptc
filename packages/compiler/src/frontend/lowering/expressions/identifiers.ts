@@ -12,6 +12,7 @@ import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
 import { zlibConstantsValue } from "../builtins/constants.js";
 import { legacyUrlClassValue } from "../builtins/url.js";
+import { captureRejectionSymbolValue } from "../lower-event-emitter.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { globalFunctionValue } from "../global-function-values.js";
@@ -751,6 +752,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           expr,
           "read require('events').defaultMaxListeners or EventEmitter.defaultMaxListeners where the value is needed",
         );
+      }
+      // events.captureRejectionSymbol is Symbol.for('nodejs.rejection'):
+      // one symbol at every read, so a destructured or named binding holds
+      // the same value the property read answers.
+      if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+        return captureRejectionSymbolValue(loc);
       }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);

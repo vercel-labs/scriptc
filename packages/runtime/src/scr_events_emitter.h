@@ -75,15 +75,16 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
                             ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
                             ScrEeInvoke err_inv);
 void scr_events_once_fire(ScrClosure *cb, ScrArr *args);
-/* events.once(emitter, name, { signal }) (scr_events_once_signal.c): the
- * scr_events_once arguments plus the checked-dynamic signal (borrowed;
- * undefined for the plain form). Never throws: a non-AbortSignal value,
- * an aborted signal or a throwing 'newListener' listener rejects the +1
- * result. Its adapters end in scr_events_once_signal_fire. */
+/* events.once(emitter, name, options) (scr_events_once_signal.c): the
+ * scr_events_once arguments plus the checked-dynamic options object
+ * (borrowed; undefined for the plain form). Never throws: invalid options,
+ * a non-AbortSignal options.signal, an aborted signal or a throwing
+ * 'newListener' listener rejects the +1 result. Its adapters end in
+ * scr_events_once_signal_fire. */
 typedef struct ScrDyn ScrDyn; /* full definition below (C11 repeat) */
 ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
                                    ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
-                                   ScrEeInvoke err_inv, ScrDyn *signal);
+                                   ScrEeInvoke err_inv, ScrDyn *options);
 void scr_events_once_signal_fire(ScrClosure *cb, ScrArr *args);
 /* Removes the listener entry whose closure is `cb` (borrowed) without a
  * 'removeListener' event: the undo of an add whose 'newListener'

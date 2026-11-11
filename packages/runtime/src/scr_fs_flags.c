@@ -513,6 +513,11 @@ static void scr_fs_write_options_run(ScrStr *path, const ScrFsWritePayload *payl
   size_t len = 0;
   ScrBytes *encoded = NULL;
   char *owned = NULL;
+  /* The snapshot of a shared payload has to outlive the write below, so it
+   * is taken for the whole function rather than inside the byte branch,
+   * whose scope ends before the bytes reach write(2). */
+  const ScrBytes *view = data.bytes;
+  SCR_BYTES_SNAPSHOT(view);
   if (data.str) {
     if (o.encoding != NULL) {
       /* Buffer.from(data, encoding): the requested encoding, or the
@@ -540,8 +545,6 @@ static void scr_fs_write_options_run(ScrStr *path, const ScrFsWritePayload *payl
       len = data.str->len;
     }
   } else {
-    const ScrBytes *view = data.bytes;
-    SCR_BYTES_SNAPSHOT(view);
     bytes = view->data;
     len = view->len * scr_bytes_elem_size(view->elem);
   }

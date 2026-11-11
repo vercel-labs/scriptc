@@ -599,6 +599,7 @@ ScrPromise *scr_fsp_unlink(ScrStr *path);
 ScrPromise *scr_fsp_chmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid);
 ScrPromise *scr_fsp_lchown(ScrStr *path, double uid, double gid);
+ScrPromise *scr_fsp_lchmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_access(ScrStr *path, double mode);
 ScrPromise *scr_fsp_append_file(ScrStr *path, ScrStr *data);
 ScrPromise *scr_fsp_append_file_bytes(ScrStr *path, ScrBytes *data);
@@ -609,6 +610,20 @@ ScrPromise *scr_fsp_write_file_data(ScrStr *path, const ScrDyn *data);
 ScrPromise *scr_fsp_append_file_data(ScrStr *path, const ScrDyn *data);
 ScrPromise *scr_fsp_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
                                           double exclusive);
+/* writeFile/appendFile over Node's options record: the data argument is a
+ * string, a Buffer/TypedArray view, or a value whose type the call site did
+ * not pin down (the checked form). Each reports through the settled
+ * promise. */
+ScrPromise *scr_fsp_write_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options);
+ScrPromise *scr_fsp_write_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                             const ScrDyn *options);
+ScrPromise *scr_fsp_write_file_options_data(ScrStr *path, const ScrDyn *data,
+                                            const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options(ScrStr *path, ScrStr *data, const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options_bytes(ScrStr *path, const ScrBytes *data,
+                                              const ScrDyn *options);
+ScrPromise *scr_fsp_append_file_options_data(ScrStr *path, const ScrDyn *data,
+                                             const ScrDyn *options);
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);

@@ -45,6 +45,7 @@ import {
   isBitwiseOp,
   withinInt32,
   withinUint32,
+  type IntegerRange,
 } from "../../ir/integer-ranges.js";
 import { charAtUnitRead, emitArrayValues } from "./expr-containers.js";
 import {
@@ -268,6 +269,95 @@ export function emitLiteralExpr(
   }
 }
 
+/** Whether evaluating an expression again is unobservable: a plain read of
+ * a local, a literal, a field or an element of one of those. */
+function repeatableRead(e: IrExpr): boolean {
+  switch (e.kind) {
+    case "varRef":
+    case "numLit":
+      return true;
+    case "fieldGet":
+    case "recordGet":
+      return repeatableRead(e.obj);
+    case "unionNarrow":
+    case "downcast":
+      return repeatableRead(e.value);
+    case "bytesIntrinsic":
+      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
+    case "arrIntrinsic":
+      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
+    case "strIntrinsic":
+      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
+    default:
+      return false;
+  }
+}
+
+/** The quotient range of two integer ranges, in exact integer arithmetic
+ * (BigInt division truncates toward zero, as does the instruction). */
+function quotientRange(left: IntegerRange, divisor: number): IntegerRange {
+  const d = BigInt(divisor);
+  const low = Number(BigInt(left.min) / d);
+  const high = Number(BigInt(left.max) / d);
+  return { min: Math.min(low, high), max: Math.max(low, high) };
+}
+
+/** `(x / c) | 0`, `(x / c) ^ 0`, `(x / c) & -1`, `(x / c) << 0` and
+ * `(x / c) >> 0` for an integer dividend `x` within int32 and a constant
+ * nonzero integer divisor `c`: the truncated quotient. ToInt32 of a real
+ * quotient truncates toward zero, which integer division does for every
+ * dividend and divisor, and a quotient of an int32 dividend stays inside
+ * int32, so the conversion wraps nothing. Null for any other shape, which
+ * keeps the ToInt32 path (a fractional dividend, a non-constant or
+ * non-integer divisor, `>>>`). */
+function emitIntegerQuotient(host: LlvmEmitterContext, e: ExprOf<"bin">): LlValue | null {
+  if (e.op === ">>>") return null;
+  const neutral = (literal: IrExpr): boolean => {
+    if (literal.kind !== "numLit") return false;
+    if (e.op === "&") return (literal.value | 0) === -1;
+    if (e.op === "|" || e.op === "^") return (literal.value | 0) === 0;
+    return ((literal.value >>> 0) & 31) === 0;
+  };
+  const division =
+    neutral(e.right) && e.left.kind === "bin" && e.left.op === "/"
+      ? e.left
+      : neutral(e.left) && e.right.kind === "bin" && e.right.op === "/"
+        ? e.right
+        : null;
+  if (division === null || !repeatableRead(division.left)) return null;
+  if (division.right.kind !== "numLit") return null;
+  const divisor = division.right.value;
+  if (!Number.isInteger(divisor) || divisor === 0) return null;
+  const numerator = host.emitExpr(division.left);
+  const B = host.B;
+  // The dividend's integer: an exact one, or the integer an element read
+  // holds when it found one (`nanInteger`), with NaN reading as the zero
+  // ToInt32 gives it.
+  const integer: LlInteger | null = exactInteger(host, numerator, division.left);
+  let range: IntegerRange | null = integer ? integer.range : null;
+  let ordered: string | null = null;
+  if (integer === null && numerator.nanInteger !== undefined && numerator.ordered !== undefined) {
+    range = integerOrNaNRange(host, division.left);
+    ordered = numerator.ordered;
+  }
+  if (range === null || !withinInt32(range)) return null;
+  const quotient = quotientRange(range, divisor);
+  // INT32_MIN / -1 is the one quotient outside int32; there ToInt32 wraps
+  // and the integer division would not.
+  if (!withinInt32(quotient)) return null;
+  const divided = B.tmp();
+  const dividend = integer ? widenInteger(host, integer) : numerator.nanInteger!;
+  B.line(`${divided} = sdiv i64 ${dividend}, ${BigInt(divisor).toString()}`);
+  let number = divided;
+  let result = quotient;
+  if (ordered !== null) {
+    number = B.tmp();
+    result = { min: Math.min(quotient.min, 0), max: Math.max(quotient.max, 0) };
+    B.line(`${number} = select i1 ${ordered}, i64 ${divided}, i64 0`);
+  }
+  return integerNumber(host, number, result, e.type);
+}
+
 export function emitOperatorExpr(
   host: LlvmEmitterContext,
   e: ExprOf<"bin" | "unary" | "incDec" | "fieldIncDec" | "assignExpr" | "seqExpr">,
@@ -324,7 +414,15 @@ export function emitOperatorExpr(
         host.llType(e.left.type) === "ptr";
       // A sum that only feeds the conversion of a bitwise operator can be
       // computed in 32 bits (emitWrappingSum).
-      if (isBitwiseOp(e.op)) markWrappingOperands(host, e.left, e.right);
+      if (isBitwiseOp(e.op)) {
+        markWrappingOperands(host, e.left, e.right);
+        // `(x / c) | 0` with a constant integer c and an integer x is the
+        // truncated quotient: ToInt32 of a real quotient truncates toward
+        // zero, which is what integer division does. Decided before the
+        // operands are emitted, so the real division is never built.
+        const quotient = emitIntegerQuotient(host, e);
+        if (quotient !== null) return quotient;
+      }
       const operands = identity
         ? emitBorrowedInputs(host, [e.left, e.right])
         : [host.emitExpr(e.left), host.emitExpr(e.right)];

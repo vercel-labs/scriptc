@@ -6,6 +6,10 @@ function register() {
   console.log("registered");
 }
 !register();
+!!register();
+!!!register();
+!(!((register())));
+((!!(register())));
 !function () {
   console.log("anonymous");
 }();
@@ -17,8 +21,8 @@ function first() {
 function second() {
   order.push("second");
 }
-!first();
-!second();
+!!first();
+!!!second();
 console.log(order.join(","));
 // The operand still throws when it throws.
 function boom() {
@@ -26,6 +30,15 @@ function boom() {
 }
 try {
   !boom();
+} catch (error) {
+  console.log(error.message);
+}
+function maybeBoom(fail) {
+  console.log("before maybe boom");
+  if (fail) throw new Error("maybe boom");
+}
+try {
+  !!!maybeBoom(true);
 } catch (error) {
   console.log(error.message);
 }
@@ -51,4 +64,11 @@ if (!(function () {
   return 0;
 })())
   console.log("truthy result negated");
+
+console.log(
+  !!(() => {
+    !!!register();
+    return false;
+  })(),
+);
 

@@ -224,7 +224,12 @@ struct ScrHttpReq {
   ScrStr **hnames;  /* lowercased */
   ScrStr **hnames_raw; /* arrival case — rawHeaders */
   ScrStr **hvalues;
-  size_t nheaders;
+  size_t nheaders; /* every parsed line: rawHeaders, and the framing check */
+  /* A client response past request.maxHeadersCount keeps every line — Node's
+   * parser does, and its rawHeaders keeps them too — while headers,
+   * headersDistinct and getHeader stop at the limit. */
+  size_t nheaders_visible;
+  bool headers_truncated;
   ScrStr **tnames; /* parsed chunk trailers: lowercased, separate from headers */
   ScrStr **tnames_raw; /* wire case for rawTrailers */
   ScrStr **tvalues;
@@ -410,18 +415,27 @@ static ScrStr *scr_http_field_value(ScrStr *const *names, ScrStr *const *values,
   return value;
 }
 
+/* How many of the parsed lines the headers snapshot exposes. Always
+ * r->nheaders except on a client response whose head ran past
+ * request.maxHeadersCount: Node's parser consumes every line (rawHeaders
+ * and the body framing see them) but stops adding to `headers` there. */
+static size_t scr_http_req_visible(const ScrHttpReq *r) {
+  return r->headers_truncated ? r->nheaders_visible : r->nheaders;
+}
+
 /* The snapshot pairs behind `{ ...req.headers }` (the record-building
  * helper's feed): [lowercased name, value, ...] in arrival order — the
  * same keys the per-name reads answer: each name once, at its first
  * position, with scr_http_field_value's value. Always a fresh +1 array. */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, r->nheaders * 2);
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, visible * 2);
+  for (size_t i = 0; i < visible; i++) {
     bool seen = false;
     for (size_t k = 0; k < i && !seen; k++) seen = scr_http_name_eq(r->hnames[k], r->hnames[i]);
     if (seen) continue;
     scr_arr_push_ref(out, scr_str_retain(r->hnames[i]));
-    scr_arr_push_ref(out, scr_http_field_value(r->hnames, r->hvalues, r->nheaders, i, r->join_dup));
+    scr_arr_push_ref(out, scr_http_field_value(r->hnames, r->hvalues, visible, i, r->join_dup));
   }
   return out;
 }
@@ -430,8 +444,9 @@ ScrArr *scr_http_req_header_pairs(ScrHttpReq *r) {
  * repeated names included: the fetch Response's Headers feed. Always a
  * fresh +1 array. */
 ScrArr *scr_http_req_header_lines(ScrHttpReq *r) {
-  ScrArr *out = scr_arr_new(SCR_ELEM_STR, r->nheaders * 2);
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, visible * 2);
+  for (size_t i = 0; i < visible; i++) {
     scr_arr_push_ref(out, scr_str_retain(r->hnames[i]));
     scr_arr_push_ref(out, scr_str_retain(r->hvalues[i]));
   }
@@ -461,7 +476,7 @@ static ScrArr *scr_http_req_distinct_values(ScrStr *const *names, ScrStr *const 
 }
 
 ScrArr *scr_http_req_header_values(ScrHttpReq *r, ScrStr *name /*borrowed*/) {
-  return scr_http_req_distinct_values(r->hnames, r->hvalues, r->nheaders, name);
+  return scr_http_req_distinct_values(r->hnames, r->hvalues, scr_http_req_visible(r), name);
 }
 
 /* Every value of a header in arrival order, as Node stores set-cookie:
@@ -535,9 +550,10 @@ ScrStr *scr_http_req_status_message(ScrHttpReq *r) {
 /* Header lookup by (case-insensitively matched) name: +1 value, or NULL —
  * the compiler's undefined arm, exactly process.envGet's contract. */
 ScrStr *scr_http_req_header(ScrHttpReq *r, ScrStr *name) {
-  for (size_t i = 0; i < r->nheaders; i++) {
+  size_t visible = scr_http_req_visible(r);
+  for (size_t i = 0; i < visible; i++) {
     if (scr_http_name_eq(r->hnames[i], name))
-      return scr_http_field_value(r->hnames, r->hvalues, r->nheaders, i, r->join_dup);
+      return scr_http_field_value(r->hnames, r->hvalues, visible, i, r->join_dup);
   }
   return NULL;
 }
@@ -6011,8 +6027,15 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     const char *ve = eol;
     while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
     header_size += (size_t)(colon - p) + (size_t)(ve - v);
-    if (conn->max_header_pairs == 0 || res->nheaders < conn->max_header_pairs)
-      scr_http_req_add_header(res, p, (size_t)(colon - p), v, (size_t)(ve - v));
+    /* Node's parser keeps consuming the line past the limit: rawHeaders
+     * holds it, and Content-Length or Transfer-Encoding after the cutoff
+     * still frames the body. Only the headers snapshot stops. */
+    if (!res->headers_truncated && conn->max_header_pairs != 0 &&
+        res->nheaders >= conn->max_header_pairs) {
+      res->headers_truncated = true;
+      res->nheaders_visible = res->nheaders;
+    }
+    scr_http_req_add_header(res, p, (size_t)(colon - p), v, (size_t)(ve - v));
     p = eol + 2;
   }
   if (!ok || header_size >= scr_http_conn_header_limit(conn)) {

@@ -326,6 +326,9 @@ void scr_http_client_destroy(ScrHttpClientReq *c);
 /* req.destroy(err): err (borrowed) becomes the request's 'error'. */
 void scr_http_client_destroy_error(ScrHttpClientReq *c, ScrError *err);
 void scr_http_client_max_header_size(ScrHttpClientReq *c, double value); /* see the server form */
+/* request.maxHeadersCount: Node's writable property, null until assigned. */
+ScrDyn *scr_http_client_max_headers_count_get(ScrHttpClientReq *c); /* +1 */
+void scr_http_client_max_headers_count_set(ScrHttpClientReq *c, const ScrDyn *value /*borrowed*/);
 /* http.request's `signal` option (borrowed), checked before the request
  * is built. May throw ERR_INVALID_ARG_TYPE. */
 void scr_http_client_signal_check(const ScrDyn *signal);

@@ -50,7 +50,14 @@ declare module "child_process" {
     encoding?: "utf8" | "utf-8";
     timeout?: number;
     killSignal?: string;
-    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    /* null is Node's default (every slot piped); a null/undefined tuple
+     * entry is the default "pipe" for that slot. */
+    stdio?:
+      | "pipe"
+      | "ignore"
+      | "inherit"
+      | null
+      | ("pipe" | "ignore" | "inherit" | null | undefined)[];
     env?: { [k: string]: string | undefined };
     cwd?: string;
     /* Piped to the child's stdin. undefined is an ABSENT option (no
@@ -89,7 +96,12 @@ declare module "child_process" {
     /* A REPLACEMENT environment; an absent member inherits ours. */
     env?: { [key: string]: string | undefined };
     input?: string;
-    stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit")[];
+    stdio?:
+      | "pipe"
+      | "ignore"
+      | "inherit"
+      | null
+      | ("pipe" | "ignore" | "inherit" | null | undefined)[];
     timeout?: number;
     windowsHide?: boolean;
     /* Read at the call. The call then takes the command-line form only:
@@ -125,6 +137,13 @@ declare module "child_process" {
    * surface typechecks and needs the general stream representation to
    * lower. */
   export interface ChildStdout extends Readable {}
+
+  /* Node's IPC Control object: the channel's own keep-alive switch,
+   * independent of the ChildProcess ref()/unref() pair above. */
+  export interface Control {
+    ref(): void;
+    unref(): void;
+  }
 
   export interface ChildProcess extends Disposable {
     ref(): void;
@@ -181,6 +200,9 @@ declare module "child_process" {
     readonly spawnargs: string[];
     kill(signal?: string | number): boolean;
     unref(): void;
+    /* The IPC channel: undefined when the child has none (every spawn),
+     * the Control object with a fork, and null once it disconnects. */
+    readonly channel?: Control | null;
     readonly connected: boolean;
     send(message: object, callback?: (error: Error | null) => void): boolean;
     disconnect(): void;
@@ -198,7 +220,12 @@ declare module "child_process" {
      * ["ignore", logFd, logFd]) — and "pipe" there too (child.stdout/
      * child.stderr streams); "pipe" in the stdin slot exposes
      * child.stdin. */
-    stdio?: "ignore" | "inherit" | "pipe" | ("ignore" | "inherit" | "pipe" | number)[];
+    stdio?:
+      | "ignore"
+      | "inherit"
+      | "pipe"
+      | null
+      | ("ignore" | "inherit" | "pipe" | number | null | undefined)[];
     /* detached gives the child its own session and process group
      * (POSIX_SPAWN_SETSID); env REPLACES the child environment; cwd
      * sets its working directory; windowsHide is a POSIX no-op; shell
@@ -222,7 +249,12 @@ declare module "child_process" {
       env?: { [k: string]: string | undefined };
       execArgv?: string[];
       silent?: boolean;
-      stdio?: "pipe" | "ignore" | "inherit" | ("pipe" | "ignore" | "inherit" | "ipc")[];
+      stdio?:
+        | "pipe"
+        | "ignore"
+        | "inherit"
+        | null
+        | ("pipe" | "ignore" | "inherit" | "ipc" | null | undefined)[];
       serialization?: "json" | "advanced";
       windowsHide?: boolean;
     },

@@ -587,6 +587,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         );
       };
       const t = lowerer.typeOf(node);
+      // A nullish scalar is Node's default: every slot piped.
+      if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
       if (t.isStringLiteralType()) {
         modeOf(t.value, 0);
         modeOf(t.value, 1);
@@ -597,6 +599,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         let slotRuntime = false;
         node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
+          // null and undefined mean the default "pipe" entry.
+          if (et.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return;
           if (!et.isStringLiteralType()) {
             // A slot typed as a union of the supported literals maps at
             // the call. stdin's "ignore" and "pipe" both read nothing, but
@@ -1568,6 +1572,14 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
+              // null and undefined mean Node's default "pipe" entry.
+              if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+                if (which === 0) inMode = numLit(3, loc);
+                else if (which === 1) outMode = numLit(3, loc);
+                else errMode = numLit(3, loc);
+                plain = false;
+                return;
+              }
               if (t.isStringLiteralType()) {
                 if (t.value !== "ignore" && t.value !== "inherit" && t.value !== "pipe") {
                   lowerer.noLowering(
@@ -1624,6 +1636,13 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
             break;
           }
           const t = lowerer.typeOf(m.value);
+          // A nullish scalar is Node's default: all three slots piped.
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) {
+            inMode = outMode = errMode = numLit(3, loc);
+            sawStdio = true;
+            plain = false;
+            break;
+          }
           // A scalar union-typed stdio expression feeds all three modes: it
           // is read once into a hidden local, so a side effect in the
           // expression runs once and the three modes cannot disagree.
@@ -1834,6 +1853,8 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 
   const stdioMode = (node: ts.Expression, label: string): number => {
     const type = lowerer.typeOf(node);
+    // null and undefined mean the default "pipe" entry, as Node treats them.
+    if (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) return 3;
     const value = type.isStringLiteralType() ? type.value : null;
     if (value !== "ignore" && value !== "inherit" && value !== "pipe") {
       lowerer.noLowering(

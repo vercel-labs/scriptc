@@ -3559,6 +3559,10 @@ function buildLibFnSignatures() {
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
     "child.ref": { argTypes: [CHILD_T], result: VOID },
+    /** subprocess.channel: the checked-dynamic Control handle (undefined
+     * without an IPC channel, null after a disconnect); the lowering
+     * supplies its DYN type. */
+    "child.channel": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
     /* The Buffer captures (spawnSync without an encoding option): the same

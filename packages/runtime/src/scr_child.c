@@ -1763,6 +1763,10 @@ struct ScrChild {
   bool has_code;
   bool killed;
   bool reffed;
+  /* Node's Control object keeps the IPC channel handle in or out of the
+   * loop's keep-alive set (subprocess.channel.ref()/.unref()); the process
+   * handle above stays independent of it. */
+  bool channel_reffed;
   int spawn_uv_errno;       /* spawn failure: Node's exitCode (negative) */
   const char *spawn_errname; /* spawn failure: the `code` stamp */
   double code;
@@ -1797,6 +1801,20 @@ struct ScrChild {
 static SCR_TL ScrChild *scr_children = NULL;
 static SCR_TL ScrChild *scr_children_closing = NULL;
 static SCR_TL size_t scr_children_reffed_n = 0;
+/* A child keeps the loop alive through either of Node's two handles: the
+ * process (child.ref()/unref()) and the IPC channel (its Control object's
+ * ref()/unref()). Capture this before changing a flag, then hand it to
+ * scr_child_liveness_apply. */
+static bool scr_child_liveness(const ScrChild *c) {
+  return !c->settled && (c->reffed || c->channel_reffed);
+}
+
+static void scr_child_liveness_apply(ScrChild *c, bool before) {
+  bool after = scr_child_liveness(c);
+  if (after && !before) scr_children_reffed_n++;
+  else if (!after && before) scr_children_reffed_n--;
+}
+
 /* Pending children the handle wait can NOT represent — spawn failures
  * awaiting their first-pass settle. While any exist, scr_children_wait
  * declines and the loop keeps the ~1ms polling cap (the POSIX arm's
@@ -2876,8 +2894,11 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
     c->pid = sp.pid;
   }
   /* The registry's reference: dropped when the child settles. */
-  c->reffed = true;
-  scr_children_reffed_n++;
+  {
+    bool before = scr_child_liveness(c);
+    c->reffed = true;
+    scr_child_liveness_apply(c, before);
+  }
   c->next = scr_children;
   scr_children = scr_child_retain(c);
   scr_child_loop_install();
@@ -2910,6 +2931,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
   if (child->state == SCR_CHILD_RUNNING) {
     child->ipc = scr_ipc_new(scr_child_stream_new(parent_read),
                              scr_child_writer_new(parent_write));
+    /* Node's fork starts with both the process handle and the channel
+     * referenced; the child is already counted, so just record the flag. */
+    child->channel_reffed = true;
   } else {
     CloseHandle(parent_read);
     CloseHandle(parent_write);
@@ -3046,10 +3070,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
 }
 
 void scr_child_unref(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--; /* settle/teardown clear reffed first */
-  }
+  bool before = scr_child_liveness(c);
+  c->reffed = false; /* settle/teardown clear the flags first */
+  scr_child_liveness_apply(c, before);
 }
 
 bool scr_children_reffed_pending(void) {
@@ -3087,11 +3110,11 @@ void scr_children_teardown(void) {
     ScrChild *c = scr_children;
     scr_children = c->next;
     c->next = NULL;
+    bool before = scr_child_liveness(c);
     c->settled = true; /* late listener registrations release immediately */
-    if (c->reffed) {
-      c->reffed = false;
-      scr_children_reffed_n--;
-    }
+    c->reffed = false;
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
     if (c->state == SCR_CHILD_SPAWN_FAILED) scr_children_unwatched--;
     scr_child_drop_listeners(c);
     scr_child_release(c);
@@ -3319,10 +3342,12 @@ static void scr_child_settle(ScrChild *c) {
 }
 
 static void scr_child_settle_in(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--;
-  }
+  /* The exit stops keeping the loop alive for both the process handle and
+   * the IPC channel (Node's Control follows its handle to null). */
+  bool was_live = scr_child_liveness(c);
+  c->reffed = false;
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, was_live);
   if (c->state == SCR_CHILD_EXITED) {
     if (!c->spawn_done) scr_child_fire_spawn(c);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
@@ -4851,6 +4876,9 @@ struct ScrChild {
   bool has_code;
   bool killed;    /* a kill() successfully sent a signal (Node's flag) */
   bool reffed;    /* keeps the loop alive; unref() clears it (Node) */
+  /* The IPC channel's own keep-alive state (Node's Control): channel
+   * .ref()/.unref() move this, never `reffed`. */
+  bool channel_reffed;
   int spawn_errno; /* spawn failure only: Node's exitCode is -errno there */
   double code;
   /* Signal death only: the terminating signal's name (static storage) —
@@ -4921,8 +4949,22 @@ ScrChildWriter *scr_child_writer_island_new(void *island) {
 
 static SCR_TL ScrChild *scr_children = NULL; /* unsettled children (registry +1) */
 static SCR_TL ScrChild *scr_children_closing = NULL; /* exited, waiting for stdio EOF */
-static SCR_TL size_t scr_children_reffed_n = 0; /* unsettled AND reffed (liveness) */
+static SCR_TL size_t scr_children_reffed_n = 0; /* unsettled AND (reffed or channel-reffed) */
 static SCR_TL unsigned long scr_children_pass = 0; /* reap passes run */
+
+/* A child keeps the loop alive through either of Node's two handles: the
+ * process (child.ref()/unref()) and the IPC channel (its Control object's
+ * ref()/unref()). Capture this before changing a flag, then hand it to
+ * scr_child_liveness_apply. */
+static bool scr_child_liveness(const ScrChild *c) {
+  return !c->settled && (c->reffed || c->channel_reffed);
+}
+
+static void scr_child_liveness_apply(ScrChild *c, bool before) {
+  bool after = scr_child_liveness(c);
+  if (after && !before) scr_children_reffed_n++;
+  else if (!after && before) scr_children_reffed_n--;
+}
 
 /* Children the kqueue can NOT wake the loop for (spawn failures awaiting
  * their first-pass settle, exit-filter registration failures, every child
@@ -6590,8 +6632,11 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
    * is in spawn order: a pass fires 'spawn', and the 'exit' of children it
    * reaps together, oldest child first, as Node does (libuv's exit pass
    * walks its process queue in spawn order, uv__wait_children). */
-  c->reffed = true;
-  scr_children_reffed_n++;
+  {
+    bool before = scr_child_liveness(c);
+    c->reffed = true;
+    scr_child_liveness_apply(c, before);
+  }
   ScrChild **tail = &scr_children;
   while (*tail) tail = &(*tail)->next;
   *tail = scr_child_retain(c);
@@ -6638,6 +6683,9 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
     reader->short_read_yields = true;
 #endif
     child->ipc = scr_ipc_new(reader, scr_child_writer_new(parent_to_child[1]));
+    /* Node's fork starts with both the process handle and the channel
+     * referenced; the child is already counted, so just record the flag. */
+    child->channel_reffed = true;
   } else {
     close(child_to_parent[0]);
     close(parent_to_child[1]);
@@ -6799,10 +6847,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * zombie outlives the parent). */
 void scr_child_unref(ScrChild *c) {
   SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "unref"); return);
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--; /* settle/teardown clear reffed first */
-  }
+  bool before = scr_child_liveness(c);
+  c->reffed = false; /* settle/teardown clear the flags first */
+  scr_child_liveness_apply(c, before);
 }
 
 /* The loop's liveness half: true while some UNSETTLED, REFFED child
@@ -6859,11 +6906,11 @@ void scr_children_teardown(void) {
     ScrChild *c = scr_children;
     scr_children = c->next;
     c->next = NULL;
+    bool before = scr_child_liveness(c);
     c->settled = true; /* late listener registrations release immediately */
-    if (c->reffed) {
-      c->reffed = false;
-      scr_children_reffed_n--;
-    }
+    c->reffed = false;
+    c->channel_reffed = false;
+    scr_child_liveness_apply(c, before);
     if (c->unwatched) {
       c->unwatched = false;
       scr_children_unwatched--;
@@ -7110,10 +7157,12 @@ static void scr_child_settle(ScrChild *c) {
 }
 
 static void scr_child_settle_in(ScrChild *c) {
-  if (c->reffed) {
-    c->reffed = false;
-    scr_children_reffed_n--;
-  }
+  /* Both the process handle and the IPC channel's Control stop keeping the
+   * loop alive when the child exits. */
+  bool was_live = scr_child_liveness(c);
+  c->reffed = false;
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, was_live);
   if (c->unwatched) {
     c->unwatched = false;
     scr_children_unwatched--;
@@ -7795,10 +7844,10 @@ static void scr_child_drop_spawn_listeners(ScrChild *c) {
 
 void scr_child_ref(ScrChild *c) {
   SCR_IF_ISLAND(c, scr_child_island_ops->call(c->island, "ref"); return);
-  if (!c->settled && !c->reffed) {
-    c->reffed = true;
-    scr_children_reffed_n++;
-  }
+  if (c->settled) return;
+  bool before = scr_child_liveness(c);
+  c->reffed = true;
+  scr_child_liveness_apply(c, before);
 }
 
 void scr_child_on_spawn(ScrChild *c, ScrClosure *cb) {
@@ -9111,7 +9160,73 @@ static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
         ? scr_dyn_new_num(scr_child_exit_code(child))
         : scr_dyn_new_null();
   }
+  if (key_len == 7 && memcmp(key, "channel", 7) == 0) return scr_child_channel(child);
   return NULL;
+}
+
+/* ── subprocess.channel (Node's Control) ─────────────────────────────────
+ * A child made with an IPC channel answers its Control object here:
+ * undefined when it never had a channel, null once the channel was closed
+ * or disconnected, and otherwise a checked-dynamic handle over the child.
+ * The handle keeps the child pointer, so two reads compare equal (dyn
+ * equality is (tag, pointer)) exactly as Node's one Control object does.
+ * Its ref()/unref() move the CHANNEL's keep-alive state; the process
+ * handle's child.ref()/child.unref() stay independent, as in Node, which
+ * keeps the two handles apart. Node's Control is an EventEmitter, but the
+ * channel surface programs use is these two methods. */
+static ScrDyn *scr_child_channel_invoke(
+    void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+    const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  ScrChild *child = h;
+  if (!strcmp(method, "ref")) {
+    scr_child_channel_ref(child);
+  } else if (!strcmp(method, "unref")) {
+    scr_child_channel_unref(child);
+  } else {
+    char msg[160];
+    int n = snprintf(msg, sizeof msg, "%s is not a function", what);
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    return NULL;
+  }
+  /* Node's Control answers undefined from both methods. */
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static const ScrDynHandleMethod scr_child_channel_methods[] = {
+  {"ref", 0, false, NULL},
+  {"unref", 0, false, NULL},
+  {NULL, 0, false, NULL},
+};
+
+static const ScrDynHandleOps scr_child_channel_ops = {
+  .cls = "Control",
+  .retain = &scr_child_retain_v,
+  .release = &scr_child_release_v,
+  .invoke = &scr_child_channel_invoke,
+  .methods = scr_child_channel_methods,
+};
+
+ScrDyn *scr_child_channel(ScrChild *c) {
+  SCR_IF_ISLAND(c, return scr_child_island_ops->channel(c->island));
+  if (c->ipc == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  if (!c->ipc->connected) return scr_dyn_new_null();
+  scr_dyn_handle_install(SCR_DYNH_CHILD_CHANNEL, &scr_child_channel_ops);
+  return scr_dyn_new_handle(c, SCR_DYNH_CHILD_CHANNEL);
+}
+
+void scr_child_channel_ref(ScrChild *c) {
+  bool before = scr_child_liveness(c);
+  if (c->ipc != NULL && !c->settled) c->channel_reffed = true;
+  scr_child_liveness_apply(c, before);
+}
+
+void scr_child_channel_unref(ScrChild *c) {
+  bool before = scr_child_liveness(c);
+  c->channel_reffed = false;
+  scr_child_liveness_apply(c, before);
 }
 
 static bool scr_child_dyn_set(

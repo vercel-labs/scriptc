@@ -11472,7 +11472,9 @@
           "tests/corpus/5627-exec-callback.ts",
           "tests/corpus/8921-child-max-buffer-sync.js",
           "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/child-channel-control/main.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
+          "tests/corpus/child-stdio-options/main.ts",
           "tests/corpus/compat-child-process-handle.ts",
           "tests/fixtures/node-types/child-exec.ts",
           "tests/harness/project-config.test.ts"
@@ -11601,7 +11603,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.child_process.fork",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11684,8 +11687,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "partial",
+        "evidence": "compiler-feature:child_process.options.stdio",
+        "tests": [
+          "tests/corpus/child-stdio-options/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -11931,7 +11937,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.ChildProcess",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11957,7 +11964,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.disconnect",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11983,7 +11991,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.kill",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12035,7 +12045,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.ref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12061,7 +12073,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.send",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12087,7 +12100,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.subprocess.unref",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12110,8 +12125,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.channel",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -12133,8 +12151,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.ref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12156,8 +12177,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "status": "supported",
+        "evidence": "compiler-feature:child_process.subprocess.channel.unref",
+        "tests": [
+          "tests/corpus/child-channel-control/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -12182,7 +12206,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.connected",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12208,7 +12233,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.exitCode",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12234,7 +12261,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.killed",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12260,7 +12289,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.pid",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12286,7 +12317,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.signalCode",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -12420,7 +12453,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:child_process"
+        "evidence": "compiler-feature:child_process.stdio"
       },
       "anchorSource": "ancestor"
     },
@@ -12473,7 +12506,9 @@
         "evidence": "compiler-feature:child_process.'close'",
         "tests": [
           "tests/corpus/2939-child-shell-text.ts",
-          "tests/corpus/3131-child-rest-listeners.js"
+          "tests/corpus/3131-child-rest-listeners.js",
+          "tests/corpus/child-stdio-options/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12499,7 +12534,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'disconnect'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12525,7 +12561,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'error'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12551,7 +12589,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'exit'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12577,7 +12617,8 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'message'",
         "tests": [
-          "tests/corpus/2946-child-fork-ipc/main.ts"
+          "tests/corpus/2946-child-fork-ipc/main.ts",
+          "tests/corpus/child-channel-control/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12603,7 +12644,9 @@
         "status": "partial",
         "evidence": "compiler-feature:child_process.'spawn'",
         "tests": [
-          "tests/corpus/compat-child-process-handle.ts"
+          "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-stdio-options/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86037,8 +86080,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:readline"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:readline.InterfaceConstructor"
       },
       "anchorSource": "exact"
     },

@@ -5140,6 +5140,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "child" };
   }
+  // child_process.Control (@types/node's interface, or the fallback
+  // declarations' copy): subprocess.channel's object. It is a checked-dynamic
+  // value — a stable-identity handle whose ref()/unref() reach the channel's
+  // keep-alive state — so `Control | null | undefined` collapses to DYN.
+  if (
+    psym !== undefined &&
+    psymName === "Control" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "child_process"),
+    )
+  ) {
+    return DYN;
+  }
   // net.Server / net.Socket: @types/node's classes or the fallback
   // declarations' interfaces. The NAME is ambiguous across builtin
   // modules (http.Server, tls.Socket share it), so the provenance check

@@ -50,6 +50,10 @@ struct ScrChild {
   bool has_code;
   bool killed;
   bool reffed;
+  /* Node's Control object keeps the IPC channel handle in or out of the
+   * loop's keep-alive set (subprocess.channel.ref()/.unref()); the process
+   * handle above stays independent of it. */
+  bool channel_reffed;
   int spawn_uv_errno;       /* spawn failure: Node's exitCode (negative) */
   const char *spawn_errname; /* spawn failure: the `code` stamp */
   double code;
@@ -112,6 +116,9 @@ struct ScrChild {
   bool has_code;
   bool killed;    /* a kill() successfully sent a signal (Node's flag) */
   bool reffed;    /* keeps the loop alive; unref() clears it (Node) */
+  /* The IPC channel's own keep-alive state (Node's Control): channel
+   * .ref()/.unref() move this, never `reffed`. */
+  bool channel_reffed;
   int spawn_errno; /* spawn failure only: Node's exitCode is -errno there */
   double code;
   /* Signal death only: the terminating signal's name (static storage) —

@@ -238,6 +238,12 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* subprocess.channel: the Control object (+1), undefined when the child
+ * has no IPC channel, null once the channel is disconnected. The handle's
+ * methods move the channel's keep-alive state, not the child's. */
+ScrDyn *scr_child_channel(ScrChild *c);
+void scr_child_channel_ref(ScrChild *c);
+void scr_child_channel_unref(ScrChild *c);
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json);
 bool scr_child_ipc_send_cb(ScrChild *c, ScrStr *json,
                            ScrClosure *cb /*moves*/, ScrIpcSendFn fn);
@@ -419,6 +425,9 @@ typedef struct ScrChildIslandOps {
   bool (*number)(void *island, int prop, double *value); /* false: null or undefined */
   bool (*boolean)(void *island, int prop);
   ScrStr *(*string)(void *island, int prop); /* +1; NULL: null or undefined */
+  /* subprocess.channel as the island's own Control object (+1), undefined
+   * when the child has none, null after a disconnect. */
+  ScrDyn *(*channel)(void *island);
   ScrArr *(*spawnargs)(void *island);        /* +1 */
   bool (*kill)(void *island, const ScrStr *signal, double signum); /* signal NULL: the number */
   void (*call)(void *island, const char *method); /* a method without arguments or result */

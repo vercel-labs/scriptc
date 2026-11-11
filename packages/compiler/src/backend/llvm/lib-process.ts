@@ -153,6 +153,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${out} = call i1 @scr_child_ipc_connected(ptr ${child.name})`);
     return { name: out, type: e.type };
   }
+  if (e.fn === "child.channel") {
+    // The Control handle as a checked-dynamic value (+1): undefined for a
+    // child without an IPC channel, null after a disconnect.
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_child_channel(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call ptr @scr_child_channel(ptr ${child.name}) ; +1`);
+    return host.own({ name: out, type: e.type });
+  }
   if (e.fn === "child.send" || e.fn === "child.sendCb") {
     host.usesTimers = true;
     const child = host.emitExpr(e.args[0]!);

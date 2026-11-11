@@ -256,6 +256,31 @@ declare module "crypto" {
     key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
     callback: (err: Error | null, signature: Buffer) => void,
   ): void;
+  // Node reads a callback that is undefined at run time as no callback and
+  // answers synchronously, where @types/node's signatures make the call
+  // untyped; the value it answers is the signature Buffer.
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: undefined,
+  ): Buffer;
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: ((err: Error | null, signature: Buffer) => void) | undefined,
+  ): Buffer | void;
+  // Node evaluates every argument the call supplies and ignores the ones
+  // past the last it declares, so a longer call still answers: the
+  // synchronous result when the callback position holds no function, and
+  // undefined when the job is deferred to it.
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    ...surplus: unknown[]
+  ): Buffer | void;
   export function verify(
     algorithm: string | null | undefined,
     data: ScriptcBufferView,
@@ -269,6 +294,32 @@ declare module "crypto" {
     signature: ScriptcBufferView,
     callback: (err: Error | null, result: boolean) => void,
   ): void;
+  // As with sign: an undefined callback at run time answers the verdict
+  // synchronously.
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: undefined,
+  ): boolean;
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: ((err: Error | null, result: boolean) => void) | undefined,
+  ): boolean | void;
+  // As with sign: a call with more arguments than the shapes above name
+  // ignores what it supplies past the callback position and still answers
+  // the synchronous verdict.
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    ...surplus: unknown[]
+  ): boolean | void;
   /* RSA's public-key operations. The key is key material, a KeyObject, or
    * an options object whose own `key` is either, with the padding and OAEP
    * options beside it. */

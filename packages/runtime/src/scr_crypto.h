@@ -352,6 +352,14 @@ ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, 
 void scr_crypto_sign_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback);
 void scr_crypto_verify_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
                                      ScrDyn *callback);
+/* The callback position filled by a value whose type is not known to be a
+ * function: Node runs the synchronous form when the value is undefined,
+ * the asynchronous one when it is a function, and throws for anything
+ * else. The synchronous form answers its result; the asynchronous one
+ * answers undefined and delivers through the callback. */
+ScrDyn *scr_crypto_sign_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback);
+ScrDyn *scr_crypto_verify_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                        ScrDyn *callback);
 /* RSA's public-key operations: the ciphertext, or the recovered message. */
 ScrDyn *scr_crypto_public_encrypt(ScrDyn *key, ScrDyn *buffer);
 ScrDyn *scr_crypto_private_decrypt(ScrDyn *key, ScrDyn *buffer);

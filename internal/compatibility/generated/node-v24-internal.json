@@ -19785,6 +19785,8 @@
           "tests/corpus/crypto-secret-key-inputs.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-options.ts",
           "tests/corpus/crypto-sign-pipe.ts",
@@ -20507,17 +20509,7 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/corpus/crypto-sign-options.ts",
-          "tests/corpus/crypto-sign-option-types.mjs",
-          "tests/corpus/crypto-sign-async-errors.ts",
-          "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs"
         ]
@@ -20570,17 +20562,7 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/corpus/crypto-sign-options.ts",
-          "tests/corpus/crypto-sign-option-types.mjs",
-          "tests/corpus/crypto-sign-async-errors.ts",
-          "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs"
         ]
@@ -20633,13 +20615,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -20648,9 +20630,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20673,13 +20653,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createVerify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -20688,9 +20668,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20826,17 +20804,7 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/corpus/crypto-sign-options.ts",
-          "tests/corpus/crypto-sign-option-types.mjs",
-          "tests/corpus/crypto-sign-async-errors.ts",
-          "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs"
         ]
@@ -20866,17 +20834,7 @@
         "tests": [
           "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/7082-crypto-key-objects.ts",
-          "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
-          "tests/corpus/crypto-sign-writable.ts",
-          "tests/corpus/crypto-sign-write-encoding.ts",
-          "tests/corpus/crypto-sign-write-after-end.ts",
-          "tests/corpus/crypto-sign-pipe.ts",
-          "tests/corpus/crypto-sign-options.ts",
-          "tests/corpus/crypto-sign-option-types.mjs",
-          "tests/corpus/crypto-sign-async-errors.ts",
-          "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs"
         ]
@@ -21835,13 +21793,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -21850,9 +21808,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21902,13 +21858,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -21917,9 +21873,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24173,13 +24127,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24188,9 +24142,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24213,13 +24165,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.sign",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24228,9 +24180,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24253,13 +24203,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:sign.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24268,9 +24218,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24293,13 +24241,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24308,9 +24256,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24333,13 +24279,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.update",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24348,9 +24294,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24373,13 +24317,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:verify.verify",
         "tests": [
-          "tests/corpus/7080-crypto-ed25519.mjs",
-          "tests/corpus/7082-crypto-key-objects.ts",
+          "tests/corpus/crypto-sign-call-shapes.cjs",
+          "tests/corpus/crypto-sign-callback-types.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
-          "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7080-crypto-ed25519.mjs",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -24388,9 +24332,7 @@
           "tests/corpus/crypto-sign-option-types.mjs",
           "tests/corpus/crypto-sign-async-errors.ts",
           "tests/corpus/crypto-sign-async-arguments.mjs",
-          "tests/corpus/crypto-signer-encodings.ts",
-          "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-signer-encodings.ts"
         ]
       },
       "anchorSource": "exact"

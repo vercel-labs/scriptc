@@ -2618,6 +2618,11 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomIntAny",
     ],
     randomUUID: ["crypto.randomUUIDOpts"],
+    // A sign or verify callback of a type the checker cannot prove is a
+    // function may be undefined at run time, where Node answers
+    // synchronously; a function takes the asynchronous entry point.
+    sign: ["crypto.signOneshotCb", "crypto.signOneshotMaybe"],
+    verify: ["crypto.verifyOneshotCb", "crypto.verifyOneshotMaybe"],
   },
   tty: {
     isatty: ["process.isTTYValue"],

@@ -1715,44 +1715,80 @@ function lowerPkiCall(
   const form = forms[member];
   if (!form) return null;
   const [baseFn, min, max, supported] = form;
-  if (args.length < min || args.length > max)
+  // sign and verify take an optional trailing callback, and Node checks
+  // every other argument count at run time: missing arguments answer the
+  // errors of the checks they fail, surplus ones evaluate and are ignored.
+  if (member === "sign" || member === "verify") {
+    const syncCount = member === "sign" ? 3 : 4;
+    const syncFn: IrLibFn = member === "sign" ? "crypto.signOneshot" : "crypto.verifyOneshot";
+    const maybeFn: IrLibFn =
+      member === "sign" ? "crypto.signOneshotMaybe" : "crypto.verifyOneshotMaybe";
+    const callbackArg = args[syncCount];
+    const literalUndefined =
+      callbackArg !== undefined &&
+      callbackArg.kind === ts.SyntaxKind.Identifier &&
+      callbackArg.getText() === "undefined";
+    if (args.length === syncCount || (args.length === syncCount + 1 && literalUndefined)) {
+      // The declared synchronous shape; a literal undefined callback is
+      // no callback at all.
+      const values = args.slice(0, syncCount).map((arg) => dynArg(lowerer, arg, loc));
+      return pkiResult(lowerer, expr, {
+        kind: "libCall",
+        fn: syncFn,
+        args: values,
+        type: DYN,
+        loc,
+      });
+    }
+    if (args.length === syncCount + 1) {
+      // A callback the checker cannot prove is a function may be
+      // undefined at run time, which Node runs synchronously.
+      const values = args.map((arg) => dynArg(lowerer, arg, loc));
+      return pkiResult(lowerer, expr, {
+        kind: "libCall",
+        fn: maybeFn,
+        args: values,
+        type: DYN,
+        loc,
+      });
+    }
+    const withCallback = args.length > syncCount && !literalUndefined;
+    return pkiResult(
+      lowerer,
+      expr,
+      dynCall(
+        lowerer,
+        expr,
+        withCallback ? syncCount + 1 : syncCount,
+        withCallback ? maybeFn : syncFn,
+        DYN,
+      ),
+    );
+  }
+  if (args.length < min || args.length > max) {
+    // Node ignores surplus arguments, which still evaluate in source order.
+    if (member === "createSign" || member === "createVerify")
+      return pkiResult(lowerer, expr, dynCall(lowerer, expr, max, baseFn, DYN));
     lowerer.noLowering(
       `crypto.${member} with ${args.length} arguments`,
       expr,
       `${supported} is supported`,
     );
-  // One-shot helpers take an optional trailing callback, which selects the
-  // asynchronous entry point. Node treats an explicit undefined as no
-  // callback and answers synchronously, so the literal undefined stays on
-  // the synchronous entry point.
-  const callbackIndex = member === "sign" ? 3 : member === "verify" ? 4 : -1;
-  const callbackArg = callbackIndex >= 0 ? args[callbackIndex] : undefined;
-  const literalUndefined =
-    callbackArg !== undefined &&
-    callbackArg.kind === ts.SyntaxKind.Identifier &&
-    callbackArg.getText() === "undefined";
-  let fn: IrLibFn = baseFn;
-  if (member === "sign" && args.length === 4 && !literalUndefined) fn = "crypto.signOneshotCb";
-  if (member === "verify" && args.length === 5 && !literalUndefined) fn = "crypto.verifyOneshotCb";
+  }
   // generateKeyPair(type, callback): the runtime reads a function in the
   // options position as the callback, as Node does.
   const values: IrExpr[] = [];
-  const valueCount = literalUndefined
-    ? callbackIndex
-    : fn === "crypto.signOneshot"
-      ? 3
-      : fn === "crypto.verifyOneshot"
-        ? 4
-        : max;
-  for (let i = 0; i < valueCount; i++) values.push(dynArg(lowerer, args[i], loc));
-  if (
-    fn === "crypto.generateKeyPairCb" ||
-    fn === "crypto.signOneshotCb" ||
-    fn === "crypto.verifyOneshotCb" ||
-    fn === "crypto.setEngine"
-  )
-    return { kind: "libCall", fn, args: values, type: VOID, loc };
-  const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
+  for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
+  if (baseFn === "crypto.generateKeyPairCb" || baseFn === "crypto.setEngine")
+    return { kind: "libCall", fn: baseFn, args: values, type: VOID, loc };
+  return pkiResult(lowerer, expr, { kind: "libCall", fn: baseFn, args: values, type: DYN, loc });
+}
+
+/** An asymmetric-key entry's checked-dynamic result as the call site's
+ * type (KeyObject, Sign and Verify handles stay dynamic; signatures,
+ * key pairs and verdicts convert to their Buffers, records and
+ * booleans). */
+function pkiResult(lowerer: Lowerer, expr: ts.CallExpression, call: IrExpr): IrExpr {
   const callType = lowerer.typeOf(expr);
   /* A literal undefined callback fails overload resolution (the checker
    * types the call never); it was rewritten to the synchronous entry point,

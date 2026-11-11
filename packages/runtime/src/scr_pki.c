@@ -4141,6 +4141,28 @@ void scr_crypto_verify_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *ke
   scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), scr_dyn_new_null(), result);
 }
 
+/* crypto.sign(algorithm, data, key, callback) and crypto.verify(...,
+ * signature, callback) where the callback is a value whose type is known
+ * only at run time. Node reads a function as the asynchronous form, an
+ * undefined as the synchronous one, and anything else as an argument
+ * error; the synchronous form answers its result, the asynchronous one
+ * undefined. */
+ScrDyn *scr_crypto_sign_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback) {
+  if (callback && callback->kind == SCR_DYN_UNDEF) return scr_crypto_sign_oneshot(algorithm, data, key);
+  scr_crypto_sign_oneshot_async(algorithm, data, key, callback);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_crypto_verify_oneshot_maybe(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                        ScrDyn *callback) {
+  if (callback && callback->kind == SCR_DYN_UNDEF)
+    return scr_crypto_verify_oneshot(algorithm, data, key, signature);
+  scr_crypto_verify_oneshot_async(algorithm, data, key, signature, callback);
+  if (scr_exc_pending()) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* ── RSA public-key encryption ─────────────────────────────────────────
  * publicEncrypt, privateDecrypt, privateEncrypt and publicDecrypt: the RSA
  * operation with the key's public half (encrypt and recover) or its private

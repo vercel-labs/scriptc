@@ -129,6 +129,52 @@ console.log(document.label, typeof document);
   expect(/"fn":"global\.bindingValue"/.test(ir)).toBe(true);
 });
 
+test("a declared global's typeof guard uses the non-throwing read before install", async () => {
+  // The comparison answers the global object's question for the name, so it
+  // answers "undefined" before the program installs the property. A read of
+  // the binding itself would throw Node's ReferenceError at the guard.
+  const ir = await irOf(
+    {
+      "main.ts": `/// <reference path="./globals.d.ts" />
+const key = "document";
+(globalThis as any)[key] = { label: "installed" };
+console.log(typeof document === "undefined");
+`,
+      "globals.d.ts": DECLARED_GLOBALS,
+    },
+    "main.ts",
+  );
+  expect(/"fn":"global\.bindingRead"/.test(ir)).toBe(false);
+  expect(/"fn":"global\.bindingValue"/.test(ir)).toBe(true);
+});
+
+test("a computed global write leaves built-in globals off the program table", async () => {
+  // A computed write can create any property, which is why a name nothing
+  // declares has a run-time typeof. It cannot replace one of Node's
+  // built-in globals, so those keep their built-in values and static reads.
+  const ir = await irOf(
+    {
+      "main.ts": `const key = "appState";
+(globalThis as any)[key] = 1;
+console.log(typeof Infinity, typeof NaN, typeof undefined, typeof Array);
+console.log(Infinity, Number.isNaN(NaN));
+`,
+    },
+    "main.ts",
+  );
+  expect(BINDING_CALLS.test(ir)).toBe(false);
+});
+
+test("a computed global write leaves built-in namespace objects alone", async () => {
+  const ir = await irOf({
+    "main.mjs": `const key = "appState";
+globalThis[key] = 1;
+console.log(typeof Math, typeof JSON, typeof Infinity);
+`,
+  });
+  expect(BINDING_CALLS.test(ir)).toBe(false);
+});
+
 test("a `declare global` block's binding is read the same way", async () => {
   const ir = await irOf(
     {

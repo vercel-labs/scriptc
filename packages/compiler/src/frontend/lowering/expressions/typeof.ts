@@ -722,6 +722,25 @@ export function lowerDynTypeofTest(
             loc,
           };
       }
+      // A global binding the program declares and TypeScript erases, when
+      // the program may have written the name on the global object: compare
+      // the non-throwing `typeof` value (an absent property answers
+      // "undefined"), never the binding. A read of the binding is Node's
+      // ReferenceError before the program installs the property, and the
+      // comparison must answer, not throw.
+      if (
+        ts.isIdentifier(operand) &&
+        erasedGlobalBindingOf(lowerer, operand) &&
+        programMayWriteGlobalName(lowerer, operand.text, operand)
+      )
+        return {
+          kind: "strEq",
+          negated,
+          left: lowerTypeofExpr(lowerer, a, loc),
+          right: { kind: "strLit", value: b.text, type: STRING, loc },
+          type: BOOL,
+          loc,
+        };
       // `typeof localStorage === "undefined"`: a global the declarations
       // type and Node 24 does not define, or a CommonJS binding in an ES
       // module. Node answers "undefined" without reading it, and a read

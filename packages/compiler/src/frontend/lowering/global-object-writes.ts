@@ -92,7 +92,10 @@ export function programMayWriteGlobalName(lowerer: Lowerer, name: string, node: 
  * through the global object, exactly as it resolves a name nothing declares.
  * A merged value declaration that is not such a declaration (a real `var` in
  * a script file, an import alias) answers false, as does a member of an
- * ambient namespace or a `.d.ts` module.
+ * ambient namespace or a `.d.ts` module, and a STANDARD-LIBRARY global
+ * (`Infinity`, `NaN`, `undefined`, `globalThis`, the constructors, Math,
+ * JSON): TypeScript erases those declarations too, but Node's global object
+ * has the built-in value.
  *
  * The read keeps that answer only where the program may have written the
  * name on the global object (programMayWriteGlobalName); every other read
@@ -103,6 +106,13 @@ export function erasedGlobalBindingOf(lowerer: Lowerer, id: ts.Identifier): bool
   // the global object's property.
   const symbol = lowerer.checker.getSymbolAtLocation(id);
   if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Alias) !== 0) return false;
+  // A STANDARD-LIBRARY global (Infinity, NaN, undefined, globalThis, the
+  // constructors, Math, JSON, the @types/node globals) does not use the
+  // global object's program-owned table: Node's global object defines the
+  // property with the built-in value, so a read answers the built-in even
+  // when the program may have written OTHER properties there. TypeScript
+  // erases the declaration, but the run-time binding exists.
+  if (lowerer.isStdlibSymbol(symbol)) return false;
   const declarations = lowerer.resolveValueSymbol(id)?.declarations ?? [];
   let sawValue = false;
   for (const declaration of declarations) {

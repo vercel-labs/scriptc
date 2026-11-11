@@ -1315,17 +1315,49 @@ export function lowerProcessProperty(
   if (member === "features") {
     return { kind: "libCall", fn: "process.features", args: [], type: DYN, loc };
   }
-  // process.noDeprecation / process.throwDeprecation: the values the
+  // process.noDeprecation / process.throwDeprecation /
+  // process.traceDeprecation / process.traceProcessWarnings: the values the
   // program assigned (undefined before that — no Node flags reach a
-  // compiled binary).
-  if (member === "noDeprecation" || member === "throwDeprecation") {
+  // compiled binary). The trace flags are plain writable properties in Node
+  // too: they are absent until assigned, and the warning report reads them
+  // on every warning.
+  if (
+    member === "noDeprecation" ||
+    member === "throwDeprecation" ||
+    member === "traceDeprecation" ||
+    member === "traceProcessWarnings"
+  ) {
+    const slot =
+      member === "noDeprecation"
+        ? 0
+        : member === "throwDeprecation"
+          ? 1
+          : member === "traceDeprecation"
+            ? 2
+            : 3;
     return {
       kind: "libCall",
       fn: "process.deprecationFlag",
-      args: [numLit(member === "noDeprecation" ? 0 : 1, loc)],
+      args: [numLit(slot, loc)],
       type: DYN,
       loc,
     };
+  }
+  // process.permission: Node defines the Permission object only when it
+  // runs with --permission. A compiled binary has no such mode, so the
+  // member is undefined exactly as it is in Node without the flag; a
+  // member read on it (`process.permission.has(...)`) throws Node's
+  // TypeError for reading a property of undefined.
+  if (member === "permission") {
+    return dynUndefinedExpr(loc);
+  }
+  // process.finalization: one stable object holding register,
+  // registerBeforeExit and unregister (scr_process_finalization, the
+  // events unit). Its members are ordinary function properties, so a
+  // stored method, a destructured one and a direct call all reach the
+  // same runtime thunk.
+  if (member === "finalization") {
+    return { kind: "libCall", fn: "process.finalization", args: [], type: DYN, loc };
   }
   if (member === "version") {
     // Node's own version string for the compatibility target, the same
@@ -1563,6 +1595,22 @@ export function lowerProcessMethodCall(
       type: DYN,
       loc,
     };
+  }
+  // process.abort(): Node's abort — the process terminates by SIGABRT
+  // (a parent sees the signal, not an exit status) after its output is
+  // flushed. Node also dumps its native and JavaScript stack traces to
+  // stderr; those name Node's own addresses and internal frames, so the
+  // compiled binary raises the signal without the dump.
+  // Arguments are ignored but still evaluated, like any call.
+  if (directProcessMember === "abort") {
+    const loc = locOf(call);
+    return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+      kind: "libCall",
+      fn: "process.abort",
+      args: [],
+      type: VOID,
+      loc,
+    }));
   }
   if (directProcessMember === "send") return lowerProcessIpcSend(lowerer, call);
   if (directProcessMember === "disconnect") return lowerProcessIpcDisconnect(lowerer, call);

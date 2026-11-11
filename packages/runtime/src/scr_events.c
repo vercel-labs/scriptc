@@ -1821,14 +1821,20 @@ void scr_run_exit_listeners(double code) {
     if (scr_context_checkpoint()) break;
 #endif
     if (scr_exc_pending()) {
-      /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
+      /* Node: a throw in an 'exit' listener is reported and the process
+       * leaves with the code it was already leaving with — process.exitCode
+       * when the program set one (0 included), else 1 (unset reads as
+       * undefined and an abnormal termination is 1). The remaining
+       * listeners do not run. */
+      int status = (int)code;
+      if (status == 0 && !scr_process_has_exit_code()) status = 1;
       scr_exc_print_uncaught();
       scr_stdout_settle();
       fflush(stdout);
 #ifdef SCR_WORKERS
-      if (!scr_context_is_main()) { scr_context_stop(7); break; }
+      if (!scr_context_is_main()) { scr_context_stop(status); break; }
 #endif
-      _Exit(7);
+      _Exit(status);
     }
   }
   for (size_t i = 0; i < scr_exit_n; i++) {
@@ -2041,6 +2047,297 @@ void scr_process_off_before_exit(ScrClosure *cb /*borrowed*/) {
   }
 }
 
+/* ── process.finalization ─────────────────────────────────────────────
+ * register/registerBeforeExit/unregister: the program hands an object and a
+ * callback to run when the process exits (or, for the second, at each
+ * 'beforeExit' emission). Node keeps the pairs in two Sets of WeakRefs and
+ * installs its own process listener the first time a set gains an entry, so
+ * the callbacks run at their registration position among the program's own
+ * listeners; a new registration made from inside a callback runs in the same
+ * drain (both drains walk until empty), and unregister drops by object
+ * identity. The node:internal/process/finalization source behind these
+ * rules is short enough to reproduce faithfully:
+ *
+ *  - register/registerBeforeExit validate the object Node's validateObject
+ *    does (any non-null non-array object, including functions) and do NOT
+ *    validate the callback — Node calls it at exit time, so a non-function
+ *    callback throws its "fn is not a function" there.
+ *  - unregister warns even when it does nothing, answers early (undefined)
+ *    while no registration exists, and otherwise renders V8's plain
+ *    TypeError for a token that is not an object, function or symbol
+ *    ("Invalid unregisterToken ('null')" and friends).
+ *  - the three methods each report one ExperimentalWarning per feature.
+ *
+ * Divergence (SEMANTICS.md): the refs are strong. RC keeps the object alive
+ * until the program drops it, where V8 would finalize it whenever it gets
+ * around to it — at latest at exit either way, so every callback the event
+ * lists still run every time. */
+
+typedef struct {
+  ScrDyn *ref; /* owned */
+  ScrDyn *cb; /* owned; may be a non-function (validated at fire time) */
+} ScrFinEntry;
+
+static SCR_TL ScrFinEntry *scr_fin_exit_ls = NULL;
+static SCR_TL size_t scr_fin_exit_n = 0, scr_fin_exit_cap = 0;
+static SCR_TL ScrFinEntry *scr_fin_bx_ls = NULL;
+static SCR_TL size_t scr_fin_bx_n = 0, scr_fin_bx_cap = 0;
+/* The process listeners the first registration installed (Node's install). */
+static SCR_TL ScrClosure *scr_fin_exit_cb = NULL;
+static SCR_TL ScrClosure *scr_fin_bx_cb = NULL;
+static SCR_TL ScrDyn *scr_fin_object = NULL;
+static SCR_TL bool scr_fin_warned_register = false;
+static SCR_TL bool scr_fin_warned_before_exit = false;
+static SCR_TL bool scr_fin_warned_unregister = false;
+
+static void scr_fin_warn(const char *feature, bool *shown) {
+  if (*shown) return;
+  *shown = true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, feature);
+  scr_jb_puts(&b, " is an experimental feature and might change at any time");
+  ScrStr *message = scr_jb_finish(&b);
+  ScrDyn *warning = scr_warning_new(message, "ExperimentalWarning", NULL);
+  scr_str_release(message);
+  scr_warning_emit_deferred(warning);
+  scr_dyn_release(warning);
+}
+
+/* Node's validateObject(obj, 'obj', kValidateObjectAllowFunction): any
+ * non-null object, functions included, arrays excluded. `new Array(n)`
+ * crosses the boundary as a typed reference capsule, so the array test is
+ * the Array.isArray predicate rather than the box kind. */
+static bool scr_fin_ref_ok(const ScrDyn *ref) {
+  switch (ref->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_BIGINT:
+    return false;
+  default:
+    return !(ref->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(ref));
+  }
+}
+
+static void scr_fin_push(ScrFinEntry **ls, size_t *n, size_t *cap, ScrDyn *ref, ScrDyn *cb) {
+  if (*n == *cap) {
+    size_t grown_cap = *cap ? *cap * 2 : 4;
+    ScrFinEntry *grown = realloc(*ls, grown_cap * sizeof **ls);
+    if (!grown) scr_events_oom();
+    *ls = grown;
+    *cap = grown_cap;
+  }
+  (*ls)[(*n)++] = (ScrFinEntry){scr_dyn_retain(ref), scr_dyn_retain(cb)};
+}
+
+/* onExit/onBeforeExit: drain the event's list, releasing each pair as it
+ * fires. A callback that registers another ref finds it appended to the same
+ * list and this loop reaches it in the same drain (Node's Set iteration); one
+ * that unregisters a later pair removes it before it is reached. A throw
+ * leaves the exception pending and stops the drain, like Node's propagating
+ * `fn(obj, event)`. */
+static void scr_fin_drain(ScrFinEntry **ls, size_t *n, const char *event_name) {
+  if (*n == 0) return;
+  ScrStr *name = scr_str_new(event_name, strlen(event_name));
+  ScrDyn *event = scr_dyn_new_str(name);
+  scr_str_release(name);
+  size_t i = 0;
+  while (i < *n) {
+    ScrFinEntry entry = (*ls)[i];
+    memmove(*ls + i, *ls + i + 1, (*n - i - 1) * sizeof **ls);
+    (*n)--;
+    ScrDyn *argv[2] = {entry.ref, event};
+    ScrDyn *result = scr_dyn_call(entry.cb, argv, 2, "fn");
+    scr_dyn_release(result);
+    scr_dyn_release(entry.ref);
+    scr_dyn_release(entry.cb);
+    if (scr_exc_pending()) break;
+  }
+  scr_dyn_release(event);
+}
+
+static void scr_fin_fire_exit(ScrClosure *cb) {
+  (void)cb;
+  scr_fin_drain(&scr_fin_exit_ls, &scr_fin_exit_n, "exit");
+}
+
+static void scr_fin_fire_before_exit(ScrClosure *cb) {
+  (void)cb;
+  scr_fin_drain(&scr_fin_bx_ls, &scr_fin_bx_n, "beforeExit");
+}
+
+/* install(event): the first registration for an event adds its process
+ * listener at the current position in that event's list. The exit list can
+ * already be swept (registering from inside an exit listener), in which case
+ * nothing is installed and the entry simply never runs — Node's emitter
+ * clones its list per emission the same way. */
+static void scr_fin_install(bool before_exit) {
+  if (before_exit) {
+    if (scr_fin_bx_cb != NULL) return;
+    ScrClosure *cb = scr_closure_new((void *)scr_fin_fire_before_exit, 0);
+    scr_process_on_before_exit(cb, scr_exit_thunk0, false);
+    scr_fin_bx_cb = cb;
+  } else {
+    if (scr_fin_exit_cb != NULL || scr_exit_ran) return;
+    ScrClosure *cb = scr_closure_new((void *)scr_fin_fire_exit, 0);
+    scr_process_on_exit(cb, scr_exit_thunk0, false);
+    scr_fin_exit_cb = cb;
+  }
+}
+
+/* uninstall(event): once both sets are empty, Node removes its process
+ * listeners and drops the registry — so a later unregister answers early
+ * instead of reaching V8's token check. */
+static void scr_fin_uninstall(void) {
+  if (scr_fin_exit_n > 0 || scr_fin_bx_n > 0) return;
+  if (scr_fin_exit_cb != NULL) {
+    scr_process_off_exit(scr_fin_exit_cb);
+    scr_fin_exit_cb = NULL;
+  }
+  if (scr_fin_bx_cb != NULL) {
+    scr_process_off_before_exit(scr_fin_bx_cb);
+    scr_fin_bx_cb = NULL;
+  }
+}
+
+/* The registry exists while any pair is registered (Node's `registry` is a
+ * FinalizationRegistry created by the first _register and nulled when both
+ * sets empty out). */
+static bool scr_fin_registry_exists(void) { return scr_fin_exit_n > 0 || scr_fin_bx_n > 0; }
+
+/* V8's FinalizationRegistry.prototype.unregister token check: objects,
+ * functions and symbols are tokens; every other primitive is rejected with
+ * the token rendered by ToString. */
+static bool scr_fin_token_invalid(const ScrDyn *token) {
+  switch (token->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_BIGINT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static void scr_fin_invalid_token(const ScrDyn *token) {
+  /* V8 builds its message with `${token}`: ToString, so a string token is
+   * unquoted and a bigint loses its suffix. */
+  ScrStr *text = scr_dyn_string_coerce_js(token);
+  if (text == NULL) text = scr_str_new("undefined", 9); /* unreachable: primitives */
+  ScrStr *prefix = scr_str_new("Invalid unregisterToken ('", 26);
+  ScrStr *suffix = scr_str_new("')", 2);
+  ScrStr *parts[3] = {prefix, text, suffix};
+  ScrStr *message = scr_str_concat_parts(parts, 3);
+  scr_str_release(prefix);
+  scr_str_release(text);
+  scr_str_release(suffix);
+  scr_throw_error(SCR_ERR_TYPE, message);
+}
+
+static void scr_fin_remove(ScrFinEntry **ls, size_t *n, const ScrDyn *token) {
+  for (size_t i = 0; i < *n;) {
+    if (scr_dyn_same_value((*ls)[i].ref, token)) {
+      scr_dyn_release((*ls)[i].ref);
+      scr_dyn_release((*ls)[i].cb);
+      memmove(*ls + i, *ls + i + 1, (*n - i - 1) * sizeof **ls);
+      (*n)--;
+    } else {
+      i++;
+    }
+  }
+}
+
+static ScrDyn *scr_fin_register_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.register", &scr_fin_warned_register);
+  ScrDyn *ref = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *cb = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (!scr_fin_ref_ok(ref)) {
+    scr_dyn_arg_type_fail("obj", "of type object", ref);
+    return NULL;
+  }
+  scr_fin_install(false);
+  scr_fin_push(&scr_fin_exit_ls, &scr_fin_exit_n, &scr_fin_exit_cap, ref, cb);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_fin_register_before_exit_call(ScrClosure *closure, ScrDyn *const *args,
+                                                 size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.registerBeforeExit", &scr_fin_warned_before_exit);
+  ScrDyn *ref = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *cb = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (!scr_fin_ref_ok(ref)) {
+    scr_dyn_arg_type_fail("obj", "of type object", ref);
+    return NULL;
+  }
+  scr_fin_install(true);
+  scr_fin_push(&scr_fin_bx_ls, &scr_fin_bx_n, &scr_fin_bx_cap, ref, cb);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_fin_unregister_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.unregister", &scr_fin_warned_unregister);
+  ScrDyn *token = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (!scr_fin_registry_exists()) return scr_dyn_undefined();
+  if (scr_fin_token_invalid(token)) {
+    scr_fin_invalid_token(token);
+    return NULL;
+  }
+  scr_fin_remove(&scr_fin_exit_ls, &scr_fin_exit_n, token);
+  scr_fin_remove(&scr_fin_bx_ls, &scr_fin_bx_n, token);
+  scr_fin_uninstall();
+  return scr_dyn_undefined();
+}
+
+/* The stable object every process.finalization read answers, like Node's. */
+ScrDyn *scr_process_finalization(void) {
+  if (scr_fin_object != NULL) return scr_dyn_retain(scr_fin_object);
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "register", 8,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_register_call, 2,
+                                   "(obj, fn)", "register"));
+  scr_dyn_obj_set(object, "registerBeforeExit", 18,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_register_before_exit_call, 2,
+                                   "(obj, fn)", "registerBeforeExit"));
+  scr_dyn_obj_set(object, "unregister", 10,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_unregister_call, 1, "(obj)",
+                                   "unregister"));
+  scr_fin_object = object;
+  return scr_dyn_retain(object);
+}
+
+/* Pairs a program leaves registered are Node-legitimate, not leaks (an
+ * explicit process.exit() never emits beforeExit); the exit-event drain has
+ * already emptied the exit list by the time this runs. */
+static void scr_fin_cleanup(void) {
+  for (size_t i = 0; i < scr_fin_exit_n; i++) {
+    scr_dyn_release(scr_fin_exit_ls[i].ref);
+    scr_dyn_release(scr_fin_exit_ls[i].cb);
+  }
+  free(scr_fin_exit_ls);
+  scr_fin_exit_ls = NULL;
+  scr_fin_exit_n = scr_fin_exit_cap = 0;
+  for (size_t i = 0; i < scr_fin_bx_n; i++) {
+    scr_dyn_release(scr_fin_bx_ls[i].ref);
+    scr_dyn_release(scr_fin_bx_ls[i].cb);
+  }
+  free(scr_fin_bx_ls);
+  scr_fin_bx_ls = NULL;
+  scr_fin_bx_n = scr_fin_bx_cap = 0;
+  if (scr_fin_object != NULL) {
+    scr_dyn_release(scr_fin_object);
+    scr_fin_object = NULL;
+  }
+}
+
 /* The runtime-provided stdin data adapters. */
 void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk) {
   (void)chunk;
@@ -2108,6 +2405,7 @@ static void scr_exit_atexit(void) {
  * a clean heap. */
 static void scr_events_cleanup_atexit(void) {
   if (scr_context_is_main()) scr_sig_cleanup();
+  scr_fin_cleanup();
   scr_bx_drop();
   scr_stdin_settle_done();
   scr_stdin_drop_listeners();

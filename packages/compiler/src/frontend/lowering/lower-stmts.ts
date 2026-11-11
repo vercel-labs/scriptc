@@ -11406,15 +11406,28 @@ export function lowerExprStatement(
             };
           }
           const flag = lowerer.stdlibGlobalMember(expr.left, "process");
-          if (flag === "noDeprecation" || flag === "throwDeprecation") {
+          if (
+            flag === "noDeprecation" ||
+            flag === "throwDeprecation" ||
+            flag === "traceDeprecation" ||
+            flag === "traceProcessWarnings"
+          ) {
             const loc = locOf(expr);
             const value = lowerer.lowerExprExpecting(expr.right, DYN);
+            const slot =
+              flag === "noDeprecation"
+                ? 0
+                : flag === "throwDeprecation"
+                  ? 1
+                  : flag === "traceDeprecation"
+                    ? 2
+                    : 3;
             return {
               kind: "exprStmt",
               expr: {
                 kind: "libCall",
                 fn: "process.setDeprecationFlag",
-                args: [numLit(flag === "noDeprecation" ? 0 : 1, loc), value],
+                args: [numLit(slot, loc), value],
                 type: VOID,
                 loc,
               },

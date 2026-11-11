@@ -87,10 +87,3 @@ compat-absent-node-apis.ts:26:25 - error SC0001: Property 'timeOrigin' does not 
   27 | const observer = new PerformanceObserver(() => {});
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
-
-compat-absent-node-apis.ts:31:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 63 more ...; disconnect(): void; }'.
-
-  30 | // process: finalization registration.
-  31 | process.finalization.register({ n: 1 }, () => {});
-     |         ^~~~~~~~~~~~
-  32 | 

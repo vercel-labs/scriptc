@@ -12,6 +12,10 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "process.finalization",
+  // scr_process_abort settles stdout and raises SIGABRT: it raises no
+  // error and runs no program code (the arguments were evaluated).
+  "process.abort",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   "global.bindingValue",

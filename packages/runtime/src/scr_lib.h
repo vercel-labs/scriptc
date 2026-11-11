@@ -178,6 +178,9 @@ bool scr_process_kill_dyn(const ScrDyn *pid, const ScrDyn *signal);
 /* fflush stdout, then _Exit((int)code): no atexit handlers run — the RC
  * audit is deliberately skipped (exiting mid-program leaves live values). */
 void scr_process_exit(double code);
+/* process.abort(): flush the program's output, then terminate by SIGABRT.
+ * Node's stack-trace dump is not reproduced (it names Node's addresses). */
+void scr_process_abort(void);
 /* process.exit(value): the exitCode setter's conversion first (null and
  * undefined clear the code, a numeric string is Number()'d, anything else
  * that is not an integer number throws its validation error), then the

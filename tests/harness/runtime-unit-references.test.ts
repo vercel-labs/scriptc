@@ -72,6 +72,11 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_ecdh.c -> scr_async_dyn.c": ["scr_emit_warning"],
   "scr_event_target.c -> scr_async_dyn.c": ["scr_dyn_new_promise", "scr_promise_resolve_dyn"],
+  // process.finalization's one-per-feature ExperimentalWarning asks the
+  // deferred warning queue, and every call that reaches the finalization
+  // registration selects dynAsync (runtime-features.ts). An events program
+  // without the registration (a held procStream type) links neither.
+  "scr_events.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
   "scr_events_once_signal.c -> scr_events_emitter.c": [
     "scr_emitter_off",
     "scr_emitter_on",

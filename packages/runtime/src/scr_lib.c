@@ -3097,6 +3097,20 @@ static void scr_process_exit_finish(int code) {
   _Exit((int)code);
 }
 
+/* process.abort(): flush the program's output and terminate by SIGABRT,
+ * the signal a parent observes (Node's own abort). Node also dumps a
+ * native and a JavaScript stack trace before the signal; those name Node's
+ * addresses and internal frames, so a compiled binary raises the signal
+ * without the dump. */
+void scr_process_abort(void) {
+  scr_stdout_settle();
+  fflush(stdout);
+  fflush(stderr);
+  /* abort() raises SIGABRT with the default disposition and terminates
+   * even when the program installed a handler, like Node's ABORT(). */
+  abort();
+}
+
 void scr_process_exit(double code) {
   /* process.exit(code) assigns process.exitCode first, so a code that is
    * not a safe integer throws its RangeError and the program continues. */

@@ -122,6 +122,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackGlob",
   "fs.callbackValue",
   "process.deprecationFlag",
+  // process.finalization reports its ExperimentalWarnings through this
+  // unit's deferred warning queue.
+  "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
   "process.offMultipleResolves",
@@ -821,6 +824,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offBeforeExit",
   "process.offExit",
   "process.offSignal",
+  "process.finalization",
   "process.onBeforeExit",
   "process.onExit",
   "process.onSignal",

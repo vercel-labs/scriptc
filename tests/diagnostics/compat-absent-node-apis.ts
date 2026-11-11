@@ -27,9 +27,6 @@ console.log(performance.timeOrigin);
 const observer = new PerformanceObserver(() => {});
 observer.observe({ entryTypes: ["mark"] });
 
-// process: finalization registration.
-process.finalization.register({ n: 1 }, () => {});
-
 // module: loader hooks and package lookup.
 register("./hooks.mjs", import.meta.url);
 console.log(findPackageJSON("..", import.meta.url));

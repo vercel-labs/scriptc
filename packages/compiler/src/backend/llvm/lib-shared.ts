@@ -443,6 +443,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.exiting": "scr_process_exiting",
   "process.ipcOpen": "scr_process_ipc_open",
   "process.exit": "scr_process_exit",
+  "process.abort": "scr_process_abort",
+  "process.finalization": "scr_process_finalization",
   "process.setExitCode": "scr_process_set_exit_code",
   "process.currentExitCode": "scr_process_exit_code_or_zero",
   "process.setExitCodeTracked": "scr_process_set_exit_code_tracked",
@@ -2129,6 +2131,10 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   "process.emitWarning",
+  // The finalization registration reports its ExperimentalWarnings through
+  // the deferred tick queue, and its callbacks run from the exit listeners
+  // the loop's end installs the ordering for: the queue must drain.
+  "process.finalization",
   // Constructor-function streams defer their events on the stream ticks.
   "dyn.builtinStreamClass",
   // Decipheriv.setAuthTag reports DEP0182 on the next tick.

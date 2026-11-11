@@ -4304,6 +4304,13 @@ function buildLibFnSignatures() {
      * array; never throws. */
     "process.envPairs": { argTypes: [], result: arrayOf(STRING) },
     "process.exit": { argTypes: [F64], result: VOID },
+    /** process.abort(): settles stdout, then raises SIGABRT with the default
+     * disposition (Node's dump names its own frames, so the compiled binary
+     * raises the signal without it). Never returns. */
+    "process.abort": { argTypes: [], result: VOID },
+    /** process.finalization: the stable register/registerBeforeExit/
+     * unregister object (fresh +1 reference to one cached value). */
+    "process.finalization": { argTypes: [], result: DYN },
     /** process.exit(expr) for a non-number expr: Node's exitCode setter
      * converts ('' is a TypeError, ' ' is 0, '0x10' is 16, null and
      * undefined clear) before exiting with the resulting status. */

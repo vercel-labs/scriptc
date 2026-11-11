@@ -403,9 +403,10 @@ extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */
 extern SCR_TL bool scr_warning_trace_hint_shown;
-/* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
- * the stored value (+1; undefined until assigned), the assignment
- * (borrowed), and the truthiness the warning paths test. */
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3): the
+ * stored value (+1; undefined until assigned), the assignment (borrowed),
+ * and the truthiness the warning paths test. */
 ScrDyn *scr_process_deprecation_flag(double which);
 void scr_process_set_deprecation_flag(double which, ScrDyn *value);
 bool scr_process_deprecation_flag_on(int which);

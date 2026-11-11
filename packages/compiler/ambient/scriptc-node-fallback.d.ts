@@ -107,7 +107,9 @@ declare namespace NodeJS {
     reportOnFatalError: boolean;
     reportOnSignal: boolean;
     reportOnUncaughtException: boolean;
+    excludeEnv: boolean;
     getReport(error?: Error): object;
+    writeReport(filename?: string, error?: Error): string;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -290,6 +292,14 @@ interface ProcessChannel {
   unref(): void;
 }
 
+/* Node's permission model queries (--permission), which a compiled binary
+ * cannot enable: process.permission is undefined, the same as Node's
+ * without the flag. */
+interface ProcessPermission {
+  has(scope: string, reference?: string): boolean;
+  drop(scope: string, reference?: string): void;
+}
+
 declare var process: {
   getBuiltinModule(id: string): unknown;
   hrtime: {
@@ -321,6 +331,11 @@ declare var process: {
   /* Node's feature flags with the values that hold for a compiled binary
    * (see NodeJS.ProcessFeatures). */
   readonly features: NodeJS.ProcessFeatures;
+  /* The permission model's object. Node defines it only under
+   * --permission, a Node command-line mode a compiled binary cannot run
+   * with, so the member is undefined exactly as in Node without the flag;
+   * a member read on it throws Node's TypeError. */
+  readonly permission: ProcessPermission | undefined;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -387,6 +402,17 @@ declare var process: {
   readonly release: NodeJS.ProcessRelease;
   /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
   readonly report: NodeJS.ProcessReport;
+  /* Exit and beforeExit callbacks for objects the program registers. The
+   * callback receives the object and the event name. */
+  readonly finalization: {
+    register(ref: object, callback: (ref: object, event: "exit") => void): void;
+    registerBeforeExit(ref: object, callback: (ref: object, event: "beforeExit") => void): void;
+    unregister(ref: object): void;
+  };
+  /* Terminate the process with SIGABRT after its output is flushed
+   * (Node's diagnostics dump names its own addresses and is not
+   * reproduced; the signal and the flush are). */
+  abort(): never;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -397,6 +423,11 @@ declare var process: {
    * process.emitWarning); undefined until assigned. */
   noDeprecation?: boolean;
   throwDeprecation?: boolean;
+  /* Show the stack trace of a warning in place of its one-line report
+   * (Node's --trace-deprecation and --trace-warnings): undefined until
+   * assigned, since no command-line flag reaches a compiled binary. */
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The

@@ -56,6 +56,10 @@ bool scr_run_before_exit_listeners(double code);
 extern SCR_TL bool (*scr_process_before_exit_hook)(double code);
 void scr_exit_thunk0(ScrClosure *cb, double code);
 void scr_exit_thunk_code(ScrClosure *cb, double code);
+/* process.finalization: the stable register/registerBeforeExit/unregister
+ * object (+1). Its callbacks run from process listeners this unit installs
+ * on the first registration for each event. */
+ScrDyn *scr_process_finalization(void);
 void scr_stdin_on_data(ScrClosure *cb, void (*fn)(ScrClosure *, ScrBytes *), bool once);
 /* A string 'data' listener (moves cb): receives each chunk decoded by the
  * stdin's setEncoding decoder; with no encoding set, a delivery throws

@@ -3325,6 +3325,20 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "process.exit and the process._exiting flag read are one surface",
     },
     {
+      id: "node-builtin.process.abort",
+      kind: "node-builtin",
+      name: "process.abort",
+      fns: ["process.abort"],
+      note: "flushes stdout and stderr and raises SIGABRT; without Node's native and JavaScript stack dumps",
+    },
+    {
+      id: "node-builtin.process.finalization",
+      kind: "node-builtin",
+      name: "process.finalization",
+      fns: ["process.finalization"],
+      note: "register, registerBeforeExit and unregister on one stable object; the callbacks run from process 'exit'/'beforeExit' listeners installed at the first registration",
+    },
+    {
       id: "node-builtin.process.exitCode",
       kind: "node-builtin",
       name: "process.exitCode",

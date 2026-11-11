@@ -82250,6 +82250,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/compiler/test/node-value-reads.test.ts",
           "packages/compiler/test/process-builtin-values.test.ts",
           "tests/corpus/1443-signal-handlers.ts",
           "tests/corpus/1445-exit-process-exit.ts",
@@ -82289,6 +82290,7 @@
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-imports.cjs",
+          "tests/corpus/process-abort.ts",
           "tests/corpus/process-allowed-node-env-flags-destructured.cjs",
           "tests/corpus/process-allowed-node-env-flags.ts",
           "tests/corpus/process-argv-surface.mjs",
@@ -82319,6 +82321,9 @@
           "tests/corpus/process-exit-event.mjs",
           "tests/corpus/process-exit-value-forms.cjs",
           "tests/corpus/process-feature-flags.mjs",
+          "tests/corpus/process-finalization-errors.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization.ts",
           "tests/corpus/process-hrtime.js",
           "tests/corpus/process-ignored-arguments.cjs",
           "tests/corpus/process-ipc-surface/main.ts",
@@ -82332,6 +82337,7 @@
           "tests/corpus/process-multiple-resolves.cjs",
           "tests/corpus/process-named-signals.cjs",
           "tests/corpus/process-next-tick-callback-checks.cjs",
+          "tests/corpus/process-permission.ts",
           "tests/corpus/process-pid-ppid.mjs",
           "tests/corpus/process-platform-arch-version.mjs",
           "tests/corpus/process-ref-protocol.cjs",
@@ -82354,15 +82360,17 @@
           "tests/corpus/process-versions-object.mjs",
           "tests/corpus/process-versions-storage.ts",
           "tests/corpus/process-warning-events.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-errors.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdout-write-patch.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-types/env-files.ts",
+          "tests/fixtures/node-types/fenced.ts",
           "tests/fixtures/node-types/util-callables.ts",
+          "tests/harness/__snapshots__/node-types-fenced.txt",
           "tests/harness/event-loop.test.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -82795,10 +82803,10 @@
       "anchor": "processabort",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.abort",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-abort.ts"
         ]
       },
       "anchorSource": "exact"
@@ -82954,8 +82962,8 @@
       "anchor": "processdlopenmodule-filename-flags",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:addons"
       },
       "anchorSource": "exact"
     },
@@ -83089,10 +83097,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.register",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83115,10 +83125,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.registerBeforeExit",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83141,10 +83153,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:process.process.finalization.unregister",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/corpus/process-finalization.ts",
+          "tests/corpus/process-finalization-order.ts",
+          "tests/corpus/process-finalization-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -84098,7 +84112,11 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.config",
+        "tests": [
+          "tests/fixtures/node-types/fenced.ts",
+          "tests/harness/__snapshots__/node-types-fenced.txt"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -84546,10 +84564,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:process.mainModule",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/diagnostics/compat-absent-node-values.ts",
+          "packages/compiler/test/node-value-reads.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -84573,6 +84592,7 @@
           "tests/corpus/5188-util-deprecate-flags.cjs",
           "tests/corpus/5189-util-deprecate.ts",
           "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/fixtures/node-types/util-callables.ts"
         ]
       },
@@ -84591,8 +84611,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.permission",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -84609,8 +84632,11 @@
       "anchor": "processpermissionhasscope-reference",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.permission.has",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84632,8 +84658,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "partial",
+        "evidence": "compiler-feature:process.process.permission.drop",
+        "tests": [
+          "tests/corpus/process-permission.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84777,8 +84806,11 @@
       "anchor": "processreportwritereportfilename-err",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.process.report.writeReport",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84921,8 +84953,11 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "island-served",
+        "evidence": "compiler-feature:process.excludeEnv",
+        "tests": [
+          "tests/corpus/8830-process-report-island/main.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85160,6 +85195,7 @@
           "tests/corpus/5188-util-deprecate-flags.cjs",
           "tests/corpus/5189-util-deprecate.ts",
           "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
           "tests/fixtures/node-types/util-callables.ts"
         ]
       },
@@ -85200,8 +85236,15 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.traceDeprecation",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -85218,8 +85261,15 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "status": "supported",
+        "evidence": "compiler-feature:process.traceProcessWarnings",
+        "tests": [
+          "tests/corpus/5188-util-deprecate-flags.cjs",
+          "tests/corpus/5189-util-deprecate.ts",
+          "tests/corpus/process-deprecation-flags.cjs",
+          "tests/corpus/process-warning-trace-flags.ts",
+          "tests/fixtures/node-types/util-callables.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

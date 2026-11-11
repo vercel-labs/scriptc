@@ -1431,22 +1431,29 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
-/* process.noDeprecation (0) and process.throwDeprecation (1): ordinary
- * writable process properties, undefined until the program assigns them.
- * A compiled binary takes no Node command-line flags, so only those
- * assignments set them. */
-static SCR_TL ScrDyn *scr_deprecation_flags[2] = {NULL, NULL};
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3):
+ * ordinary writable process properties, undefined until the program
+ * assigns them. A compiled binary takes no Node command-line flags, so
+ * only those assignments set them. */
+static SCR_TL ScrDyn *scr_deprecation_flags[4] = {NULL, NULL, NULL, NULL};
 static SCR_TL bool scr_deprecation_flags_registered = false;
 
+static size_t scr_deprecation_flag_slot(double which) {
+  if (which == 0) return 0;
+  if (which == 1) return 1;
+  return which == 2 ? 2 : 3;
+}
+
 static void scr_deprecation_flags_teardown(void) {
-  for (size_t i = 0; i < 2; i++) {
+  for (size_t i = 0; i < 4; i++) {
     scr_dyn_release(scr_deprecation_flags[i]);
     scr_deprecation_flags[i] = NULL;
   }
 }
 
 ScrDyn *scr_process_deprecation_flag(double which) {
-  ScrDyn *value = scr_deprecation_flags[which != 0];
+  ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot(which)];
   return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
@@ -1455,15 +1462,23 @@ void scr_process_set_deprecation_flag(double which, ScrDyn *value) {
     scr_deprecation_flags_registered = true;
     scr_atexit(scr_deprecation_flags_teardown);
   }
-  size_t slot = which != 0;
+  size_t slot = scr_deprecation_flag_slot(which);
   ScrDyn *previous = scr_deprecation_flags[slot];
   scr_deprecation_flags[slot] = scr_dyn_retain(value);
   scr_dyn_release(previous);
 }
 
 bool scr_process_deprecation_flag_on(int which) {
-  const ScrDyn *value = scr_deprecation_flags[which != 0];
+  const ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot((double)which)];
   return value != NULL && scr_dyn_truthy(value);
+}
+
+/* Node's onWarning trace test: process.traceProcessWarnings for every
+ * warning, process.traceDeprecation for deprecations too. A set flag makes
+ * the report print the warning's own stack in place of its one-line
+ * "Name: message" and drops the one-time hint. */
+static bool scr_warning_trace_on(bool deprecation) {
+  return scr_process_deprecation_flag_on(3) || (deprecation && scr_process_deprecation_flag_on(2));
 }
 
 /* The warning's name as warning.toString() reads it: the own property, or
@@ -1534,7 +1549,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
     ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
     if (!scr_exc_pending())
       (void)scr_ni_warning(w, code, detail,
-                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0),
+                           scr_process_deprecation_flag_on(3) != 0,
+                           scr_process_deprecation_flag_on(2) != 0);
     scr_dyn_release(code);
     scr_dyn_release(detail);
     return;
@@ -1549,15 +1566,23 @@ static void scr_warning_dispatch(ScrDyn *w) {
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
   if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
+  /* process.traceProcessWarnings / process.traceDeprecation: the report
+   * prints the warning's own stack instead of the one-line heading (Node's
+   * onWarning). The stack carries the heading too, so the name and message
+   * reads stay for the untraced report and for a warning whose stack was
+   * deleted. */
+  bool trace = scr_warning_trace_on(deprecation);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
   ScrDyn *ed = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+  ScrDyn *es = trace && !scr_exc_pending() ? scr_warning_field(w, "stack", 5) : NULL;
   if (scr_exc_pending()) {
     /* A read that threw reports nothing; the exception propagates. */
     scr_str_release(name);
     scr_dyn_release(em);
     scr_dyn_release(ec);
     scr_dyn_release(ed);
+    scr_dyn_release(es);
     return;
   }
   ScrJsonBuf report;
@@ -1570,11 +1595,18 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_put_str(&report, ec->v.str);
     scr_jb_puts(&report, "] ");
   }
-  if (name) scr_jb_put_str(&report, name);
-  else scr_jb_puts(&report, "Warning");
+  if (es && es->kind == SCR_DYN_STR) {
+    /* The stack starts with the "Name: message" heading Node's untraced
+     * report spells out below. */
+    scr_jb_put_str(&report, es->v.str);
+  } else {
+    if (name) scr_jb_put_str(&report, name);
+    else scr_jb_puts(&report, "Warning");
+    scr_jb_puts(&report, ": ");
+    if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  }
   scr_str_release(name);
-  scr_jb_puts(&report, ": ");
-  if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  scr_dyn_release(es);
   if (ed && ed->kind == SCR_DYN_STR) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
@@ -1582,9 +1614,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_dyn_release(em);
   scr_dyn_release(ec);
   scr_dyn_release(ed);
-  /* Node's one-time trace hint, after the first report; deprecations
-   * name their own trace flag. */
-  if (!scr_warning_trace_hint_shown) {
+  /* Node's one-time trace hint, after the first untraced report;
+   * deprecations name their own trace flag. */
+  if (!trace && !scr_warning_trace_hint_shown) {
     scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"

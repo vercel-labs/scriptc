@@ -2372,6 +2372,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.process.abort",
+      "kind": "node-builtin",
+      "name": "process.abort",
+      "status": "static",
+      "note": "flushes stdout and stderr and raises SIGABRT; without Node's native and JavaScript stack dumps"
+    },
+    {
       "id": "node-builtin.process.allowedNodeEnvironmentFlags",
       "kind": "node-builtin",
       "name": "process.allowedNodeEnvironmentFlags",
@@ -2474,6 +2481,13 @@
       "name": "process.features",
       "status": "static",
       "note": "Node's feature flags as booleans that describe the compiled binary: inspector, debug, uv, tls_ocsp, cached_builtins, quic and typescript are false, the others match Node"
+    },
+    {
+      "id": "node-builtin.process.finalization",
+      "kind": "node-builtin",
+      "name": "process.finalization",
+      "status": "static",
+      "note": "register, registerBeforeExit and unregister on one stable object; the callbacks run from process 'exit'/'beforeExit' listeners installed at the first registration"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",

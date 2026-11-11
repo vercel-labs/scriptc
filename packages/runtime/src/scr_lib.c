@@ -10554,9 +10554,24 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
   ScrBytes *bytes;
   size_t key_object_len;
   const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
-  if (key_object) {
-    bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
-    if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  const unsigned char *crypto_key = NULL;
+  size_t crypto_key_len = 0;
+  int crypto_key_kind = 0;
+  if (!key_object && scr_crypto_crypto_key_info)
+    crypto_key_kind = scr_crypto_crypto_key_info(key, &crypto_key, &crypto_key_len);
+  if (key_object || crypto_key) {
+    /* prepareSecretKey: a secret KeyObject or CryptoKey supplies its bytes,
+     * and a CryptoKey reports DEP0203. */
+    size_t len = key_object ? key_object_len : crypto_key_len;
+    const unsigned char *data = key_object ? key_object : crypto_key;
+    if (crypto_key && scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(bytes->data, data, len);
+  } else if (crypto_key_kind) {
+    /* A public or private CryptoKey: DEP0203, then Node's key type error. */
+    if (scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    scr_crypto_invalid_key_object_type(crypto_key_kind == 3);
+    return NULL;
   } else if (scr_crypto_is_key_object(key)) {
     /* A private or public KeyObject: scr_pki.c reports Node's error. */
     scr_crypto_reject_asymmetric_secret(key);
@@ -11291,6 +11306,24 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
 
+/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c): the deferral
+ * lives in that unit, so scr_lib.c calls it through this pointer and a
+ * program that links scr_lib.c without the crypto async unit still links. */
+void (*scr_crypto_defer_callback)(ScrDyn *, ScrDyn *, ScrDyn *) = NULL;
+
+int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
+
+/* DEP0203, once per process: passing a CryptoKey to node:crypto functions
+ * is deprecated. scr_async_dyn.c, which owns the process-warning channel
+ * and which every program holding a CryptoKey links, installs it. */
+void (*scr_crypto_deprecate_crypto_key)(void) = NULL;
+
+void scr_crypto_invalid_key_object_type(bool private_key) {
+  scr_throw_error_msg_code(SCR_ERR_TYPE,
+                           private_key ? "Invalid key object type private, expected secret."
+                                       : "Invalid key object type public, expected secret.",
+                           private_key ? 49 : 48, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
+}
 /* `value instanceof KeyObject`: a secret key, or a private or public key
  * (scr_pki.c, matched by its handle tags so this unit does not link it). */
 bool scr_crypto_is_key_object(const ScrDyn *value) {
@@ -11690,7 +11723,8 @@ void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterati
         delivery = scr_dyn_new_buffer(value);
         scr_bytes_release(value);
       }
-      scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), error, delivery);
+      if (scr_crypto_defer_callback)
+        scr_crypto_defer_callback(scr_dyn_retain(callback_value), error, delivery);
     }
   }
   scr_bytes_release(sl);

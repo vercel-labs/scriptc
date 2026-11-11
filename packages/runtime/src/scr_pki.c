@@ -2595,11 +2595,7 @@ static const ScrDynHandleOps sp_public_ops = {
 
 /* createHmac with a private or public key (scr_crypto_reject_asymmetric_secret). */
 static void sp_reject_as_secret(const ScrDyn *key) {
-  bool private_key = key->v.handle.tag == SCR_DYNH_PRIVATE_KEY;
-  scr_throw_error_msg_code(SCR_ERR_TYPE,
-                           private_key ? "Invalid key object type private, expected secret."
-                                       : "Invalid key object type public, expected secret.",
-                           private_key ? 49 : 48, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE");
+  scr_crypto_invalid_key_object_type(key->v.handle.tag == SCR_DYNH_PRIVATE_KEY);
 }
 
 static void sp_key_install(void) {

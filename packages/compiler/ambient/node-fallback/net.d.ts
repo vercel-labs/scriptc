@@ -235,6 +235,12 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* http servers: a request past server.maxRequestsPerSocket (the
+     * server answers 503 itself). */
+    on(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     /* tls and https servers: a handshake that failed */
@@ -256,6 +262,10 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    addListener(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     once(event: "connection", listener: (socket: Socket) => void): void;
     once(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
@@ -276,6 +286,10 @@ declare module "net" {
     once(
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    once(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
     ): void;
     /* The EventEmitter meta event: fires with the event name before a
      * listener joins any of the server's lists. */
@@ -303,6 +317,10 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    off(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     removeListener(event: "error", listener: (err: Error) => void): void;
     removeListener(event: "close" | "listening", listener: () => void): void;
     removeListener(
@@ -325,6 +343,10 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    removeListener(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     /* The event's listeners in registration order, each the function the
      * program registered (Node's identity semantics), typed by the event's
      * listener shape. */
@@ -344,6 +366,9 @@ declare module "net" {
     listeners(
       event: "request" | "checkContinue" | "checkExpectation",
     ): ((req: import("http").IncomingMessage, res: import("http").ServerResponse) => void)[];
+    listeners(
+      event: "dropRequest",
+    ): ((req: import("http").IncomingMessage, socket: Socket) => void)[];
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {

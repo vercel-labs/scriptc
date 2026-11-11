@@ -567,25 +567,9 @@ export function variantsFor(source) {
       defines: ["SCR_HTTP_SERVER_META"],
     });
   }
-  // Programs with web streams link the promise unit with native promise
-  // reactions, the builtin-class unit whose instanceof knows their classes,
-  // and the fetch unit that takes their streams as bodies; every other
-  // program keeps the default objects.
-  if (source === "scr_async.c") {
-    variants.push({
-      id: "native-reactions",
-      when: { webStreams: true },
-      defines: ["SCR_NATIVE_REACTIONS"],
-    });
-    // A program with both web streams and Node islands needs both builds:
-    // the island slot carries the hosted loop, and the variant with the
-    // most conditions is the one selected.
-    variants.push({
-      id: "native-reactions-node-island",
-      when: { webStreams: true, nodeIsland: true },
-      defines: ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS"],
-    });
-  }
+  // Programs with web streams link the builtin-class unit whose instanceof
+  // knows their classes and the fetch unit that takes their streams as
+  // bodies; every other program keeps the default objects.
   if (source === "scr_dyn_builtin_class.c" || source === "scr_fetch.c") {
     variants.push({
       id: "handle-classes",
@@ -624,19 +608,9 @@ export function variantsFor(source) {
     for (const [id, when, defines] of [
       ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
       [
-        "native-reactions-promise-reject-dyn",
-        { webStreams: true, promiseRejectDyn: true },
-        ["SCR_NATIVE_REACTIONS", "SCR_PROMISE_REJECT_DYN"],
-      ],
-      [
         "node-island-promise-reject-dyn",
         { nodeIsland: true, promiseRejectDyn: true },
         ["SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
-      ],
-      [
-        "native-reactions-node-island-promise-reject-dyn",
-        { webStreams: true, nodeIsland: true, promiseRejectDyn: true },
-        ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
       ],
     ])
       variants.push({ id, when, defines });

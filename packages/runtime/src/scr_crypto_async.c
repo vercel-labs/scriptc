@@ -75,6 +75,13 @@ void scr_crypto_defer_dyn_callback(ScrDyn *callback, ScrDyn *error, ScrDyn *valu
   scr_loop_defer(c);
 }
 
+/* scr_lib.c's pbkdf2 callback reaches the deferral through the hook, so the
+ * unit links without this one; the pack always links it, so the hook is
+ * installed in every program. */
+__attribute__((constructor)) static void scr_crypto_async_install(void) {
+  scr_crypto_defer_callback = scr_crypto_defer_dyn_callback;
+}
+
 /* randomFill(buf, [offset, [size,]] callback) over a typed view: the fill
  * happens now, and the callback receives the same view in a later
  * macrotask, or synchronously when nothing is filled, as in Node. */

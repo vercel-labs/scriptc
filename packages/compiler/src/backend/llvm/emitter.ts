@@ -3614,7 +3614,7 @@ export class LlEmitter {
     for (const fn of this.mod.functions) {
       if (fn.async !== true || fn.generator !== undefined) continue;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
-      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
+      if (parks.has(fn.name)) continue;
       if (!this.fnDefText.has(fn.name) || this.stacklessAsync.has(fn.name)) continue;
       eligible.add(fn.name);
     }
@@ -3668,8 +3668,10 @@ export class LlEmitter {
    * coroutine form is then emitted and must pass the same test with no
    * exceptions (its frame bookkeeping excepted); otherwise the fiber form
    * stays. Bodies that never suspend stay fiberless, and module evaluation
-   * bodies and async functions with `dyn` results keep fibers as they do
-   * there. The runtime traps if a stackless body ever parks. */
+   * bodies keep fibers as they do there. A `dyn` result settles the promise
+   * through the resolution procedure, which never parks the body: a promise
+   * it holds is adopted by a reaction on it (scr_promise_resolve_dyn). The
+   * runtime traps if a stackless body ever parks. */
   selectStacklessAsync(fnDefs: string[]): void {
     if (!this.stacklessAsyncAllowed) return;
     const parks = this.parkingFunctions();
@@ -3686,9 +3688,6 @@ export class LlEmitter {
     this.mod.functions.forEach((fn, index) => {
       if (fn.async !== true) return;
       if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
-      // A dyn result may adopt a thenable when it settles the promise; an
-      // async generator's completion value settles its request's record.
-      if (fn.generator === undefined && fn.returnType.kind === "dyn") return;
       if (!parks.has(fn.name)) return;
       // An async generator's body also suspends at its own yields.
       let fiberText = fnDefs[index]!.replace(AWAIT_SUSPENSIONS, "");
@@ -3908,12 +3907,13 @@ export class LlEmitter {
 
   /** Whether a stackless coroutine body's `await f(...)` may run f's body in
    * place (emitCoroInlineAwait): f never suspends, and its direct call is
-   * one an await-call entry could take. */
+   * one an await-call entry could take. A `dyn` result may hold a promise
+   * the await must adopt, so it keeps its promise. */
   inlineAwaitEligible(fnName: string): boolean {
     if (this.wasi || this.currentCoro?.kind !== "async") return false;
     const fn = this.fnByName.get(fnName);
     if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
-    return fn.captures === undefined;
+    return fn.captures === undefined && fn.returnType.kind !== "dyn";
   }
 
   /** Whether a stackless coroutine body's `await f(...)` may await f's

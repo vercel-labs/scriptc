@@ -577,12 +577,32 @@ static ScrDyn *sc_cipher_new(bool decrypt, ScrDyn *cipher, ScrDyn *key, ScrDyn *
   ScrDyn *encoding = sc_string_option(options, "encoding", &failed);
   if (failed) return NULL;
   ScrBytes *key_bytes = NULL;
-  size_t key_object_len;
+  size_t key_object_len = 0;
   const unsigned char *key_object = scr_key_object_bytes(key, &key_object_len);
-  if (key_object) {
-    /* prepareSecretKey: a secret KeyObject supplies its bytes. */
-    key_bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
-    if (key_object_len) memcpy(key_bytes->data, key_object, key_object_len);
+  const unsigned char *crypto_key = NULL;
+  size_t crypto_key_len = 0;
+  int crypto_key_kind = 0;
+  if (!key_object && scr_crypto_crypto_key_info)
+    crypto_key_kind = scr_crypto_crypto_key_info(key, &crypto_key, &crypto_key_len);
+  if (key_object || crypto_key) {
+    /* prepareSecretKey: a secret KeyObject or CryptoKey supplies its bytes,
+     * and Node deprecates the CryptoKey. */
+    size_t len = key_object ? key_object_len : crypto_key_len;
+    const unsigned char *data = key_object ? key_object : crypto_key;
+    if (crypto_key && scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    key_bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(key_bytes->data, data, len);
+  } else if (crypto_key_kind) {
+    /* A public or private CryptoKey: DEP0203, then Node's key type error. */
+    scr_dyn_release(encoding);
+    if (scr_crypto_deprecate_crypto_key) scr_crypto_deprecate_crypto_key();
+    scr_crypto_invalid_key_object_type(crypto_key_kind == 3);
+    return NULL;
+  } else if (scr_crypto_is_key_object(key)) {
+    /* A private or public KeyObject: scr_pki.c reports Node's error. */
+    scr_dyn_release(encoding);
+    scr_crypto_reject_asymmetric_secret(key);
+    return NULL;
   } else if (key->kind == SCR_DYN_STR || sc_is_view(key) || scr_buffer_storage_is(key)) {
     key_bytes = sc_buffer_or_view(key, "key", encoding);
   } else {
@@ -1695,12 +1715,13 @@ static ScrDyn *sc_set_aad(ScCipher *c, ScrDyn *self, ScrDyn *buffer, ScrDyn *opt
     scr_bytes_release(aad);
     return ok ? scr_dyn_retain(self) : NULL;
   }
-  /* After data, GCM refuses any AAD and chacha20-poly1305 refuses
-   * non-empty AAD. */
-  bool ok = c->active && sc_aead(c) && !(c->data_started && (c->mode == SC_GCM || aad->len > 0));
+  /* After data, both AEAD ciphers refuse non-empty AAD; an empty setAAD is
+   * a no-op in Node, before or after data. */
+  bool ok = c->active && sc_aead(c) && !(c->data_started && aad->len > 0);
   bool backend = true;
-  if (ok && c->mode == SC_GCM) backend = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
-  if (ok && c->mode == SC_CHACHA && aad->len > 0) {
+  if (ok && aad->len > 0 && c->mode == SC_GCM)
+    backend = mbedtls_gcm_update_ad(&c->gcm, aad->data, aad->len) == 0;
+  if (ok && aad->len > 0 && c->mode == SC_CHACHA) {
     backend = mbedtls_poly1305_update(&c->poly, aad->data, aad->len) == 0;
     c->aad_len += aad->len;
     c->aad_open = true;

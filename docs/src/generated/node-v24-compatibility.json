@@ -10957,8 +10957,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -10980,8 +10980,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -12406,8 +12406,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12429,8 +12429,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12452,8 +12452,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12475,8 +12475,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12498,8 +12498,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12521,8 +12521,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12544,8 +12544,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12567,8 +12567,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12590,8 +12590,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12613,8 +12613,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12636,8 +12636,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -12659,8 +12659,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
+        "status": "supported",
+        "detail": "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.",
         "verification": "test-backed"
       }
     },
@@ -35758,9 +35758,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36402,9 +36402,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36448,9 +36448,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36678,9 +36678,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42980,9 +42980,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -83386,8 +83386,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.",
+        "status": "supported",
+        "detail": "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.",
         "verification": "test-backed"
       }
     },

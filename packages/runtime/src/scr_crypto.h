@@ -90,6 +90,22 @@ bool scr_crypto_is_key_object(const ScrDyn *value);
  * installs it with them, so its messages stay out of other programs. */
 extern void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key);
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len);
+/* A WebCrypto CryptoKey as node:crypto reads a key argument (scr_webcrypto.c
+ * installs this when it makes, imports or generates a key): 0 for any other
+ * value, 1 for a secret key with *bytes and *len set, 2 for a public and 3
+ * for a private asymmetric key. Node deprecates passing a CryptoKey to
+ * node:crypto (DEP0203) and its ciphers and HMACs use a secret key's bytes. */
+extern int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes,
+                                         size_t *len);
+/* DEP0203, once per process: passing a CryptoKey to node:crypto functions
+ * is deprecated. scr_async_dyn.c, which owns the process-warning channel
+ * and which every program that can hold a CryptoKey links, installs it;
+ * the ciphers and Hmac constructors call it when a CryptoKey supplies the
+ * key bytes. */
+extern void (*scr_crypto_deprecate_crypto_key)(void);
+/* Throws Node's ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE for a public or private
+ * key used where a secret key is expected (scr_lib.c). */
+void scr_crypto_invalid_key_object_type(bool private_key);
 /* crypto.createCipheriv (decrypt false) and crypto.createDecipheriv
  * (decrypt true) over checked-dynamic arguments (scr_cipher.c, linked
  * with the vendored mbedTLS archive). +1 handle, or NULL with Node's
@@ -146,9 +162,12 @@ void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* move
 void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                           ScrCryptoBytesFn fn);
 /* A checked-dynamic callback(error, value) delivered in a later macrotask;
- * a NULL value calls it with the error alone. Every argument is moved. */
-void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
-                                   ScrDyn *value /* moves, may be NULL */);
+ * a NULL value calls it with the error alone. Every argument is moved.
+ * Set by the callback-style wrappers (scr_crypto_async.c), which the pack
+ * always links as a base unit and the minimal runtime tests do not: the
+ * deferral lives there, so a build of scr_lib.c alone stays linkable. */
+extern void (*scr_crypto_defer_callback)(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
+                                         ScrDyn *value /* moves, may be NULL */);
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,

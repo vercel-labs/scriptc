@@ -1501,8 +1501,14 @@ function functionReadsInheritedMember(fn: IrFunction): boolean {
  * function: a typed callable, a class value, or a checked-dynamic value,
  * which may hold an any-typed function. Only a boxed non-callable (a record,
  * bytes, a handle) proves the definition never reaches the function path, so
- * a definition on one of those selects the default objects. */
-function moduleShadowsFunctionMember(mod: IrModule): boolean {
+ * a definition on one of those selects the default objects.
+ *
+ * The receiver proofs that read `f.call(this, …)` as the builtin rest on
+ * the default objects, which refuse a function its own `call` and `apply`
+ * (SC2020): a program this test selects keeps them only while its text
+ * gives no function such a member
+ * (frontend/lowering/module-member-this.ts refuseForwardsToOwnCall). */
+export function moduleShadowsFunctionMember(mod: IrModule): boolean {
   return mod.functions.some((fn) => functionShadowsMember(fn) || functionReadsInheritedMember(fn));
 }
 
@@ -1697,13 +1703,17 @@ const RUNTIME_FEATURE_RULES = {
     // The legacy url functions, crypto.createCipheriv,
     // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
     // deprecation warnings through the dyn-async unit (WebCrypto's
-    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
-    // handles and promises through it.
+    // encrypt and decrypt link scr_cipher.c too), as do the
+    // checked-dynamic Hmac constructors when their key is a CryptoKey
+    // (DEP0203, scr_lib.c); scr_wasm.c boxes its handles and promises
+    // through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
+      "crypto.hmacNewDyn",
+      "crypto.hmacNewAny",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
       "webcrypto.wrapKey",

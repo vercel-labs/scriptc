@@ -650,7 +650,7 @@ function publicDetail(tier) {
     return "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.";
   }
   if (/^surface-manifest:node-builtin\.crypto\.create(?:Cipheriv|Decipheriv)$/.test(source)) {
-    return "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.";
+    return "Supports aes-128/192/256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, cfb1, ofb, and key-wrap modes, des-ede3 and des-ede, chacha20, and chacha20-poly1305 with Node's argument, IV, tag-length, key, and encoding errors; other OpenSSL ciphers are refused.";
   }
   if (/^surface-manifest:node-builtin\.crypto\.createECDH$/.test(source)) {
     return "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.";
@@ -674,7 +674,7 @@ function publicDetail(tier) {
     return "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.";
   }
   if (/^compiler-dedicated:(?:Cipheriv|Decipheriv|cipher\.|decipher\.)/.test(source)) {
-    return "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.";
+    return "Matches Node's update() output lengths, padding, authentication tags, AAD and key forms (including KeyObject and CryptoKey keys), string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.";
   }
   if (source.startsWith("compiler-dedicated:"))
     return "Implemented by a dedicated static compiler/runtime path.";
@@ -750,7 +750,7 @@ function publicDetail(tier) {
       return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
-      return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";
+      return "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
     }
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";

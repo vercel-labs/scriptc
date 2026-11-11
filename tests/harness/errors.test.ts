@@ -1429,6 +1429,326 @@ export const read = function (n) { return inner.call(this, n); };
     );
   });
 
+  // The export's value names the function that reads `this` in each form
+  // the receiver proof follows, not only as a function or a call by name.
+  test.for(
+    Object.entries({
+      "a factory named through a namespace": [
+        `import * as inner from "./inner.mjs";
+export const read = inner.dual(function (n) { return this === undefined ? n : -n; });
+`,
+        "may read",
+      ],
+      "a factory named through an alias of a namespace member": [
+        `import * as inner from "./inner.mjs";
+const make = inner.dual;
+export const read = make(function (n) { return this === undefined ? n : -n; });
+`,
+        "may read",
+      ],
+      "a namespace member": [
+        `import * as inner from "./inner.mjs";
+export const read = inner.reader;
+`,
+        "reads",
+      ],
+      "the argument Object.defineProperty returns": [
+        `export const read = Object.defineProperty(function (n) { return this === undefined ? n : -n; }, "length", { value: 2 });
+`,
+        "reads",
+      ],
+      "the argument Object.setPrototypeOf returns": [
+        `export const read = Object.setPrototypeOf(function (n) { return this === undefined ? n : -n; }, Function.prototype);
+`,
+        "reads",
+      ],
+      "an arm of a conditional": [
+        `const quiet = process.argv.length > 100;
+export const read = quiet ? (n) => n : function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      "the last operand of a comma": [
+        `export const read = (0, function (n) { return this === undefined ? n : -n; });
+`,
+        "reads",
+      ],
+      "an operand of '??'": [
+        `const none = process.argv.length > 100 ? (n) => n : undefined;
+export const read = none ?? function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      "an operand of '||'": [
+        `const none = process.argv.length > 100 ? (n) => n : undefined;
+export const read = none || function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      "a name another module exports": [
+        `export { reader as read } from "./inner.mjs";
+`,
+        "reads",
+      ],
+      // A member of an object the text writes out names the function too.
+      "a property of an object literal": [
+        `const all = { read: function (n) { return this === undefined ? n : -n; } };
+export const read = all.read;
+`,
+        "reads",
+      ],
+      "a method of an object literal": [
+        `const all = { read(n) { return this === undefined ? n : -n; } };
+export const read = all.read;
+`,
+        "reads",
+      ],
+      "an element of an array literal": [
+        `const all = [function (n) { return this === undefined ? n : -n; }];
+export const read = all[0];
+`,
+        "reads",
+      ],
+      "a static method of a class": [
+        `class All { static read(n) { return this === undefined ? n : -n; } }
+export const read = All.read;
+`,
+        "reads",
+      ],
+      "a name destructured from an object literal": [
+        `const all = { read: function (n) { return this === undefined ? n : -n; } };
+export const { read } = all;
+`,
+        "reads",
+      ],
+      // A binding the program assigns holds each value it is given.
+      "a binding assigned after its declaration": [
+        `export let read;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      "a binding assigned again": [
+        `export let read = (n) => n;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+        "reads",
+      ],
+      // A binding the module declares under the name `undefined` holds
+      // what it is given, not the value of that name.
+      "a binding named 'undefined'": [
+        `const undefined = function (n) { return this === void 0 ? n : -n; };
+export const read = undefined;
+`,
+        "reads",
+      ],
+      "a binding named 'undefined' that an operator chooses": [
+        `const undefined = function (n) { return this === void 0 ? n : -n; };
+const quiet = process.argv.length > 100;
+export const read = quiet ? (n) => n : undefined;
+`,
+        "reads",
+      ],
+    }),
+  )(
+    "an export that holds a reader of 'this' as %s keeps the module-binding receiver fence",
+    async ([, [lib, reads]]) => {
+      const r = await compileAndRun(
+        "module-binding-export-forms",
+        `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+        "mjs",
+        {
+          "lib.mjs": lib,
+          "inner.mjs": `export function dual(body) { return function () { return body.apply(this, arguments); }; }
+export const reader = function (n) { return this === undefined ? n : -n; };
+`,
+        },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        new RegExp(
+          `^Uncaught Error: calling a module export that ${reads} 'this' through its module binding.*\\[SC1090 at .*module-binding-export-forms\\.mjs:3\\]\\n$`,
+        ),
+      );
+    },
+  );
+
+  // A member of an object, array or class the text writes out is followed
+  // to the function it was written with only while nothing else can have
+  // given it another value: the export holds what the member holds then.
+  test.for(
+    Object.entries({
+      "an assignment to the property": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+all.read = function (n) { return n + 1; };
+export const read = all.read;
+`,
+      "an assignment to the element": `const all = [function (n) { return this === undefined ? n : -n; }];
+all[0] = function (n) { return n + 1; };
+export const read = all[0];
+`,
+      "a function that takes the object": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+function fix(o) { o.read = function (n) { return n + 1; }; }
+fix(all);
+export const read = all.read;
+`,
+      "another name for the object": `const all = { read: function (n) { return this === undefined ? n : -n; } };
+const same = all;
+same.read = function (n) { return n + 1; };
+export const { read } = all;
+`,
+    }),
+  )("an export of a member that %s replaced before it is read is called", async ([, lib]) => {
+    const r = await compileAndRun(
+      "module-binding-member-replaced",
+      `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+      "mjs",
+      { "lib.mjs": lib },
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe("before\n2\n");
+    expect(r.exitCode).toBe(0);
+  });
+
+  // `export default name` stores the value the binding holds when the
+  // statement runs: the export is that value, whatever the binding is
+  // given later.
+  const storedDefaultMain = `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.default(1));
+`;
+
+  test.for(
+    Object.entries({
+      "the initializer": `let read = function (n) { return this === undefined ? n : -n; };
+export default read;
+read = (n) => n;
+`,
+      "the last assignment before it": `let read = (n) => n;
+read = function (n) { return this === undefined ? n : -n; };
+export default read;
+`,
+    }),
+  )(
+    "a default export that stored a reader of 'this', %s, keeps the module-binding receiver fence",
+    async ([, lib]) => {
+      const r = await compileAndRun("module-binding-stored-default", storedDefaultMain, "mjs", {
+        "lib.mjs": lib,
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: calling a module export that reads 'this' through its module binding.*\[SC1090 at .*module-binding-stored-default\.mjs:3\]\n$/,
+      );
+    },
+  );
+
+  test.for(
+    Object.entries({
+      "after the statement": `let read = function (n) { return n + 1; };
+export default read;
+read = function (n) { return this === undefined ? n : -n; };
+`,
+      "in a function nobody has called": `let read = function (n) { return n + 1; };
+export default read;
+export function arm() { read = function (n) { return this === undefined ? n : -n; }; }
+`,
+      "before the assignment the statement stores": `let read = function (n) { return this === undefined ? n : -n; };
+read = function (n) { return n + 1; };
+export default read;
+`,
+    }),
+  )(
+    "a default export that stored a function without 'this' is called where a reader is assigned %s",
+    async ([, lib]) => {
+      const r = await compileAndRun(
+        "module-binding-stored-default-kept",
+        storedDefaultMain,
+        "mjs",
+        {
+          "lib.mjs": lib,
+        },
+      );
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toBe("before\n2\n");
+      expect(r.exitCode).toBe(0);
+    },
+  );
+
+  // A function answers `g.call(…)` with what its prototype chain defines:
+  // the native member call runs the builtin, so the prototype is refused
+  // where the text names one that defines the member.
+  test.for(
+    Object.entries({
+      "written in place": `Object.setPrototypeOf(inner, { call(self, n) { return self === undefined ? n : -n; } });`,
+      "held by a name": `const proto = { call(self, n) { return self === undefined ? n : -n; } };
+Object.setPrototypeOf(inner, proto);`,
+      "set in another function": `function arm(fn) { Object.setPrototypeOf(fn, { call(self, n) { return self === undefined ? n : -n; } }); }
+arm(inner);`,
+    }),
+  )("a function is refused a prototype that defines 'call', %s", async ([, define]) => {
+    const r = await compileAndRun(
+      "function-prototype-own-call",
+      `import * as lib from "./lib.mjs";
+console.log(lib.read(1));
+`,
+      "mjs",
+      {
+        "lib.mjs": `const inner = function (n) { return n; };
+${define}
+export const read = (n) => inner.call(undefined, n);
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: giving a value that can be a function a prototype that defines 'apply', 'bind' or 'call'.*\[SC1090 at .*lib\.mjs:\d\]\n$/,
+    );
+  });
+
+  // A statement can give a function its own `call` after the binding that
+  // holds it: the proof reads no statements, so a program that defines
+  // `call` or `apply` on a function keeps no proof that passes `this` on.
+  test.for(
+    Object.entries({
+      "Object.defineProperty": `Object.defineProperty(inner, "call", { value(self, n) { return self === undefined ? n : -n; } });`,
+      "an assignment": `inner.call = function (self, n) { return self === undefined ? n : -n; };`,
+      "a definition another function makes": `function arm(fn) { Object.defineProperty(fn, "call", { value(self, n) { return self === undefined ? n : -n; } }); }
+arm(inner);`,
+      "a key a const names": `const key = "call";
+Object.defineProperty(inner, key, { value(self, n) { return self === undefined ? n : -n; } });`,
+    }),
+  )(
+    "an export that passes 'this' on is refused where the program gives a function its own 'call' by %s",
+    async ([, define]) => {
+      await expect(
+        compileAndRun(
+          "module-binding-own-call-statement",
+          `import * as lib from "./lib.mjs";
+console.log("before");
+console.log(lib.read(1));
+`,
+          "mjs",
+          {
+            "lib.mjs": `const inner = function (n) { return n; };
+${define}
+export const read = function (n) { return inner.call(this, n); };
+`,
+          },
+        ),
+      ).rejects.toThrow(
+        /SC1090: calling a module export that passes 'this' on with 'call' or 'apply' through its module binding, in a program that gives a function its own 'apply', 'bind' or 'call'/,
+      );
+    },
+  );
+
   test.for(
     Object.entries({
       "function expression": "exports.read = function () { return this.n; };",
@@ -3170,18 +3490,20 @@ console.log(require(name).x);
       "require\\(\\) with a computed specifier",
     ],
     [
-      "exports-call-reads-this",
-      `exports.timeouts = function (n) {
-  return this.scale * n;
+      "exports-call-passes-this-on",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+exports.size = function () {
+  return count(this);
 };
-exports.scale = 2;
 console.log("before");
-console.log(exports.timeouts(3));
+console.log(exports.size());
 `,
       {},
       "before\n",
-      6,
-      "calling 'exports\\.timeouts' through the module's exports object when the function may read 'this'",
+      8,
+      "calling 'exports\\.size' through the module's exports object when the function may read 'this'",
     ],
     [
       "require-table-as-value",

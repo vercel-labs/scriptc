@@ -19760,17 +19760,15 @@
           "tests/corpus/7093-x509-methods-js.mjs",
           "tests/corpus/7122-webcrypto-node-crypto.ts",
           "tests/corpus/7123-webcrypto-node-crypto.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
           "tests/corpus/7152-crypto-prime.ts",
           "tests/corpus/7153-crypto-prime-errors.cjs",
           "tests/corpus/7154-crypto-cipher-info.cjs",
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
           "tests/corpus/crypto-fips-deprecated.cjs",
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
@@ -19782,6 +19780,8 @@
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
           "tests/corpus/node-crypto-hash-arguments.cjs",
           "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
@@ -20169,13 +20169,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createCipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createCipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -20212,13 +20212,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDecipheriv",
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.createDecipheriv",
         "tests": [
-          "tests/corpus/7155-cipher-aes-ccm.cjs",
-          "tests/corpus/7156-cipher-key-wrap.cjs",
-          "tests/corpus/7150-cipher-legacy-modes.ts",
-          "tests/corpus/7151-cipher-legacy-errors.cjs",
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22435,9 +22435,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Cipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22474,9 +22478,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22513,9 +22521,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.getAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22552,9 +22564,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22591,9 +22607,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22630,9 +22650,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:cipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22669,9 +22693,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Decipheriv",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22708,9 +22736,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.final",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22747,9 +22779,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAAD",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22786,9 +22822,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAuthTag",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22825,9 +22865,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.setAutoPadding",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -22864,9 +22908,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:decipher.update",
         "tests": [
+          "tests/corpus/node-crypto-cipher-aad-state.cjs",
+          "tests/corpus/node-crypto-cipher-key-arguments.cjs",
+          "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
           "tests/corpus/5252-cipher-aes-ctr.ts",
@@ -56447,7 +56495,11 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -57502,10 +57554,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-client-max-headers-count.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58256,10 +58308,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58310,10 +58364,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxRequestsPerSocket",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58580,10 +58636,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.'dropRequest'",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65917,6 +65975,7 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -66222,10 +66281,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:https.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/https-server-max-headers-count.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120041,6 +120100,7 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-constants-object.ts",
           "tests/corpus/zlib-stream-classes.ts",
           "tests/corpus/zlib-typed-view-inputs.ts",
           "tests/corpus/zstd-compress.cjs",
@@ -122183,11 +122243,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.constants",
         "tests": [
           "tests/corpus/5376-zlib-constants.cjs",
-          "tests/corpus/5374-zlib-stream-flush-params.ts"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/zlib-constants-object.ts"
         ]
       },
       "anchorSource": "exact"

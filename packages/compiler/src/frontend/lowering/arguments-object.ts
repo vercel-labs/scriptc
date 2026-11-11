@@ -168,6 +168,13 @@ function isArgumentsObject(lowerer: Lowerer, node: ts.Expression): boolean {
   );
 }
 
+/** Whether `node` is an arguments object by the same test the answers below
+ * use (the name, or a constant holding it). util.types.isArgumentsObject
+ * answers true for it; every other value's brand is decided at run time. */
+export function isArgumentsObjectValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  return isArgumentsObject(lowerer, node);
+}
+
 /** The read an answer about `operand` keeps: none for the name `arguments`,
  * the constant's own read for a constant that holds the object, because a
  * constant read before its declaration throws. */

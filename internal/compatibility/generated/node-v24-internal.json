@@ -104932,6 +104932,7 @@
           "tests/corpus/5191-util-callbackify.ts",
           "tests/corpus/5192-util-debuglog.cjs",
           "tests/corpus/5193-util-debuglog.ts",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/5470-strip-vt-osc.cjs",
           "tests/corpus/5471-strip-vt-csi.cjs",
           "tests/corpus/5472-strip-vt-random.cjs",
@@ -105004,7 +105005,10 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-format-json-error.ts",
-          "tests/diagnostics/compat-absent-lowerings.ts",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-module-namespace/main.ts",
           "tests/fixtures/node-types/deep-equality.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
@@ -107034,13 +107038,19 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.types",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.types",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
-          "tests/corpus/node24-util-types.cjs",
-          "tests/fixtures/node-types/util-types.ts"
+          "tests/corpus/node24-util-types.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -107063,9 +107073,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isAnyArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107092,9 +107109,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isArrayBufferView",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107121,8 +107145,20 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.types.isArgumentsObject",
+        "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -107144,9 +107180,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107173,9 +107216,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isAsyncFunction",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107202,11 +107252,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigInt64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107233,11 +107288,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigIntObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107264,11 +107324,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBigUint64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107295,11 +107360,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBooleanObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107326,11 +107396,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isBoxedPrimitive",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107357,11 +107432,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isCryptoKey",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107388,9 +107468,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isDataView",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107417,11 +107504,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isDate",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107448,11 +107540,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isExternal",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107479,11 +107576,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107510,9 +107612,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107539,9 +107648,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isFloat64Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107568,9 +107684,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isGeneratorFunction",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107597,9 +107720,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isGeneratorObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107626,9 +107756,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt8Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107655,9 +107792,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107684,9 +107828,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isInt32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107713,11 +107864,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isKeyObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107744,9 +107900,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isMap",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107773,11 +107936,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isMapIterator",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107804,10 +107972,19 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:util.util.types.isModuleNamespaceObject",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.types.isModuleNamespaceObject",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
+          "tests/corpus/node24-util-types.ts",
+          "tests/corpus/node24-util-types.js",
+          "tests/corpus/node24-util-types.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -107830,9 +108007,16 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isNativeError",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107859,11 +108043,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isNumberObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107890,9 +108079,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isPromise",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107919,9 +108115,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isProxy",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107948,9 +108151,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isRegExp",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -107977,9 +108187,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSet",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108006,11 +108223,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSetIterator",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108037,11 +108259,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSharedArrayBuffer",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108068,11 +108295,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isStringObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108099,11 +108331,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isSymbolObject",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/5831-util-types-brands.ts",
           "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108130,9 +108367,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isTypedArray",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108159,9 +108403,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint8Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108188,9 +108439,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint8ClampedArray",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108217,9 +108475,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint16Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108246,9 +108511,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isUint32Array",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108275,9 +108547,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isWeakMap",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",
@@ -108304,9 +108583,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.types.isWeakSet",
         "tests": [
+          "tests/corpus/util-types-brand-matrix.ts",
+          "tests/corpus/util-types-module-namespace/main.ts",
+          "tests/corpus/util-types-module-namespace-js/main.js",
+          "tests/corpus/util-types-arguments-object.js",
+          "tests/corpus/5831-util-types-brands.ts",
+          "tests/corpus/5832-util-types-brands-dynamic.js",
+          "tests/corpus/5406-util-types-keys.ts",
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/node24-util-types.js",
           "tests/corpus/node24-util-types.cjs",

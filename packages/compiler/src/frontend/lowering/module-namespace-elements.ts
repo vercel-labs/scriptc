@@ -122,7 +122,10 @@ export function lowerModuleNamespaceElement(
  * in JavaScript): an object holding each value export, keyed in the
  * namespace's sorted key order. The copy is exact while every export is a
  * binding that never changes after initialization (const, function or
- * class); null for other namespaces, which keep their fence. */
+ * class); null for other namespaces, which keep their fence. The runtime
+ * keeps the first copy it builds for a module and answers it to every later
+ * request (module.namespaceCopy), so the value has Node's per-module
+ * identity and answers util.types.isModuleNamespaceObject. */
 export function moduleNamespaceObject(
   lowerer: Lowerer,
   ns: IrExpr & { type: IrType & { kind: "moduleNs" } },
@@ -176,7 +179,22 @@ export function moduleNamespaceObject(
         params: [],
         returnType: DYN,
         locals: [...context.locals],
-        body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+        body: [
+          {
+            kind: "return",
+            value: {
+              // The runtime keeps the first object it builds for a module,
+              // so a namespace taken as a value twice is the same object,
+              // and marks it as a module namespace for util.types.
+              kind: "libCall",
+              fn: "module.namespaceCopy",
+              args: [strLit(ns.type.moduleId, loc), { kind: "dynObjLit", fields, type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
         loc,
       };
       lowerer.liftedFns.push(fn);

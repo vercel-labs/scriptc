@@ -4313,6 +4313,11 @@ function buildLibFnSignatures() {
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    /** A module namespace built from its export values as a JavaScript
+     * source takes one (scr_module_namespace_copy_value): the module id and
+     * the object holding the values. One marked object per module, so the
+     * namespace keeps its identity. Never throws. */
+    "module.namespaceCopy": { argTypes: [STRING, DYN], result: DYN },
     /** A primitive wrapper object (scr_js_wrapper_new): the kind
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */

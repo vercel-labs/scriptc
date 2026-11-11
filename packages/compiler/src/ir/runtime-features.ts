@@ -2314,7 +2314,7 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
-  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn", "module.namespaceCopy"] }),
   /** Primitive wrapper objects (scr_js_wrapper.c), which also own
    * Number.prototype and Boolean.prototype: the value a JavaScript source
    * reads through dyn.builtinPrototype, and the compiled constructor's

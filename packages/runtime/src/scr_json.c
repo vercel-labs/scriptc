@@ -6300,6 +6300,33 @@ bool scr_dyn_typed_array_is(const ScrDyn *d, int elem) {
 
 static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
 
+/* Module namespace objects boxed as checked-dynamic values
+ * (scr_module_namespace_dyn.c) are ordinary objects; V8's brand check is a
+ * private slot, but this runtime has none, so the builder registers each
+ * object here and util.types.isModuleNamespaceObject tests membership. The
+ * registry borrows the objects: the builder caches every one for the
+ * program's lifetime, so none is freed before the process exits. */
+static SCR_TL ScrDyn **scr_module_namespace_marks;
+static SCR_TL size_t scr_module_namespace_mark_count;
+static SCR_TL size_t scr_module_namespace_mark_cap;
+
+void scr_dyn_mark_module_namespace(ScrDyn *object) {
+  if (scr_module_namespace_mark_count == scr_module_namespace_mark_cap) {
+    size_t cap = scr_module_namespace_mark_cap ? scr_module_namespace_mark_cap * 2 : 8;
+    ScrDyn **grown = realloc(scr_module_namespace_marks, cap * sizeof(*grown));
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    scr_module_namespace_marks = grown;
+    scr_module_namespace_mark_cap = cap;
+  }
+  scr_module_namespace_marks[scr_module_namespace_mark_count++] = object;
+}
+
+static bool scr_dyn_is_marked_module_namespace(const ScrDyn *value) {
+  for (size_t i = 0; i < scr_module_namespace_mark_count; i++)
+    if (scr_module_namespace_marks[i] == value) return true;
+  return false;
+}
+
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
@@ -6335,8 +6362,26 @@ bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (PROBE("isProxy")) return value->kind == SCR_DYN_PROXY;
   if (PROBE("isAsyncFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_ASYNC) != 0;
   if (PROBE("isGeneratorFunction")) return value->kind == SCR_DYN_FUNC && (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_GENERATOR) != 0;
-  if (PROBE("isGeneratorObject")) return scr_dyn_generator(value);
-  if (PROBE("isDate")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
+  if (PROBE("isGeneratorObject")) {
+    /* Array iterators, string iterators and iterator helpers are compiled
+     * generators here but have their own brands in Node; each prints with
+     * its @@toStringTag (scr_gen_set_tag), while a generator object keeps
+     * the default "Generator"/"AsyncGenerator". */
+    if (!scr_dyn_generator(value)) return false;
+    if (!scr_gen_tag_reader) return true;
+    const char *tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(value->v.typed_ref.ptr);
+    return !strcmp(tag, "Generator") || !strcmp(tag, "AsyncGenerator");
+  }
+  /* A Date, or an instance of a class declared `extends Date` (a
+   * compiled instance keeps the Date slot in one of its own fields). */
+  if (PROBE("isDate")) return scr_dyn_date_instance_is(value);
+  if (PROBE("isModuleNamespaceObject"))
+    return (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_MODULE_NAMESPACE) ||
+           (value->kind == SCR_DYN_OBJ && scr_dyn_is_marked_module_namespace(value));
+  /* A compiled `arguments` is the call's argument list, an array; a value
+   * that left the function is that array everywhere else. The static
+   * lowering answers the name itself (lowerUtilTypeCall). */
+  if (PROBE("isArgumentsObject")) return false;
   if (PROBE("isMapIterator")) return scr_native_iterator_over(value, 2);
   if (PROBE("isSetIterator")) return scr_native_iterator_over(value, 3);
   if (PROBE("isKeyObject")) return value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_KEY_OBJECT;

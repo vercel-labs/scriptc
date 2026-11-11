@@ -2018,6 +2018,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     },
     // The util/types spoke supplies the probe name to the shared brand check.
     "util/types": {
+      isArgumentsObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
+      isModuleNamespaceObject: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isAnyArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBuffer: { fn: "util.typeIs", params: [DYN], result: BOOL },
       isArrayBufferView: { fn: "util.typeIs", params: [DYN], result: BOOL },

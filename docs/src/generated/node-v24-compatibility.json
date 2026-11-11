@@ -71329,8 +71329,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -71352,7 +71352,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71375,7 +71375,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71398,9 +71398,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -71421,7 +71421,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71444,7 +71444,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71467,7 +71467,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71490,7 +71490,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71513,7 +71513,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71536,7 +71536,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71559,7 +71559,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71582,7 +71582,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71605,7 +71605,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71628,7 +71628,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71651,7 +71651,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71674,7 +71674,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71697,7 +71697,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71720,7 +71720,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71743,7 +71743,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71766,7 +71766,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71789,7 +71789,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71812,7 +71812,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71835,7 +71835,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71858,7 +71858,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71881,7 +71881,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71904,7 +71904,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71927,9 +71927,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -71950,7 +71950,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71973,7 +71973,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -71996,7 +71996,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72019,7 +72019,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72042,7 +72042,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72065,7 +72065,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72088,7 +72088,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72111,7 +72111,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72134,7 +72134,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72157,7 +72157,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72180,7 +72180,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72203,7 +72203,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72226,7 +72226,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72249,7 +72249,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72272,7 +72272,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72295,7 +72295,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }
@@ -72318,7 +72318,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Checks existing native runtime brands without inspecting public properties, with stored function values and tested predicate narrowing; unrepresented object forms retain compiler boundaries.",
         "verification": "test-backed"
       }

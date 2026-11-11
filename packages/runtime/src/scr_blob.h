@@ -46,6 +46,11 @@ ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
  * (the well-known symbol is `tag_key`), and Node's strict-mode write
  * TypeErrors. Borrows all four; +1 object. */
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
+/* A JavaScript source's namespace taken as a value (moduleNamespaceObject):
+ * the object built from the module's export values, which the runtime keeps
+ * for module `id` and answers to every later request, marked as a module
+ * namespace. Borrows both; +1 object. */
+ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);

@@ -98,6 +98,10 @@ void scr_dns_lookup_dyn(const ScrDyn *hostname, const ScrDyn *options, const Scr
                         bool typed);
 void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const ScrDyn *callback,
                             bool typed);
+/* lookup options' hints: a number, ToUint32, then only dns.ADDRCONFIG,
+ * dns.V4MAPPED and dns.ALL. Stores the getaddrinfo flags; false with the
+ * argument error pending. Shared by the callback and promise forms. */
+bool scr_dns_hints_flags(const ScrDyn *options, int *ai_flags);
 /* util.promisify(dns.lookup) and util.promisify(dns.lookupService): a +1
  * promise of the checked-dynamic result; never throws. */
 typedef struct ScrPromise ScrPromise;

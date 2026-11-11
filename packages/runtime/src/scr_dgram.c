@@ -1248,6 +1248,42 @@ static int scr_dns_order_of(const ScrDyn *v) {
   return -1;
 }
 
+/* JavaScript's ToUint32: truncate toward zero, then modulo 2^32 (NaN and
+ * the infinities convert to 0). Node's validateHints receives the result
+ * of `hints >>> 0`. */
+static uint32_t scr_dns_to_uint32(double d) {
+  if (!isfinite(d)) return 0;
+  double t = trunc(d);
+  double m = fmod(t, 4294967296.0);
+  if (m < 0) m += 4294967296.0;
+  return (uint32_t)m;
+}
+
+/* lookup options' hints, validated as Node validates them: a number, then
+ * ToUint32, then only dns.ADDRCONFIG, dns.V4MAPPED and dns.ALL (the
+ * getaddrinfo flags). Stores the flags for getaddrinfo. True when the
+ * options carry no hints or a valid mask; otherwise the argument error is
+ * pending and false is returned. Shared by the callback and promise
+ * forms, which report the same errors. */
+bool scr_dns_hints_flags(const ScrDyn *options, int *ai_flags) {
+  const ScrDyn *v = scr_dyn_obj_get(options, "hints", 5);
+  if (v == NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return true;
+  if (v->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail("options.hints", "of type number", v);
+    return false;
+  }
+  uint32_t hints = scr_dns_to_uint32(v->v.num);
+  uint32_t allowed = (uint32_t)(AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL);
+  if ((hints & ~allowed) != 0) {
+    ScrDyn *shown = scr_dyn_new_num((double)hints);
+    scr_dyn_arg_value_fail("hints", "is invalid", shown);
+    scr_dyn_release(shown);
+    return false;
+  }
+  *ai_flags = (int)hints;
+  return true;
+}
+
 ScrStr *scr_dns_get_default_result_order(void) {
   const char *o = scr_dns_orders[scr_dns_default_order];
   return scr_str_new(o, strlen(o));
@@ -1393,27 +1429,14 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
     }
     family = f;
   } else if (options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_OBJ &&
-             options->kind != SCR_DYN_NULL) {
-    scr_dyn_arg_type_fail("options", "of type integer or an instance of Object", options);
+             options->kind != SCR_DYN_ARR && options->kind != SCR_DYN_NULL) {
+    /* Node tests `typeof options !== 'object'`, so an array is an options
+     * object too (its members read as undefined). */
+    scr_dyn_arg_type_fail("options", "of type object or integer", options);
     return;
-  } else if (options->kind == SCR_DYN_OBJ) {
-    const ScrDyn *v = scr_dyn_obj_get(options, "hints", 5);
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
-      if (v->kind != SCR_DYN_NUM) {
-        scr_dyn_prop_type_fail("options.hints", "of type number", v);
-        return;
-      }
-      /* Node's validateHints: only dns.ADDRCONFIG, dns.V4MAPPED and
-       * dns.ALL (getaddrinfo's own flags), which then reach getaddrinfo */
-      double h = v->v.num;
-      int allowed = AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL;
-      if (!(h == h && trunc(h) == h && h >= 0 && h <= 0x7fffffff) || ((int)h & ~allowed) != 0) {
-        scr_dyn_arg_value_fail("hints", "is invalid", v);
-        return;
-      }
-      ai_flags = (int)h;
-    }
-    v = scr_dyn_obj_get(options, "family", 6);
+  } else if (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_ARR) {
+    if (!scr_dns_hints_flags(options, &ai_flags)) return;
+    const ScrDyn *v = scr_dyn_obj_get(options, "family", 6);
     if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
       if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv4", 4) == 0) family = 4;
       else if (v->kind == SCR_DYN_STR && v->v.str->len == 4 && memcmp(v->v.str->data, "IPv6", 4) == 0) family = 6;
@@ -1474,7 +1497,19 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
       ScrDyn *args[2] = { scr_dyn_new_null(), scr_dyn_new_arr() };
       scr_dns_call_later(callback, args, 2, true);
     } else {
-      ScrDyn *args[3] = { scr_dyn_new_null(), scr_dyn_new_null(), scr_dyn_new_num(family == 6 ? 6 : 4) };
+      /* Node answers `null` here. A typed callback signature declares the
+       * address as a string, so the typed form substitutes the empty
+       * string, as it does for a failed lookup (scr_dns_fail); the untyped
+       * form gets Node's null. */
+      ScrDyn *address;
+      if (typed) {
+        ScrStr *empty = scr_str_new("", 0);
+        address = scr_dyn_new_str(empty);
+        scr_str_release(empty);
+      } else {
+        address = scr_dyn_new_null();
+      }
+      ScrDyn *args[3] = { scr_dyn_new_null(), address, scr_dyn_new_num(family == 6 ? 6 : 4) };
       scr_dns_call_later(callback, args, 3, true);
     }
     return;

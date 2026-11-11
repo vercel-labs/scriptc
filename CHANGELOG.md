@@ -42,6 +42,8 @@ All notable changes to scriptc will be documented in this file.
   - A read of a field that several union arms declare reads over the stored union at the site's common type instead of a narrowed arm that traps, so a negated inexact type predicate matches Node where the previous build traps; the 0.4.11 native binary traps on the first read of the corpus program.
   - `{ ...a, ...b }` into one declared record enumerates in Node's order: each source keeps its own key order, a key that two sources set keeps its first position, and later keys append, so `Object.keys`, `values` and `entries`, `for…in`, `JSON.stringify`, `util.inspect`, `console.log` and a spread copy of the result agree with Node; a program that never observes the order of such a shape compiles to the same code.
   - The six http header-limit getters and setters are classified as never throwing, since they are plain storage with no accessor, coercion or listener, and `http.serverOnDropRequest` as may-throw because it fires `'newListener'` before the add.
+  - An `Immutable` annotation is recognized through a re-export, an alias or a path alias of `@scriptc/types`, and a marker whose import cannot be followed is refused with SC7006 instead of compiling as if the annotation were absent.
+  - An array built by pushing values read from `Immutable` data, and the result of `filter` over an `Immutable` array, are accepted as fresh for a store into an `Immutable` field (SC7004), and each checked element read is read as the array passed at its call site, so a plain array's `.map` is no longer refused (SC7005) because an unrelated `Immutable` table of the same element type is indexed elsewhere.
 
 <!-- release:end -->
 

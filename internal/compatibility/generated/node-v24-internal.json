@@ -45464,6 +45464,7 @@
           "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-file-handle-chown.ts",
           "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
           "tests/corpus/fs-lchmod-member-reads.cjs",
           "tests/corpus/fs-mkdtemp-disposable-arguments.cjs",
@@ -45632,7 +45633,8 @@
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45655,13 +45657,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.appendFile",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45684,10 +45687,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.chmod",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45736,13 +45740,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.close",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45819,10 +45824,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.datasync",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45891,13 +45897,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.read",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45920,13 +45927,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.read",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45949,13 +45957,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.read",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46007,7 +46016,8 @@
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46057,10 +46067,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.readv",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46087,7 +46098,8 @@
         "evidence": "compiler-feature:fs.filehandle.stat",
         "tests": [
           "tests/corpus/3136-fs-file-handle-options.ts",
-          "tests/corpus/fs-promises-stat-options.ts"
+          "tests/corpus/fs-promises-stat-options.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46110,10 +46122,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.sync",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46136,10 +46149,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.truncate",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46162,11 +46176,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.utimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-promises.ts",
-          "tests/fixtures/node-types/fs-timestamps.ts"
+          "tests/fixtures/node-types/fs-timestamps.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46189,13 +46204,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.write",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46218,13 +46234,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.write",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46247,13 +46264,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.write",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46276,13 +46294,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.writeFile",
         "tests": [
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/3136-fs-file-handle-options.ts",
           "tests/corpus/fs-file-handle-overloads.ts",
-          "tests/corpus/fs-file-handle-encodings.ts"
+          "tests/corpus/fs-file-handle-encodings.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46305,10 +46324,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.writev",
         "tests": [
-          "tests/corpus/3135-fs-file-handle-controls.ts"
+          "tests/corpus/3135-fs-file-handle-controls.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46354,10 +46374,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46380,10 +46401,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fd",
         "tests": [
-          "tests/corpus/2686-fs-file-handle.ts"
+          "tests/corpus/2686-fs-file-handle.ts",
+          "tests/corpus/fs-file-handle-members.ts"
         ]
       },
       "anchorSource": "ancestor"

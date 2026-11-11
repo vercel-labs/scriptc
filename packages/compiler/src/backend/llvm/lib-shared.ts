@@ -1139,6 +1139,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fileHandle.writeFileOptionsBytes": "scr_file_handle_write_file_options_bytes_promise",
   "fileHandle.writeFileOptionsData": "scr_file_handle_write_file_options_data_promise",
   "fileHandle.stat": "scr_file_handle_stat_promise",
+  "fileHandle.statOptions": "scr_file_handle_stat_options_promise",
   "sym.new": "scr_sym_new",
   "sym.for": "scr_sym_for",
   "sym.wellKnown": "scr_sym_well_known",

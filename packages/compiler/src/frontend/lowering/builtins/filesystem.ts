@@ -26,8 +26,10 @@ import {
   type IrLibFn,
   type IrStmt,
   type IrType,
+  NULL_T,
   STATS_T,
   STRING,
+  UNDEFINED_T,
   type SrcLoc,
   VOID,
   arrayOf,
@@ -834,11 +836,66 @@ export function lowerFileHandleMethodCall(
       };
     }
     if (!ts.isObjectLiteralExpression(optsNode)) {
-      lowerer.noLowering(
-        "FileHandle.stat with this options value",
-        optsNode,
-        "pass an object literal: stat({ bigint: true })",
-      );
+      // A stored options value. The checker's result type already chose
+      // the member table (a widened `bigint` flag is the union result this
+      // lowering refused above), so only evaluation order and Node's null
+      // read remain: Node validates the handle, reads options.bigint
+      // (which a null options value does not have), then stats.
+      const value = lowerer.lowerExpr(optsNode);
+      const arms =
+        value.type.kind === "union" ? lowerer.unions.get(value.type.unionId)?.arms : undefined;
+      const recordOrUnit = (arm: IrType): boolean => arm.kind === "record" || isUnitType(arm);
+      const recordsOrUnits =
+        value.type.kind === "record" ||
+        value.type.kind === "nullT" ||
+        (value.type.kind === "union" && arms !== undefined && arms.every(recordOrUnit));
+      if (!recordsOrUnits) {
+        lowerer.noLowering(
+          "FileHandle.stat with this options value",
+          optsNode,
+          "pass an object literal, or a value typed as the options record",
+        );
+      }
+      const handle = lowerer.declareHiddenLocal("%fhHandle", FILEHANDLE_T);
+      const stmts: IrStmt[] = [{ kind: "varDecl", localId: handle.id, init: receiver(), loc }];
+      const discard = (): void => {
+        if (!isSafeToDiscard(value)) stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+      };
+      let optionsNull: IrExpr;
+      const nullTag = value.type.kind === "union" ? lowerer.armTag(value.type.unionId, NULL_T) : -1;
+      if (value.type.kind === "nullT") {
+        discard();
+        optionsNull = boolLit(true, loc);
+      } else if (nullTag >= 0 && value.type.kind === "union") {
+        const unionId = value.type.unionId;
+        const slot = lowerer.declareHiddenLocal("%fhStatOptions", value.type);
+        stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc: value.loc });
+        optionsNull = {
+          kind: "unionIsTag",
+          unionId,
+          tag: nullTag,
+          negated: false,
+          value: varRef(slot.id, value.type, loc),
+          type: BOOL,
+          loc,
+        };
+      } else {
+        discard();
+        optionsNull = boolLit(false, loc);
+      }
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: {
+          kind: "libCall",
+          fn: "fileHandle.statOptions",
+          args: [varRef(handle.id, FILEHANDLE_T, loc), optionsNull],
+          type: promise(statsType),
+          loc,
+        },
+        type: promise(statsType),
+        loc,
+      };
     }
     const effects: IrExpr[] = [];
     for (const p of optsNode.properties.nodes) {
@@ -902,7 +959,57 @@ export function lowerFileHandleMethodCall(
     // handle) has no lowering.
     let encodingExpr: IrExpr;
     const argType = arg ? lowerer.mapTypeOf(lowerer.typeOf(arg)) : undefined;
-    if (arg && argType?.kind === "record" && typeEquals(type.inner, STRING)) {
+    const isLiteral = (node: ts.Expression): boolean => {
+      let n: ts.Expression = node;
+      while (ts.isParenthesizedExpression(n)) n = n.expression;
+      return ts.isObjectLiteralExpression(n);
+    };
+    if (
+      arg &&
+      typeEquals(type.inner, BYTES_U8) &&
+      (argType?.kind === "record" || (argType?.kind === "dyn" && isLiteral(arg)))
+    ) {
+      // A Buffer result: the checker's overload already fixed it, and Node
+      // reads options.encoding only to choose between the two result kinds.
+      // A record's other members (a signal, say) would be ignored here, so
+      // only `encoding` may be spelled out.
+      if (argType?.kind === "record") {
+        const fields = lowerer.shapes.get(argType.shapeId)?.fields ?? [];
+        if (fields.some((entry) => entry.name !== "encoding")) {
+          lowerer.noLowering(
+            "FileHandle.readFile with this options record",
+            arg,
+            "encoding is the only member a Buffer result reads",
+          );
+        }
+      } else {
+        let literal: ts.Expression = arg;
+        while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+        for (const member of (literal as ts.ObjectLiteralExpression).properties.nodes) {
+          const m = optionMember(member);
+          if (!m || m.name !== "encoding") {
+            lowerer.noLowering(
+              "FileHandle.readFile with this options shape",
+              member,
+              "encoding is the only member a Buffer result reads",
+            );
+          }
+        }
+      }
+      // The argument still evaluates (a record's members exist as values
+      // before Node reads the encoding off it).
+      const argument = lowerer.lowerExpr(arg);
+      const dflt: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
+      encodingExpr = isSafeToDiscard(argument)
+        ? dflt
+        : {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: argument, loc: argument.loc }],
+            result: dflt,
+            type: STRING,
+            loc,
+          };
+    } else if (arg && argType?.kind === "record" && typeEquals(type.inner, STRING)) {
       const fields = lowerer.shapes.get(argType.shapeId)?.fields;
       if (
         fields === undefined ||
@@ -928,7 +1035,7 @@ export function lowerFileHandleMethodCall(
       return {
         kind: "libCall",
         fn: "fileHandle.readFileBytes",
-        args: [receiver(), encoding(arg)],
+        args: [receiver(), encodingExpr],
         type,
         loc,
       };
@@ -1038,15 +1145,51 @@ export function lowerFileHandleMethodCall(
 
   if (name === "read" || name === "write") {
     const firstNode = call.arguments.nodes[0];
-    const firstT = firstNode ? lowerer.mapTypeOf(lowerer.typeOf(firstNode)) : undefined;
-    const secondT = call.arguments.nodes[1]
-      ? lowerer.mapTypeOf(lowerer.typeOf(call.arguments.nodes[1]!))
+    const firstT = firstNode
+      ? (lowerer.mapTypeOf(lowerer.typeOf(firstNode)) ?? undefined)
       : undefined;
+    const secondNode = call.arguments.nodes[1];
+    const secondT = secondNode
+      ? (lowerer.mapTypeOf(lowerer.typeOf(secondNode)) ?? undefined)
+      : undefined;
+    // An object literal is an options record even when its type maps to a
+    // dynamic value: the empty literal `{}` has no record shape of its own
+    // (its contextual FileReadOptions maps to dyn), and Node reads every
+    // member off it — all absent, so the defaults stand.
+    const optionsLiteral = (node: ts.Expression | undefined): boolean => {
+      if (!node) return false;
+      let n: ts.Expression = node;
+      while (ts.isParenthesizedExpression(n)) n = n.expression;
+      return ts.isObjectLiteralExpression(n);
+    };
+    // `null | undefined` (a contextually-typed `null` argument) is still
+    // the options position: Node's read accepts a nullish options value as
+    // the all-defaults record.
+    const unitUnion = (t: IrType | undefined): boolean =>
+      t?.kind === "union" && (lowerer.unions.get(t.unionId)?.arms.every(isUnitType) ?? false);
+    const optionsUnion = (t: IrType | undefined): boolean =>
+      t?.kind === "union" &&
+      (lowerer.unions
+        .get(t.unionId)
+        ?.arms.filter((arm) => !isUnitType(arm))
+        .every((arm) => arm.kind === "record") ??
+        false);
+    // A statically `undefined` argument is Node's all-defaults options
+    // value too; the checker types bare `undefined` as `void`.
+    const staticUndefined = firstT?.kind === "void";
     const readOptions =
       name === "read" &&
-      (!firstNode || firstT?.kind === "record" || (firstT && isUnitType(firstT)));
+      (!firstNode ||
+        staticUndefined ||
+        optionsLiteral(firstNode) ||
+        firstT?.kind === "record" ||
+        (firstT !== undefined && isUnitType(firstT)) ||
+        unitUnion(firstT) ||
+        optionsUnion(firstT));
     const bufferOptions =
-      firstT?.kind === "bytes" && firstT.elem === "u8" && secondT?.kind === "record";
+      firstT?.kind === "bytes" &&
+      firstT.elem === "u8" &&
+      (secondT?.kind === "record" || optionsLiteral(secondNode));
     if (readOptions || bufferOptions) {
       if (call.arguments.nodes.length > (bufferOptions ? 2 : 1))
         lowerer.noLowering(`FileHandle.${name} options with extra arguments`, call);
@@ -1064,11 +1207,73 @@ export function lowerFileHandleMethodCall(
         ? stage(lowerer.lowerExprExpecting(firstNode!, BYTES_U8), "%fhWindowBuffer")
         : undefined;
       const optionsNode = bufferOptions ? call.arguments.nodes[1] : firstNode;
-      const options = optionsNode
-        ? stage(lowerer.lowerExpr(optionsNode), "%fhWindowOptions")
-        : undefined;
+      let options: IrExpr | undefined;
+      if (optionsNode) {
+        const value = lowerer.lowerExpr(optionsNode);
+        // A nullish options value has no members to read: every member is
+        // absent, so all defaults stand. Only its evaluation is kept.
+        const noMembers =
+          value.type.kind === "void" ||
+          isUnitType(value.type) ||
+          (value.type.kind === "union" &&
+            (lowerer.unions.get(value.type.unionId)?.arms.every(isUnitType) ?? false));
+        if (noMembers) {
+          if (!isSafeToDiscard(value)) {
+            stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+          }
+        } else {
+          options = stage(value, "%fhWindowOptions");
+        }
+      }
       const field = (key: string): IrExpr | undefined => {
-        if (options?.type.kind !== "record") return undefined;
+        if (options?.type.kind === "union") {
+          // A stored options value that may be nullish (`const o:
+          // FileReadOptions<Buffer> | null`): every non-unit arm is the
+          // same record shape, and Node reads each member off the present
+          // value — a nullish arm answers undefined, so each field keeps
+          // its absent-arm default.
+          const unionId = options.type.unionId;
+          const records = lowerer.unions.get(unionId)?.arms.filter((arm) => !isUnitType(arm));
+          if (!records || records.length === 0) return undefined;
+          const shapeId = records[0]!.kind === "record" ? records[0]!.shapeId : undefined;
+          if (
+            shapeId === undefined ||
+            records.some((arm) => arm.kind !== "record" || arm.shapeId !== shapeId)
+          ) {
+            lowerer.noLowering(
+              `FileHandle.${name} with this options value`,
+              optionsNode!,
+              "the options must carry the same record members whichever arm is present",
+            );
+          }
+          const member = lowerer.shapes.get(shapeId!)?.fields.find((f) => f.name === key);
+          if (!member) return undefined;
+          const answer = member.type;
+          const answerArms =
+            answer.kind === "union" ? lowerer.unions.get(answer.unionId)?.arms : undefined;
+          const type: IrType =
+            answerArms?.some(isUnitType) === true
+              ? answer
+              : { kind: "union", unionId: lowerer.unions.intern([answer, UNDEFINED_T]) };
+          return {
+            kind: "unionKeyGet",
+            unionId,
+            key: { kind: "strLit", value: key, type: STRING, loc },
+            value: options,
+            type,
+            loc,
+          };
+        }
+        if (options?.type.kind !== "record") {
+          if (options?.type.kind === "dyn" && !optionsLiteral(optionsNode)) {
+            lowerer.noLowering(
+              `FileHandle.${name} with this options value`,
+              optionsNode!,
+              "pass an object literal with the members spelled out",
+            );
+          }
+          return undefined;
+        }
         const fields = lowerer.shapes.get(options.type.shapeId)?.fields;
         const getter = fields?.find((f) => f.name === `%get:${key}`);
         if (getter?.type.kind === "func") {
@@ -1096,7 +1301,15 @@ export function lowerFileHandleMethodCall(
       };
       if (!buffer) {
         const supplied = field("buffer");
-        const fresh: IrExpr = { kind: "bytesNew", source: numLit(16384, loc), type: BYTES_U8, loc };
+        // Node's default read window is Buffer.alloc(16384): a real,
+        // zero-filled Buffer, and Buffer.isBuffer observes the brand.
+        const fresh: IrExpr = {
+          kind: "libCall",
+          fn: "buffer.alloc",
+          args: [numLit(16384, loc)],
+          type: BYTES_U8,
+          loc,
+        };
         if (!supplied || isUnitType(supplied.type))
           buffer = supplied ? defaultAfterUndefined(supplied, fresh) : fresh;
         else if (supplied.type.kind === "union") {
@@ -1390,6 +1603,38 @@ export function lowerDirDisposeCall(lowerer: Lowerer, call: ts.CallExpression): 
         type: { kind: "promise", inner: VOID },
         loc,
       };
+}
+
+/** `handle[Symbol.asyncDispose]()` — FileHandle's explicit async
+ * resource management member, which Node implements as close(). */
+export function lowerFileHandleDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (
+    !ts.isElementAccessExpression(access) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access)) ||
+    (call.questionDotToken && !lowerer.chainHandled.has(call))
+  ) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("FileHandle[Symbol.asyncDispose] with arguments", call);
+  }
+  const loc = locOf(call);
+  return {
+    kind: "libCall",
+    fn: "fileHandle.close",
+    args: [lowerer.lowerExprExpecting(access.expression, FILEHANDLE_T)],
+    type: { kind: "promise", inner: VOID },
+    loc,
+  };
 }
 
 /** The Stats type tests, each a read of the snapshot's mode. */

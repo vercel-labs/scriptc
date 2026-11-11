@@ -4395,7 +4395,10 @@ function validateFunction(
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
       const promiseStatsVariant =
-        (e.fn === "fsp.stat" || e.fn === "fsp.lstat" || e.fn === "fileHandle.stat") &&
+        (e.fn === "fsp.stat" ||
+          e.fn === "fsp.lstat" ||
+          e.fn === "fileHandle.stat" ||
+          e.fn === "fileHandle.statOptions") &&
         sig.result.kind === "promise" &&
         e.type.kind === "promise" &&
         typeEquals(sig.result.inner, STATS_T) &&

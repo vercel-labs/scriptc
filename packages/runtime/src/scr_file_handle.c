@@ -951,6 +951,24 @@ ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h) {
                                  &scr_stats_release_v, NULL);
 }
 
+/* FileHandle.stat(options): Node validates the handle first (EBADF), then
+ * reads options.bigint without validating the options value — a null options
+ * value is the TypeError below — and only then stats. The member table
+ * (Stats or BigIntStats) was already chosen from the checker's result type,
+ * so the null shape is the only runtime fact this form carries. */
+ScrPromise *scr_file_handle_stat_options_promise(ScrFileHandle *h,
+                                                 bool options_null) {
+  if (!scr_file_handle_require_open(h, "fstat")) return scr_promise_settled_void();
+  if (options_null) {
+    static const char message[] = "Cannot read properties of null (reading 'bigint')";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return scr_promise_settled_void();
+  }
+  ScrStats *st = scr_file_handle_stat(h);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v,
+                                 &scr_stats_release_v, NULL);
+}
+
 /* The checked boundary retains the shared descriptor slot. Statically
  * typed uses unwrap it before invoking the existing FileHandle surface. */
 static ScrDyn *scr_file_handle_dyn_invoke(

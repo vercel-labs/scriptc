@@ -217,6 +217,7 @@ import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirDisposeCall,
+  lowerFileHandleDisposeCall,
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
   lowerDirMethodCall,
@@ -2278,6 +2279,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (readlineDispose) return readlineDispose;
     const dirDispose = lowerDirDisposeCall(lowerer, expr);
     if (dirDispose) return dirDispose;
+    const fileHandleDispose = lowerFileHandleDisposeCall(lowerer, expr);
+    if (fileHandleDispose) return fileHandleDispose;
     const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
     if (streamDispose) return streamDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);

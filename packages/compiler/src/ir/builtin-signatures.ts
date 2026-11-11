@@ -4316,6 +4316,13 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
+    // stat with a non-literal options value: the argument is the
+    // runtime null check; Node's member table was chosen by the checker's
+    // result type, so the payload stays the stat snapshot.
+    "fileHandle.statOptions": {
+      argTypes: [FILEHANDLE_T, BOOL],
+      result: { kind: "promise", inner: STATS_T },
+    },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
     // The Node runtime flag a node:test binary took out of process.argv
     // (--test-update-snapshots), or [] — a fresh array per read.

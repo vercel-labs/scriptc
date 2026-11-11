@@ -99,7 +99,7 @@ declare module "fs/promises" {
       position?: number | null,
       encoding?: BufferEncoding | null,
     ): Promise<FileWriteResult<string>>;
-    readFile(options?: null): Promise<Buffer>;
+    readFile(options?: { encoding?: null | undefined } | null): Promise<Buffer>;
     readFile(encoding: BufferEncoding): Promise<string>;
     readFile(options: { encoding: BufferEncoding }): Promise<string>;
     writeFile(

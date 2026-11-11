@@ -87,6 +87,7 @@ import {
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
+import { refuseForwardsToOwnCall } from "./module-member-this.js";
 import { bindCompletionCallbacks } from "./completion-callbacks.js";
 import { isJsonRequireDecl, type JsonRequireModule } from "./json-require.js";
 import {
@@ -539,6 +540,7 @@ import {
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -751,6 +753,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerPromiseStaticCall } from "./builtins/promises.js";
@@ -3685,6 +3688,9 @@ export class Lowerer {
   readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
   /** Receiver proofs depend only on a module's source and stable bindings. */
   readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Per CommonJS file, what its source shows of its exports object
+   * (cjs-exports-receiver.ts); null when it does not show every write. */
+  readonly cjsExportsShapes = new Map<ts.SourceFile, CjsExportsShape | null>();
   /** Member write sites by property name across the program, built on the
    * first query, and the exports each query proved change after their
    * module initializes (cjs-inline-require.ts). */
@@ -5037,6 +5043,11 @@ export class Lowerer {
    * (noteDeferredRefusal), one per statement. Warnings, so they leave with
    * the divergences and never fail the build. */
   readonly deferredRefusalWarnings: ScrDiagnostic[] = [];
+  /** The sites whose receiver proof read `f.call(this, …)` or
+   * `f.apply(this, …)` as the builtin (module-member-this.ts), each as
+   * `start:end:file`: refused when the lowered program gives a function its
+   * own `call` or `apply` (refuseForwardsToOwnCall). */
+  readonly receiverForwardSites = new Set<string>();
   readonly sharedInitFlags = new Map<ts.Statement, string[]>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
@@ -5683,6 +5694,7 @@ export class Lowerer {
       setTable("recordFieldDeletes", this.recordFieldDeletes),
       setTable("freezableArrays", this.freezableArrays),
       setTable("weakKeys", this.weakKeys),
+      setTable("receiverForwardSites", this.receiverForwardSites),
       checkedTable("moduleOrder", () => this.moduleOrder.length),
       checkedTable("diags", () => this.diags.length),
       // The shared-module plan runs inside the first unit that lowers a
@@ -6023,6 +6035,10 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // The census of the program's writes on the global object, a pure
+    // function of its modules, read again when a unit replays.
+    "globalObjectWrites",
+    "globalThisWrittenNames",
     // Asked only where no unit is recorded: a build that reuses units leaves
     // the conditions `--define` decides to the run (constant-conditions.ts).
     "computedEnvironmentWrite",
@@ -6087,6 +6103,7 @@ export class Lowerer {
     "cjsLiveMemberExports",
     "cjsNamespaceTargets",
     "cjsReceiverProofs",
+    "cjsExportsShapes",
     "cjsLateWrittenExports",
     "cjsMemberWritesByName",
     "cjsEsmBoundNames",
@@ -13502,8 +13519,12 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
+    // Receiver proofs that took `call` and `apply` for the builtins, in a
+    // program whose finished module gives a function its own.
+    const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];
+    for (const diag of ownCallRefusals) this.pushDiag(diag);
     return {
-      module,
+      module: ownCallRefusals.length > 0 ? null : module,
       diagnostics: this.diags,
       runtimeFences: this.runtimeFences,
       stats: this.stats,
@@ -14493,6 +14514,9 @@ export class Lowerer {
     // record keeps its keys; the `"k" in r` sites answer through the view).
     if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
+    // A declared spread merge that kept the copy's own order holds a source
+    // view too, so the captures that consult one must be active for it.
+    if (this.keyOrder.keptDeclaredMerges > 0) this.recordSourcesPossible = true;
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.
     if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
@@ -23079,6 +23103,8 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `zlib.constants` as a value: the module's singleton record.
+    if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23185,6 +23211,7 @@ export class Lowerer {
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     return null;
   }
 

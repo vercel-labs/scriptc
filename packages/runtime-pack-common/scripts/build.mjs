@@ -807,7 +807,6 @@ async function build() {
           "SCR_WARNING_REPLACE",
           "SCR_STREAM_WRITE_ERRORS",
           "SCR_FS_STREAM_SIGNAL",
-          "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_WEB_BODIES",
           "SCR_YIN",

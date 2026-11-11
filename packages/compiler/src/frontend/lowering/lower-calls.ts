@@ -34,7 +34,7 @@ import {
   builtinClassValue,
   lowerBuiltinClassCall,
 } from "./builtins/builtin-class-dyn.js";
-import { refuseModuleMemberThis } from "./module-member-this.js";
+import { refuseModuleMemberThis, refuseOwnCallPrototype } from "./module-member-this.js";
 import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.js";
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
@@ -81,6 +81,7 @@ import {
   lowerWithInlineRequireInit,
 } from "./cjs-inline-require.js";
 import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
+import { lowerCjsExportsReceiver } from "./cjs-exports-receiver.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { lowerReadlineDisposeCall } from "./builtins/readline.js";
@@ -584,6 +585,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
 }
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  refuseOwnCallPrototype(lowerer, expr);
   // `c.toString()` of a builtin constructor value is the constructor's text,
   // whatever tier holds the value (held-constructors.ts).
   if (
@@ -1894,24 +1896,34 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // `exports.f =` statement assigns.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
     const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
-    if (
-      g &&
-      (g.type.kind === "func" || g.type.kind === "dyn") &&
-      !cjsExportCallIgnoresThis(lowerer, ts.getSourceFileOfNode(expr), expr.expression.name.text)
-    ) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
-      );
-    }
     if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+      const sf = ts.getSourceFileOfNode(expr);
+      const member = expr.expression.name.text;
+      // A function that reads `this` only for its sibling exports gets them
+      // as its receiver (cjs-exports-receiver.ts).
+      const receiver = cjsExportCallIgnoresThis(lowerer, sf, member)
+        ? undefined
+        : (lowerCjsExportsReceiver(lowerer, expr, sf, member) ?? null);
+      const refusal = `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`;
+      if (receiver === null) lowerer.unsupported("SC1090", expr, refusal);
       const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
-      if (checked) return checked;
+      if (checked) {
+        if (receiver === undefined) return checked;
+        // Spread arguments take a call form that carries no receiver.
+        if (checked.kind !== "dynCall") lowerer.unsupported("SC1090", expr, refusal);
+        return { ...checked, receiver };
+      }
       if (callee.type.kind === "func") {
         const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-        return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+        return {
+          kind: "callValue",
+          callee,
+          ...(receiver ? { receiver } : {}),
+          args,
+          type: callee.type.ret,
+          loc,
+        };
       }
     }
   }
@@ -5895,7 +5907,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "bytes",
   "arrayBuffer",
   // Promise.prototype (SCR_DYN_PROMISE receivers): the reaction trio
-  // rides the fiber machinery (scr_dyn_promise_then); on every other dyn
+  // registers native reactions (scr_dyn_promise_then); on every other dyn
   // kind then/catch/finally answer the stored-member path (OBJ own
   // members call, the rest throw Node's is-not-a-function).
   "then",
@@ -8968,11 +8980,12 @@ export function recordKeysArrayCall(
       }
       body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
-      // A record that kept undeclared keys answers for-in through its live
-      // kept view, exactly as Object.keys does at its call site. Gated on
-      // the shape being one a kept width spread builds (a shape that keeps
-      // no source stays byte-identical to main) and on the shape holding a
-      // source at all.
+      // A record that kept the order of the sources a declared spread merge
+      // copied, or undeclared keys a width spread copied, answers for-in
+      // through its live kept view, exactly as Object.keys does at its call
+      // site. Gated on the shape being one a kept merge or kept width spread
+      // builds (every other shape stays byte-identical to main) and on the
+      // shape holding a source at all.
       if (
         lowerer.keyOrder.keptSourceShapes.has(argIr.shapeId) &&
         recordMayKeepSource(lowerer, argIr)

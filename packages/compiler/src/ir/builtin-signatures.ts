@@ -2325,6 +2325,13 @@ function buildLibFnSignatures() {
     "http.serverCloseAllConnections": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverCloseIdleConnections": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverTimeoutSet": { argTypes: [NETSERVER_T, F64, F64], result: VOID },
+    /** server.maxHeadersCount / server.maxRequestsPerSocket — ordinary
+     * writable properties (any value is kept as assigned; only a number
+     * counts), so reads and writes cross the dyn tier. */
+    "net.serverMaxHeadersCountGet": { argTypes: [NETSERVER_T], result: DYN },
+    "net.serverMaxHeadersCountSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.serverMaxRequestsPerSocketGet": { argTypes: [NETSERVER_T], result: DYN },
+    "net.serverMaxRequestsPerSocketSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
     /** server.on("listening", cb) — the deferred listen-callback list. */
     "net.serverOnListening": {
@@ -2494,6 +2501,9 @@ function buildLibFnSignatures() {
      * default 400/413/431 answer, as in Node. (err, socket) and shorter
      * prefixes (the libCall case checks). */
     "http.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+    /** server.on("dropRequest", (req, socket) => ...): a request past
+     * maxRequestsPerSocket, answered by the server with 503. */
+    "http.serverOnDropRequest": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.reqSocket": { argTypes: [HTTPREQ_T], result: NETSOCKET_T },
     // reqH2Stream's program-interned Http2Stream | undefined result is
     // checked in the special libCall cases in validate.ts.
@@ -2616,6 +2626,9 @@ function buildLibFnSignatures() {
      * MAY THROW. */
     "http.serverMaxHeaderSize": { argTypes: [NETSERVER_T, F64], result: VOID },
     "http.clientMaxHeaderSize": { argTypes: [HTTPCLIENTREQ_T, F64], result: VOID },
+    /** request.maxHeadersCount — the client's header-line budget. */
+    "http.clientMaxHeadersCountGet": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
+    "http.clientMaxHeadersCountSet": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** req.destroy(err): err becomes the request's 'error'. */
     "http.clientDestroyError": {
       argTypes: [HTTPCLIENTREQ_T, { kind: "object", className: "%Error" }],
@@ -4556,6 +4569,14 @@ function buildLibFnSignatures() {
     "dyn.installBuiltinStatics": { argTypes: [DYN], result: VOID },
     /** The keys `for (key in globalThis)` visits, as a fresh object. */
     "global.forInObject": { argTypes: [], result: DYN },
+    /** A JavaScript read of a name no declaration binds (scr_node_builtin.c):
+     * the global object's own property of that name, or Node's
+     * ReferenceError "<name> is not defined" when it has none. bindingValue
+     * is the same property for `typeof`, undefined when absent; bindingHas
+     * tests that the property exists. */
+    "global.bindingRead": { argTypes: [STRING], result: DYN },
+    "global.bindingValue": { argTypes: [STRING], result: DYN },
+    "global.bindingHas": { argTypes: [STRING], result: BOOL },
     /** Node's navigator global (scr_node_builtin.c). */
     "navigator.object": { argTypes: [], result: DYN },
     "navigator.language": { argTypes: [], result: STRING },
@@ -5753,11 +5774,15 @@ function buildLibFnSignatures() {
      * through the pair, which the caller has tested (record.linkIs); its
      * type is the pair's source type. Never throws. */
     "record.linkSource": { argTypes: [null, F64], result: VOID },
-    /** `record.sourceNote(built, keys)`: the record a width spread just
-     * built keeps `keys` (the copy's own keys, in order; declared ones are
-     * placeholders) as its kept source when they hold an undeclared key or
-     * another order (scr_record_source_note). The first is a record type,
-     * the second dyn (borrowed). Never throws. */
+    /** `record.sourceNote(built, keys)`: the record a spread just built
+     * keeps `keys` as its kept source (scr_record_source_note). For a
+     * declared spread merge (`{ ...a, ...b }` into one declared shape;
+     * key-order-witness.ts declared merges) they are the declared keys its
+     * sources supplied, in the order the spreads created them, kept when the
+     * record holds them in another order than it serializes them. For a width
+     * spread they are the copy's own keys, in order (declared ones are
+     * placeholders), kept when they hold an undeclared key or another order.
+     * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },

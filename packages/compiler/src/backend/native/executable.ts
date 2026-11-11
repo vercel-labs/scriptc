@@ -597,10 +597,8 @@ const RUNTIME_DEFINES: readonly {
   // scr_fs_stream.c's `signal` option, whose abort listener comes from the
   // event-target unit.
   { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
-  // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_dyn_builtin_class.c's instanceof over its classes, and scr_fetch.c's
-  // bodies of its streams.
-  { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
+  // scr_dyn_builtin_class.c's instanceof over the web streams unit's classes,
+  // and scr_fetch.c's bodies of its streams.
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
   // as Content-Type when the request sets none.

@@ -318,6 +318,7 @@ import {
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpClientFnBindingDecl,
+  lowerHttpClientMaxHeadersCountAssignment,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -1724,6 +1725,14 @@ function varBindingType(lowerer: Lowerer, nameNode: ts.Identifier): IrType | nul
   if (ts.isVariableDeclaration(nameNode.parent) && nameNode.parent.name === nameNode) {
     type = staticImportNamespaceType(lowerer, nameNode.parent.initializer) ?? type;
   }
+  // `var c = void 0` / `var v: undefined`: the unit-only union, as for a
+  // `let` binding of the same type (lowerVarDecl). Its undefined arm is the
+  // hoisted value and the initializer's value.
+  if (
+    type?.kind === "void" &&
+    isUnitOnlyTsType(lowerer.typeOf(nameNode), lowerer.typeParamResolver)
+  )
+    type = unitOnlyUnion(lowerer.unions);
   if (!type || type.kind === "void") return null;
   // A JavaScript `var` holds whatever its writes store, as a `let` does:
   // the checker types it by its initializer and checks no later write
@@ -11101,7 +11110,8 @@ export function lowerExprStatement(
           );
           if (timeoutProp) return timeoutProp;
         }
-        // server.maxConnections — net.Server's connection cap.
+        // server.maxConnections / server.maxHeadersCount /
+        // server.maxRequestsPerSocket — writable server limits.
         {
           const capProp = lowerNetServerMaxConnectionsAssignment(
             lowerer,
@@ -11110,6 +11120,16 @@ export function lowerExprStatement(
             locOf(expr),
           );
           if (capProp) return capProp;
+        }
+        // request.maxHeadersCount — the client's header-line budget.
+        {
+          const clientLimit = lowerHttpClientMaxHeadersCountAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (clientLimit) return clientLimit;
         }
         // `N.x = v` — a namespace-qualified write: exported `let`
         // members are module globals, so the qualified spelling assigns

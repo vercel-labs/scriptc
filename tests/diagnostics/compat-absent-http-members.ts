@@ -11,8 +11,7 @@ console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof 
 console.log(agent.maxTotalSockets);
 agent.destroy();
 
-// Server: the header-count and requests-per-socket limits, the event for
-// a request the latter drops, and explicit resource management.
+// Server: explicit resource management.
 const server = http.createServer((request, response) => {
   // IncomingMessage: the abort signal.
   console.log(request.signal.aborted);
@@ -24,19 +23,11 @@ const server = http.createServer((request, response) => {
   response.on("drain", () => {});
   response.end();
 });
-console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
-server.on("dropRequest", () => {});
 await server[Symbol.asyncDispose]();
-
-// ClientRequest: the header-count limit of the response.
-const request = http.request({ host: "127.0.0.1", port: 1 });
-console.log(request.maxHeadersCount);
-request.destroy();
 
 // The module: the proxy configuration read from the environment.
 http.setGlobalProxyFromEnv();
 
-// https: the same server members.
+// https: the same server member.
 const secure = https.createServer({}, (_request, response) => response.end());
-console.log(secure.maxHeadersCount);
 await secure[Symbol.asyncDispose]();

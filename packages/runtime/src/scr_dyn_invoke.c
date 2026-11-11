@@ -1987,8 +1987,8 @@ static ScrDyn *scr_dyn_invoke_impl(
     return NULL;
   }
 
-  /* PROMISE receivers: the then/catch/finally reactions ride the fiber
-   * machinery (scr_dyn_promise_then — microtask-exact ordering); every
+  /* PROMISE receivers: the then/catch/finally reactions are native
+   * reactions (scr_dyn_promise_then — microtask-exact ordering); every
    * other Promise.prototype name is `then`-adjacent sugar JS doesn't
    * have, so the not-a-function answer IS the JS answer. */
   if (recv->kind == SCR_DYN_PROMISE) {

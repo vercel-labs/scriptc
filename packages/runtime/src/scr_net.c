@@ -510,6 +510,12 @@ struct ScrNetServer {
   /* server.dropMaxConnection (NULL = undefined): Node reads it only in
    * cluster mode, so here it is a stored value */
   ScrDyn *drop_max_connection;
+  /* http.Server's maxHeadersCount / maxRequestsPerSocket (NULL = unset,
+   * reading null and 0): ordinary writable properties of any value, kept
+   * as assigned so a dynamic write preserves its kind. Only
+   * http_timeout_surface servers expose them, like the timeout fields. */
+  ScrDyn *max_headers_count;
+  ScrDyn *max_requests_per_socket;
   /* protocol layer (scr_http.c): a C-level connection consumer + its
    * context, freed with the handle */
   ScrNetNativeConnFn native_conn;
@@ -804,6 +810,8 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_closure_release(s->close_override);
     for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
     scr_dyn_release(s->drop_max_connection);
+    scr_dyn_release(s->max_headers_count);
+    scr_dyn_release(s->max_requests_per_socket);
     scr_str_release(s->bound_host);
     scr_str_release(s->pending_err);
     scr_str_release(s->unix_path);
@@ -2531,6 +2539,39 @@ ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s) {
 void scr_net_server_drop_max_connection_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/) {
   scr_dyn_release(s->drop_max_connection);
   s->drop_max_connection = scr_dyn_retain((ScrDyn *)value);
+}
+
+/* server.maxHeadersCount / server.maxRequestsPerSocket: Node's plain
+ * writable properties (null and 0 until assigned). The getters answer +1;
+ * the setters store the value as assigned so a dynamic write keeps its
+ * kind, and the borrowed raw views let the HTTP layer apply Node's numeric
+ * coercions. */
+ScrDyn *scr_net_server_max_headers_count_get(ScrNetServer *s) {
+  return s->max_headers_count != NULL ? scr_dyn_retain(s->max_headers_count) : scr_dyn_new_null();
+}
+
+void scr_net_server_max_headers_count_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/) {
+  scr_dyn_release(s->max_headers_count);
+  s->max_headers_count = value != NULL ? scr_dyn_retain((ScrDyn *)value) : NULL;
+}
+
+const ScrDyn *scr_net_server_max_headers_count_raw(const ScrNetServer *s) {
+  return s->max_headers_count;
+}
+
+ScrDyn *scr_net_server_max_requests_per_socket_get(ScrNetServer *s) {
+  return s->max_requests_per_socket != NULL ? scr_dyn_retain(s->max_requests_per_socket)
+                                            : scr_dyn_new_num(0);
+}
+
+void scr_net_server_max_requests_per_socket_set(ScrNetServer *s,
+                                                const ScrDyn *value /*borrowed*/) {
+  scr_dyn_release(s->max_requests_per_socket);
+  s->max_requests_per_socket = value != NULL ? scr_dyn_retain((ScrDyn *)value) : NULL;
+}
+
+const ScrDyn *scr_net_server_max_requests_per_socket_raw(const ScrNetServer *s) {
+  return s->max_requests_per_socket;
 }
 
 void scr_net_server_notify_new_listener(ScrNetServer *s, const char *event) {
@@ -7221,7 +7262,13 @@ static ScrDyn *scr_net_dynh_srv_get(void *h, const char *key, size_t key_len) {
     if (strcmp(key, "maxConnections") == 0) return s->max_conns_set ? scr_dyn_new_num(s->max_conns) : NULL;
     if (strcmp(key, "dropMaxConnection") == 0)
       return s->drop_max_connection != NULL ? scr_dyn_retain(s->drop_max_connection) : NULL;
-    static const char *const known[] = { "connections", "maxHeadersCount", NULL };
+    if (s->http_timeout_surface && strcmp(key, "maxHeadersCount") == 0)
+      return s->max_headers_count != NULL ? scr_dyn_retain(s->max_headers_count)
+                                          : scr_dyn_new_null();
+    if (s->http_timeout_surface && strcmp(key, "maxRequestsPerSocket") == 0)
+      return s->max_requests_per_socket != NULL ? scr_dyn_retain(s->max_requests_per_socket)
+                                                : scr_dyn_new_num(0);
+    static const char *const known[] = { "connections", NULL };
     for (size_t i = 0; known[i]; i++) {
       if (strcmp(key, known[i]) == 0) {
         scr_net_dynh_srv_unsupported(key, NULL);
@@ -7251,6 +7298,14 @@ static bool scr_net_dynh_srv_set(void *h, const char *key, size_t key_len, const
   }
   if (strcmp(key, "dropMaxConnection") == 0) {
     scr_net_server_drop_max_connection_set(s, value);
+    return true;
+  }
+  if (s->http_timeout_surface && strcmp(key, "maxHeadersCount") == 0) {
+    scr_net_server_max_headers_count_set(s, value);
+    return true;
+  }
+  if (s->http_timeout_surface && strcmp(key, "maxRequestsPerSocket") == 0) {
+    scr_net_server_max_requests_per_socket_set(s, value);
     return true;
   }
   return false;

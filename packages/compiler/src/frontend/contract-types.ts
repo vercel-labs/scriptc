@@ -7,6 +7,7 @@
  * variable and class field types, and the class markers (Acyclic,
  * ProgramLifetime) in heritage clauses. The IR-side checks live in
  * ir/contract-check.ts. */
+import { dirname, resolve } from "node:path";
 import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
@@ -97,14 +98,22 @@ export function contractLocKey(loc: SrcLoc): string {
   return `${loc.file}\0${loc.start}\0${loc.end}`;
 }
 
+/** A written name that is a marker, or one that is imported from the
+ * contract package but whose alias chain stops before the package's own
+ * declaration (reported instead of dropping the contract). */
+type MarkerResolution =
+  | { kind: "marker"; marker: ContractMarker }
+  | { kind: "unresolved"; name: string };
+
 /** The marker a type reference names when its name is a named or namespace
  * import binding of @scriptc/types (`import type { Int32 } from
- * "@scriptc/types"`, `import type * as sc from "@scriptc/types"`). */
-function markerOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): ContractMarker | null {
+ * "@scriptc/types"`, `import type * as sc from "@scriptc/types"`), directly
+ * or through an alias or re-export. */
+function markerOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): MarkerResolution | null {
   const name = ref.typeName;
-  if (ts.isIdentifier(name)) return markerNamed(checker, name, name.text, false);
+  if (ts.isIdentifier(name)) return markerNamed(checker, name, false);
   if (ts.isQualifiedName(name) && ts.isIdentifier(name.left))
-    return markerNamed(checker, name.left, name.right.text, true);
+    return markerNamed(checker, name.left, true, name.right.text);
   return null;
 }
 
@@ -112,42 +121,196 @@ function markerOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): ContractM
  * `implements sc.ProgramLifetime`), as an ExpressionWithTypeArguments or,
  * in TypeScript 7.1's interface `extends` and class `implements`, a
  * TypeReference. */
-function markerOfHeritage(checker: ts.TypeChecker, node: HeritageElement): ContractMarker | null {
+function markerOfHeritage(checker: ts.TypeChecker, node: HeritageElement): MarkerResolution | null {
   if (ts.isTypeReferenceNode(node)) return markerOf(checker, node);
   const e = node.expression;
-  if (ts.isIdentifier(e)) return markerNamed(checker, e, e.text, false);
+  if (ts.isIdentifier(e)) return markerNamed(checker, e, false);
   if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && ts.isIdentifier(e.name))
-    return markerNamed(checker, e.expression, e.name.text, true);
+    return markerNamed(checker, e.expression, true, e.name.text);
   return null;
 }
 
-/** Resolve `ident` (the whole name, or the namespace of a qualified one)
- * to an import of @scriptc/types and answer the imported marker. */
+/** The marker a type reference names, when it names one. */
+function markerTypeOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): ContractMarker | null {
+  const resolution = markerOf(checker, ref);
+  return resolution?.kind === "marker" ? resolution.marker : null;
+}
+
+/** The module a declaration file is the entry of: the contract packages'
+ * `index.d.ts`, in the workspace (`packages/<name>/index.d.ts`) or installed
+ * (`node_modules/@scriptc/<name>/index.d.ts`). */
+function contractModuleOfFile(fileName: string): string | null {
+  if (/(?:^|[\\/])(?:@scriptc[\\/]types|packages[\\/]types)[\\/]index\.d\.ts$/.test(fileName))
+    return CONTRACT_TYPES_MODULE;
+  if (
+    /(?:^|[\\/])(?:@scriptc[\\/]experimental|packages[\\/]experimental)[\\/]index\.d\.ts$/.test(
+      fileName,
+    )
+  )
+    return INLINE_ARRAY_MODULE;
+  return null;
+}
+
+function symbolAt(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | undefined {
+  try {
+    return checker.getSymbolAtLocation(node);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The module an import or re-export binding names, and the member it names
+ * there, or null when the declaration is neither. An import specifier sits
+ * under a named binding under an import clause; an export specifier sits
+ * under a named binding under the export declaration that holds the module
+ * specifier. */
+function importedFrom(decl: ts.Node): { module: string; member: string } | null {
+  if (!ts.isImportSpecifier(decl) && !ts.isExportSpecifier(decl)) return null;
+  const holder = decl.parent?.parent;
+  const statement = holder !== undefined && ts.isImportClause(holder) ? holder.parent : holder;
+  if (
+    statement === undefined ||
+    (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement))
+  )
+    return null;
+  const moduleSpecifier = statement.moduleSpecifier;
+  if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) return null;
+  return { module: moduleSpecifier.text, member: decl.propertyName?.text ?? decl.name.text };
+}
+
+/** Resolve `ident` (the whole name, or the namespace of a qualified one) to
+ * the contract package's declaration of a marker. Aliases, re-exports and
+ * namespace imports are followed through the checker's symbol graph:
+ * `import type { Immutable as RO } from "@scriptc/types"`,
+ * `export type { Immutable } from "@scriptc/types"` in a local module, and
+ * `export * from "@scriptc/types"` all reach the same declaration. */
 function markerNamed(
   checker: ts.TypeChecker,
   ident: ts.Identifier,
-  written: string,
   qualified: boolean,
-): ContractMarker | null {
-  if (!MARKERS.has(written)) return null;
-  let member = written;
-  const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? symbol.declarations[0] : undefined;
-  if (decl === undefined) return null;
-  let importDecl: ts.Node | undefined;
-  if (ts.isImportSpecifier(decl) && !qualified) {
-    importDecl = decl.parent?.parent?.parent;
-    member = decl.propertyName?.text ?? decl.name.text;
-  } else if (ts.isNamespaceImport(decl) && qualified) importDecl = decl.parent?.parent;
-  else return null;
+  member?: string,
+): MarkerResolution | null {
+  const symbol = symbolAt(checker, ident);
+  if (symbol === undefined) return null;
+  const seen = new Set<ts.Symbol>();
+  let current: ts.Symbol | undefined = symbol;
+  for (let step = 0; current !== undefined && step < 8; step++) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const decl = current.declarations?.[0];
+    if (decl === undefined) break;
+    if (ts.isSourceFile(decl) || ts.isModuleDeclaration(decl)) {
+      // A module (or a namespace import of one): the marker is the export
+      // `member` names, whether the module is the package or re-exports it.
+      const name = qualified ? member : undefined;
+      if (name === undefined) return null;
+      const exported: ts.Symbol | undefined = checker
+        .getExportsOfModule(current)
+        .find((s) => ts.symbolName(s) === name);
+      if (exported === undefined) return null;
+      current = exported;
+      continue;
+    }
+    const module = contractModuleOfFile(decl.getSourceFile().fileName);
+    if (module !== null) {
+      const name = qualified ? member : ts.symbolName(current);
+      if (name === undefined || !MARKERS.has(name) || markerModule(name) !== module) return null;
+      return { kind: "marker", marker: name as ContractMarker };
+    }
+    // A local or library declaration: only another alias keeps the chain
+    // going, and only the package's declaration ends it.
+    current = current.flags & ts.SymbolFlags.Alias ? aliasOf(checker, current) : undefined;
+  }
+  // The name is imported from the contract module, but following the alias
+  // stopped short: report it rather than treating the annotation as ordinary.
+  const imported = importedFrom(symbol.declarations?.[0] ?? ident);
   if (
-    importDecl === undefined ||
-    !ts.isImportDeclaration(importDecl) ||
-    !ts.isStringLiteral(importDecl.moduleSpecifier) ||
-    importDecl.moduleSpecifier.text !== markerModule(member)
+    imported !== null &&
+    MARKERS.has(imported.member) &&
+    imported.module === markerModule(imported.member)
   )
-    return null;
-  return MARKERS.has(member) ? (member as ContractMarker) : null;
+    return { kind: "unresolved", name: imported.member };
+  return null;
+}
+
+function aliasOf(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol | undefined {
+  try {
+    return checker.getAliasedSymbol(symbol);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Files whose written annotations can name a contract marker: those that
+ * import the contract modules, and those that import or re-export from a
+ * module that does. A relative import that does not resolve to a program
+ * file is walked too (the module may re-export the markers from a
+ * declaration file). */
+function contractFiles(files: readonly ts.SourceFile[]): Set<ts.SourceFile> {
+  const byPath = new Map<string, ts.SourceFile>();
+  for (const sf of files) byPath.set(resolve(sf.fileName), sf);
+  const importers = new Map<ts.SourceFile, ts.SourceFile[]>();
+  const found = new Set<ts.SourceFile>();
+  const queue: ts.SourceFile[] = [];
+  const add = (sf: ts.SourceFile): void => {
+    if (found.has(sf)) return;
+    found.add(sf);
+    queue.push(sf);
+  };
+  for (const sf of files) {
+    if (sf.isDeclarationFile) continue;
+    for (const statement of sf.statements.nodes) {
+      const specifier = moduleSpecifierOf(statement);
+      if (specifier === null) continue;
+      if (specifier === CONTRACT_TYPES_MODULE || specifier === INLINE_ARRAY_MODULE) {
+        add(sf);
+        continue;
+      }
+      if (!specifier.startsWith(".")) continue;
+      const target = resolveInline(sf.fileName, specifier, byPath);
+      if (target === undefined) add(sf);
+      else importers.set(target, [...(importers.get(target) ?? []), sf]);
+    }
+  }
+  while (queue.length > 0) {
+    const target = queue.pop()!;
+    for (const importer of importers.get(target) ?? []) add(importer);
+  }
+  return found;
+}
+
+function moduleSpecifierOf(statement: ts.Node): string | null {
+  if (
+    (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
+    statement.moduleSpecifier !== undefined &&
+    ts.isStringLiteral(statement.moduleSpecifier)
+  )
+    return statement.moduleSpecifier.text;
+  return null;
+}
+
+/** The program file a relative specifier names, without touching the file
+ * system: the program's own modules are already in `byPath`. */
+function resolveInline(
+  fromFile: string,
+  specifier: string,
+  byPath: ReadonlyMap<string, ts.SourceFile>,
+): ts.SourceFile | undefined {
+  const base = resolve(dirname(fromFile), specifier);
+  const stems = [base, base.replace(/\.(?:m|c)?js$/, "")];
+  const candidates: string[] = [];
+  for (const stem of stems) {
+    candidates.push(stem);
+    for (const ext of [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"])
+      candidates.push(stem + ext);
+    for (const ext of [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"])
+      candidates.push(`${stem}/index${ext}`);
+  }
+  for (const candidate of candidates) {
+    const sf = byPath.get(candidate);
+    if (sf !== undefined) return sf;
+  }
+  return undefined;
 }
 
 function nameText(node: ts.Node | undefined): string {
@@ -166,8 +329,8 @@ function contractDiag(
 }
 
 /** Collect every contract annotation in the program's own TypeScript
- * modules. Files that do not mention the package cannot import a marker
- * (re-exports are not followed), so they are skipped without a walk. */
+ * modules. A file is walked when it can name a marker, directly or through
+ * a re-export. */
 export function collectContractAnnotations(
   checker: ts.TypeChecker,
   files: readonly ts.SourceFile[],
@@ -187,27 +350,30 @@ export function collectContractAnnotations(
     ts.SyntaxKind.TypeReference,
     ts.SyntaxKind.ExpressionWithTypeArguments,
   ]);
+  const interesting = contractFiles(files);
   for (const sf of files) {
-    if (
-      sf.isDeclarationFile ||
-      (!ts.sourceTextIncludes(sf, CONTRACT_TYPES_MODULE) &&
-        !ts.sourceTextIncludes(sf, INLINE_ARRAY_MODULE))
-    )
-      continue;
+    if (!interesting.has(sf)) continue;
     ts.walkPreorder(
       sf,
       (node) => {
-        if (isHeritageElement(node)) {
-          const marker = markerOfHeritage(checker, node);
-          if (marker === null) return;
-          out.count++;
-          placeHeritage(out, checker, node, marker, resolveUnit);
+        const heritage = isHeritageElement(node);
+        const resolution = heritage
+          ? markerOfHeritage(checker, node)
+          : ts.isTypeReferenceNode(node)
+            ? markerOf(checker, node)
+            : null;
+        if (resolution === null) return;
+        if (resolution.kind === "unresolved") {
+          out.diagnostics.push(unresolvedMarker(node, resolution.name));
+          return;
+        }
+        const marker = resolution.marker;
+        out.count++;
+        if (heritage) {
+          placeHeritage(out, checker, node as HeritageElement, marker, resolveUnit);
           return;
         }
         if (!ts.isTypeReferenceNode(node)) return;
-        const marker = markerOf(checker, node);
-        if (marker === null) return;
-        out.count++;
         if (marker === "Acyclic") placeAcyclicAlias(out, checker, node, resolveUnit);
         else if (marker === "ProgramLifetime") unsupported(out, node, marker);
         else if (marker === INLINE_ARRAY_MARKER) placeInlineArray(out, node);
@@ -217,6 +383,18 @@ export function collectContractAnnotations(
     );
   }
   return out;
+}
+
+/** A marker the compiler could not trace back to the package: the contract
+ * cannot be checked, so say so instead of compiling as if it were never
+ * written. */
+function unresolvedMarker(node: ts.Node, name: string): ScrDiagnostic {
+  return contractDiag(
+    "SC7006",
+    locOf(node),
+    `the ${name} contract here cannot be checked: '${name}' is imported from ${markerModule(name)} but the import does not resolve to the package's declaration`,
+    "import the marker directly from @scriptc/types, or through a module that re-exports it and resolves",
+  );
 }
 
 function unsupported(out: ContractAnnotations, node: ts.Node, marker: ContractMarker): void {
@@ -398,7 +576,7 @@ function place(
   // NoThrow<Int32> / NoThrow<Immutable<T>>: the inner marker is the result
   // contract of the function the NoThrow annotates.
   if (marker !== "NoThrow" && parent !== undefined && ts.isTypeReferenceNode(parent)) {
-    const wrapper = markerOf(checker, parent);
+    const wrapper = markerTypeOf(checker, parent);
     if (wrapper === "NoThrow" && parent.typeArguments?.nodes[0] === node) {
       node = parent;
       parent = parent.parent;

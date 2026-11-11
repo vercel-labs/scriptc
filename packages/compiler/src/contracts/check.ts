@@ -97,6 +97,17 @@ function walk(
   for (const s of body) stmt(s);
 }
 
+/** Whether two expressions name the same storage place (`xs`, `this.rows`,
+ * `b.rows`) without evaluating anything. */
+function samePlace(a: IrExpr, b: IrExpr): boolean {
+  if (a.kind === "varRef" && b.kind === "varRef") return a.localId === b.localId;
+  if (a.kind === "fieldGet" && b.kind === "fieldGet")
+    return a.className === b.className && a.field === b.field && samePlace(a.obj, b.obj);
+  if (a.kind === "recordGet" && b.kind === "recordGet")
+    return a.field === b.field && samePlace(a.obj, b.obj);
+  return false;
+}
+
 function baseName(file: string): string {
   const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
   return slash >= 0 ? file.slice(slash + 1) : file;
@@ -1238,8 +1249,9 @@ class ImmutableContracts {
     return family === null ? null : `f:${family}`;
   }
 
-  /** A factory: every return is fresh, built from literals and locals that
-   * only it references. */
+  /** A factory: every return is fresh, built from literals, its own fresh
+   * locals, and values the program already declared Immutable (which no
+   * write can reach, so passing one in cannot make the result shared). */
   private computeFreshFunctions(): void {
     const c = this.c;
     for (let changed = true; changed;) {
@@ -1248,13 +1260,14 @@ class ImmutableContracts {
         if (this.freshFns.has(fn.name) || fn.async || fn.generator || fn.captures?.length) continue;
         if (!isRefCounted(fn.returnType) || fn.returnType.kind === "string") continue;
         const freshLocals = this.freshLocalsOf(fn);
+        const declared = (e: IrExpr): boolean => this.declaredImmutable(fn, e);
         let returns = 0;
         let ok = true;
         walk(fn.body, {
           stmt: (s) => {
             if (s.kind !== "return") return;
             returns++;
-            if (!s.value || !this.fresh(s.value, freshLocals)) ok = false;
+            if (!s.value || !this.fresh(s.value, freshLocals, declared)) ok = false;
           },
         });
         if (ok && returns > 0) {
@@ -1264,6 +1277,17 @@ class ImmutableContracts {
       }
     }
     this.factoriesFinal = true;
+  }
+
+  /** Whether `e` names an annotation the program wrote as Immutable: a
+   * parameter, variable, module constant or instance field. */
+  private declaredImmutable(fn: IrFunction, e: IrExpr): boolean {
+    if (e.kind === "varRef") return this.annotated.has(this.localSlot(fn, e.localId));
+    if (e.kind === "fieldGet") {
+      const slot = this.fieldSlot(e.className, e.field);
+      return slot !== null && this.annotated.has(slot);
+    }
+    return false;
   }
 
   /** Locals of `fn` that only ever hold fresh values and are used only as
@@ -1287,8 +1311,15 @@ class ImmutableContracts {
     // An element write at a negative, fractional or too-large index adds an
     // ordinary property instead, and publication refuses arrays that carry
     // properties: only writes at provable array indexes keep a value fresh.
-    // Typed-array writes never add properties.
-    const arrayIndex = (index: IrExpr): boolean => {
+    // Writing at the array's own `length` appends, and typed-array writes
+    // never add properties.
+    const appendsTo = (arr: IrExpr, index: IrExpr): boolean =>
+      index.kind === "arrIntrinsic" &&
+      index.method === "length" &&
+      index.args.length === 0 &&
+      samePlace(arr, index.receiver);
+    const arrayIndex = (arr: IrExpr, index: IrExpr): boolean => {
+      if (appendsTo(arr, index)) return true;
       ranges ??= analyzeIntegerRanges(fn);
       const range = ranges.get(index);
       return (
@@ -1301,7 +1332,11 @@ class ImmutableContracts {
         if ((s.kind === "fieldSet" || s.kind === "recordSet") && s.obj.kind === "varRef")
           allowed.add(s.obj);
         if (s.kind === "bytesSet" && s.arr.kind === "varRef") allowed.add(s.arr);
-        if (s.kind === "arraySet" && s.arr.kind === "varRef" && arrayIndex(s.index))
+        if (
+          (s.kind === "arraySet" || s.kind === "arraySetUndefined") &&
+          s.arr.kind === "varRef" &&
+          arrayIndex(s.arr, s.index)
+        )
           allowed.add(s.arr);
       },
       expr: (e) => {
@@ -1316,6 +1351,35 @@ class ImmutableContracts {
           allowed.add(e.obj);
       },
     });
+    // `out.push(v)` reaches the array through a compiler temporary
+    // (`%pushTarget.0 = out`) that is the write target. A temporary whose
+    // every use is one of the allowed positions is the array itself, so
+    // naming it is not an escape.
+    const uses = new Map<string, IrExpr[]>();
+    const inits = new Map<string, IrExpr>();
+    const temporaries = new Set(fn.locals.filter((l) => l.source === undefined).map((l) => l.id));
+    walk(fn.body, {
+      stmt: (s) => {
+        if (s.kind === "varDecl" && s.init !== undefined && s.init !== null)
+          inits.set(s.localId, s.init);
+      },
+      expr: (e) => {
+        if (e.kind !== "varRef") return;
+        const list = uses.get(e.localId);
+        if (list === undefined) uses.set(e.localId, [e]);
+        else list.push(e);
+      },
+    });
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const id of temporaries) {
+        const init = inits.get(id);
+        if (init === undefined || init.kind !== "varRef" || allowed.has(init)) continue;
+        if (!(uses.get(id) ?? []).every((use) => allowed.has(use))) continue;
+        allowed.add(init);
+        changed = true;
+      }
+    }
     for (let changed = true; changed;) {
       changed = false;
       walk(fn.body, {
@@ -1754,8 +1818,16 @@ class ImmutableContracts {
           SET_ELEMENT_READS.has(e.method) &&
           (this.mayHold.has(`se:${typeKey(e.receiver.type)}`) || derived(e.receiver))
         );
-      case "call":
+      case "call": {
+        // The checked element read `%arr.idxOr.<elem>` is one helper shared by
+        // every `a[i]` of its element type, so its result slot holds the union
+        // of all call sites. Read it as the element read it is: derived exactly
+        // when the array passed here may hold Immutable elements.
+        const arg = e.args[0];
+        if (arg !== undefined && e.callee.startsWith("%arr.idxOr."))
+          return this.mayHold.has(`e:${typeKey(arg.type)}`) || derived(arg);
         return this.mayHold.has(`r:${e.callee}`);
+      }
       case "virtualCall":
         return (this.methodImpls.get(e.method) ?? []).some((impl) => this.mayHold.has(`r:${impl}`));
       case "ternary":

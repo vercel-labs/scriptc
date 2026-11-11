@@ -2206,11 +2206,16 @@ export function unsupportedNativeApiDiag(
   };
 }
 
-export function unsupportedPackageImportDiag(pkg: string, loc: SrcLoc): ScrDiagnostic {
+export function unsupportedPackageImportDiag(
+  pkg: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return npmStaticRefusalDiag(
     pkg,
     "its implementation is not part of the compiled module graph",
     loc,
+    hint,
   );
 }
 
@@ -2222,6 +2227,16 @@ export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagno
   );
 }
 
+/** The package a declaration-only `@types/<name>` package types: resolution
+ * can answer the types package for a program that imports `<name>`, and the
+ * diagnostic must name what the program imports (`@types/scope__name` types
+ * `@scope/name`). Any other name is returned as is. */
+export function runtimePackageName(pkg: string): string {
+  if (!pkg.startsWith("@types/")) return pkg;
+  const bare = pkg.slice("@types/".length);
+  return bare.includes("__") ? `@${bare.replace("__", "/")}` : bare;
+}
+
 export function npmStaticRefusalDiag(
   pkg: string,
   detail: string,
@@ -2230,7 +2245,7 @@ export function npmStaticRefusalDiag(
 ): ScrDiagnostic {
   return {
     code: "SC2013",
-    message: `cannot compile npm package '${pkg}' statically: ${detail}`,
+    message: `cannot compile npm package '${runtimePackageName(pkg)}' statically: ${detail}`,
     loc,
     milestone: "later",
     hint:

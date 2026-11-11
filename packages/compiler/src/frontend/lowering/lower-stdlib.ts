@@ -45,6 +45,7 @@ import {
 import {
   type ScrDiagnostic,
   unsupportedNativeApiDiag,
+  runtimePackageName,
   unsupportedPackageImportDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
@@ -2356,7 +2357,8 @@ function uncompiledImportPackage(lowerer: Lowerer, call: ts.CallExpression): str
   if (specifier === null) return null;
   const file = ts.getSourceFileOfNode(call).fileName;
   if (lowerer.dynImports.get(dynImportKey(file, specifier, !literal)) !== undefined) return null;
-  return resolveNpmImport(file, specifier)?.packageName ?? null;
+  const npm = resolveNpmImport(file, specifier);
+  return npm === null ? null : runtimePackageName(npm.packageName);
 }
 
 /** The package a refusal names as outside the compiled module graph
@@ -2425,7 +2427,14 @@ function lowerResolvedImport(
     // call (lower-node-island.ts, lowerIslandLoadCall).
     const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
     if (npm !== null) {
-      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call)));
+      lowerer.pushDiag(
+        unsupportedPackageImportDiag(
+          runtimePackageName(npm.packageName),
+          locOf(call),
+          "no static import names this package, so it is not compiled: add a static import of it " +
+            "(`import x from 'pkg'`) so it joins the module graph, or allow a Node island for it",
+        ),
+      );
       throw new PoisonError();
     }
     lowerer.refuseUnsupportedApi("'import()'", call);

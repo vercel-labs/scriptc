@@ -12,8 +12,6 @@
   },
   "exports": [],
   "determinism": {
-    "fences": [
-      { "id": "stdlib.math.random" }
-    ]
+    "fences": [{ "id": "stdlib.math.random" }]
   }
 }

@@ -108,6 +108,18 @@ function samePlace(a: IrExpr, b: IrExpr): boolean {
   return false;
 }
 
+/** The element type of an array value, or undefined for anything else. */
+function arrayElement(type: IrType): IrType | undefined {
+  return type.kind === "array" ? type.elem : undefined;
+}
+
+/** Whether values of `type` cannot be shared between two containers:
+ * primitives, including strings, which are immutable. A copy whose
+ * elements are all this kind shares no mutable storage with its source. */
+function cannotAlias(type: IrType): boolean {
+  return !isRefCounted(type) || type.kind === "string";
+}
+
 /** Visit the `varRef`s that a stored value carries into the container
  * without handing them to other code: the value itself and the structural
  * slots a construction puts it in (array and record literals, Map and Set
@@ -1389,8 +1401,12 @@ class ImmutableContracts {
     // Every write that puts a value into a container: element writes,
     // field writes, appends and insertions, and Map/Set entries. The values
     // become part of the container, so a local that receives one only stays
-    // fresh when the value is fresh too.
-    const stores: { target: IrExpr; values: readonly IrExpr[] }[] = [];
+    // fresh when the value is fresh too. `spread` marks a store that copies
+    // a source container's elements instead (`push(...xs)`): only the
+    // element values join the receiver, so a primitive element type needs
+    // nothing of the source, while object elements stay shared and the
+    // source must be fresh.
+    const stores: { target: IrExpr; values: readonly IrExpr[]; spread?: boolean }[] = [];
     const uses = new Map<string, IrExpr[]>();
     const inits = new Map<string, IrExpr>();
     const temporaries = new Set(fn.locals.filter((l) => l.source === undefined).map((l) => l.id));
@@ -1410,7 +1426,11 @@ class ImmutableContracts {
           return;
         }
         if (e.kind === "arrIntrinsic" && ARR_STORES.has(e.method))
-          stores.push({ target: e.receiver, values: e.args });
+          stores.push({
+            target: e.receiver,
+            values: e.args,
+            ...(e.method === "pushSpread" || e.method === "unshiftSpread" ? { spread: true } : {}),
+          });
         else if (e.kind === "mapIntrinsic" && e.method === "set")
           stores.push({ target: e.receiver, values: e.args.slice(0, 2) });
         else if (e.kind === "setIntrinsic" && e.method === "add")
@@ -1540,6 +1560,8 @@ class ImmutableContracts {
       for (const store of stores) {
         const id = candidateOf(store.target);
         if (id === null) continue;
+        const elem = arrayElement(store.target.type);
+        if (store.spread && elem !== undefined && cannotAlias(elem)) continue;
         if (store.values.every((value) => this.fresh(value, candidates, declared))) continue;
         candidates.delete(id);
         changed = true;
@@ -1563,8 +1585,16 @@ class ImmutableContracts {
         return true;
       case "varRef":
         return freshLocals.has(e.localId);
-      case "arrayLit":
-        return e.elems.every((x) => this.fresh(x, freshLocals, derived));
+      case "arrayLit": {
+        // A spread copies the source's elements: primitive elements cannot
+        // alias anything, while object elements stay shared with the source.
+        const spreads = new Set(e.spreads ?? []);
+        return e.elems.every((x, i) =>
+          spreads.has(i)
+            ? this.copyOfFresh(x, freshLocals, derived)
+            : this.fresh(x, freshLocals, derived),
+        );
+      }
       case "recordLit":
         return e.fields.every((f) => this.fresh(f.value, freshLocals, derived));
       case "mapNew":
@@ -1579,10 +1609,16 @@ class ImmutableContracts {
           this.constructorKeepsThis(e.className) &&
           e.args.every((a) => this.fresh(a, freshLocals, derived))
         );
-      case "call":
-        return (
-          this.freshFns.has(e.callee) && e.args.every((a) => this.fresh(a, freshLocals, derived))
-        );
+      case "call": {
+        if (!this.freshFns.has(e.callee)) return false;
+        // A factory result of primitive elements keeps no mutable reference
+        // to its arguments: only element values are copied into it.
+        const elem = arrayElement(e.type);
+        if (elem !== undefined && cannotAlias(elem)) return true;
+        return e.args.every((a) => this.fresh(a, freshLocals, derived));
+      }
+      case "arrIntrinsic":
+        return this.intrinsicFresh(e, freshLocals, derived);
       case "upcast":
       case "downcast":
       case "unionWrap":
@@ -1596,6 +1632,47 @@ class ImmutableContracts {
       default:
         return false;
     }
+  }
+
+  /** A copy of `source`'s elements (a spread, `Array.from`, `slice`,
+   * `concat`) puts element values in a new container. Primitive elements
+   * cannot alias anything, so the copy is fresh whatever `source` is.
+   * Object elements stay shared with the source, so the source must itself
+   * be fresh. */
+  private copyOfFresh(
+    source: IrExpr,
+    freshLocals: ReadonlySet<string>,
+    derived?: (e: IrExpr) => boolean,
+  ): boolean {
+    if (source.type.kind === "string") return true;
+    const elem = arrayElement(source.type);
+    if (elem !== undefined && cannotAlias(elem)) return true;
+    return this.fresh(source, freshLocals, derived);
+  }
+
+  /** An array intrinsic that yields a container: the copying methods build
+   * a new array whose element values come from the receiver and arguments,
+   * and `reverse` returns the receiver it sorted in place. The flattening
+   * copies return the result array they are handed, so even for primitive
+   * elements it must be fresh. */
+  private intrinsicFresh(
+    e: Extract<IrExpr, { kind: "arrIntrinsic" }>,
+    freshLocals: ReadonlySet<string>,
+    derived?: (e: IrExpr) => boolean,
+  ): boolean {
+    if (e.method === "reverse") return this.fresh(e.receiver, freshLocals, derived);
+    if (!ARR_COPIES.has(e.method)) return false;
+    if (
+      (e.method === "flatCopy" || e.method === "flatOne") &&
+      !this.fresh(e.receiver, freshLocals, derived)
+    )
+      return false;
+    const elem = arrayElement(e.type);
+    if (elem !== undefined && cannotAlias(elem)) return true;
+    return (
+      this.fresh(e.receiver, freshLocals, derived) &&
+      e.args.every((a) => this.fresh(a, freshLocals, derived))
+    );
   }
 
   /** The constructor chain uses `this` only to read and write its own

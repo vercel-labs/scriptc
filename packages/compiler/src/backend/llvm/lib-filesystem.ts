@@ -545,6 +545,17 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_watcher_off(ptr ${w.name}, double ${event.name}, ptr ${cb.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
+    // Loop-liveness bookkeeping only (the watcher's uv handle ref/unref);
+    // the receiver comes back BORROWED for chaining, like Node's methods
+    // answering `this`.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @${sym}(ptr ${w.name})`);
+    return { name: t, type: e.type };
+  }
   if (e.fn === "watcher.close") {
     // Idempotent; never throws.
     const w = host.emitExpr(e.args[0]!);

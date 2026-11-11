@@ -34,6 +34,11 @@ void scr_watcher_release_v(void *p);
  * directory watch has no lowering yet and THROWS [SC2020]. +1. */
 ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb, ScrWatchFn fn, bool wants_name);
 void scr_watcher_close(ScrWatcher *w); /* idempotent */
+/* watcher.ref()/unref(): whether the open watcher holds the event loop
+ * (persistent is the default). Both answer the receiver; a closed
+ * watcher makes them no-ops, like Node's dropped handle. */
+ScrWatcher *scr_watcher_ref(ScrWatcher *w);
+ScrWatcher *scr_watcher_unref(ScrWatcher *w);
 /* watcher.on/once/addListener/prependListener(event, listener): cb MOVES
  * in. On a closed watcher the listener is released at once (it can never
  * run). Directory watches on macOS cannot name entries (slice F3), so a

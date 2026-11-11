@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-watch-unref-exit.ts"
+ ],
+ "diags": []
+}

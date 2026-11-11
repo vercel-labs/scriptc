@@ -1578,6 +1578,10 @@ function buildLibFnSignatures() {
     "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
     "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    // ref()/unref(): whether an open watcher holds the event loop; Node
+    // answers the receiver (`this`), so the handle comes back for chaining.
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: FSWATCHER_T },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: FSWATCHER_T },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for
@@ -4076,6 +4080,18 @@ function buildLibFnSignatures() {
     "fsp.mkdirMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.mkdirRecursive": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdirRecursiveMode": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.mkdirModeOctal": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+    // mkdir(p, { recursive: true }) answers the first created directory:
+    // the interned `string | undefined` union (the runtime answers
+    // +1-or-NULL; the backend builds the arms), like fs.mkdirRecursiveSync.
+    "fsp.mkdirRecursiveFirst": {
+      argTypes: [STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.mkdirRecursiveFirstOctal": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
@@ -4140,6 +4156,11 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    "fsp.mkdtempEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.mkdtempBuffer": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],
@@ -4179,7 +4200,13 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
+    "fsp.statProbe": { argTypes: [STRING, BOOL], result: { kind: "promise", inner: VOID } },
     "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    "fsp.realpathEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.realpathBuffer": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     "fsp.lstat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
     /** fs/promises.open and the statically represented FileHandle surface.
      * Every operation returns an already-settled promise; syscall failures
@@ -4188,6 +4215,14 @@ function buildLibFnSignatures() {
      * buffer }) assembled by the backends around the fixed runtime ABI. */
     "fsp.open": {
       argTypes: [STRING, STRING, F64],
+      result: { kind: "promise", inner: FILEHANDLE_T },
+    },
+    // open()'s general form: Node's stringToFlags and parseFileMode read the
+    // argument values, so a numeric flag mask, an octal-string mode, and an
+    // absent argument all reach one entry point that resolves them at run
+    // time. The all-static spelling above keeps its direct call.
+    "fsp.openOptions": {
+      argTypes: [STRING, DYN, DYN],
       result: { kind: "promise", inner: FILEHANDLE_T },
     },
     "fileHandle.fd": { argTypes: [FILEHANDLE_T], result: F64 },

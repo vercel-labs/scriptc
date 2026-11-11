@@ -208,6 +208,29 @@ static int scr_file_handle_open_flags(ScrStr *flags) {
   return of;
 }
 
+/* Node's stringToFlags for the number arm: validateInt32's ladder, whose
+ * received rendering shares scr_num_received with the mode checks. */
+static bool scr_file_handle_flags_valid(double flags) {
+  char msg[192];
+  char recv[48];
+  scr_num_received(flags, recv);
+  if (!(isfinite(flags) && trunc(flags) == flags)) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (flags < -2147483648.0 || flags > 2147483647.0) {
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
 static bool scr_file_handle_mode_valid(double mode) {
   char msg[160];
   char recv[48];
@@ -229,11 +252,11 @@ static bool scr_file_handle_mode_valid(double mode) {
   return true;
 }
 
-ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode) {
-  scr_file_handle_dyn_install();
-  if (!scr_file_handle_path_valid(path)) return NULL;
-  int of = scr_file_handle_open_flags(flags);
-  if (of < 0) return NULL;
+/* The shared tail of every open(): the creation mode is validated, then the
+ * descriptor opens and is wrapped in the shared handle representation. The
+ * callers have already validated the path and resolved the flag bits, in
+ * Node's path → flags → mode order. */
+static ScrFileHandle *scr_file_handle_open_fd(ScrStr *path, int of, double mode) {
   if (!scr_file_handle_mode_valid(mode)) return NULL;
   int fd = open(path->data, of | O_BINARY, (mode_t)mode);
   if (fd < 0) {
@@ -246,6 +269,75 @@ ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode) {
   h->fd = fd;
   h->refs = 1;
   return h;
+}
+
+/* parseFileMode's string arm: the value must spell an octal number, which
+ * then takes the same uint32 ladder as a numeric mode. */
+static bool scr_file_handle_parse_mode(const ScrStr *text, double *mode) {
+  bool octal = text->len > 0;
+  for (size_t i = 0; i < text->len && octal; i++) {
+    unsigned char c = (unsigned char)text->data[i];
+    if (c < '0' || c > '7') octal = false;
+  }
+  if (!octal) {
+    scr_file_handle_arg_value_error(
+        "The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received ",
+        text);
+    return false;
+  }
+  double parsed = 0;
+  for (size_t i = 0; i < text->len; i++) parsed = parsed * 8 + (text->data[i] - '0');
+  if (!scr_file_handle_mode_valid(parsed)) return false;
+  *mode = parsed;
+  return true;
+}
+
+ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode) {
+  scr_file_handle_dyn_install();
+  if (!scr_file_handle_path_valid(path)) return NULL;
+  int of = scr_file_handle_open_flags(flags);
+  if (of < 0) return NULL;
+  return scr_file_handle_open_fd(path, of, mode);
+}
+
+/* fs.promises.open's general form: Node's stringToFlags and parseFileMode
+ * read the argument VALUE, so a flag mask, a flag name, an octal-string
+ * mode, and an absent argument all resolve here. The all-static spelling
+ * keeps scr_fsp_open; this entry serves the forms whose kind the compiler
+ * cannot fold into the signature. */
+ScrFileHandle *scr_file_handle_open_options(ScrStr *path, const ScrDyn *flags,
+                                            const ScrDyn *mode) {
+  scr_file_handle_dyn_install();
+  if (!scr_file_handle_path_valid(path)) return NULL;
+  int of;
+  if (flags->kind == SCR_DYN_UNDEF || flags->kind == SCR_DYN_NULL) {
+    of = O_RDONLY;
+  } else if (flags->kind == SCR_DYN_NUM) {
+    if (!scr_file_handle_flags_valid(flags->v.num)) return NULL;
+    of = (int)flags->v.num;
+  } else if (flags->kind == SCR_DYN_STR) {
+    of = scr_file_handle_open_flags(flags->v.str);
+    if (of < 0) return NULL;
+  } else {
+    char rendered[128];
+    const char *text = scr_dyn_inspect_lite(flags, rendered, sizeof rendered);
+    char msg[256];
+    int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received %s", text);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    return NULL;
+  }
+  double created;
+  if (mode->kind == SCR_DYN_UNDEF || mode->kind == SCR_DYN_NULL) {
+    created = 0666;
+  } else if (mode->kind == SCR_DYN_NUM) {
+    created = mode->v.num;
+  } else if (mode->kind == SCR_DYN_STR) {
+    if (!scr_file_handle_parse_mode(mode->v.str, &created)) return NULL;
+  } else {
+    scr_dyn_arg_type_fail("mode", "number", mode);
+    return NULL;
+  }
+  return scr_file_handle_open_fd(path, of, created);
 }
 
 ScrFileHandle *scr_file_handle_retain(ScrFileHandle *h) {
@@ -491,6 +583,12 @@ ScrStats *scr_file_handle_stat(ScrFileHandle *h) {
 
 ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode) {
   ScrFileHandle *h = scr_file_handle_open(path, flags, mode);
+  return scr_promise_settled_ref(h, &scr_file_handle_retain_v,
+                                 &scr_file_handle_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_open_options(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode) {
+  ScrFileHandle *h = scr_file_handle_open_options(path, flags, mode);
   return scr_promise_settled_ref(h, &scr_file_handle_retain_v,
                                  &scr_file_handle_release_v, NULL);
 }

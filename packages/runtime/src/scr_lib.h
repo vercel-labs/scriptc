@@ -428,6 +428,10 @@ void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
 /* The same walk, answering the first directory created (+1) or NULL
  * when the path already existed (or on failure, the exception pending). */
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);
+/* Node's parseFileMode for a string mode: [0-7]+ read in base 8 and then
+ * range-checked like a numeric mode. Answers false with Node's
+ * ERR_INVALID_ARG_VALUE (or ERR_OUT_OF_RANGE) pending for anything else. */
+bool scr_fs_parse_octal_mode(ScrStr *value, double *mode);
 
 /* Sequentially consistent integer operations and shared Int32 wait queues. */
 typedef struct ScrBytes ScrBytes;
@@ -588,6 +592,9 @@ ScrPromise *scr_fsp_mkdir(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_mode(ScrStr *path, double mode);
 ScrPromise *scr_fsp_mkdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_mkdir_recursive_mode(ScrStr *path, double mode);
+ScrPromise *scr_fsp_mkdir_mode_octal(ScrStr *path, ScrStr *mode);
+ScrPromise *scr_fsp_mkdir_recursive_first(ScrStr *path, double mode);
+ScrPromise *scr_fsp_mkdir_recursive_first_octal(ScrStr *path, ScrStr *mode);
 ScrPromise *scr_fsp_unlink(ScrStr *path);
 ScrPromise *scr_fsp_chmod(ScrStr *path, double mode);
 ScrPromise *scr_fsp_chown(ScrStr *path, double uid, double gid);
@@ -605,6 +612,8 @@ ScrPromise *scr_fsp_write_file_flags_data(ScrStr *path, const ScrDyn *data, doub
 ScrPromise *scr_fsp_copyfile(ScrStr *src, ScrStr *dest);
 ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
+ScrPromise *scr_fsp_mkdtemp_encoded(ScrStr *prefix, ScrStr *encoding);
+ScrPromise *scr_fsp_mkdtemp_buffer(ScrStr *prefix);
 ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding);
 ScrPromise *scr_fsp_rmdir(ScrStr *path);
 ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
@@ -616,13 +625,19 @@ ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
 ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,
                                   double retry_delay);
 ScrPromise *scr_fsp_stat(ScrStr *path);
+ScrPromise *scr_fsp_stat_probe(ScrStr *path, bool throw_if_no_entry);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
+ScrPromise *scr_fsp_realpath_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_realpath_buffer(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);
 typedef struct ScrDir ScrDir; /* fs.Dir, declared with its operations in scr_os.h */
 ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size);
 ScrPromise *scr_dir_close_promise(ScrDir *d);
 ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath);
 ScrPromise *scr_fsp_open(ScrStr *path, ScrStr *flags, double mode);
+/* open()'s general form: the flags and mode are read from their values
+ * (a flag mask or name, a numeric mode or an octal string). */
+ScrPromise *scr_fsp_open_options(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode);
 ScrPromise *scr_file_handle_close_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_utimes_promise(ScrFileHandle *h, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h, ScrStr *encoding);

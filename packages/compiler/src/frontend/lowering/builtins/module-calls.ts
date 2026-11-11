@@ -22,6 +22,7 @@ import {
   lowerFsOpendirCall,
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
+  lowerFsPromisesEncodeOptionsCall,
   lowerFsRemoveCall,
   lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
@@ -30,8 +31,10 @@ import {
   lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
   lowerFsExistsValueCall,
+  staticallyAbsent,
 } from "./filesystem-calls.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
+import { lowerBuiltinOptionalDefault } from "./arguments.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -59,6 +62,7 @@ import { lowerProcessLoadEnvFile } from "./environment.js";
 import {
   lowerFsWatchCall,
   lowerFsReaddirTypesCall,
+  lowerFsPromisesStatOptionsCall,
   lowerFsStatFdOptionsCall,
   lowerFsStatOptionsCall,
 } from "./filesystem.js";
@@ -213,6 +217,24 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "fs" && bi.member === "fstatSync" && expr.arguments.nodes.length === 2) {
     return lowerFsStatFdOptionsCall(lowerer, expr, loc);
+  }
+  // fs.promises.realpath/mkdtemp(path, options): the encoding option,
+  // routed BEFORE the table completion.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "realpath" || bi.member === "mkdtemp") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    return lowerFsPromisesEncodeOptionsCall(lowerer, expr, loc, bi.member === "mkdtemp");
+  }
+  // fs.promises.stat/lstat(path, options): bigint and (stat only)
+  // throwIfNoEntry, routed BEFORE the table completion.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "stat" || bi.member === "lstat") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    return lowerFsPromisesStatOptionsCall(lowerer, expr, loc, bi.member === "lstat");
   }
   if (bi.module === "os" && bi.member === "userInfo") {
     return lowerOsUserInfoCall(lowerer, expr, loc);
@@ -387,12 +409,24 @@ export function lowerBuiltinModuleCall(
     const src = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
     const dest = lowerFsPath(lowerer, expr.arguments.nodes[1]!);
     const modeNode = expr.arguments.nodes[2];
-    if (!modeNode) return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
+    // An omitted mode and a statically absent one (undefined, or a `void`
+    // value) are both Node's plain copy, whose mode is 0.
+    if (!modeNode || staticallyAbsent(lowerer, modeNode))
+      return { kind: "libCall", fn: fn.fn, args: [src, dest], type: fn.result, loc };
     const flags: IrLibFn = bi.module === "fs" ? "fs.copyFileFlagsSync" : "fsp.copyFileFlags";
     return {
       kind: "libCall",
       fn: flags,
-      args: [src, dest, lowerer.lowerExprExpecting(modeNode, F64)],
+      args: [
+        src,
+        dest,
+        lowerBuiltinOptionalDefault(lowerer, modeNode, F64, {
+          kind: "numLit",
+          value: 0,
+          type: F64,
+          loc,
+        }),
+      ],
       type: fn.result,
       loc,
     };

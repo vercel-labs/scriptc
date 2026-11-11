@@ -4286,6 +4286,31 @@ static bool scr_fs_file_mode_valid(double mode) {
   return true;
 }
 
+/* Node's parseFileMode for a string mode: an octal string ([0-7]+) is read
+ * in base 8 and then range-checked like a numeric mode; anything else
+ * throws Node's ERR_INVALID_ARG_VALUE instead. Answers false with the
+ * exception pending. */
+bool scr_fs_parse_octal_mode(ScrStr *value, double *mode) {
+  bool octal = value->len > 0;
+  for (size_t i = 0; i < value->len && octal; i++) {
+    unsigned char c = (unsigned char)value->data[i];
+    if (c < '0' || c > '7') octal = false;
+  }
+  if (!octal) {
+    char msg[224];
+    int len = snprintf(msg, sizeof msg,
+                       "The argument 'mode' must be a 32-bit unsigned integer or an octal string. Received '%.*s'",
+                       (int)value->len, value->data);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    return false;
+  }
+  double parsed = 0;
+  for (size_t i = 0; i < value->len; i++) parsed = parsed * 8 + (value->data[i] - '0');
+  if (!scr_fs_file_mode_valid(parsed)) return false;
+  *mode = parsed;
+  return true;
+}
+
 /* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
  * argument — it applies at CREATION only (umask applying), and an
  * existing file keeps its permissions, exactly Node (which never chmods
@@ -4351,6 +4376,7 @@ void scr_fs_mkdir(ScrStr *path) {
  * Windows has no directory modes and drops it, like Node there). */
 void scr_fs_mkdir_mode(ScrStr *path, double mode) {
   if (!scr_fs_path_ok(path, "path")) return;
+  if (!scr_fs_file_mode_valid(mode)) return;
   if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
 }
 
@@ -5588,13 +5614,20 @@ static bool scr_fs_win_same_file(const WCHAR *a, const WCHAR *b) {
  * COPYFILE_FICLONE_FORCE (4) is the ENOSYS uv_fs_copyfile reports. The
  * POSIX arm lives in scr_fs_cp.c with its reflink handling. */
 void scr_fs_copyfile_flags(ScrStr *src, ScrStr *dest, double mode) {
+  /* copyFile validates the two paths before the binding reads the mode:
+   * getValidatedPath(src), getValidatedPath(dest), then GetValidFileMode. */
+  if (!scr_fs_path_ok(src, "src")) return;
+  if (!scr_fs_path_ok(dest, "dest")) return;
+  if (!isfinite(mode)) {
+    static const char text[] = "mode is out of range";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
   if (!(mode >= 0 && mode <= 7)) {
     static const char text[] = "mode is out of range: >= 0 && <= 7";
     scr_throw_error_msg_code(SCR_ERR_RANGE, text, sizeof text - 1, "ERR_OUT_OF_RANGE");
     return;
   }
-  if (!scr_fs_path_ok(src, "src")) return;
-  if (!scr_fs_path_ok(dest, "dest")) return;
   if (((int)mode & 4) != 0) {
     scr_fs_throw2(ENOSYS, "copyfile", src, dest);
     return;
@@ -5761,6 +5794,7 @@ void scr_fs_mkdir_recursive(ScrStr *path) {
  * directory the walk creates (existing ones keep theirs). */
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode) {
   if (!scr_fs_path_ok(path, "path")) return;
+  if (!scr_fs_file_mode_valid(mode)) return;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");
@@ -5789,6 +5823,7 @@ static bool scr_fs_mkdirp_exists(char *buf, size_t len) {
 
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode) {
   if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (!scr_fs_file_mode_valid(mode)) return NULL;
   char *buf = malloc(path->len + 1);
   if (!buf) {
     scr_trap("scriptc: out of memory\n");

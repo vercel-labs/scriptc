@@ -737,14 +737,115 @@ export function lowerFileHandleMethodCall(
       loc,
     };
   }
-  if (name === "close" || name === "stat") {
+  if (name === "close") {
     if (call.arguments.nodes.length !== 0)
-      lowerer.noLowering(`FileHandle.${name} with arguments`, call);
+      lowerer.noLowering("FileHandle.close with arguments", call);
     return {
       kind: "libCall",
-      fn: name === "close" ? "fileHandle.close" : "fileHandle.stat",
+      fn: "fileHandle.close",
       args: [receiver()],
-      type: promise(name === "close" ? VOID : { kind: "stats" }),
+      type: promise(VOID),
+      loc,
+    };
+  }
+  if (name === "stat") {
+    // stat([options]): Node reads options?.bigint from the open
+    // descriptor, so only the literal-selected member table needs the
+    // option; a widened flag that could pick either table has no lowering.
+    if (call.arguments.nodes.length > 1)
+      lowerer.noLowering(`FileHandle.stat with ${call.arguments.nodes.length} arguments`, call);
+    const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const inner = callType?.kind === "promise" ? callType.inner : undefined;
+    if (inner?.kind !== "stats" && inner?.kind !== "bigintStats") {
+      lowerer.noLowering(
+        "FileHandle.stat with a result that may be either Stats or BigIntStats",
+        call,
+        "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
+      );
+    }
+    const statsType: IrType = inner.kind === "bigintStats" ? BIGINT_STATS_T : STATS_T;
+    const statCall = (): IrExpr => ({
+      kind: "libCall",
+      fn: "fileHandle.stat",
+      args: [receiver()],
+      type: promise(statsType),
+      loc,
+    });
+    const optsNode = call.arguments.nodes[0];
+    if (!optsNode) return statCall();
+    const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
+    if (undefinedOptions !== null) {
+      if (isSafeToDiscard(undefinedOptions)) return statCall();
+      const handle = lowerer.declareHiddenLocal("%fhHandle", FILEHANDLE_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: handle.id, init: receiver(), loc },
+          { kind: "exprStmt", expr: undefinedOptions, loc: undefinedOptions.loc },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "fileHandle.stat",
+          args: [varRef(handle.id, FILEHANDLE_T, loc)],
+          type: promise(statsType),
+          loc,
+        },
+        type: promise(statsType),
+        loc,
+      };
+    }
+    if (!ts.isObjectLiteralExpression(optsNode)) {
+      lowerer.noLowering(
+        "FileHandle.stat with this options value",
+        optsNode,
+        "pass an object literal: stat({ bigint: true })",
+      );
+    }
+    const effects: IrExpr[] = [];
+    for (const p of optsNode.properties.nodes) {
+      const m = optionMember(p);
+      if (!m) {
+        lowerer.noLowering(
+          "FileHandle.stat with this options shape",
+          p,
+          "spreads and computed keys have no lowering — write each member inline",
+        );
+      }
+      if (m.name === "bigint") {
+        const effect = checkStatBigintOption(
+          lowerer,
+          m.value,
+          "FileHandle.stat",
+          statsType.kind === "bigintStats" ? "bigint" : "number",
+        );
+        if (effect !== null) effects.push(effect);
+      } else {
+        fenceOrDropOptionKey(
+          lowerer,
+          p,
+          m.name,
+          "FileHandle.stat",
+          FS_FSTAT_DOCUMENTED_OPTIONS,
+          "bigint is the supported option",
+        );
+      }
+    }
+    if (effects.length === 0) return statCall();
+    const handle = lowerer.declareHiddenLocal("%fhHandle", FILEHANDLE_T);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: handle.id, init: receiver(), loc },
+        ...effects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc: expr.loc })),
+      ],
+      result: {
+        kind: "libCall",
+        fn: "fileHandle.stat",
+        args: [varRef(handle.id, FILEHANDLE_T, loc)],
+        type: promise(statsType),
+        loc,
+      },
+      type: promise(statsType),
       loc,
     };
   }
@@ -1485,11 +1586,12 @@ export function lowerFsWatchFileCall(
 }
 
 /** Method calls on FSWatcher receivers: close() (idempotent, statement
- * position — Node returns void there too) and the EventEmitter surface for
+ * position — Node returns void there too), ref()/unref() (the loop-liveness
+ * pair, both answering the receiver) and the EventEmitter surface for
  * 'change', 'error' and 'close' (on/once/addListener/prependListener/
  * prependOnceListener/off/removeListener, registered as their own
- * statement). Everything else @types/node declares (ref/unref, other
- * events) fences member-qualified. Null for non-watcher receivers. */
+ * statement). Other events fence member-qualified. Null for non-watcher
+ * receivers. */
 export function lowerWatcherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1503,6 +1605,17 @@ export function lowerWatcherMethodCall(
   if (name === "close" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };
+  }
+  // ref()/unref(): the loop-liveness pair, both answering the receiver.
+  if ((name === "ref" || name === "unref") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "watcher.ref" : "watcher.unref",
+      args: [receiver],
+      type: FSWATCHER_T,
+      loc,
+    };
   }
   // The EventEmitter surface for the three events the watcher emits:
   // "change" (the listener shapes fs.watch takes), "error", and "close".
@@ -1801,7 +1914,8 @@ const FS_FSTAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint"]);
 
 /** The stat representation a mapped result type carries: BigIntStats and
  * `BigIntStats | undefined` read the bigint member table, Stats and
- * `Stats | undefined` the number one; anything else is neither. */
+ * `Stats | undefined` the number one; anything else is neither. A promise
+ * result reads through to its awaited type. */
 function statRepresentation(
   callType: IrType | undefined | null,
   arms: readonly IrType[] | undefined,
@@ -1809,7 +1923,7 @@ function statRepresentation(
   const kindOf = (t: IrType): "bigint" | "number" | null =>
     t.kind === "bigintStats" ? "bigint" : t.kind === "stats" ? "number" : null;
   if (callType === undefined || callType === null) return null;
-  const own = kindOf(callType);
+  const own = kindOf(callType.kind === "promise" ? callType.inner : callType);
   if (own !== null) return own;
   if (arms !== undefined) {
     for (const arm of arms) {
@@ -2144,6 +2258,212 @@ export function lowerFsStatFdOptionsCall(
     type: statsType,
     loc,
   };
+}
+
+/** fs.promises.stat / lstat(path, options). Node validates the path, then
+ * reads options.bigint (both members) and, for stat, options.throwIfNoEntry.
+ * bigint picks the member table; throwIfNoEntry: false sends stat through
+ * the probe, whose promise fulfills with undefined for a missing entry
+ * instead of rejecting. Node's promise lstat ignores throwIfNoEntry, so that
+ * member is dropped there rather than fenced. */
+export function lowerFsPromisesStatOptionsCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+  noFollow: boolean,
+): IrExpr {
+  const spelling = noFollow ? "fs.promises.lstat" : "fs.promises.stat";
+  const optsNode = call.arguments.nodes[1]!;
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  const def = inner?.kind === "union" ? lowerer.unions.get(inner.unionId) : undefined;
+  const representation = statRepresentation(callType, def?.arms);
+  if (representation === null) {
+    lowerer.noLowering(
+      `${spelling}(path, options) where the result is not a promise of Stats`,
+      call,
+      `${spelling}(path) answers a promise of Stats; options select bigint and, for stat, throwIfNoEntry`,
+    );
+  }
+  const statsType: IrType = representation === "bigint" ? BIGINT_STATS_T : STATS_T;
+  const answersUndefined = def !== undefined && def.arms.some((a) => a.kind === "undefinedT");
+  // A promise that may hold Stats | undefined carries a nullable union in
+  // its payload: the Stats handle, or NULL for undefined (the same encoding
+  // the sync probe builds).
+  const plainType: IrType = answersUndefined ? callType! : { kind: "promise", inner: statsType };
+  const plain = (pathArg: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: noFollow ? "fsp.lstat" : "fsp.stat",
+    args: [pathArg],
+    type: plainType,
+    loc,
+  });
+  // The path binds first, then the options' effects, then the stat runs.
+  const pathThen = (effect: IrExpr | null, stat: (pathArg: IrExpr) => IrExpr): IrExpr => {
+    if (effect === null) return stat(path);
+    const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
+    const result = stat(varRef(pathLocal.id, STRING, loc));
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc },
+        { kind: "exprStmt", expr: effect, loc: effect.loc },
+      ],
+      result,
+      type: result.type,
+      loc,
+    };
+  };
+  const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
+  if (undefinedOptions !== null) {
+    return pathThen(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions, plain);
+  }
+  let throwIfNoEntry: IrExpr | null = null;
+  const recordOptions = !ts.isObjectLiteralExpression(optsNode);
+  if (recordOptions) {
+    // A stored options record: Node reads options.throwIfNoEntry at the
+    // call. For lstat the member is ignored, so the record needs no
+    // reading at all; for stat it must be a boolean.
+    const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+    const shape = optsType?.kind === "record" ? lowerer.shapes.get(optsType.shapeId) : undefined;
+    const field = shape?.fields.find((f) => f.name === "throwIfNoEntry");
+    if (
+      optsType?.kind !== "record" ||
+      !shape ||
+      shape.tuple ||
+      shape.indexValue ||
+      shape.fields.length !== 1 ||
+      field?.type.kind !== "bool"
+    ) {
+      lowerer.noLowering(
+        `${spelling} with this options value`,
+        optsNode,
+        `pass an object literal, or a record whose only member is a boolean throwIfNoEntry: ${spelling}(path, { throwIfNoEntry: false })`,
+      );
+    }
+    const opts = lowerer.lowerExpr(optsNode);
+    if (opts.type.kind === "record") {
+      throwIfNoEntry = {
+        kind: "recordGet",
+        obj: opts,
+        shapeId: opts.type.shapeId,
+        field: "throwIfNoEntry",
+        type: BOOL,
+        loc,
+      };
+    } else if (opts.type.kind === "dyn") {
+      throwIfNoEntry = {
+        kind: "dynScalarEq",
+        left: {
+          kind: "dynKeyGet",
+          key: { kind: "strLit", value: "throwIfNoEntry", type: STRING, loc },
+          optional: true,
+          value: opts,
+          type: DYN,
+          loc,
+        },
+        right: boolLit(false, loc),
+        negated: true,
+        type: BOOL,
+        loc,
+      };
+    } else {
+      lowerer.noLowering(`${spelling} with this options value`, optsNode, "pass an object literal");
+    }
+  }
+  // The members in source order, when a bigint member has an effect: the
+  // throwIfNoEntry value ("throwIfNoEntry") and each effect.
+  const members: (IrExpr | "throwIfNoEntry")[] = [];
+  let bigintEffect = false;
+  for (const p of ts.isObjectLiteralExpression(optsNode) ? optsNode.properties.nodes : []) {
+    const m = optionMember(p);
+    if (!m) {
+      lowerer.noLowering(
+        `${spelling} with this options shape`,
+        p,
+        "spreads and computed keys have no lowering — write each member inline",
+      );
+    }
+    if (m.name === "throwIfNoEntry") {
+      if (noFollow) {
+        // Node's promise lstat never reads the member: drop it (or fence
+        // an effectful value, which Node would still evaluate).
+        fenceOrDropOptionKey(
+          lowerer,
+          p,
+          m.name,
+          spelling,
+          FS_FSTAT_DOCUMENTED_OPTIONS,
+          "bigint is the supported option",
+        );
+        continue;
+      }
+      throwIfNoEntry = lowerer.lowerExprExpecting(m.value, BOOL);
+      members.push("throwIfNoEntry");
+    } else if (m.name === "bigint") {
+      const effect = checkStatBigintOption(lowerer, m.value, spelling, representation);
+      if (effect !== null) {
+        members.push(effect);
+        bigintEffect = true;
+      }
+    } else {
+      fenceOrDropOptionKey(
+        lowerer,
+        p,
+        m.name,
+        spelling,
+        FS_STAT_DOCUMENTED_OPTIONS,
+        "throwIfNoEntry and bigint are the supported options",
+      );
+    }
+  }
+  const ordered = (stat: (pathArg: IrExpr, flag: IrExpr | null) => IrExpr): IrExpr => {
+    if (!bigintEffect) return stat(path, throwIfNoEntry);
+    const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc }];
+    let flag = throwIfNoEntry;
+    for (const member of members) {
+      if (member !== "throwIfNoEntry") {
+        stmts.push({ kind: "exprStmt", expr: member, loc: member.loc });
+      } else if (flag !== null && flag.kind !== "boolLit") {
+        const flagLocal = lowerer.declareHiddenLocal("%statThrowIfNoEntry", BOOL);
+        stmts.push({ kind: "varDecl", localId: flagLocal.id, init: flag, loc: flag.loc });
+        flag = varRef(flagLocal.id, BOOL, flag.loc);
+      }
+    }
+    const result = stat(varRef(pathLocal.id, STRING, loc), flag);
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
+  };
+  if (inner?.kind === "stats" || inner?.kind === "bigintStats") {
+    // A runtime flag that is false answers undefined, which a Stats result
+    // cannot hold.
+    if (throwIfNoEntry !== null && !(throwIfNoEntry.kind === "boolLit" && throwIfNoEntry.value)) {
+      lowerer.noLowering(
+        `${spelling} with a runtime-valued throwIfNoEntry where the result is typed Stats`,
+        call,
+        "the result must be Stats | undefined when throwIfNoEntry may be false",
+      );
+    }
+    return ordered((pathArg) => plain(pathArg));
+  }
+  if (!answersUndefined) {
+    lowerer.noLowering(
+      `${spelling}(path, options) where the result is not a promise of Stats`,
+      call,
+      `${spelling}(path, { throwIfNoEntry: false }) answers Stats | undefined`,
+    );
+  }
+  // lstat keeps the plain call (Node ignores its throwIfNoEntry); stat's
+  // probe honors the flag and fulfills with undefined for a missing entry.
+  if (noFollow) return ordered((pathArg) => plain(pathArg));
+  return ordered((pathArg, flag) => ({
+    kind: "libCall",
+    fn: "fsp.statProbe",
+    args: [pathArg, flag ?? boolLit(true, loc)],
+    type: callType!,
+    loc,
+  }));
 }
 
 /** The `d.is*()` probes on a Dirent-typed receiver: one read of the hidden

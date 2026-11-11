@@ -45463,12 +45463,20 @@
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-promises-copyfile-mode.ts",
           "tests/corpus/fs-promises-lchmod.ts",
+          "tests/corpus/fs-promises-mkdir-options.ts",
+          "tests/corpus/fs-promises-open-flags.ts",
           "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-encoding.ts",
           "tests/corpus/fs-promises-rmdir-options.ts",
+          "tests/corpus/fs-promises-stat-options.ts",
           "tests/corpus/fs-promises-write-file-dynamic-options.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-keepalive.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-unref-exit.ts",
           "tests/corpus/fs-write-options.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -46050,8 +46058,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.filehandle.stat",
         "tests": [
-          "tests/corpus/2686-fs-file-handle.ts",
-          "tests/corpus/3136-fs-file-handle-options.ts"
+          "tests/corpus/3136-fs-file-handle-options.ts",
+          "tests/corpus/fs-promises-stat-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46501,7 +46509,8 @@
           "tests/corpus/5542-fs-promises-parity.cjs",
           "tests/corpus/5543-fs-promises-typed.ts",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-copyfile-mode.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46698,7 +46707,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.lstat",
         "tests": [
-          "tests/corpus/2941-fsp-lstat-identity.ts"
+          "tests/corpus/2941-fsp-lstat-identity.ts",
+          "tests/corpus/fs-promises-stat-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46724,12 +46734,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.mkdir",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-mkdir-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46756,7 +46761,8 @@
         "evidence": "surface-manifest:node-builtin.fs.promises.mkdtemp",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/5543-fs-promises-typed.ts",
+          "tests/corpus/fs-promises-path-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46805,12 +46811,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.open",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-open-flags.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46949,7 +46950,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.realpath",
         "tests": [
-          "tests/corpus/2940-fsp-realpath.ts"
+          "tests/corpus/2940-fsp-realpath.ts",
+          "tests/corpus/fs-promises-path-encoding.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47055,12 +47057,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.fs.promises.stat",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-stat-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50996,8 +50993,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.watcher.close",
+        "tests": [
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-unref-exit.ts",
+          "tests/corpus/fs-watch-ref-keepalive.ts",
+          "tests/corpus/1564-fs-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51019,8 +51022,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-unref-exit.ts",
+          "tests/corpus/fs-watch-ref-keepalive.ts",
+          "tests/corpus/1564-fs-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51042,8 +51051,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-unref-exit.ts",
+          "tests/corpus/fs-watch-ref-keepalive.ts",
+          "tests/corpus/1564-fs-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },

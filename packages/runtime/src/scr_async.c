@@ -3806,6 +3806,28 @@ ScrPromise *scr_fsp_mkdir_recursive_mode(ScrStr *path, double mode) {
   return scr_promise_settled_void();
 }
 
+ScrPromise *scr_fsp_mkdir_mode_octal(ScrStr *path, ScrStr *mode) {
+  double parsed;
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_void();
+  if (!scr_fs_parse_octal_mode(mode, &parsed)) return scr_promise_settled_void();
+  scr_fs_mkdir_mode(path, parsed);
+  return scr_promise_settled_void();
+}
+
+/* mkdir(p, { recursive: true }) answers Node's first created directory (or
+ * undefined when the path already existed): the settled string is the
+ * promise's `string | undefined` payload, NULL meaning undefined. */
+ScrPromise *scr_fsp_mkdir_recursive_first(ScrStr *path, double mode) {
+  return scr_promise_settled_str(scr_fs_mkdir_recursive_first(path, mode));
+}
+
+ScrPromise *scr_fsp_mkdir_recursive_first_octal(ScrStr *path, ScrStr *mode) {
+  double parsed;
+  if (!scr_fs_path_ok(path, "path")) return scr_promise_settled_str(NULL);
+  if (!scr_fs_parse_octal_mode(mode, &parsed)) return scr_promise_settled_str(NULL);
+  return scr_promise_settled_str(scr_fs_mkdir_recursive_first(path, parsed));
+}
+
 ScrPromise *scr_fsp_unlink(ScrStr *path) {
   scr_fs_unlink(path);
   return scr_promise_settled_void();
@@ -3852,8 +3874,27 @@ ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   return scr_promise_settled_str(scr_fs_read_file_encoded(path, encoding));
 }
 
+/* The shared encoding helpers (defined with the realpath entries below). */
+static bool scr_fsp_encoding_ok(ScrStr *encoding);
+static ScrStr *scr_fsp_path_encoded(ScrStr *resolved, ScrStr *encoding);
+static ScrBytes *scr_fsp_path_bytes(ScrStr *resolved);
+
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix) {
   return scr_promise_settled_str(scr_fs_mkdtemp_async(prefix));
+}
+
+ScrPromise *scr_fsp_mkdtemp_encoded(ScrStr *prefix, ScrStr *encoding) {
+  if (!scr_fsp_encoding_ok(encoding)) return scr_promise_settled_str(NULL);
+  ScrStr *created = scr_fs_mkdtemp_async(prefix);
+  if (!created) return scr_promise_settled_str(NULL);
+  return scr_promise_settled_str(scr_fsp_path_encoded(created, encoding));
+}
+
+ScrPromise *scr_fsp_mkdtemp_buffer(ScrStr *prefix) {
+  ScrStr *created = scr_fs_mkdtemp_async(prefix);
+  if (!created) return scr_promise_settled_ref(NULL, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+  return scr_promise_settled_ref(scr_fsp_path_bytes(created), scr_bytes_retain_v,
+                                 scr_bytes_release_v, NULL);
 }
 
 ScrPromise *scr_fsp_rmdir(ScrStr *path) {
@@ -3938,8 +3979,74 @@ ScrPromise *scr_fsp_stat(ScrStr *path) {
   return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
 }
 
+/* fs.promises.stat(p, { throwIfNoEntry }) with the flag false: a missing
+ * entry (or missing parent) fulfills with NULL — the await's undefined
+ * arm — instead of rejecting, exactly the sync probe's answer in promise
+ * form. */
+ScrPromise *scr_fsp_stat_probe(ScrStr *path, bool throw_if_no_entry) {
+  ScrStats *st = scr_fs_stat_probe(path, false, throw_if_no_entry);
+  return scr_promise_settled_ref(st, &scr_stats_retain_v, &scr_stats_release_v, NULL);
+}
+
 ScrPromise *scr_fsp_realpath(ScrStr *path) {
   return scr_promise_settled_str(scr_fs_realpath_promise(path));
+}
+
+/* ── the encoding option of realpath / mkdtemp ────────────────────────
+ * Node's getOptions reads the encoding inside the async function, so an
+ * unknown name REJECTS (assertEncoding's ERR_INVALID_ARG_VALUE) before the
+ * path is even looked at; the empty string means the default. The answer is
+ * the path's text for utf8, a Buffer for "buffer", and the UTF-8 bytes
+ * re-encoded otherwise (StringBytes::Encode's answer). */
+
+static bool scr_fsp_str_is(const ScrStr *s, const char *lit) {
+  size_t n = strlen(lit);
+  return s->len == n && (n == 0 || !memcmp(s->data, lit, n));
+}
+
+static bool scr_fsp_encoding_ok(ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) || scr_fsp_str_is(encoding, "buffer"))
+    return true;
+  char msg[300];
+  int n = snprintf(msg, sizeof msg, "The argument 'encoding' is invalid encoding. Received '%.*s'",
+                   (int)(encoding->len > 160 ? 160 : encoding->len), encoding->data);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_VALUE");
+  return false;
+}
+
+/* Consumes +1 resolved; answers +1. */
+static ScrStr *scr_fsp_path_encoded(ScrStr *resolved, ScrStr *encoding) {
+  if (encoding->len == 0 || scr_fsp_str_is(encoding, "utf8") || scr_fsp_str_is(encoding, "utf-8"))
+    return resolved;
+  ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)resolved->data, resolved->len);
+  ScrStr *text = scr_bytes_to_str(bytes, encoding);
+  scr_bytes_release(bytes);
+  scr_str_release(resolved);
+  return text;
+}
+
+/* Consumes +1 resolved; answers +1. */
+static ScrBytes *scr_fsp_path_bytes(ScrStr *resolved) {
+  ScrBytes *bytes = scr_bytes_from_data((const uint8_t *)resolved->data, resolved->len);
+  scr_str_release(resolved);
+  /* Node answers a Buffer: the brand is observable (Buffer.isBuffer,
+   * .constructor, instanceof, inspect), so the bytes carry it. */
+  if (bytes) bytes->is_buffer = true;
+  return bytes;
+}
+
+ScrPromise *scr_fsp_realpath_encoded(ScrStr *path, ScrStr *encoding) {
+  if (!scr_fsp_encoding_ok(encoding)) return scr_promise_settled_str(NULL);
+  ScrStr *resolved = scr_fs_realpath_promise(path);
+  if (!resolved) return scr_promise_settled_str(NULL);
+  return scr_promise_settled_str(scr_fsp_path_encoded(resolved, encoding));
+}
+
+ScrPromise *scr_fsp_realpath_buffer(ScrStr *path) {
+  ScrStr *resolved = scr_fs_realpath_promise(path);
+  if (!resolved) return scr_promise_settled_ref(NULL, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+  return scr_promise_settled_ref(scr_fsp_path_bytes(resolved), scr_bytes_retain_v,
+                                 scr_bytes_release_v, NULL);
 }
 
 ScrPromise *scr_fsp_lstat(ScrStr *path) {
@@ -6526,6 +6633,23 @@ static bool scr_loop_run_checkpoint(void) {
   return true;
 }
 
+/* The loop's liveness terms MINUS the watch unit (scr_loop_run_pass's
+ * break condition without `watch`): whether the turn has some other
+ * reffed handle, request or ready work keeping it going. A unit whose
+ * handles can be unref'd needs this to tell "the loop runs for something
+ * else" from "the loop is about to exit". */
+static bool scr_loop_alive_besides_watch(void) {
+  return scr_reffed_timers > 0 || scr_reffed_immediates > 0 ||
+         (scr_loop_children != NULL && scr_loop_children->reffed_pending()) ||
+         (scr_events_pending_fn != NULL && scr_events_pending_fn()) ||
+         (scr_net_pending_fn != NULL && scr_net_pending_fn()) ||
+         (scr_dgram_pending_fn != NULL && scr_dgram_pending_fn()) ||
+         (scr_ffi_pending_fn != NULL && scr_ffi_pending_fn()) ||
+         (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) ||
+         scr_fs_renames_pending() || scr_crypto_bytes_pending() ||
+         scr_loop_deferred_pending() || scr_workers_pending();
+}
+
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -6672,8 +6796,17 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     }
     /* Watch dispatch (scr_watch.c, when linked): file events queued on
      * the unit's event backend fire their FSWatcher listeners now — the
-     * net hook's exact station. */
-    if (scr_watch_dispatch_fn != NULL) {
+     * net hook's exact station.
+     *
+     * Watchers can be unref'd, and their queued events are poll-phase I/O:
+     * Node checks liveness BEFORE polling, so a loop kept alive by nothing
+     * but unref'd watchers exits without delivering them. The station is
+     * skipped in exactly that case (everything else unref'd too); once
+     * anything else keeps the turn going, unref'd watchers deliver like
+     * any other registered handle. */
+    if (scr_watch_dispatch_fn != NULL &&
+        (scr_watch_pending_fn == NULL || scr_watch_pending_fn() ||
+         scr_loop_alive_besides_watch())) {
       scr_watch_dispatch_fn();
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;

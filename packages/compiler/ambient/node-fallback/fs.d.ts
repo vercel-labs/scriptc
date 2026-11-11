@@ -687,6 +687,8 @@ declare module "node:fs" {
   export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    ref(): this;
+    unref(): this;
     on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
     on(event: "error", listener: (error: Error) => void): this;
     on(event: "close", listener: () => void): this;

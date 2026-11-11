@@ -277,10 +277,13 @@ export function lowerFsOpenCall(lowerer: Lowerer, expr: ts.CallExpression, loc: 
   };
 }
 
-// fs/promises.open(path[, flags[, mode]]) — string flags and numeric
-// creation mode, with Node's "r"/0o666 defaults. The runtime wraps
-// the descriptor in a shared FileHandle and settles/rejects exactly
-// like the existing fs/promises operations.
+// fs/promises.open(path[, flags[, mode]]) — Node's stringToFlags (a flag
+// name or an int32 mask) and parseFileMode (a number or an octal string),
+// with Node's "r"/0o666 defaults and its path → flags → mode validation
+// order. The all-static spelling keeps the direct runtime call; every
+// other form hands the option values to the runtime, which reads them the
+// way Node does. The runtime wraps the descriptor in a shared FileHandle
+// and settles/rejects exactly like the existing fs/promises operations.
 export function lowerFsPromisesOpenCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -294,23 +297,39 @@ export function lowerFsPromisesOpenCall(
     lowerer.noLowering(
       `fs.promises.open with ${expr.arguments.nodes.length} arguments`,
       expr,
-      "use open(path[, stringFlags[, numericMode]])",
+      "use open(path[, flags[, mode]])",
     );
   }
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
-  const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-  const flags = expr.arguments.nodes[1]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[1]!, STRING, defaultFlags)
-    : defaultFlags;
-  const mode = expr.arguments.nodes[2]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
-    : defaultMode;
+  const flagsNode = expr.arguments.nodes[1];
+  const modeNode = expr.arguments.nodes[2];
+  const flagsPresent = flagsNode !== undefined && !staticallyAbsent(lowerer, flagsNode);
+  const modePresent = modeNode !== undefined && !staticallyAbsent(lowerer, modeNode);
+  const flagsKind =
+    flagsNode !== undefined && flagsPresent
+      ? lowerer.mapTypeOf(lowerer.typeOf(flagsNode))?.kind
+      : undefined;
+  const modeKind =
+    modeNode !== undefined && modePresent
+      ? lowerer.mapTypeOf(lowerer.typeOf(modeNode))?.kind
+      : undefined;
+  const type: IrType = { kind: "promise", inner: FILEHANDLE_T };
+  if ((!flagsPresent || flagsKind === "string") && (!modePresent || modeKind === "f64")) {
+    const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
+    const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
+    const flags = flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, STRING) : defaultFlags;
+    const mode = modePresent ? lowerer.lowerExprExpecting(modeNode!, F64) : defaultMode;
+    return { kind: "libCall", fn: "fsp.open", args: [path, flags, mode], type, loc };
+  }
   return {
     kind: "libCall",
-    fn: "fsp.open",
-    args: [path, flags, mode],
-    type: { kind: "promise", inner: FILEHANDLE_T },
+    fn: "fsp.openOptions",
+    args: [
+      path,
+      flagsPresent ? lowerer.lowerExprExpecting(flagsNode!, DYN) : dynUndefinedExpr(loc),
+      modePresent ? lowerer.lowerExprExpecting(modeNode!, DYN) : dynUndefinedExpr(loc),
+    ],
+    type,
     loc,
   };
 }
@@ -888,36 +907,219 @@ export function lowerFsMkdirSyncCall(
     : { kind: "libCall", fn: "fs.mkdirRecursiveSync", args: [path], type: VOID, loc };
 }
 
-// fs.promises.mkdir(p, options): the mkdirSync matrix behind settled
-// promises — literal { recursive?: <boolean literal>, mode?: number }.
-// The recursive form's value (`string | undefined`) has no lowering;
-// `await` in statement position is the supported use.
+// fs.promises.mkdir(p, options): Node's mkdir matrix behind settled
+// promises. Options may be the mode shorthand (a number or an octal
+// string), null/undefined (the defaults), or a literal
+// { recursive?: <boolean literal>, mode?: number | <octal string> }. The
+// recursive form answers the first created directory (`string |
+// undefined`); the plain form answers undefined. The runtime validates the
+// mode and parses octal strings in Node's order — the path first, then
+// parseFileMode.
 export function lowerFsPromisesMkdirCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments.nodes[1]!;
-  const options = parseMkdirOptions(optsNode);
-  if (!options) {
-    lowerer.noLowering(
-      "fs.promises.mkdir with an options argument beyond { recursive, mode }",
-      optsNode,
-      "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
-    );
+  const spelling = "fs.promises.mkdir";
+  const optsNode = expr.arguments.nodes[1];
+  let recursive = false;
+  let modeNode: ts.Expression | null = null;
+  if (optsNode !== undefined && !staticallyAbsent(lowerer, optsNode)) {
+    if (ts.isObjectLiteralExpression(optsNode)) {
+      const options = parseMkdirOptions(optsNode);
+      if (!options) {
+        lowerer.noLowering(
+          `${spelling} with an options argument beyond { recursive, mode }`,
+          optsNode,
+          "the recursive flag must be a boolean literal and mode a number or an octal string; other options have no lowering",
+        );
+      }
+      recursive = options.recursive;
+      modeNode = options.modeNode;
+    } else {
+      // Node reads a non-object options value as the mode itself.
+      modeNode = optsNode;
+    }
+    if (modeNode && staticallyAbsent(lowerer, modeNode)) modeNode = null;
   }
-  const { recursive, modeNode } = options;
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
-  const type: IrType = { kind: "promise", inner: VOID };
+  let mode: IrExpr | null = null;
+  let octal: string | null = null;
+  if (modeNode) {
+    const type = lowerer.typeOf(modeNode);
+    if (type.isStringLiteralType()) octal = type.value;
+    else if (lowerer.mapTypeOf(type)?.kind === "f64")
+      mode = lowerer.lowerExprExpecting(modeNode, F64);
+    else
+      lowerer.noLowering(
+        `${spelling} whose mode is neither a number nor an octal string`,
+        modeNode,
+        "pass a number, or the octal spelling as a string literal",
+      );
+  }
   if (!recursive) {
+    const type: IrType = { kind: "promise", inner: VOID };
+    if (octal !== null)
+      return {
+        kind: "libCall",
+        fn: "fsp.mkdirModeOctal",
+        args: [path, strLit(octal, loc)],
+        type,
+        loc,
+      };
     return mode
       ? { kind: "libCall", fn: "fsp.mkdirMode", args: [path, mode], type, loc }
       : { kind: "libCall", fn: "fsp.mkdir", args: [path], type, loc };
   }
-  return mode
-    ? { kind: "libCall", fn: "fsp.mkdirRecursiveMode", args: [path, mode], type, loc }
-    : { kind: "libCall", fn: "fsp.mkdirRecursive", args: [path], type, loc };
+  // recursive: true answers the first created directory, a `string |
+  // undefined` union the runtime spells as a string or NULL.
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  const def = inner?.kind === "union" ? lowerer.unions.get(inner.unionId) : undefined;
+  if (
+    callType?.kind !== "promise" ||
+    !def ||
+    !def.arms.some((a) => a.kind === "string") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  )
+    lowerer.noLowering(
+      `${spelling} in the recursive form without its 'string | undefined' result`,
+      expr,
+      "recursive: true answers the first created directory",
+    );
+  if (octal !== null)
+    return {
+      kind: "libCall",
+      fn: "fsp.mkdirRecursiveFirstOctal",
+      args: [path, strLit(octal, loc)],
+      type: callType,
+      loc,
+    };
+  return {
+    kind: "libCall",
+    fn: "fsp.mkdirRecursiveFirst",
+    args: [path, mode ?? numLit(0o777, loc)],
+    type: callType,
+    loc,
+  };
+}
+
+/** True when the expression's static type is only the unit types (null,
+ * undefined, void): Node's `??` default applies. A `T | undefined`
+ * variable may still hold a T, so it does not count. */
+export function staticallyAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  const unit = (type: ts.Type): boolean =>
+    (type.flags & ~(ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0;
+  const type = lowerer.typeOf(node);
+  return type.isUnionType() ? ts.constituentTypes(type).every(unit) : unit(type);
+}
+
+/** realpath and mkdtemp's documented option keys. */
+const FS_ENCODE_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["encoding", "signal"]);
+
+/** fs.promises.realpath / mkdtemp(path, options): the encoding is the
+ * string shorthand or an object literal's `encoding` member, exactly the
+ * shape Node's getOptions accepts. Node validates the encoding before the
+ * path, so an unknown name rejects first; "buffer" answers the raw bytes and
+ * every other name re-encodes the UTF-8 path text. */
+export function lowerFsPromisesEncodeOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  isMkdtemp: boolean,
+): IrExpr {
+  const spelling = isMkdtemp ? "fs.promises.mkdtemp" : "fs.promises.realpath";
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering(`${spelling} with spread arguments`, expr);
+  const optsNode = expr.arguments.nodes[1];
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = callType?.kind === "promise" ? callType.inner : undefined;
+  const wantsBuffer = inner?.kind === "bytes";
+  if (!wantsBuffer && inner?.kind !== "string") {
+    lowerer.noLowering(
+      `${spelling} where the result is neither a string nor a Buffer`,
+      expr,
+      "an encoding of 'buffer' answers a Buffer; every other encoding answers a string",
+    );
+  }
+  const plainFn: IrLibFn = isMkdtemp ? "fsp.mkdtemp" : "fsp.realpath";
+  const strType: IrType = { kind: "promise", inner: STRING };
+  const bytesType: IrType = { kind: "promise", inner: BYTES_U8 };
+  const answer = (fn: IrLibFn, args: IrExpr[], type: IrType): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args,
+    type,
+    loc,
+  });
+  const plain = (): IrExpr => answer(plainFn, [path], wantsBuffer ? bytesType : strType);
+  const fence = (node: ts.Node): never =>
+    lowerer.noLowering(
+      `${spelling} with this options value`,
+      node,
+      "pass a BufferEncoding string, or an object literal whose encoding is one; 'buffer' answers a Buffer",
+    );
+  // null = the default utf8 (also options that are null or undefined).
+  let encoding: string | null = null;
+  const literalOf = (node: ts.Expression): string | null => {
+    const t = lowerer.typeOf(node);
+    return t.isStringLiteralType() ? t.value : null;
+  };
+  if (optsNode !== undefined) {
+    if (!staticallyAbsent(lowerer, optsNode)) {
+      const t = lowerer.typeOf(optsNode);
+      if (t.isStringLiteralType()) {
+        encoding = t.value;
+      } else if (ts.isObjectLiteralExpression(optsNode)) {
+        for (const p of optsNode.properties.nodes) {
+          const m = optionMember(p);
+          if (!m)
+            lowerer.noLowering(
+              `${spelling} with this options shape`,
+              p,
+              "spreads and computed keys have no lowering — write each member inline",
+            );
+          if (m.name === "encoding") {
+            const lit = literalOf(m.value);
+            if (lit === null) fence(m.value);
+            encoding = lit;
+          } else if (m.name === "signal") {
+            // getOptions validates the signal and realpath ignores it; a
+            // statically typed AbortSignal needs neither.
+          } else {
+            fenceOrDropOptionKey(
+              lowerer,
+              p,
+              m.name,
+              spelling,
+              FS_ENCODE_DOCUMENTED_OPTIONS,
+              "encoding is the supported option",
+            );
+          }
+        }
+      } else {
+        fence(optsNode);
+      }
+    }
+  }
+  const enc = encoding;
+  if (enc === null || enc.length === 0 || enc === "utf8" || enc === "utf-8") return plain();
+  if (enc === "buffer") {
+    if (!wantsBuffer) fence(optsNode ?? expr);
+    return answer(isMkdtemp ? "fsp.mkdtempBuffer" : "fsp.realpathBuffer", [path], bytesType);
+  }
+  if (wantsBuffer)
+    lowerer.noLowering(
+      `${spelling} with an encoding other than 'buffer' where the result is a Buffer`,
+      optsNode ?? expr,
+      "only encoding: 'buffer' answers a Buffer",
+    );
+  return answer(
+    isMkdtemp ? "fsp.mkdtempEncoded" : "fsp.realpathEncoded",
+    [path, strLit(enc, loc)],
+    strType,
+  );
 }
 
 // rmSync(p, options) and fs.promises.rm(p, options): literal

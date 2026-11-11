@@ -101,7 +101,11 @@ declare module "fs/promises" {
     readFile(encoding: "utf8" | "utf-8"): Promise<string>;
     writeFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
     appendFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    stat(): Promise<import("node:fs").Stats>;
+    stat(options?: null | { bigint?: false }): Promise<import("node:fs").Stats>;
+    stat(options: { bigint: true }): Promise<import("node:fs").BigIntStats>;
+    stat(options: {
+      bigint?: boolean;
+    }): Promise<import("node:fs").Stats | import("node:fs").BigIntStats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
   /* The options record fs.promises.writeFile/appendFile accept: Node
@@ -129,7 +133,11 @@ declare module "fs/promises" {
     maxRetries?: number;
     [option: string]: unknown;
   }
-  export function open(path: string | URL, flags?: string, mode?: number): Promise<FileHandle>;
+  export function open(
+    path: string | URL,
+    flags?: string | number,
+    mode?: number | string,
+  ): Promise<FileHandle>;
   export function link(
     existingPath: string | Uint8Array | URL,
     newPath: string | Uint8Array | URL,
@@ -177,10 +185,22 @@ declare module "fs/promises" {
     data: string | ScriptcBufferView,
     options?: WriteFileOptions | BufferEncoding | null,
   ): Promise<void>;
+  /* Node accepts options as the mode shorthand (a number or an octal
+   * string) and answers the first created directory when recursive is
+   * true, undefined otherwise. */
+  export function mkdir(path: string | URL, options?: number | string | null): Promise<void>;
   export function mkdir(
     path: string | URL,
-    options?: { recursive?: boolean; mode?: number },
+    options: { recursive?: false; mode?: number | string },
   ): Promise<void>;
+  export function mkdir(
+    path: string | URL,
+    options: { recursive: true; mode?: number | string },
+  ): Promise<string | undefined>;
+  export function mkdir(
+    path: string | URL,
+    options: { recursive?: boolean; mode?: number | string },
+  ): Promise<string | undefined>;
   export function readdir(path: string | URL): Promise<string[]>;
   export function readdir(
     path: string | URL,
@@ -205,7 +225,36 @@ declare module "fs/promises" {
     path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): Promise<void>;
-  export function stat(path: string | URL): Promise<import("node:fs").Stats>;
+  /* stat's record selects the member table (bigint: true is BigIntStats)
+   * and whether a missing entry answers undefined instead of rejecting
+   * (throwIfNoEntry: false, Node's v24.15 addition). The runtime still
+   * reads any truthy `bigint`, so the catch-all keeps the reachable
+   * Stats | undefined answer for a runtime-valued flag. */
+  export interface StatOptions {
+    bigint?: boolean;
+    throwIfNoEntry?: boolean;
+  }
+  export function stat(path: string | URL, options?: undefined): Promise<import("node:fs").Stats>;
+  export function stat(
+    path: string | URL,
+    options: StatOptions & { bigint?: false; throwIfNoEntry: false },
+  ): Promise<import("node:fs").Stats | undefined>;
+  export function stat(
+    path: string | URL,
+    options: StatOptions & { bigint: true; throwIfNoEntry: false },
+  ): Promise<import("node:fs").BigIntStats | undefined>;
+  export function stat(
+    path: string | URL,
+    options: StatOptions & { bigint?: false; throwIfNoEntry?: true },
+  ): Promise<import("node:fs").Stats>;
+  export function stat(
+    path: string | URL,
+    options: StatOptions & { bigint: true; throwIfNoEntry?: true },
+  ): Promise<import("node:fs").BigIntStats>;
+  export function stat(
+    path: string | URL,
+    options: StatOptions,
+  ): Promise<import("node:fs").Stats | undefined>;
   export function statfs(
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions & { bigint?: false },
@@ -218,8 +267,33 @@ declare module "fs/promises" {
     path: string | Uint8Array | URL,
     options?: import("node:fs").StatFsOptions,
   ): Promise<import("node:fs").StatsFs | import("node:fs").BigIntStatsFs>;
-  export function realpath(path: string | URL): Promise<string>;
-  export function lstat(path: string | URL): Promise<import("node:fs").Stats>;
+  /* realpath and mkdtemp take an encoding option in Node; "buffer" is the
+   * one name that answers a Buffer, so it is the first overload and every
+   * other encoding (the empty string included) answers the path text. */
+  export function realpath(
+    path: string | URL,
+    options: "buffer" | { encoding: "buffer" },
+  ): Promise<Buffer>;
+  export function realpath(
+    path: string | URL,
+    options?: BufferEncoding | string | { encoding?: BufferEncoding | string | null } | null,
+  ): Promise<string>;
+  /* lstat's record has the same shape as stat's, but Node's promise
+   * binding reads only bigint there: throwIfNoEntry is accepted and
+   * ignored, so a missing entry still rejects. */
+  export function lstat(path: string | URL, options?: undefined): Promise<import("node:fs").Stats>;
+  export function lstat(
+    path: string | URL,
+    options: StatOptions & { bigint?: false },
+  ): Promise<import("node:fs").Stats>;
+  export function lstat(
+    path: string | URL,
+    options: StatOptions & { bigint: true },
+  ): Promise<import("node:fs").BigIntStats>;
+  export function lstat(
+    path: string | URL,
+    options: StatOptions,
+  ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats>;
   export function unlink(path: string | URL): Promise<void>;
   export function chmod(path: string | URL, mode: number): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
@@ -232,7 +306,14 @@ declare module "fs/promises" {
     options?: AppendFileOptions | BufferEncoding | null,
   ): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
-  export function mkdtemp(prefix: string | URL): Promise<string>;
+  export function mkdtemp(
+    prefix: string | URL,
+    options: "buffer" | { encoding: "buffer" },
+  ): Promise<Buffer>;
+  export function mkdtemp(
+    prefix: string | URL,
+    options?: BufferEncoding | string | { encoding?: BufferEncoding | string | null } | null,
+  ): Promise<string>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rmdir(path: string | URL, options: RmdirOptions): Promise<void>;
   export function lchmod(path: string | URL, mode: number): Promise<void>;

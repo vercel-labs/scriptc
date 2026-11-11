@@ -4388,12 +4388,19 @@ function validateFunction(
     const variableResult = e.fn === "net.serverListeners" || e.fn === "http.serverListeners";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
-      // their `bigint` option picks BigIntStats' reads over Stats'.
+      // their `bigint` option picks BigIntStats' reads over Stats'. The
+      // promise forms carry that choice in the promise's inner type.
       const statsVariant =
         (e.fn === "fs.statSync" || e.fn === "fs.lstatSync" || e.fn === "fs.fstatSync") &&
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
-      if (!statsVariant)
+      const promiseStatsVariant =
+        (e.fn === "fsp.stat" || e.fn === "fsp.lstat" || e.fn === "fileHandle.stat") &&
+        sig.result.kind === "promise" &&
+        e.type.kind === "promise" &&
+        typeEquals(sig.result.inner, STATS_T) &&
+        typeEquals(e.type.inner, BIGINT_STATS_T);
+      if (!statsVariant && !promiseStatsVariant)
         err(`libCall ${e.fn} must be ${sig.result.kind}, got ${e.type.kind}`, e.loc);
     }
   }
@@ -5141,15 +5148,41 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
-      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+    if (
+      e.fn === "fs.statProbeSync" ||
+      e.fn === "fs.lstatProbeSync" ||
+      e.fn === "fsp.statProbe" ||
+      e.fn === "fsp.mkdirRecursiveFirst" ||
+      e.fn === "fsp.mkdirRecursiveFirstOctal"
+    ) {
+      // The promise calls' union rides inside the promise.
+      const promiseResult =
+        e.fn === "fsp.statProbe" ||
+        e.fn === "fsp.mkdirRecursiveFirst" ||
+        e.fn === "fsp.mkdirRecursiveFirstOctal";
+      const result = promiseResult
+        ? e.type.kind === "promise"
+          ? e.type.inner
+          : undefined
+        : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const mkdirFirst =
+        e.fn === "fsp.mkdirRecursiveFirst" || e.fn === "fsp.mkdirRecursiveFirstOctal";
       const ok =
         def &&
         def.arms.length === 2 &&
-        def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") &&
-        def.arms.some((a) => a.kind === "undefinedT");
+        (mkdirFirst
+          ? def.arms.some((a) => a.kind === "string") &&
+            def.arms.some((a) => a.kind === "undefinedT")
+          : def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") &&
+            def.arms.some((a) => a.kind === "undefinedT"));
       if (!ok) {
-        err(`libCall ${e.fn} must return the 'Stats | undefined' union`, e.loc);
+        err(
+          `libCall ${e.fn} must return ${promiseResult ? "a promise of " : ""}the '${
+            mkdirFirst ? "string | undefined" : "Stats | undefined"
+          }' union`,
+          e.loc,
+        );
       }
       return true;
     }

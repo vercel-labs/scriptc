@@ -221,6 +221,8 @@ export interface NativeLinkFeatures {
   abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;

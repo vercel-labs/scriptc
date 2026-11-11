@@ -935,6 +935,7 @@ async function compileExecutableNative(
     ...(features.webBodies ? { webBodies: true } : {}),
     ...(features.abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
+    ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),

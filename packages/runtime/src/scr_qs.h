@@ -98,6 +98,9 @@ bool scr_mime_is(const struct ScrDyn *value, double kind);
  * the validation error pending. */
 struct ScrDyn *scr_util_debounce(struct ScrDyn *fn, struct ScrDyn *wait, struct ScrDyn *options);
 struct ScrDyn *scr_util_throttle(struct ScrDyn *fn, struct ScrDyn *limit, struct ScrDyn *interval, struct ScrDyn *options);
+/* util.markPromiseAsHandled(promise) (scr_util_mark_handled.c): marks the
+ * promise's rejection observed, or throws ERR_INVALID_ARG_TYPE. */
+void scr_util_mark_promise_as_handled(struct ScrDyn *promise);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);

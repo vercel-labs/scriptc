@@ -143,6 +143,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.aborted",
   "util.debounce",
   "util.throttle",
+  // util.markPromiseAsHandled reads the checked-dynamic promise box.
+  "util.markPromiseAsHandled",
   "timers.immediatePromise",
   // A timer callback bound to its handle as `this`.
   "timers.thisCallback",
@@ -1980,6 +1982,10 @@ const RUNTIME_FEATURE_RULES = {
   abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
+  /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
+   * argument check through the checked-dynamic description, so the
+   * dyn-async unit comes with it. */
+  utilMarkPromiseAsHandled: rule({ fns: ["util.markPromiseAsHandled"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
@@ -2530,6 +2536,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webStreams: false,
     abortSignal: false,
     utilTiming: false,
+    utilMarkPromiseAsHandled: false,
     mockTimers: false,
     net: false,
     netLookup: false,

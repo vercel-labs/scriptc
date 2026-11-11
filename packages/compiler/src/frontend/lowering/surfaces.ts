@@ -1878,6 +1878,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
           { mode: "optional", type: DYN, defaultValue: undefined },
         ],
       },
+      // The argument is checked at runtime: a promise marks its rejection
+      // handled, anything else throws ERR_INVALID_ARG_TYPE (the lowering in
+      // the util spoke supplies the missing-argument undefined).
+      markPromiseAsHandled: {
+        fn: "util.markPromiseAsHandled",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
+      },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
       aborted: {
         fn: "util.aborted",

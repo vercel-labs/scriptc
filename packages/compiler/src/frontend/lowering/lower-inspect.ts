@@ -5848,6 +5848,41 @@ export function lowerUtilModuleCall(
         loc,
       };
     }
+    case "markPromiseAsHandled": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.markPromiseAsHandled with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
     case "inherits":
     case "deprecate":
     case "callbackify":

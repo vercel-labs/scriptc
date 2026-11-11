@@ -1501,6 +1501,7 @@ function buildLibFnSignatures() {
     "util.signalExitCode": { argTypes: [DYN], result: F64 },
     "util.aborted": { argTypes: [DYN, DYN], result: DYN },
     "util.diff": { argTypes: [DYN, DYN], result: DYN },
+    "util.markPromiseAsHandled": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },

@@ -105170,6 +105170,8 @@
           "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-json-error.ts",
           "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-mark-promise-handled-args.cjs",
+          "tests/corpus/util-mark-promise-handled.ts",
           "tests/corpus/util-mime-object-view.ts",
           "tests/corpus/util-system-errors.ts",
           "tests/corpus/util-text-codecs.ts",
@@ -106886,8 +106888,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.markPromiseAsHandled",
+        "tests": [
+          "tests/corpus/util-mark-promise-handled.ts",
+          "tests/corpus/util-mark-promise-handled-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

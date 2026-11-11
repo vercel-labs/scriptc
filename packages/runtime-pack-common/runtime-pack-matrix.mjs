@@ -185,6 +185,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_webstreams.c", "webStreams"],
   ["scr_dyn_handle_class.c", "webStreams"],
   ["scr_util_timing.c", "utilTiming"],
+  // util.markPromiseAsHandled boxes and describes its argument through the
+  // checked-dynamic units.
+  ["scr_util_mark_handled.c", all("utilMarkPromiseAsHandled", "dynAsync")],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
   // the Worker env option compares against worker_threads.SHARE_ENV.

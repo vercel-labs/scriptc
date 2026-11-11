@@ -3085,6 +3085,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.markPromiseAsHandled",
+      "kind": "node-builtin",
+      "name": "util.markPromiseAsHandled",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.parseArgs",
       "kind": "node-builtin",
       "name": "util.parseArgs",

@@ -122,6 +122,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
+  utilMarkPromiseAsHandled: boolean;
   dynBuffer: boolean;
   fsPathValue: boolean;
   builtinValues: boolean;
@@ -420,6 +421,7 @@ export function effectiveRuntimeFeatures(
     webBodies: features.webBodies === true,
     abortSignal,
     utilTiming: features.utilTiming === true,
+    utilMarkPromiseAsHandled: features.utilMarkPromiseAsHandled === true,
     dynBuffer: features.dynBuffer === true,
     fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,

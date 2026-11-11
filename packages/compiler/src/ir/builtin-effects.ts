@@ -782,6 +782,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.extend",
   "util.signalExitCode",
   "util.diff",
+  // Any non-promise argument throws ERR_INVALID_ARG_TYPE.
+  "util.markPromiseAsHandled",
   "util.debounce",
   "util.throttle",
   "mime.typeNew",

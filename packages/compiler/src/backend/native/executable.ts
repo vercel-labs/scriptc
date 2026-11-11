@@ -365,6 +365,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep

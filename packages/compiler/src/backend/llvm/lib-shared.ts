@@ -135,6 +135,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.signalExitCode": "scr_util_signal_exit_code",
   "util.aborted": "scr_util_aborted",
   "util.diff": "scr_util_diff",
+  "util.markPromiseAsHandled": "scr_util_mark_promise_as_handled",
   "util.debounce": "scr_util_debounce",
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",

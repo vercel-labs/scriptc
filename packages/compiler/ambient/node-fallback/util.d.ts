@@ -21,6 +21,9 @@ declare module "util" {
   export function stripVTControlCharacters(str: string): string;
   export function toUSVString(string: string): string;
   export function isDeepStrictEqual(val1: unknown, val2: unknown, skipPrototype?: boolean): boolean;
+  /** Marks a promise as handled: its rejection never reaches
+   * 'unhandledRejection'. Any other value throws ERR_INVALID_ARG_TYPE. */
+  export function markPromiseAsHandled<T>(promise: Promise<T>): void;
   export function styleText(
     format: string | readonly string[],
     text: string,

@@ -3655,6 +3655,14 @@ function buildLibFnSignatures() {
     "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
     "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
     "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
+    /** The any-argument forms: Node's argument types are checked at run
+     * time, in its order, for calls whose arguments do not fit the typed
+     * signatures (missing ones read as undefined). */
+    "crypto.hashNewAny": { argTypes: [DYN, DYN], result: CRYPTOHASH_T },
+    "crypto.hmacNewAny": { argTypes: [DYN, DYN, DYN], result: CRYPTOHMAC_T },
+    "crypto.hashOneshotAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.pbkdf2Any": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.pbkdf2AnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
     /** Views of any element kind (the validator checks both are views). */
     "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
     "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },

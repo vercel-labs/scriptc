@@ -10088,7 +10088,7 @@ ScrCryptoHash *scr_crypto_hash_copy(ScrCryptoHash *hash) {
   return scr_crypto_hash_clone(hash);
 }
 
-static bool scr_crypto_integer(double value, const char *name, double max);
+static bool scr_crypto_integer(double value, const char *name, double min, double max);
 
 /* Computes the digest into `out` (hash->out_len bytes) and marks it
  * computed. A Hash keeps a copy for a later digest() or flush. */
@@ -10170,6 +10170,7 @@ ScrBytes *scr_crypto_hash_digest_buffer(ScrCryptoHash *hash) {
   ScrBytes *result = NULL;
   if (n != 0 || !scr_exc_pending()) {
     result = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    result->is_buffer = true; /* Node's digest() answers a Buffer */
     if (n != 0) memcpy(result->data, digest, n);
   }
   scr_crypto_digest_space_end(digest, hash->out_len, stack);
@@ -10368,7 +10369,7 @@ static bool scr_crypto_uint32(const ScrDyn *value, const char *name, double *out
     else scr_dyn_arg_type_fail(name, "of type number", value);
     return false;
   }
-  if (!scr_crypto_integer(value->v.num, name, 4294967295.0)) return false;
+  if (!scr_crypto_integer(value->v.num, name, 0, 4294967295.0)) return false;
   *out = value->v.num + 0.0;
   return true;
 }
@@ -10756,6 +10757,103 @@ ScrDyn *scr_crypto_hash_oneshot(ScrStr *alg, ScrDyn *input, ScrDyn *options) {
   SCR_BYTES_SNAPSHOT(data);
   return scr_hash_oneshot_raw(alg, data->data, (size_t)scr_bytes_byte_len(data), name, cshake,
                               has_length, length);
+}
+
+/* Each argument with a typed-ref box materialized (+1); plain values are
+ * retained. False after a throw, with the entries so far left for
+ * scr_crypto_release_args. */
+static bool scr_crypto_unbox_args(ScrDyn **out, ScrDyn *const *args, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    out[i] = args[i]->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(args[i])
+                                                : scr_dyn_retain(args[i]);
+    if (!out[i]) return false;
+  }
+  return true;
+}
+
+static void scr_crypto_release_args(ScrDyn **values, size_t count) {
+  for (size_t i = 0; i < count; i++)
+    if (values[i]) scr_dyn_release(values[i]);
+}
+
+/* validateString for a checked-dynamic argument: borrowed, or NULL with
+ * Node's ERR_INVALID_ARG_TYPE pending. */
+static ScrStr *scr_crypto_string_arg(const char *name, const ScrDyn *value) {
+  if (value->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail(name, "of type string", value);
+    return NULL;
+  }
+  return value->v.str;
+}
+
+/* validateInteger for a checked-dynamic argument. */
+static bool scr_crypto_number_arg(const char *name, const ScrDyn *value, double min, double max,
+                                  double *out) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(name, "of type number", value);
+    return false;
+  }
+  if (!scr_crypto_integer(value->v.num, name, min, max)) return false;
+  *out = value->v.num + 0.0;
+  return true;
+}
+
+/* getArrayBufferOrView for a checked-dynamic argument: a string is its
+ * UTF-8 bytes, a view or ArrayBuffer its bytes. +1 or NULL with Node's
+ * error pending. */
+static ScrBytes *scr_crypto_bytes_arg(const char *name, const ScrDyn *value) {
+  if (value->kind == SCR_DYN_STR) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *bytes = scr_bytes_from_str_checked(value->v.str, utf8);
+    scr_str_release(utf8);
+    return bytes;
+  }
+  if (value->kind == SCR_DYN_BYTES || scr_buffer_storage_is(value))
+    return scr_bytes_buffer_source(value);
+  scr_dyn_arg_type_fail(
+      name, "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", value);
+  return NULL;
+}
+
+/* createHash(algorithm, options) over arguments of any type: Node's
+ * validateString for the algorithm, then the options checks. */
+ScrCryptoHash *scr_crypto_hash_new_any(ScrDyn *alg, ScrDyn *options) {
+  ScrDyn *args[2] = {alg, options};
+  ScrDyn *v[2] = {NULL, NULL};
+  ScrCryptoHash *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 2)) {
+    ScrStr *name = scr_crypto_string_arg("algorithm", v[0]);
+    if (name) result = scr_crypto_hash_new_opts(name, v[1]);
+  }
+  scr_crypto_release_args(v, 2);
+  return result;
+}
+
+/* createHmac(algorithm, key, options): Node names the algorithm "hmac" and
+ * the key's checks follow in scr_crypto_hmac_new_dyn. */
+ScrCryptoHash *scr_crypto_hmac_new_any(ScrDyn *alg, ScrDyn *key, ScrDyn *options) {
+  ScrDyn *args[3] = {alg, key, options};
+  ScrDyn *v[3] = {NULL, NULL, NULL};
+  ScrCryptoHash *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 3)) {
+    ScrStr *name = scr_crypto_string_arg("hmac", v[0]);
+    if (name) result = scr_crypto_hmac_new_dyn(name, v[1], v[2]);
+  }
+  scr_crypto_release_args(v, 3);
+  return result;
+}
+
+/* crypto.hash(algorithm, input, options) over arguments of any type. */
+ScrDyn *scr_crypto_hash_oneshot_any(ScrDyn *alg, ScrDyn *input, ScrDyn *options) {
+  ScrDyn *args[3] = {alg, input, options};
+  ScrDyn *v[3] = {NULL, NULL, NULL};
+  ScrDyn *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 3)) {
+    ScrStr *name = scr_crypto_string_arg("algorithm", v[0]);
+    if (name) result = scr_crypto_hash_oneshot(name, v[1], v[2]);
+  }
+  scr_crypto_release_args(v, 3);
+  return result;
 }
 
 bool scr_crypto_timing_safe_equal(ScrBytes *left, ScrBytes *right) {
@@ -11441,6 +11539,7 @@ static ScrBytes *scr_crypto_pbkdf2_raw(const unsigned char *password, size_t pas
   size_t digest_len = scr_digest_final(&empty, empty_digest);
   scr_crypto_zero(empty_digest, sizeof empty_digest);
   ScrBytes *result = scr_bytes_new(SCR_BYTES_U8, (double)keylen);
+  result->is_buffer = true; /* Node's derived keys are Buffers */
   unsigned char *block = malloc(salt_len + 4);
   if (!block) scr_trap("scriptc: out of memory\n");
   memcpy(block, salt, salt_len);
@@ -11488,25 +11587,8 @@ ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double itera
   *failure = NULL;
   SCR_BYTES_SNAPSHOT(password);
   SCR_BYTES_SNAPSHOT(salt);
-  if (!isfinite(iterations) || floor(iterations) != iterations ||
-      iterations < 1 || iterations > 2147483647.0) {
-    char value[64], msg[176];
-    size_t value_len = scr_f64_to_str(iterations, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"iterations\" is out of range. It must be >= 1 && <= 2147483647. Received %.*s",
-                     (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
-  }
-  if (!isfinite(keylen) || floor(keylen) != keylen || keylen < 0 || keylen > 2147483647.0) {
-    char value[64], msg[176];
-    size_t value_len = scr_f64_to_str(keylen, value);
-    int n = snprintf(msg, sizeof msg,
-                     "The value of \"keylen\" is out of range. It must be >= 0 && <= 2147483647. Received %.*s",
-                     (int)value_len, value);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return NULL;
-  }
+  if (!scr_crypto_integer(iterations, "iterations", 1, 2147483647.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0)) return NULL;
   ScrDigestAlg alg;
   if (!scr_digest_alg(digest->data, digest->len, &alg)) {
     scr_crypto_invalid_digest(digest);
@@ -11534,17 +11616,120 @@ ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
   return result;
 }
 
+/* pbkdf2's argument checks over checked-dynamic values in Node's order:
+ * the digest's type, password, salt, iterations and keylen. The digest's
+ * name resolves in the job. */
+static bool scr_crypto_pbkdf2_values(const ScrDyn *digest, const ScrDyn *password,
+                                     const ScrDyn *salt, const ScrDyn *iterations,
+                                     const ScrDyn *keylen, ScrStr **alg, ScrBytes **pw,
+                                     ScrBytes **sl, double *iteration_count, double *key_len) {
+  *alg = NULL;
+  *pw = NULL;
+  *sl = NULL;
+  *alg = scr_crypto_string_arg("digest", digest);
+  if (!*alg) return false;
+  *pw = scr_crypto_bytes_arg("password", password);
+  if (!*pw) return false;
+  *sl = scr_crypto_bytes_arg("salt", salt);
+  if (!*sl || !scr_crypto_number_arg("iterations", iterations, 1, 2147483647.0, iteration_count) ||
+      !scr_crypto_number_arg("keylen", keylen, 0, 2147483647.0, key_len)) {
+    scr_bytes_release(*sl);
+    scr_bytes_release(*pw);
+    *sl = NULL;
+    *pw = NULL;
+    return false;
+  }
+  return true;
+}
+
+/* The pending error taken as a checked-dynamic value (+1). */
+static ScrDyn *scr_crypto_take_error(void) {
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
+/* pbkdf2(password, salt, iterations, keylen, digest, callback) over any
+ * values: Node's checks (the callback last), then the job, whose result or
+ * failure reaches the callback in a later macrotask. */
+void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                 ScrDyn *keylen, ScrDyn *digest, ScrDyn *callback) {
+  ScrDyn *args[6] = {password, salt, iterations, keylen, digest, callback};
+  ScrDyn *v[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+  ScrStr *alg;
+  ScrBytes *pw = NULL, *sl = NULL;
+  double iteration_count = 0, key_len = 0;
+  if (!scr_crypto_unbox_args(v, args, 6)) {
+    scr_crypto_release_args(v, 6);
+    return;
+  }
+  // Node's five-argument form: a function digest is the callback.
+  ScrDyn *digest_value = v[4], *callback_value = v[5];
+  if (scr_dyn_is_callable(digest_value)) {
+    callback_value = digest_value;
+    digest_value = (ScrDyn *)scr_dyn_undefined();
+  }
+  if (!scr_crypto_pbkdf2_values(digest_value, v[0], v[1], v[2], v[3], &alg, &pw, &sl,
+                                &iteration_count, &key_len)) {
+    scr_crypto_release_args(v, 6);
+    return;
+  }
+  if (!scr_dyn_is_callable(callback_value)) {
+    scr_dyn_arg_type_fail("callback", "of type function", callback_value);
+  } else {
+    const char *failure = NULL;
+    ScrBytes *value = scr_crypto_pbkdf2_job(pw, sl, iteration_count, key_len, alg, &failure);
+    if (!scr_exc_pending()) {
+      ScrDyn *error = NULL, *delivery = NULL;
+      if (failure) {
+        scr_throw_error_msg(SCR_ERR_ERROR, failure, strlen(failure));
+        error = scr_crypto_take_error();
+      } else if (value) {
+        error = scr_dyn_new_null();
+        delivery = scr_dyn_new_buffer(value);
+        scr_bytes_release(value);
+      }
+      scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), error, delivery);
+    }
+  }
+  scr_bytes_release(sl);
+  scr_bytes_release(pw);
+  scr_crypto_release_args(v, 6);
+}
+
+/* pbkdf2Sync(password, salt, iterations, keylen, digest) over any values. */
+ScrBytes *scr_crypto_pbkdf2_any(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                ScrDyn *keylen, ScrDyn *digest) {
+  ScrDyn *args[5] = {password, salt, iterations, keylen, digest};
+  ScrDyn *v[5] = {NULL, NULL, NULL, NULL, NULL};
+  ScrBytes *result = NULL;
+  if (scr_crypto_unbox_args(v, args, 5)) {
+    ScrStr *alg;
+    ScrBytes *pw, *sl;
+    double iteration_count, key_len;
+    if (scr_crypto_pbkdf2_values(v[4], v[0], v[1], v[2], v[3], &alg, &pw, &sl, &iteration_count,
+                                 &key_len)) {
+      result = scr_crypto_pbkdf2(pw, sl, iteration_count, key_len, alg);
+      scr_bytes_release(sl);
+      scr_bytes_release(pw);
+    }
+  }
+  scr_crypto_release_args(v, 5);
+  return result;
+}
+
 /* RFC 5869 HKDF and RFC 7914 scrypt share the digest core in both
  * execution tiers. Sensitive scratch storage is cleared before release. */
-static bool scr_crypto_integer(double value, const char *name, double max) {
-  if (isfinite(value) && floor(value) == value && value >= 0 && value <= max) return true;
+static bool scr_crypto_integer(double value, const char *name, double min, double max) {
+  if (isfinite(value) && floor(value) == value && value >= min && value <= max) return true;
   char received[64], requirement[80], message[256];
   size_t n = scr_f64_to_str(value, received);
   received[n] = '\0';
   if (!isfinite(value) || floor(value) != value) {
     snprintf(requirement, sizeof requirement, "an integer");
   } else {
-    snprintf(requirement, sizeof requirement, ">= 0 && <= %.0f", max);
+    snprintf(requirement, sizeof requirement, ">= %.0f && <= %.0f", min, max);
     if (fabs(value) > 4294967296.0) {
       char digits[40];
       snprintf(digits, sizeof digits, "%.0f", value);
@@ -11567,7 +11752,7 @@ ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
   SCR_BYTES_SNAPSHOT(ikm);
   SCR_BYTES_SNAPSHOT(salt);
   SCR_BYTES_SNAPSHOT(info);
-  if (!scr_crypto_integer(keylen, "length", 9007199254740991.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "length", 0, 9007199254740991.0)) return NULL;
   size_t info_len = info->len * scr_bytes_elem_size(info->elem);
   if (info_len > 1024) {
     char message[192];
@@ -11701,9 +11886,9 @@ ScrBytes *scr_crypto_scrypt_derive(ScrBytes *password, ScrBytes *salt, double ke
                                   double n, double r, double p, double maxmem) {
   SCR_BYTES_SNAPSHOT(password);
   SCR_BYTES_SNAPSHOT(salt);
-  if (!scr_crypto_integer(keylen, "keylen", 2147483647.0) ||
-      !scr_crypto_integer(n, "N", 4294967295.0) || !scr_crypto_integer(r, "r", 4294967295.0) ||
-      !scr_crypto_integer(p, "p", 4294967295.0) || !scr_crypto_integer(maxmem, "maxmem", 9007199254740991.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0) ||
+      !scr_crypto_integer(n, "N", 0, 4294967295.0) || !scr_crypto_integer(r, "r", 0, 4294967295.0) ||
+      !scr_crypto_integer(p, "p", 0, 4294967295.0) || !scr_crypto_integer(maxmem, "maxmem", 0, 9007199254740991.0)) return NULL;
   if (n == 0) n = 16384;
   if (r == 0) r = 8;
   if (p == 0) p = 1;
@@ -11769,7 +11954,7 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
       return false;
     }
     *out = value->v.num;
-    bool valid = scr_crypto_integer(*out, name, max);
+    bool valid = scr_crypto_integer(*out, name, 0, max);
     scr_dyn_release(value);
     return valid;
   }
@@ -11778,7 +11963,7 @@ static bool scr_scrypt_option(ScrDyn *options, const char *name, double max, dou
 }
 
 ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, ScrDyn *options) {
-  if (!scr_crypto_integer(keylen, "keylen", 2147483647.0)) return NULL;
+  if (!scr_crypto_integer(keylen, "keylen", 0, 2147483647.0)) return NULL;
   double values[4] = {16384, 8, 1, 33554432};
   if (options && scr_dyn_truthy(options)) {
     const char *names[3] = {"N", "r", "p"};
@@ -11807,7 +11992,7 @@ ScrBytes *scr_crypto_scrypt(ScrBytes *password, ScrBytes *salt, double keylen, S
           return NULL;
         }
         values[i] = alias_value->v.num;
-        if (!scr_crypto_integer(values[i], aliases[i], 4294967295.0)) {
+        if (!scr_crypto_integer(values[i], aliases[i], 0, 4294967295.0)) {
           scr_dyn_release(alias_value);
           return NULL;
         }

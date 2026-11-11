@@ -19782,6 +19782,8 @@
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -20381,7 +20383,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20397,6 +20399,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -20420,7 +20424,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createHmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -20436,6 +20440,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21140,7 +21146,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21156,6 +21162,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21260,7 +21268,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21276,6 +21284,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21299,7 +21309,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2Sync",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -21315,6 +21325,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23467,7 +23479,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23483,6 +23495,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23506,7 +23520,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.copy",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23522,6 +23536,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23545,7 +23561,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23561,6 +23577,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23584,7 +23602,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hash.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23600,6 +23618,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23623,7 +23643,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23639,6 +23659,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23662,7 +23684,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.digest",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23678,6 +23700,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23701,7 +23725,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:hmac.update",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -23717,6 +23741,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -25648,7 +25674,7 @@
       "anchor": "dep0009-cryptopbkdf2-without-digest",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.pbkdf2",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -25664,6 +25690,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -28772,7 +28800,7 @@
       "anchor": "dep0179-hash-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hash",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28788,6 +28816,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -28824,7 +28854,7 @@
       "anchor": "dep0181-hmac-constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:Hmac",
         "tests": [
           "tests/corpus/5760-crypto-hash-stream.ts",
@@ -28840,6 +28870,8 @@
           "tests/corpus/5438-crypto-kdf-digests.ts",
           "tests/corpus/5440-crypto-hash-encodings.js",
           "tests/corpus/5441-crypto-hash-output-length.ts",
+          "tests/corpus/node-crypto-hash-arguments.cjs",
+          "tests/corpus/node-crypto-hash-hmac-edges.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },

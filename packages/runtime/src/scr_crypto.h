@@ -121,6 +121,16 @@ ScrDyn *scr_crypto_generate_prime_sync(ScrDyn *size, ScrDyn *options);
 void scr_crypto_generate_prime_async(ScrDyn *size, ScrDyn *options, ScrDyn *callback, bool null_error);
 ScrBytes *scr_crypto_pbkdf2(ScrBytes *password, ScrBytes *salt,
                             double iterations, double keylen, ScrStr *digest);
+/* The same entries over arguments of any type, with Node's validateString /
+ * getArrayBufferOrView / validateInteger checks in its order
+ * (createHmac names its algorithm "hmac"). */
+ScrCryptoHash *scr_crypto_hash_new_any(ScrDyn *alg, ScrDyn *options);
+ScrCryptoHash *scr_crypto_hmac_new_any(ScrDyn *alg, ScrDyn *key, ScrDyn *options);
+ScrDyn *scr_crypto_hash_oneshot_any(ScrDyn *alg, ScrDyn *input, ScrDyn *options);
+ScrBytes *scr_crypto_pbkdf2_any(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                ScrDyn *keylen, ScrDyn *digest);
+void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterations,
+                                 ScrDyn *keylen, ScrDyn *digest, ScrDyn *callback);
 ScrBytes *scr_crypto_pbkdf2_job(ScrBytes *password, ScrBytes *salt, double iterations,
                                 double keylen, ScrStr *digest, const char **failure);
 ScrBytes *scr_crypto_hkdf_bytes(ScrStr *digest, ScrBytes *ikm, ScrBytes *salt,
@@ -135,6 +145,10 @@ void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* move
                             ScrCryptoBytesFn fn);
 void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                           ScrCryptoBytesFn fn);
+/* A checked-dynamic callback(error, value) delivered in a later macrotask;
+ * a NULL value calls it with the error alone. Every argument is moved. */
+void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
+                                   ScrDyn *value /* moves, may be NULL */);
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,

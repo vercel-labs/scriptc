@@ -228,6 +228,112 @@ function dynArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc):
   return node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
 }
 
+/** Node evaluates a surplus argument for its side effects, then drops it. */
+function dropArg(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrStmt {
+  const value = lowerer.lowerExpr(node);
+  const dropped = lowerer.declareHiddenLocal("%cryptoDropped", value.type);
+  return { kind: "varDecl", localId: dropped.id, init: value, loc };
+}
+
+/** Node's argument evaluation for a call whose arguments do not fit the
+ * typed signature: the first `count` arguments evaluate left to right into
+ * checked-dynamic hidden locals (missing ones read as undefined), and any
+ * surplus arguments evaluate after them and are dropped. */
+function dynCallArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  count: number,
+): { stmts: IrStmt[]; args: IrExpr[] } {
+  const loc = locOf(call);
+  const nodes = call.arguments.nodes;
+  const stmts: IrStmt[] = [];
+  const args: IrExpr[] = [];
+  for (let i = 0; i < Math.max(count, nodes.length); i++) {
+    const node = nodes[i];
+    if (i >= count) {
+      stmts.push(dropArg(lowerer, node!, loc));
+      continue;
+    }
+    const value = node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
+    const saved = lowerer.declareHiddenLocal("%cryptoArg", DYN);
+    stmts.push({ kind: "varDecl", localId: saved.id, init: value, loc });
+    args.push(varRef(saved.id, DYN, loc));
+  }
+  return { stmts, args };
+}
+
+/** A crypto entry called with Node's own argument checks: every argument
+ * evaluates in source order, and the entry throws Node's error for a shape
+ * the typed signature does not describe. */
+function dynCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  count: number,
+  fn: IrLibFn,
+  type: IrType,
+): IrExpr {
+  const loc = locOf(call);
+  const { stmts, args } = dynCallArgs(lowerer, call, count);
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "libCall", fn, args, type, loc },
+    type,
+    loc,
+  };
+}
+
+/** A Hash/Hmac method call with Node's argument checks: the receiver and
+ * the arguments evaluate left to right, surplus arguments are dropped, and
+ * `fn` receives the receiver followed by the first `count` arguments. */
+function dynHashCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  receiverType: IrType,
+  count: number,
+  fn: IrLibFn,
+  type: IrType,
+): IrExpr {
+  const loc = locOf(call);
+  const stmts: IrStmt[] = [];
+  const target = lowerer.declareHiddenLocal("%cryptoRecv", receiverType);
+  stmts.push({
+    kind: "varDecl",
+    localId: target.id,
+    init: lowerer.lowerExprExpecting(access.expression, receiverType),
+    loc,
+  });
+  const nodes = call.arguments.nodes;
+  const args: IrExpr[] = [varRef(target.id, receiverType, loc)];
+  for (let i = 0; i < Math.max(count, nodes.length); i++) {
+    const node = nodes[i];
+    if (i >= count) {
+      stmts.push(dropArg(lowerer, node!, loc));
+      continue;
+    }
+    const value = node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
+    const saved = lowerer.declareHiddenLocal("%cryptoArg", DYN);
+    stmts.push({ kind: "varDecl", localId: saved.id, init: value, loc });
+    args.push(varRef(saved.id, DYN, loc));
+  }
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "libCall", fn, args, type, loc },
+    type,
+    loc,
+  };
+}
+
+/** Whether an argument's static type is one the typed byte-input lowering
+ * describes without a refusal. */
+function isByteInputType(lowerer: Lowerer, node: ts.Expression | undefined): boolean {
+  if (!node) return false;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return type?.kind === "string" || type?.kind === "bytes";
+}
+
 /** A digest name. The runtime resolves every name and alias Node 24
  * accepts and throws Node's error for the others, so literals are not
  * checked here. */
@@ -290,12 +396,23 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "pbkdf2") {
-    if (args.length !== 6) {
-      lowerer.noLowering(
-        `crypto.pbkdf2 with ${args.length} arguments`,
-        expr,
-        "pbkdf2(password, salt, iterations, keylen, digest, callback) is supported",
-      );
+    const callbackType =
+      args.length === 6 ? lowerer.mapTypeOf(lowerer.typeOf(args[5]!)) : undefined;
+    // A missing or surplus argument, a value of another type, and a
+    // callback that does not fit (error, buffer) take Node's checks at run
+    // time, including the five-argument form whose digest is the callback.
+    if (
+      args.length !== 6 ||
+      args.some(ts.isSpreadElement) ||
+      !isByteInputType(lowerer, args[0]) ||
+      !isByteInputType(lowerer, args[1]) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[2]!))?.kind !== "f64" ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[3]!))?.kind !== "f64" ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[4]!))?.kind !== "string" ||
+      callbackType?.kind !== "func" ||
+      callbackType.params.length > 2
+    ) {
+      return dynCall(lowerer, expr, 6, "crypto.pbkdf2AnyCb", VOID);
     }
     return {
       kind: "libCall",
@@ -367,12 +484,15 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "createHash") {
-    if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
-      lowerer.noLowering(
-        `crypto.createHash with ${args.length} arguments`,
-        expr,
-        "createHash(algorithm[, options]) is supported",
-      );
+    // A missing, surplus or non-string algorithm takes Node's validateString
+    // check at run time.
+    if (
+      args.length < 1 ||
+      args.length > 2 ||
+      args.some(ts.isSpreadElement) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string"
+    ) {
+      return dynCall(lowerer, expr, 2, "crypto.hashNewAny", CRYPTOHASH_T);
     }
     const algorithm = cryptoAlgorithm(lowerer, args[0]!);
     if (args.length === 1) {
@@ -416,12 +536,15 @@ export function lowerCryptoModuleCall(
   if (bi.member === "getDiffieHellman" || bi.member === "createDiffieHellmanGroup")
     return lowerGetDiffieHellman(lowerer, expr);
   if (bi.member === "createHmac") {
-    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
-      lowerer.noLowering(
-        `crypto.createHmac with ${args.length} arguments`,
-        expr,
-        "createHmac(algorithm, key[, options]) is supported",
-      );
+    // A missing, surplus or non-string algorithm takes Node's check at run
+    // time, which names the argument "hmac".
+    if (
+      args.length < 1 ||
+      args.length > 3 ||
+      args.some(ts.isSpreadElement) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string"
+    ) {
+      return dynCall(lowerer, expr, 3, "crypto.hmacNewAny", CRYPTOHMAC_T);
     }
     const algorithm = cryptoAlgorithm(lowerer, args[0]!);
     if (args.length === 1) {
@@ -465,12 +588,15 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "hash") {
-    if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
-      lowerer.noLowering(
-        `crypto.hash with ${args.length} arguments`,
-        expr,
-        "hash(algorithm, data[, outputEncodingOrOptions]) is supported",
-      );
+    // A missing, surplus or non-string algorithm takes Node's checks at
+    // run time, in its order: algorithm, input, then options.
+    if (
+      args.length < 2 ||
+      args.length > 3 ||
+      args.some(ts.isSpreadElement) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "string"
+    ) {
+      return dynCall(lowerer, expr, 3, "crypto.hashOneshotAny", DYN);
     }
     const algorithm = cryptoAlgorithm(lowerer, args[0]!);
     const data = lowerer.lowerExpr(args[1]!);
@@ -806,12 +932,18 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "pbkdf2Sync") {
-    if (args.length !== 5) {
-      lowerer.noLowering(
-        `crypto.pbkdf2Sync with ${args.length} arguments`,
-        expr,
-        "pbkdf2Sync(password, salt, iterations, keylen, digest) is supported",
-      );
+    // Missing, surplus and wrongly typed arguments take Node's checks at
+    // run time, in its order: digest, password, salt, iterations, keylen.
+    if (
+      args.length !== 5 ||
+      args.some(ts.isSpreadElement) ||
+      !isByteInputType(lowerer, args[0]) ||
+      !isByteInputType(lowerer, args[1]) ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[2]!))?.kind !== "f64" ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[3]!))?.kind !== "f64" ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[4]!))?.kind !== "string"
+    ) {
+      return dynCall(lowerer, expr, 5, "crypto.pbkdf2Any", BYTES_U8);
     }
     const password = lowerBuiltinByteInput(lowerer, args[0]!, locOf(args[0]!), "crypto");
     const salt = lowerBuiltinByteInput(lowerer, args[1]!, locOf(args[1]!), "crypto");
@@ -1016,7 +1148,7 @@ export function lowerCryptoHashMethodCall(
     return {
       kind: "seqExpr",
       stmts: evaluated,
-      result: nodeThrowExpr(1, "", `${ts.getTextOfNode(access)} is not a function`, DYN, loc),
+      result: nodeThrowExpr(1, "", `${v8CalleeText(access)} is not a function`, DYN, loc),
       type: DYN,
       loc,
     };
@@ -1028,11 +1160,17 @@ export function lowerCryptoHashMethodCall(
   if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${label}.${name} with spread arguments`, call);
   if (name === "update") {
+    // A missing or surplus argument takes Node's "data" check at run time
+    // (an extra argument is evaluated and dropped).
     if (call.arguments.nodes.length < 1 || call.arguments.nodes.length > 2) {
-      lowerer.noLowering(
-        `${label}.update with ${call.arguments.nodes.length} arguments`,
+      return dynHashCall(
+        lowerer,
         call,
-        "update(data[, inputEncoding]) is supported",
+        access,
+        receiverType,
+        2,
+        hash ? "crypto.hashUpdateDyn" : "crypto.hmacUpdateDyn",
+        receiverType,
       );
     }
     const target = receiver();
@@ -1092,11 +1230,16 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "digest") {
+    // A surplus argument is evaluated and dropped, as Node does.
     if (call.arguments.nodes.length > 1) {
-      lowerer.noLowering(
-        `${label}.digest with ${call.arguments.nodes.length} arguments`,
+      return dynHashCall(
+        lowerer,
         call,
-        "digest([outputEncoding]) is supported",
+        access,
+        receiverType,
+        1,
+        hash ? "crypto.hashDigestDyn" : "crypto.hmacDigestDyn",
+        DYN,
       );
     }
     const encodingNode = call.arguments.nodes[0];
@@ -1138,11 +1281,16 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "copy" && hash) {
+    // A surplus argument is evaluated and dropped, as Node does.
     if (call.arguments.nodes.length > 1)
-      lowerer.noLowering(
-        `Hash.copy with ${call.arguments.nodes.length} arguments`,
+      return dynHashCall(
+        lowerer,
         call,
-        "copy([options]) is supported",
+        access,
+        receiverType,
+        1,
+        "crypto.hashCopyOpts",
+        CRYPTOHASH_T,
       );
     if (call.arguments.nodes.length === 0)
       return {

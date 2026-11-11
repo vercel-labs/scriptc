@@ -1309,6 +1309,7 @@ ScrBytes *scr_crypto_random_bytes(double n) {
     return NULL;
   }
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, n);
+  b->is_buffer = true; /* Node's randomBytes answers a Buffer */
   if (b->len > 0) arc4random_buf(b->data, b->len);
   return b;
 }

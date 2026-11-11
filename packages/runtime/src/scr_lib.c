@@ -4263,27 +4263,66 @@ void scr_fs_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_common(path, data, "wb");
 }
 
-/* Node's parseFileMode for a numeric mode: a number that is an integer in
+/* Node's validateUint32 for a file mode: a number that is an integer in
  * 0..0xFFFFFFFF. Anything else throws Node's ERR_OUT_OF_RANGE and answers
- * false. */
-static bool scr_fs_file_mode_valid(double mode) {
-  char recv[48], msg[176];
-  scr_num_received(mode, recv);
+ * false; a passing value is handed back additively zeroed, like Node's
+ * `return value + 0;`. */
+bool scr_fs_mode_number_valid(double mode, const char *name, double *out) {
+  char recv[48], msg[208];
   if (!(isfinite(mode) && trunc(mode) == mode)) {
+    scr_num_received(mode, recv);
     int len = snprintf(msg, sizeof msg,
-                       "The value of \"mode\" is out of range. It must be an integer. Received %s",
-                       recv);
+                       "The value of \"%s\" is out of range. It must be an integer. Received %s",
+                       name, recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return false;
   }
   if (mode < 0 || mode > 4294967295.0) {
+    scr_num_received(mode, recv);
     int len = snprintf(msg, sizeof msg,
-                       "The value of \"mode\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
-                       recv);
+                       "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
+                       name, recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return false;
   }
+  *out = mode + 0;
   return true;
+}
+
+/* parseFileMode's string arm: the whole string must be octal digits (the
+ * empty string is not), and it parses base 8. Anything else throws Node's
+ * ERR_INVALID_ARG_VALUE naming the received string. */
+bool scr_fs_mode_octal(const ScrStr *text, const char *name, double *out) {
+  bool octal = text->len > 0;
+  for (size_t i = 0; octal && i < text->len; i++) {
+    if (text->data[i] < '0' || text->data[i] > '7') octal = false;
+  }
+  if (!octal) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "The ");
+    scr_jb_puts(&b, strchr(name, '.') != NULL ? "property '" : "argument '");
+    scr_jb_puts(&b, name);
+    scr_jb_puts(&b, "' must be a 32-bit unsigned integer or an octal string. Received '");
+    scr_jb_puts(&b, text->data);
+    scr_jb_puts(&b, "'");
+    ScrStr *msg = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(msg);
+    return false;
+  }
+  /* parseInt(value, 8), then validateUint32: a string that parses past
+   * 0xffffffff throws the same ERR_OUT_OF_RANGE a number does. */
+  double parsed = 0;
+  for (size_t i = 0; i < text->len; i++) parsed = parsed * 8 + (double)(text->data[i] - '0');
+  return scr_fs_mode_number_valid(parsed, name, out);
+}
+
+/* The numeric-mode wrapper the write and open paths already validate
+ * through. */
+static bool scr_fs_file_mode_valid(double mode) {
+  double parsed;
+  return scr_fs_mode_number_valid(mode, "mode", &parsed);
 }
 
 /* writeFileSync(p, data, { mode }): the mode is open(2)'s O_CREAT
@@ -4341,6 +4380,70 @@ bool scr_fs_exists_bytes(ScrBytes *bytes) {
   return found;
 }
 
+/* mkdirSync with the option ladder already resolved: Node validates the
+ * path, then parses the mode (its `name` is "mode" for a bare mode option
+ * and "options.mode" for the object member), then calls mkdir(2) — or,
+ * recursively, the first-created-directory walk. Answers the first created
+ * directory in the recursive form and NULL otherwise (the plain form's
+ * result is discarded, the existing directory's is undefined). */
+/* The plain mkdir(2) behind every non-recursive form: it creates one
+ * directory and answers what Node's binding answers for it, undefined. */
+static ScrStr *scr_fs_mkdir_plain(ScrStr *path, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
+  return NULL;
+}
+
+static ScrStr *scr_fs_mkdir_resolved(ScrStr *path, double mode, const char *name, bool recursive) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, name, &parsed)) return NULL;
+  if (!recursive) return scr_fs_mkdir_plain(path, parsed);
+  return scr_fs_mkdir_recursive_first(path, parsed);
+}
+
+/* The same with an octal-string mode. */
+static ScrStr *scr_fs_mkdir_octal(ScrStr *path, ScrStr *mode, const char *name, bool recursive) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, name, &parsed)) return NULL;
+  if (!recursive) return scr_fs_mkdir_plain(path, parsed);
+  return scr_fs_mkdir_recursive_first(path, parsed);
+}
+
+ScrStr *scr_fs_mkdir_obj_number(ScrStr *path, double mode, bool recursive) {
+  return scr_fs_mkdir_resolved(path, mode, "options.mode", recursive);
+}
+
+ScrStr *scr_fs_mkdir_obj_octal(ScrStr *path, ScrStr *mode, bool recursive) {
+  return scr_fs_mkdir_octal(path, mode, "options.mode", recursive);
+}
+
+/* The statement forms answer nothing, so the walk's first created
+ * directory is released here rather than by the caller. */
+void scr_fs_mkdir_obj_number_void(ScrStr *path, double mode, bool recursive) {
+  scr_str_release(scr_fs_mkdir_obj_number(path, mode, recursive));
+}
+
+void scr_fs_mkdir_obj_octal_void(ScrStr *path, ScrStr *mode, bool recursive) {
+  scr_str_release(scr_fs_mkdir_obj_octal(path, mode, recursive));
+}
+
+/* mkdirSync's top-level mode forms are never recursive: they create one
+ * directory and answer undefined, the value the call site keeps. */
+ScrStr *scr_fs_mkdir_mode_value(ScrStr *path, double mode) {
+  return scr_fs_mkdir_resolved(path, mode, "mode", false);
+}
+
+ScrStr *scr_fs_mkdir_str_value(ScrStr *path, ScrStr *mode) {
+  return scr_fs_mkdir_octal(path, mode, "mode", false);
+}
+
+/* mkdirSync(p, "700") — the bare string option is parseFileMode's "mode". */
+void scr_fs_mkdir_mode_octal(ScrStr *path, ScrStr *mode) {
+  (void)scr_fs_mkdir_str_value(path, mode);
+}
+
 void scr_fs_mkdir(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return;
   if (scr_sys_mkdir(path->data, 0777) != 0) scr_fs_throw(errno, "mkdir", path);
@@ -4350,8 +4453,7 @@ void scr_fs_mkdir(ScrStr *path) {
  * (umask applies, exactly as in Node — mode is the syscall argument;
  * Windows has no directory modes and drops it, like Node there). */
 void scr_fs_mkdir_mode(ScrStr *path, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  if (scr_sys_mkdir(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "mkdir", path);
+  (void)scr_fs_mkdir_resolved(path, mode, "mode", false);
 }
 
 #ifdef _WIN32
@@ -4398,8 +4500,18 @@ void scr_fs_unlink(ScrStr *path) {
 }
 
 void scr_fs_chmod(ScrStr *path, double mode) {
+  /* Node validates the path, then parseFileMode's numeric arm. */
   if (!scr_fs_path_ok(path, "path")) return;
-  if (chmod(path->data, (mode_t)mode) != 0) scr_fs_throw(errno, "chmod", path);
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return;
+  if (chmod(path->data, (mode_t)parsed) != 0) scr_fs_throw(errno, "chmod", path);
+}
+
+void scr_fs_chmod_str_mode(ScrStr *path, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return;
+  if (chmod(path->data, (mode_t)parsed) != 0) scr_fs_throw(errno, "chmod", path);
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
@@ -4459,31 +4571,60 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
  * the compiler with Node's 0o666 default; it is checked like
  * parseFileMode before the open, and open(2) ignores it unless the flags
  * create the file. */
-double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return 0;
+/* Node's stringToFlags for the documented flag strings (and nullish →
+ * O_RDONLY); anything else throws ERR_INVALID_ARG_VALUE naming the flags. */
+bool scr_fs_flag_string(const ScrStr *flags, int *out) {
   const char *f = flags->data;
-  int of;
-  if (strcmp(f, "r") == 0) of = O_RDONLY;
-  else if (strcmp(f, "rs") == 0 || strcmp(f, "sr") == 0) of = O_RDONLY | O_SYNC;
-  else if (strcmp(f, "r+") == 0) of = O_RDWR;
-  else if (strcmp(f, "rs+") == 0 || strcmp(f, "sr+") == 0) of = O_RDWR | O_SYNC;
-  else if (strcmp(f, "w") == 0) of = O_TRUNC | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "wx") == 0 || strcmp(f, "xw") == 0) of = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "w+") == 0) of = O_TRUNC | O_CREAT | O_RDWR;
-  else if (strcmp(f, "wx+") == 0 || strcmp(f, "xw+") == 0) of = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "a") == 0) of = O_APPEND | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "ax") == 0 || strcmp(f, "xa") == 0) of = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "as") == 0 || strcmp(f, "sa") == 0) of = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
-  else if (strcmp(f, "a+") == 0) of = O_APPEND | O_CREAT | O_RDWR;
-  else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) of = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
+  if (strcmp(f, "r") == 0) *out = O_RDONLY;
+  else if (strcmp(f, "rs") == 0 || strcmp(f, "sr") == 0) *out = O_RDONLY | O_SYNC;
+  else if (strcmp(f, "r+") == 0) *out = O_RDWR;
+  else if (strcmp(f, "rs+") == 0 || strcmp(f, "sr+") == 0) *out = O_RDWR | O_SYNC;
+  else if (strcmp(f, "w") == 0) *out = O_TRUNC | O_CREAT | O_WRONLY;
+  else if (strcmp(f, "wx") == 0 || strcmp(f, "xw") == 0) *out = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
+  else if (strcmp(f, "w+") == 0) *out = O_TRUNC | O_CREAT | O_RDWR;
+  else if (strcmp(f, "wx+") == 0 || strcmp(f, "xw+") == 0) *out = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
+  else if (strcmp(f, "a") == 0) *out = O_APPEND | O_CREAT | O_WRONLY;
+  else if (strcmp(f, "ax") == 0 || strcmp(f, "xa") == 0) *out = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
+  else if (strcmp(f, "as") == 0 || strcmp(f, "sa") == 0) *out = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
+  else if (strcmp(f, "a+") == 0) *out = O_APPEND | O_CREAT | O_RDWR;
+  else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) *out = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
+  else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) *out = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
   else {
-    char msg[128];
+    char msg[160];
     int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
-    return 0;
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    return false;
   }
-  if (!scr_fs_file_mode_valid(mode)) return 0;
+  return true;
+}
+
+/* Node's validateInt32 for the numeric flags argument (stringToFlags'
+ * number arm). False with Node's RangeError thrown. */
+bool scr_fs_flags_number_valid(double flags, double *out) {
+  char recv[48], msg[208];
+  if (!(isfinite(flags) && trunc(flags) == flags)) {
+    scr_num_received(flags, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (flags < -2147483648.0 || flags > 2147483647.0) {
+    scr_num_received(flags, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"flags\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  *out = flags + 0;
+  return true;
+}
+
+/* The open(2) the three flag forms share (BINARY: zero on POSIX, CRLF
+ * translation off on Windows). */
+double scr_fs_open_flags(ScrStr *path, int of, double mode) {
   int fd = open(path->data, of | O_BINARY, (mode_t)mode);
   if (fd < 0) {
     scr_fs_throw(errno, "open", path);
@@ -4492,14 +4633,37 @@ double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
   return (double)fd;
 }
 
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (!scr_fs_flag_string(flags, &of)) return 0;
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return 0;
+  return scr_fs_open_flags(path, of, parsed);
+}
+
+/* openSync with an octal-string mode: the string parses like Node's
+ * parseFileMode. */
+double scr_fs_open_str_mode(ScrStr *path, ScrStr *flags, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (!scr_fs_flag_string(flags, &of)) return 0;
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return 0;
+  return scr_fs_open_flags(path, of, parsed);
+}
+
 /* fs.openSync(path, fs.constants.O_* [, mode]). The compiler passes a
  * platform-independent mask for inline flag expressions; native flags are
- * chosen here so cross-compiled programs retain the target's values. */
-double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
+ * chosen here so cross-compiled programs retain the target's values.
+ *
+ * The mode is already parsed: Node validates the path, then stringToFlags
+ * (which the compiler resolved), then parseFileMode. */
+double scr_fs_open_mask(ScrStr *path, double flags, double mode) {
   if (!scr_fs_path_ok(path, "path")) return 0;
   int bits = (int)flags;
   int access = bits & 3;
-  if (access == 3 || !(isfinite(mode) && trunc(mode) == mode && mode >= 0 && mode <= 4294967295.0)) {
+  if (access == 3) {
     scr_throw_error_msg(SCR_ERR_RANGE, "Invalid open flags or mode", 26);
     return 0;
   }
@@ -4527,11 +4691,28 @@ double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
   return (double)fd;
 }
 
+/* The same with a numeric creation mode. */
+double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed_mode)) return 0;
+  return scr_fs_open_mask(path, flags, parsed_mode);
+}
+
 static void scr_fs_throw_nopath(int e, const char *op);
 static bool scr_fs_write_fd_valid(double fd);
 
 double scr_fs_open_native(ScrStr *path, double flags, double mode) {
+  /* Node validates the path, then stringToFlags' numeric arm, then the
+   * creation mode; the flags reach open(2) as the raw bits the program
+   * computed from fs.constants. */
   if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_flags;
+  if (!scr_fs_flags_number_valid(flags, &parsed_flags)) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed_mode)) return 0;
+  flags = parsed_flags;
+  mode = parsed_mode;
 #ifdef _WIN32
   WCHAR *wide = scr_fs_win_wide(path);
   if (!wide) { scr_fs_throw(scr_fs_win_errno(GetLastError()), "open", path); return 0; }
@@ -4544,15 +4725,36 @@ double scr_fs_open_native(ScrStr *path, double flags, double mode) {
   return (double)fd;
 }
 
+/* fchmodSync validates the mode before the descriptor (its arguments
+ * evaluate in that order), then binding.fchmod checks the fd. */
+static bool scr_fs_fchmod_args(double fd, double mode) {
+  double parsed;
+  if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return false;
+  if (!scr_fs_write_fd_valid(fd)) return false;
+  return true;
+}
+
 void scr_fs_fchmod(double fd, double mode) {
+  if (!scr_fs_fchmod_args(fd, mode)) return;
 #ifdef _WIN32
   (void)fd;
-  (void)mode;
   /* The CRT cannot enforce Unix permission bits through a descriptor.
    * A no-op success would misrepresent a security-sensitive operation. */
   scr_fs_throw_nopath(ENOSYS, "fchmod");
 #else
   if (fchmod((int)fd, (mode_t)mode) != 0) scr_fs_throw_nopath(errno, "fchmod");
+#endif
+}
+
+void scr_fs_fchmod_str_mode(double fd, ScrStr *mode) {
+  double parsed;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed)) return;
+  if (!scr_fs_write_fd_valid(fd)) return;
+#ifdef _WIN32
+  (void)parsed;
+  scr_fs_throw_nopath(ENOSYS, "fchmod");
+#else
+  if (fchmod((int)fd, (mode_t)parsed) != 0) scr_fs_throw_nopath(errno, "fchmod");
 #endif
 }
 
@@ -5756,14 +5958,7 @@ void scr_fs_mkdir_recursive(ScrStr *path) {
 /* mkdirSync(p, { recursive: true, mode }): Node passes the mode to every
  * directory the walk creates (existing ones keep theirs). */
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode) {
-  if (!scr_fs_path_ok(path, "path")) return;
-  char *buf = malloc(path->len + 1);
-  if (!buf) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  memcpy(buf, path->data, path->len + 1);
-  scr_mkdir_rec(buf, path->len, (mode_t)mode);
-  free(buf);
+  scr_str_release(scr_fs_mkdir_resolved(path, mode, "options.mode", true));
 }
 
 /* mkdir(p, { recursive: true })'s answer, Node's MKDirpSync first path:

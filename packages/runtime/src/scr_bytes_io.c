@@ -300,26 +300,45 @@ static void scr_fs_flag_invalid(const char *f) {
   scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
 }
 
-/* open's flags check, which Node runs before its callback check. Numeric
- * flags keep their open-time refusal. */
+/* stringToFlags over a dynamic value: an absent flag is the caller's
+ * fallback string, a number goes through validateInt32 and IS the open(2)
+ * bit set the binding receives under Node, a string is one of the
+ * documented spellings, and anything else is Node's
+ * ERR_INVALID_ARG_VALUE. False with the error thrown; a passing value
+ * reaches *bits. */
+static bool scr_fs_cb_open_bits(const ScrDyn *flag, const char *fallback, int *bits) {
+  if (flag == NULL || scr_fs_dyn_absent(flag)) {
+    *bits = scr_fs_flag_bits(fallback);
+    return true;
+  }
+  if (flag->kind == SCR_DYN_NUM) {
+    double parsed;
+    if (!scr_fs_flags_number_valid(flag->v.num, &parsed)) return false;
+    *bits = (int)parsed;
+    return true;
+  }
+  if (flag->kind != SCR_DYN_STR) {
+    scr_dyn_arg_value_fail("flags", NULL, flag);
+    return false;
+  }
+  int of = scr_fs_flag_bits(flag->v.str->data);
+  if (of < 0) {
+    scr_fs_flag_invalid(flag->v.str->data);
+    return false;
+  }
+  *bits = of;
+  return true;
+}
+
+/* open's flags check, which Node runs before its callback check. */
 static bool scr_fs_cb_open_flags(const ScrDyn *flag) {
-  if (flag->kind != SCR_DYN_STR || scr_fs_flag_bits(flag->v.str->data) >= 0) return true;
-  scr_fs_flag_invalid(flag->v.str->data);
-  return false;
+  int bits;
+  return scr_fs_cb_open_bits(flag, "r", &bits);
 }
 
 static double scr_fs_cb_open(const ScrStr *path, const ScrDyn *flag, double mode, const char *fallback) {
-  const char *f = scr_fs_dyn_absent(flag) ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
-  if (!f) {
-    static const char message[] = "Runtime numeric filesystem flags have no portable native lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return -1;
-  }
-  int bits = scr_fs_flag_bits(f);
-  if (bits < 0) {
-    scr_fs_flag_invalid(f);
-    return -1;
-  }
+  int bits;
+  if (!scr_fs_cb_open_bits(flag, fallback, &bits)) return -1;
   if (scr_exc_pending()) return -1;
   int fd = open(path->data, bits, (mode_t)mode);
   if (fd < 0) scr_fs_throw(errno, "open", path);
@@ -656,6 +675,7 @@ static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, c
 static bool scr_fs_length_int32(const ScrDyn *, double *);
 static bool scr_fs_write_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *);
 static bool scr_fs_mode_chk(const ScrDyn *, const char *);
+static bool scr_fs_parse_file_mode(const ScrDyn *, const char *, bool, double, double *);
 
 /* Where Node's signature handling finds the callback: a fixed position, or
  * an earlier optional argument it takes instead when that one is a
@@ -696,9 +716,7 @@ static size_t scr_fs_cb_slot(const char *op, ScrDyn *const *args, size_t argc) {
 
 /* parseFileMode(value, name): an octal string or a uint32. */
 static bool scr_fs_cb_file_mode(const ScrDyn *value, const char *name, double *mode) {
-  if (!scr_fs_mode_chk(value, name)) return false;
-  *mode = value->kind == SCR_DYN_STR ? (double)strtoul(value->v.str->data, NULL, 8) : value->v.num;
-  return true;
+  return scr_fs_parse_file_mode(value, name, false, 0, mode);
 }
 
 /* mkdir's options: a function (the callback) or nothing means the
@@ -1008,7 +1026,9 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   if (!strcmp(op, "copyFile")) checked = scr_fs_path_chk(ARG(1), "dest");
   else if (!strcmp(op, "chmod")) checked = scr_fs_cb_file_mode(ARG(1), "mode", &chmod_mode);
   else if (!strcmp(op, "open")) {
-    checked = ARG(2)->kind == SCR_DYN_UNDEF || scr_fs_cb_file_mode(ARG(2), "mode", &open_mode);
+    /* parseFileMode's 0o666 default: Node's open passes it to the mode
+     * position, so an omitted, null or undefined mode opens with it. */
+    checked = scr_fs_dyn_absent(ARG(2)) || scr_fs_cb_file_mode(ARG(2), "mode", &open_mode);
     if (checked) checked = scr_fs_cb_open_flags(ARG(1));
   }
   if (checked && (!strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open")))
@@ -1759,43 +1779,158 @@ static bool scr_fs_encoding_chk(const ScrDyn *opts) {
   return false;
 }
 
-/* parseFileMode: integers 0..2^32-1 pass, octal strings parse, and the
- * rest throw Node's exact ladder (validateUint32's wording). */
-static bool scr_fs_mode_chk(const ScrDyn *m, const char *name) {
-  if (m->kind == SCR_DYN_STR) {
-    const ScrStr *s = m->v.str;
-    bool octal = s->len > 0;
-    for (size_t i = 0; octal && i < s->len; i++) {
-      if (s->data[i] < '0' || s->data[i] > '7') octal = false;
+/* Node's parseFileMode(value, name, def): a nullish value takes the
+ * default, or reports "Received undefined" when the call has none (the
+ * `value ??= def` falls through to validateUint32), an octal string parses
+ * base 8, and a number goes through validateUint32. False with the error
+ * thrown; a passing mode reaches *out as Node's `value + 0`. */
+static bool scr_fs_parse_file_mode(const ScrDyn *value, const char *name, bool has_default,
+                                   double def, double *out) {
+  if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
+    if (!has_default) {
+      scr_dyn_arg_type_fail(name, "of type number", scr_dyn_undefined());
+      return false;
     }
-    if (octal) return true;
-    scr_dyn_arg_value_fail(name, "must be a 32-bit unsigned integer or an octal string", m);
+    *out = def;
+    return true;
+  }
+  if (value->kind == SCR_DYN_STR) return scr_fs_mode_octal(value->v.str, name, out);
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(name, "of type number", value);
     return false;
   }
-  if (m->kind != SCR_DYN_NUM) {
-    scr_dyn_arg_type_fail(name, "of type number", m);
-    return false;
+  return scr_fs_mode_number_valid(value->v.num, name, out);
+}
+
+/* The parse without a resolved value, for callers that only validate. */
+static bool scr_fs_mode_chk(const ScrDyn *m, const char *name) {
+  double parsed;
+  return scr_fs_parse_file_mode(m, name, false, 0, &parsed);
+}
+
+/* chmodSync(path, mode) for a mode whose static type is not a bare number:
+ * Node validates the path first, then parseFileMode. */
+void scr_fs_chmod_dyn(ScrStr *path, const ScrDyn *mode) {
+  if (!scr_fs_path_ok(path, "path")) return;
+  double parsed;
+  if (!scr_fs_parse_file_mode(mode, "mode", false, 0, &parsed)) return;
+  scr_fs_chmod(path, parsed);
+}
+
+/* fchmodSync(fd, mode): the mode parses before the fd, like Node. */
+void scr_fs_fchmod_dyn(double fd, const ScrDyn *mode) {
+  double parsed;
+  if (!scr_fs_parse_file_mode(mode, "mode", false, 0, &parsed)) return;
+  scr_fs_fchmod(fd, parsed);
+}
+
+/* mkdirSync with an options argument the compiler could not resolve to a
+ * literal shape: Node's ladder over the dynamic value. Answers the first
+ * created directory in the recursive form (+1), NULL otherwise. */
+ScrStr *scr_fs_mkdir_dyn(ScrStr *path, const ScrDyn *options) {
+  /* Node validates the path (its type) before it reads any option. */
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  double mode = 0777;
+  bool recursive = false;
+  if (options != NULL && !scr_fs_dyn_absent(options)) {
+    if (options->kind == SCR_DYN_NUM || options->kind == SCR_DYN_STR) {
+      if (!scr_fs_parse_file_mode(options, "mode", false, 0, &mode)) return NULL;
+    } else if (scr_dyn_truthy(options)) {
+      ScrDyn *value = scr_fs_cb_option(options, "recursive");
+      bool ok = true;
+      if (value && value->kind != SCR_DYN_UNDEF) {
+        if (value->kind == SCR_DYN_BOOL) recursive = value->v.b;
+        else {
+          scr_dyn_arg_type_fail("options.recursive", "of type boolean", value);
+          ok = false;
+        }
+      }
+      scr_dyn_release(value);
+      if (!ok) return NULL;
+      value = scr_fs_cb_option(options, "mode");
+      if (value && value->kind != SCR_DYN_UNDEF) {
+        ok = scr_fs_parse_file_mode(value, "options.mode", false, 0, &mode);
+      }
+      scr_dyn_release(value);
+      if (!ok) return NULL;
+    }
   }
-  double v = m->v.num;
-  if (!(isfinite(v) && trunc(v) == v)) {
-    char recv[48], msg[160];
-    scr_num_received(v, recv);
-    int len = snprintf(msg, sizeof msg,
-                       "The value of \"%s\" is out of range. It must be an integer. Received %s",
-                       name, recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return false;
+  return scr_fs_mkdir_obj_number(path, mode, recursive);
+}
+
+void scr_fs_mkdir_dyn_void(ScrStr *path, const ScrDyn *options) {
+  ScrStr *first = scr_fs_mkdir_dyn(path, options);
+  if (first) scr_str_release(first);
+}
+
+/* openSync for flags and mode whose static types are not pinned:
+ * getValidatedPath, then stringToFlags (nullish is O_RDONLY, a number is
+ * the raw bits), then parseFileMode with Node's 0o666 default. */
+double scr_fs_open_dyn(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (flags == NULL || scr_fs_dyn_absent(flags)) of = O_RDONLY;
+  else if (flags->kind == SCR_DYN_NUM) {
+    double parsed;
+    if (!scr_fs_flags_number_valid(flags->v.num, &parsed)) return 0;
+    of = (int)parsed;
+  } else if (flags->kind == SCR_DYN_STR) {
+    if (!scr_fs_flag_string(flags->v.str, &of)) return 0;
+  } else {
+    scr_dyn_arg_value_fail("flags", NULL, flags);
+    return 0;
   }
-  if (v < 0 || v > 4294967295.0) {
-    char recv[48], msg[160];
-    scr_num_received(v, recv);
-    int len = snprintf(msg, sizeof msg,
-                       "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. Received %s",
-                       name, recv);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return false;
-  }
-  return true;
+  double parsed_mode;
+  if (!scr_fs_parse_file_mode(mode, "mode", true, 0666, &parsed_mode)) return 0;
+  return scr_fs_open_flags(path, of, parsed_mode);
+}
+
+/* openSync with string flags and a mode the compiler could not resolve to a
+ * number: parseFileMode's arms over the dynamic value. */
+double scr_fs_open_mode_dyn(ScrStr *path, ScrStr *flags, const ScrDyn *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  int of;
+  if (!scr_fs_flag_string(flags, &of)) return 0;
+  double parsed_mode;
+  if (!scr_fs_parse_file_mode(mode, "mode", true, 0666, &parsed_mode)) return 0;
+  return scr_fs_open_flags(path, of, parsed_mode);
+}
+
+/* openSync over the frontend's inline fs.constants mask with an
+ * octal-string creation mode. */
+double scr_fs_open_numeric_str(ScrStr *path, double flags, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed_mode)) return 0;
+  return scr_fs_open_mask(path, flags, parsed_mode);
+}
+
+/* The same with a creation mode only the runtime can read. */
+double scr_fs_open_numeric_dyn(ScrStr *path, double flags, const ScrDyn *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_mode;
+  if (!scr_fs_parse_file_mode(mode, "mode", true, 0666, &parsed_mode)) return 0;
+  return scr_fs_open_mask(path, flags, parsed_mode);
+}
+
+/* openSync over raw open(2) flag bits with an octal-string creation mode. */
+double scr_fs_open_native_str(ScrStr *path, double flags, ScrStr *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_flags;
+  if (!scr_fs_flags_number_valid(flags, &parsed_flags)) return 0;
+  double parsed_mode;
+  if (!scr_fs_mode_octal(mode, "mode", &parsed_mode)) return 0;
+  return scr_fs_open_native(path, parsed_flags, parsed_mode);
+}
+
+/* The same with a creation mode only the runtime can read. */
+double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode) {
+  if (!scr_fs_path_ok(path, "path")) return 0;
+  double parsed_flags;
+  if (!scr_fs_flags_number_valid(flags, &parsed_flags)) return 0;
+  double parsed_mode;
+  if (!scr_fs_parse_file_mode(mode, "mode", true, 0666, &parsed_mode)) return 0;
+  return scr_fs_open_native(path, parsed_flags, parsed_mode);
 }
 
 /* fs.exists(path, cb) — the REAL deprecated-API shape: the callback

@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Node.js parity
+
+- `fs.openSync`, `fs.mkdirSync`, `fs.chmodSync` and `fs.fchmodSync` read the modes Node's `parseFileMode` accepts, an octal string or an integer in `0..2^32-1`, and an argument whose static type is `any` or a union runs Node's own validation ladder at run time instead of being refused by the build: `openSync` takes a string flag name or raw `open(2)` bits, `mkdirSync` answers the first directory a recursive walk created and accepts the mode as the options argument itself, and each check throws Node's error with its code and message. `fs.open`'s callback form reads numeric flags the same way, and an omitted, `null` or `undefined` mode there opens with `parseFileMode`'s `0o666` default.
+
 <!-- release:start -->
 
 ## 0.4.11

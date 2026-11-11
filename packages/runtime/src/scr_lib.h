@@ -367,6 +367,10 @@ ScrStr *scr_fs_read_fd(double fd);
  * creates). */
 void scr_fs_unlink(ScrStr *path);
 void scr_fs_chmod(ScrStr *path, double mode);
+/* chmodSync/chmod with a `string | number` mode the compiler routed by its
+ * static type: the string form parses Node's octal mode at run time. */
+void scr_fs_chmod_str_mode(ScrStr *path, ScrStr *mode);
+void scr_fs_fchmod_str_mode(double fd, ScrStr *mode);
 void scr_fs_chown(ScrStr *path, double uid, double gid);
 void scr_fs_lchown(ScrStr *path, double uid, double gid);
 void scr_fs_fchown(double fd, double uid, double gid);
@@ -376,6 +380,13 @@ void scr_fs_fchown(double fd, double uid, double gid);
 bool scr_fs_owner_id_valid(double id, const char *name);
 bool scr_fs_access_mode_valid(double mode);
 bool scr_fs_truncate_len_valid(double length);
+/* parseFileMode's numeric and octal-string arms (scr_fs_parse_file_mode in
+ * scr_bytes_io.c layers the nullish/default handling on top). False with
+ * the error thrown; a passing mode reaches *out as Node's `value + 0`. */
+bool scr_fs_mode_number_valid(double mode, const char *name, double *out);
+bool scr_fs_mode_octal(const ScrStr *text, const char *name, double *out);
+/* stringToFlags' numeric arm: validateInt32 over the raw open(2) bits. */
+bool scr_fs_flags_number_valid(double flags, double *out);
 void scr_fs_truncate(ScrStr *path, double length);
 void scr_fs_copyfile(ScrStr *src, ScrStr *dest);
 /* copyFileSync(src, dest, mode): libuv's copyfile flag bits (EXCL 1,
@@ -425,6 +436,22 @@ void scr_fs_append_file_data_options(ScrStr *path, const ScrDyn *data, ScrStr *e
                                      double mode, ScrStr *flags);
 void scr_fs_mkdir_mode(ScrStr *path, double mode);
 void scr_fs_mkdir_recursive_mode(ScrStr *path, double mode);
+/* mkdirSync's resolved options object: the mode parses under
+ * "options.mode", `recursive` selects Node's walk, and the result is the
+ * first directory created (+1) in the recursive form, NULL otherwise (or
+ * on failure, the exception pending). */
+ScrStr *scr_fs_mkdir_obj_number(ScrStr *path, double mode, bool recursive);
+ScrStr *scr_fs_mkdir_obj_octal(ScrStr *path, ScrStr *mode, bool recursive);
+/* The statement forms of the same calls: the first created directory is
+ * released by the runtime. */
+void scr_fs_mkdir_obj_number_void(ScrStr *path, double mode, bool recursive);
+void scr_fs_mkdir_obj_octal_void(ScrStr *path, ScrStr *mode, bool recursive);
+/* mkdirSync's top-level mode forms in value position: never recursive, so
+ * the answer is undefined (NULL). */
+ScrStr *scr_fs_mkdir_mode_value(ScrStr *path, double mode);
+ScrStr *scr_fs_mkdir_str_value(ScrStr *path, ScrStr *mode);
+/* mkdirSync(p, "700"): the bare octal option. */
+void scr_fs_mkdir_mode_octal(ScrStr *path, ScrStr *mode);
 /* The same walk, answering the first directory created (+1) or NULL
  * when the path already existed (or on failure, the exception pending). */
 ScrStr *scr_fs_mkdir_recursive_first(ScrStr *path, double mode);

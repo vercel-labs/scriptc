@@ -723,6 +723,19 @@ void scr_fs_watch_file_chk(const ScrDyn *path, const ScrDyn *listener, const Scr
 void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb, const ScrStr *fence);
 ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode);
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
+/* The sync fs entry points whose mode or options argument the compiler
+ * could not pin to a static shape: Node's own validation ladder over the
+ * dynamic value, then the same runtime operation. */
+void scr_fs_chmod_dyn(ScrStr *path, const ScrDyn *mode);
+void scr_fs_fchmod_dyn(double fd, const ScrDyn *mode);
+ScrStr *scr_fs_mkdir_dyn(ScrStr *path, const ScrDyn *options);
+void scr_fs_mkdir_dyn_void(ScrStr *path, const ScrDyn *options);
+double scr_fs_open_dyn(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode);
+double scr_fs_open_mode_dyn(ScrStr *path, ScrStr *flags, const ScrDyn *mode);
+double scr_fs_open_numeric_str(ScrStr *path, double flags, ScrStr *mode);
+double scr_fs_open_numeric_dyn(ScrStr *path, double flags, const ScrDyn *mode);
+double scr_fs_open_native_str(ScrStr *path, double flags, ScrStr *mode);
+double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
 double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,

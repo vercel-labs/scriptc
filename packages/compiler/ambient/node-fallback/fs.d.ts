@@ -90,14 +90,26 @@ declare module "node:fs" {
     },
   ): void;
   export function existsSync(path: string | Uint8Array | URL): boolean;
-  export function mkdirSync(path: string | URL): void;
+  /* Node's overload set: `recursive: true` answers the first directory the
+   * walk created (or undefined when the path already existed), the single
+   * mkdir forms answer undefined. The mode is a number or an octal string. */
   export function mkdirSync(
     path: string | URL,
-    options: { recursive?: boolean; mode?: number },
+    options: { recursive: true; mode?: number | string },
+  ): string | undefined;
+  export function mkdirSync(
+    path: string | URL,
+    options?: number | string | { recursive?: false | undefined; mode?: number | string } | null,
   ): void;
+  export function mkdirSync(
+    path: string | URL,
+    options?: number | string | { recursive?: boolean; mode?: number | string } | null,
+  ): string | undefined;
   export function unlinkSync(path: string | URL): void;
-  export function chmodSync(path: string | URL, mode: number): void;
-  export function fchmodSync(fd: number, mode: number): void;
+  /* The mode is a number or an octal string (Node's `Mode`), parsed by
+   * parseFileMode's ladder. */
+  export function chmodSync(path: string | URL, mode: number | string): void;
+  export function fchmodSync(fd: number, mode: number | string): void;
   export function fsyncSync(fd: number): void;
   export function linkSync(
     existingPath: string | Uint8Array | URL,
@@ -542,8 +554,11 @@ declare module "node:fs" {
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. The
    * mode is open(2)'s creation mode and applies to both flag forms. */
-  export function openSync(path: string | URL, flags: string, mode?: number): number;
-  export function openSync(path: string | URL, flags: number, mode?: number): number;
+  export function openSync(
+    path: string | URL,
+    flags: string | number,
+    mode?: number | string,
+  ): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;
   export function ftruncateSync(fd: number, len?: number): void;

@@ -29,6 +29,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import { defaultAfterUndefined } from "../optional-arguments.js";
 import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
@@ -183,17 +184,49 @@ export function lowerFsVectorOrTruncateCall(
   return { kind: "libCall", fn: fn.fn, args, type: vector ? F64 : VOID, loc };
 }
 
-// Numeric open flags are interpreted symbolically at the call site. The
-// O_* bit values differ between Darwin and Linux, so emit a stable mask
-// and let the target runtime select its own native constants.
-export function lowerFsNumericOpenCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr {
-  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
-    lowerer.noLowering("openSync with numeric flags and this argument shape", expr);
+/** The statically visible kind of an optional fs argument: `absent` for the
+ * call's omitted argument and the spellings Node's `??=` treats as one
+ * (`undefined`, `null`), `number`/`string`/`boolean` when the checker narrows
+ * the value to that scalar, and `dyn` for everything only the runtime sees
+ * (`any`, unions, restored narrowings). Each kind selects the entry point
+ * whose argument types match, so a typed call keeps its fast path and a value
+ * that needs Node's ladder runs it at run time. */
+function fsArgKind(lowerer: Lowerer, node: ts.Expression | null | undefined): FsArgKind {
+  if (!node) return "absent";
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (mapped === null) return "dyn";
+  switch (mapped.kind) {
+    case "f64":
+      return "number";
+    case "string":
+      return "string";
+    case "bool":
+      return "boolean";
+    case "undefinedT":
+    case "nullT":
+    case "void":
+      return "absent";
+    default:
+      return "dyn";
   }
+}
+
+type FsArgKind = "absent" | "number" | "string" | "boolean" | "dyn";
+
+/** The value Node's `value ??= def` answers: the argument's own effects, then
+ * the default. Used where the argument's static type is one Node treats as
+ * absent (`mkdirSync(p, true)` and `mkdirSync(p, null)` both mean the
+ * defaults). */
+function defaultAfter(lowerer: Lowerer, node: ts.Expression, dflt: IrExpr): IrExpr {
+  return defaultAfterUndefined(lowerer.lowerExpr(node), dflt);
+}
+
+/** Numeric open flags written as an inline bitwise OR of fs.constants.O_*
+ * members, as the compiler's platform-independent mask. The O_* values differ
+ * between Darwin and Linux, so an inline expression keeps emitting the mask
+ * the target runtime maps to its own constants. Null for any other numeric
+ * expression, whose value is already the target's own bits. */
+function inlineFlagsMask(lowerer: Lowerer, input: ts.Expression): number | null {
   const bits: Record<string, number | undefined> = {
     O_RDONLY: 0,
     O_WRONLY: 1,
@@ -205,8 +238,8 @@ export function lowerFsNumericOpenCall(
     O_TRUNC: 64,
     O_APPEND: 128,
   };
-  const flagsOf = (input: ts.Expression): number | null => {
-    let node = input;
+  const flagsOf = (expr: ts.Expression): number | null => {
+    let node = expr;
     while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)) node = node.expression;
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.BarToken) {
       const left = flagsOf(node.left);
@@ -227,52 +260,131 @@ export function lowerFsNumericOpenCall(
     }
     return null;
   };
-  const mask = flagsOf(expr.arguments.nodes[1]!);
-  if (mask === null) {
-    lowerer.noLowering(
-      "openSync with computed numeric flags",
-      expr.arguments.nodes[1]!,
-      "use an inline bitwise OR of fs.constants.O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_EXCL/O_NOFOLLOW/O_NONBLOCK/O_TRUNC/O_APPEND",
-    );
-  }
-  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-  // Node treats an undefined creation mode as an omitted one.
-  const mode = expr.arguments.nodes[2]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
-    : defaultMode;
-  return {
-    kind: "libCall",
-    fn: "fs.openNumericSync",
-    args: [path, { kind: "numLit", value: mask, type: F64, loc }, mode],
-    type: F64,
-    loc,
-  };
+  return flagsOf(input);
 }
 
-// fs.openSync(path, flags[, mode]) with Node's string flags: the runtime
-// selects the O_* bits from the flag text, and mode is the creation mode
-// open(2) applies when the file is created. An omitted mode passes Node's
-// 0o666 default, so every call reaches the runtime with three arguments.
-export function lowerFsOpenCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (
-    expr.arguments.nodes.length < 2 ||
-    expr.arguments.nodes.length > 3 ||
-    expr.arguments.nodes.some(ts.isSpreadElement)
-  )
+// fs.openSync(path, flags[, mode]) with Node's flag and mode grammar:
+// stringToFlags reads a string flag name, a number as raw open(2) bits, and
+// an omitted/`null`/`undefined` flags as "r"; parseFileMode reads the
+// creation mode as a number or an octal string and passes 0o666 for an absent
+// one. The path validates first, then the flags, then the mode.
+export function lowerFsOpenSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement))
     lowerer.noLowering("openSync with this argument shape", expr);
-  const mode = expr.arguments.nodes[2];
+  const path = lowerFsPath(lowerer, args[0]!);
+  const flagsKind = fsArgKind(lowerer, args[1]);
+  const modeKind = fsArgKind(lowerer, args[2]);
+  const call = (fn: IrLibFn, fnArgs: IrExpr[]): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args: fnArgs,
+    type: F64,
+    loc,
+  });
+  // parseFileMode's default: an absent creation mode is Node's 0o666.
   const defaultMode = numLit(0o666, loc);
+  const numericMode = (): IrExpr =>
+    args[2] ? lowerBuiltinOptionalDefault(lowerer, args[2], F64, defaultMode, true) : defaultMode;
+  const dynMode = (): IrExpr =>
+    args[2] ? lowerer.lowerExprExpecting(args[2], DYN) : dynUndefinedExpr(loc);
+
+  if (flagsKind !== "number") {
+    if (flagsKind === "dyn" || flagsKind === "boolean") {
+      // stringToFlags' arm is the runtime's to pick: a number is raw bits, a
+      // string is the flag grammar, and anything else throws its TypeError.
+      const flags = lowerer.lowerExprExpecting(args[1]!, DYN);
+      return call("fs.openDynSync", [path, flags, dynMode()]);
+    }
+    // "r" for an omitted, `null` or `undefined` flags value.
+    const defaultFlags = strLit("r", loc);
+    const flags = args[1]
+      ? lowerBuiltinOptionalDefault(lowerer, args[1], STRING, defaultFlags, true)
+      : defaultFlags;
+    if (modeKind === "string") {
+      return call("fs.openStrModeSync", [
+        path,
+        flags,
+        lowerer.lowerExprExpecting(args[2]!, STRING),
+      ]);
+    }
+    if (modeKind === "absent" || modeKind === "number")
+      return call("fs.openSync", [path, flags, numericMode()]);
+    return call("fs.openModeDynSync", [path, flags, dynMode()]);
+  }
+  const mask = inlineFlagsMask(lowerer, args[1]!);
+  if (mask !== null) {
+    if (modeKind === "string") {
+      return call("fs.openNumericStrSync", [
+        path,
+        { kind: "numLit", value: mask, type: F64, loc },
+        lowerer.lowerExprExpecting(args[2]!, STRING),
+      ]);
+    }
+    if (modeKind !== "absent" && modeKind !== "number") {
+      return call("fs.openNumericDynSync", [
+        path,
+        { kind: "numLit", value: mask, type: F64, loc },
+        dynMode(),
+      ]);
+    }
+    return call("fs.openNumericSync", [
+      path,
+      { kind: "numLit", value: mask, type: F64, loc },
+      numericMode(),
+    ]);
+  }
+  const flags = lowerer.lowerExprExpecting(args[1]!, F64);
+  if (modeKind === "string") {
+    return call("fs.openNativeStrSync", [
+      path,
+      flags,
+      lowerer.lowerExprExpecting(args[2]!, STRING),
+    ]);
+  }
+  if (modeKind === "absent" || modeKind === "number")
+    return call("fs.openNativeSync", [path, flags, numericMode()]);
+  return call("fs.openNativeDynSync", [path, flags, dynMode()]);
+}
+
+// chmodSync(path, mode) and fchmodSync(fd, mode): parseFileMode reads the
+// mode as a number or an octal string (an absent mode throws Node's
+// ERR_INVALID_ARG_TYPE for `undefined`), and fchmodSync validates the mode
+// before the descriptor. A statically numeric mode keeps the typed entry
+// point — the runtime validates it there — so this answers null for the
+// generic lowering, and the other kinds take the string and value forms.
+export function lowerFsModeSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "chmodSync" | "fchmodSync",
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) return null;
+  const kind = fsArgKind(lowerer, args[1]);
+  if (kind === "number") return null;
+  const target =
+    member === "chmodSync"
+      ? lowerFsPath(lowerer, args[0]!)
+      : lowerer.lowerExprExpecting(args[0]!, F64);
+  if (kind === "string") {
+    return {
+      kind: "libCall",
+      fn: member === "chmodSync" ? "fs.chmodSyncStr" : "fs.fchmodSyncStr",
+      args: [target, lowerer.lowerExprExpecting(args[1]!, STRING)],
+      type: VOID,
+      loc,
+    };
+  }
   return {
     kind: "libCall",
-    fn: "fs.openSync",
-    args: [
-      lowerFsPath(lowerer, expr.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING),
-      // Node treats an undefined creation mode as an omitted one.
-      mode ? lowerBuiltinOptionalDefault(lowerer, mode, F64, defaultMode) : defaultMode,
-    ],
-    type: F64,
+    fn: member === "chmodSync" ? "fs.chmodSyncDyn" : "fs.fchmodSyncDyn",
+    args: [target, args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc)],
+    type: VOID,
     loc,
   };
 }
@@ -847,45 +959,130 @@ export function lowerFsStreamCreate(
   );
 }
 
-// mkdirSync(p, options): the lowered options form is a literal
-// `{ recursive?: <boolean literal>, mode?: <number> }` — recursive:
-// true routes to Node's recursive algorithm (the mode, when present,
-// applies to every directory the walk creates, like Node's), false/
-// absent is the plain mkdir. The recursive form's return value (the
-// first created directory, `string | undefined` under @types/node)
-// has no lowering — statement position only.
+/** mkdirSync's answer: Node's `string | undefined` (the first directory the
+ * recursive walk created) where the call keeps it, and void where the
+ * statement discards it — the shape the statement form has always emitted. */
+function mkdirResultType(lowerer: Lowerer, expr: ts.CallExpression): IrType {
+  const parent = expr.parent;
+  if (parent !== undefined && ts.isExpressionStatement(parent)) return VOID;
+  // A call whose declared type is void (mkdirSync's single-directory forms)
+  // keeps the statement shape; one the checker types `string | undefined`
+  // keeps the walk's answer, narrowed to the checked union when the type
+  // world spells it another way (`string` alone, an `any`).
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (mapped === null) return lowerer.withUndefinedArm(STRING);
+  if (mapped.kind === "void" || mapped.kind === "undefinedT") return VOID;
+  return mapped.kind === "union" ? mapped : lowerer.withUndefinedArm(STRING);
+}
+
+// mkdirSync(p, options) with Node's option ladder: a number or a string is
+// the mode itself, an absent/`null`/`undefined`/boolean options value means
+// the 0o777 default, and an options object reads `recursive` (validated as a
+// boolean) and then `mode` (parseFileMode under the name "options.mode").
+// The runtime runs the same ladder for an options value only it can see. The
+// recursive walk answers the first directory it created; the statement forms
+// keep their void entry points, which release it.
 export function lowerFsMkdirSyncCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments.nodes[1]!;
-  const options = parseMkdirOptions(optsNode);
-  if (!options) {
-    lowerer.noLowering(
-      "mkdirSync with an options argument beyond { recursive, mode }",
-      optsNode,
-      "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
-    );
+  const args = expr.arguments.nodes;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+    lowerer.noLowering(`mkdirSync with ${args.length} arguments`, expr);
+  const path = lowerFsPath(lowerer, args[0]!);
+  const type = mkdirResultType(lowerer, expr);
+  const optsNode = args[1];
+  const kind = fsArgKind(lowerer, optsNode);
+  const keepsValue = type.kind !== "void";
+  if (kind === "number")
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeValueSync" : "fs.mkdirModeSync",
+      args: [path, lowerer.lowerExprExpecting(optsNode!, F64)],
+      type,
+      loc,
+    };
+  if (kind === "string")
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeStrValueSync" : "fs.mkdirModeStrSync",
+      args: [path, lowerer.lowerExprExpecting(optsNode!, STRING)],
+      type,
+      loc,
+    };
+  if (kind === "absent") {
+    // A top-level mode is never recursive: the answer is undefined and the
+    // statement form drops it, the value form narrows Node's union to it.
+    const mode = optsNode
+      ? defaultAfter(lowerer, optsNode, numLit(0o777, loc))
+      : numLit(0o777, loc);
+    return {
+      kind: "libCall",
+      fn: keepsValue ? "fs.mkdirModeValueSync" : optsNode ? "fs.mkdirModeSync" : "fs.mkdirSync",
+      args: optsNode || keepsValue ? [path, mode] : [path],
+      type,
+      loc,
+    };
   }
-  const { recursive, modeNode } = options;
-  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-  const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
-  if (!recursive) {
-    return mode
-      ? { kind: "libCall", fn: "fs.mkdirModeSync", args: [path, mode], type: VOID, loc }
-      : { kind: "libCall", fn: "fs.mkdirSync", args: [path], type: VOID, loc };
+  const options = kind === "boolean" ? null : parseMkdirOptions(optsNode!);
+  if (options) {
+    const recursiveKind = fsArgKind(lowerer, options.recursive);
+    const modeKind = fsArgKind(lowerer, options.mode);
+    if (recursiveKind !== "dyn" && modeKind !== "dyn") {
+      const recursiveNode = options.recursive;
+      const recursive: IrExpr =
+        recursiveNode === null
+          ? boolLit(false, loc)
+          : isTrueLiteral(recursiveNode)
+            ? boolLit(true, loc)
+            : isFalseLiteral(recursiveNode)
+              ? boolLit(false, loc)
+              : lowerer.lowerExprExpecting(recursiveNode, BOOL);
+      const modeNode = options.mode;
+      const mode: IrExpr =
+        modeNode === null
+          ? numLit(0o777, loc)
+          : modeKind === "string"
+            ? lowerer.lowerExprExpecting(modeNode, STRING)
+            : modeKind === "number"
+              ? lowerer.lowerExprExpecting(modeNode, F64)
+              : numLit(0o777, loc);
+      const fn: IrLibFn =
+        modeKind === "string"
+          ? type.kind === "void"
+            ? "fs.mkdirObjStrVoidSync"
+            : "fs.mkdirObjStrSync"
+          : type.kind === "void"
+            ? "fs.mkdirObjVoidSync"
+            : "fs.mkdirObjSync";
+      return { kind: "libCall", fn, args: [path, mode, recursive], type, loc };
+    }
   }
-  if (!ts.isExpressionStatement(expr.parent)) {
-    lowerer.noLowering(
-      "mkdirSync's return value in the recursive form",
-      expr,
-      "the first-created-directory result has no lowering — call it as a statement",
-    );
-  }
-  return mode
-    ? { kind: "libCall", fn: "fs.mkdirRecursiveModeSync", args: [path, mode], type: VOID, loc }
-    : { kind: "libCall", fn: "fs.mkdirRecursiveSync", args: [path], type: VOID, loc };
+  // An options value whose arms only the runtime sees (or a boolean-typed
+  // `recursive`): the runtime runs Node's whole ladder over the object.
+  const lowered = lowerer.lowerExpr(optsNode!);
+  const value = lowered.type.kind === "dyn" ? lowered : lowerer.coerceInto(optsNode!, lowered, DYN);
+  return {
+    kind: "libCall",
+    fn: type.kind === "void" ? "fs.mkdirDynVoidSync" : "fs.mkdirDynSync",
+    args: [path, value],
+    type,
+    loc,
+  };
+}
+
+function isBooleanLiteral(node: ts.Expression): boolean {
+  const kind = withoutParenthesesTypeWrappers(node).kind;
+  return kind === ts.SyntaxKind.TrueKeyword || kind === ts.SyntaxKind.FalseKeyword;
+}
+
+function isTrueLiteral(node: ts.Expression): boolean {
+  return withoutParenthesesTypeWrappers(node).kind === ts.SyntaxKind.TrueKeyword;
+}
+
+function isFalseLiteral(node: ts.Expression): boolean {
+  return withoutParenthesesTypeWrappers(node).kind === ts.SyntaxKind.FalseKeyword;
 }
 
 // fs.promises.mkdir(p, options): the mkdirSync matrix behind settled
@@ -899,14 +1096,15 @@ export function lowerFsPromisesMkdirCall(
 ): IrExpr {
   const optsNode = expr.arguments.nodes[1]!;
   const options = parseMkdirOptions(optsNode);
-  if (!options) {
+  if (!options || (options.recursive && !isBooleanLiteral(options.recursive))) {
     lowerer.noLowering(
-      "fs.promises.mkdir with an options argument beyond { recursive, mode }",
+      "fs.promises.mkdir with an options argument beyond { recursive: <boolean literal>, mode }",
       optsNode,
       "the recursive flag must be a boolean literal and mode a number; other options have no lowering",
     );
   }
-  const { recursive, modeNode } = options;
+  const recursive = options.recursive ? isTrueLiteral(options.recursive) : false;
+  const modeNode = options.mode;
   const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   const type: IrType = { kind: "promise", inner: VOID };
@@ -1798,24 +1996,18 @@ export function lowerFsReadPathCall(
 /** Both mkdir forms accept the same literal option shape; evaluation stays in the caller. */
 function parseMkdirOptions(
   node: ts.Expression,
-): { recursive: boolean; modeNode: ts.Expression | null } | null {
+): { recursive: ts.Expression | null; mode: ts.Expression | null } | null {
   if (!ts.isObjectLiteralExpression(node)) return null;
-  let recursive = false;
-  let modeNode: ts.Expression | null = null;
+  let recursive: ts.Expression | null = null;
+  let mode: ts.Expression | null = null;
   for (const property of node.properties.nodes) {
     const member = optionMember(property);
     if (!member) return null;
-    if (member.name === "recursive") {
-      if (member.value.kind === ts.SyntaxKind.TrueKeyword) recursive = true;
-      else if (member.value.kind === ts.SyntaxKind.FalseKeyword) recursive = false;
-      else return null;
-    } else if (member.name === "mode") {
-      modeNode = member.value;
-    } else {
-      return null;
-    }
+    if (member.name === "recursive") recursive = member.value;
+    else if (member.name === "mode") mode = member.value;
+    else return null;
   }
-  return { recursive, modeNode };
+  return { recursive, mode };
 }
 
 /** fs.existsSync(path) where the path value is not statically a string: a

@@ -5141,6 +5141,24 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // mkdirSync's value forms answer the first directory a recursive walk
+    // created, or undefined; the lowering fills the call site's union.
+    if (
+      e.fn === "fs.mkdirObjSync" ||
+      e.fn === "fs.mkdirObjStrSync" ||
+      e.fn === "fs.mkdirDynSync" ||
+      e.fn === "fs.mkdirModeValueSync" ||
+      e.fn === "fs.mkdirModeStrValueSync"
+    ) {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "string") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) err(`libCall ${e.fn} must return the 'string | undefined' union`, e.loc);
+      return true;
+    }
     if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =

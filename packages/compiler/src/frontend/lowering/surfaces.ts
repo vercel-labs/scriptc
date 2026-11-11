@@ -2448,8 +2448,21 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
-    // Inline numeric O_* flags use a target-neutral runtime entry point.
-    openSync: ["fs.openNumericSync"],
+    // Every flag and mode spelling the lowering selects: inline numeric O_*
+    // flags (the target-neutral mask), raw open(2) bits, the octal-string
+    // creation mode, and the forms whose flags or mode only the runtime
+    // knows.
+    openSync: [
+      "fs.openNumericSync",
+      "fs.openStrModeSync",
+      "fs.openNativeSync",
+      "fs.openDynSync",
+      "fs.openModeDynSync",
+      "fs.openNativeStrSync",
+      "fs.openNativeDynSync",
+      "fs.openNumericStrSync",
+      "fs.openNumericDynSync",
+    ],
     // The Buffer path: the typed entry point for a statically typed one
     // (fs.existsSyncBytes), and the value form when only the runtime knows
     // the arm (fs.existsSyncValue, which reports DEP0187 for other values).
@@ -2525,8 +2538,23 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     writeSync: ["fs.writeStrSync"],
     // The form whose arguments Node checks at run time.
     readSync: ["fs.readSyncDyn"],
-    // The { recursive, mode } option lowerings.
-    mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
+    // The bare mode, the { recursive, mode } option lowerings, the forms
+    // keeping Node's first-created-directory answer, and the runtime-ladder
+    // form for an options value the compiler cannot read.
+    mkdirSync: [
+      "fs.mkdirModeSync",
+      "fs.mkdirModeStrSync",
+      "fs.mkdirRecursiveSync",
+      "fs.mkdirRecursiveModeSync",
+      "fs.mkdirObjSync",
+      "fs.mkdirObjStrSync",
+      "fs.mkdirObjVoidSync",
+      "fs.mkdirObjStrVoidSync",
+      "fs.mkdirModeValueSync",
+      "fs.mkdirModeStrValueSync",
+      "fs.mkdirDynSync",
+      "fs.mkdirDynVoidSync",
+    ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
@@ -2545,7 +2573,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // callers fence per site); the ladder runs the REAL lchmod on APPLE,
     // so the chmod fence witnesses it — fencing one spelling fences the
     // operation.
-    chmodSync: ["fs.lchmodSyncChk"],
+    // The octal-string and run-time-checked mode forms (lowerFsModeSyncCall).
+    chmodSync: ["fs.lchmodSyncChk", "fs.chmodSyncStr", "fs.chmodSyncDyn"],
+    fchmodSync: ["fs.fchmodSyncStr", "fs.fchmodSyncDyn"],
     // The two-argument listener form.
     watch: ["fs.watchCb"],
   },

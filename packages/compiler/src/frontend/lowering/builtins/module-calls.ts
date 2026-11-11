@@ -8,8 +8,8 @@ import {
   lowerFsLinkOrStatfsCall,
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
-  lowerFsNumericOpenCall,
-  lowerFsOpenCall,
+  lowerFsOpenSyncCall,
+  lowerFsModeSyncCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -136,15 +136,12 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsVectorOrTruncateCall(lowerer, expr, bi, fn, loc, name);
   }
-  if (
-    bi.module === "fs" &&
-    bi.member === "openSync" &&
-    expr.arguments.nodes.length >= 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "f64"
-  ) {
-    return lowerFsNumericOpenCall(lowerer, expr, loc);
+  if (bi.module === "fs" && bi.member === "openSync")
+    return lowerFsOpenSyncCall(lowerer, expr, loc);
+  if (bi.module === "fs" && (bi.member === "chmodSync" || bi.member === "fchmodSync")) {
+    const lowered = lowerFsModeSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
   }
-  if (bi.module === "fs" && bi.member === "openSync") return lowerFsOpenCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
     return lowerer.lowerSpawnSyncCall(expr, loc);
@@ -339,7 +336,7 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsStreamCreate(lowerer, expr, bi.member, loc);
   }
-  if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.nodes.length === 2) {
+  if (bi.module === "fs" && bi.member === "mkdirSync") {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);
   }
   if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.nodes.length === 2) {

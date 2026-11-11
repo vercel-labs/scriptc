@@ -25732,7 +25732,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -45465,12 +45469,16 @@
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links.ts",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts",
           "tests/corpus/node24-fs-statfs-callbacks.cjs",
           "tests/corpus/node24-fs-statfs-errors.cjs",
           "tests/corpus/node24-fs-statfs-options.cjs",
@@ -46439,7 +46447,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46716,7 +46728,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46797,7 +46813,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46880,7 +46900,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46966,7 +46990,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47024,7 +47052,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47055,7 +47087,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47171,7 +47207,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48397,7 +48437,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48676,7 +48720,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49006,7 +49054,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49037,7 +49089,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49068,7 +49124,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49099,7 +49159,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49130,7 +49194,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49568,7 +49636,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49599,7 +49671,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49705,7 +49781,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49736,7 +49816,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49822,7 +49906,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49853,7 +49941,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49910,7 +50002,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49967,7 +50063,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49998,7 +50098,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50029,7 +50133,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50060,7 +50168,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50176,7 +50288,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50266,7 +50382,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50297,7 +50417,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50328,7 +50452,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
+          "tests/corpus/node24-fs-mkdir-sync.ts",
+          "tests/corpus/node24-fs-modes-sync.ts",
+          "tests/corpus/node24-fs-open-sync.ts"
         ]
       },
       "anchorSource": "exact"

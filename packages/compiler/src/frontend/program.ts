@@ -42,6 +42,7 @@ import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
+import { astLineBreak, astSkipTrivia } from "./ts7/ast-text.js";
 import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
 import { InternalCompilerError } from "../errors.js";
 import { moduleKindName, scriptTargetName } from "./ts7/enums.js";
@@ -7885,15 +7886,21 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
   const found: [number, number][] = [];
   const scanned = new Set<number>();
   const collect = (from: number, to: number): void => {
-    // Search only the trivia span, not the rest of the text: `indexOf` on
-    // `text` runs to the next opener or the end of the file, and a file with
-    // one admitted setter and a large comment-free body gives every node a
-    // trivia span with no opener in it, so the walk would be quadratic in the
-    // file's length.
-    const trivia = text.slice(from, to);
-    let offset = trivia.indexOf("/*");
-    while (offset >= 0) {
-      const open = from + offset;
+    // Stop at the token, and skip line comments before looking for a block
+    // opener: `/*` inside `//` text is not a comment of its own. The trivia
+    // helper also skips shebangs, whose text can contain the same spelling.
+    let offset = from;
+    while (offset < to) {
+      offset = astSkipTrivia(text, offset, true, false);
+      if (offset >= to || text.charCodeAt(offset) !== 47) break;
+      const next = text.charCodeAt(offset + 1);
+      if (next === 47) {
+        offset += 2;
+        while (offset < to && !astLineBreak(text.charCodeAt(offset))) offset++;
+        continue;
+      }
+      if (next !== 42) break;
+      const open = offset;
       const close = text.indexOf("*/", open + 2);
       const end = close < 0 ? text.length : close + 2;
       // A block-comment opener in the leading trivia of several nodes (a
@@ -7902,7 +7909,7 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
         scanned.add(open);
         found.push([open, end]);
       }
-      offset = trivia.indexOf("/*", end - from);
+      offset = end;
     }
   };
   let triviaFrom = -1;

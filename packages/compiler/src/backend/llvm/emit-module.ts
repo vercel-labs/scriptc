@@ -661,8 +661,13 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // through the symbol unit's Symbol.for, which only these programs install.
   const usesBufferPrototypeObject = runtimeFeatures.bufferPrototypeObject;
   // util.inspect as a value carries Symbol.for('nodejs.util.inspect.custom')
-  // as `custom`, so those programs install the symbol unit's Symbol.for too.
-  const usesSymbolFor = usesBufferPrototypeObject || runtimeFeatures.inspectFunctionValue;
+  // as `custom`, and util.promisify reads and marks with
+  // Symbol.for('nodejs.util.promisify.custom'), so those programs install the
+  // symbol unit's Symbol.for too.
+  const usesSymbolFor =
+    usesBufferPrototypeObject ||
+    runtimeFeatures.inspectFunctionValue ||
+    runtimeFeatures.utilPromisify;
   // Programs that read Symbol.toPrimitive install ToNumber's
   // Symbol.toPrimitive step; the others do not link it.
   const usesToPrimitiveNumber = runtimeFeatures.toPrimitiveNumber;

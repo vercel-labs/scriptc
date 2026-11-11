@@ -124,9 +124,11 @@ export function executableLinkFeatures(
     events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
     // util.inspect's function value carries
-    // Symbol.for('nodejs.util.inspect.custom') (inspectFunctionValue): its
-    // object is built in scr_inspect.c through the symbol unit's Symbol.for.
-    symbol: features.symbol || features.inspectFunctionValue === true,
+    // Symbol.for('nodejs.util.inspect.custom') (inspectFunctionValue) and
+    // util.promisify consults Symbol.for('nodejs.util.promisify.custom')
+    // (utilPromisify): both build their symbol in scr_symbol.c.
+    symbol:
+      features.symbol || features.inspectFunctionValue === true || features.utilPromisify === true,
     bigint: features.bigint,
     ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,

@@ -105175,6 +105175,8 @@
           "tests/corpus/util-mark-promise-handled-args.cjs",
           "tests/corpus/util-mark-promise-handled.ts",
           "tests/corpus/util-mime-object-view.ts",
+          "tests/corpus/util-promisify-custom-args.cjs",
+          "tests/corpus/util-promisify-custom.ts",
           "tests/corpus/util-set-trace-sigint-args.cjs",
           "tests/corpus/util-set-trace-sigint.ts",
           "tests/corpus/util-system-errors.ts",
@@ -107031,6 +107033,8 @@
           "tests/fixtures/node-types/promisify-callback-functions.ts",
           "tests/corpus/7522-promisify-untyped.cjs",
           "tests/corpus/7523-promisify-untyped.ts",
+          "tests/corpus/util-promisify-custom.ts",
+          "tests/corpus/util-promisify-custom-args.cjs",
           "tests/harness/project-config.test.ts"
         ]
       },
@@ -107077,8 +107081,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.custom",
+        "tests": [
+          "tests/corpus/util-promisify-custom.ts",
+          "tests/corpus/util-promisify-custom-args.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },

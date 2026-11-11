@@ -323,6 +323,14 @@ declare module "util" {
       ((arg1: T1, arg2: T2, arg3: T3, callback: (err: any, result: TResult) => void) => void) &
       (F extends (...args: any[]) => infer R ? (R extends void ? unknown : never) : never),
   ): (arg1: T1, arg2: T2, arg3: T3) => Promise<TResult>;
+  export namespace promisify {
+    /* The key of a function's custom promisified variant:
+     * Symbol.for('nodejs.util.promisify.custom'). A truthy value there is
+     * what promisify answers for an untyped function (it must be a
+     * function); the wrapper a plain function gets carries the key too,
+     * with itself as its value. */
+    const custom: unique symbol;
+  }
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). */

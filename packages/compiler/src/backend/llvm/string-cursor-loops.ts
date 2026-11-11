@@ -127,6 +127,32 @@ interface Declaration {
   chain: readonly AnyLoop[];
 }
 
+/** Whether every entry into `loop` begins from a value the current pass
+ * wrote, so that starting the cursor at unit 0 reads the right string: the
+ * local is declared in an enclosing loop, or a statement directly before
+ * `loop` in its enclosing loop's body assigns it in full. */
+function freshEachEntry(
+  loop: AnyLoop,
+  enclosing: readonly AnyLoop[],
+  id: string,
+  declared: readonly Declaration[],
+): boolean {
+  if (declared.some((declaration) => enclosing.some((outer) => declaration.chain.includes(outer))))
+    return true;
+  const parent = enclosing[enclosing.length - 1]!;
+  const at = parent.body.indexOf(loop);
+  return (
+    at > 0 &&
+    parent.body
+      .slice(0, at)
+      .some(
+        (stmt) =>
+          (stmt.kind === "varDecl" && stmt.localId === id) ||
+          (stmt.kind === "assign" && stmt.localId === id),
+      )
+  );
+}
+
 /** The versioned loops of `fn`, keyed by statement. `facts` decides which
  * locals keep the ordinary representation: a captured, boxed or
  * value-captured binding has a home the loop does not reach. */
@@ -239,6 +265,16 @@ export function findStringCursorLoops(
     const declared = declarations.get(id) ?? [];
     const parameter = facts.parameters.has(id);
     if (!parameter && !declared.some((declaration) => !inside(declaration))) continue;
+    // A loop nested in another is entered again on each pass of that loop,
+    // and the slot then still holds the string the nested loop last
+    // started from — the cursor's base. Starting over at unit 0 would scan
+    // that string again instead of the suffix the pass left. The cursor
+    // form needs an entry that begins a new value on every pass: the local
+    // declared in an enclosing loop, or assigned in full by a statement
+    // before the loop directly in the enclosing loop's body.
+    const chain = localReads[0]!.chain;
+    const enclosing = chain.slice(0, chain.indexOf(loop));
+    if (enclosing.length > 0 && !freshEachEntry(loop, enclosing, id, declared)) continue;
     loops.set(loop, { loop, localId: id });
   }
   return loops;

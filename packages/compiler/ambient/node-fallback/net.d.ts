@@ -188,14 +188,19 @@ declare module "net" {
     listen(port?: number | string, host?: string, callback?: () => void): Server;
     /* A Unix-socket server; the socket file is removed when it closes. */
     listen(path: string, callback?: () => void): Server;
-    /* The explicit-interface bind: host is an IP literal (absent or
-     * undefined = the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY
-     * and reusePort requests kernel connection distribution where Node
+    /* The options bind: a `port` or a Unix-socket `path` is required, and
+     * the port wins when both are given (Node's normalizeArgs). Absent or
+     * undefined keys are Node's absent options; a `path` that is empty or
+     * reads as a number is not a pipe name and throws ERR_INVALID_ARG_VALUE,
+     * exactly as Node does. host is an IP literal (absent or undefined =
+     * the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and
+     * reusePort requests kernel connection distribution where Node
      * supports it. */
     listen(
       options: {
-        port: number | undefined;
+        port?: number | undefined;
         host?: string | undefined;
+        path?: string | undefined;
         ipv6Only?: boolean;
         reusePort?: boolean;
       },

@@ -149,6 +149,34 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     if (e.fn === "net.listenPathCb") host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn === "net.listenPathOpts" || e.fn === "net.listenPathOptsCb") {
+    // [server, path, received[, cb]]: the path check (isPipeName) throws
+    // Node's ERR_INVALID_ARG_VALUE with the compiler-rendered options
+    // text in its "Received" tail.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.listenPathOptsCb") {
+      const cbT = e.args[3]!.type;
+      if (cbT.kind === "func") {
+        host.toHeap(args[3]!);
+        cb = args[3]!.name;
+      } else {
+        if (cbT.kind !== "union")
+          throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback shape`);
+        const def = host.unionsById.get(cbT.unionId);
+        const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
+        if (funcTag < 0)
+          throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its func arm`);
+        cb = host.unwrapNullableClosure(args[3]!.name, cbT.unionId, funcTag);
+      }
+    }
+    host.declare(`declare void @scr_net_listen_path_opts(ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_listen_path_opts(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb})`,
+    );
+    if (e.fn === "net.listenPathOptsCb") host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.connectOptsChk") {
     return emitAlwaysThrowLibCall(host, e, "scr_net_connect_opts_chk");
   }

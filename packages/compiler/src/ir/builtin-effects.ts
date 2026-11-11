@@ -1250,6 +1250,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
   // or the fence for forms without a lowering.
   "net.listenPortDyn",
+  // The options form's port: ERR_SOCKET_BAD_PORT for a bad number or
+  // string, the options-object error for a value of another kind.
+  "net.listenPortOpts",
+  // The options form's non-string host: ERR_INVALID_ARG_TYPE from the
+  // hostname check once the port branch wins.
+  "net.listenHostNumber",
+  "net.listenHostBool",
   // Server event registrations fire the 'newListener' meta event before the
   // add, so a handler of it can throw out of the on/once/addListener call.
   "net.serverOnError",
@@ -1271,6 +1278,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen({ path })'s isPipeName check throws ERR_INVALID_ARG_VALUE for a
+  // path that is not a pipe name.
+  "net.listenPathOpts",
+  "net.listenPathOptsCb",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",

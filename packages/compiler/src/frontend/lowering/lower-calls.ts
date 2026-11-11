@@ -1465,6 +1465,13 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           loc,
         );
       }
+      // A call through `const on = process.on.bind(process)`: the stored
+      // `process.<member>` access lowers the call exactly as the member
+      // itself would (Node's process listeners read their receiver).
+      if (projection?.kind === "process-listener") {
+        const served = lowerer.lowerProcessMethodCall(expr, projection.access);
+        if (served) return served;
+      }
       // A call through an immutable alias of an http/https client
       // function (`const httpsRequest = https.request`).
       if (projection?.kind === "client-function") {

@@ -2,7 +2,7 @@ import { isIslandPromisifyCall } from "../lower-node-island.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { builtinModuleFnOf } from "../surfaces.js";
+import { builtinModuleFnOf, stdlibGlobalMember } from "../surfaces.js";
 import { registerHttpClientFnBinding } from "../lower-server.js";
 import { isPromisifiedZlibMember } from "./compression.js";
 import { isPromisifiedCryptoMember } from "./crypto.js";
@@ -34,12 +34,51 @@ export function isPromisifyCall(lowerer: Lowerer, init: ts.Expression): ts.CallE
  * compile-time call target, so direct calls keep the builtin's validated
  * lowering without materializing a JavaScript function object. Value
  * uses remain fenced until an escaping closure adapter exists. */
+/** The process listeners a bound alias may project: the members whose
+ * lowering the `process.<member>(...)` call path already owns. */
+const PROCESS_LISTENER_MEMBERS: ReadonlySet<string> = new Set([
+  "on",
+  "once",
+  "off",
+  "removeListener",
+  "prependListener",
+]);
+
+/** `const on = process.on.bind(process)` — the graceful-shutdown idiom.
+ * Node's process listeners are EventEmitter's, which read their receiver,
+ * so the bound function is the only spelling that can be called as a
+ * value. The binding owns no function object: calls through it lower as
+ * the stored `process.<member>(...)` access, and reads escape-fence. */
+function registerBoundProcessListener(
+  lowerer: Lowerer,
+  nameNode: ts.Node,
+  init: ts.Expression,
+): boolean {
+  if (!ts.isIdentifier(nameNode) || !ts.isCallExpression(init) || init.questionDotToken)
+    return false;
+  const callee = init.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return false;
+  if (callee.name.text !== "bind" || init.arguments.nodes.length !== 1) return false;
+  const fn = callee.expression;
+  if (!ts.isPropertyAccessExpression(fn) || fn.questionDotToken) return false;
+  const member = stdlibGlobalMember(lowerer, fn, "process");
+  if (member === null || !PROCESS_LISTENER_MEMBERS.has(member)) return false;
+  const self = init.arguments.nodes[0]!;
+  if (ts.isSpreadElement(self) || !lowerer.isStdlibGlobal(self, "process")) return false;
+  if (lowerer.checker.getCallSignatures(lowerer.typeOf(nameNode)).length === 0) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+  if (!symbol) return false;
+  lowerer.staticCallables.set(symbol, { kind: "process-listener", member, access: fn });
+  return true;
+}
+
 export function registerBuiltinCallableAlias(
   lowerer: Lowerer,
   nameNode: ts.Node,
   init: ts.Expression | undefined,
 ): boolean {
   if (!ts.isIdentifier(nameNode) || !init) return false;
+  if (registerBoundProcessListener(lowerer, nameNode, init)) return true;
   let targetExpr = init;
   while (ts.isParenthesizedExpression(targetExpr)) targetExpr = targetExpr.expression;
   let target: { module: string; member: string } | null = null;

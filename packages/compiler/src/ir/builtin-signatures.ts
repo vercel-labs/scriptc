@@ -1927,6 +1927,19 @@ function buildLibFnSignatures() {
       argTypes: [NETSERVER_T, STRING, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** listen({ path }[, cb]) with a computed path: Node's isPipeName at
+     * run time, and Node's ERR_INVALID_ARG_VALUE when the string is not a
+     * pipe name (empty, whitespace, numeric), whose message ends with the
+     * compiler-built "Received { ... }" text. */
+    "net.listenPathOpts": { argTypes: [NETSERVER_T, STRING, STRING], result: VOID },
+    "net.listenPathOptsCb": {
+      argTypes: [NETSERVER_T, STRING, STRING, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** The inspect text of one listen option value for that message's
+     * "Received" tail: a string quotes as util.inspect renders it, and the
+     * scalars print plain. Answers a new string. */
+    "net.optionValueText": { argTypes: [DYN], result: STRING },
     "net.listenCb": {
       argTypes: [NETSERVER_T, F64, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -2020,6 +2033,15 @@ function buildLibFnSignatures() {
      * polymorphic-result carve-out). May-throw seed. */
     "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
     "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
+    // The options form's `port`: validatePort over the TCP branch's number
+    // or string, the whole options object's Received text for a value that
+    // is neither.
+    "net.listenPortOpts": { argTypes: [DYN, STRING], result: F64 },
+    // The options form's `host` of a static number or boolean: Node's
+    // dns.lookup rejects it as ERR_INVALID_ARG_TYPE when the port branch
+    // reads it. ALWAYS THROWS. May-throw seed.
+    "net.listenHostNumber": { argTypes: [F64], result: STRING },
+    "net.listenHostBool": { argTypes: [BOOL], result: STRING },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: NETSOCKET_T,

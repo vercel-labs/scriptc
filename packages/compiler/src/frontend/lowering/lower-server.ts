@@ -312,6 +312,29 @@ function listenHostOf(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
   );
 }
 
+/** The options form's `host`: the positional form's rules (a string binds,
+ * undefined binds every interface), except that a number is not a backlog
+ * here. Node reads the host only when the port branch wins and the value is
+ * truthy (`if (options.host)`), and `dns.lookup` rejects a non-string with
+ * ERR_INVALID_ARG_TYPE: a truthy number or boolean throws when the port
+ * branch reads the argument, so a pipe `path` (which ignores the host)
+ * still binds. */
+function listenOptionsHostOf(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
+  const loc = value.loc;
+  const reject = (fn: "net.listenHostNumber" | "net.listenHostBool"): IrExpr => ({
+    kind: "ternary",
+    cond:
+      fn === "net.listenHostNumber" ? { kind: "toBool", operand: value, type: BOOL, loc } : value,
+    then: { kind: "libCall", fn, args: [value], type: STRING, loc },
+    else_: strLit("", loc),
+    type: STRING,
+    loc,
+  });
+  if (value.type.kind === "f64") return reject("net.listenHostNumber");
+  if (value.type.kind === "bool") return reject("net.listenHostBool");
+  return listenHostOf(lowerer, value, node);
+}
+
 /** The port of a listen call: a number; undefined and null bind an unused
  * port (Node sets `options.port = 0`); a value that may also be a string
  * takes Node's validatePort at run time through `untypedPort`. Null for a
@@ -324,6 +347,10 @@ function listenPortOf(
   const loc = value.loc;
   if (value.type.kind === "f64") return value;
   if (isUnitType(value.type)) return afterIgnoredListenArg(lowerer, value, numLit(0, loc));
+  // A string-typed port (the options form's `port: "8080"`): validatePort
+  // takes it as a port, never as a pipe path — the positional form diverts
+  // strings to the path branch before reaching here.
+  if (value.type.kind === "string") return untypedPort(value);
   if (value.type.kind === "dyn") return untypedPort(value);
   const picked = listenUnionArmOr(lowerer, value, F64, numLit(0, loc));
   if (picked !== null) return picked;
@@ -2156,6 +2183,9 @@ function lowerNetServerMethodCall(
     // read into an untyped slot, or a checker `any`.
     const untyped =
       args.length > 0 &&
+      // An object literal is the options form, even when its type is the
+      // empty object type `{}` (Node reads any non-null object as options).
+      !ts.isObjectLiteralExpression(args[0]!) &&
       (first?.kind === "dyn" ||
         first?.kind === "jsval" ||
         (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0);
@@ -2216,7 +2246,11 @@ function lowerNetServerMethodCall(
       if (port.type.kind !== "f64") return port;
       // Already Node's validatePort at run time (an untyped port, or a port
       // that may be a string).
-      if (port.kind === "libCall" && port.fn === "net.listenPortDyn") return port;
+      if (
+        port.kind === "libCall" &&
+        (port.fn === "net.listenPortDyn" || port.fn === "net.listenPortOpts")
+      )
+        return port;
       if (
         port.kind === "numLit" &&
         Number.isInteger(port.value) &&
@@ -2276,21 +2310,107 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
-    // The options-object form — listen({ port, host?, ipv6Only?, reusePort? }[, cb]),
-    // the portless listenOnProxyInterface shape: host binds that ONE
-    // address (an IP literal — the runtime has no resolver here; absent
-    // = Node's host-less dual-stack any), ipv6Only sets IPV6_V6ONLY
-    // (truthiness, like Node's option handling — `boolean | undefined`
-    // flows). reusePort is different: Node enables it only for exact true,
-    // while its presence selects the additive ABI even when the value is
-    // false.
+    // The options-object form — listen({ port?, host?, path?, ipv6Only?,
+    // reusePort? }[, cb]), the portless listenOnProxyInterface shape and
+    // Node's Unix-socket `path` option: host binds that ONE address (an IP
+    // literal — the runtime has no resolver here; absent = Node's
+    // host-less dual-stack any), ipv6Only sets IPV6_V6ONLY (truthiness,
+    // like Node's option handling — `boolean | undefined` flows).
+    // reusePort is different: Node enables it only for exact true, while
+    // its presence selects the additive ABI even when the value is false.
+    // A `path` key without a `port` binds the Unix socket it names (a
+    // string whose Number() is not a non-negative number, Node's
+    // isPipeName); with a port the port wins, as normalizeArgs reads the
+    // port first. An object with neither key, and a path that is not a
+    // pipe name, throw Node's ERR_INVALID_ARG_VALUE with the object
+    // inspected in its "Received" tail.
     // Every other key fences by name.
     if (ts.isObjectLiteralExpression(args[0]!)) {
+      const optionProps = (args[0] as ts.ObjectLiteralExpression).properties.nodes;
+      const literalKeyOf = (prop: ts.ObjectLiteralElementLike): string | null =>
+        (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+        (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
+          ? prop.name.text
+          : null;
+      const hasKey = (key: string): boolean => optionProps.some((p) => literalKeyOf(p) === key);
+      // A `port` whose value is a number, a string, an optional binding of
+      // those, or absent takes the TCP branch's validatePort, whose own
+      // message names `options.port`. Any other value is not a port at all
+      // and answers Node's generic options-object error, which needs the
+      // whole object in the "Received" tail.
+      const portProp = optionProps.find((p) => literalKeyOf(p) === "port");
+      const portPropType = ((): IrType | null => {
+        if (portProp === undefined) return null;
+        const node = ts.isPropertyAssignment(portProp)
+          ? portProp.initializer
+          : ts.isShorthandPropertyAssignment(portProp)
+            ? portProp.name
+            : null;
+        return node === null ? null : lowerer.mapTypeOf(lowerer.typeOf(node));
+      })();
+      const plainPort =
+        portPropType === null ||
+        portPropType.kind === "f64" ||
+        portPropType.kind === "string" ||
+        isUnitType(portPropType) ||
+        (portPropType.kind === "union" &&
+          (lowerer.unions.get(portPropType.unionId)?.arms ?? []).every(
+            (arm) => arm.kind === "f64" || arm.kind === "string" || isUnitType(arm),
+          ));
+      // The path form, an object with no port, and a port of another shape
+      // answer Node's ERR_INVALID_ARG_VALUE, whose "Received" tail inspects
+      // the whole options object in insertion order. There every value is
+      // held once, in source order, so the message and the bind read the
+      // same value; other objects keep their earlier single-use lowering.
+      const reportOptions = hasKey("path") || !hasKey("port") || !plainPort;
+      const held: IrStmt[] = [];
+      const hold = (value: IrExpr, name: string): IrExpr => {
+        // A unit-typed value (`port: undefined`, `path: undefined`) has no
+        // slot to store it in and every read of it is pure, so the message
+        // and the bind share the value itself.
+        if (!reportOptions || isUnitType(value.type)) return value;
+        const local = lowerer.declareHiddenLocal(name, value.type);
+        held.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
+        return varRef(local.id, value.type, value.loc);
+      };
+      const received: IrExpr[] = [];
+      const noteReceived = (key: string, value: IrExpr): void => {
+        if (!reportOptions) return;
+        received.push({
+          kind: "strConcat",
+          left: strLit(`${key}: `, loc),
+          right: {
+            kind: "libCall",
+            fn: "net.optionValueText",
+            args: [lowerer.coerceToExpected(value, DYN)],
+            type: STRING,
+            loc,
+          },
+          type: STRING,
+          loc,
+        });
+      };
       let port: IrExpr | null = null;
+      let portNode: ts.Node | null = null;
       let host: IrExpr | null = null;
       let v6only: IrExpr | null = null;
       let reusePort: IrExpr | null = null;
-      for (const prop of (args[0] as ts.ObjectLiteralExpression).properties.nodes) {
+      let path: IrExpr | null = null;
+      // The literal spelling of the path, when there is one: a pipe name
+      // binds without the runtime's isPipeName check, and its negation
+      // throws before anything binds.
+      let staticPath: string | null = null;
+      // A `path` whose value can never be a pipe name (a number, a boolean,
+      // a record): Node throws ERR_INVALID_ARG_VALUE for it. Scalar values
+      // report exactly in the message; other shapes need inspect's
+      // rendering, which this lowering does not have.
+      let invalidPath = false;
+      // A `port` whose value can never be a TCP port (a boolean): Node's
+      // port branch takes only numbers and strings, so the object falls
+      // through to the path branch (a pipe path still binds, the port is
+      // ignored) and to the invalid-options throw otherwise.
+      let portNotTcp = false;
+      for (const prop of optionProps) {
         let initializer: ts.Expression | null;
         if (
           ts.isPropertyAssignment(prop) &&
@@ -2308,33 +2428,62 @@ function lowerNetServerMethodCall(
         }
         const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
         if (key === "port") {
-          const portValue =
-            initializer !== null
-              ? lowerer.lowerExpr(initializer)
-              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
-          // `port: undefined` and `port: null` bind an unused port, as the
-          // positional form does.
-          port = listenPortOf(lowerer, portValue, portOfUntyped);
-          if (port === null) {
-            lowerer.noLowering(
-              `a listen 'port' option of '${lowerer.fmt(portValue.type)}' values`,
-              prop,
-              "the port is a number here",
-            );
-          }
-        } else if (key === "host") {
-          // `host: undefined` binds every interface, as an absent host does.
-          host = listenHostOf(
-            lowerer,
+          const portValue = hold(
             initializer !== null
               ? lowerer.lowerExpr(initializer)
               : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
-            prop,
+            "%listenPort",
           );
+          // `port: undefined` and `port: null` bind an unused port, as the
+          // positional form does. The value stays unvalidated until the
+          // keys are read: an invalid one reports the whole options object,
+          // which is complete only then.
+          port = portValue;
+          portNode = prop;
+          noteReceived("port", portValue);
+        } else if (key === "host") {
+          // `host: undefined` binds every interface, as an absent host does.
+          const hostValue = hold(
+            initializer !== null
+              ? lowerer.lowerExpr(initializer)
+              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment),
+            "%listenHost",
+          );
+          noteReceived("host", hostValue);
+          host = listenOptionsHostOf(lowerer, hostValue, prop);
+        } else if (key === "path") {
+          const value =
+            initializer !== null
+              ? lowerer.lowerExpr(initializer)
+              : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+          const raw = hold(value, "%listenPath");
+          const arms =
+            raw.type.kind === "union"
+              ? (lowerer.unions.get(raw.type.unionId)?.arms ?? [])
+              : [raw.type];
+          const optionalString =
+            arms.length > 0 && arms.every((arm) => arm.kind === "string" || isUnitType(arm));
+          if (!optionalString) {
+            if (raw.type.kind === "f64" || raw.type.kind === "bool" || isUnitType(raw.type)) {
+              // The port key, when present, wins before this throw.
+              invalidPath = true;
+            } else {
+              lowerer.noLowering(
+                `a listen 'path' option of '${lowerer.fmt(raw.type)}' values`,
+                prop,
+                "the socket path is a string (or an optional string); Node throws ERR_INVALID_ARG_VALUE for anything else",
+              );
+            }
+          }
+          path = raw;
+          staticPath = value.kind === "strLit" ? value.value : null;
+          noteReceived("path", raw);
         } else if (key === "ipv6Only") {
           if (initializer !== null) {
-            v6only =
-              lowerer.lowerCondition(initializer); /* truthiness: `boolean | undefined` flows */
+            v6only = hold(
+              lowerer.lowerCondition(initializer),
+              "%listenV6Only",
+            ); /* truthiness: `boolean | undefined` flows */
           } else {
             const v = lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
             if (v.type.kind !== "bool") {
@@ -2344,11 +2493,15 @@ function lowerNetServerMethodCall(
                 "spell the option out (ipv6Only: value) so non-boolean values can narrow",
               );
             }
-            v6only = v;
+            v6only = hold(v, "%listenV6Only");
           }
+          noteReceived("ipv6Only", v6only);
         } else if (key === "reusePort") {
           if (initializer !== null) {
-            reusePort = lowerExactReusePort(lowerer, lowerer.lowerExpr(initializer), prop);
+            reusePort = hold(
+              lowerExactReusePort(lowerer, lowerer.lowerExpr(initializer), prop),
+              "%listenReusePort",
+            );
           } else {
             const v = lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
             if (v.type.kind !== "bool") {
@@ -2358,8 +2511,9 @@ function lowerNetServerMethodCall(
                 "spell the option out (reusePort: value) so optional values can narrow",
               );
             }
-            reusePort = v;
+            reusePort = hold(v, "%listenReusePort");
           }
+          noteReceived("reusePort", reusePort);
         } else if (
           key === "signal" &&
           ts.isPropertyAssignment(prop) &&
@@ -2377,7 +2531,7 @@ function lowerNetServerMethodCall(
             raw.type.kind === "record" ||
             raw.type.kind === "array";
           if (provablyNot && lowerer.dynConvertible(raw.type)) {
-            return {
+            const thrown: IrExpr = {
               kind: "libCall",
               fn: "error.propTypeThrow",
               args: [
@@ -2388,53 +2542,189 @@ function lowerNetServerMethodCall(
               type: ts.isExpressionStatement(call.parent) ? VOID : NETSERVER_T,
               loc,
             };
+            return held.length === 0
+              ? thrown
+              : { kind: "seqExpr", stmts: held, result: thrown, type: thrown.type, loc };
           }
           lowerer.noLowering(
             `listen option 'signal'`,
             prop,
-            "abort-driven close has no lowering yet — port, host, ipv6Only, and reusePort are the supported listen options",
+            "abort-driven close has no lowering yet — port, host, path, ipv6Only, and reusePort are the supported listen options",
           );
         } else {
           lowerer.noLowering(
             `listen option '${key}'`,
             prop,
-            "port, host, ipv6Only, and reusePort are the supported listen options",
+            "port, host, path, ipv6Only, and reusePort are the supported listen options",
           );
         }
       }
-      if (port === null) {
-        lowerer.noLowering(
-          "listen options without a port",
-          args[0]!,
-          "the supported options object is { port, host?, ipv6Only?, reusePort? } — port 0 binds an ephemeral port",
-        );
-      }
-      port = validatedPort(port);
-      host ??= {
-        kind: "strLit",
-        value: "",
-        type: STRING,
+      // The evaluated values run in source order before the bind, and the
+      // invalid-options throw (and the bind) read the same values.
+      const finish = (result: IrExpr): IrExpr =>
+        held.length === 0
+          ? result
+          : { kind: "seqExpr", stmts: held, result, type: result.type, loc };
+      // `{ ... }` in Node's inspect spelling: `{ path: '', host: 'x' }`
+      // (the options are scalars, so the compact form is the whole shape).
+      const receivedText = (): IrExpr => {
+        // `{}` for no keys; inspect spaces a non-empty object's braces.
+        let text: IrExpr = strLit(received.length === 0 ? "{" : "{ ", loc);
+        received.forEach((part, index) => {
+          text = {
+            kind: "strConcat",
+            left: text,
+            right:
+              index === 0
+                ? part
+                : { kind: "strConcat", left: strLit(", ", loc), right: part, type: STRING, loc },
+            type: STRING,
+            loc,
+          };
+        });
+        return {
+          kind: "strConcat",
+          left: text,
+          right: strLit(received.length === 0 ? "}" : " }", loc),
+          type: STRING,
+          loc,
+        };
+      };
+      // Node's ERR_INVALID_ARG_VALUE for the options object: a TypeError
+      // reading `The argument 'options' <reason>. Received <inspect>`.
+      const invalidOptions = (reason: string): IrExpr => ({
+        kind: "libCall",
+        fn: "error.nodeThrow",
+        args: [
+          numLit(1, loc),
+          strLit("ERR_INVALID_ARG_VALUE", loc),
+          {
+            kind: "strConcat",
+            left: strLit(`The argument 'options' ${reason}. Received `, loc),
+            right: receivedText(),
+            type: STRING,
+            loc,
+          },
+        ],
+        type: ts.isExpressionStatement(call.parent) ? VOID : NETSERVER_T,
         loc,
-      }; /* "" = the dual-stack any default */
-      v6only ??= boolLit(false, loc);
-      const listenOptsFn: IrLibFn =
-        reusePort === null ? "net.listenOpts" : "net.listenOptsReusePort";
-      const listenOptsCbFn: IrLibFn =
-        reusePort === null ? "net.listenOptsCb" : "net.listenOptsReusePortCb";
-      if (args.length === 1) {
-        return listenResult(
-          listenOptsFn,
-          reusePort === null
-            ? [receiver, port, host, v6only]
-            : [receiver, port, host, v6only, reusePort],
+      });
+      // The port's checklist runs after the whole object is read: Node's
+      // TCP branch takes a string as a port (never as a pipe name), and
+      // anything that is neither a number nor a string is the generic
+      // options error whose Received tail needs every key.
+      const portOfOptions = (value: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "net.listenPortOpts",
+        args: [lowerer.coerceToExpected(value, DYN), receivedText()],
+        type: F64,
+        loc,
+      });
+      if (port !== null) {
+        const validated = listenPortOf(lowerer, port, portOfOptions);
+        if (validated !== null) {
+          port = validated;
+        } else if (port.type.kind === "bool") {
+          // Node's port branch takes only numbers and strings; a boolean
+          // falls through to the path branch, and the object is invalid
+          // when no pipe path follows.
+          portNotTcp = true;
+          port = null;
+        } else if (lowerer.dynConvertible(port.type)) {
+          port = portOfOptions(port);
+        } else {
+          lowerer.noLowering(
+            `a listen 'port' option of '${lowerer.fmt(port.type)}' values`,
+            portNode ?? args[0]!,
+            "the port is a number, a string, or an optional binding of those",
+          );
+        }
+      }
+      if (port !== null) {
+        // The port key wins over a path key (the path value was evaluated
+        // above); a path-less object is the earlier shape, unchanged.
+        port = validatedPort(port);
+        host ??= {
+          kind: "strLit",
+          value: "",
+          type: STRING,
+          loc,
+        }; /* "" = the dual-stack any default */
+        v6only ??= boolLit(false, loc);
+        const listenOptsFn: IrLibFn =
+          reusePort === null ? "net.listenOpts" : "net.listenOptsReusePort";
+        const listenOptsCbFn: IrLibFn =
+          reusePort === null ? "net.listenOptsCb" : "net.listenOptsReusePortCb";
+        if (args.length === 1) {
+          return finish(
+            listenResult(
+              listenOptsFn,
+              reusePort === null
+                ? [receiver, port, host, v6only]
+                : [receiver, port, host, v6only, reusePort],
+            ),
+          );
+        }
+        const cbV = lowerOptionalListenCallback(lowerer, args[1]!, loc);
+        return finish(
+          listenResult(
+            listenOptsCbFn,
+            reusePort === null
+              ? [receiver, port, host, v6only, cbV]
+              : [receiver, port, host, v6only, reusePort, cbV],
+          ),
         );
       }
-      const cbV = lowerOptionalListenCallback(lowerer, args[1]!, loc);
-      return listenResult(
-        listenOptsCbFn,
-        reusePort === null
-          ? [receiver, port, host, v6only, cbV]
-          : [receiver, port, host, v6only, reusePort, cbV],
+      if (invalidPath) return finish(invalidOptions("is invalid"));
+      if (path === null) {
+        // A non-TCP `port` key was present, so the object reports as
+        // invalid rather than as missing both keys.
+        return finish(
+          invalidOptions(portNotTcp ? "is invalid" : `must have the property "port" or "path"`),
+        );
+      }
+      if (staticPath !== null) {
+        // A literal path is decided here: a pipe name binds directly, and
+        // anything else (empty, whitespace, numeric, a negative number
+        // reads as a pipe name) is Node's ERR_INVALID_ARG_VALUE.
+        if (Number(staticPath) >= 0) return finish(invalidOptions("is invalid"));
+        return finish(
+          args.length === 1
+            ? listenResult("net.listenPath", [receiver, path])
+            : listenResult("net.listenPathCb", [
+                receiver,
+                path,
+                lowerCallbackArg(
+                  lowerer,
+                  args[1]!,
+                  "listen callbacks",
+                  0,
+                  () => false,
+                  "use ()",
+                  [],
+                ).cb,
+              ]),
+        );
+      }
+      // A computed path: the runtime takes Node's isPipeName over it (and
+      // over the optional `string | undefined` binding, whose undefined
+      // arm is not a path).
+      const pathArg: IrExpr =
+        path.type.kind === "string"
+          ? path
+          : isUnitType(path.type)
+            ? strLit("", loc)
+            : (listenUnionArmOr(lowerer, path, STRING, strLit("", loc)) ?? strLit("", loc));
+      if (args.length === 1) {
+        return finish(listenResult("net.listenPathOpts", [receiver, pathArg, receivedText()]));
+      }
+      return finish(
+        listenResult("net.listenPathOptsCb", [
+          receiver,
+          pathArg,
+          receivedText(),
+          lowerOptionalListenCallback(lowerer, args[1]!, loc),
+        ]),
       );
     }
     // listen(path[, cb]): a string first argument names a Unix socket
@@ -3319,10 +3609,30 @@ function unixListenReachable(lowerer: Lowerer): boolean {
       if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "listen") return undefined;
       const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(callee.expression))?.kind;
       if (kind !== undefined && kind !== "netServer" && kind !== "dyn") return undefined;
-      const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(node.arguments.nodes[0]!));
+      const argNode = node.arguments.nodes[0]!;
+      const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(argNode));
       // Only a string-typed argument lowers to listen(path) (an untyped
-      // one checks into a port).
+      // one checks into a port); the options form's string-typed `path`
+      // key lowers to it too.
       if (arg?.kind === "string") reachable = true;
+      else if (ts.isObjectLiteralExpression(argNode)) {
+        for (const prop of argNode.properties.nodes) {
+          if (!ts.isPropertyAssignment(prop)) continue;
+          const key =
+            ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : null;
+          if (key !== "path") continue;
+          const pathType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(prop.initializer));
+          const arms =
+            pathType?.kind === "union"
+              ? (lowerer.unions.get(pathType.unionId)?.arms ?? [])
+              : pathType === null || pathType === undefined
+                ? []
+                : [pathType];
+          if (arms.length > 0 && arms.every((a) => a.kind === "string" || isUnitType(a))) {
+            reachable = true;
+          }
+        }
+      }
       return undefined;
     });
     if (reachable) break;

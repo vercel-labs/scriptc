@@ -3398,6 +3398,69 @@ double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence) {
   return port;
 }
 
+/* options.port in server.listen({ port ... }): Node's TCP branch reads a
+ * number or a string as the port (an options.port string is never a pipe
+ * path) and validates it with validatePort; undefined and null were
+ * normalized to 0 before. Any other kind falls through to the options
+ * object's generic ERR_INVALID_ARG_VALUE, whose `received` text carries
+ * the whole object. */
+double scr_net_listen_port_validate(const ScrDyn *v, ScrStr *received) {
+  if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) return 0;
+  double n = 0;
+  bool ok = false;
+  if (v->kind == SCR_DYN_NUM) {
+    n = v->v.num;
+    ok = n == n && trunc(n) == n && n >= 0 && n <= 65535;
+  } else if (v->kind == SCR_DYN_STR) {
+    ScrStr *trimmed = scr_str_trim(v->v.str);
+    ok = trimmed->len > 0;
+    scr_str_release(trimmed);
+    n = scr_string_to_number(v->v.str);
+    ok = ok && n == n && trunc(n) == n && n >= 0 && n <= 65535;
+  }
+  if (v->kind != SCR_DYN_NUM && v->kind != SCR_DYN_STR) {
+    ScrJsonBuf msg;
+    scr_jb_init(&msg);
+    scr_jb_puts(&msg, "The argument 'options' is invalid. Received ");
+    scr_jb_put_str(&msg, received);
+    ScrStr *text = scr_jb_finish(&msg);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(text);
+    return 0;
+  }
+  if (!ok) {
+    char detail[64], msg[160];
+    const char *d = scr_dyn_specific_type(v, detail, sizeof detail);
+    int len =
+        snprintf(msg, sizeof msg, "options.port should be >= 0 and < 65536. Received %s.", d);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, len < 0 ? 0 : (size_t)len, "ERR_SOCKET_BAD_PORT");
+  }
+  return n;
+}
+
+/* options.host of a TCP listen: a number or a boolean is not a hostname,
+ * and Node's hostname check rejects it with ERR_INVALID_ARG_TYPE before
+ * the bind. Always throws. */
+ScrStr *scr_net_listen_host_number(double v) {
+  char text[32], msg[160];
+  size_t tn = scr_f64_to_str(v, text);
+  int len = snprintf(msg, sizeof msg,
+                     "The \"hostname\" argument must be of type string. Received type number (%s)",
+                     text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len < 0 ? 0 : (size_t)len, "ERR_INVALID_ARG_TYPE");
+  return scr_str_new(text, tn);
+}
+
+ScrStr *scr_net_listen_host_bool(bool v) {
+  char msg[160];
+  int len = snprintf(
+      msg, sizeof msg,
+      "The \"hostname\" argument must be of type string. Received type boolean (%s)",
+      v ? "true" : "false");
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len < 0 ? 0 : (size_t)len, "ERR_INVALID_ARG_TYPE");
+  return scr_str_new("", 0);
+}
+
 /* A dial the caller starts LATER (the http agent's maxSockets queue):
  * the socket exists, registers, and buffers writes as "connecting" —
  * scr_net_sock_dial_start runs the actual dial when a slot frees. */
@@ -3604,6 +3667,45 @@ void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/,
   if (!s->pending_err) s->pending_err = scr_jb_finish(&b);
   else scr_str_release(scr_jb_finish(&b));
   scr_net_server_register(s); /* the sweep delivers the failure */
+}
+
+/* The inspect text of one listen option value for ERR_INVALID_ARG_VALUE's
+ * "Received" tail: strings quote as util.inspect renders them and the
+ * scalars print plain (the options are scalars). Answers a new string. */
+ScrStr *scr_net_option_value_text(const ScrDyn *v) {
+  switch (v->kind) {
+  case SCR_DYN_STR: return scr_str_inspect_quoted(v->v.str, false);
+  case SCR_DYN_UNDEF: return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL: return scr_str_new("null", 4);
+  case SCR_DYN_BOOL: return v->v.b ? scr_str_new("true", 4) : scr_str_new("false", 5);
+  case SCR_DYN_NUM: {
+    char buf[32];
+    size_t n = scr_f64_to_str(v->v.num, buf);
+    return scr_str_new(buf, n);
+  }
+  default: return scr_str_new("[object]", 8);
+  }
+}
+
+/* listen({ path }[, cb]) for a path the compiler could not decide: Node's
+ * isPipeName over it (a string whose Number() is not a non-negative
+ * number binds the Unix socket), and ERR_INVALID_ARG_VALUE otherwise,
+ * with the compiler-rendered options object in the "Received" tail. */
+void scr_net_listen_path_opts(ScrNetServer *s, ScrStr *path /*borrowed*/,
+                              ScrStr *received /*borrowed*/,
+                              ScrClosure *cb /*moves, nullable*/) {
+  if (!(scr_string_to_number(path) >= 0)) {
+    scr_net_listen_path(s, path, cb);
+    return;
+  }
+  ScrJsonBuf msg;
+  scr_jb_init(&msg);
+  scr_jb_puts(&msg, "The argument 'options' is invalid. Received ");
+  scr_jb_put_str(&msg, received);
+  ScrStr *text = scr_jb_finish(&msg);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(text);
+  if (cb) scr_closure_release(cb);
 }
 
 /* ── the caller-lookup dial (net.connect with a lookup option) ─────────

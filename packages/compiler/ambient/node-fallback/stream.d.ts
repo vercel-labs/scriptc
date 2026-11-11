@@ -458,15 +458,17 @@ declare module "stream" {
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
     /* A ReadableWritablePair of web streams over the duplex's halves, and
-     * the Duplex over a pair of web streams. The pair is also declared as
-     * a ReadableStream so that `typeof Duplex` stays assignable to
-     * `typeof Readable`, as class values are. */
+     * the Duplex over a pair of web streams. At runtime the pair is a
+     * plain `{ readable, writable }` object, and a bare ReadableStream is
+     * Node's ERR_INVALID_ARG_TYPE. Both signatures are widened just enough
+     * to stay assignable to the inherited Readable statics, because
+     * `typeof Duplex` is a `typeof Readable` when class values are. */
     static toWeb(
       duplex: Duplex,
       options?: { readableType?: "bytes"; type?: "bytes" },
     ): ReadableWritablePair & ReadableStream;
     static fromWeb(
-      pair: ReadableWritablePair,
+      pair: ReadableWritablePair | ReadableStream,
       options?: {
         allowHalfOpen?: boolean;
         decodeStrings?: boolean;
@@ -611,6 +613,13 @@ declare module "stream" {
       ? PassThrough
       : D
     : unknown;
+  /* pipeline(streams, callback): the stream list form. Node expands a lone
+   * array argument into the stages, so the answer is the list's
+   * destination. */
+  function pipeline(
+    streams: ReadonlyArray<Readable | Writable | Duplex>,
+    callback: (err?: Error | null) => void,
+  ): Writable;
   function pipeline<T extends unknown[]>(...streams: T): PipelineResult<T>;
   /* util.promisify's pipeline overload matches only pipeline itself: a
    * generic signature alone admits every function. */
@@ -683,6 +692,11 @@ declare module "stream" {
       ? Promise<P>
       : Promise<void>;
   namespace promises {
+    /* The stream list form: the stages in one array, then the options. */
+    function pipeline(
+      streams: ReadonlyArray<Readable | Writable | Duplex>,
+      options?: { signal?: AbortSignal; end?: boolean },
+    ): Promise<void>;
     function pipeline<T extends unknown[]>(...streams: T): PipelinePromise<T>;
     function finished(
       stream: unknown,

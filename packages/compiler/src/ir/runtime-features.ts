@@ -338,6 +338,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.outputFromDyn",
   "sp.finished",
   "sp.pipeline",
+  "sp.pipelineMissing",
   "sp.pipelineStages",
   "sp.pipelineStagesOpts",
   "stream.addAbortSignal",

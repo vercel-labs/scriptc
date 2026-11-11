@@ -5252,6 +5252,9 @@ function buildLibFnSignatures() {
     "stream.finishedOpts": { argTypes: [null, F64, F64, BOOL, null], result: VOID },
     "stream.finishedOptsSignal": { argTypes: [null, F64, F64, BOOL, DYN, null], result: VOID },
     "sp.pipeline": { argTypes: [F64], result: { kind: "promise", inner: VOID } },
+    /** pipeline's fewer-than-two-stages ladder in the promise form: an
+     * already-rejected promise (ERR_MISSING_ARGS). */
+    "sp.pipelineMissing": { argTypes: [], result: { kind: "promise", inner: VOID } },
     /** pipeline with function stages: [n, k, positions, flags, mask,
      * s1..sn, stage1..stagek, helpers..., box?, (signal, abort)?] (+ the
      * callback for the stream.* forms): the user's stage functions at the
@@ -5324,6 +5327,9 @@ function buildLibFnSignatures() {
     "readable.read": { argTypes: [null, F64], result: VOID },
     "readable.pause": { argTypes: [null], result: VOID },
     "readable.setEncoding": { argTypes: [null, STRING], result: VOID },
+    /** setEncoding with an encoding known only at run time: falsy installs
+     * no decoder, an unknown name throws ERR_UNKNOWN_ENCODING. */
+    "readable.setEncodingDyn": { argTypes: [null, DYN], result: VOID },
     /** push(chunk, enc) with a literal non-utf8 encoding, and the
      * defaultEncoding option's push side (how push(string) decodes —
      * Buffer.from(chunk, enc)); both carry the CANONICAL literal. */

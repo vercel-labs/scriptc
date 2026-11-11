@@ -365,6 +365,10 @@ struct ScrDyn *scr_stream_dyn_async_iterator_open(struct ScrDyn *value, ScrStr *
  * Streams borrowed; +1 promises. */
 ScrPromise *scr_sp_finished(ScrStream *s);
 ScrPromise *scr_sp_pipeline(double n, ScrStream **streams);
+/* pipelineImpl's fewer-than-two-stages ladder for the promise form: an
+ * already-rejected promise (ERR_MISSING_ARGS), where the callback form
+ * throws. */
+ScrPromise *scr_sp_pipeline_missing(void);
 /* node:stream/consumers — the promise consumers over the readable
  * machinery: accumulate every chunk (string chunks as their utf8 bytes)
  * and settle at the terminal point (right after 'close', the eos timing
@@ -759,6 +763,13 @@ ScrStream *scr_stream_option_values(ScrStream *s, struct ScrDyn *decode_strings,
 void scr_stream_set_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_set_default_encoding(ScrStream *s, struct ScrDyn *enc);
+/* setEncoding(enc) with an encoding known only at run time (the
+ * Readable.from options' form): a falsy value installs no decoder
+ * (Node's `if (options.encoding)`), a name the decoder does not know
+ * throws ERR_UNKNOWN_ENCODING, and readableEncoding answers the spelling
+ * as given. Borrows enc; answers the stream (+1), or NULL with the
+ * exception pending. */
+ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, struct ScrDyn *enc);
 ScrDyn *scr_stream_done_dyn_c(ScrClosure *clo, ScrDyn *const *args, size_t argc);
 /* The native state's extra operations: view adds its members to the
  * stream's untyped view and close is the view's close() (both NULL when

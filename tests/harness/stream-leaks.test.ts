@@ -26,6 +26,10 @@ const programs = [
   // Duplex.toWeb on a duplex with its readable side disabled moves the
   // caller's type option into the temporary readable source.
   "tests/corpus/stream-duplex-to-web-options.ts",
+  // The web adapters hold each other: the context retains the node stream
+  // and the web stream, whose controller callbacks retain the context.
+  "tests/corpus/stream-web-to-web.ts",
+  "tests/corpus/stream-web-from-web.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")("streams under LeakSanitizer", () => {

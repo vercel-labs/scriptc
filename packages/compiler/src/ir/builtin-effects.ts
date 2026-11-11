@@ -524,6 +524,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // hook's error rejects the returned promise.
   "stream.asyncDispose",
   "sp.pipeline",
+  "sp.pipelineMissing",
   "sp.pipelineStages",
   "sp.pipelineStagesOpts",
   "stream.pipelineStages",
@@ -571,6 +572,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.end",
   "writable.uncork",
   "writable.setDefaultEncoding",
+  "readable.setEncodingDyn",
   "stream.duplexFromGen",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",

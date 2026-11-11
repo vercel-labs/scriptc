@@ -8,12 +8,6 @@ import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
 import { PerformanceObserver, performance } from "node:perf_hooks";
-import { Readable, Writable } from "node:stream";
-
-// stream: the web-stream adapters going out.
-const webReadable = Readable.toWeb(Readable.from(["a"]));
-const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
-console.log(typeof webReadable, typeof webWritable);
 
 // url: object URLs.
 console.log(URL.createObjectURL(new Blob(["x"])));

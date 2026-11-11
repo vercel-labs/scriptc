@@ -837,6 +837,9 @@ function publicDetail(tier) {
       return "Not implemented: a test pins the refusal a program using this API gets.";
     if (tier.status === "not-implemented")
       return "Not implemented in scriptc's static module-loader subset yet.";
+    if (source === "compiler-feature:stream.stream.Readable.from") {
+      return "Builds a Readable from strings, Buffers, arrays, Sets, Maps, generators and class iterables, with the objectMode, highWaterMark, encoding and signal options; a source known only at run time keeps the checked-dynamic form's option refusal.";
+    }
     if (
       source === "compiler-feature:stream.stream.getDefaultHighWaterMark" ||
       source === "compiler-feature:stream.stream.setDefaultHighWaterMark"
@@ -855,6 +858,9 @@ function publicDetail(tier) {
       )
     ) {
       return "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.";
+    }
+    if (source === "compiler-feature:stream.stream.pipeline") {
+      return "Supports the stream-list forms with an array literal or a const list of stages, expanded as Node's pipelineImpl does, including the fewer-than-two-stages errors; a stage list built at run time is refused at compile time.";
     }
     if (
       source.startsWith("compiler-feature:stream.") ||

@@ -89613,6 +89613,8 @@
           "tests/corpus/stream-default-high-water-mark.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-pipeline-stream-list.ts",
+          "tests/corpus/stream-readable-from-options.ts",
           "tests/corpus/stream-readable-wrap.ts",
           "tests/corpus/stream-web-from-web.ts",
           "tests/corpus/stream-web-to-web.ts",
@@ -89732,20 +89734,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89940,20 +89931,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90124,7 +90104,8 @@
           "tests/corpus/5421-readable-from-generators.cjs",
           "tests/corpus/5610-readable-from-sets-and-views.ts",
           "tests/corpus/5611-readable-from-class-iterables.ts",
-          "tests/corpus/5612-readable-from-iterables.cjs"
+          "tests/corpus/5612-readable-from-iterables.cjs",
+          "tests/corpus/stream-readable-from-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90613,20 +90594,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:stream.pipeline",
+        "evidence": "compiler-feature:stream.stream.pipeline",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-pipeline-stream-list.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90797,7 +90767,8 @@
           "tests/corpus/5421-readable-from-generators.cjs",
           "tests/corpus/5610-readable-from-sets-and-views.ts",
           "tests/corpus/5611-readable-from-class-iterables.ts",
-          "tests/corpus/5612-readable-from-iterables.cjs"
+          "tests/corpus/5612-readable-from-iterables.cjs",
+          "tests/corpus/stream-readable-from-options.ts"
         ]
       },
       "anchorSource": "ancestor"

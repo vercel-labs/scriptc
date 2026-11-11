@@ -6063,6 +6063,17 @@ ScrPromise *scr_sp_pipeline(double n, ScrStream **streams) {
   return p;
 }
 
+/* pipelineImpl's first ladder for the promise form: a stream list of
+ * fewer than two stages rejects (the callback form throws before any
+ * stage is touched). */
+ScrPromise *scr_sp_pipeline_missing(void) {
+  ScrPromise *p = scr_promise_new();
+  static const char msg[] = "The \"streams\" argument must be specified";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_MISSING_ARGS");
+  scr_promise_reject_pending(p);
+  return p;
+}
+
 /* The promise form's settlement with the destination's value: a
  * promise destination's value settles the result as it settled the
  * destination's own promise (same inner type). */
@@ -7288,6 +7299,29 @@ ScrStream *scr_stream_set_default_encoding(ScrStream *s, ScrDyn *enc) {
   scr_str_release(canonical);
   if (s->st->has_w) scr_stream_store_default_enc(s->st, lower);
   else scr_str_release(lower);
+  return scr_stream_retain(s);
+}
+
+/* setEncoding(enc) with a run-time value: Node's `if (options.encoding)`
+ * skips a falsy value, the spelling as given is what readableEncoding
+ * answers, and a name StringDecoder rejects throws ERR_UNKNOWN_ENCODING
+ * (scr_bytes_normalize_encoding's ladder, which coerces non-strings as
+ * getEncodingOps does). Borrows enc; answers the stream +1, or NULL with
+ * the exception pending. */
+ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, ScrDyn *enc) {
+  if (enc == NULL || !scr_dyn_truthy(enc)) return scr_stream_retain(s);
+  ScrStr *raw =
+      enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str) : scr_dyn_string_coerce_js(enc);
+  if (raw == NULL) return NULL;
+  ScrStr *canonical = scr_bytes_normalize_encoding(raw);
+  if (canonical == NULL) {
+    scr_str_release(raw);
+    return NULL;
+  }
+  scr_stream_release(scr_stream_set_encoding(s, canonical));
+  scr_stream_release(scr_stream_set_encoding_name(s, raw));
+  scr_str_release(canonical);
+  scr_str_release(raw);
   return scr_stream_retain(s);
 }
 

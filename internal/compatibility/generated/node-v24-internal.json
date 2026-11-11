@@ -85415,6 +85415,8 @@
           "tests/corpus/6862-readline-chained-listeners.cjs",
           "tests/corpus/8790-readline-question-dyn-options.cjs",
           "tests/corpus/readline-close-in-line-listener.ts",
+          "tests/corpus/readline-history-live.cjs",
+          "tests/corpus/readline-history-live.ts",
           "tests/corpus/readline-line-close-history.ts",
           "tests/corpus/readline-line-listener-changes.ts",
           "tests/corpus/readline-line-separators.cjs",
@@ -85423,6 +85425,7 @@
           "tests/corpus/readline-output-resize.cjs",
           "tests/corpus/readline-prepend-listeners.ts",
           "tests/corpus/readline-prompt-values.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts",
           "tests/harness/readline-terminal-resize.test.ts"
         ]
       },
@@ -86631,11 +86634,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'history'",
         "tests": [
           "tests/corpus/5780-readline-history-options.ts",
-          "tests/corpus/5781-readline-history-options.cjs"
+          "tests/corpus/5781-readline-history-options.cjs",
+          "tests/corpus/readline-history-live.ts",
+          "tests/corpus/readline-history-live.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -86734,14 +86739,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGCONT'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -86791,14 +86797,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:readline.'SIGTSTP'",
         "tests": [
           "tests/corpus/5782-readline-terminal-editing.ts",
           "tests/corpus/5783-readline-terminal-completion.cjs",
           "tests/corpus/5784-readline-terminal-promises.ts",
           "tests/corpus/5785-readline-terminal-keys.ts",
-          "tests/corpus/5786-readline-terminal-history.cjs"
+          "tests/corpus/5786-readline-terminal-history.cjs",
+          "tests/fixtures/readline-terminal-suspend/main.ts"
         ]
       },
       "anchorSource": "exact"

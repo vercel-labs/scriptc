@@ -26,12 +26,15 @@ typedef void (*ScrRlHistoryFn)(ScrClosure *, ScrArr *); /* borrows the history *
 
 /* One listener: a user closure (fn: the line, error or history adapter;
  * NULL for the zero-argument events), or the async iterator's own
- * handler. */
+ * handler. A checked-dynamic 'history' listener has no adapter: `box` is
+ * the typed-ref recipe its argument (the history array itself) is boxed
+ * with, so the listener reads and writes the interface's array. */
 typedef struct {
   ScrClosure *cb;
   void *fn;
   bool once;
   bool iter;
+  const ScrDynTypedRefRecipe *box;
 } RlEntry;
 
 typedef struct {

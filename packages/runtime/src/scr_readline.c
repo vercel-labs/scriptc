@@ -84,21 +84,23 @@ static void scr_rl_mark_event(ScrRl *rl, int ev) {
   if (rl->ev[ev].n == 0 && rl->ev_seq[ev] == 0) rl->ev_seq[ev] = ++rl->ev_seq_next;
 }
 
-static void scr_rl_add(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once, bool iter) {
+static void scr_rl_add(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once, bool iter,
+                       const ScrDynTypedRefRecipe *box) {
   RlList *l = &rl->ev[ev];
   scr_rl_mark_event(rl, ev);
   l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
-  l->v[l->n++] = (RlEntry){cb, fn, once, iter};
+  l->v[l->n++] = (RlEntry){cb, fn, once, iter, box};
 }
 
 /* prependListener's registration: the same entry at the FRONT of the
  * event's list, so it runs before the listeners already there. */
-static void scr_rl_add_first(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+static void scr_rl_add_first(ScrRl *rl, int ev, ScrClosure *cb /*moves*/, void *fn, bool once,
+                             const ScrDynTypedRefRecipe *box) {
   RlList *l = &rl->ev[ev];
   scr_rl_mark_event(rl, ev);
   l->v = scr_rl_grow(l->v, &l->cap, l->n + 1, sizeof *l->v);
   memmove(&l->v[1], &l->v[0], l->n * sizeof *l->v);
-  l->v[0] = (RlEntry){cb, fn, once, false};
+  l->v[0] = (RlEntry){cb, fn, once, false, box};
   l->n++;
 }
 
@@ -170,6 +172,13 @@ void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err) {
         ((ScrRlLineFn)e.fn)(e.cb, scr_str_retain(line));
       } else if (ev == RL_EV_ERROR) {
         ((ScrRlErrFn)e.fn)(e.cb, err);
+      } else if (ev == RL_EV_HISTORY && e.box) {
+        /* A checked-dynamic listener gets the interface's array itself, as
+         * the interned capsule a typed read of rl.history boxes it into:
+         * `h === rl.history` holds and the listener's writes land in the
+         * array. The callee owns the +1 capsule. */
+        ScrDyn *view = scr_dyn_typed_box(scr_rl_history_of(rl), e.box);
+        ((void (*)(ScrClosure *, ScrDyn *))e.cb->fn)(e.cb, view);
       } else if (ev == RL_EV_HISTORY && e.fn) {
         ((ScrRlHistoryFn)e.fn)(e.cb, scr_rl_history_of(rl));
       } else {
@@ -675,9 +684,9 @@ void scr_rl_iter_open(double id) {
   if (!rl || rl->iter) return;
   rl->iter = calloc(1, sizeof *rl->iter);
   if (!rl->iter) scr_rl_oom();
-  scr_rl_add(rl, RL_EV_LINE, NULL, NULL, false, true);
-  scr_rl_add(rl, RL_EV_ERROR, NULL, NULL, false, true);
-  scr_rl_add(rl, RL_EV_CLOSE, NULL, NULL, false, true);
+  scr_rl_add(rl, RL_EV_LINE, NULL, NULL, false, true, NULL);
+  scr_rl_add(rl, RL_EV_ERROR, NULL, NULL, false, true, NULL);
+  scr_rl_add(rl, RL_EV_CLOSE, NULL, NULL, false, true, NULL);
 }
 
 /* next(): a promise of the next line, or of undefined once done. */
@@ -1294,24 +1303,26 @@ void scr_rl_write(double id, ScrStr *data) {
 /* on/once for 'line' (fn: the line adapter), 'close', 'pause', 'resume'
  * (fn NULL), and 'error' (fn: the error adapter). Listeners added after
  * 'close' was emitted never run. */
-void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+               const ScrDynTypedRefRecipe *box, bool once) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || ev < 0 || ev >= RL_EV_COUNT) {
     scr_closure_release(cb);
     return;
   }
-  scr_rl_add(rl, (int)ev, cb, fn, once, false);
+  scr_rl_add(rl, (int)ev, cb, fn, once, false, box);
 }
 
 /* prependListener/prependOnceListener: the same registration, at the front
  * of the event's list. */
-void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once) {
+void scr_rl_on_first(double id, double ev, ScrClosure *cb /*moves*/, void *fn,
+                     const ScrDynTypedRefRecipe *box, bool once) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || ev < 0 || ev >= RL_EV_COUNT) {
     scr_closure_release(cb);
     return;
   }
-  scr_rl_add_first(rl, (int)ev, cb, fn, once);
+  scr_rl_add_first(rl, (int)ev, cb, fn, once, box);
 }
 
 /* removeListener/off: the LAST registration of the same function leaves
@@ -1726,30 +1737,6 @@ ScrPromise *scr_rl_ui_commit(double id) {
  * interface keeps the array. */
 void scr_rl_history_thunk_arr(ScrClosure *cb, ScrArr *history) {
   ((void (*)(ScrClosure *, ScrArr *))cb->fn)(cb, scr_arr_retain(history));
-}
-
-/* A checked-dynamic (history) listener: it gets a dyn copy of the
- * history, and its changes to the copy are written back to the
- * interface's array when it returns. */
-void scr_rl_history_thunk_dyn(ScrClosure *cb, ScrArr *history) {
-  ScrDyn *copy = scr_dyn_new_arr();
-  double n = scr_arr_len(history);
-  for (double i = 0; i < n; i++) {
-    ScrStr *s = scr_arr_peek_ref(history, i);
-    scr_dyn_arr_push(copy, s ? scr_dyn_new_str(s) : scr_dyn_retain(scr_dyn_undefined()));
-  }
-  ((void (*)(ScrClosure *, ScrDyn *))cb->fn)(cb, scr_dyn_retain(copy));
-  if (!scr_exc_pending()) {
-    double m = scr_dyn_arr_len(copy);
-    scr_arr_set_len(history, 0);
-    for (double i = 0; i < m; i++) {
-      ScrDyn *e = scr_dyn_arr_at(copy, i);
-      ScrStr *s = e->kind == SCR_DYN_STR ? scr_str_retain(e->v.str) : scr_dyn_string_coerce(e);
-      scr_arr_push_ref(history, s);
-      scr_dyn_release(e);
-    }
-  }
-  scr_dyn_release(copy);
 }
 
 /* A zero-param line/answer callback: the text is ignored. */

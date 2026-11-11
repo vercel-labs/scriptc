@@ -57,7 +57,8 @@
   The `history`, `historySize`, `removeHistoryDuplicates`, `completer`, `tabSize`, and `escapeCodeTimeout` options are validated as in Node.
   With `terminal: true`, or with no `terminal` option and `process.stdout` as the output when it is a TTY, the interface runs Node's terminal mode: the editing keys, the kill ring, undo and redo, history recording and recall, Tab completion through the completer, Ctrl+C, Ctrl+D, and Ctrl+Z, `TERM=dumb`, redrawing the prompt and line when the output's `'resize'` event arrives, and the same escape sequences written to the output.
   The cursor never stops between the two UTF-16 units of a supplementary character: where Node's Up or Down movement through a multiline line would, the cursor moves to the character's start or end.
-  In JavaScript, a `'history'` listener receives a copy of the history; its changes are written back when the listener returns, but the copy is not `rl.history` itself.
+  A `'history'` listener receives the interface's history array itself: the same object `rl.history` answers, in typed and JavaScript code alike.
+  A change the listener makes lands in that array, so an entry it removes never reaches recall or the later history.
   `rl.history`, `historySize`, `historyIndex`, `crlfDelay`, `tabSize`, `escapeCodeTimeout`, `line`, `cursor`, and `terminal` read as in Node; `rl.cursor` is `undefined` on an interface that is not a terminal.
   `rl[Symbol.dispose]()` closes the interface, and `instanceof` with `readline.Interface` or `readlinePromises.Interface` answers whether the interface came from that module, as in Node.
   In JavaScript, the input and output can be any expression that evaluates to a stream, such as a function's result or an object's member; a value that is not a stream is unsupported.

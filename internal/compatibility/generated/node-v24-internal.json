@@ -31389,7 +31389,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/5648-dns-lookup-forms.ts",
@@ -31397,6 +31397,8 @@
           "tests/corpus/5650-dns-lookup-errors-untyped.cjs",
           "tests/corpus/dns-lookup-options.ts",
           "tests/corpus/dns-promises-lookup.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts",
           "tests/corpus/dns-promises-untyped.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
           "tests/corpus/node-dns-resolve-records.cjs",
@@ -31446,11 +31448,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.Resolver",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31473,11 +31477,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.resolver.cancel",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31500,11 +31506,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.getServers",
         "tests": [
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31583,12 +31591,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolve",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31611,12 +31621,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolve4",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31639,12 +31651,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolve6",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31667,12 +31681,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveAny",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31695,12 +31711,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveCaa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31723,12 +31741,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveCname",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31751,12 +31771,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveMx",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31779,12 +31801,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveNaptr",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31807,12 +31831,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveNs",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31835,12 +31861,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolvePtr",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31863,12 +31891,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveSoa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31891,12 +31921,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveSrv",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31919,12 +31951,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveTlsa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31947,12 +31981,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.resolveTxt",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -31975,12 +32011,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.reverse",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32003,11 +32041,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.setDefaultResultOrder",
         "tests": [
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32058,11 +32098,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dnsPromises.setServers",
         "tests": [
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32131,11 +32173,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolve",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32187,11 +32231,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.Resolver",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32214,11 +32260,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.Resolver",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32241,11 +32289,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.resolver.cancel",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32268,11 +32318,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.resolver.setLocalAddress",
         "tests": [
           "tests/corpus/node-dns-resolver-class.ts",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32405,11 +32457,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolve",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32432,11 +32486,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolve4",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32459,11 +32515,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolve6",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32486,11 +32544,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveAny",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32513,11 +32573,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveCname",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32540,11 +32602,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveCaa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32567,11 +32631,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveMx",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32594,11 +32660,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveNaptr",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32621,11 +32689,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveNs",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32648,11 +32718,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolvePtr",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32675,11 +32747,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveSoa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32702,11 +32776,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveSrv",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32729,11 +32805,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveTlsa",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32756,11 +32834,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.resolveTxt",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32783,11 +32863,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.reverse",
         "tests": [
           "tests/corpus/node-dns-resolve-records.cjs",
-          "tests/corpus/node-dns-resolve-errors.cjs"
+          "tests/corpus/node-dns-resolve-errors.cjs",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"
@@ -32868,11 +32950,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dns.dns.setServers",
         "tests": [
           "tests/corpus/node-dns-resolve-errors.cjs",
-          "tests/corpus/node-dns-resolver-class.ts"
+          "tests/corpus/node-dns-resolver-class.ts",
+          "tests/corpus/dns-promises-resolve.cjs",
+          "tests/corpus/dns-promises-resolver.ts"
         ]
       },
       "anchorSource": "exact"

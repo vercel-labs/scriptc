@@ -15948,7 +15948,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -15971,7 +15971,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -15994,7 +15994,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16017,7 +16017,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16086,7 +16086,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16109,7 +16109,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16132,7 +16132,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16155,7 +16155,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16178,7 +16178,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16201,7 +16201,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16224,7 +16224,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16247,7 +16247,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16270,7 +16270,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16293,7 +16293,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16316,7 +16316,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16339,7 +16339,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16362,7 +16362,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16385,7 +16385,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16408,7 +16408,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16431,7 +16431,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16477,7 +16477,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16500,7 +16500,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16546,7 +16546,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16569,7 +16569,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16592,7 +16592,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16615,7 +16615,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16707,7 +16707,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16730,7 +16730,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16753,7 +16753,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16776,7 +16776,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16799,7 +16799,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16822,7 +16822,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16845,7 +16845,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16868,7 +16868,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16891,7 +16891,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16914,7 +16914,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16937,7 +16937,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16960,7 +16960,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -16983,7 +16983,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -17006,7 +17006,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -17029,7 +17029,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }
@@ -17098,7 +17098,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.",
         "verification": "test-backed"
       }

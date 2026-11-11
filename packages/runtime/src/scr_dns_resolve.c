@@ -1950,12 +1950,16 @@ static ScrPromise *scr_dnsq_promise_start(ScrDnsResolver *r, const ScrStr *bindi
     char bbuf[32];
     const char *bname = scr_dnsq_binding_name(binding, bbuf, sizeof bbuf);
     ScrDyn *err = scr_dnsq_error("EINVAL", bname, name_view->v.str);
-    /* scr_dnsq_start consumed its retained promise; this frame's own
-     * reference and the argument views go before the throw unwinds. */
-    scr_promise_release(p);
+    /* The callback form throws c-ares's synchronous EINVAL out of the
+     * call, but the promise forms report it the way lib/internal/dns/
+     * promises.js does: the promise rejects. scr_dnsq_start consumed its
+     * retained promise; the argument views go, then the rejection is
+     * moved into `p` and the promise is returned. */
     if (name_owned != NULL) scr_dyn_release(name_owned);
     if (options_owned != NULL) scr_dyn_release(options_owned);
     scr_dyn_throw(err);
+    scr_promise_reject_pending(p);
+    return p;
   }
   if (name_owned != NULL) scr_dyn_release(name_owned);
   if (options_owned != NULL) scr_dyn_release(options_owned);

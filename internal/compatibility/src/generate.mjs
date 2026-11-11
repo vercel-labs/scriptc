@@ -711,6 +711,9 @@ function publicDetail(tier) {
     if (source === "compiler-feature:buffer.Buffer") {
       return "Buffers are byte sequences with Node's indexing, slicing, comparisons and the documented instance methods.";
     }
+    if (source === "compiler-feature:globals.Buffer") {
+      return "The global binding is node:buffer's Buffer constructor: its static constructors and the documented instance methods run through the global name, and JavaScript reads the same value from globalThis and the module.";
+    }
     if (
       /^compiler-feature:(?:buffer\.(?:Blob|File|blob\.\w+)|globals\.(?:Blob|File))$/.test(source)
     ) {
@@ -755,16 +758,30 @@ function publicDetail(tier) {
       return "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.";
     }
     if (
+      /^compiler-feature:zlib\.zlib\.(?:brotliCompress|brotliCompressSync|brotliDecompress|brotliDecompressSync|createBrotliCompress|createBrotliDecompress)$/.test(
+        source,
+      )
+    ) {
+      return "The Brotli one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply every BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* parameter with Node's errors and return Buffers; the callback forms settle on the worker pool.";
+    }
+    if (
+      /^compiler-feature:zlib\.zlib\.(?:zstdCompress|zstdCompressSync|zstdDecompress|zstdDecompressSync|createZstdCompress|createZstdDecompress)$/.test(
+        source,
+      )
+    ) {
+      return "The zstd one-shots take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, apply ZSTD_c_* and ZSTD_d_* parameters, dictionaries and pledged source sizes with Node's errors, and return Buffers; the callback forms settle on the worker pool.";
+    }
+    if (
       /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
         source,
       )
     ) {
-      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().";
+      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.";
     }
     if (
       /^compiler-feature:zlib\.(?:zlib\.(?:ZstdCompress|ZstdDecompress)|ZstdOptions)$/.test(source)
     ) {
-      return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().";
+      return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params(), and the info option is not supported yet.";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";

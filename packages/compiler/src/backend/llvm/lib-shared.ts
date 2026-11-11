@@ -2062,6 +2062,7 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.setTimeoutHandle": "scr_test_mt_set_timeout_handle",
   "timers.setInterval": "scr_test_mt_set_interval",
   "timers.clearTimeout": "scr_test_mt_clear_timeout",
+  "timers.close": "scr_test_mt_clear_timeout",
   "timers.clearInterval": "scr_test_mt_clear_interval",
   "timers.unref": "scr_test_mt_unref",
   "timers.ref": "scr_test_mt_ref",

@@ -47,6 +47,9 @@ extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
 ScrStr *scr_emitter_class_name(const ScrEmitter *em); /* +1 */
+/* NodeEventTarget registries: suppress the newListener/removeListener meta
+ * events (emit through scr_emitter_emit_flex is already raw). */
+void scr_emitter_mark_plain(ScrEmitter *em);
 /* Internal owner hook; observes listener presence without running script. */
 void scr_emitter_observe(ScrEmitter *em,
                         void (*observe)(void *, const ScrStr *, bool), void *context);
@@ -117,6 +120,9 @@ ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn 
  * program emits only through untyped values or computed names. */
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 bool once, bool prepend);
+/* NodeEventTarget's Set semantics: whether `fn` is already registered for
+ * `name` by a plain on()/addListener() (once() wrappers do not match). */
+bool scr_emitter_has_listener_fn(ScrEmitter *em, const ScrStr *name, const ScrDyn *fn);
 /* Registration and emit through an untyped value (the class dispatch of
  * compiled emitters): on_any adds runtime typed adapters under 'error' and
  * the meta events and installs the dynamic half; emit_any keeps Node's
@@ -286,6 +292,17 @@ void scr_emitter_esm_sync(void);
 /* True when the emitter has at least one listener for `name` — the
  * stream unit's registration probe (and anyone else's). */
 bool scr_emitter_has(ScrEmitter *em, const char *name);
+
+/* A NodeEventTarget (Worker, MessagePort) is an emitter behind a dyn
+ * handle: the node:events helpers (getEventListeners, listenerCount,
+ * getMaxListeners, setMaxListeners) accept one, like Node's do. The
+ * worker unit installs this accessor (the scr_message_port_ops pattern —
+ * scr_event_target.c is linked without it); NULL when no NodeEventTarget
+ * can exist. Answers the view's emitter, borrowed, or NULL. */
+typedef struct ScrNodeEventTargetOps {
+  ScrEmitter *(*emitter_of)(const ScrDyn *self);
+} ScrNodeEventTargetOps;
+extern SCR_TL const ScrNodeEventTargetOps *scr_node_event_target_ops;
 /* Post-registration hook (one registrant: scr_stream_install) — called at
  * the END of scr_emitter_on with the emitter and the event name, so the
  * stream unit can start flowing on the first 'data' listener. NULL when

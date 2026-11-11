@@ -581,6 +581,9 @@ function buildLibFnSignatures() {
       result: F64,
     },
     "timers.clearTimeout": { argTypes: [F64], result: VOID },
+    /** Timeout.close() — clearTimeout(this) that returns the handle for
+     * chaining. Node's legacy cancel; mock-aware like clearTimeout. */
+    "timers.close": { argTypes: [F64], result: F64 },
     /** Timeout.unref()/ref()/hasRef() — loop-liveness bookkeeping over the
      * handle id. unref/ref RETURN the handle (f64) for chaining; hasRef
      * returns bool. */

@@ -212,14 +212,65 @@ export function lowerTimeoutMethodCall(
     const handle = lowerer.lowerExprExpecting(access.expression, F64);
     return { kind: "libCall", fn: "timers.refresh", args: [handle], type: F64, loc };
   }
+  if (name === "close" && call.arguments.nodes.length === 0 && !isImmediate) {
+    // Node's legacy cancel: clearTimeout(this), returning the handle.
+    // Like clearTimeout it is mock-aware (mock.timers' Timeout.close
+    // clears the mock entry).
+    const handle = lowerer.lowerExprExpecting(access.expression, F64);
+    return { kind: "libCall", fn: "timers.close", args: [handle], type: F64, loc };
+  }
   lowerer.noLowering(
     `${isImmediate ? "Immediate" : "Timeout"}.${name}`,
     call,
     isImmediate
       ? "unref(), ref(), and hasRef() are the supported Immediate methods"
-      : "unref(), ref(), hasRef(), and refresh() are the supported Timeout methods",
+      : "unref(), ref(), hasRef(), refresh(), and close() are the supported Timeout methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** `t[Symbol.dispose]()` / `t[Symbol.toPrimitive]()` and their
+ * `t["close"]()` spelling on a timer handle, which the property-access
+ * path never reaches. Both handles share the numeric id; Node's
+ * Symbol.dispose clears (undefined result) and Symbol.toPrimitive answers
+ * the id. Null when the receiver isn't a handle or the key isn't one of
+ * these members. */
+export function lowerTimerElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  if (call.arguments.nodes.length !== 0) return null;
+  const isTimeout = isTimeoutTyped(lowerer, access.expression);
+  const isImmediate = !isTimeout && isTimerHandleTyped(lowerer, access.expression, "Immediate");
+  if (!isTimeout && !isImmediate) return null;
+  const loc = locOf(call);
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  const symbolName = ts.isPropertyAccessExpression(key)
+    ? lowerer.stdlibGlobalMember(key, "Symbol")
+    : null;
+  const stringKey = ts.isPropertyAccessExpression(key) ? null : lowerer.foldedStringKeyOf(key);
+  if (symbolName === "toPrimitive") {
+    // The id itself; Node returns it unchanged and clearing still works.
+    return lowerer.lowerExprExpecting(access.expression, F64);
+  }
+  if (stringKey === "close" && !isImmediate) {
+    // The property spelling that reaches here only through a string key.
+    const handle = lowerer.lowerExprExpecting(access.expression, F64);
+    return { kind: "libCall", fn: "timers.close", args: [handle], type: F64, loc };
+  }
+  if (symbolName !== "dispose") return null;
+  // Node's dispose methods clear and answer undefined (unlike close());
+  // the declared result is void, so the clear call's unit is the value.
+  return {
+    kind: "libCall",
+    fn: isImmediate ? "timers.clearImmediate" : "timers.clearTimeout",
+    args: [lowerer.lowerExprExpecting(access.expression, F64)],
+    type: VOID,
+    loc,
+  };
 }
 
 // node:timers/promises — setTimeout([delay[, value[, options]]]) and

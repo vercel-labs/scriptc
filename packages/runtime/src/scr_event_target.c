@@ -1383,6 +1383,15 @@ static ScrDyn *scr_et_native_value(ScrEtListener *l) {
  * and its ERR_INVALID_ARG_TYPE for any other value that is neither an
  * EventEmitter nor an EventTarget (`argname` is "emitter" or
  * "eventTargets"). */
+/* The worker unit installs the NodeEventTarget accessor (NULL without it):
+ * a Worker or MessagePort carries its listeners in an emitter registry
+ * rather than an EventTarget core. The pointer itself lives in the emitter
+ * unit (scr_events_emitter.c), which links whenever a NodeEventTarget can. */
+
+static ScrEmitter *scr_et_helper_emitter(const ScrDyn *self) {
+  return scr_node_event_target_ops ? scr_node_event_target_ops->emitter_of(self) : NULL;
+}
+
 static ScrEventTargetCore *scr_et_helper_target_of(const ScrDyn *self, const char *argname,
                                                    const char *prop, bool plain_read) {
   if (plain_read && (self->kind == SCR_DYN_NULL || self->kind == SCR_DYN_UNDEF)) {
@@ -1394,6 +1403,9 @@ static ScrEventTargetCore *scr_et_helper_target_of(const ScrDyn *self, const cha
   }
   ScrEventTargetCore *core = scr_et_core_of(self);
   if (!core) {
+    /* A NodeEventTarget answers through its emitter; the caller falls back
+     * to it. Any other value is Node's ERR_INVALID_ARG_TYPE. */
+    if (scr_et_helper_emitter(self) != NULL) return NULL;
     scr_dyn_arg_type_fail(argname, "an instance of EventEmitter or EventTarget", self);
     return NULL;
   }
@@ -1407,9 +1419,12 @@ static ScrEventTargetCore *scr_et_helper_target(const ScrDyn *self, const char *
 
 ScrDyn *scr_event_target_listeners(const ScrDyn *self, const ScrStr *type) {
   ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listeners");
+  if (!core) {
+    ScrEmitter *em = scr_et_helper_emitter(self);
+    return em ? scr_emitter_listeners_dyn(em, (ScrStr *)type) : scr_dyn_new_arr();
+  }
   /* The caller converts the array through a checked cast, which needs a
    * value even when the exception is pending. */
-  if (!core) return scr_dyn_new_arr();
   ScrDyn *out = scr_dyn_new_arr();
   const ScrEtRoot *root = scr_et_root_find(core, type);
   for (ScrEtListener *h = root ? root->head : NULL; h; h = h->next) {
@@ -1421,14 +1436,21 @@ ScrDyn *scr_event_target_listeners(const ScrDyn *self, const ScrStr *type) {
 
 ScrDyn *scr_event_target_listeners_dyn(const ScrDyn *self, const ScrDyn *type) {
   ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listeners");
-  if (!core) return scr_dyn_new_arr();
+  if (!core) {
+    ScrEmitter *em = scr_et_helper_emitter(self);
+    if (!em || type->kind != SCR_DYN_STR) return scr_dyn_new_arr();
+    return scr_emitter_listeners_dyn(em, type->v.str);
+  }
   if (type->kind != SCR_DYN_STR) return scr_dyn_new_arr();
   return scr_event_target_listeners(self, type->v.str);
 }
 
 double scr_event_target_listener_count(const ScrDyn *self, const ScrStr *type) {
   ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listenerCount");
-  if (!core) return 0;
+  if (!core) {
+    ScrEmitter *em = scr_et_helper_emitter(self);
+    return em ? scr_emitter_listener_count(em, (ScrStr *)type) : 0;
+  }
   const ScrEtRoot *root = scr_et_root_find(core, type);
   return root ? (double)root->size : 0;
 }
@@ -1437,15 +1459,27 @@ double scr_event_target_listener_count(const ScrDyn *self, const ScrStr *type) {
  * is not a string finds none. */
 double scr_event_target_listener_count_dyn(const ScrDyn *self, const ScrDyn *type) {
   ScrEventTargetCore *core = scr_et_helper_target(self, "emitter", "listenerCount");
-  if (!core) return 0;
+  if (!core) {
+    ScrEmitter *em = scr_et_helper_emitter(self);
+    if (!em || type->kind != SCR_DYN_STR) return 0;
+    return scr_emitter_listener_count(em, type->v.str);
+  }
   if (type->kind != SCR_DYN_STR) return 0;
   return scr_event_target_listener_count(self, type->v.str);
 }
 
+/* events.getMaxListeners(emitterOrTarget) — the module's static helper.
+ * Node reads `_maxListeners` off a value that has getMaxListeners: a
+ * NodeEventTarget (Worker, MessagePort) keeps its limit in
+ * kMaxEventTargetListeners instead, so the static form answers the process
+ * default even though the instance method reports the target's own. Plain
+ * EventTargets have no getMaxListeners and are read through
+ * kMaxEventTargetListeners, which our cores hold as max_listeners. */
 double scr_event_target_get_max(const ScrDyn *self) {
   ScrEventTargetCore *core =
       scr_et_helper_target_of(self, "emitter", "getMaxListeners", false);
-  return core ? core->max_listeners : 0;
+  if (!core) return scr_emitter_default_max;
+  return core->max_listeners;
 }
 
 /* Node's validateNumber(n, 'setMaxListeners', 0): a negative or NaN limit
@@ -1466,7 +1500,11 @@ static bool scr_et_max_ok(double n) {
 void scr_event_target_set_max(const ScrDyn *self, double n) {
   if (!scr_et_max_ok(n)) return;
   ScrEventTargetCore *core = scr_et_helper_target(self, "eventTargets", "setMaxListeners");
-  if (!core) return;
+  if (!core) {
+    ScrEmitter *em = scr_et_helper_emitter(self);
+    if (em) scr_emitter_release(scr_emitter_set_max(em, n));
+    return;
+  }
   core->max_listeners = n;
   /* Node clears the leak-warning latch with the limit. */
   core->warned = false;

@@ -1,6 +1,7 @@
 #include "scr_worker.h"
 
 #ifdef SCR_WORKERS
+#include <stdio.h>
 #include <stdlib.h>
 
 extern int sc_worker_entry(uint32_t root);
@@ -214,6 +215,31 @@ static void scr_worker_port_listeners(void *ptr, const ScrStr *name, bool presen
   view->referenced = present;
 }
 
+/** The internal 'newListener'/'removeListener' listeners Node's
+ * NodeEventTarget registers at construction (they keep the DOM listener
+ * map and the EventEmitter surface in sync): they make eventNames(),
+ * listenerCount() and listeners() of a Worker or MessagePort report the
+ * meta events, as Node's do. The port's own start-on-'message' bookkeeping
+ * is the observer below, so these only have to exist. */
+static ScrDyn *scr_worker_meta_noop(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_worker_seed_meta_listeners(ScrEmitter *em) {
+  static const char *const names[] = {"newListener", "removeListener"};
+  for (size_t i = 0; i < 2; i++) {
+    ScrDyn *listener =
+      scr_dyn_new_func(scr_closure_new(NULL, 0), scr_worker_meta_noop, 1, "(name)", "");
+    ScrStr *name = scr_str_new(names[i], strlen(names[i]));
+    scr_emitter_release(scr_emitter_on_any(em, name, listener, false, false));
+    scr_str_release(name);
+    scr_dyn_release(listener);
+  }
+}
+
 static ScrWorkerView *scr_worker_view_new(bool port) {
   static ScrCycType cyc_type = { &scr_worker_view_trace, &scr_worker_view_gcfree, SCR_CYC_KIND_WORKER_VIEW };
   ScrWorkerView *view = scr_cyc_alloc(sizeof(*view), &cyc_type);
@@ -223,6 +249,10 @@ static ScrWorkerView *scr_worker_view_new(bool port) {
   view->events = scr_emitter_new();
   view->events->cls = port ? "MessagePort" : "Worker";
   if (port) scr_emitter_observe(view->events, scr_worker_port_listeners, view);
+  /* NodeEventTarget semantics: the seeded meta listeners never fire on
+   * add/remove, and emit is raw dispatch. */
+  scr_emitter_mark_plain(view->events);
+  scr_worker_seed_meta_listeners(view->events);
   scr_obj_alloc_note();
   return view;
 }
@@ -419,6 +449,11 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     if (scr_exc_pending()) return NULL;
     if (!argc || args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
+    /* NodeEventTarget keeps one entry per listener (Node's Set holds the
+     * original function, once() included): any second registration of the
+     * same function is a no-op. */
+    if (scr_emitter_has_listener_fn(view->events, args[0]->v.str, listener))
+      return scr_dyn_retain(self);
     scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
@@ -445,6 +480,35 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
       ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
       : scr_emitter_listener_count(view->events, args[0]->v.str));
   }
+  /* NodeEventTarget's emit/eventNames/setMaxListeners/getMaxListeners —
+   * the surface MessagePort and Worker share with EventEmitter. Emit is
+   * the target's raw dispatch: exactly one argument (Node's `emit(type,
+   * arg)` ignores the rest), no 'error' throw with no listener, and no
+   * meta events; typed listeners are reached through the same registry. */
+  if (method_is(method, "emit")) {
+    if (!argc || args[0]->kind != SCR_DYN_STR) {
+      char detail[64];
+      const char *received =
+        scr_dyn_specific_type(argc ? args[0] : scr_dyn_undefined(), detail, sizeof detail);
+      char msg[192];
+      int n = snprintf(msg, sizeof msg,
+                       "The \"type\" argument must be of type string. Received %s", received);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+    /* Node's kHybridDispatch always hands the listener exactly one value. */
+    ScrDyn *arg = argc > 1 ? args[1] : scr_dyn_undefined();
+    bool had = scr_emitter_emit_flex(view->events, args[0]->v.str, &arg, 1);
+    return scr_exc_pending() ? NULL : scr_dyn_new_bool(had);
+  }
+  if (method_is(method, "eventNames")) return scr_emitter_event_names(view->events);
+  if (method_is(method, "setMaxListeners")) {
+    scr_emitter_release(
+      scr_emitter_set_max_chk(view->events, argc ? args[0] : scr_dyn_undefined()));
+    return scr_exc_pending() ? NULL : scr_dyn_retain(self);
+  }
+  if (method_is(method, "getMaxListeners"))
+    return scr_dyn_new_num(scr_emitter_get_max(view->events));
   if (view->port && method_is(method, "close")) {
     if (argc && args[0]->kind != SCR_DYN_UNDEF) {
       scr_dyn_check_listener(args[0], "callback");
@@ -941,6 +1005,19 @@ static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
 
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
+/* The node:events helpers' NodeEventTarget accessor (scr_event_target.c
+ * accepts a Worker or MessagePort through this). */
+static ScrEmitter *scr_node_event_target_emitter_of(const ScrDyn *self) {
+  if (!self || self->kind != SCR_DYN_HANDLE) return NULL;
+  if (self->v.handle.tag != SCR_DYNH_WORKER && self->v.handle.tag != SCR_DYNH_MESSAGE_PORT)
+    return NULL;
+  return ((ScrWorkerView *)self->v.handle.ptr)->events;
+}
+
+static const ScrNodeEventTargetOps scr_node_event_target_ops_value = {
+    scr_node_event_target_emitter_of,
+};
+
 static bool scr_worker_events_install(void) {
   if (scr_worker_events) return true;
   ScrMailbox *inbox = scr_worker_inbox();
@@ -960,6 +1037,7 @@ static bool scr_worker_events_install(void) {
   scr_dyn_handle_install(SCR_DYNH_WORKER, &worker_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_PORT, &port_ops);
   scr_port_ops_install();
+  scr_node_event_target_ops = &scr_node_event_target_ops_value;
   if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);

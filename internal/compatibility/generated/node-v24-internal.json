@@ -43133,6 +43133,7 @@
           "tests/corpus/compat-emitter-listener-events.ts",
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/events-erased-emit-args.ts",
+          "tests/corpus/events-node-event-target-port.mjs",
           "tests/diagnostics/compat-absent-node-apis.ts"
         ]
       },
@@ -43343,8 +43344,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.NodeEventTarget",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44158,8 +44162,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.NodeEventTarget",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44181,8 +44188,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.addListener",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44204,8 +44214,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.emit",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44227,8 +44240,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.eventNames",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44250,8 +44266,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.listenerCount",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44273,8 +44292,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.setMaxListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44296,8 +44318,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.getMaxListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44319,8 +44344,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.off",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44342,8 +44370,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.on",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44365,8 +44396,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.once",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44388,8 +44422,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.removeAllListeners",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44411,8 +44448,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-feature:events.nodeEventTarget.removeListener",
+        "tests": [
+          "tests/corpus/events-node-event-target-port.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98310,12 +98350,9 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
           "tests/corpus/1804-timers-module.ts",
           "tests/corpus/1805-timer-callback-args.ts",
           "tests/corpus/2093-timers-promises.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2852-timers-promises-interval.ts",
           "tests/corpus/5830-timers-promises-signal.ts",
@@ -98323,7 +98360,7 @@
           "tests/corpus/5889-timers-scheduler-signal.ts",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -98859,7 +98896,8 @@
         "status": "partial",
         "evidence": "compiler-feature:timers.immediate",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98909,10 +98947,10 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:timers.timeout.close",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99056,11 +99094,10 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:timeout",
+        "evidence": "compiler-feature:timers.timeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "exact"
@@ -99086,7 +99123,8 @@
         "status": "partial",
         "evidence": "compiler-feature:timers.timeout",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/timers-timeout-close.ts"
         ]
       },
       "anchorSource": "exact"

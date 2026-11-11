@@ -24,14 +24,15 @@
  * return, borrow for a read) and rejects every other position that could
  * produce or duplicate a reference. Wrappers that do not change ownership
  * (union boxing, upcasts) are transparent. */
-import type {
-  IrExpr,
-  IrFunction,
-  IrLocal,
-  IrModule,
-  IrStmt,
-  IrType,
-  IrUnionDef,
+import {
+  isUnitType,
+  type IrExpr,
+  type IrFunction,
+  type IrLocal,
+  type IrModule,
+  type IrStmt,
+  type IrType,
+  type IrUnionDef,
 } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { computeTraced } from "./cycle-analysis.js";
@@ -205,7 +206,11 @@ function treeSlot(slot: TypeSlot, name: string): boolean {
   }
 }
 
-/** `object:C`, `C | null`, or null when the type is anything else. */
+/** `object:C`, a union of one `C` arm and one or two unit arms (`null` and
+ * `undefined`, in either order), or null when the type is anything else.
+ * The nullable forms all lower to the single class pointer, so `C |
+ * undefined` is the same node as `C | null` (backend/llvm/nullable-unions.ts
+ * nullableShape). */
 function treeShape(
   type: IrType,
   name: string,
@@ -214,15 +219,15 @@ function treeShape(
   if (type.kind === "object") return type.className === name ? "object" : null;
   if (type.kind !== "union") return null;
   const arms = unions.get(type.unionId)?.arms;
-  if (arms === undefined || arms.length !== 2) return null;
+  if (arms === undefined || arms.length > 3) return null;
   let object = false;
-  let nulled = false;
+  let units = 0;
   for (const arm of arms) {
-    if (arm.kind === "nullT") nulled = true;
+    if (isUnitType(arm)) units++;
     else if (arm.kind === "object" && arm.className === name) object = true;
     else return null;
   }
-  return object && nulled ? "nullable" : null;
+  return object && units > 0 ? "nullable" : null;
 }
 
 function unionIdOf(type: IrType): string {

@@ -441,6 +441,22 @@ static const char *scr_zs_class_name(int mode) {
   }
 }
 
+/* The zlib members an untyped read of the stream answers: ZlibBase's
+ * bytesWritten property, and its close() (Node's close registers a 'close'
+ * callback and destroys; a callback through an untyped value stays the
+ * shared refusal). */
+static void scr_zs_view(ScrStream *s, ScrDyn *view) {
+  ScrZlibStream *zs = scr_stream_native(s, &scr_zs_release_v);
+  if (zs == NULL) return;
+  scr_dyn_obj_set(view, "bytesWritten", 12, scr_dyn_new_num(zs->bytes_written));
+}
+
+static void scr_zs_close_native(ScrStream *s) { scr_zlib_stream_close(s, NULL); }
+
+static const ScrStreamNativeOps scr_zs_native_ops = {
+  &scr_zs_view, &scr_zs_close_native, NULL,
+};
+
 ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   /* A typed options object is read through its materialized view. */
   if (opts != NULL && opts->kind == SCR_DYN_TYPED_REF) {
@@ -477,8 +493,11 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   zs->mode = mode;
   zs->eng = scr_zlib_engine_from_options(mode, &zo);
   scr_zlib_options_drop(&zo);
+  /* Node's binding takes the out length as a uint32, so a larger chunkSize
+   * truncates here exactly as it does there (2^32 asks for a 0-byte step and
+   * stalls, as it does in Node); keep the allocation non-empty regardless. */
   zs->chunk_size = (uint32_t)zo.chunk_size;
-  zs->out_buf = malloc(zs->chunk_size);
+  zs->out_buf = malloc(zs->chunk_size ? zs->chunk_size : 1);
   if (!zs->out_buf) scr_zlib_stream_oom();
   zs->default_flush = (int)zo.flush;
   zs->finish_flush = (int)zo.finish_flush;
@@ -513,7 +532,135 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   s->cls = scr_zs_class_name(mode);
   zs->s = s;
   scr_stream_set_native(s, zs, &scr_zs_release_v); /* moves the creation reference */
+  scr_stream_set_native_ops(s, &scr_zs_native_ops);
   return s;
+}
+
+/* The one-shot convenience methods' `info` result: the engine object the
+ * call used, boxed as the %Transform typed reference the { buffer, engine }
+ * record carries. Node's sync form leaves its engine open with the
+ * transformed byte count (its handle is closed, so later writes complete
+ * without transforming); the callback and promise forms hand over an
+ * engine that has ended and been destroyed, its 'close' on a later tick. */
+static void *scr_zs_stream_retain_v(void *p) {
+  return scr_stream_retain((ScrStream *)p);
+}
+
+static void scr_zs_stream_release_v(void *p) {
+  scr_stream_release((ScrStream *)p);
+}
+
+static ScrDyn *scr_zlib_info_engine(ScrStream *s, double bytes, bool ended) {
+  if (s == NULL) return NULL;
+  ScrZlibStream *zs = scr_stream_native(s, &scr_zs_release_v);
+  if (zs != NULL) {
+    zs->bytes_written = bytes;
+    zs->closed = true; /* Node's engine._handle === null */
+    if (ended) scr_stream_mark_ended(s);
+  }
+  if (ended) scr_stream_release(scr_stream_destroy(s, NULL));
+  ScrDyn *ref = scr_dyn_new_typed_ref_traced(s, &scr_zs_stream_retain_v, &scr_zs_stream_release_v,
+                                             "object:%Transform", 17, scr_stream_ref_view, NULL);
+  scr_stream_release(s);
+  return ref;
+}
+
+/* The { buffer, engine } record, both values moving in. */
+static ScrDyn *scr_zs_info_result(ScrBytes *buffer /* moves */, ScrDyn *engine /* moves */) {
+  ScrDyn *obj = scr_dyn_new_obj();
+  scr_dyn_obj_set(obj, "buffer", 6, scr_dyn_new_buffer(buffer));
+  scr_dyn_obj_set(obj, "engine", 6, engine);
+  scr_bytes_release(buffer);
+  return obj;
+}
+
+/* The builder the one-shot forms (scr_zlib.c) pair the run with: the
+ * engine ends and is destroyed, its 'close' on a later tick, and the
+ * record carries the transformed input length. A NULL Buffer means the
+ * call failed and only the engine is released. */
+static ScrDyn *scr_zs_info_build(void *engine, double input_len, ScrBytes *buffer /* moves */) {
+  if (buffer == NULL) {
+    scr_stream_release((ScrStream *)engine);
+    return NULL;
+  }
+  return scr_zs_info_result(buffer, scr_zlib_info_engine((ScrStream *)engine, input_len, true));
+}
+
+ScrDyn *scr_zlib_sync_opts_info(double mode_d, const ScrBytes *data, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) return NULL;
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) {
+    scr_stream_release(engine);
+    return NULL;
+  }
+  ScrBytes *out = scr_zlib_run_opts(mode, data, &o);
+  if (out == NULL) {
+    scr_stream_release(engine);
+    return NULL;
+  }
+  return scr_zs_info_result(out, scr_zlib_info_engine(engine, (double)data->len, false));
+}
+
+ScrDyn *scr_zlib_sync_opts_info_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
+  int mode = (int)mode_d;
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) return NULL;
+  ScrBytes *input = scr_zlib_input_dyn(data, false);
+  if (input == NULL) {
+    scr_stream_release(engine);
+    return NULL;
+  }
+  double len = (double)input->len;
+  ScrZlibOptions o;
+  ScrBytes *out = scr_zlib_options_parse(mode, opts, &o) ? scr_zlib_run_opts(mode, input, &o) : NULL;
+  scr_bytes_release(input);
+  if (out == NULL) {
+    scr_stream_release(engine);
+    return NULL;
+  }
+  return scr_zs_info_result(out, scr_zlib_info_engine(engine, len, false));
+}
+
+void scr_zlib_codec_async_opts_info(const ScrBytes *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                                    ScrZlibDynFn fn) {
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_zlib_info_async_submit(data, mode_d, opts, cb, fn, engine, &scr_zs_info_build);
+}
+
+void scr_zlib_codec_async_opts_info_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                                        ScrZlibDynFn fn) {
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_zlib_info_async_submit_dyn(data, mode_d, opts, cb, fn, engine, &scr_zs_info_build);
+}
+
+ScrPromise *scr_zlib_codec_promise_info(const ScrBytes *data, double mode_d, ScrDyn *opts) {
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) {
+    ScrPromise *promise = scr_promise_new();
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  return scr_zlib_info_promise_submit(data, mode_d, opts, engine, &scr_zs_info_build);
+}
+
+ScrPromise *scr_zlib_codec_promise_info_dyn(ScrDyn *data, double mode_d, ScrDyn *opts) {
+  ScrStream *engine = scr_zlib_stream_new(mode_d, opts);
+  if (engine == NULL) {
+    ScrPromise *promise = scr_promise_new();
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  return scr_zlib_info_promise_submit_dyn(data, mode_d, opts, engine, &scr_zs_info_build);
 }
 
 /* ── the instance surface ─────────────────────────────────────────────── */

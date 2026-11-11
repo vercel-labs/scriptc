@@ -7997,6 +7997,14 @@ static void scr_stream_do_destroy(ScrStream *s, ScrError *err /*borrowed*/) {
   scr_stream_run_destroy(s, err);
 }
 
+void scr_stream_mark_ended(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  st->r.ended = true;
+  st->r.end_emitted = true;
+  st->w.ending = true;
+  st->w.finished = true;
+}
+
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err) {
   scr_stream_do_destroy(s, err);
   return scr_stream_retain(s);

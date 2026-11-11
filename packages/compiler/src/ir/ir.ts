@@ -4365,7 +4365,27 @@ export type IrExpr =
         | "slots.get"
         | "slots.has"
         | "slots.set"
-        | "slots.delete";
+        | "slots.delete"
+        /* Parallel loops (@scriptc/experimental; scr_parallel.c). The
+         * callbacks are closures of the calling module that the runtime
+         * calls once per chunk with the closure pointer as their
+         * environment: (env, part, start, end), (env, start, end) and
+         * (env, left, right), all of them doubles except `part`.
+         * par.into (target bytes, stride f64, grainGiven f64, grain f64,
+         * parallel f64, body func, …reads bytes) → void fills the target;
+         * par.reduce (count, grainGiven, grain, initial, parallel, part,
+         * combine) → f64 folds one value per chunk left to right in chunk
+         * order; par.for (count, grainGiven, grain, parallel, body) → void
+         * calls the body once per chunk. `grainGiven` is 1 when the source
+         * passed `grain` (the runtime tells an absent option from 0), and
+         * `parallel` is 0 when the compiler resolved the call to the
+         * sequential loop. The chunk views `par.into` builds carry no
+         * owner and are only ever passed to the body. Entry checks throw
+         * the RangeError the Node.js implementation throws, before the
+         * first chunk. */
+        | "par.into"
+        | "par.reduce"
+        | "par.for";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;

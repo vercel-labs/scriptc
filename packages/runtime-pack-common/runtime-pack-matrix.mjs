@@ -50,6 +50,8 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
+  // Parallel loops (@scriptc/experimental); it links only into programs that call them.
+  "scr_parallel.c",
   "scr_alloc.c",
   // crypto.getCipherInfo's table; it links only into programs that call it.
   "scr_cipher_info.c",
@@ -479,6 +481,13 @@ export function variantsFor(source) {
   // program's JavaScript object model build carries it (a program whose
   // JavaScript adds own properties to handles).
   if (source === "scr_dyn_integrity.c") {
+    withJsObjectModel(variants);
+  }
+  // A parallel loop's entry checks run the `subarray` semantics the Node
+  // implementation has: a detached target throws through the object model
+  // build's buffer registry. Every other program keeps the default object,
+  // byte for byte.
+  if (source === "scr_parallel.c") {
     withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware

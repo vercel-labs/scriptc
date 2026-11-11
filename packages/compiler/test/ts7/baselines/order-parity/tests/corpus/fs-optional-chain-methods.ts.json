@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fs-optional-chain-methods.ts"
+ ],
+ "diags": []
+}

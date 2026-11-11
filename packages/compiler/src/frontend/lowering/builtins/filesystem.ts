@@ -571,7 +571,14 @@ export function lowerFileHandleMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // `handle?.read(...)` on a nullable FileHandle: the optional-chain
+  // lowering guards the receiver, then re-enters here with it narrowed.
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  ) {
+    return null;
+  }
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
@@ -1280,7 +1287,14 @@ export function lowerDirMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // `dir?.read()` on a nullable Dir: the optional-chain lowering guards
+  // the receiver, then re-enters here with it narrowed.
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  ) {
+    return null;
+  }
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "dir") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
@@ -1310,7 +1324,15 @@ export function lowerDirMethodCall(
         loc,
       };
     }
-    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    // `maybeDir?.readSync()` checker-types as `Dirent | null | undefined`:
+    // the chain re-enters this lowering only when the receiver is present, so
+    // the call has the plain member's shape (the chain wrapper re-adds the
+    // short-circuit's undefined arm).
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const type =
+      mapped && access.questionDotToken && lowerer.chainHandled.has(access)
+        ? lowerer.stripUndefinedArm(mapped)
+        : mapped;
     const entry = type?.kind === "promise" ? type.inner : type;
     const arms = entry?.kind === "union" ? lowerer.unions.get(entry.unionId)?.arms : undefined;
     if (
@@ -1341,7 +1363,11 @@ export function lowerDirMethodCall(
  * closes through the promise form. Null for other element-access calls. */
 export function lowerDirDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   const access = call.expression;
-  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+  if (
+    !ts.isElementAccessExpression(access) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access)) ||
+    (call.questionDotToken && !lowerer.chainHandled.has(call))
+  ) {
     return null;
   }
   let key = access.argumentExpression;
@@ -1705,7 +1731,14 @@ export function lowerWatcherMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // `watcher?.close()` on a nullable watcher: the optional-chain lowering
+  // guards the receiver, then re-enters here with it narrowed.
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  ) {
+    return null;
+  }
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fsWatcher") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
@@ -2581,7 +2614,14 @@ export function lowerDirentMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // `dirent?.isFile()` on a nullable Dirent: the optional-chain lowering
+  // guards the receiver, then re-enters here with it narrowed.
+  if (
+    (call.questionDotToken && !lowerer.chainHandled.has(call)) ||
+    (access.questionDotToken && !lowerer.chainHandled.has(access))
+  ) {
+    return null;
+  }
   if (!lowerer.isStdlibMember(access)) return null;
   const recvSym = lowerer.typeOf(access.expression).getSymbol();
   if (recvSym === undefined || ts.symbolName(recvSym) !== "Dirent") return null;

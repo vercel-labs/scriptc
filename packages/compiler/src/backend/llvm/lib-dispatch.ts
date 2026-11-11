@@ -13,7 +13,7 @@ import { nodeThrowExpr } from "../../ir/build.js";
 
 import { MAY_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.js";
-import type { IrLibFn } from "../../ir/builtin-signatures.js";
+import { libFnSignatures, type IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
@@ -1154,6 +1154,11 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return { name: emitSameValueF64(host, args[0]!.name, args[1]!.name), type: e.type };
   const callArgs = args;
   if (e.type.kind === "date") {
+    // A runtime function that builds the Date itself (the Stats members,
+    // whose snapshot caches Node's lazy Date model) answers a +1
+    // `ScrDate *`; every other Date result is milliseconds to wrap.
+    if (libFnSignatures()[e.fn]?.dateHandle === true)
+      return emitSymbolLibCall(host, e, sym, callArgs);
     const ms = emitSymbolLibCall(host, { ...e, type: F64 }, sym, callArgs);
     host.declare(`declare ptr @scr_date_new(double)`);
     const date = B.tmp();

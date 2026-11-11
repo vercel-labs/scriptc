@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct ScrDate;
+
 /* The integers in the order Node's binding reports them. */
 enum {
   SCR_STATS_DEV,
@@ -38,6 +40,11 @@ struct ScrStats {
   uint64_t fields[SCR_STATS_FIELDS]; /* blocks counts 512-byte units */
   int64_t sec[4];
   int64_t nsec[4];
+  /* Node's Stats caches each Date member on first read: the prototype
+   * getter replaces itself with an own property, so later reads answer the
+   * SAME Date object and mutations stick. The snapshot holds one retained
+   * Date per timestamp to reproduce that identity; NULL until first read. */
+  struct ScrDate *dates[4];
 };
 
 #endif /* SCR_STATS_PRIVATE_H */

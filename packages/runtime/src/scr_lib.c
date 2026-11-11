@@ -6509,7 +6509,10 @@ ScrStats *scr_stats_retain(ScrStats *s) {
 
 void scr_stats_release(ScrStats *s) {
   if (!s || s->rc == SIZE_MAX) return;
-  if (--s->rc == 0) scr_mem_free(s);
+  if (--s->rc == 0) {
+    for (int i = 0; i < 4; i++) scr_date_release(s->dates[i]);
+    scr_mem_free(s);
+  }
 }
 
 void *scr_stats_retain_v(void *p) { return scr_stats_retain(p); }
@@ -6570,11 +6573,22 @@ static double scr_stats_round(double ms) {
   return ms - low >= 0.5 ? low + 1 : low;
 }
 
-/* The Date fields: Node rounds the millisecond value before new Date(). */
-double scr_stats_atime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_ATIME))); }
-double scr_stats_mtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_MTIME))); }
-double scr_stats_ctime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
-double scr_stats_birthtime(ScrStats *s) { return scr_date_new_ms(scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
+/* The Date fields: Node rounds the millisecond value before new Date() and
+ * caches the resulting object on the Stats, so every read answers the same
+ * Date. `scr_stats_date` is that cache; the caller passes the time value to
+ * build it with (rounded here for Stats, truncated for BigIntStats). */
+struct ScrDate *scr_stats_date(ScrStats *s, int which, double ms) {
+  if (s->dates[which] == NULL) {
+    double clipped = scr_date_new_ms(ms);
+    s->dates[which] = scr_date_new(clipped);
+  }
+  return scr_date_retain(s->dates[which]);
+}
+
+ScrDate *scr_stats_atime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_ATIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_ATIME))); }
+ScrDate *scr_stats_mtime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_MTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_MTIME))); }
+ScrDate *scr_stats_ctime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_CTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_CTIME))); }
+ScrDate *scr_stats_birthtime(ScrStats *s) { return scr_stats_date(s, SCR_STATS_BIRTHTIME, scr_stats_round(scr_stats_ms(s, SCR_STATS_BIRTHTIME))); }
 
 /* Small-object blocks: a stat-and-test loop recycles one block instead of
  * calling the system allocator per call. */

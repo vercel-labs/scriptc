@@ -554,10 +554,15 @@ bool scr_stats_is_fifo(ScrStats *s);
 bool scr_stats_is_socket(ScrStats *s);
 /* The Date fields' time values: the *Ms value rounded, as Node's
  * dateFromMs does. */
-double scr_stats_atime(ScrStats *s);
-double scr_stats_mtime(ScrStats *s);
-double scr_stats_ctime(ScrStats *s);
-double scr_stats_birthtime(ScrStats *s);
+/* The Date members: +1 on the snapshot's cached Date (Node builds it on
+ * the first read and keeps the same object), built from the rounded
+ * millisecond value. */
+struct ScrDate;
+struct ScrDate *scr_stats_date(ScrStats *s, int which, double ms);
+struct ScrDate *scr_stats_atime(ScrStats *s);
+struct ScrDate *scr_stats_mtime(ScrStats *s);
+struct ScrDate *scr_stats_ctime(ScrStats *s);
+struct ScrDate *scr_stats_birthtime(ScrStats *s);
 /* BigIntStats members (scr_stats_bigint.c): every number member of Stats
  * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
  * time values from the truncated `*Ms` member. */
@@ -580,10 +585,10 @@ ScrBigInt *scr_stats_big_atime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_mtime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_ctime_ms(ScrStats *s);
 ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s);
-double scr_stats_big_atime(ScrStats *s);
-double scr_stats_big_mtime(ScrStats *s);
-double scr_stats_big_ctime(ScrStats *s);
-double scr_stats_big_birthtime(ScrStats *s);
+struct ScrDate *scr_stats_big_atime(ScrStats *s);
+struct ScrDate *scr_stats_big_mtime(ScrStats *s);
+struct ScrDate *scr_stats_big_ctime(ScrStats *s);
+struct ScrDate *scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
 /* stat(2) following symlinks without throwing (the fs.watchFile poll):

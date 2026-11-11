@@ -47,6 +47,11 @@ import {
 export interface LibFnSignature {
   argTypes: (IrType | null)[];
   result: IrType;
+  /** A Date result the runtime builds itself: the symbol answers an owned
+   * `ScrDate *` (+1) instead of the milliseconds the backend wraps in
+   * `scr_date_new`. The Stats Date members use it to answer Node's cached
+   * Date object, whose identity and mutations the snapshot keeps. */
+  dateHandle?: true;
 }
 
 /** Preserve the closed names while giving every entry the same slot type. */
@@ -1671,11 +1676,12 @@ function buildLibFnSignatures() {
     "stats.isCharacterDevice": { argTypes: [STATS_T], result: BOOL },
     "stats.isFIFO": { argTypes: [STATS_T], result: BOOL },
     "stats.isSocket": { argTypes: [STATS_T], result: BOOL },
-    /** The Date fields: the *Ms value rounded (Node's dateFromMs). */
-    "stats.atime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
-    "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
+    /** The Date fields: the snapshot's cached Date, built from the *Ms value
+     * rounded (Node's dateFromMs builds it on the first read). */
+    "stats.atime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.mtime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.ctime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
+    "stats.birthtime": { argTypes: [STATS_T], result: DATE_T, dateHandle: true },
     /** BigIntStats (statSync with `{ bigint: true }`): the same snapshot
      * handle under Node's bigint member table — every number member of Stats
      * (the integers, `*Ms` and the BigIntStats-only `*Ns`) answers `bigint`;
@@ -1705,10 +1711,10 @@ function buildLibFnSignatures() {
     "bigstats.mtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
     "bigstats.ctimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
     "bigstats.birthtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
-    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
-    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
+    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T, dateHandle: true },
     // The wider sync fs slice (unlink/chmod/chown/copyfile and the
     // mode-carrying write/mkdir forms).
     /** The wider sync fs slice (scr_lib.c), all throwing catchably with

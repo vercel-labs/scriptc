@@ -45415,6 +45415,7 @@
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2686-fs-file-handle.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
@@ -45483,6 +45484,7 @@
           "tests/corpus/fs-promises-write-file-dynamic-options.ts",
           "tests/corpus/fs-realpath-callback-dynamic-options.cjs",
           "tests/corpus/fs-realpath-callback-options.ts",
+          "tests/corpus/fs-stats-date-cache.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-watch-file-stat-watcher.ts",
@@ -51501,10 +51503,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.Stats",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51550,10 +51554,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isBlockDevice",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51576,10 +51582,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isCharacterDevice",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51602,10 +51610,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isDirectory",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51628,10 +51638,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isFIFO",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51654,10 +51666,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isFile",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51680,10 +51694,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isSocket",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51706,10 +51722,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isSymbolicLink",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts",
+          "tests/corpus/2688-fs-stats-disk-fields.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51732,10 +51750,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dev",
         "tests": [
-          "tests/corpus/2941-fsp-lstat-identity.ts"
+          "tests/corpus/2941-fsp-lstat-identity.ts",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51758,10 +51777,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ino",
         "tests": [
-          "tests/corpus/2941-fsp-lstat-identity.ts"
+          "tests/corpus/2941-fsp-lstat-identity.ts",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51784,10 +51804,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mode",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51810,10 +51831,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.nlink",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51836,10 +51858,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.uid",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51862,10 +51885,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.gid",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51888,10 +51912,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.rdev",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51914,10 +51939,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.size",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51940,10 +51966,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.blksize",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51966,10 +51993,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.blocks",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51992,10 +52020,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52018,10 +52047,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52044,10 +52074,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctimeMs",
         "tests": [
-          "tests/corpus/2941-fsp-lstat-identity.ts"
+          "tests/corpus/2941-fsp-lstat-identity.ts",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52070,10 +52101,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtimeMs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52096,10 +52128,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52122,10 +52155,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52148,10 +52182,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52174,10 +52209,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtimeNs",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52200,10 +52236,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52226,10 +52263,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52252,10 +52290,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -52278,10 +52317,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtime",
         "tests": [
-          "tests/corpus/5541-fs-stats-fields.cjs"
+          "tests/corpus/5541-fs-stats-fields.cjs",
+          "tests/corpus/fs-stats-date-cache.ts"
         ]
       },
       "anchorSource": "ancestor"

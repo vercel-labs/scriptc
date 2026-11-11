@@ -169,13 +169,44 @@ export function lowerFsVectorOrTruncateCall(
 ): IrExpr {
   const vector = bi.member !== "ftruncateSync";
   const required = vector ? 2 : 1;
-  if (
-    expr.arguments.nodes.length < required ||
-    expr.arguments.nodes.length > required + 1 ||
-    expr.arguments.nodes.some(ts.isSpreadElement)
-  )
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < required || nodes.length > required + 1 || nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with this argument shape`, expr);
-  const args = [lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64)];
+  // The descriptor, the vector and the position the typed ABI pins down; a
+  // JavaScript call with any of them left untyped runs Node's ladder (the
+  // buffers argument's ArrayBufferView[] check, the empty-vector early
+  // return, the position rule, then the descriptor) over the values.
+  const buffersTyped = (() => {
+    if (!vector) return true;
+    const type = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+    return type?.kind === "array" && type.elem.kind === "bytes" && type.elem.elem === "u8";
+  })();
+  const positionKind = fsArgKind(lowerer, nodes[required]);
+  const typed =
+    fsArgKind(lowerer, nodes[0]) === "number" &&
+    buffersTyped &&
+    (positionKind === "number" || positionKind === "absent");
+  if (!typed && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const dynArgs: IrExpr[] = [lowerer.lowerExprExpecting(nodes[0]!, DYN)];
+    if (nodes[1]) dynArgs.push(lowerer.lowerExprExpecting(nodes[1], DYN));
+    else dynArgs.push(dynUndefinedExpr(loc));
+    if (vector) {
+      const position = nodes[2];
+      dynArgs.push(position ? lowerer.lowerExprExpecting(position, DYN) : dynUndefinedExpr(loc));
+    }
+    return {
+      kind: "libCall",
+      fn: vector
+        ? bi.member === "readvSync"
+          ? "fs.readvSyncDyn"
+          : "fs.writevSyncDyn"
+        : "fs.ftruncateSyncDyn",
+      args: dynArgs,
+      type: vector ? F64 : VOID,
+      loc,
+    };
+  }
+  const args = [lowerer.lowerExprExpecting(nodes[0]!, F64)];
   if (vector) args.push(lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, arrayOf(BYTES_U8)));
   const optional = expr.arguments.nodes[required];
   args.push(
@@ -375,16 +406,33 @@ export function lowerFsModeSyncCall(
   const args = expr.arguments.nodes;
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) return null;
   const kind = fsArgKind(lowerer, args[1]);
+  if (member === "fchmodSync" && fsArgKind(lowerer, args[0]) !== "number") {
+    // The descriptor is only known at run time: parseFileMode reads the mode
+    // first, then getValidatedFd checks the fd, both over the values.
+    return {
+      kind: "libCall",
+      fn: "fs.fchmodSyncDyn",
+      args: [
+        lowerer.lowerExprExpecting(args[0]!, DYN),
+        args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc),
+      ],
+      type: VOID,
+      loc,
+    };
+  }
   if (kind === "number") return null;
-  const target =
+  // The target the member names: the path for chmodSync, the descriptor for
+  // fchmodSync — a number where the typed entry point takes one, a
+  // dynamic value where Node's ladder reads it.
+  const target = (type: IrType): IrExpr =>
     member === "chmodSync"
       ? lowerFsPath(lowerer, args[0]!)
-      : lowerer.lowerExprExpecting(args[0]!, F64);
+      : lowerer.lowerExprExpecting(args[0]!, type);
   if (kind === "string") {
     return {
       kind: "libCall",
       fn: member === "chmodSync" ? "fs.chmodSyncStr" : "fs.fchmodSyncStr",
-      args: [target, lowerer.lowerExprExpecting(args[1]!, STRING)],
+      args: [target(F64), lowerer.lowerExprExpecting(args[1]!, STRING)],
       type: VOID,
       loc,
     };
@@ -392,10 +440,43 @@ export function lowerFsModeSyncCall(
   return {
     kind: "libCall",
     fn: member === "chmodSync" ? "fs.chmodSyncDyn" : "fs.fchmodSyncDyn",
-    args: [target, args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc)],
+    args: [target(DYN), args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc)],
     type: VOID,
     loc,
   };
+}
+
+// closeSync(fd), fsyncSync(fd), fdatasyncSync(fd) and fchownSync(fd, uid,
+// gid): the descriptor primitives whose arguments are values Node passes to
+// getValidatedFd (and, for fchown, validateInteger for the owner ids first).
+// A call whose values the compiler pinned to numbers keeps the typed entry
+// points — the runtime validates them there — so this answers null for the
+// generic lowering and emits the run-time ladder for every other kind, where
+// Node's typeof check reports the value it received instead of a coercion.
+export function lowerFsDescriptorSyncCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: "closeSync" | "fsyncSync" | "fdatasyncSync" | "fchownSync",
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = expr.arguments.nodes;
+  const arity = member === "fchownSync" ? 3 : 1;
+  if (args.length > arity || args.some(ts.isSpreadElement)) return null;
+  if (args.every((arg) => fsArgKind(lowerer, arg) === "number")) return null;
+  const fn: IrLibFn =
+    member === "closeSync"
+      ? "fs.closeSyncDyn"
+      : member === "fsyncSync"
+        ? "fs.fsyncSyncDyn"
+        : member === "fdatasyncSync"
+          ? "fs.fdatasyncSyncDyn"
+          : "fs.fchownSyncDyn";
+  const dynArgs: IrExpr[] = [];
+  for (let index = 0; index < arity; index += 1) {
+    const arg = args[index];
+    dynArgs.push(arg ? lowerer.lowerExprExpecting(arg, DYN) : dynUndefinedExpr(loc));
+  }
+  return { kind: "libCall", fn, args: dynArgs, type: VOID, loc };
 }
 
 // fs/promises.open(path[, flags[, mode]]) — string flags and numeric
@@ -509,6 +590,85 @@ export function lowerFsRenameCallbackCall(
   };
 }
 
+/** Whether an fs fd/offset/length-style argument's static type is the typed
+ * form's number. An omitted argument is the form's default, and `nullable`
+ * admits a literal null where the lowering completes it to the runtime's -1
+ * current-offset sentinel. */
+function fsNumberArg(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  nullable: boolean,
+): boolean {
+  if (node === undefined) return true;
+  let value: ts.Expression = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (nullable && value.kind === ts.SyntaxKind.NullKeyword) return true;
+  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "f64";
+}
+
+/** The typed readSync forms: readSync(fd, buffer), readSync(fd, buffer,
+ * literalOptions), and readSync(fd, buffer, offset, length[, position]) over
+ * a Uint8Array/Buffer descriptor. Anything else a JavaScript source writes
+ * takes Node's run-time ladder. */
+function readSyncTypedForm(lowerer: Lowerer, expr: ts.CallExpression): boolean {
+  const nodes = expr.arguments.nodes;
+  if (!fsNumberArg(lowerer, nodes[0], false)) return false;
+  const bufferType = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+  if (bufferType?.kind !== "bytes" || bufferType.elem !== "u8") return false;
+  if (nodes.length === 2) return true;
+  if (nodes.length === 3) {
+    let value: ts.Expression = nodes[2]!;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    return ts.isObjectLiteralExpression(value) || value.kind === ts.SyntaxKind.NullKeyword;
+  }
+  return (
+    fsNumberArg(lowerer, nodes[2], false) &&
+    fsNumberArg(lowerer, nodes[3], false) &&
+    fsNumberArg(lowerer, nodes[4], true)
+  );
+}
+
+/** The typed writeSync forms: the Uint8Array/Buffer window (with an omitted
+ * or literal-null offset/length/position, a literal options object, or a
+ * numeric offset with a numeric length and position) and the utf8 string
+ * form. Anything else a JavaScript source writes takes Node's run-time
+ * ladder, which also reads the options object and supports every encoding. */
+function writeSyncTypedForm(lowerer: Lowerer, expr: ts.CallExpression): boolean {
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 2 || nodes.length > 5) return false;
+  if (!fsNumberArg(lowerer, nodes[0], false)) return false;
+  const dataType = lowerer.mapTypeOf(lowerer.typeOf(nodes[1]!));
+  if (dataType?.kind === "bytes") {
+    if (dataType.elem !== "u8") return false;
+    if (nodes.length === 2) return true;
+    if (nodes.length === 3) {
+      let value: ts.Expression = nodes[2]!;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      return (
+        ts.isObjectLiteralExpression(value) ||
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        lowerer.mapTypeOf(lowerer.typeOf(nodes[2]!))?.kind === "f64"
+      );
+    }
+    return (
+      fsNumberArg(lowerer, nodes[2], false) &&
+      fsNumberArg(lowerer, nodes[3], false) &&
+      fsNumberArg(lowerer, nodes[4], true)
+    );
+  }
+  if (dataType?.kind === "string") {
+    if (nodes.length > 4 || !fsNumberArg(lowerer, nodes[2], true)) return false;
+    const encoding = nodes[3];
+    if (encoding === undefined) return true;
+    const encodingType = lowerer.typeOf(encoding);
+    return (
+      encodingType.isStringLiteralType() &&
+      (encodingType.value === "utf8" || encodingType.value === "utf-8")
+    );
+  }
+  return false;
+}
+
 // fs.readSync's classic and options-object buffer forms normalize into
 // one fixed-width IR call. Current-offset forms use Node/libuv's -1
 // sentinel; a numeric position performs offset-preserving I/O.
@@ -529,6 +689,20 @@ export function lowerFsReadSyncCall(
       expr,
       supported,
     );
+  }
+  // JavaScript arguments outside the typed signature (an untyped fd or
+  // buffer, a bigint or untyped position, an options value only the runtime
+  // sees) take Node's argument checks at run time, then the same read. The
+  // call's own argument count decides Node's options form, so it crosses as
+  // a number.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && !readSyncTypedForm(lowerer, expr)) {
+    const nodes = expr.arguments.nodes;
+    const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+      const node = nodes[i];
+      return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+    });
+    args.push(numLit(nodes.length, loc));
+    return { kind: "libCall", fn: "fs.readSyncArgs", args, type: F64, loc };
   }
   if (expr.arguments.nodes.length === 2) {
     return lowerFsSyncBufferWindow(
@@ -555,28 +729,6 @@ export function lowerFsReadSyncCall(
       );
     }
     lowerer.noLowering("readSync with a non-literal options argument", optionsNode, supported);
-  }
-  // JavaScript arguments outside the typed signature (an untyped fd or
-  // buffer, a bigint or untyped position) take Node's argument checks at
-  // run time, then the same read.
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-    const nodes = expr.arguments.nodes;
-    const typed = [F64, BYTES_U8, F64, F64, F64].every((want, i) => {
-      const node = nodes[i];
-      if (node === undefined) return true;
-      let value: ts.Expression = node;
-      while (ts.isParenthesizedExpression(value)) value = value.expression;
-      if (i === 4 && value.kind === ts.SyntaxKind.NullKeyword) return true;
-      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
-      return t !== null && (want.kind === "bytes" ? t.kind === "bytes" : t.kind === "f64");
-    });
-    if (!typed) {
-      const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
-        const node = nodes[i];
-        return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
-      });
-      return { kind: "libCall", fn: "fs.readSyncDyn", args, type: F64, loc };
-    }
   }
   const args: IrExpr[] = [
     lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64),
@@ -623,6 +775,22 @@ export function lowerFsWriteSyncCall(
       expr,
       supported,
     );
+  }
+  // A JavaScript call whose argument kinds the typed forms below do not pin
+  // down runs Node's own ladder over the values: the view form's options
+  // object and validateOffsetLengthWrite, or the string form's
+  // validateEncoding and encoding.
+  if (
+    expr.arguments.nodes.length <= 5 &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    !writeSyncTypedForm(lowerer, expr)
+  ) {
+    const nodes = expr.arguments.nodes;
+    const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+      const node = nodes[i];
+      return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+    });
+    return { kind: "libCall", fn: "fs.writeSyncArgs", args, type: F64, loc };
   }
   const dataNode = expr.arguments.nodes[1]!;
   const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));

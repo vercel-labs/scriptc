@@ -25724,22 +25724,8 @@
       "anchor": "dep0015-fsreadsync-legacy-string-interface",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readSync",
-        "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-feature:deprecations.fs.readSync"
       },
       "anchorSource": "exact"
     },
@@ -45424,6 +45410,7 @@
           "tests/corpus/2844-node-disposable-resources.ts",
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/2938-fs-sync-overloads.cjs",
           "tests/corpus/2940-fsp-realpath.ts",
           "tests/corpus/2941-fsp-lstat-identity.ts",
           "tests/corpus/2942-fsp-readdir-dirent.ts",
@@ -45452,6 +45439,8 @@
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
           "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
+          "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
@@ -45472,7 +45461,15 @@
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
+          "tests/corpus/fs-stat-callback-ladder.cjs",
           "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-write-options.ts",
@@ -47767,12 +47764,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.fstat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48013,12 +48011,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.lstat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48553,12 +48552,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.stat",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
           "tests/corpus/5549-fs-callback-option-checks.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49232,21 +49232,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.closeSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.closeSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/2938-fs-sync-overloads.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49354,10 +49345,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.fchmodSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.fchmodSync",
         "tests": [
-          "tests/corpus/2950-fs-descriptor-publication.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/node24-fs-timestamps.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49380,11 +49374,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.fchownSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.fchownSync",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/node24-fs-timestamps.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49407,10 +49403,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.fdatasyncSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.fdatasyncSync",
         "tests": [
-          "tests/corpus/3134-fs-vectors.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/2938-fs-sync-overloads.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49433,9 +49431,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.fstatSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.fstatSync",
         "tests": [
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
+          "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
           "tests/corpus/2950-fs-descriptor-publication.ts"
         ]
       },
@@ -49459,10 +49461,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.fsyncSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.fsyncSync",
         "tests": [
-          "tests/corpus/2950-fs-descriptor-publication.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/2938-fs-sync-overloads.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49485,10 +49489,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.ftruncateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.ftruncateSync",
         "tests": [
-          "tests/corpus/3134-fs-vectors.ts"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/node24-fs-timestamps.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49511,11 +49518,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.futimesSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.futimesSync",
         "tests": [
-          "tests/corpus/node24-fs-timestamps.ts",
-          "tests/corpus/node24-fs-timestamps-errors.cjs"
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts",
+          "tests/corpus/node24-fs-timestamps.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49676,21 +49685,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.lstatSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.lstatSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
+          "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49956,21 +49958,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.readSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/3134-fs-vectors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49993,21 +49987,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.readSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/3134-fs-vectors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50030,9 +50016,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readvSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.readvSync",
         "tests": [
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/3134-fs-vectors.ts"
         ]
       },
@@ -50230,21 +50219,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.statSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.statSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
+          "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
+          "tests/corpus/2950-fs-descriptor-publication.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50450,21 +50432,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.writeSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.writeSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/3134-fs-vectors.ts",
+          "tests/corpus/3137-fs-vector-callbacks.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -50487,21 +50462,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.writeSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.writeSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/3134-fs-vectors.ts",
+          "tests/corpus/3137-fs-vector-callbacks.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -50524,21 +50492,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.writeSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.writeSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/3134-fs-vectors.ts",
+          "tests/corpus/3137-fs-vector-callbacks.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -50561,10 +50522,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.writevSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.writevSync",
         "tests": [
-          "tests/corpus/3134-fs-vectors.ts"
+          "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+          "tests/corpus/fs-sync-dynamic-control.cjs",
+          "tests/corpus/2595-fs-arg-ladders.cjs",
+          "tests/corpus/3134-fs-vectors.ts",
+          "tests/corpus/3137-fs-vector-callbacks.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51609,11 +51574,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.Stats",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51659,11 +51627,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isBlockDevice",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51686,11 +51657,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isCharacterDevice",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51713,11 +51687,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isDirectory",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51740,11 +51717,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isFIFO",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51767,11 +51747,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isFile",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51794,11 +51777,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isSocket",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51821,11 +51807,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.stats.isSymbolicLink",
         "tests": [
           "tests/corpus/5541-fs-stats-fields.cjs",
-          "tests/corpus/fs-stat-callback-options.cjs"
+          "tests/corpus/fs-stat-callback-options.cjs",
+          "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-stat-runtime-options.ts",
+          "tests/corpus/fs-stat-callback-ladder.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -51848,9 +51837,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dev",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/2941-fsp-lstat-identity.ts"
         ]
       },
@@ -51874,9 +51866,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ino",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/2941-fsp-lstat-identity.ts"
         ]
       },
@@ -51900,9 +51895,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mode",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -51927,9 +51925,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.nlink",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -51954,9 +51955,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.uid",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -51981,9 +51985,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.gid",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52008,9 +52015,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.rdev",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52035,9 +52045,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.size",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52062,9 +52075,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.blksize",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52089,9 +52105,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.blocks",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52116,9 +52135,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atimeMs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52143,9 +52165,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtimeMs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52170,9 +52195,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctimeMs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/2941-fsp-lstat-identity.ts"
         ]
       },
@@ -52196,9 +52224,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtimeMs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52223,9 +52254,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atimeNs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52250,9 +52284,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtimeNs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52277,9 +52314,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctimeNs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52304,9 +52344,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtimeNs",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52331,9 +52374,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.atime",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52358,9 +52404,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.mtime",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52385,9 +52434,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.ctime",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]
@@ -52412,9 +52464,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.birthtime",
         "tests": [
+          "tests/corpus/fs-stats-fields.ts",
+          "tests/corpus/fs-stats-bigint-fields.ts",
+          "tests/corpus/fs-stats-member-tables.cjs",
           "tests/corpus/5541-fs-stats-fields.cjs",
           "tests/corpus/fs-stat-callback-options.cjs"
         ]

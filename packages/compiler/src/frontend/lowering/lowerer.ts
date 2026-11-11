@@ -133,7 +133,7 @@ import {
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
-import { sharedDynConversion } from "./expressions/narrowing.js";
+import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
@@ -3173,6 +3173,11 @@ export class Lowerer {
   /** Arguments and const initializers whose array or record layout the
    * lowering kept instead of copying (divergences.ts reports no copy there). */
   readonly layoutKeptNodes = new Set<ts.Node>();
+  /** fs.statSync/lstatSync/fstatSync calls lowered to the run-time options
+   * ladder: the value is a checked-dynamic Stats, BigIntStats or undefined
+   * (bigint selects the member table at run time), so a binding initialized
+   * with one holds the box instead of the checker's static stats union. */
+  readonly dynStatCalls = new Set<ts.Node>();
   /** Object-literal GENERIC methods (`{ m<T>(x: T) {...} }`), interned by
    * their function-like node — instances ride the same monomorphization
    * queue (objLitGenericFnInfoOf). */
@@ -5947,6 +5952,7 @@ export class Lowerer {
       checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
       checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
       checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
+      checkedTable("dynStatCalls", () => this.dynStatCalls.size),
       checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
       checkedTable("pinnedTypeParams", () => this.pinnedTypeParams.length),
       checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
@@ -17225,6 +17231,11 @@ export class Lowerer {
         const projected = consoleInto(this, expr, expected, expr.loc);
         if (projected) return projected;
       }
+      // A Stats object the stat calls' run-time options ladder answered:
+      // its member table is checked-dynamic, so a typed slot reads it
+      // through the snapshot extraction (statsDynConversion).
+      const stats = statsDynConversion(this, expr, expected, expr.loc);
+      if (stats) return stats;
       if (
         canDynCheckTo(
           expected,

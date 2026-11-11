@@ -632,6 +632,92 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   return !scr_exc_pending();
 }
 
+/* The AbortError Node's checkAborted hands the stat callback: name
+ * AbortError, code ABORT_ERR, the signal's reason as cause. +1 dyn error. */
+static ScrDyn *scr_fs_cb_abort_error_dyn(const ScrDyn *signal) {
+  static const char message[] = "The operation was aborted";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_str_release(error->name);
+  error->name = scr_str_new("AbortError", 10);
+  error->name_present = true;
+  scr_error_set_code(error, "ABORT_ERR");
+  ScrStr *key = scr_str_new("reason", 6);
+  ScrDyn *reason = scr_dyn_handle_key_get(signal, key);
+  scr_str_release(key);
+  if (reason) {
+    if (reason->kind != SCR_DYN_UNDEF) scr_error_set_cause(error, reason);
+    scr_dyn_release(reason);
+  }
+  scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *value = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return value;
+}
+
+/* Node's checkAborted(signal, callback) after fs.stat's path check: an
+ * aborted signal runs the callback SYNCHRONOUSLY with the AbortError and the
+ * call answers undefined — not a later turn. True when the stat proceeds. */
+static bool scr_fs_cb_stat_aborted(const ScrDyn *options, const ScrDyn *callback) {
+  ScrDyn *signal = scr_fs_cb_option(options, "signal");
+  if (!signal) return false;
+  if (scr_fs_dyn_absent(signal)) { scr_dyn_release(signal); return true; }
+  ScrStr *key = scr_str_new("aborted", 7);
+  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+  scr_str_release(key);
+  bool cancelled = aborted && scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (!cancelled) { scr_dyn_release(signal); return true; }
+  ScrDyn *error = scr_fs_cb_abort_error_dyn(signal);
+  scr_dyn_release(signal);
+  if (!error) return false;
+  ScrDyn *arguments = scr_dyn_new_arr();
+  scr_dyn_arr_push(arguments, error);
+  ScrDyn *result = scr_dyn_apply(callback, arguments, "the filesystem callback");
+  scr_dyn_release(result);
+  scr_dyn_release(arguments);
+  return false;
+}
+
+/* fs.stat's getOptions, run before its callback check: a function, null or
+ * non-object options value is the empty default; an object's encoding is
+ * read for the 'buffer' comparison and, when it is not that, read again for
+ * assertEncoding (falsy values pass), then a signal member that is not
+ * undefined goes through validateAbortSignal (a second read). *normalized
+ * is the value the binding then reads (undefined for the empty default). */
+static bool scr_fs_cb_stat_options(const ScrDyn *options, const ScrDyn **normalized) {
+  *normalized = options;
+  if (scr_fs_dyn_absent(options) || options->kind == SCR_DYN_FUNC) { *normalized = scr_dyn_undefined(); return true; }
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_ARR &&
+      options->kind != SCR_DYN_TYPED_REF && options->kind != SCR_DYN_BYTES &&
+      options->kind != SCR_DYN_HANDLE && options->kind != SCR_DYN_PROXY) {
+    *normalized = scr_dyn_undefined();
+    return true;
+  }
+  ScrDyn *encoding = scr_fs_cb_option(options, "encoding");
+  if (!encoding) return false;
+  bool buffer = encoding->kind == SCR_DYN_STR && scr_fs_str_is(encoding->v.str, "buffer");
+  scr_dyn_release(encoding);
+  if (!buffer) {
+    ScrDyn *value = scr_fs_cb_option(options, "encoding");
+    if (!value) return false;
+    bool valid = scr_fs_read_encoding_check(value);
+    scr_dyn_release(value);
+    if (!valid) return false;
+  }
+  ScrDyn *signal = scr_fs_cb_option(options, "signal");
+  if (!signal) return false;
+  if (signal->kind == SCR_DYN_UNDEF) { scr_dyn_release(signal); return true; }
+  ScrDyn *value = scr_fs_cb_option(options, "signal");
+  if (!value) { scr_dyn_release(signal); return false; }
+  bool valid = scr_fs_read_signal_check(value);
+  scr_dyn_release(value);
+  scr_dyn_release(signal);
+  return valid;
+}
+
 /* Whether a length-delimited name is one of stringToFlags' spellings. The
  * length is the string's own, so an embedded NUL is part of the name and
  * never a terminator: "r\0x" is not "r" to Node either. */
@@ -779,6 +865,88 @@ ScrDyn *scr_fs_statfs_checked(const ScrDyn *input, const ScrDyn *options) {
   ScrDyn *result = scr_exc_pending() ? NULL : scr_fs_statfs(path, bigint);
   scr_str_release(path);
   return result;
+}
+
+/* The stat family's options member read at run time. Node passes the value
+ * straight to the binding: `options.bigint` picks the BigIntStats member
+ * table on the literal true only, and `options.throwIfNoEntry` answers
+ * undefined for a missing entry on the literal false only. A member read is
+ * an ordinary JavaScript property read, so a null options value throws
+ * V8's TypeError and primitives simply have no member. `options` is never
+ * undefined here: the signature's default applies for an undefined
+ * argument, which the callback forms spell as an empty options value. */
+static ScrDyn *scr_fs_stat_member(const ScrDyn *options, const char *name, bool *ok) {
+  *ok = true;
+  if (options->kind == SCR_DYN_NULL) {
+    char message[80];
+    int length = snprintf(message, sizeof message, "Cannot read properties of null (reading '%s')", name);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+    *ok = false;
+    return NULL;
+  }
+  return scr_fs_cb_option(options, name);
+}
+
+static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
+
+static bool scr_fs_stat_bigint_member(const ScrDyn *options) {
+  bool ok;
+  ScrDyn *value = scr_fs_stat_member(options, "bigint", &ok);
+  if (!ok) return false;
+  bool bigint = value && value->kind == SCR_DYN_BOOL && value->v.b;
+  scr_dyn_release(value);
+  return bigint;
+}
+
+/* Whether a missing entry throws: the binding swallows it for the literal
+ * false alone. *ok is false with the exception a member read threw. */
+static bool scr_fs_stat_throws_member(const ScrDyn *options, bool *ok) {
+  ScrDyn *value = scr_fs_stat_member(options, "throwIfNoEntry", ok);
+  if (!*ok) return true;
+  bool suppress = value && value->kind == SCR_DYN_BOOL && !value->v.b;
+  scr_dyn_release(value);
+  return !suppress;
+}
+
+/* statSync/lstatSync(path, options) with a run-time options value: bigint
+ * selects the member table, then throwIfNoEntry selects the missing-entry
+ * answer. A suppressed miss answers the dynamic undefined value. */
+static ScrDyn *scr_fs_stat_sync_dyn_core(ScrStr *path, const ScrDyn *options, bool no_follow) {
+  bool bigint = scr_fs_stat_bigint_member(options);
+  if (scr_exc_pending()) return NULL;
+  bool ok;
+  bool throws = scr_fs_stat_throws_member(options, &ok);
+  if (!ok) return NULL;
+  ScrStats *snapshot = scr_fs_stat_probe(path, no_follow, throws);
+  if (!snapshot) {
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrDyn *object = scr_stats_dyn(snapshot, bigint);
+  scr_stats_release(snapshot);
+  return object;
+}
+
+ScrDyn *scr_fs_stat_sync_dyn(ScrStr *path, const ScrDyn *options) {
+  return scr_fs_stat_sync_dyn_core(path, options, false);
+}
+
+ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options) {
+  return scr_fs_stat_sync_dyn_core(path, options, true);
+}
+
+/* fstatSync(fd, options): an open descriptor cannot miss, so Node passes the
+ * throw flag as the literal false. The option is read before the binding
+ * validates the descriptor, so a throwing bigint read beats a bad fd. */
+ScrDyn *scr_fs_fstat_sync_dyn(const ScrDyn *fd, const ScrDyn *options) {
+  bool bigint = scr_fs_stat_bigint_member(options);
+  if (scr_exc_pending()) return NULL;
+  if (!scr_fs_int_range_chk(fd, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  ScrStats *snapshot = scr_fs_fstat(fd->v.num);
+  if (!snapshot) return NULL;
+  ScrDyn *object = scr_stats_dyn(snapshot, bigint);
+  scr_stats_release(snapshot);
+  return object;
 }
 
 /* validateOneOf runs before either path, even on POSIX where the type has
@@ -1017,12 +1185,12 @@ static bool scr_fs_cb_stat_suppressed(const ScrDyn *options) {
   return suppressed;
 }
 
-static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, const ScrDyn *options, bool nofollow,
-                               bool suppressible) {
+static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, bool nofollow, bool suppressed,
+                               bool bigint) {
   ScrStats *snapshot;
   if (!path) snapshot = scr_fs_fstat(fd);
   else if (nofollow) snapshot = scr_fs_lstat((ScrStr *)path);
-  else if (suppressible && scr_fs_cb_stat_suppressed(options)) {
+  else if (suppressed) {
     /* A missing entry answers the callback's (null, undefined) — the
      * second argument is present and undefined, as Node's
      * makeStatsCallback reports it; any other failure still throws. */
@@ -1030,7 +1198,7 @@ static ScrDyn *scr_fs_cb_stats(const ScrStr *path, double fd, const ScrDyn *opti
     if (!snapshot && !scr_exc_pending()) return scr_dyn_retain(scr_dyn_undefined());
   } else snapshot = scr_fs_stat((ScrStr *)path);
   if (!snapshot) return NULL;
-  ScrDyn *object = scr_stats_dyn(snapshot, scr_fs_cb_option_bool(options, "bigint"));
+  ScrDyn *object = scr_stats_dyn(snapshot, bigint);
   scr_stats_release(snapshot);
   return object;
 }
@@ -1389,6 +1557,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
               !strcmp(op, "mkdir") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate") || !strcmp(op, "truncate") ||
               !strcmp(op, "read") || !strcmp(op, "write");
   bool optional_callback = !strcmp(op, "close") && callback->kind == SCR_DYN_UNDEF;
+  /* fs.stat normalizes its options (getOptions: the encoding check and
+   * validateAbortSignal) before makeStatsCallback checks the callback. */
+  const ScrDyn *stat_options = NULL;
+  if (!strcmp(op, "stat") && !scr_fs_cb_stat_options(scr_fs_cb_arg(args, argc, 1), &stat_options)) {
+    scr_arr_release(vectors);
+    return NULL;
+  }
   if (!late && !optional_callback && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
   size_t count = timestamp ? argc : slot < argc ? slot : argc;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
@@ -1402,6 +1577,18 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     }
     if (strcmp(op, "fdatasync") && !scr_fs_cb_chk(callback, "cb")) return NULL;
     if (!scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+  }
+  /* fstat reads options.bigint (FSReqCallback then the binding) before the
+   * binding checks its descriptor; null options fail on that first read. */
+  bool fstat_bigint = false;
+  if (!strcmp(op, "fstat")) {
+    /* A function in the options position is the callback: Node replaces it
+     * with the empty default before reading anything from it. */
+    const ScrDyn *options = scr_fs_cb_arg(args, argc, 1);
+    if (options->kind == SCR_DYN_FUNC) options = scr_dyn_undefined();
+    fstat_bigint = scr_fs_stat_bigint_member(options);
+    if (!scr_exc_pending()) fstat_bigint = scr_fs_stat_bigint_member(options);
+    if (scr_exc_pending()) return NULL;
   }
   if ((!strcmp(op, "fsync") || !strcmp(op, "fstat") || !strcmp(op, "close")) &&
       !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
@@ -1479,6 +1666,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
        !scr_fs_cb_chk(callback, "cb"))) return NULL;
   ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
   if (!descriptor && !path) return NULL;
+  /* fs.stat's checkAborted runs after the path check and before the
+   * request: an aborted signal runs the callback synchronously and the
+   * call answers undefined. */
+  if (!strcmp(op, "stat") && !descriptor && !scr_fs_cb_stat_aborted(stat_options, callback)) {
+    scr_str_release(path);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   if (timestamp && !timestamp_fd && !scr_fs_callback_times(ARG(1), ARG(2), false, &access, &modified)) { scr_str_release(path); return NULL; }
   if ((timestamp_fd || !strcmp(op, "fchown")) && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
   double chmod_mode = 0, open_mode = 0666;
@@ -1605,8 +1799,19 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   }
   else if (!strcmp(op, "stat") || !strcmp(op, "lstat")) {
     bool stat = !strcmp(op, "stat");
-    result = scr_fs_cb_stats(path, -1, ARG(1), !stat, stat);
-  } else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, ARG(1), false, false);
+    /* A function in the options position is the callback (Node's
+     * typeof check): lstat reads nothing from it. */
+    const ScrDyn *options = scr_fs_cb_arg(args, argc, 1);
+    if (options->kind == SCR_DYN_FUNC) options = scr_dyn_undefined();
+    if (stat) options = stat_options;
+    /* FSReqCallback(options.bigint), then the binding's own read; stat then
+     * reads throwIfNoEntry. A throwing read throws at the call. */
+    bool bigint = scr_fs_stat_bigint_member(options);
+    if (!scr_exc_pending()) bigint = scr_fs_stat_bigint_member(options);
+    bool suppressed = stat && scr_fs_cb_stat_suppressed(options);
+    if (scr_exc_pending()) { scr_str_release(path); return NULL; }
+    result = scr_fs_cb_stats(path, -1, !stat, suppressed, bigint);
+  } else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, false, false, fstat_bigint);
   else if (!strcmp(op, "close")) {
     if (!optional_callback) scr_fs_close(fd);
     else {
@@ -2317,11 +2522,14 @@ void scr_fs_chmod_dyn(ScrStr *path, const ScrDyn *mode) {
   scr_fs_chmod(path, parsed);
 }
 
-/* fchmodSync(fd, mode): the mode parses before the fd, like Node. */
-void scr_fs_fchmod_dyn(double fd, const ScrDyn *mode) {
+/* fchmodSync(fd, mode): the mode parses before the fd, like Node (the
+ * descriptor validates in the binding, which is where a dynamic fd is
+ * checked). */
+void scr_fs_fchmod_dyn(const ScrDyn *fd, const ScrDyn *mode) {
   double parsed;
   if (!scr_fs_parse_file_mode(mode, "mode", false, 0, &parsed)) return;
-  scr_fs_fchmod(fd, parsed);
+  if (!scr_fs_int_range_chk(fd, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return;
+  scr_fs_fchmod(fd->v.num, parsed);
 }
 
 /* mkdirSync with an options argument the compiler could not resolve to a
@@ -2671,6 +2879,11 @@ static bool scr_fs_length_int32(const ScrDyn *length, double *out) {
   double n;
   if (length->kind == SCR_DYN_NUM) {
     n = length->v.num;
+  } else if (length->kind == SCR_DYN_BIGINT) {
+    /* `length |= 0` on a BigInt is JavaScript's mixed-operand error. */
+    static const char message[] = "Cannot mix BigInt and other types, use explicit conversions";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
   } else if (!scr_dyn_number_coerce_js(length, &n)) {
     return false;
   }
@@ -2737,6 +2950,20 @@ static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length) {
 }
 
 
+/* The empty-view ERR_INVALID_ARG_VALUE the read and write ladders share:
+ * Node prints the view's own inspect after "Received " ("<Buffer >" for a
+ * Buffer, "Uint8Array(0) []" for a typed array, the DataView body for one).
+ * Always throws catchably. */
+static void scr_fs_empty_buffer_fail(const ScrDyn *buffer) {
+  ScrStr *inspected = scr_dyn_empty_view_inspect(buffer);
+  char msg[320];
+  int len = snprintf(msg, sizeof msg,
+                     "The argument 'buffer' is empty and cannot be written. Received %.*s",
+                     (int)inspected->len, inspected->data);
+  scr_str_release(inspected);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+}
+
 /* fs.read(fd, buffer, offset, length, position, cb)'s argument checks, in
  * Node's order: the fd, the buffer, the offset (an integer >= 0), the
  * length as `length |= 0`, the position (validatePosition, against that
@@ -2778,13 +3005,7 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
   }
   if (count == 0) return true;
   if (buflen == 0) {
-    if (scr_bytes_is_buffer(buffer->v.bytes)) {
-      static const char empty[] =
-          "The argument 'buffer' is empty and cannot be written. Received <Buffer >";
-      scr_throw_error_msg_code(SCR_ERR_TYPE, empty, sizeof empty - 1, "ERR_INVALID_ARG_VALUE");
-    } else {
-      scr_dyn_arg_value_fail("buffer", "is empty and cannot be written", buffer);
-    }
+    scr_fs_empty_buffer_fail(buffer);
     return false;
   }
   if (count < 0 || off + count > buflen) {
@@ -2862,32 +3083,6 @@ bool scr_fs_stream_mode(const ScrDyn *value, double *mode) {
   return scr_fs_cb_file_mode(value, "mode", mode);
 }
 
-/* fs.readSync(fd, buffer, offset, length[, position]) with arguments the
- * compiler could not type (JavaScript): Node's checks (validateBuffer
- * first, then the fd, the offset, `length |= 0` and the position, which
- * may be a bigint), then the typed read. */
-double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
-                            const ScrDyn *length, const ScrDyn *position) {
-  if (buffer->kind != SCR_DYN_BYTES) {
-    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
-    return 0;
-  }
-  double count = 0;
-  if (!scr_fs_read_validate(fd, buffer, offset, length, position, &count)) return 0;
-  if (count == 0) return 0;
-  double off = scr_fs_dyn_absent(offset) ? 0 : offset->v.num;
-  ScrBytes *bytes = scr_dyn_bytes_unbox(buffer);
-  /* A bigint position passed its range check above and reads at its exact
-   * value: a double would round it past 2^53. */
-  double read =
-      !scr_fs_dyn_absent(position) && position->kind == SCR_DYN_BIGINT
-          ? scr_fs_read_sync_at(fd->v.num, bytes, off, count, scr_bigint_to_i64(position->v.bigint))
-          : scr_fs_read_sync(fd->v.num, bytes, off, count,
-                             scr_fs_dyn_absent(position) ? -1 : position->v.num);
-  scr_bytes_release(bytes);
-  return read;
-}
-
 /* ERR_OUT_OF_RANGE for the number `n` of argument `name`. Always false. */
 static bool scr_fs_num_range_fail(const char *name, const char *range, double n) {
   char recv[48], msg[192];
@@ -2928,4 +3123,338 @@ static bool scr_fs_write_validate(const ScrDyn *buffer, const ScrDyn *offset, co
   if (!(isfinite(len) && trunc(len) == len)) return scr_fs_num_range_fail("length", "an integer", len);
   if (len > 2147483647.0) return scr_fs_num_range_fail("length", ">= 0 && <= 2147483647", len);
   return true;
+}
+
+/* ── the sync fd ladders (checked-dynamic lane) ─────────────────────────
+ * The fs.*Sync calls whose argument kinds the compiler could not pin down.
+ * Each runs Node's own checks over the dynamic values in Node's own order,
+ * then the same typed operation the fully typed lane uses. */
+
+/* typeof value === 'object': null included; undefined and the primitive and
+ * callable kinds excluded. */
+static bool scr_fs_dyn_objectish(const ScrDyn *v) {
+  switch (v->kind) {
+    case SCR_DYN_OBJ:
+    case SCR_DYN_ARR:
+    case SCR_DYN_BYTES:
+    case SCR_DYN_NULL:
+    case SCR_DYN_HANDLE:
+    case SCR_DYN_PROMISE:
+    case SCR_DYN_TYPED_REF:
+    case SCR_DYN_PROXY:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* An ArrayBufferView's bytes as a Uint8 view over the same memory (+1), so
+ * a read onto it or a write from it reaches the original view. */
+static ScrBytes *scr_fs_dyn_view(const ScrDyn *buffer) {
+  ScrBytes *raw = scr_dyn_bytes_unbox(buffer);
+  ScrBytes *view = scr_bytes_raw_view(raw);
+  scr_bytes_release(raw);
+  return view;
+}
+
+/* Node's GetOffset: a safe nonnegative integer is the position; anything
+ * else (including a negative number, a fraction and a non-number) is the
+ * current descriptor offset, which libuv spells -1. */
+static double scr_fs_dyn_position(const ScrDyn *position) {
+  if (position->kind != SCR_DYN_NUM || !isfinite(position->v.num) ||
+      trunc(position->v.num) != position->v.num || position->v.num < 0 ||
+      position->v.num > 9007199254740991.0)
+    return -1;
+  return position->v.num;
+}
+
+/* getValidatedFd over a dynamic value. */
+static bool scr_fs_dyn_fd_chk(const ScrDyn *fd) {
+  return scr_fs_int_range_chk(fd, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647");
+}
+
+/* fs.readSync(fd, buffer[, offset[, length[, position]]]) including the
+ * options-object form, with argument kinds the compiler could not pin down:
+ * validateBuffer, the options object and its members (in destructuring
+ * order), the offset integer, `length |= 0`, the position (which may be a
+ * bigint), the zero-length early return, the empty-buffer check,
+ * validateOffsetLengthRead, then the descriptor and the read. `argc` is the
+ * call's own argument count, which decides the options form. */
+double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                             const ScrDyn *length, const ScrDyn *position, double argc) {
+  ScrDyn *own_offset = NULL, *own_length = NULL, *own_position = NULL;
+  const ScrDyn *offv = offset, *lenv = length, *posv = position;
+  double buflen = 0, off = 0, count = 0, result = 0, default_len = 0;
+  bool options_form = false, defaulted = false;
+  int64_t at = -1;
+  if (buffer->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
+    return 0;
+  }
+  buflen = scr_bytes_byte_len(buffer->v.bytes);
+  options_form = argc <= 3 || scr_fs_dyn_objectish(offset);
+  if (options_form) {
+    /* validateObject(options, kValidateObjectAllowNullable): null and the
+     * object kinds pass; a function or a primitive does not. */
+    if (offset->kind != SCR_DYN_UNDEF && !scr_fs_dyn_objectish(offset)) {
+      scr_dyn_arg_type_fail("options", "of type object", offset);
+      return 0;
+    }
+    offv = lenv = posv = scr_dyn_undefined();
+    if (!scr_fs_dyn_absent(offset)) {
+      own_offset = scr_fs_cb_option(offset, "offset");
+      if (own_offset) own_length = scr_fs_cb_option(offset, "length");
+      if (own_length) own_position = scr_fs_cb_option(offset, "position");
+      if (!own_position) goto done;
+      offv = own_offset;
+      lenv = own_length;
+      posv = own_position;
+    }
+    /* The destructuring's own defaults: offset = 0, then
+     * length = buffer.byteLength - offset. The subtraction runs on the raw
+     * offset value, so a Symbol or a BigInt there throws its conversion
+     * error before the offset is validated. */
+    if (lenv->kind == SCR_DYN_UNDEF) {
+      double offnum = 0;
+      if (offv->kind == SCR_DYN_BIGINT) {
+        static const char mix[] =
+            "Cannot mix BigInt and other types, use explicit conversions";
+        scr_throw_error_msg(SCR_ERR_TYPE, mix, sizeof mix - 1);
+        goto done;
+      }
+      if (offv->kind != SCR_DYN_UNDEF && !scr_dyn_number_coerce_js(offv, &offnum)) goto done;
+      default_len = buflen - offnum;
+      defaulted = true;
+    }
+  }
+  if (offv->kind != SCR_DYN_UNDEF) {
+    if (!scr_fs_int_range_chk(offv, "offset", 0, 9007199254740991.0,
+                              ">= 0 && <= 9007199254740991"))
+      goto done;
+    off = offv->v.num;
+  }
+  /* `length |= 0`, on the destructured default or the given argument. */
+  if (defaulted) {
+    count = scr_fs_int32(default_len);
+  } else if (!scr_fs_length_int32(lenv, &count)) {
+    goto done;
+  }
+  if (!scr_fs_dyn_absent(posv)) {
+    if (posv->kind == SCR_DYN_BIGINT) {
+      if (!scr_fs_bigint_position_chk(posv->v.bigint, count)) goto done;
+      /* The exact value: a double would round past 2^53. */
+      at = scr_bigint_to_i64(posv->v.bigint);
+    } else if (posv->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("position", "of type bigint or integer", posv);
+      goto done;
+    } else if (!scr_fs_int_range_chk(posv, "position", -1, 9007199254740991.0,
+                                     ">= -1 && <= 9007199254740991")) {
+      goto done;
+    } else {
+      at = (int64_t)posv->v.num;
+    }
+  }
+  if (count == 0) goto done;
+  if (buflen == 0) {
+    scr_fs_empty_buffer_fail(buffer);
+    goto done;
+  }
+  if (count < 0 || off + count > buflen) {
+    char recv[48], range[64], msg[192];
+    scr_num_received(count, recv);
+    if (count < 0) {
+      snprintf(range, sizeof range, ">= 0");
+    } else {
+      snprintf(range, sizeof range, "<= %.0f", buflen - off);
+    }
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"length\" is out of range. It must be %s. Received %s", range,
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    goto done;
+  }
+  if (!scr_fs_dyn_fd_chk(fd)) goto done;
+  {
+    ScrBytes *view = scr_fs_dyn_view(buffer);
+    result = scr_fs_read_sync_at(fd->v.num, view, off, count, at);
+    scr_bytes_release(view);
+  }
+done:
+  if (own_offset) scr_dyn_release(own_offset);
+  if (own_length) scr_dyn_release(own_length);
+  if (own_position) scr_dyn_release(own_position);
+  return result;
+}
+
+/* fs.writeSync(fd, buffer[, offset[, length[, position]]]) with argument
+ * kinds the compiler could not pin down. The view form runs Node's
+ * validateOffsetLengthWrite ladder (the options object's members when the
+ * offset slot holds one, then the offset, the defaulted length and the
+ * int32 bound), the descriptor, and a write at GetOffset's position; the
+ * string form runs validateEncoding's hex check, the descriptor, and one
+ * write of the encoded bytes. */
+double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                              const ScrDyn *length, const ScrDyn *position) {
+  ScrDyn *own_offset = NULL, *own_length = NULL, *own_position = NULL;
+  const ScrDyn *offv = offset, *lenv = length, *posv = position;
+  double buflen = 0, off = 0, len = 0, at = -1, result = 0;
+  char range[64];
+  if (buffer->kind == SCR_DYN_BYTES) {
+    buflen = scr_bytes_byte_len(buffer->v.bytes);
+    if (scr_fs_dyn_objectish(offset) && !scr_fs_dyn_absent(offset)) {
+      /* The destructuring reads the members in source order. */
+      own_offset = scr_fs_cb_option(offset, "offset");
+      if (own_offset) own_length = scr_fs_cb_option(offset, "length");
+      if (own_length) own_position = scr_fs_cb_option(offset, "position");
+      if (!own_position) goto done;
+      offv = own_offset;
+      lenv = own_length;
+      posv = own_position;
+    } else if (scr_fs_dyn_absent(offset)) {
+      offv = lenv = posv = scr_dyn_undefined();
+    }
+    if (offv->kind != SCR_DYN_UNDEF && offv->kind != SCR_DYN_NULL) {
+      if (!scr_fs_int_range_chk(offv, "offset", 0, 9007199254740991.0,
+                                ">= 0 && <= 9007199254740991"))
+        goto done;
+      off = offv->v.num;
+    }
+    len = lenv->kind == SCR_DYN_NUM ? lenv->v.num : buflen - off;
+    if (off > buflen) {
+      snprintf(range, sizeof range, "<= %.0f", buflen);
+      scr_fs_num_range_fail("offset", range, off);
+      goto done;
+    }
+    if (len > buflen - off) {
+      snprintf(range, sizeof range, "<= %.0f", buflen - off);
+      scr_fs_num_range_fail("length", range, len);
+      goto done;
+    }
+    if (len < 0) {
+      scr_fs_num_range_fail("length", ">= 0", len);
+      goto done;
+    }
+    if (!(isfinite(len) && trunc(len) == len)) {
+      scr_fs_num_range_fail("length", "an integer", len);
+      goto done;
+    }
+    if (len > 2147483647.0) {
+      scr_fs_num_range_fail("length", ">= 0 && <= 2147483647", len);
+      goto done;
+    }
+    if (!scr_fs_dyn_fd_chk(fd)) goto done;
+    at = scr_fs_dyn_position(posv);
+    {
+      ScrBytes *view = scr_fs_dyn_view(buffer);
+      result = scr_fs_write_sync(fd->v.num, view, off, len, at);
+      scr_bytes_release(view);
+    }
+  } else {
+    if (buffer->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("buffer",
+                            "of type string or an instance of Buffer, TypedArray, or DataView",
+                            buffer);
+      goto done;
+    }
+    /* The string arm is the typed lane's own: validateEncoding (the `length`
+     * argument stands in as the encoding; a non-string name normalizes to
+     * utf8 and never fails it) reads the string before getValidatedFd does,
+     * then the encoded write at GetOffset's position. */
+    ScrStr *encoding = length->kind == SCR_DYN_STR ? length->v.str : NULL;
+    if (!scr_fs_write_str_encoding_ok(buffer->v.str, encoding)) goto done;
+    if (!scr_fs_dyn_fd_chk(fd)) goto done;
+    result = scr_fs_write_str_sync(fd->v.num, buffer->v.str, scr_fs_dyn_position(offset),
+                                   encoding);
+  }
+done:
+  if (own_offset) scr_dyn_release(own_offset);
+  if (own_length) scr_dyn_release(own_length);
+  if (own_position) scr_dyn_release(own_position);
+  return result;
+}
+
+/* The vector arguments as Uint8 views over the same memory (+1 array), or
+ * NULL with Node's "ArrayBufferView[]" TypeError. A typed array the call
+ * site only knows as a dynamic value arrives as a typed reference, which is
+ * materialized so its elements can be read like a literal array's. */
+static ScrArr *scr_fs_dyn_views(const ScrDyn *buffers) {
+  ScrDyn *materialized = NULL;
+  if (buffers->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(buffers) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(buffers);
+    buffers = materialized;
+  }
+  if (buffers->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("buffers", "an ArrayBufferView[]", buffers);
+    scr_dyn_release(materialized);
+    return NULL;
+  }
+  double count = scr_dyn_arr_len(buffers);
+  ScrArr *views = scr_arr_new_ops(&scr_bytes_io_bytes_ops, (size_t)count);
+  for (double i = 0; i < count; i++) {
+    ScrDyn *item = scr_dyn_index_get(buffers, i);
+    if (item == NULL || item->kind != SCR_DYN_BYTES) {
+      if (item) scr_dyn_release(item);
+      scr_dyn_arg_type_fail("buffers", "an ArrayBufferView[]", buffers);
+      scr_arr_release(views);
+      scr_dyn_release(materialized);
+      return NULL;
+    }
+    scr_arr_push_ref(views, scr_fs_dyn_view(item));
+    scr_dyn_release(item);
+  }
+  scr_dyn_release(materialized);
+  return views;
+}
+
+double scr_fs_readv_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position) {
+  ScrArr *views = scr_fs_dyn_views(buffers);
+  double result = 0;
+  if (!views) return 0;
+  if (scr_fs_dyn_fd_chk(fd))
+    result = scr_fs_readv_sync(fd->v.num, views, scr_fs_dyn_position(position));
+  scr_arr_release(views);
+  return result;
+}
+
+double scr_fs_writev_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position) {
+  ScrArr *views = scr_fs_dyn_views(buffers);
+  double result = 0;
+  if (!views) return 0;
+  /* An empty vector writes nothing before the descriptor is checked. */
+  if (scr_arr_len(views) != 0 && scr_fs_dyn_fd_chk(fd))
+    result = scr_fs_writev_sync(fd->v.num, views, scr_fs_dyn_position(position));
+  scr_arr_release(views);
+  return result;
+}
+
+void scr_fs_close_sync_dyn(const ScrDyn *fd) {
+  if (scr_fs_dyn_fd_chk(fd)) scr_fs_close(fd->v.num);
+}
+
+void scr_fs_fsync_sync_dyn(const ScrDyn *fd) {
+  if (scr_fs_dyn_fd_chk(fd)) scr_fs_fsync(fd->v.num);
+}
+
+void scr_fs_fdatasync_sync_dyn(const ScrDyn *fd) {
+  if (scr_fs_dyn_fd_chk(fd)) scr_fs_fdatasync(fd->v.num);
+}
+
+void scr_fs_ftruncate_sync_dyn(const ScrDyn *fd, const ScrDyn *len) {
+  double length = 0;
+  /* ftruncateSync's default applies to an omitted or undefined len alone. */
+  if (len->kind != SCR_DYN_UNDEF) {
+    if (!scr_fs_int_range_chk(len, "len", -9007199254740991.0, 9007199254740991.0,
+                              ">= -9007199254740991 && <= 9007199254740991"))
+      return;
+    length = len->v.num;
+  }
+  if (!scr_fs_dyn_fd_chk(fd)) return;
+  scr_fs_ftruncate(fd->v.num, length);
+}
+
+void scr_fs_fchown_sync_dyn(const ScrDyn *fd, const ScrDyn *uid, const ScrDyn *gid) {
+  if (!scr_fs_int_range_chk(uid, "uid", -1, 4294967295.0, ">= -1 && <= 4294967295")) return;
+  if (!scr_fs_int_range_chk(gid, "gid", -1, 4294967295.0, ">= -1 && <= 4294967295")) return;
+  if (!scr_fs_dyn_fd_chk(fd)) return;
+  scr_fs_fchown(fd->v.num, uid->v.num, gid->v.num);
 }

@@ -3252,8 +3252,21 @@ export function lowerIntrinsicProperty(
   }
   if (kind === "stats" || kind === "bigintStats") {
     const bigintStats = kind === "bigintStats";
+    const receiver = lowerer.lowerExpr(expr.expression);
+    if (receiver.type.kind === "dyn") {
+      // A Stats/BigIntStats spelling over a checked-dynamic value (a stat
+      // call lowered to the run-time options ladder, which picks the member
+      // table at the call): the member reads off the object at run time.
+      return {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: name, type: STRING, loc: locOf(expr) },
+        ...(expr.questionDotToken ? { optional: true as const } : {}),
+        value: receiver,
+        type: DYN,
+        loc: locOf(expr),
+      };
+    }
     if (name === "size") {
-      const receiver = lowerer.lowerExpr(expr.expression);
       return {
         kind: "libCall",
         fn: bigintStats ? "bigstats.size" : "stats.size",

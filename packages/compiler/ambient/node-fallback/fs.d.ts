@@ -661,6 +661,9 @@ declare module "node:fs" {
   /* statSync over an open fd — the same snapshot. */
   export function fstatSync(fd: number, options?: StatSyncOptions & { bigint?: false }): Stats;
   export function fstatSync(fd: number, options: StatSyncOptions & { bigint: true }): BigIntStats;
+  /* A runtime-valued `bigint` selects the member table at the call; an open
+   * descriptor cannot miss, so there is no undefined arm. */
+  export function fstatSync(fd: number, options: StatSyncOptions): Stats | BigIntStats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
    * shapes for missing paths. */
   export function realpathSync(path: string | URL): string;

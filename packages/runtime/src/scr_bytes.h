@@ -727,7 +727,7 @@ ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
  * could not pin to a static shape: Node's own validation ladder over the
  * dynamic value, then the same runtime operation. */
 void scr_fs_chmod_dyn(ScrStr *path, const ScrDyn *mode);
-void scr_fs_fchmod_dyn(double fd, const ScrDyn *mode);
+void scr_fs_fchmod_dyn(const ScrDyn *fd, const ScrDyn *mode);
 ScrStr *scr_fs_mkdir_dyn(ScrStr *path, const ScrDyn *options);
 void scr_fs_mkdir_dyn_void(ScrStr *path, const ScrDyn *options);
 double scr_fs_open_dyn(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode);
@@ -738,8 +738,21 @@ double scr_fs_open_native_str(ScrStr *path, double flags, ScrStr *mode);
 double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
-double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
-                            const ScrDyn *length, const ScrDyn *position);
+/* The fd primitives whose arguments the compiler could not pin down: Node's
+ * own checks over the dynamic values in Node's own order, then the same
+ * typed operation. `argc` is the call's argument count (the readSync options
+ * form's discriminator). */
+double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                             const ScrDyn *length, const ScrDyn *position, double argc);
+double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                              const ScrDyn *length, const ScrDyn *position);
+double scr_fs_readv_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position);
+double scr_fs_writev_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position);
+void scr_fs_close_sync_dyn(const ScrDyn *fd);
+void scr_fs_fsync_sync_dyn(const ScrDyn *fd);
+void scr_fs_fdatasync_sync_dyn(const ScrDyn *fd);
+void scr_fs_ftruncate_sync_dyn(const ScrDyn *fd, const ScrDyn *len);
+void scr_fs_fchown_sync_dyn(const ScrDyn *fd, const ScrDyn *uid, const ScrDyn *gid);
 void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence);
 /* The fs streams' option pieces (scr_fs_stream.c): the getOptions,
  * options.fd and path checks above without the fence; the checked path

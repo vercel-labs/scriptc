@@ -707,6 +707,28 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
+  if (e.fn === "fs.statsFromDynOpt") {
+    // `Stats | undefined` — the runtime answers a +1 Stats extracted from
+    // the checked-dynamic object, or NULL for the dynamic undefined a
+    // suppressed missing entry answers (a value outside the type throws).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const value = host.emitExpr(e.args[0]!);
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(ptr ${value.name})`);
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
+  }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
     // Dirent rows assembled inline from one scandir snapshot — the C
     // emitter's flat loop. The sync form checks a scandir error before

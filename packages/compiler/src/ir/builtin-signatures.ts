@@ -1532,10 +1532,24 @@ function buildLibFnSignatures() {
     // +1-or-NULL; the backend builds the arms).
     "fs.statProbeSync": { argTypes: [STRING, BOOL], result: VOID },
     "fs.lstatProbeSync": { argTypes: [STRING, BOOL], result: VOID },
+    // statSync/lstatSync(path, options) and fstatSync(fd, options) with an
+    // options value only the runtime knows: Node's member ladder over the
+    // value (bigint selects the member table, throwIfNoEntry the missing-
+    // entry answer) answers Stats, BigIntStats or undefined as a checked-
+    // dynamic object, so no static stats type can name it.
+    "fs.statSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.lstatSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.fstatSyncDyn": { argTypes: [DYN, DYN], result: DYN },
+    // A checked-dynamic Stats object back into the snapshot the typed
+    // members read (the ladder's answer at a typed slot). `statsFromDynOpt`
+    // answers NULL for the dynamic undefined, so its call site builds the
+    // `Stats | undefined` union (the runtime's +1-or-NULL answer).
+    "fs.statsFromDyn": { argTypes: [DYN], result: STATS_T },
+    "fs.statsFromDynOpt": { argTypes: [DYN], result: VOID },
     "fs.fstatSync": { argTypes: [F64], result: STATS_T },
     "fs.fchmodSync": { argTypes: [F64, F64], result: VOID },
     "fs.fchmodSyncStr": { argTypes: [F64, STRING], result: VOID },
-    "fs.fchmodSyncDyn": { argTypes: [F64, DYN], result: VOID },
+    "fs.fchmodSyncDyn": { argTypes: [DYN, DYN], result: VOID },
     "fs.fsyncSync": { argTypes: [F64], result: VOID },
     "fs.fdatasyncSync": { argTypes: [F64], result: VOID },
     "fs.ftruncateSync": { argTypes: [F64, F64], result: VOID },
@@ -1575,9 +1589,21 @@ function buildLibFnSignatures() {
     "fs.openNativeStrSync": { argTypes: [STRING, F64, STRING], result: F64 },
     "fs.openNativeDynSync": { argTypes: [STRING, F64, DYN], result: F64 },
     "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
-    "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
     "fs.writeSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
     "fs.writeStrSync": { argTypes: [F64, STRING, F64, STRING], result: F64 },
+    /** The fd primitives' checked-dynamic lane: the argument kinds the call
+     * site did not pin down take Node's own run-time ladder (readSync also
+     * needs the call's argument count for its options form), then the typed
+     * operation. */
+    "fs.readSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN, F64], result: F64 },
+    "fs.writeSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
+    "fs.readvSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.writevSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.ftruncateSyncDyn": { argTypes: [DYN, DYN], result: VOID },
+    "fs.closeSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fsyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fdatasyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fchownSyncDyn": { argTypes: [DYN, DYN, DYN], result: VOID },
     // fs.watch's callback func type is program-dependent (zero params, or
     // the eventType string) — the slot pins arity and the path/receiver.
     /** fs.watch(path, listener?) → an FSWatcher handle (scr_watch.c —

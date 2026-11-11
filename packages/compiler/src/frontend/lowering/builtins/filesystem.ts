@@ -36,6 +36,7 @@ import {
 } from "../../../ir/ir.js";
 import { optionMember, lowerBuiltinOptionalDefault } from "./arguments.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 
 type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
@@ -1177,6 +1178,9 @@ export function lowerStatsMethodCall(
   const receiverKind = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
   if (receiverKind !== "stats" && receiverKind !== "bigintStats") return null;
   if (!lowerer.isStdlibMember(access)) return null;
+  // A stats-spelled receiver holding a checked-dynamic value: the member is
+  // read and called at run time (the dyn call path).
+  if (tryLowerExpression(lowerer, access.expression)?.type.kind === "dyn") return null;
   const name = access.name.text;
   // BigIntStats' type tests are the same snapshot mode read; only the kind
   // of the handle differs.
@@ -1782,6 +1786,28 @@ const FS_STAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint", "thro
  * throwIfNoEntry. */
 const FS_FSTAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint"]);
 
+/** The boolean literal an expression is typed as ("true"/"false"), or null
+ * for any wider type: only a literal pins the member table statically. */
+function statBoolLiteral(lowerer: Lowerer, value: ts.Expression): "true" | "false" | null {
+  const t = lowerer.typeOf(value);
+  if (!(t.flags & ts.TypeFlags.BooleanLiteral)) return null;
+  return lowerer.checker.typeToString(t) === "true" ? "true" : "false";
+}
+
+/** The same literalness for a stored record's member, read off the checker
+ * through the options expression's own type. */
+function recordBoolLiteral(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  name: string,
+): "true" | "false" | null {
+  const prop = lowerer.checker.getPropertyOfType(lowerer.typeOf(node), name);
+  if (!prop) return null;
+  const t = lowerer.checker.getTypeOfSymbol(prop);
+  if (!(t.flags & ts.TypeFlags.BooleanLiteral)) return null;
+  return lowerer.checker.typeToString(t) === "true" ? "true" : "false";
+}
+
 /** The stat representation a mapped result type carries: BigIntStats and
  * `BigIntStats | undefined` read the bigint member table, Stats and
  * `Stats | undefined` the number one; anything else is neither. */
@@ -1837,12 +1863,14 @@ function checkStatBigintOption(
 
 /** fs.statSync / fs.lstatSync(path, options). The options are an object
  * literal, where throwIfNoEntry takes any boolean and bigint is the literal
- * true (BigIntStats) or false (Stats), or a stored record whose only member
- * is a boolean throwIfNoEntry. When the call's type is
- * `Stats | undefined` (or `BigIntStats | undefined`), the call lowers to the
- * probe, which answers undefined for a missing entry without building the
- * error. An explicitly undefined options argument is the one-argument
- * form. */
+ * true (BigIntStats) or false (Stats), a stored record whose members the
+ * checker pinned the same way, or any other value, where Node's whole member
+ * ladder runs at run time: bigint selects the member table, throwIfNoEntry
+ * the missing-entry answer, so the call answers a checked-dynamic Stats,
+ * BigIntStats or undefined. When the call's type is `Stats | undefined` (or
+ * `BigIntStats | undefined`), the call lowers to the probe, which answers
+ * undefined for a missing entry without building the error. An explicitly
+ * undefined options argument is the one-argument form. */
 export function lowerFsStatOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1851,6 +1879,7 @@ export function lowerFsStatOptionsCall(
 ): IrExpr {
   const spelling = noFollow ? "lstatSync" : "statSync";
   const plainFn: IrLibFn = noFollow ? "fs.lstatSync" : "fs.statSync";
+  const dynFn: IrLibFn = noFollow ? "fs.lstatSyncDyn" : "fs.statSyncDyn";
   const optsNode = call.arguments.nodes[1]!;
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
   // `{ bigint: true }` selects Node's BigIntStats: the SAME snapshot handle,
@@ -1860,9 +1889,24 @@ export function lowerFsStatOptionsCall(
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const def = callType?.kind === "union" ? lowerer.unions.get(callType.unionId) : undefined;
   const representation = statRepresentation(callType, def?.arms);
-  const statsType: IrType = representation === "bigint" ? BIGINT_STATS_T : STATS_T;
+  // Node's ladder over a value the compiler did not pin down: the member
+  // table (bigint) and the missing-entry policy (throwIfNoEntry) are read
+  // off the options at the call, so the answer is checked-dynamic.
+  // A stored options record the runtime must read (`JSON.parse(...) as
+  // StatOptions`) reaches the ladder boxed: the call reads its members off
+  // the checked-dynamic object, not off a copied struct.
+  const boxDyn = (options: IrExpr): IrExpr =>
+    options.type.kind === "dyn" ? options : lowerer.coerceToExpected(options, DYN);
+  const dynamicCall = (options: IrExpr): IrExpr => {
+    lowerer.dynStatCalls.add(call);
+    return { kind: "libCall", fn: dynFn, args: [path, boxDyn(options)], type: DYN, loc };
+  };
   // The path binds first, then the options' effects, then the stat runs.
-  const plainAfter = (effect: IrExpr | null): IrExpr => {
+  const plainAfter = (
+    effect: IrExpr | null,
+    repr: "bigint" | "number" = representation === "bigint" ? "bigint" : "number",
+  ): IrExpr => {
+    const statsType: IrType = repr === "bigint" ? BIGINT_STATS_T : STATS_T;
     if (effect === null)
       return { kind: "libCall", fn: plainFn, args: [path], type: statsType, loc };
     const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
@@ -1888,57 +1932,68 @@ export function lowerFsStatOptionsCall(
     return plainAfter(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions);
   }
   let throwIfNoEntry: IrExpr | null = null;
+  // The representation the call's own members pin, when they differ from the
+  // call type's (a stored record's literal member).
+  let pinned: "bigint" | "number" | null = representation;
   if (!ts.isObjectLiteralExpression(optsNode)) {
     // A stored options record (`const statSyncOptions = { throwIfNoEntry:
-    // false }`): the flag is read from it at the call, as Node reads
-    // options.throwIfNoEntry.
-    const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
-    const shape = optsType?.kind === "record" ? lowerer.shapes.get(optsType.shapeId) : undefined;
-    const field = shape?.fields.find((f) => f.name === "throwIfNoEntry");
+    // false } as const`): every member the call reads is pinned by the
+    // record's own type, so the lowering reads like the literal it spells.
+    // A record whose bigint member is a widened boolean has no static member
+    // table and takes the run-time ladder, and so does a JavaScript binding
+    // held as a dynamic value: Node reads its members at the call.
+    const opts = lowerer.lowerExpr(optsNode);
+    const shape = opts.type.kind === "record" ? lowerer.shapes.get(opts.type.shapeId) : undefined;
+    const fields = shape && !shape.tuple && !shape.indexValue ? shape.fields : undefined;
+    const member = (name: string) => fields?.find((f) => f.name === name);
+    const bigintField = member("bigint");
+    const throwsField = member("throwIfNoEntry");
     if (
-      optsType?.kind !== "record" ||
-      !shape ||
-      shape.tuple ||
-      shape.indexValue ||
-      shape.fields.length !== 1 ||
-      field?.type.kind !== "bool"
-    ) {
+      !fields ||
+      !fields.every((f) => f.name === "bigint" || f.name === "throwIfNoEntry") ||
+      (bigintField !== undefined && bigintField.type.kind !== "bool") ||
+      (throwsField !== undefined && throwsField.type.kind !== "bool")
+    )
+      return dynamicCall(opts);
+    const bigintLiteral = bigintField ? recordBoolLiteral(lowerer, optsNode, "bigint") : null;
+    if (bigintField !== undefined && bigintLiteral === null) return dynamicCall(opts);
+    if (bigintField !== undefined) pinned = bigintLiteral === "true" ? "bigint" : "number";
+    if (throwsField !== undefined) {
+      const literal = recordBoolLiteral(lowerer, optsNode, "throwIfNoEntry");
+      throwIfNoEntry =
+        literal === "true"
+          ? boolLit(true, loc)
+          : literal === "false"
+            ? boolLit(false, loc)
+            : {
+                kind: "recordGet",
+                obj: opts,
+                shapeId: opts.type.kind === "record" ? opts.type.shapeId : "",
+                field: "throwIfNoEntry",
+                type: BOOL,
+                loc,
+              };
+    }
+    if (pinned !== null && representation !== null && pinned !== representation) {
       lowerer.noLowering(
-        `${spelling} with this options value`,
+        `${spelling} with bigint: ${pinned === "bigint"} where the result is not ${pinned === "bigint" ? "BigIntStats" : "Stats"}`,
         optsNode,
-        `pass an object literal, or a record whose only member is a boolean throwIfNoEntry: ${spelling}(path, { throwIfNoEntry: false })`,
+        "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
       );
     }
-    const opts = lowerer.lowerExpr(optsNode);
-    if (opts.type.kind === "record") {
-      throwIfNoEntry = {
-        kind: "recordGet",
-        obj: opts,
-        shapeId: opts.type.shapeId,
-        field: "throwIfNoEntry",
-        type: BOOL,
-        loc,
-      };
-    } else if (opts.type.kind === "dyn") {
-      // A JavaScript binding held as a dynamic value: Node keeps throwing
-      // unless the member is exactly false.
-      throwIfNoEntry = {
-        kind: "dynScalarEq",
-        left: {
-          kind: "dynKeyGet",
-          key: { kind: "strLit", value: "throwIfNoEntry", type: STRING, loc },
-          optional: true,
-          value: opts,
-          type: DYN,
-          loc,
-        },
-        right: boolLit(false, loc),
-        negated: true,
-        type: BOOL,
-        loc,
-      };
-    } else {
-      lowerer.noLowering(`${spelling} with this options value`, optsNode, "pass an object literal");
+  }
+  // An object literal whose bigint member is a value only the runtime knows
+  // selects the member table at the call: the whole literal takes the ladder.
+  // A literal whose members are not plain property assignments (a getter, a
+  // method, a computed key, a spread) also takes it: Node reads bigint and
+  // throwIfNoEntry off the constructed object, exactly as the ladder does.
+  if (ts.isObjectLiteralExpression(optsNode)) {
+    for (const p of optsNode.properties.nodes) {
+      const m = optionMember(p);
+      if (!m) return dynamicCall(lowerer.lowerExprExpecting(optsNode, DYN));
+      if (m.name === "bigint" && statBoolLiteral(lowerer, m.value) === null) {
+        return dynamicCall(lowerer.lowerExprExpecting(optsNode, DYN));
+      }
     }
   }
   // The members in source order, when a bigint member has an effect: the
@@ -1978,7 +2033,7 @@ export function lowerFsStatOptionsCall(
   // run in source order (a runtime throwIfNoEntry into a local), then the
   // stat; without one, the call evaluates its operands in that order itself.
   const ordered = (stat: (pathArg: IrExpr, flag: IrExpr | null) => IrExpr): IrExpr => {
-    if (!bigintEffect) return stat(path, throwIfNoEntry);
+    if (!bigintEffect && ts.isObjectLiteralExpression(optsNode)) return stat(path, throwIfNoEntry);
     const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
     const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc }];
     let flag = throwIfNoEntry;
@@ -1994,6 +2049,7 @@ export function lowerFsStatOptionsCall(
     const result = stat(varRef(pathLocal.id, STRING, loc), flag);
     return { kind: "seqExpr", stmts, result, type: result.type, loc };
   };
+  const statsType: IrType = pinned === "bigint" ? BIGINT_STATS_T : STATS_T;
   if (callType?.kind === "stats" || callType?.kind === "bigintStats") {
     // A runtime flag that is false answers undefined, which a Stats result
     // cannot hold.
@@ -2004,7 +2060,7 @@ export function lowerFsStatOptionsCall(
         "the result must be Stats | undefined when throwIfNoEntry may be false",
       );
     }
-    if (!bigintEffect) return plainAfter(null);
+    if (!bigintEffect && ts.isObjectLiteralExpression(optsNode)) return plainAfter(null);
     return ordered((pathArg) => ({
       kind: "libCall",
       fn: plainFn,
@@ -2036,23 +2092,36 @@ export function lowerFsStatOptionsCall(
 
 /** fs.fstatSync(fd, options): the descriptor form of the same snapshot.
  * Node documents only `bigint` here — an open descriptor cannot miss, so the
- * result is Stats or BigIntStats, never undefined. */
+ * result is Stats or BigIntStats, never undefined. A descriptor or options
+ * value the compiler did not pin down takes the run-time ladder: Node reads
+ * options.bigint before the binding validates the descriptor. */
 export function lowerFsStatFdOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
   const spelling = "fstatSync";
-  const fd = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+  const fdNode = call.arguments.nodes[0]!;
   const optsNode = call.arguments.nodes[1]!;
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const representation = statRepresentation(callType, undefined);
-  const statsType: IrType = representation === "bigint" ? BIGINT_STATS_T : STATS_T;
-  const plain = (): IrExpr => ({
+  const dynamicCall = (fd: IrExpr, options: IrExpr): IrExpr => {
+    lowerer.dynStatCalls.add(call);
+    const boxed = options.type.kind === "dyn" ? options : lowerer.coerceToExpected(options, DYN);
+    return { kind: "libCall", fn: "fs.fstatSyncDyn", args: [fd, boxed], type: DYN, loc };
+  };
+  // The descriptor is validated in the binding, after options.bigint is read.
+  const dynamicOptions = (): IrExpr =>
+    dynamicCall(lowerer.lowerExprExpecting(fdNode, DYN), lowerer.lowerExprExpecting(optsNode, DYN));
+  if (lowerer.mapTypeOf(lowerer.typeOf(fdNode))?.kind !== "f64") return dynamicOptions();
+  const fd = lowerer.lowerExprExpecting(fdNode, F64);
+  const plain = (
+    repr: "bigint" | "number" = representation === "bigint" ? "bigint" : "number",
+  ): IrExpr => ({
     kind: "libCall",
     fn: "fs.fstatSync",
     args: [fd],
-    type: statsType,
+    type: repr === "bigint" ? BIGINT_STATS_T : STATS_T,
     loc,
   });
   const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
@@ -2070,19 +2139,45 @@ export function lowerFsStatFdOptionsCall(
         kind: "libCall",
         fn: "fs.fstatSync",
         args: [varRef(fdLocal.id, F64, loc)],
-        type: statsType,
+        type: plain().type,
         loc,
       },
-      type: statsType,
+      type: plain().type,
       loc,
     };
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
-    lowerer.noLowering(
-      `${spelling} with this options value`,
-      optsNode,
-      `pass an object literal: ${spelling}(fd, { bigint: true })`,
-    );
+    // A stored record the checker pinned (`const fstatOptions = { bigint:
+    // true } as const`): the member table is static. Every other value is
+    // read at the call.
+    const opts = lowerer.lowerExpr(optsNode);
+    const shape = opts.type.kind === "record" ? lowerer.shapes.get(opts.type.shapeId) : undefined;
+    const fields = shape && !shape.tuple && !shape.indexValue ? shape.fields : undefined;
+    const pinned =
+      fields &&
+      fields.every((f) => f.name === "bigint") &&
+      fields.length === 1 &&
+      fields[0]!.type.kind === "bool"
+        ? recordBoolLiteral(lowerer, optsNode, "bigint")
+        : null;
+    if (pinned === null) return dynamicCall(lowerer.lowerExprExpecting(fdNode, DYN), opts);
+    const repr = pinned === "true" ? "bigint" : "number";
+    if (representation !== null && repr !== representation) {
+      lowerer.noLowering(
+        `${spelling} with bigint: ${repr === "bigint"} where the result is not ${repr === "bigint" ? "BigIntStats" : "Stats"}`,
+        optsNode,
+        "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
+      );
+    }
+    return plain(repr);
+  }
+  for (const p of optsNode.properties.nodes) {
+    const m = optionMember(p);
+    // A member the table cannot enumerate (a getter, a method, a computed
+    // key, a spread) and a bigint value only the runtime knows both take
+    // the run-time ladder, which reads bigint off the object.
+    if (!m) return dynamicOptions();
+    if (m.name === "bigint" && statBoolLiteral(lowerer, m.value) === null) return dynamicOptions();
   }
   const effects: IrExpr[] = [];
   for (const p of optsNode.properties.nodes) {
@@ -2121,10 +2216,10 @@ export function lowerFsStatFdOptionsCall(
       kind: "libCall",
       fn: "fs.fstatSync",
       args: [varRef(fdLocal.id, F64, loc)],
-      type: statsType,
+      type: plain().type,
       loc,
     },
-    type: statsType,
+    type: plain().type,
     loc,
   };
 }

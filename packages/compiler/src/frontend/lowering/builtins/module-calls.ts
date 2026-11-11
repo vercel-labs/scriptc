@@ -10,6 +10,7 @@ import {
   lowerFsVectorOrTruncateCall,
   lowerFsOpenSyncCall,
   lowerFsModeSyncCall,
+  lowerFsDescriptorSyncCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -140,6 +141,16 @@ export function lowerBuiltinModuleCall(
     return lowerFsOpenSyncCall(lowerer, expr, loc);
   if (bi.module === "fs" && (bi.member === "chmodSync" || bi.member === "fchmodSync")) {
     const lowered = lowerFsModeSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
+  }
+  if (
+    bi.module === "fs" &&
+    (bi.member === "closeSync" ||
+      bi.member === "fsyncSync" ||
+      bi.member === "fdatasyncSync" ||
+      bi.member === "fchownSync")
+  ) {
+    const lowered = lowerFsDescriptorSyncCall(lowerer, expr, bi.member, loc);
     if (lowered) return lowered;
   }
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);

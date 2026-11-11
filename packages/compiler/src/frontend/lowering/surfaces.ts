@@ -2546,10 +2546,20 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fs.fsStreamClose",
       "fs.fsStreamCloseCb",
     ],
-    // The utf8 string overload; the table row is the Buffer-window form.
-    writeSync: ["fs.writeStrSync"],
+    // The utf8 string overload and the run-time-checked argument forms;
+    // the table row is the Buffer-window form.
+    writeSync: ["fs.writeStrSync", "fs.writeSyncArgs"],
     // The form whose arguments Node checks at run time.
-    readSync: ["fs.readSyncDyn"],
+    readSync: ["fs.readSyncArgs"],
+    // The same run-time ladder over a descriptor the call site did not pin
+    // down.
+    readvSync: ["fs.readvSyncDyn"],
+    writevSync: ["fs.writevSyncDyn"],
+    ftruncateSync: ["fs.ftruncateSyncDyn"],
+    closeSync: ["fs.closeSyncDyn"],
+    fsyncSync: ["fs.fsyncSyncDyn"],
+    fdatasyncSync: ["fs.fdatasyncSyncDyn"],
+    fchownSync: ["fs.fchownSyncDyn"],
     // The bare mode, the { recursive, mode } option lowerings, the forms
     // keeping Node's first-created-directory answer, and the runtime-ladder
     // form for an options value the compiler cannot read.
@@ -2571,12 +2581,15 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
     // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
     readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
-    // The { throwIfNoEntry } probe form.
-    statSync: ["fs.statProbeSync"],
+    // The { throwIfNoEntry } probe form and the run-time option ladder
+    // (bigint and throwIfNoEntry read off a value only the runtime knows).
+    statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
     // realpathSync and realpathSync.native read as function values.
     realpathSync: ["fs.realpathValue"],
     "realpathSync.native": ["fs.realpathValue"],
-    lstatSync: ["fs.lstatProbeSync"],
+    lstatSync: ["fs.lstatProbeSync", "fs.lstatSyncDyn"],
+    // The run-time option ladder over options the compiler cannot read.
+    fstatSync: ["fs.fstatSyncDyn"],
     globSync: ["fs.globTypesSync"],
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.

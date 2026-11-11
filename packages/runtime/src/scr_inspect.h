@@ -248,6 +248,13 @@ ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
 ScrStr *scr_fs_read_file_str_opts(ScrStr *path, const ScrDyn *options);   /* +1 string */
 ScrBytes *scr_fs_read_file_bytes_opts(ScrStr *path, const ScrDyn *options); /* +1 Buffer */
 ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *options);   /* +1 dyn */
+/* statSync / lstatSync / fstatSync with the options held at run time: the
+ * bigint member picks Stats or BigIntStats, throwIfNoEntry (stat and lstat)
+ * the missing-entry answer. A +1 dynamic Stats object, or NULL with the
+ * exception pending. */
+ScrDyn *scr_fs_stat_sync_dyn(ScrStr *path, const ScrDyn *options);        /* +1 dyn */
+ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options);       /* +1 dyn */
+ScrDyn *scr_fs_fstat_sync_dyn(const ScrDyn *fd, const ScrDyn *options); /* +1 dyn */
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
 /* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
  * check Node runs before it converts a URL path. */

@@ -7744,6 +7744,18 @@ export function lowerVarDecl(
       isCollectionPrototypeRead(lowerer, decl.initializer)
     )
       g.type = DYN;
+    // A file-scope statSync/lstatSync/fstatSync call lowered to the run-time
+    // options ladder answers a checked-dynamic Stats, BigIntStats or
+    // undefined (the options pick the member table and the missing-entry
+    // policy at the call), so an unannotated binding holds that box instead
+    // of the checker's static stats union (lowerVarDecl's local rule).
+    if (
+      !decl.type &&
+      !hasJsTypeAnnotation(decl) &&
+      raw.type.kind === "dyn" &&
+      lowerer.dynStatCalls.has(withoutParentheses(decl.initializer))
+    )
+      g.type = DYN;
     g.type = inferredOptionalRecordType(lowerer, decl, g.type, raw.type);
     // A module const keeps its initializer's record or array layout, as a
     // function's const does (keepsInitializerLayout). An annotated module
@@ -7958,6 +7970,18 @@ export function lowerVarDecl(
     staticImportNamespaceType(lowerer, decl.initializer) ??
     (init.type.kind === "moduleNs" ? init.type : null) ??
     (init.type.kind === "dyn" ? DYN : null);
+  // A statSync/lstatSync/fstatSync call lowered to the run-time options
+  // ladder answers a checked-dynamic Stats, BigIntStats or undefined (the
+  // options pick the member table and the missing-entry policy at the call),
+  // so an unannotated binding holds that box instead of the checker's static
+  // stats union.
+  if (
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    init.type.kind === "dyn" &&
+    lowerer.dynStatCalls.has(withoutParentheses(decl.initializer))
+  )
+    type = DYN;
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&

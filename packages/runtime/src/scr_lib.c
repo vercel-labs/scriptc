@@ -4515,7 +4515,7 @@ void scr_fs_chmod_str_mode(ScrStr *path, ScrStr *mode) {
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
+bool scr_fs_fd_valid(double fd);
 
 /* Node's validateInteger(id, name, -1, 2 ** 32 - 1) for uid and gid. False
  * with the RangeError thrown. */
@@ -4538,7 +4538,7 @@ bool scr_fs_owner_id_valid(double id, const char *name) {
 static void scr_fs_chown_op(ScrStr *path, double fd, bool no_follow, double uid, double gid) {
   if (!scr_fs_owner_id_valid(uid, "uid") || !scr_fs_owner_id_valid(gid, "gid")) return;
   /* The binding checks fchown's fd after the ids. */
-  if (!path && !scr_fs_write_fd_valid(fd)) return;
+  if (!path && !scr_fs_fd_valid(fd)) return;
 #if defined(_WIN32) || defined(__wasi__)
   (void)path; (void)fd; (void)no_follow;
 #else
@@ -4715,7 +4715,7 @@ double scr_fs_open_numeric(ScrStr *path, double flags, double mode) {
 }
 
 static void scr_fs_throw_nopath(int e, const char *op);
-static bool scr_fs_write_fd_valid(double fd);
+bool scr_fs_fd_valid(double fd);
 
 double scr_fs_open_native(ScrStr *path, double flags, double mode) {
   /* Node validates the path, then stringToFlags' numeric arm, then the
@@ -4745,7 +4745,7 @@ double scr_fs_open_native(ScrStr *path, double flags, double mode) {
 static bool scr_fs_fchmod_args(double fd, double mode) {
   double parsed;
   if (!scr_fs_mode_number_valid(mode, "mode", &parsed)) return false;
-  if (!scr_fs_write_fd_valid(fd)) return false;
+  if (!scr_fs_fd_valid(fd)) return false;
   return true;
 }
 
@@ -4764,7 +4764,7 @@ void scr_fs_fchmod(double fd, double mode) {
 void scr_fs_fchmod_str_mode(double fd, ScrStr *mode) {
   double parsed;
   if (!scr_fs_mode_octal(mode, "mode", &parsed)) return;
-  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_fd_valid(fd)) return;
 #ifdef _WIN32
   (void)parsed;
   scr_fs_throw_nopath(ENOSYS, "fchmod");
@@ -4774,6 +4774,8 @@ void scr_fs_fchmod_str_mode(double fd, ScrStr *mode) {
 }
 
 void scr_fs_fsync(double fd) {
+  /* binding.fsync checks the descriptor before the syscall. */
+  if (!scr_fs_fd_valid(fd)) return;
 #ifdef _WIN32
   if (_commit((int)fd) != 0) scr_fs_throw_nopath(errno, "fsync");
 #else
@@ -4782,7 +4784,7 @@ void scr_fs_fsync(double fd) {
 }
 
 void scr_fs_fdatasync(double fd) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+  if (!scr_fs_fd_valid(fd)) return;
 #if defined(_WIN32)
   if (_commit((int)fd) != 0) scr_fs_throw_nopath(errno, "fdatasync");
 #elif defined(__APPLE__)
@@ -4808,8 +4810,10 @@ bool scr_fs_truncate_len_valid(double length) {
 }
 
 void scr_fs_ftruncate(double fd, double length) {
-  if (!scr_fs_write_fd_valid(fd)) return;
+  /* ftruncateSync validates len in JS before binding.ftruncate checks the
+   * descriptor: an invalid len wins over an invalid fd. */
   if (!scr_fs_truncate_len_valid(length)) return;
+  if (!scr_fs_fd_valid(fd)) return;
   if (length < 0) length = 0;
 #ifdef _WIN32
   int error = (int)_chsize_s((int)fd, (__int64)length);
@@ -5037,7 +5041,9 @@ static ssize_t scr_fs_pwrite(int fd, const void *data, size_t length, double pos
 #endif
 }
 
-static bool scr_fs_write_fd_valid(double fd) {
+/* getValidatedFd's validateInteger(fd, 'fd', 0, 2147483647). Other units
+ * (the checked-dynamic fd ladders) reuse the exact message. */
+bool scr_fs_fd_valid(double fd) {
   char msg[160];
   char recv[48];
   scr_num_received(fd, recv);
@@ -5179,7 +5185,7 @@ static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
  * writes whole (scr_fs_bytes_write.c). */
 double scr_fs_write_mem(double fd, const void *data, size_t length,
                         double position) {
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   /* fs.writeSync(1|2, ...) and writes to a duplicated stdout descriptor go
    * between the program's other output: publish buffered stdout first so
    * source order holds (--stdout-buffering). */
@@ -5264,13 +5270,39 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
   return scr_fs_write_mem(fd, buf->data + off, (size_t)length, position);
 }
 
+/* fs.writeSync(fd, string[, position[, encoding]]): Node's string arm of
+ * writeSync — validateEncoding (hex needs an even number of UTF-16 units),
+ * then binding.writeString's ParseEncoding (an unknown or non-string name
+ * is utf8), then the descriptor, then one write at a safe-integer position
+ * or the current offset. */
+bool scr_fs_write_str_encoding_ok(ScrStr *data, ScrStr *encoding) {
+  ScrStr *enc = scr_bytes_normalize_encoding_or_utf8(encoding);
+  bool ok = true;
+  if (enc->len == 3 && memcmp(enc->data, "hex", 3) == 0) {
+    double units = scr_str_utf16_len(data);
+    if (fmod(units, 2.0) != 0) {
+      ScrStr *shown = scr_str_inspect_quoted(encoding, true);
+      char msg[320];
+      int len = snprintf(msg, sizeof msg,
+                         "The argument 'encoding' is invalid for data of length %.0f. Received %s",
+                         units, shown->data);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+      scr_str_release(shown);
+      ok = false;
+    }
+  }
+  scr_str_release(enc);
+  return ok;
+}
+
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding) {
-  (void)encoding; /* frontend proves utf8; the argument still evaluates */
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  double wrote = scr_fs_write_mem(fd, bytes, data->len, position);
-  scr_str_utf8_end(owned);
+  if (!scr_fs_write_str_encoding_ok(data, encoding)) return 0;
+  ScrStr *enc = scr_bytes_normalize_encoding_or_utf8(encoding);
+  ScrBytes *bytes = scr_bytes_from_str(data, enc);
+  scr_str_release(enc);
+  double wrote = scr_fs_write_mem(fd, bytes->data, bytes->len, position);
+  scr_bytes_release(bytes);
   return wrote;
 }
 
@@ -5389,6 +5421,10 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
+  /* binding.read checks the descriptor after the JS-level window checks
+   * (and after the zero-length early return), so an invalid fd loses to an
+   * invalid offset, position, length or buffer. */
+  if (!scr_fs_fd_valid(fd)) return 0;
   size_t off = (size_t)offset;
   size_t want = (size_t)length;
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
@@ -5423,7 +5459,7 @@ double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double lengt
  * scalar calls would change short I/O and pipe atomicity. This portable seam
  * also preserves positioned I/O on targets without preadv/pwritev. */
 double scr_fs_read_zero(double fd, double position) {
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   uint8_t dummy;
   ssize_t n = position < 0 ? read((int)fd, &dummy, 0)
     : scr_fs_pread((int)fd, &dummy, 0, (int64_t)position);
@@ -5435,7 +5471,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
                                  bool writing) {
   size_t count = (size_t)scr_arr_len(buffers);
   if (writing && count == 0) return 0;
-  if (!scr_fs_write_fd_valid(fd)) return 0;
+  if (!scr_fs_fd_valid(fd)) return 0;
   if (count == 0) { scr_fs_throw_nopath(EINVAL, "read"); return 0; }
   size_t length = 0;
   for (size_t i = 0; i < count; i++) {
@@ -5457,8 +5493,11 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
     }
   }
   ScrBytes window = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = data};
-  position = isfinite(position) && position >= 0 && position <= 9007199254740991.0
-    ? trunc(position) : -1;
+  /* GetOffset: a safe integer position is honored; every other value (a
+   * fraction, a negative, NaN) is libuv's "use the current offset". */
+  position = isfinite(position) && trunc(position) == position && position >= 0 &&
+             position <= 9007199254740991.0
+    ? position : -1;
   double transferred = writing
     ? scr_fs_write_sync(fd, &window, 0, (double)length, position)
     : length == 0 ? scr_fs_read_zero(fd, position)
@@ -5487,6 +5526,8 @@ double scr_fs_writev_sync(double fd, ScrArr *buffers, double position) {
 }
 
 void scr_fs_close(double fd) {
+  /* binding.close checks the descriptor before the syscall. */
+  if (!scr_fs_fd_valid(fd)) return;
   if (close((int)fd) != 0) {
     int e = errno;
     char namebuf[16];
@@ -7268,7 +7309,28 @@ ScrStats *scr_stats_of_fd(int fd, int *error) {
 #endif
 }
 
+/* Node's binding validates the descriptor as an int32 in [0, 2^31-1] before
+ * the syscall, whatever number reached it: a call site the checker typed
+ * passes its value here directly, so the ladder lives on the one entry point
+ * every fstat path calls. */
 ScrStats *scr_fs_fstat(double fd) {
+  char recv[48], msg[192];
+  if (!(isfinite(fd) && trunc(fd) == fd)) {
+    scr_num_received(fd, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be an integer. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  if (fd < 0 || fd > 2147483647.0) {
+    scr_num_received(fd, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"fd\" is out of range. It must be >= 0 && <= 2147483647. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
   int error = 0;
   ScrStats *s = scr_stats_of_fd((int)fd, &error);
   if (!s) scr_fs_throw_nopath(error, "fstat");
@@ -7599,6 +7661,92 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
     scr_dyn_obj_set(object, name, (size_t)len, ns[i]);
   }
   return object;
+}
+
+/* ── checked-dynamic Stats values back to the snapshot ─────────────── */
+
+/* One integer member of a dynamic Stats object: a number member (Stats) and
+ * a bigint member (BigIntStats) name the same snapshot field. */
+static bool scr_stats_dyn_field(const ScrDyn *object, const char *name, uint64_t *out) {
+  ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
+  if (!value) return false;
+  if (value->kind == SCR_DYN_NUM) {
+    *out = (uint64_t)value->v.num;
+    return true;
+  }
+  if (value->kind == SCR_DYN_BIGINT) {
+    *out = (uint64_t)scr_bigint_to_i64(value->v.bigint);
+    return true;
+  }
+  return false;
+}
+
+/* One timestamp: a BigIntStats object carries the exact nanoseconds, a
+ * number Stats object the millisecond value Node computes from them
+ * (msFromTimeSpec: sec * 1000 + nsec / 1e6), which this inverts. */
+static bool scr_stats_dyn_time(const ScrDyn *object, int which, int64_t *sec, int64_t *nsec) {
+  char name[16];
+  int len = snprintf(name, sizeof name, "%sNs", scr_stats_date_names[which]);
+  ScrDyn *value = scr_dyn_obj_get(object, name, (size_t)len);
+  if (value && value->kind == SCR_DYN_BIGINT) {
+    /* nsFromTimeSpecBigInt: the BigInt quotient and remainder. */
+    int64_t ns = scr_bigint_to_i64(value->v.bigint);
+    int64_t q = ns / INT64_C(1000000000);
+    *sec = q;
+    *nsec = ns - q * INT64_C(1000000000);
+    return true;
+  }
+  len = snprintf(name, sizeof name, "%sMs", scr_stats_date_names[which]);
+  value = scr_dyn_obj_get(object, name, (size_t)len);
+  if (value && value->kind == SCR_DYN_NUM) {
+    double ms = value->v.num;
+    double whole = floor(ms / 1000.0);
+    *sec = (int64_t)whole;
+    *nsec = (int64_t)llround((ms - whole * 1000.0) * 1e6);
+    return true;
+  }
+  return false;
+}
+
+/* A typed Stats slot taking a value the compiler held as a checked-dynamic
+ * value: the stat calls' run-time options ladder answers Node's Stats or
+ * BigIntStats object (the member table its `bigint` option chose), and this
+ * copies the object's fields into the snapshot handle the typed members
+ * read. The object's prototype is the brand: anything else is a value the
+ * slot's type cannot hold, the same TypeError the other checked
+ * conversions throw. */
+ScrStats *scr_stats_from_dyn(const ScrDyn *object) {
+  static const char *const names[SCR_STATS_FIELDS] = {
+    "dev", "mode", "nlink", "uid", "gid", "rdev", "blksize", "ino", "size", "blocks",
+  };
+  bool branded =
+    object->kind == SCR_DYN_OBJ &&
+    (object->prototype == scr_stats_protos[0] || object->prototype == scr_stats_protos[1]);
+  if (branded) {
+    ScrStats *s = scr_stats_new();
+    for (size_t i = 0; i < SCR_STATS_FIELDS; i++) {
+      if (!scr_stats_dyn_field(object, names[i], &s->fields[i])) goto fail;
+    }
+    for (int i = 0; i < 4; i++) {
+      if (!scr_stats_dyn_time(object, i, &s->sec[i], &s->nsec[i])) goto fail;
+    }
+    unsigned type = (unsigned)(s->fields[SCR_STATS_MODE] & SCR_STATS_IFMT);
+    s->is_file = type == SCR_STATS_IFREG;
+    s->is_dir = type == SCR_STATS_IFDIR;
+    s->is_symlink = type == SCR_STATS_IFLNK;
+    return s;
+  fail:
+    scr_stats_release(s);
+  }
+  scr_dyn_check_fail(NULL, "Stats", object);
+  return NULL;
+}
+
+/* The same extraction for a `Stats | undefined` slot: the ladder answers the
+ * dynamic undefined for a missing entry whose stat was suppressed. */
+ScrStats *scr_stats_from_dyn_opt(const ScrDyn *object) {
+  if (object->kind == SCR_DYN_UNDEF) return NULL;
+  return scr_stats_from_dyn(object);
 }
 
 /* The names of one scandir listing: byte order on POSIX (libuv sorts),

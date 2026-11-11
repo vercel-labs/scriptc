@@ -74,6 +74,10 @@ ScrStats *scr_file_handle_stat(ScrFileHandle *h);
  * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */
 double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                         double position);
+/* getValidatedFd: an integer in [0, 2147483647]; false with Node's
+ * ERR_OUT_OF_RANGE pending otherwise. The checked-dynamic fd ladders reuse
+ * it for the descriptor they read out of a dyn value. */
+bool scr_fs_fd_valid(double fd);
 /* fs.readSync's offset check; false with ERR_OUT_OF_RANGE pending. */
 bool scr_fs_read_offset_chk(double offset);
 /* scr_fs_read_sync after its offset and position checks, with an exact
@@ -87,6 +91,9 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
                          double position);
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding);
+/* writeSync's string arm validation before the descriptor: validateEncoding's
+ * hex parity check. False with ERR_INVALID_ARG_VALUE pending. */
+bool scr_fs_write_str_encoding_ok(ScrStr *data, ScrStr *encoding);
 double scr_fs_readv_sync(double fd, ScrArr *buffers, double position);
 double scr_fs_writev_sync(double fd, ScrArr *buffers, double position);
 /* Unlike scalar readSync's zero-length fast path, a nonempty vector of

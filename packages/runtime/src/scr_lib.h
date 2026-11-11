@@ -617,6 +617,12 @@ ScrStats *scr_stats_zero(void);
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
 ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
+/* A checked-dynamic Stats object back into the snapshot the typed members
+ * read: +1, or NULL with the checked conversion's TypeError pending. The
+ * `_opt` form answers NULL (no exception) for the dynamic undefined a
+ * suppressed missing entry answers. */
+ScrStats *scr_stats_from_dyn(const ScrDyn *object);
+ScrStats *scr_stats_from_dyn_opt(const ScrDyn *object);
 
 /* fs/promises: the SAME sync operations, minting an already-settled
  * promise — success fulfills, failure REJECTS with the would-be thrown

@@ -379,6 +379,29 @@ test("a class declaration assignment names the mutable outer binding", () => {
   expect(kept.hint).not.toContain("read-only");
 });
 
+test("a class declaration's inner assignment names its immutable binding", () => {
+  const kept = refusal("export class Value { static reset() { Value = null; } }");
+  expect(kept.message).toContain("assigning to a class binding");
+  expect(kept.hint).toContain("a class declaration's inner binding");
+  expect(kept.hint).toContain("are immutable");
+});
+
+test.for([
+  "export class Value { [Value = null]() {} }",
+  "export const Outer = class Inner { [Inner = null]() {} };",
+])("an uninitialized class inner assignment names its ReferenceError: %s", (source) => {
+  const kept = diagnostics(
+    source,
+    'import * as library from "./library.js"; console.log(library);',
+  ).find(
+    (diagnostic) =>
+      diagnostic.code === "SC1090" && diagnostic.message.includes("assigning to a class binding"),
+  );
+  expect(kept?.code).toBe("SC1090");
+  expect(kept?.hint).toContain("once initialized");
+  expect(kept?.hint).toContain("ReferenceError before initialization");
+});
+
 test("a named class expression's inner binding names the immutable inner binding", () => {
   const kept = refusal(
     "const Outer = class Inner { static reset() { Inner = null; } };\nexport { Outer };",

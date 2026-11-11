@@ -1586,7 +1586,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
     2629,
     REWRITE(
       "assigning to a class binding",
-      "a class declaration's outer binding is mutable, so Node replaces it; only a named class expression's inner binding is immutable, where strict code throws a TypeError. The class lowering does not model either assignment",
+      "a class declaration's outer binding is mutable, so Node replaces it; a class declaration's inner binding and a named class expression's inner binding are immutable. Assignments to them throw a TypeError once initialized, or a ReferenceError before initialization. The class lowering does not model these assignments",
     ),
   ],
   [

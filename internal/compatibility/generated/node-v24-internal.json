@@ -105171,7 +105171,12 @@
           "tests/corpus/util-ansi-text.ts",
           "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
           "tests/corpus/util-mark-promise-handled-args.cjs",
           "tests/corpus/util-mark-promise-handled.ts",
           "tests/corpus/util-mime-object-view.ts",
@@ -106399,7 +106404,11 @@
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
           "tests/corpus/inspect-numeric-separator.ts",
-          "tests/corpus/util-format-json-error.ts"
+          "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106431,7 +106440,11 @@
           "tests/corpus/7520-util-format-runtime.ts",
           "tests/corpus/7521-util-format-runtime.cjs",
           "tests/corpus/inspect-numeric-separator.ts",
-          "tests/corpus/util-format-json-error.ts"
+          "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106639,7 +106652,12 @@
           "tests/corpus/inspect-max-string-length.ts",
           "tests/corpus/inspect-numeric-separator.ts",
           "tests/corpus/inspect-hidden-properties.cjs",
-          "tests/corpus/util-inspect-options.ts"
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106669,7 +106687,12 @@
           "tests/corpus/inspect-show-hidden.ts",
           "tests/corpus/inspect-show-hidden-prototypes.ts",
           "tests/corpus/inspect-max-string-length.ts",
-          "tests/corpus/util-inspect-options.ts"
+          "tests/corpus/util-inspect-options.ts",
+          "tests/corpus/util-inspect-promise-state.ts",
+          "tests/corpus/util-inspect-regexp-hidden.ts",
+          "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-error-hidden.ts",
+          "tests/corpus/util-inspect-colors-values.ts"
         ]
       },
       "anchorSource": "exact"

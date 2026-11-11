@@ -539,6 +539,10 @@ bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
  * binaries keep their size class): called when a promise the checkpoint
  * report already delivered as unhandled gains a handler. */
 SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
+
+/* The settled-value reader of a boxed promise (scr_async_dyn.c installs it
+ * with the box hooks; a program without that unit has no box to inspect). */
+SCR_TL ScrDyn *(*scr_promise_settled_dyn_fn)(const ScrPromise *p) = NULL;
 #ifdef SCR_NODE_ISLANDS
 SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
 #endif

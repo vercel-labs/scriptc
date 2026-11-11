@@ -2001,6 +2001,7 @@ static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_settled_dyn_fn = scr_promise_reason_dyn;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -2018,6 +2019,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_promise_settled_dyn_fn = scr_promise_reason_dyn;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

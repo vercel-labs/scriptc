@@ -336,6 +336,11 @@ void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for
  * dyn payloads and %Error instances). +1. */
 ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
+/* A settled boxed promise's outcome as a dyn value (+1): the rejection
+ * reason, the fulfillment value otherwise. scr_async_dyn.c installs it when
+ * it creates a box — the only way an inspector meets a SCR_DYN_PROMISE —
+ * so a program without that unit keeps the pointer NULL. Runtime-internal. */
+extern SCR_TL ScrDyn *(*scr_promise_settled_dyn_fn)(const ScrPromise *p);
 /* process warnings (scr_lib.c — always linked so any unit can emit a
  * deprecation): dyn listeners plus Node's default stderr report
  * ("(node:pid) [CODE] Name: message" and a detail second line).

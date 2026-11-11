@@ -4104,7 +4104,7 @@ ScrPromise *scr_fsp_lstat(ScrStr *path) {
 }
 
 ScrPromise *scr_fsp_opendir(ScrStr *path, double buffer_size) {
-  ScrDir *d = scr_fs_opendir(path, buffer_size);
+  ScrDir *d = scr_fs_opendir_promise(path, buffer_size);
   return scr_promise_settled_ref(d, &scr_dir_retain_v, &scr_dir_release_v, NULL);
 }
 

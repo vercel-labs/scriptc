@@ -45479,9 +45479,11 @@
           "tests/corpus/fs-promises-copyfile-mode.ts",
           "tests/corpus/fs-promises-lchmod.ts",
           "tests/corpus/fs-promises-mkdir-options.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts",
           "tests/corpus/fs-promises-open-flags.ts",
           "tests/corpus/fs-promises-optionless-ops.ts",
           "tests/corpus/fs-promises-path-encoding.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/fs-promises-read-options-js.js",
           "tests/corpus/fs-promises-read-options.ts",
           "tests/corpus/fs-promises-rmdir-options.ts",
@@ -46459,12 +46461,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.access",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.access",
         "tests": [
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46487,12 +46490,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.appendFile",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.appendFile",
         "tests": [
+          "tests/corpus/fs-promises-mutation-errors.ts",
+          "tests/corpus/fs-promises-write-file-dynamic-options.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-write-file-dynamic-options.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46543,12 +46547,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.chown",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.chown",
         "tests": [
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46571,14 +46576,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.copyFile",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.copyFile",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/fs-promises-copyfile-mode.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts",
           "tests/corpus/fs-promises-optionless-ops.ts",
-          "tests/corpus/fs-promises-copyfile-mode.ts"
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46689,12 +46695,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.lchown",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lchown",
         "tests": [
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46717,11 +46724,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.lutimes",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lutimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-promises.ts",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
@@ -46745,13 +46753,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.link",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.link",
         "tests": [
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
           "tests/fixtures/node-types/fs-links.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46801,10 +46810,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.mkdir",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.mkdir",
         "tests": [
-          "tests/corpus/fs-promises-mkdir-options.ts"
+          "tests/corpus/fs-promises-mkdir-options.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46827,12 +46837,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.mkdtemp",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.mkdtemp",
         "tests": [
+          "tests/corpus/fs-promises-path-encoding.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-path-encoding.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46883,9 +46894,10 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.open",
+        "evidence": "compiler-feature:fs.fsPromises.open",
         "tests": [
-          "tests/corpus/fs-promises-open-flags.ts"
+          "tests/corpus/fs-promises-open-flags.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46909,9 +46921,10 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.opendir",
+        "evidence": "compiler-feature:fs.fsPromises.opendir",
         "tests": [
-          "tests/corpus/5544-fs-opendir.cjs"
+          "tests/corpus/5544-fs-opendir.cjs",
+          "tests/corpus/fs-promises-mutation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46993,14 +47006,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.readlink",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.readlink",
         "tests": [
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
           "tests/fixtures/node-types/fs-links.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47050,10 +47064,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.rename",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.rename",
         "tests": [
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47076,12 +47091,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.rmdir",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.rmdir",
         "tests": [
+          "tests/corpus/fs-promises-rmdir-options.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-rmdir-options.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47104,10 +47120,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.rm",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.rm",
         "tests": [
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47156,13 +47173,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.statfs",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.statfs",
         "tests": [
           "tests/corpus/node24-fs-statfs.ts",
           "tests/corpus/node24-fs-statfs-options.cjs",
           "tests/corpus/node24-fs-statfs-errors.cjs",
-          "tests/fixtures/node-types/fs-statfs.ts"
+          "tests/fixtures/node-types/fs-statfs.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47185,14 +47203,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.symlink",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.symlink",
         "tests": [
           "tests/corpus/node24-fs-links-promises.ts",
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
           "tests/fixtures/node-types/fs-links.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47215,12 +47234,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.truncate",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.truncate",
         "tests": [
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts",
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47243,10 +47263,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.unlink",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.unlink",
         "tests": [
-          "tests/corpus/fs-promises-optionless-ops.ts"
+          "tests/corpus/fs-promises-optionless-ops.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47269,10 +47290,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.utimes",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.utimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-promises.ts",
+          "tests/corpus/fs-promises-path-operation-errors.ts",
           "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
@@ -47319,15 +47341,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.writeFile",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.writeFile",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
+          "tests/corpus/fs-promises-mutation-errors.ts",
+          "tests/corpus/fs-promises-write-file-dynamic-options.ts",
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
-          "tests/corpus/fs-promises-write-file-dynamic-options.ts"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"

@@ -8459,10 +8459,12 @@ static void scr_dir_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_DIR, &ops);
 }
 
-/* Opens the directory and attaches its path: the stream half of
- * opendir, without the options.bufferSize check (fs.opendir's callback
- * form validates it after the open, from the completion callback). */
-ScrDir *scr_fs_opendir_raw(ScrStr *path) {
+/* Opens the directory: the stream half of opendir, without the
+ * options.bufferSize check (fs.opendir's callback form validates it after
+ * the open, from the completion callback). `with_path` picks the error
+ * shape: opendirSync reports Node's path-less errno error, while the
+ * callback and promise forms report the path and its message suffix. */
+static ScrDir *scr_fs_opendir_open(ScrStr *path, bool with_path) {
   if (!scr_fs_path_ok(path, "path")) return NULL;
   ScrDir *d = calloc(1, sizeof *d);
   if (!d) scr_trap("scriptc: out of memory\n");
@@ -8493,7 +8495,8 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
   if (error) {
     free(d->stream);
     free(d);
-    scr_fs_throw_nopath(error, "opendir");
+    if (with_path) scr_fs_throw(error, "opendir", path);
+    else scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #else
@@ -8502,7 +8505,8 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
     int error = errno;
     free(d->stream);
     free(d);
-    scr_fs_throw_nopath(error, "opendir");
+    if (with_path) scr_fs_throw(error, "opendir", path);
+    else scr_fs_throw_nopath(error, "opendir");
     return NULL;
   }
 #endif
@@ -8511,9 +8515,12 @@ ScrDir *scr_fs_opendir_raw(ScrStr *path) {
   return d;
 }
 
-ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+/* The options.bufferSize check runs after the open, as Node's Dir
+ * constructor does: an open error wins, and an invalid size closes the
+ * handle it just opened and throws the RangeError. */
+static ScrDir *scr_fs_opendir_sized(ScrStr *path, double buffer_size, bool with_path) {
   scr_dir_dyn_install();
-  ScrDir *d = scr_fs_opendir_raw(path);
+  ScrDir *d = scr_fs_opendir_open(path, with_path);
   if (!d) return NULL;
   if (!scr_dir_buffer_size_ok(buffer_size)) {
     scr_dir_close_stream(d);
@@ -8523,6 +8530,19 @@ ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
   }
   d->buffer_size = buffer_size;
   return d;
+}
+
+/* fs.opendir's callback form: the open errors carry the path. */
+ScrDir *scr_fs_opendir_raw(ScrStr *path) { return scr_fs_opendir_open(path, true); }
+
+/* fs.promises.opendir: the open's errors carry the path. */
+ScrDir *scr_fs_opendir_promise(ScrStr *path, double buffer_size) {
+  return scr_fs_opendir_sized(path, buffer_size, true);
+}
+
+/* opendirSync: Node's errno error for the open carries no path. */
+ScrDir *scr_fs_opendir(ScrStr *path, double buffer_size) {
+  return scr_fs_opendir_sized(path, buffer_size, false);
 }
 
 /* A Dir as a dynamic handle (fs.opendir's callback result). */

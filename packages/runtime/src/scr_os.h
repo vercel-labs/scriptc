@@ -124,7 +124,9 @@ void scr_fs_listing_free(ScrFsListing *l);
  * scandir encoding), false at the end; a closed Dir throws ERR_DIR_CLOSED
  * from read and close. Releasing the last reference closes the stream.
  * scr_fs_opendir throws Node's opendir errno error (no path), or the
- * options.bufferSize RangeError, and answers NULL then.
+ * options.bufferSize RangeError, and answers NULL then. The callback and
+ * promise forms (scr_fs_opendir_raw, scr_fs_opendir_promise) attach the
+ * path to the errno error, as Node's asynchronous forms do.
  *
  * The asynchronous reads, closes and disposals live in scr_async.c beside
  * the promise and loop machinery, and the Dirent a callback read receives
@@ -142,6 +144,7 @@ bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind);
 bool scr_dir_read_async(ScrDir *d, ScrStr **name, double *kind, bool *buffered);
 void scr_dir_close(ScrDir *d);
 ScrDir *scr_fs_opendir_raw(ScrStr *path); /* +1, or throws (NULL) */
+ScrDir *scr_fs_opendir_promise(ScrStr *path, double buffer_size); /* +1, or throws (NULL) */
 ScrDyn *scr_dir_dyn_handle(ScrDir *d);   /* +1 */
 void scr_defer_pending_throw(void);
 void scr_dir_read_callback(ScrDir *d, ScrDyn *callback);

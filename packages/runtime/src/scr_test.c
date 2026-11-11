@@ -1685,6 +1685,12 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
 static void scr_test_ensure_runner(void) {
   if (scr_test_runner_spawned) return;
   scr_test_runner_spawned = true;
+#ifndef __wasi__
+  /* A subtest started inside a then / catch / finally handler on an untyped
+   * promise runs inline and is awaited on the current fiber (scr_test_call),
+   * so in a program with tests each such reaction's steps get a fiber. */
+  scr_dyn_reaction_spawn = scr_dyn_then_spawn;
+#endif
   scr_test_t0 = scr_now_ms();
   ScrPromise *p = scr_async_spawn(scr_test_runner_entry, NULL);
   scr_promise_release(p);

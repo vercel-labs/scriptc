@@ -406,9 +406,8 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
-#ifdef SCR_NATIVE_REACTIONS
-/* A native reaction's steps (scr_promise_react). Only the build for
- * programs with web streams has them (runtime-pack-matrix.mjs). */
+/* A native reaction's steps (scr_promise_react): the callback waiter
+ * without a destination. */
 static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
   if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
 }
@@ -418,11 +417,6 @@ static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *
   scr_promise_reaction_drop(cb);
 }
 #define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
-#else
-#define SCR_PROMISE_IS_REACTION(cb) false
-#define scr_promise_reaction_drop(cb) ((void)0)
-#define scr_promise_reaction_run(cb, src) ((void)0)
-#endif
 
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
@@ -1091,6 +1085,14 @@ static void scr_fiber_track(ScrFiber *fiber) { (void)fiber; }
 #endif
 
 long scr_abandoned_fiber_count(void) { return scr_fibers_abandoned; }
+
+#ifdef SCR_RC_AUDIT
+/* Reactions of the dynamic promise unit that are subscribed and have not
+ * run (scr_async_dyn.c). Each stands where a parked fiber stood: one left
+ * at loop exhaustion counts as a fiber never resumed, so the count audit
+ * is skipped for it as it was for that fiber. */
+SCR_TL long scr_dyn_reactions_pending = 0;
+#endif
 
 #ifdef SCR_ASAN_FIBERS
 /* Deliberately abandoned fibers stay referenced for the process lifetime,
@@ -2334,11 +2336,9 @@ static struct ScrPromiseCbWaiter *scr_promise_cb_push(ScrPromise *in) {
   return &in->cbs[in->ncbs++];
 }
 
-/* A combinator subscribing to an entry: Node's `then` on the entry. The
- * entry counts as handled from here on; a settled entry queues its
- * reaction job now, a pending one when it settles. */
-static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
-  scr_prom_observe(in);
+/* The subscription itself: a settled entry queues its reaction job now, a
+ * pending one when it settles. */
+static void scr_promise_cb_attach(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
   if (in->state != SCR_PROM_PENDING) {
     scr_promise_cb_queue(&cb, in);
   } else {
@@ -2348,14 +2348,33 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
-#ifdef SCR_NATIVE_REACTIONS
+/* A combinator subscribing to an entry: Node's `then` on the entry. The
+ * entry counts as handled from here on. */
+static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter cb) {
+  scr_prom_observe(in);
+  scr_promise_cb_attach(in, cb);
+}
+
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
   struct ScrPromiseCbWaiter cb = {0};
   cb.reaction = reaction;
   cb.ctx = ctx;
   scr_promise_cb_subscribe(p, cb);
 }
-#endif
+
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_attach(p, cb);
+}
+
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_queue(&cb, p);
+}
 
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
@@ -7210,6 +7229,9 @@ bool scr_loop_run(ScrPromise *top_level) {
    * exiting, Node's behavior; the OS reparents the children). */
   if (scr_loop_children != NULL) scr_loop_children->teardown();
   scr_fibers_abandoned = scr_fibers_live;
+#ifdef SCR_RC_AUDIT
+  scr_fibers_abandoned += scr_dyn_reactions_pending;
+#endif
   scr_note_abandoned_fibers(scr_fibers_abandoned);
   return rejection_failed;
 }

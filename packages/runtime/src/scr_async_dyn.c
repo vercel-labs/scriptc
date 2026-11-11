@@ -740,48 +740,114 @@ ScrPromise *scr_immediate_promise(void) {
 
 /* ── .then/.catch/.finally over dyn promises (scr_dyn_invoke's promise
  * arm and the dc tracePromise reactions) ──────────────────────────────
- * One reaction fiber per registration: it awaits src (the settled-await
- * microtask hop keeps JS's ordering — reactions never run synchronously
- * inside settle), runs the checked-dynamic tree handler, and settles dst. A handler
- * returning a dyn promise is ADOPTED (awaited in a loop, like JS's
- * resolve). Non-callable handlers pass the settlement through (JS's
- * PromisePrototypeThen over non-function reactions). The fiber's own
- * promise is dropped unobserved — the entry consumes every exception
- * into dst, so it can never reject. */
+ * One native reaction per registration (scr_promise_react): its job runs
+ * on the loop's stack one microtask turn after src settles (reactions
+ * never run synchronously inside settle), in the AsyncLocalStorage context
+ * of the registration, calls the checked-dynamic tree handler, and settles
+ * dst. A handler returning a dyn promise is ADOPTED (the resolution
+ * procedure, scr_promise_resolve_dyn). Non-callable handlers pass the
+ * settlement through (JS's PromisePrototypeThen over non-function
+ * reactions). The job consumes every exception into dst. Nothing here
+ * suspends in the middle, so no reaction takes a fiber. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_DYN_REACTIONS_ROOTED 1
+#endif
+#endif
+
+/* The collector does not trace a reaction's context, so one that never
+ * runs on a cycle through its handler stays allocated, as the parked fiber
+ * it replaces did. The sanitizer lane keeps the pending contexts on a list
+ * rooted in a global (their first member), so the leak check sees them
+ * reachable, as it saw that fiber's stack. The count audit takes one that
+ * is left when the loop has nothing more to run as that fiber never
+ * resumed (scr_dyn_reactions_pending). */
+#ifdef SCR_RC_AUDIT
+#define SCR_DYN_PENDING_COUNT(n) (scr_dyn_reactions_pending += (n))
+#else
+#define SCR_DYN_PENDING_COUNT(n) ((void)0)
+#endif
+#ifdef SCR_DYN_REACTIONS_ROOTED
+typedef struct ScrDynPending {
+  struct ScrDynPending *next, **previous;
+} ScrDynPending;
+static SCR_TL ScrDynPending *scr_dyn_pending = NULL;
+static void scr_dyn_pending_link(ScrDynPending *p) {
+  p->next = scr_dyn_pending;
+  p->previous = &scr_dyn_pending;
+  if (scr_dyn_pending) scr_dyn_pending->previous = &p->next;
+  scr_dyn_pending = p;
+}
+static void scr_dyn_pending_unlink(ScrDynPending *p) {
+  *p->previous = p->next;
+  if (p->next) p->next->previous = p->previous;
+}
+#define SCR_DYN_PENDING ScrDynPending pending;
+#define SCR_DYN_PENDING_LINK(pack) (scr_dyn_pending_link(&(pack)->pending), SCR_DYN_PENDING_COUNT(1))
+#define SCR_DYN_PENDING_UNLINK(pack) (scr_dyn_pending_unlink(&(pack)->pending), SCR_DYN_PENDING_COUNT(-1))
+#else
+#define SCR_DYN_PENDING
+#define SCR_DYN_PENDING_LINK(pack) SCR_DYN_PENDING_COUNT(1)
+#define SCR_DYN_PENDING_UNLINK(pack) SCR_DYN_PENDING_COUNT(-1)
+#endif
+
 typedef struct {
-  ScrPromise *src, *dst; /* owned */
+  SCR_DYN_PENDING
+  ScrPromise *dst;           /* owned */
   ScrDyn *onf, *onr, *onfin; /* owned or NULL */
+  ScrAlsCtx *als;            /* the registration's context, owned or NULL */
 } ScrDynThenPack;
 
+/* The wait of a finally callback's result. It does not own the promise it
+ * waits on: that promise owns the reaction, and a reference back would
+ * keep both alive when the promise never settles. */
 typedef struct {
-  ScrPromise *src, *dst;
-  ScrDyn *result;
+  SCR_DYN_PENDING
+  ScrPromise *src, *dst; /* owned */
 } ScrDynFinallyPack;
 
-static void scr_dyn_finally_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynFinallyPack *pack = opaque;
-  ScrDyn *result = scr_await_dyn(pack->result->v.promise);
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The promise a finally callback's result stands for has settled: its
+ * rejection replaces the original settlement, anything else passes the
+ * original on. */
+static void scr_dyn_finally_react(void *ctx, ScrPromise *settled) {
+  ScrDynFinallyPack *pack = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
   if (scr_exc_pending()) scr_promise_reject_pending(pack->dst);
   else scr_promise_adapt_copy(pack->dst, pack->src);
-  scr_dyn_release(result);
-  scr_dyn_release(pack->result);
+}
+
+static void scr_dyn_finally_drop(void *ctx) {
+  ScrDynFinallyPack *pack = ctx;
+  SCR_DYN_PENDING_UNLINK(pack);
   scr_promise_release(pack->src);
   scr_promise_release(pack->dst);
   free(pack);
 }
 
-static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
-  (void)self;
-  ScrDynThenPack *a = (ScrDynThenPack *)ap;
-  ScrDyn *v = scr_await_dyn(a->src);
+static const ScrPromiseReaction scr_dyn_finally_reaction = { scr_dyn_finally_react,
+                                                             scr_dyn_finally_drop };
+
+SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src) = NULL;
+
+static void scr_dyn_then_drop(void *ctx);
+
+/* The reaction's steps. Inlined into both callers, so that the reaction
+ * job stays one function in a program without tests. */
+static inline __attribute__((always_inline)) void scr_dyn_then_steps(ScrDynThenPack *a,
+                                                                     ScrPromise *src) {
+  scr_promise_settled_now(src); /* observes; a rejection re-throws */
   bool rejected = scr_exc_pending();
   ScrCaught *c = rejected ? scr_exc_take() : NULL;
+  ScrDyn *v = rejected ? NULL : scr_dyn_promise_payload(src);
   ScrDyn *handler = a->onfin ? a->onfin : (rejected ? a->onr : a->onf);
   if (handler != NULL && scr_dyn_is_callable(handler)) {
     ScrDyn *arg = NULL;
     if (a->onfin == NULL) arg = rejected ? scr_caught_to_dyn(c) : scr_dyn_retain(v);
+    ScrAlsCtx *outer = scr_als_dispatch_enter(a->als);
     ScrDyn *r = scr_dyn_call(handler, arg ? &arg : NULL, arg ? 1 : 0, "handler");
+    scr_als_dispatch_leave(outer);
     scr_dyn_release(arg);
     if (r == NULL) {
       /* The handler threw: dst rejects with that. */
@@ -799,11 +865,11 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
       ScrPromise *passthrough = scr_promise_new();
       ScrDynFinallyPack *pack = malloc(sizeof *pack);
       if (!pack) scr_ad_oom();
-      pack->src = scr_promise_retain(a->src);
+      pack->src = scr_promise_retain(src);
       pack->dst = scr_promise_retain(passthrough);
-      pack->result = r;
-      ScrPromise *waiter = scr_async_spawn_after(r->v.promise, scr_dyn_finally_entry, pack);
-      scr_promise_release(waiter);
+      SCR_DYN_PENDING_LINK(pack);
+      scr_promise_react_unmarked(r->v.promise, &scr_dyn_finally_reaction, pack);
+      scr_dyn_release(r);
       scr_promise_resolve_dyn(a->dst, scr_dyn_new_promise(passthrough));
       scr_promise_release(passthrough);
     } else {
@@ -817,68 +883,114 @@ static void scr_dyn_then_entry(ScrFiber *self, void *ap) {
   }
   scr_caught_release(c);
   scr_dyn_release(v);
-  scr_promise_release(a->src);
+}
+
+#ifndef __wasi__
+/* The steps on a fiber of their own (scr_dyn_then_spawn): the fiber holds
+ * the source and a context of its own, because the reaction's context goes
+ * with the reaction when its job returns, and the handler may still be
+ * waiting then. */
+typedef struct {
+  ScrDynThenPack *pack; /* owned */
+  ScrPromise *src;      /* owned */
+} ScrDynThenFiber;
+
+static void scr_dyn_then_fiber_entry(ScrFiber *self, void *argpack) {
+  (void)self;
+  ScrDynThenFiber *job = argpack;
+  scr_dyn_then_steps(job->pack, job->src);
+  scr_dyn_then_drop(job->pack);
+  scr_promise_release(job->src);
+  free(job);
+}
+
+/* Referenced by the test unit alone, so that a program without tests links
+ * neither this copy nor the fiber machinery it starts. */
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src) {
+  ScrDynThenPack *a = ctx;
+  ScrDynThenFiber *job = malloc(sizeof *job);
+  ScrDynThenPack *own = malloc(sizeof *own);
+  if (!job || !own) scr_ad_oom();
+  own->dst = scr_promise_retain(a->dst);
+  own->onf = a->onf ? scr_dyn_retain(a->onf) : NULL;
+  own->onr = a->onr ? scr_dyn_retain(a->onr) : NULL;
+  own->onfin = a->onfin ? scr_dyn_retain(a->onfin) : NULL;
+  own->als = a->als ? scr_als_ctx_retain(a->als) : NULL;
+  SCR_DYN_PENDING_LINK(own);
+  job->pack = own;
+  job->src = scr_promise_retain(src);
+  scr_promise_release(scr_async_spawn(scr_dyn_then_fiber_entry, job));
+}
+#endif
+
+static void scr_dyn_then_react(void *ctx, ScrPromise *src) {
+  if (scr_dyn_reaction_spawn != NULL) {
+    scr_dyn_reaction_spawn(ctx, src);
+    return;
+  }
+  scr_dyn_then_steps(ctx, src);
+}
+
+static void scr_dyn_then_drop(void *ctx) {
+  ScrDynThenPack *a = ctx;
+  SCR_DYN_PENDING_UNLINK(a);
   scr_promise_release(a->dst);
   scr_dyn_release(a->onf);
   scr_dyn_release(a->onr);
   scr_dyn_release(a->onfin);
+  scr_als_ctx_release(a->als);
   free(a);
 }
 
+static const ScrPromiseReaction scr_dyn_then_reaction = { scr_dyn_then_react, scr_dyn_then_drop };
+
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin) {
   /* A rejection HANDLER marks the source handled at attach (Node's
-   * moment; the reaction fiber's await re-marks harmlessly) — this is
-   * also what lets a .catch inside an 'unhandledRejection' listener fire
-   * 'rejectionHandled' immediately at the attach point. */
+   * moment), which also lets a .catch inside an 'unhandledRejection'
+   * listener fire 'rejectionHandled' at the attach point. Without one the
+   * reaction's own steps observe the source in their turn. */
   if (onr != NULL) scr_promise_mark_handled(src);
   ScrDynThenPack *a = malloc(sizeof *a);
   if (!a) scr_ad_oom();
-  a->src = scr_promise_retain(src);
   a->dst = scr_promise_new();
   a->onf = onf ? scr_dyn_retain(onf) : NULL;
   a->onr = onr ? scr_dyn_retain(onr) : NULL;
   a->onfin = onfin ? scr_dyn_retain(onfin) : NULL;
+  a->als = scr_als_capture();
   ScrDyn *boxed = scr_dyn_new_promise(a->dst);
-  ScrPromise *waiter = scr_async_spawn_after(src, scr_dyn_then_entry, a);
-  scr_promise_release(waiter); /* the entry never rejects; nobody awaits it */
+  SCR_DYN_PENDING_LINK(a);
+  scr_promise_react_unmarked(src, &scr_dyn_then_reaction, a);
   return boxed;
 }
-typedef struct {
-  ScrPromise *destination;
-  ScrDyn *value;
-} ScrDynResolvePack;
 
-static void scr_dyn_resolve_entry(ScrFiber *self, void *opaque) {
-  (void)self;
-  ScrDynResolvePack *pack = opaque;
-#ifndef __wasi__
-  /* Promise resolution schedules a job before attaching its reaction. */
-  scr_await_hop();
-#endif
-  ScrDyn *value = scr_await_dyn(pack->value->v.promise);
-  if (scr_exc_pending()) scr_promise_reject_pending(pack->destination);
-  else scr_promise_resolve_dyn(pack->destination, value);
-  scr_dyn_release(pack->value);
-  scr_promise_release(pack->destination);
-  free(pack);
+/* The promise a resolution adopts has settled: a fulfilment resolves the
+ * destination in turn, a rejection rejects it with the same reason. */
+static void scr_dyn_adopt_react(void *ctx, ScrPromise *settled) {
+  ScrPromise *destination = ctx;
+  scr_promise_settled_now(settled); /* observes; a rejection re-throws */
+  if (scr_exc_pending()) scr_promise_reject_pending(destination);
+  else scr_promise_resolve_dyn(destination, scr_dyn_promise_payload(settled));
 }
 
-#ifdef __wasi__
-static void scr_dyn_resolve_job(ScrClosure *closure) {
-  ScrPromise *destination = scr_box_get_ref(closure->caps[0]);
-  ScrDyn *value = scr_box_get_ref(closure->caps[1]);
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = destination;
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn_after(value->v.promise, scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
+static void scr_dyn_adopt_drop(void *ctx) { scr_promise_release(ctx); }
+
+static const ScrPromiseReaction scr_dyn_adopt_reaction = { scr_dyn_adopt_react, scr_dyn_adopt_drop };
+
+/* The job that calls the adopted promise's `then`: the reaction above
+ * subscribes in this turn, with a reference of its own on the destination
+ * (the job's goes with the job). */
+static void scr_dyn_adopt_subscribe(void *ctx, ScrPromise *adopted) {
+  scr_promise_react_unmarked(adopted, &scr_dyn_adopt_reaction, scr_promise_retain(ctx));
 }
-#endif
+
+static const ScrPromiseReaction scr_dyn_adopt_job = { scr_dyn_adopt_subscribe, scr_dyn_adopt_drop };
 
 /* The destination is borrowed; value moves in. An async function may
  * return a native promise hidden behind any/unknown without an explicit
- * await, so its completion must use resolution rather than fulfillment. */
+ * await, so its completion must use resolution rather than fulfillment.
+ * A promise is adopted as JavaScript does it: one job calls its `then`
+ * (scr_promise_react_next), whose reaction settles the destination one
+ * turn after the promise settles, so two turns after a settled one. */
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
   if (value->kind != SCR_DYN_PROMISE) {
 #ifdef SCR_NODE_ISLANDS
@@ -900,21 +1012,8 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
     scr_dyn_release(value);
     return;
   }
-#ifdef __wasi__
-  ScrClosure *job = scr_closure_new((void *)scr_dyn_resolve_job, 2);
-  job->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, scr_promise_trace_v);
-  scr_box_set_ref(job->caps[0], scr_promise_retain(destination));
-  job->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-  scr_box_set_ref(job->caps[1], value);
-  scr_queue_microtask(job);
-#else
-  ScrDynResolvePack *pack = malloc(sizeof *pack);
-  if (!pack) scr_ad_oom();
-  pack->destination = scr_promise_retain(destination);
-  pack->value = value;
-  ScrPromise *waiter = scr_async_spawn(scr_dyn_resolve_entry, pack);
-  scr_promise_release(waiter);
-#endif
+  scr_promise_react_next(value->v.promise, &scr_dyn_adopt_job, scr_promise_retain(destination));
+  scr_dyn_release(value);
 }
 
 /* ── new Promise(executor) of a checked-dynamic value ─────────────────

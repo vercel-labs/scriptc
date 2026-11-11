@@ -35321,8 +35321,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -35574,8 +35574,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -35597,8 +35597,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -35620,8 +35620,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -35666,8 +35666,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -35758,8 +35758,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36149,8 +36149,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36241,8 +36241,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36264,8 +36264,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36310,8 +36310,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36402,8 +36402,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36448,8 +36448,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36678,8 +36678,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -36816,8 +36816,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -37000,7 +37000,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37046,8 +37046,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -37069,8 +37069,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 informational responses support their callback forms; Early Hints takes a lowercase link string or array of links, and string, number, boolean or array field values.",
         "verification": "test-backed"
       }
     },
@@ -37092,8 +37092,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 informational responses support their callback forms; Early Hints takes a lowercase link string or array of links, and string, number, boolean or array field values.",
         "verification": "test-backed"
       }
     },
@@ -37161,8 +37161,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 informational responses support their callback forms; Early Hints takes a lowercase link string or array of links, and string, number, boolean or array field values.",
         "verification": "test-backed"
       }
     },
@@ -37506,8 +37506,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -37529,8 +37529,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -37920,8 +37920,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.",
         "verification": "test-backed"
       }
     },
@@ -38081,7 +38081,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38357,8 +38357,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -38541,7 +38541,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -38587,7 +38587,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -42865,8 +42865,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -42888,8 +42888,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -42934,8 +42934,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },

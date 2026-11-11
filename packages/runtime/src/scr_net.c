@@ -1447,7 +1447,7 @@ static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t le
 /* The write path shared by write()/end(data)/pipe delivery. Ignored on a
  * dead or ended write half (Node fires 'error' there; this slice drops —
  * SEMANTICS.md documents the bound). */
-static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len) {
+static void scr_net_sock_write_raw_inner(ScrNetSocket *s, const char *data, size_t len) {
   if (s->adopted_by != NULL) {
     /* Node writes these bytes to the wire as they are, between the TLS
      * records of the socket that took over (the peer then fails the
@@ -1499,6 +1499,16 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
     scr_net_sock_buffer(s, data + sent, len - (size_t)sent, len);
     scr_net_sock_update_write(s);
   }
+}
+
+/* Every socket write tracks Node's backpressure, the http layer's internal
+ * (native) writes included: a write that leaves the high-water mark or more
+ * buffered sets needDrain, and 'drain' follows once the buffer empties. The
+ * message above the socket computes its own answer from writableLength, but
+ * the socket it writes through is the stream Node's own 'drain' describes. */
+static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len) {
+  scr_net_sock_write_raw_inner(s, data, len);
+  if (s->wpending >= SCR_NET_WRITE_HWM) s->need_drain = true;
 }
 
 /* Ordered slices as ONE write (an HTTP head with its body, a chunk with
@@ -1581,6 +1591,7 @@ bool scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
   }
   return scr_net_sock_write_answer(s);
 #endif
+  if (s->wpending >= SCR_NET_WRITE_HWM) s->need_drain = true;
 }
 
 /* Flush on write-readiness; drives the FIN when ENDING. */

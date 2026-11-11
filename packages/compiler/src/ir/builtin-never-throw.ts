@@ -36,12 +36,20 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
   // The corked payload, its chunk framing and the socket's pending writes,
-  // added up from fields.
+  // added up from fields; writableNeedDrain compares that total with the
+  // high water mark. No listener or user code runs.
   "http.resWritableLength",
+  "http.resWritableNeedDrain",
+  "http.clientWritableLength",
+  "http.clientWritableNeedDrain",
+  // end(cb) adds the callback to the finish slot or schedules it on the
+  // next tick when the request already finished.
+  "http.clientOnEndCallback",
   // A listener is added to the request's, the response's or the session's
   // list; no listener runs.
   "http.clientOnConnect",
   "http.clientOnInformation",
+  "http.clientOnDrain",
   "http.resOnDrain",
   "http.resOnError",
   // Reads one stored header line group and boxes it as a number, string or
@@ -123,4 +131,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_http_req_destroy_error retains the payload and tears the message
+  // down; the 'error' it reports runs from the deferred emit queue.
+  "http.reqDestroyError",
 ]);

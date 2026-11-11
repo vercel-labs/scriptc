@@ -248,6 +248,7 @@ struct ScrHttpReq {
   char version[2]; /* the parsed version's digits ("09", "10", "11", "20") */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
   bool aborted;  /* the connection or h2 stream died with the response unfinished */
+  ScrError *destroy_error; /* +1 — destroy(err)'s payload, the message's 'error' */
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
   bool join_dup; /* joinDuplicateHeaders: repeated names read joined ", " */
@@ -341,6 +342,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     free(r->tnames_raw);
     free(r->tvalues);
     scr_str_release(r->status_msg);
+    scr_error_release(r->destroy_error);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
     scr_dyn_release(r->signal);
     scr_net_ls_drop(&r->data_ls);
@@ -764,15 +766,57 @@ void scr_http_req_set_timeout_plain(ScrHttpReq *r, double ms) {
 bool scr_http_req_destroyed_flag(ScrHttpReq *r) { return r->destroyed; }
 bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 
-/* destroy(): tears the underlying connection down NOW; the teardown
- * events flow through the socket's native hooks like a peer close. */
-void scr_http_req_destroy(ScrHttpReq *r) {
+static void scr_http_queue_req_destroy_error(ScrHttpReq *req);
+
+/* Node's IncomingMessage._destroy: only an 'aborted' message tears the
+ * connection down; a message the reader finished keeps its socket even
+ * when destroy(err) carries an error, so a response the handler writes
+ * afterwards still reaches the peer. The 'error' (if any) and the
+ * 'close' ride the queue either way. A message that did not end
+ * completely is aborted with it (Node's IncomingMessage._destroy), so
+ * its signal answers aborted whether it was read before the destroy or
+ * first read afterwards, and its 'aborted' listeners fire inside the
+ * destroy() call. */
+static void scr_http_req_destroy_impl(ScrHttpReq *r) {
   r->destroyed = true;
+  /* a message the reader has not finished ('readableEnded' false, or a
+   * body still incomplete) is 'aborted' — the flag and the event are set
+   * NOW, inside destroy(). */
+  bool aborted = !r->end_consumed || !scr_http_req_complete(r);
+  if (aborted) scr_http_h2_req_aborted(r);
+  if (r->destroy_error != NULL) {
+    /* the report precedes the close the teardown queues */
+    scr_http_queue_req_destroy_error(r);
+  }
   if (r->h2_stream != NULL) {
-    scr_http_h2_ops->destroy(r->h2_stream);
+    if (aborted) scr_http_h2_ops->destroy(r->h2_stream);
+    else scr_http_h2_req_close(r);
     return;
   }
-  if (r->sock) scr_net_sock_destroy(r->sock);
+  if (r->sock != NULL && aborted) {
+    scr_net_sock_destroy(r->sock);
+    return;
+  }
+  scr_http_h2_req_close(r);
+}
+
+/* destroy(): an unfinished message tears the underlying connection down
+ * NOW and its teardown flows through the socket's native hooks like a
+ * peer close; a finished one only closes the message. Once the stream is
+ * destroyed, destroy() again is Node's no-op. */
+void scr_http_req_destroy(ScrHttpReq *r) {
+  if (r->destroyed || r->close_emitted) return;
+  scr_http_req_destroy_impl(r);
+}
+
+/* destroy(err): the message is destroyed like destroy(), and `err`
+ * (borrowed) is its 'error' — before the 'close', as stream.destroy does.
+ * On a finished message Node keeps the socket, so the error does not tear
+ * the connection down. */
+void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err) {
+  if (r->destroyed || r->close_emitted) return;
+  if (r->destroy_error == NULL) r->destroy_error = scr_error_retain(err);
+  scr_http_req_destroy_impl(r);
 }
 
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -1094,11 +1138,9 @@ struct ScrHttpRes {
   bool no_body; /* HEAD request or a 1xx/204/304 status: Node's _hasBody false */
   bool req_cleared;
   ScrNetLs close_ls, timeout_ls;
-  ScrNetLs drain_ls;  /* res.on('drain') — a write answered false and the bytes drained */
-  bool need_drain;    /* Node's kNeedDrain: the next 'drain' fires once writableLength is 0 */
   ScrNetLs finish_ls; /* res.on('finish') — fires deferred once the body went out */
   ScrNetLs prefinish_ls; /* res.on('prefinish') — fires inside end(), once the body is written */
-  ScrNetLs err_ls;     /* res.on('error') — pipe()'s ERR_STREAM_CANNOT_PIPE, the one error this surface emits */
+  ScrNetLs err_ls;     /* res.on('error') — pipe()'s ERR_STREAM_CANNOT_PIPE, or a refused write's error (write_ after end/destroy) ahead of the close */
   /* The AsyncLocalStorage context of the end() call (+1, NULL outside a
    * store) once `end_ctx_set`: 'finish', the end() callbacks and 'close'
    * after an end run in it, as Node's do. An http2 compatibility response
@@ -1113,6 +1155,13 @@ struct ScrHttpRes {
   bool wcb_queued;
   bool close_queued;
   bool close_emitted;
+  /* write()'s backpressure answer: Node's kNeedDrain, set when a write
+   * answered false, and the 'drain' the message emits once the buffered
+   * bytes are all out (writableLength back to 0). */
+  ScrNetLs drain_ls;
+  bool need_drain;
+  bool drain_queued;
+  bool drain_armed; /* the one-shot socket-drain listener is registered */
 };
 
 ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
@@ -1134,6 +1183,7 @@ void scr_http_res_release(ScrHttpRes *r) {
     free(r->hkinds);
     scr_http_trailers_clear(&r->trailers);
     scr_str_release(r->status_msg);
+    scr_net_ls_drop(&r->err_ls);
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
     scr_net_ls_drop(&r->drain_ls);
@@ -1142,6 +1192,7 @@ void scr_http_res_release(ScrHttpRes *r) {
     scr_net_ls_drop(&r->err_ls);
     scr_net_ls_drop(&r->endcb_ls);
     scr_net_ls_drop(&r->wcb_ls);
+    scr_net_ls_drop(&r->drain_ls);
     free(r->cork_buf);
     free(r->held_head);
     if (r->max_requests_per_socket) scr_dyn_release(r->max_requests_per_socket);
@@ -1774,6 +1825,32 @@ void scr_http_res_write_processing(ScrHttpRes *r) {
   if (r->sock) scr_net_sock_write_native(r->sock, "HTTP/1.1 102 Processing\r\n\r\n", 27);
 }
 
+/* The interim block's write callback: Node hands it to _writeRaw, so it
+ * runs when the block is flushed — one emit sweep later here, where the
+ * write already reached the socket buffer. A refused write (headers sent,
+ * HTTP/2) releases it without running it. */
+static void scr_http_res_queue_interim_cb(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  scr_http_res_on_write_flush(r, cb);
+}
+
+void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  scr_http_res_write_continue(r);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_http_res_queue_interim_cb(r, cb);
+}
+
+void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  scr_http_res_write_processing(r);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_http_res_queue_interim_cb(r, cb);
+}
+
 /* Node's linkValueRegExp from internal/validators: `<...>` followed by
  * optional semicolon parameters. Its string arm refuses an empty or
  * malformed link before the general header-content check runs. */
@@ -1805,82 +1882,257 @@ static bool scr_http_early_link_format(const ScrStr *link) {
   return true;
 }
 
-/* A lowercase `link` controls whether Node sends a 103 at all; when
- * present it is always the first field, followed by the other object
- * properties in insertion order. This static entry accepts string-valued
- * fields. */
-void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
-  if (!scr_http_res_informational_h1(r, "writeEarlyHints")) return;
-  size_t count = (size_t)scr_arr_len(pairs);
-  ScrStr *link = NULL;
-  for (size_t i = 0; i + 1 < count; i += 2) {
-    ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
-    if (name->len == 4 && memcmp(name->data, "link", 4) == 0) {
-      scr_str_release(link);
-      link = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
+/* A typed array the hints object holds as a dynamic member arrives as a
+ * capsule: Node reads the array itself, so its view is what the hint
+ * renderers and their errors inspect. */
+static ScrDyn *scr_http_early_view(const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_TYPED_REF) return scr_dyn_visit_view(value);
+  return scr_dyn_retain(value);
+}
+
+/* A field value as the 103 line renders it: a string keeps its Latin-1
+ * bytes, an array joins its elements with ',' (Node's
+ * processInformationHeader), and anything else prints as a template
+ * literal would. */
+static void scr_http_buf_early_value(ScrHttpBuf *b, const ScrDyn *raw) {
+  ScrDyn *value = scr_http_early_view(raw);
+  if (value->kind == SCR_DYN_STR) {
+    scr_http_buf_header_value(b, value->v.str);
+  } else if (value->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < value->v.arr.len; i++) {
+      if (i > 0) scr_http_buf_str(b, ",");
+      scr_http_buf_early_value(b, value->v.arr.items[i]);
     }
-    scr_str_release(name);
+  } else {
+    scr_http_buf_dyn_str(b, value);
   }
-  if (!link) return;
-  if (!scr_http_early_link_format(link)) {
-    ScrDyn *received = scr_dyn_new_str(link);
-    scr_dyn_arg_value_fail("hints", "must be an array or string of format \"</styles.css>; rel=preload; as=style\"", received);
-    scr_dyn_release(received);
-    scr_str_release(link);
-    return;
+  scr_dyn_release(value);
+}
+
+static void scr_http_early_link_fail(const ScrDyn *got /*borrowed*/) {
+  scr_dyn_arg_value_fail("hints", "must be an array or string of format \"</styles.css>; rel=preload; as=style\"", got);
+}
+
+/* Node's validateLinkHeaderValue: a string, or an array whose every
+ * element is a link, joined with ", ". Answers NULL when the value is
+ * invalid — a pending exception is raised — and an empty string for an
+ * empty array (no 103 goes out). */
+static ScrStr *scr_http_early_link_value(const ScrDyn *raw /*borrowed*/) {
+  ScrDyn *value = scr_http_early_view(raw);
+  ScrStr *out = NULL;
+  if (value->kind == SCR_DYN_STR) {
+    if (scr_http_early_link_format(value->v.str)) {
+      out = scr_str_retain(value->v.str);
+    } else {
+      scr_http_early_link_fail(value);
+    }
+  } else if (value->kind == SCR_DYN_ARR) {
+    size_t len = value->v.arr.len;
+    if (len == 0) {
+      out = scr_str_new("", 0);
+    } else {
+      ScrHttpBuf b = {NULL, 0, 0};
+      bool ok = true;
+      for (size_t i = 0; i < len && ok; i++) {
+        ScrDyn *item = scr_http_early_view(value->v.arr.items[i]);
+        if (item->kind != SCR_DYN_STR || !scr_http_early_link_format(item->v.str)) {
+          scr_http_early_link_fail(item);
+          ok = false;
+        } else {
+          if (i > 0) scr_http_buf_str(&b, ", ");
+          scr_http_buf_append(&b, item->v.str->data, item->v.str->len);
+        }
+        scr_dyn_release(item);
+      }
+      if (ok) out = scr_str_new(b.data ? b.data : "", b.len);
+      free(b.data);
+    }
+  } else {
+    scr_http_early_link_fail(value);
+  }
+  scr_dyn_release(value);
+  return out;
+}
+
+/* Node's writeEarlyHints(): validateObject(hints), then a lowercase
+ * `link` — a string or an array of links — decides whether anything goes
+ * out; when present it is always the first field, followed by the other
+ * own enumerable properties in property order. Answers whether a 103 was
+ * written. */
+static bool scr_http_res_write_early_hints_impl(ScrHttpRes *r, const ScrDyn *hints) {
+  /* Node validates the hints and their link BEFORE the head is built and
+   * _writeRaw raises ERR_HTTP_HEADERS_SENT, so a bad hints object reports
+   * its own error on a committed response too. */
+  /* validateObject(hints): null, primitives, and — without the array or
+   * function allowance — arrays and functions too. */
+  switch (hints->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+  case SCR_DYN_ARR:
+  case SCR_DYN_FUNC:
+    scr_dyn_arg_type_fail("hints", "of type object", hints);
+    return false;
+  default: break;
+  }
+  ScrDyn *link = scr_dyn_obj_read(hints, "link", 4);
+  if (link == NULL) return false; /* a getter threw */
+  if (link->kind == SCR_DYN_UNDEF || link->kind == SCR_DYN_NULL) {
+    scr_dyn_release(link);
+    return false;
+  }
+  ScrStr *link_text = scr_http_early_link_value(link);
+  scr_dyn_release(link);
+  if (link_text == NULL) return false;
+  if (link_text->len == 0) { /* an empty link array: no 103, no callback */
+    scr_str_release(link_text);
+    return false;
   }
   ScrStr *link_name = scr_str_new("Link", 4);
-  ScrDyn *link_value = scr_dyn_new_str(link);
+  ScrDyn *link_value = scr_dyn_new_str(link_text);
   scr_http_validate_header_value(link_name, link_value);
   scr_dyn_release(link_value);
   scr_str_release(link_name);
   if (scr_exc_pending()) {
-    scr_str_release(link);
-    return;
+    scr_str_release(link_text);
+    return false;
   }
   /* after the link's own checks, before the other fields', as in Node */
-  if (!scr_http_headers_unsent(r->head_sent, "write")) {
-    scr_str_release(link);
-    return;
+  if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {
+    scr_str_release(link_text);
+    return false;
   }
-  ScrHttpBuf b = {NULL, 0, 0};
-  scr_http_buf_str(&b, "HTTP/1.1 103 Early Hints\r\nLink: ");
-  scr_http_buf_header_value(&b, link);
-  scr_http_buf_str(&b, "\r\n");
-  scr_str_release(link);
+  if (!scr_http_headers_unsent(r->head_sent, "write")) {
+    scr_str_release(link_text);
+    return false;
+  }
+  ScrDyn *keys = scr_dyn_obj_keys(hints);
+  if (keys == NULL) {
+    scr_str_release(link_text);
+    return false;
+  }
+  /* Node builds a null-prototype headers object seeded with {Link: link}
+   * and then adds the other own keys in property order: a key spelled
+   * exactly "Link" overwrites the seeded value in place, keeping the first
+   * position, while every other key adds its own field. */
+  struct {
+    const ScrStr *name; /* borrowed from `keys` */
+    ScrStr *value;      /* +1 */
+  } *fields = NULL;
+  size_t fields_len = 0, fields_cap = 0;
   ScrStr *empty_label = scr_str_new("", 0);
-  for (size_t i = 0; i + 1 < count; i += 2) {
-    ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
-    ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
-    if (name->len == 4 && memcmp(name->data, "link", 4) == 0) {
-      scr_str_release(name);
-      scr_str_release(value);
-      continue;
+  bool threw = false;
+  for (size_t i = 0; i < keys->v.arr.len; i++) {
+    const ScrDyn *key = keys->v.arr.items[i];
+    if (key->kind != SCR_DYN_STR) continue; /* an array index cannot name a field */
+    ScrStr *name = key->v.str;
+    if (name->len == 4 && memcmp(name->data, "link", 4) == 0) continue;
+    ScrDyn *value = scr_dyn_obj_read(hints, name->data, name->len);
+    if (value == NULL) {
+      threw = true;
+      break;
     }
     scr_http_validate_header_name(name, empty_label);
+    ScrHttpBuf rendered = {NULL, 0, 0};
     if (!scr_exc_pending()) {
-      ScrDyn *wrapped = scr_dyn_new_str(value);
+      scr_http_buf_early_value(&rendered, value);
+      ScrStr *text = scr_str_new(rendered.data ? rendered.data : "", rendered.len);
+      free(rendered.data);
+      rendered.data = NULL;
+      ScrDyn *wrapped = scr_dyn_new_str(text);
       scr_http_validate_header_value(name, wrapped);
       scr_dyn_release(wrapped);
+      if (scr_exc_pending()) {
+        scr_str_release(text);
+        scr_dyn_release(value);
+        threw = true;
+        break;
+      }
+      if (name->len == 4 && memcmp(name->data, "Link", 4) == 0) {
+        scr_str_release(link_text);
+        link_text = text; /* the seeded Link's value, in place */
+      } else {
+        if (fields_len == fields_cap) {
+          size_t cap = fields_cap ? fields_cap * 2 : 8;
+          void *grown = realloc(fields, cap * sizeof *fields);
+          if (grown == NULL) {
+            free(rendered.data);
+            scr_str_release(text);
+            scr_dyn_release(value);
+            scr_http_oom();
+          }
+          fields = grown;
+          fields_cap = cap;
+        }
+        fields[fields_len].name = name;
+        fields[fields_len].value = text;
+        fields_len++;
+      }
     }
+    free(rendered.data);
+    scr_dyn_release(value);
     if (scr_exc_pending()) {
-      scr_str_release(name);
-      scr_str_release(value);
-      scr_str_release(empty_label);
-      free(b.data);
-      return;
+      threw = true;
+      break;
     }
-    scr_http_buf_append(&b, name->data, name->len);
-    scr_http_buf_str(&b, ": ");
-    scr_http_buf_header_value(&b, value);
-    scr_http_buf_str(&b, "\r\n");
-    scr_str_release(name);
-    scr_str_release(value);
   }
   scr_str_release(empty_label);
-  scr_http_buf_str(&b, "\r\n");
+  ScrHttpBuf b = {NULL, 0, 0};
+  if (!threw) {
+    scr_http_buf_str(&b, "HTTP/1.1 103 Early Hints\r\nLink: ");
+    scr_http_buf_header_value(&b, link_text);
+    scr_http_buf_str(&b, "\r\n");
+    for (size_t i = 0; i < fields_len; i++) {
+      scr_http_buf_append(&b, fields[i].name->data, fields[i].name->len);
+      scr_http_buf_str(&b, ": ");
+      scr_http_buf_header_value(&b, fields[i].value);
+      scr_http_buf_str(&b, "\r\n");
+    }
+    scr_http_buf_str(&b, "\r\n");
+  }
+  for (size_t i = 0; i < fields_len; i++) scr_str_release(fields[i].value);
+  free(fields);
+  /* every stored field name is borrowed from the key list, so it outlives
+   * the block that prints them */
+  scr_dyn_release(keys);
+  scr_str_release(link_text);
+  if (threw) {
+    free(b.data);
+    return false;
+  }
   if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
   free(b.data);
+  return true;
+}
+
+/* The checked conversion of a typed record or class instance a lowering
+ * hands to the hints parameter is a capsule: its own members live in the
+ * materialized view, which is the object Node's writeEarlyHints reads. */
+static bool scr_http_res_write_early_hints_view(ScrHttpRes *r, const ScrDyn *hints) {
+  if (hints->kind != SCR_DYN_TYPED_REF) return scr_http_res_write_early_hints_impl(r, hints);
+  ScrDyn *view = scr_dyn_visit_view(hints);
+  bool wrote = scr_http_res_write_early_hints_impl(r, view);
+  scr_dyn_release(view);
+  return wrote;
+}
+
+void scr_http_res_write_early_hints(ScrHttpRes *r, const ScrDyn *hints) {
+  (void)scr_http_res_write_early_hints_view(r, hints);
+}
+
+void scr_http_res_write_early_hints_cb(ScrHttpRes *r, const ScrDyn *hints,
+                                       ScrClosure *cb /*moves*/) {
+  if (!scr_http_res_write_early_hints_view(r, hints) || scr_exc_pending()) {
+    /* no 103 went out (a missing or empty link), or the write was refused:
+     * Node returns before writeInformation reaches _writeRaw */
+    scr_closure_release(cb);
+    return;
+  }
+  scr_http_res_queue_interim_cb(r, cb);
 }
 
 /* Node's writeInformation(statusCode[, headers]): the general informational
@@ -2230,57 +2482,145 @@ static void scr_http_cork_buffer(char **buf, size_t *held_len, size_t *held_cap,
   *held_len += len;
 }
 
-/* res.writableLength, Node's OutgoingMessage getter: the corked payload
- * plus its chunk framing (and the still-held head), and the socket's own
- * pending writes. */
-double scr_http_res_writable_length(ScrHttpRes *r) {
-  double len = (double)r->cork_len;
-  if (r->cork_len > 0) {
-    if (r->chunked) {
-      size_t n = r->cork_len, digits = 1;
-      while (n >= 16) {
-        n >>= 4;
-        digits++;
-      }
-      len += (double)(digits + 4);
-    }
-    if (!r->head_sent) len += (double)r->held_head_len;
+/* The deferred queue's event kinds. Each entry holds +1 on its handle;
+ * firing settles the handle (listener lists drop). */
+enum {
+  SCR_HTTP_EMIT_RES_CLOSE = 1,   /* ScrHttpRes */
+  SCR_HTTP_EMIT_REQ_CLOSE = 2,   /* ScrHttpReq */
+  SCR_HTTP_EMIT_REQ_ABORTED = 3, /* ScrHttpReq: 'error' ("aborted") */
+  SCR_HTTP_EMIT_CLIENT_CLOSE = 4, /* ScrHttpClientReq */
+  SCR_HTTP_EMIT_RES_FINISH = 5,  /* ScrHttpRes: the end(cb) callbacks */
+  SCR_HTTP_EMIT_REQ_DRAIN = SCR_HTTP_EMIT_REQ_DRAIN_K, /* ScrHttpReq: resume()'s drain */
+  SCR_HTTP_EMIT_RES_WCB = 7,     /* ScrHttpRes: write(chunk, cb) callbacks */
+  SCR_HTTP_EMIT_CLIENT_SOCKET = 8, /* ScrHttpClientReq: assigned socket */
+  SCR_HTTP_EMIT_CLIENT_FINISH = 9, /* ScrHttpClientReq: outgoing body flushed */
+  SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
+  SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
+  SCR_HTTP_EMIT_REQ_DESTROY_ERROR = 12, /* ScrHttpReq: destroy(err)'s payload */
+  SCR_HTTP_EMIT_RES_DRAIN = 13,    /* ScrHttpRes: a false write's bytes went out */
+  SCR_HTTP_EMIT_CLIENT_DRAIN = 14, /* ScrHttpClientReq: the same, on the request */
+  SCR_HTTP_EMIT_CLIENT_WCB = 15    /* ScrHttpClientReq: write(chunk, cb) callbacks */
+};
+
+/* The client's queued emits (drain / write callbacks): the struct is
+ * declared further down, so the pump reaches it through this helper. */
+static void scr_http_client_emit(ScrHttpClientReq *c, bool drain);
+
+/* Node's OutgoingMessage.writableLength: the bytes this message buffers for
+ * the socket (kChunkedLength with its chunk framing and, while the head has
+ * not gone out, the head itself) plus the socket's own unsent bytes. */
+#define SCR_HTTP_WRITE_HWM 65536.0
+
+static double scr_http_res_writable_length(ScrHttpRes *r) {
+  double len = 0;
+  if (r->cork_len != 0) {
+    char digits[32];
+    int n = snprintf(digits, sizeof digits, "%zx", r->cork_len);
+    len = (double)r->cork_len + (double)n + 4;
+    if (r->held_head != NULL) len += (double)r->held_head_len;
   }
-  if (r->sock != NULL) len += scr_net_sock_writable_length(r->sock);
+  if (r->h2_stream == NULL && r->sock != NULL)
+    len += scr_net_sock_writable_length(r->sock);
   return len;
 }
 
-/* A false write set need_drain: 'drain' fires once writableLength is 0,
- * at the socket's next drain (Node's socketOnDrain re-emit). */
-static void scr_http_res_check_drain(ScrHttpRes *r);
+static void scr_http_res_queue_drain(ScrHttpRes *r);
 
-static void scr_http_res_drain_check_fire(ScrClosure *cb) {
-  ScrHttpRes *r = scr_box_get_ref(cb->caps[0]); /* +1 */
-  scr_http_res_check_drain(r);
+/* res.writableLength / res.writableNeedDrain (Node's OutgoingMessage
+ * getters over the same numbers write() judges). */
+double scr_http_res_writable_length_get(ScrHttpRes *r) {
+  return scr_http_res_writable_length(r);
+}
+
+bool scr_http_res_writable_need_drain_get(ScrHttpRes *r) {
+  return !r->destroyed && !r->finished && r->need_drain;
+}
+
+/* 'drain' once a false write's bytes are all out: Node fires it from
+ * uncork()'s writableLength check and from the socket's own 'drain'. */
+static void scr_http_res_drain_listener(ScrClosure *cb) {
+  ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
+  r->drain_armed = false;
+  scr_http_res_queue_drain(r);
   scr_http_res_release(r);
 }
 
-static void scr_http_res_arm_drain(ScrHttpRes *r) {
-  if (r->sock == NULL) return;
-  ScrClosure *cb = scr_closure_new((void *)&scr_http_res_drain_check_fire, 1);
+static void scr_http_res_drain_arm(ScrHttpRes *r) {
+  if (r->drain_armed || r->sock == NULL || r->destroyed || r->finished) return;
+  r->drain_armed = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_res_drain_listener, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
-  scr_net_sock_on_write_flush(r->sock, cb);
+  scr_net_sock_on_drain(r->sock, cb, true);
 }
 
-static void scr_http_res_check_drain(ScrHttpRes *r) {
-  if (!r->need_drain || r->finished || r->destroyed) return;
-  if (scr_http_res_writable_length(r) != 0) {
-    scr_http_res_arm_drain(r);
-    return;
-  }
+/* Node emits 'drain' synchronously at the end of uncork() once the pending
+ * bytes are all out (kNeedDrain && writableLength === 0). */
+static void scr_http_res_fire_drain(ScrHttpRes *r) {
+  if (!r->need_drain || r->destroyed || r->finished) return;
   r->need_drain = false;
+  scr_http_res_retain(r);
   scr_net_fire0_this(&r->drain_ls, r, SCR_DYNH_HTTP_RES);
+  scr_http_res_release(r);
 }
 
-/* write()'s answer: Node's write_ result — the socket's backpressure
- * boolean (false once the unsent bytes reach writableHighWaterMark), or
- * for a corked message whether writableLength stayed under it. */
+/* Queue the message's 'drain' when a false write's bytes are all out. */
+static void scr_http_res_queue_drain(ScrHttpRes *r) {
+  if (!r->need_drain || r->drain_queued || r->destroyed || r->finished) return;
+  if (scr_http_res_writable_length(r) != 0) return;
+  r->need_drain = false;
+  r->drain_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_RES_DRAIN, scr_http_res_retain(r));
+}
+
+/* write()'s answer: Node's write_ returns writableLength <
+ * writableHighWaterMark on the buffered path, and write() sets kNeedDrain
+ * on a false answer. A pending drain does not wait for the socket when the
+ * buffer is already empty (Node's uncork check). */
+static bool scr_http_res_note_write(ScrHttpRes *r) {
+  double len = scr_http_res_writable_length(r);
+  if (len < SCR_HTTP_WRITE_HWM) return true;
+  r->need_drain = true;
+  if (len == 0) scr_http_res_queue_drain(r);
+  else scr_http_res_drain_arm(r);
+  return false;
+}
+
+/* The typed write/end encoding argument on a string chunk: utf8 spellings
+ * pass through (the string's own bytes), every other Node encoding decodes
+ * through Buffer.from's decoder into *out (+1), and an unknown name throws
+ * Node's ERR_UNKNOWN_ENCODING. False = exception pending. */
+static bool scr_http_encode_string(ScrStr *data, ScrStr *enc, ScrBytes **out) {
+  *out = NULL;
+  char low[10];
+  size_t n = enc->len < 9 ? enc->len : 9;
+  for (size_t i = 0; i < n; i++) {
+    char c = enc->data[i];
+    low[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+  }
+  low[n] = 0;
+  if (!scr_bytes_is_encoding(enc)) {
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "Unknown encoding: ");
+    for (size_t i = 0; i < enc->len && i < 64; i++) scr_jb_putc(&b, enc->data[i]);
+    ScrStr *msg = scr_jb_finish(&b);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_UNKNOWN_ENCODING");
+    scr_str_release(msg);
+    return false;
+  }
+  if (strcmp(low, "utf8") == 0 || strcmp(low, "utf-8") == 0) return true;
+  const char *canon = low;
+  if (strcmp(low, "binary") == 0) canon = "latin1";
+  else if (strcmp(low, "ucs2") == 0 || strcmp(low, "ucs-2") == 0 ||
+           strcmp(low, "utf-16le") == 0)
+    canon = "utf16le";
+  ScrStr *cs = scr_str_new(canon, strlen(canon));
+  *out = scr_bytes_from_str(data, cs);
+  scr_str_release(cs);
+  return true;
+}
+
 static bool scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
   if (r->finished) return false;
   if (r->corked > 0) {
@@ -2333,7 +2673,54 @@ static void scr_http_res_autocork(ScrHttpRes *r) {
   scr_next_tick(cb);
 }
 
+/* Node's write_() error ladder for a message that already ended or was
+ * destroyed: write answers false at once, then one tick later runs the
+ * write's callback and (unless the message was destroyed meanwhile) lets it
+ * emit 'error' — an unhandled 'error' is Node's uncaught crash. `cb` is the
+ * write callback (nullable) and moves in. */
+static void scr_http_res_write_error_nt(ScrClosure *env) {
+  ScrHttpRes *r = scr_box_get_ref(env->caps[0]);
+  ScrClosure *cb = env->caps[1] != NULL ? scr_box_get_ref(env->caps[1]) : NULL;
+  if (cb != NULL) {
+    /* Node's callback(err): this surface's callbacks take no parameters. */
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_closure_release(cb);
+  }
+  /* A throwing callback is the crash already; the loop reports it. No
+   * listener exits 1 the unhandled-'error' way, as scr_net fires it. */
+  if (!scr_exc_pending() && !r->destroyed) {
+    ScrStr *msg = scr_box_get_ref(env->caps[2]);
+    ScrError *e = scr_error_from_event_message(msg);
+    ScrError *saved = scr_event_error_payload;
+    scr_event_error_payload = e;
+    scr_net_fire_err_this(&r->err_ls, msg, r, SCR_DYNH_HTTP_RES);
+    scr_event_error_payload = saved;
+    scr_error_release(e);
+    scr_str_release(msg);
+  }
+  scr_http_res_release(r);
+}
+
+static bool scr_http_res_write_closed(ScrHttpRes *r, ScrClosure *cb /*nullable, moves*/) {
+  if (!r->finished && !r->destroyed) return false;
+  const char *text =
+      r->finished ? "write after end" : "Cannot call write after a stream was destroyed";
+  ScrClosure *env = scr_closure_new((void *)&scr_http_res_write_error_nt, 3);
+  env->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+  scr_box_set_ref(env->caps[0], scr_http_res_retain(r));
+  env->caps[1] = NULL;
+  if (cb != NULL) {
+    env->caps[1] = scr_box_new(SCR_BOX_FUNC);
+    scr_box_set_ref(env->caps[1], cb);
+  }
+  env->caps[2] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(env->caps[2], scr_str_new(text, strlen(text)));
+  scr_next_tick(env);
+  return true;
+}
+
 bool scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
+  if (scr_http_res_write_closed(r, NULL)) return false;
   double expected;
   if (r->head_sent && scr_http_res_expected_length(r, &expected) &&
       (double)(r->strict_bytes_written + data->len) > expected) {
@@ -2348,14 +2735,11 @@ bool scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
   const char *bytes = scr_str_utf8(data, &owned);
   bool ok = scr_http_res_write_raw(r, bytes, data->len);
   scr_str_utf8_end(owned);
-  if (!ok) {
-    r->need_drain = true;
-    scr_http_res_arm_drain(r);
-  }
-  return ok;
+  return scr_http_res_note_write(r);
 }
 
 bool scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
+  if (scr_http_res_write_closed(r, NULL)) return false;
   SCR_BYTES_SNAPSHOT(data);
   double expected;
   if (r->head_sent && scr_http_res_expected_length(r, &expected) &&
@@ -2367,11 +2751,25 @@ bool scr_http_res_write_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
   }
   if (r->strict_content_length) r->strict_bytes_written += (data->len * scr_bytes_elem_size(data->elem));
   scr_http_res_autocork(r);
-  bool ok = scr_http_res_write_raw(r, (const char *)data->data,
-                                   (data->len * scr_bytes_elem_size(data->elem)));
-  if (!ok) {
-    r->need_drain = true;
-    scr_http_res_arm_drain(r);
+  scr_http_res_write_raw(r, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  return scr_http_res_note_write(r);
+}
+
+/* write(chunk, encoding[, cb]) for a string chunk: the encoding picks the
+ * bytes (Node's Buffer.from decoder), and an unknown name throws Node's
+ * ERR_UNKNOWN_ENCODING. The callback is registered once the bytes are in,
+ * so a refused write never runs it. */
+bool scr_http_res_write_str_enc(ScrHttpRes *r, ScrStr *data /*borrowed*/,
+                                ScrStr *enc /*borrowed*/) {
+  if (scr_http_res_write_closed(r, NULL)) return false;
+  ScrBytes *decoded = NULL;
+  if (!scr_http_encode_string(data, enc, &decoded)) return false;
+  bool ok;
+  if (decoded != NULL) {
+    ok = scr_http_res_write_bytes(r, decoded);
+    scr_bytes_release(decoded);
+  } else {
+    ok = scr_http_res_write_str(r, data);
   }
   return ok;
 }
@@ -2467,12 +2865,22 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
   r->cork_len = r->cork_cap = 0;
   scr_http_res_write_raw(r, held, held_len);
   free(held);
-  /* Node's uncork(): a pending drain whose bytes all left now fires it */
-  if (r->need_drain) scr_http_res_check_drain(r);
+  /* the flush may be the last of the pending writes: Node's uncork emits
+   * 'drain' (synchronously) when writableLength is back to 0 */
+  if (r->need_drain) {
+    if (scr_http_res_writable_length(r) == 0) scr_http_res_fire_drain(r);
+    else scr_http_res_drain_arm(r);
+  }
 }
 
-static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
-  if (r->finished) return;
+static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len, bool has_chunk) {
+  if (r->finished) {
+    /* Node's end() reads the message's state FIRST: any truthy chunk (a
+     * Buffer of length 0 included) is WRITE_AFTER_END, while end() with
+     * no chunk — or with "" — is a no-op. */
+    if (has_chunk) scr_http_res_write_closed(r, NULL);
+    return;
+  }
   if (!r->end_ctx_set && r->h2_stream == NULL) {
     r->end_ctx_set = true;
     r->end_als = scr_als_capture();
@@ -2538,20 +2946,103 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
   }
   scr_http_queue_res_finish(r);
   if (r->conn) scr_http_conn_response_finished(r->conn, r->keep_alive);
+  return;
 }
 
-void scr_http_res_end(ScrHttpRes *r) { scr_http_res_end_raw(r, "", 0); }
+void scr_http_res_end(ScrHttpRes *r) { scr_http_res_end_raw(r, "", 0, false); }
 
 void scr_http_res_end_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
-  scr_http_res_end_raw(r, bytes, data->len);
+  scr_http_res_end_raw(r, bytes, data->len, data->len > 0);
   scr_str_utf8_end(owned);
 }
 
 void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/) {
   SCR_BYTES_SNAPSHOT(data);
-  scr_http_res_end_raw(r, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  /* a Buffer is truthy whatever its length, as Node's end() reads it */
+  scr_http_res_end_raw(r, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)), true);
+}
+
+/* end(chunk, encoding): the encoding picks the string's bytes (Node's
+ * Buffer.from decoder); an unknown name throws ERR_UNKNOWN_ENCODING. */
+void scr_http_res_end_str_enc(ScrHttpRes *r, ScrStr *data /*borrowed*/,
+                              ScrStr *enc /*borrowed*/) {
+  if (data->len == 0) {
+    /* Node's end() only reaches the encoding when the chunk is truthy —
+     * end("", "nope") never validates "nope" */
+    scr_http_res_end_str(r, data);
+    return;
+  }
+  if (r->finished) {
+    /* the finished check runs before the encoding is looked at */
+    scr_http_res_write_closed(r, NULL);
+    return;
+  }
+  ScrBytes *decoded = NULL;
+  if (!scr_http_encode_string(data, enc, &decoded)) return;
+  if (decoded != NULL) {
+    scr_http_res_end_bytes(r, decoded);
+    scr_bytes_release(decoded);
+    return;
+  }
+  scr_http_res_end_str(r, data);
+}
+
+void scr_http_res_end_bytes_enc_ignore(ScrHttpRes *r, ScrBytes *data /*borrowed*/,
+                                       ScrStr *enc /*borrowed*/) {
+  (void)enc; /* Node ignores the encoding of a buffer chunk */
+  scr_http_res_end_bytes(r, data);
+}
+
+/* write(chunk[, enc], cb): the callback joins the queue once the bytes are
+ * in, so a refused write never runs it. */
+bool scr_http_res_write_str_cb(ScrHttpRes *r, ScrStr *data /*borrowed*/,
+                               ScrClosure *cb /*moves*/) {
+  if (scr_http_res_write_closed(r, cb)) return false;
+  bool ok = scr_http_res_write_str(r, data);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_res_on_write_flush(r, cb);
+  return ok;
+}
+
+bool scr_http_res_write_bytes_cb(ScrHttpRes *r, ScrBytes *data /*borrowed*/,
+                                 ScrClosure *cb /*moves*/) {
+  if (scr_http_res_write_closed(r, cb)) return false;
+  bool ok = scr_http_res_write_bytes(r, data);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_res_on_write_flush(r, cb);
+  return ok;
+}
+
+bool scr_http_res_write_str_enc_cb(ScrHttpRes *r, ScrStr *data /*borrowed*/,
+                                   ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  if (scr_http_res_write_closed(r, cb)) return false;
+  bool ok = scr_http_res_write_str_enc(r, data, enc);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_res_on_write_flush(r, cb);
+  return ok;
+}
+
+bool scr_http_res_write_bytes_enc_ignore(ScrHttpRes *r, ScrBytes *data /*borrowed*/,
+                                         ScrStr *enc /*borrowed*/) {
+  (void)enc; /* Node ignores the encoding of a buffer chunk */
+  return scr_http_res_write_bytes(r, data);
+}
+
+bool scr_http_res_write_bytes_enc_ignore_cb(ScrHttpRes *r, ScrBytes *data /*borrowed*/,
+                                            ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  (void)enc;
+  return scr_http_res_write_bytes_cb(r, data, cb);
 }
 
 /* writeHead's status check: Node truncates the code to an int32 and
@@ -2695,6 +3186,26 @@ void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
   scr_net_ls_add(&r->close_ls, cb, NULL, once);
 }
 
+/* res.on('error', cb): a write the message refused (write_ after end or
+ * after destroy) reports it to the write's callback and then here, one
+ * tick later — Node's emitErrorNt, skipped on a destroyed message. */
+void scr_http_res_on_error(ScrHttpRes *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
+  if (r->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&r->err_ls, cb, (void *)fn, once);
+}
+
+/* res.on('drain'): a false write's buffered bytes have all gone out. */
+void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
+  if (r->close_emitted || r->finished) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&r->drain_ls, cb, NULL, once);
+}
+
 /* ── the deferred-emit queue (scr_net.c's proto sweep drains it) ───────
  *
  * 'close' on requests/responses and the client's own 'close' fire a
@@ -2707,19 +3218,6 @@ void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
  * entry holds +1 on its handle; firing settles the handle (listener
  * lists drop — the cycle story). */
 
-enum {
-  SCR_HTTP_EMIT_RES_CLOSE = 1,   /* ScrHttpRes */
-  SCR_HTTP_EMIT_REQ_CLOSE = 2,   /* ScrHttpReq */
-  SCR_HTTP_EMIT_REQ_ABORTED = 3, /* ScrHttpReq: 'error' ("aborted") */
-  SCR_HTTP_EMIT_CLIENT_CLOSE = 4, /* ScrHttpClientReq */
-  SCR_HTTP_EMIT_RES_FINISH = 5,  /* ScrHttpRes: the end(cb) callbacks */
-  SCR_HTTP_EMIT_REQ_DRAIN = SCR_HTTP_EMIT_REQ_DRAIN_K, /* ScrHttpReq: resume()'s drain */
-  SCR_HTTP_EMIT_RES_WCB = 7,     /* ScrHttpRes: write(chunk, cb) callbacks */
-  SCR_HTTP_EMIT_CLIENT_SOCKET = 8, /* ScrHttpClientReq: assigned socket */
-  SCR_HTTP_EMIT_CLIENT_FINISH = 9, /* ScrHttpClientReq: outgoing body flushed */
-  SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
-  SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11 /* ScrHttpClientReq: destroy(err) before a dial */
-};
 
 typedef struct {
   int kind;
@@ -2774,14 +3272,18 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   switch (e->kind) {
   case SCR_HTTP_EMIT_RES_CLOSE:
   case SCR_HTTP_EMIT_RES_WCB:
+  case SCR_HTTP_EMIT_RES_DRAIN:
   case SCR_HTTP_EMIT_RES_FINISH: scr_http_res_release((ScrHttpRes *)e->h); break;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: scr_http_req_release((ScrHttpReq *)e->h); break;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: scr_http_req_release((ScrHttpReq *)e->h); break;
   case SCR_HTTP_EMIT_CLIENT_CLOSE:
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
   case SCR_HTTP_EMIT_CLIENT_FINISH:
   case SCR_HTTP_EMIT_CLIENT_ABORT:
+  case SCR_HTTP_EMIT_CLIENT_DRAIN:
+  case SCR_HTTP_EMIT_CLIENT_WCB:
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
@@ -2803,6 +3305,12 @@ static void scr_http_queue_req_close(ScrHttpReq *req) {
 
 static void scr_http_queue_req_aborted(ScrHttpReq *req) {
   scr_http_emit_push(SCR_HTTP_EMIT_REQ_ABORTED, scr_http_req_retain(req));
+}
+
+/* destroy(err)'s report: the message's 'error' fires from the queue, before
+ * the 'close' the teardown queues (Node's stream destroy order). */
+static void scr_http_queue_req_destroy_error(ScrHttpReq *req) {
+  scr_http_emit_push(SCR_HTTP_EMIT_REQ_DESTROY_ERROR, scr_http_req_retain(req));
 }
 
 /* The end(cb) deferral: 'finish'-time callbacks fire one sweep after the
@@ -2842,18 +3350,6 @@ void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool onc
     return;
   }
   scr_net_ls_add(&r->prefinish_ls, cb, NULL, once);
-}
-
-/* res.on('drain', cb): a write answered false and every byte the response
- * held has gone out. */
-void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
-  scr_net_ls_add(&r->drain_ls, cb, NULL, once);
-}
-
-/* res.on('error', cb): the OutgoingMessage error slot. pipe()'s
- * ERR_STREAM_CANNOT_PIPE is the error this surface emits. */
-void scr_http_res_on_error(ScrHttpRes *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
-  scr_net_ls_add(&r->err_ls, cb, (void *)fn, once);
 }
 
 /* OutgoingMessage.prototype.pipe(): an outgoing message is write-only, so
@@ -2946,10 +3442,12 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
     const ScrHttpRes *res = (const ScrHttpRes *)e->h;
     return res->end_ctx_set ? res->end_als : res->als;
   }
-  case SCR_HTTP_EMIT_RES_WCB: return ((ScrHttpRes *)e->h)->als;
+  case SCR_HTTP_EMIT_RES_WCB:
+  case SCR_HTTP_EMIT_RES_DRAIN: return ((ScrHttpRes *)e->h)->als;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: return ((ScrHttpReq *)e->h)->als;
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
 }
@@ -2966,8 +3464,15 @@ static void scr_http_proto_sweep(void) {
         res->destroyed = true; /* Node: destroyed reads true inside 'close' */
         res->socket_detached = true;
         scr_net_fire0_this(&res->close_ls, res, SCR_DYNH_HTTP_RES);
+        /* the persistent listener lists settle with the response: a
+         * listener that captured the response is the cycle only the settle
+         * can break ('drain'/'error' never fire past 'close'). */
         scr_net_ls_drop(&res->close_ls);
         scr_net_ls_drop(&res->timeout_ls);
+        /* Neither 'drain' nor 'error' fires past 'close': a listener that
+         * captured the response is the cycle only this settle can break. */
+        scr_net_ls_drop(&res->drain_ls);
+        scr_net_ls_drop(&res->err_ls);
       }
       break;
     }
@@ -2977,6 +3482,16 @@ static void scr_http_proto_sweep(void) {
       scr_net_fire0_this(&res->wcb_ls, res, SCR_DYNH_HTTP_RES);
       break;
     }
+    case SCR_HTTP_EMIT_RES_DRAIN: {
+      ScrHttpRes *res = (ScrHttpRes *)e.h;
+      res->drain_queued = false;
+      scr_net_fire0_this(&res->drain_ls, res, SCR_DYNH_HTTP_RES);
+      break;
+    }
+    case SCR_HTTP_EMIT_CLIENT_DRAIN:
+    case SCR_HTTP_EMIT_CLIENT_WCB:
+      scr_http_client_emit((ScrHttpClientReq *)e.h, e.kind == SCR_HTTP_EMIT_CLIENT_DRAIN);
+      break;
     case SCR_HTTP_EMIT_REQ_CLOSE: {
       ScrHttpReq *req = (ScrHttpReq *)e.h;
       if (!req->close_emitted) {
@@ -3008,6 +3523,19 @@ static void scr_http_proto_sweep(void) {
           req->end_pending = false;
           scr_http_req_finish(req, true);
         }
+      }
+      break;
+    }
+    case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: {
+      ScrHttpReq *req = (ScrHttpReq *)e.h;
+      /* destroy(err): the payload IS the message's 'error' (Node keeps the
+       * Error's identity; typed listeners read its message, name and
+       * code). No listener exits 1, the unhandled-'error' story. */
+      if (!req->close_emitted && req->destroy_error != NULL) {
+        ScrError *saved = scr_event_error_payload;
+        scr_event_error_payload = req->destroy_error;
+        scr_net_fire_err_this(&req->err_ls, req->destroy_error->message, req, SCR_DYNH_HTTP_REQ);
+        scr_event_error_payload = saved;
       }
       break;
     }
@@ -5311,6 +5839,12 @@ struct ScrHttpClientReq {
   bool close_emitted; /* settled: listeners dropped, off the registry */
   ScrHttpReq *res; /* +1 once the head parses */
   ScrNetLs resp_ls, err_ls, timeout_ls, close_ls, upgrade_ls, socket_ls, finish_ls, abort_ls;
+  ScrNetLs drain_ls;    /* 'drain': write() answered false and the buffer emptied */
+  bool need_drain;      /* Node's kNeedDrain, set by a false write */
+  bool drain_queued;
+  bool drain_armed;     /* the one-shot socket-drain listener is registered */
+  ScrNetLs wcb_ls;      /* write(chunk, cb) — fires from the queue */
+  bool wcb_queued;
   ScrNetLs continue_ls; /* 'continue': a 100 Continue response arrived */
   ScrNetLs info_ls;     /* 'information': any 1xx response but 101 (ScrHttpRespFn fires) */
   ScrNetLs connect_ls;  /* 'connect': the response to a CONNECT request (ScrHttpUpgradeFn fires) */
@@ -5358,6 +5892,8 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     scr_net_ls_drop(&c->socket_ls);
     scr_net_ls_drop(&c->finish_ls);
     scr_net_ls_drop(&c->abort_ls);
+    scr_net_ls_drop(&c->drain_ls);
+    scr_net_ls_drop(&c->wcb_ls);
     scr_net_ls_drop(&c->continue_ls);
     scr_net_ls_drop(&c->info_ls);
     scr_net_ls_drop(&c->connect_ls);
@@ -5479,6 +6015,8 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
   scr_net_ls_drop(&c->close_ls);
   scr_net_ls_drop(&c->socket_ls);
   scr_net_ls_drop(&c->finish_ls);
+  scr_net_ls_drop(&c->drain_ls);
+  scr_net_ls_drop(&c->wcb_ls);
   scr_net_ls_drop(&c->continue_ls);
   scr_net_ls_drop(&c->info_ls);
   /* 'upgrade' and 'connect' fire only before the exchange settles, so their
@@ -5837,39 +6375,16 @@ void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
                scr_http_client_has_header(c, "transfer-encoding");
 }
 
-/* One more line of a name that set_header already stored (an array-valued
- * header's later elements). The bookkeeping flags were settled by the
- * first line. */
-static void scr_http_client_append_header_line(ScrHttpClientReq *c, ScrStr *name, ScrStr *value) {
-  c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
-  c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
-  if (!c->hnames || !c->hvalues) scr_http_oom();
-  c->hnames[c->nheaders] = scr_str_retain(name);
-  c->hvalues[c->nheaders] = scr_str_retain(value);
-  c->nheaders++;
-}
-
 /* setHeader for a string, a number, or an array of either: the first value
  * replaces every line of the name, the rest follow as their own lines
- * (Node's array-valued header). False with the exception pending. */
+ * (Node's array-valued header). Every element is validated before any
+ * mutation, and every line goes through the capacity-aware insert (the
+ * header store's names, values, kinds and capacity stay in step). False
+ * with the exception pending. */
 static bool scr_http_client_set_header_values(ScrHttpClientReq *c, ScrStr *name,
                                               const ScrDyn *value) {
-  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
-  bool first = true;
-  for (size_t i = 0; i < n; i++) {
-    ScrStr *text = scr_http_header_value_text(
-        name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
-    if (text == NULL) return false;
-    if (first) {
-      first = false;
-      scr_http_client_set_header(c, name, text);
-    } else {
-      scr_http_client_append_header_line(c, name, text);
-    }
-    scr_str_release(text);
-    if (scr_exc_pending()) return false;
-  }
-  return true;
+  scr_http_client_set_header_dyn(c, name, (ScrDyn *)value);
+  return !scr_exc_pending();
 }
 
 /* request.setHeaders(headers): setHeader per entry, set-cookie last. */
@@ -6080,18 +6595,174 @@ static void scr_http_client_autocork(ScrHttpClientReq *c) {
   scr_next_tick(cb);
 }
 
-void scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
+/* Pump one queued client emit (the deferred-emit queue's client cases). */
+static void scr_http_client_emit(ScrHttpClientReq *c, bool drain) {
+  if (drain) {
+    c->drain_queued = false;
+    scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
+  } else {
+    c->wcb_queued = false; /* later write(chunk, cb)s re-queue */
+    scr_net_fire0_this(&c->wcb_ls, c, SCR_DYNH_HTTP_CLIENT);
+  }
+}
+
+/* Node's OutgoingMessage.writableLength for the request: the bytes this
+ * message buffers for the socket (with the chunk framing and the unsent
+ * head) plus the socket's own unsent bytes. */
+static double scr_http_client_writable_length(ScrHttpClientReq *c) {
+  double len = 0;
+  if (c->cork_len != 0) {
+    len = (double)c->cork_len;
+    if (c->chunked) {
+      char digits[32];
+      int n = snprintf(digits, sizeof digits, "%zx", c->cork_len);
+      len += (double)n + 4;
+    }
+    if (c->held_head != NULL) len += (double)c->held_head_len;
+  }
+  if (c->sock != NULL) len += scr_net_sock_writable_length(c->sock);
+  return len;
+}
+
+static void scr_http_client_queue_drain(ScrHttpClientReq *c);
+
+/* request.writableLength / request.writableNeedDrain. */
+double scr_http_client_writable_length_get(ScrHttpClientReq *c) {
+  return scr_http_client_writable_length(c);
+}
+
+bool scr_http_client_writable_need_drain_get(ScrHttpClientReq *c) {
+  return !c->destroyed && !c->ended && !c->close_emitted && c->need_drain;
+}
+
+static void scr_http_client_drain_listener(ScrClosure *cb) {
+  struct ScrHttpClientReq *c = scr_box_get_ref(cb->caps[0]);
+  c->drain_armed = false;
+  scr_http_client_queue_drain(c);
+  scr_http_client_release(c);
+}
+
+/* The one-shot socket-drain listener that answers the message's 'drain'
+ * once the socket's buffer empties (Node's socket ondrain). */
+static void scr_http_client_drain_arm(ScrHttpClientReq *c) {
+  if (c->drain_armed || c->sock == NULL || c->destroyed || c->ended) return;
+  c->drain_armed = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_client_drain_listener, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_http_client_retain(c));
+  scr_net_sock_on_drain(c->sock, cb, true);
+}
+
+/* Node's uncork emits 'drain' synchronously once nothing is pending. */
+static void scr_http_client_fire_drain(ScrHttpClientReq *c) {
+  if (!c->need_drain || c->destroyed || c->ended || c->close_emitted) return;
+  c->need_drain = false;
+  scr_http_client_retain(c);
+  scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
+  scr_http_client_release(c);
+}
+
+/* 'drain' once a false write's bytes are all out (writableLength 0). */
+static void scr_http_client_queue_drain(ScrHttpClientReq *c) {
+  if (!c->need_drain || c->drain_queued || c->destroyed || c->ended || c->close_emitted) return;
+  if (scr_http_client_writable_length(c) != 0) return;
+  c->need_drain = false;
+  c->drain_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_DRAIN, scr_http_client_retain(c));
+}
+
+/* write()'s answer: Node's write_ compares writableLength with the socket's
+ * writableHighWaterMark and write() sets kNeedDrain on a false answer. */
+static bool scr_http_client_note_write(ScrHttpClientReq *c) {
+  double len = scr_http_client_writable_length(c);
+  if (len < SCR_HTTP_WRITE_HWM) return true;
+  c->need_drain = true;
+  if (len == 0) scr_http_client_queue_drain(c);
+  else scr_http_client_drain_arm(c);
+  return false;
+}
+
+/* Node's write_() error ladder on the client message (the response side's
+ * scr_http_res_write_closed): false now, then one tick later the write's
+ * callback and the message's unhandled 'error' unless it was destroyed —
+ * a completed client request is destroyed, as Node's is. */
+static void scr_http_client_write_error_nt(ScrClosure *env) {
+  ScrHttpClientReq *c = scr_box_get_ref(env->caps[0]);
+  ScrClosure *cb = env->caps[1] != NULL ? scr_box_get_ref(env->caps[1]) : NULL;
+  if (cb != NULL) {
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_closure_release(cb);
+  }
+  if (!scr_exc_pending() && !c->destroyed && !c->close_emitted) {
+    ScrStr *msg = scr_box_get_ref(env->caps[2]);
+    ScrError *e = scr_error_from_event_message(msg);
+    ScrError *saved = scr_event_error_payload;
+    scr_event_error_payload = e;
+    scr_net_fire_err(&c->err_ls, msg);
+    scr_event_error_payload = saved;
+    scr_error_release(e);
+    scr_str_release(msg);
+  }
+  scr_http_client_release(c);
+}
+
+static bool scr_http_client_write_closed(ScrHttpClientReq *c, ScrClosure *cb /*nullable, moves*/) {
+  bool finished = c->ended || c->close_emitted;
+  bool destroyed = c->destroyed || c->close_emitted;
+  if (!finished && !destroyed) return false;
+  const char *text =
+      finished ? "write after end" : "Cannot call write after a stream was destroyed";
+  ScrClosure *env = scr_closure_new((void *)&scr_http_client_write_error_nt, 3);
+  env->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
+  scr_box_set_ref(env->caps[0], scr_http_client_retain(c));
+  env->caps[1] = NULL;
+  if (cb != NULL) {
+    env->caps[1] = scr_box_new(SCR_BOX_FUNC);
+    scr_box_set_ref(env->caps[1], cb);
+  }
+  env->caps[2] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(env->caps[2], scr_str_new(text, strlen(text)));
+  scr_next_tick(env);
+  return true;
+}
+
+bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
+  if (scr_http_client_write_closed(c, NULL)) return false;
   scr_http_client_autocork(c);
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
   scr_http_client_write_raw(c, bytes, data->len);
   scr_str_utf8_end(owned);
+  return scr_http_client_note_write(c);
 }
 
-void scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
+bool scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
+  if (scr_http_client_write_closed(c, NULL)) return false;
   SCR_BYTES_SNAPSHOT(data);
   scr_http_client_autocork(c);
   scr_http_client_write_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  return scr_http_client_note_write(c);
+}
+
+/* write(chunk, encoding) for a string chunk; the encoding picks the bytes
+ * and an unknown name throws ERR_UNKNOWN_ENCODING. */
+bool scr_http_client_write_str_enc(ScrHttpClientReq *c, ScrStr *data /*borrowed*/,
+                                   ScrStr *enc /*borrowed*/) {
+  if (scr_http_client_write_closed(c, NULL)) return false;
+  ScrBytes *decoded = NULL;
+  if (!scr_http_encode_string(data, enc, &decoded)) return false;
+  if (decoded != NULL) {
+    bool ok = scr_http_client_write_bytes(c, decoded);
+    scr_bytes_release(decoded);
+    return ok;
+  }
+  return scr_http_client_write_str(c, data);
+}
+
+bool scr_http_client_write_bytes_enc_ignore(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/,
+                                            ScrStr *enc /*borrowed*/) {
+  (void)enc; /* Node ignores the encoding of a buffer chunk */
+  return scr_http_client_write_bytes(c, data);
 }
 
 static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
@@ -6102,6 +6773,56 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   c->cork_len = c->cork_cap = 0;
   scr_http_client_write_raw(c, held, held_len);
   free(held);
+  if (c->need_drain) {
+    if (scr_http_client_writable_length(c) == 0) scr_http_client_fire_drain(c);
+    else scr_http_client_drain_arm(c);
+  }
+}
+
+static void scr_http_client_on_write_flush(ScrHttpClientReq *c, ScrClosure *cb /*moves*/);
+
+/* write(chunk[, enc], cb): the callback joins the queue once the bytes are
+ * in, so a refused write never runs it. */
+bool scr_http_client_write_str_cb(ScrHttpClientReq *c, ScrStr *data /*borrowed*/,
+                                  ScrClosure *cb /*moves*/) {
+  if (scr_http_client_write_closed(c, cb)) return false;
+  bool ok = scr_http_client_write_str(c, data);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_client_on_write_flush(c, cb);
+  return ok;
+}
+
+bool scr_http_client_write_bytes_cb(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/,
+                                    ScrClosure *cb /*moves*/) {
+  if (scr_http_client_write_closed(c, cb)) return false;
+  bool ok = scr_http_client_write_bytes(c, data);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_client_on_write_flush(c, cb);
+  return ok;
+}
+
+bool scr_http_client_write_str_enc_cb(ScrHttpClientReq *c, ScrStr *data /*borrowed*/,
+                                      ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  if (scr_http_client_write_closed(c, cb)) return false;
+  bool ok = scr_http_client_write_str_enc(c, data, enc);
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return ok;
+  }
+  scr_http_client_on_write_flush(c, cb);
+  return ok;
+}
+
+bool scr_http_client_write_bytes_enc_ignore_cb(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/,
+                                               ScrStr *enc /*borrowed*/, ScrClosure *cb /*moves*/) {
+  (void)enc;
+  return scr_http_client_write_bytes_cb(c, data, cb);
 }
 
 void scr_http_client_cork(ScrHttpClientReq *c) { c->corked++; }
@@ -6113,8 +6834,15 @@ void scr_http_client_uncork(ScrHttpClientReq *c) {
 
 double scr_http_client_writable_corked(ScrHttpClientReq *c) { return (double)c->corked; }
 
-static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_t len) {
-  if (c->ended || c->destroyed || c->close_emitted) return;
+static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_t len,
+                                    bool has_chunk) {
+  if (c->ended || c->destroyed || c->close_emitted) {
+    /* end(chunk) on a request past its end reports WRITE_AFTER_END (a
+     * truthy chunk: a Buffer of length 0 included); end() with no chunk —
+     * or with "" — is a no-op. */
+    if (has_chunk) scr_http_client_write_closed(c, NULL);
+    return;
+  }
   if (c->corked > 0 || c->cork_len > 0 || c->held_head != NULL) {
     /* A corked chunked request buffers end()'s chunk too: one chunk. */
     if (c->corked > 0 && c->head_sent && c->chunked && len > 0) {
@@ -6164,18 +6892,46 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
   scr_http_client_queue_finish(c);
 }
 
-void scr_http_client_end(ScrHttpClientReq *c) { scr_http_client_end_raw(c, "", 0); }
+void scr_http_client_end(ScrHttpClientReq *c) { scr_http_client_end_raw(c, "", 0, false); }
 
 void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
-  scr_http_client_end_raw(c, bytes, data->len);
+  scr_http_client_end_raw(c, bytes, data->len, data->len > 0);
   scr_str_utf8_end(owned);
 }
 
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
   SCR_BYTES_SNAPSHOT(data);
-  scr_http_client_end_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
+  scr_http_client_end_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)), true);
+}
+
+/* end(chunk, encoding): the encoding picks the string's bytes. */
+void scr_http_client_end_str_enc(ScrHttpClientReq *c, ScrStr *data /*borrowed*/,
+                                 ScrStr *enc /*borrowed*/) {
+  if (data->len == 0) {
+    /* a falsy chunk never reaches the encoding, as in Node's end() */
+    scr_http_client_end_str(c, data);
+    return;
+  }
+  if (c->ended || c->destroyed || c->close_emitted) {
+    scr_http_client_write_closed(c, NULL);
+    return;
+  }
+  ScrBytes *decoded = NULL;
+  if (!scr_http_encode_string(data, enc, &decoded)) return;
+  if (decoded != NULL) {
+    scr_http_client_end_bytes(c, decoded);
+    scr_bytes_release(decoded);
+    return;
+  }
+  scr_http_client_end_str(c, data);
+}
+
+void scr_http_client_end_bytes_enc_ignore(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/,
+                                          ScrStr *enc /*borrowed*/) {
+  (void)enc; /* Node ignores the encoding of a buffer chunk */
+  scr_http_client_end_bytes(c, data);
 }
 
 void scr_http_client_flush_headers(ScrHttpClientReq *c) {
@@ -6401,6 +7157,36 @@ void scr_http_client_on_socket(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, Sc
   scr_net_ls_add(&c->socket_ls, cb, (void *)fn, once);
 }
 
+/* request.write(chunk, cb): the callback fires from the queue once the
+ * bytes entered the socket buffer — this surface's flush moment, the same
+ * deferral res.write's callbacks take. */
+void scr_http_client_on_write_flush(ScrHttpClientReq *c, ScrClosure *cb /*moves*/) {
+  if (c->destroyed || c->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&c->wcb_ls, cb, NULL, true);
+  if (!c->wcb_queued) {
+    c->wcb_queued = true;
+    scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WCB, scr_http_client_retain(c));
+  }
+}
+
+/* request.end(cb): Node registers the callback on 'finish' (after any
+ * listener registered before it); an already finished request runs it on
+ * the next tick. */
+void scr_http_client_on_end_callback(ScrHttpClientReq *c, ScrClosure *cb /*moves*/) {
+  if (c->writable_finished) {
+    scr_next_tick(cb);
+    return;
+  }
+  if (c->destroyed || c->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&c->finish_ls, cb, NULL, true);
+}
+
 void scr_http_client_on_finish(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once) {
   if (c->writable_finished || c->close_emitted) {
     scr_closure_release(cb);
@@ -6483,6 +7269,14 @@ void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
     return;
   }
   scr_net_ls_add(&c->close_ls, cb, NULL, once);
+}
+
+void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once) {
+  if (c->close_emitted || c->writable_finished) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&c->drain_ls, cb, NULL, once);
 }
 
 /* ── response parsing (the conn's client mode) ───────────────────────── */
@@ -8051,13 +8845,22 @@ static bool scr_http_dynh_reg(const char *method, bool *once) {
   return false;
 }
 
-/* String/Buffer chunk gate (res.end/res.write/socket.write): answers
- * which flavor, throws Node's ERR_INVALID_ARG_TYPE otherwise. */
-static bool scr_http_dynh_chunk_ok(const ScrDyn *chunk) {
+/* Node's write_ chunk check: null is ERR_STREAM_NULL_VALUES, anything that
+ * is not a string or a Uint8Array ERR_INVALID_ARG_TYPE. */
+static bool scr_http_chunk_ok(const ScrDyn *chunk) {
   if (chunk->kind == SCR_DYN_STR || chunk->kind == SCR_DYN_BYTES) return true;
+  if (chunk->kind == SCR_DYN_NULL) {
+    const char *msg = "May not write null values to stream";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, strlen(msg), "ERR_STREAM_NULL_VALUES");
+    return false;
+  }
   scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", chunk);
   return false;
 }
+
+/* String/Buffer chunk gate (res.end/res.write/socket.write): answers
+ * which flavor, throws Node's ERR_INVALID_ARG_TYPE otherwise. */
+static bool scr_http_dynh_chunk_ok(const ScrDyn *chunk) { return scr_http_chunk_ok(chunk); }
 
 /* An optional trailing encoding argument on write/end: utf8 spellings
  * pass through (string chunks already carry utf8 bytes); every other
@@ -8067,35 +8870,21 @@ static bool scr_http_dynh_chunk_ok(const ScrDyn *chunk) {
  * pending. */
 static bool scr_http_dynh_encode(const ScrDyn *chunk, const ScrDyn *enc, ScrBytes **out) {
   *out = NULL;
-  if (enc->kind != SCR_DYN_STR || !scr_bytes_is_encoding(enc->v.str)) {
-    ScrJsonBuf b;
-    scr_jb_init(&b);
-    scr_jb_puts(&b, "Unknown encoding: ");
-    if (enc->kind == SCR_DYN_STR) {
-      for (size_t i = 0; i < enc->v.str->len && i < 64; i++) scr_jb_putc(&b, enc->v.str->data[i]);
-    }
-    ScrStr *msg = scr_jb_finish(&b);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_UNKNOWN_ENCODING");
-    scr_str_release(msg);
-    return false;
-  }
-  if (chunk->kind != SCR_DYN_STR) return true; /* buffers carry their bytes */
-  /* lowercase + alias normalization down to scr_bytes_from_str's arms */
-  char low[10];
-  size_t n = enc->v.str->len < 9 ? enc->v.str->len : 9;
-  for (size_t i = 0; i < n; i++) {
-    char c = enc->v.str->data[i];
-    low[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
-  }
-  low[n] = 0;
-  const char *canon = low;
-  if (strcmp(low, "utf8") == 0 || strcmp(low, "utf-8") == 0) return true; /* passthrough */
-  if (strcmp(low, "binary") == 0) canon = "latin1";
-  else if (strcmp(low, "ucs2") == 0 || strcmp(low, "ucs-2") == 0 || strcmp(low, "utf-16le") == 0) canon = "utf16le";
-  ScrStr *cs = scr_str_new(canon, strlen(canon));
-  *out = scr_bytes_from_str(chunk->v.str, cs);
-  scr_str_release(cs);
-  return true;
+  /* Node ignores (and does not validate) the encoding of a buffer chunk;
+   * a string chunk decodes through it, unknown names throwing. */
+  if (chunk->kind != SCR_DYN_STR) return true;
+  if (enc->kind == SCR_DYN_STR) return scr_http_encode_string(chunk->v.str, enc->v.str, out);
+  ScrStr *shown = scr_dyn_to_string(enc, NULL); /* Node's template: the value */
+  if (scr_exc_pending()) return false;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Unknown encoding: ");
+  scr_jb_write(&b, shown->data, shown->len);
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(msg);
+  scr_str_release(shown);
+  return false;
 }
 
 /* ── IncomingMessage (SCR_DYNH_HTTP_REQ) ─────────────────────────────── */
@@ -8162,9 +8951,13 @@ static ScrDyn *scr_http_dynh_req_invoke(void *h, ScrDyn *self, const char *metho
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "destroy") == 0) {
-    if (argc > 0 && args[0]->kind != SCR_DYN_UNDEF) {
-      scr_http_dynh_unsupported("IncomingMessage", "destroy", "destroy(error) carries a payload this surface does not model");
-      return NULL;
+    if (argc > 0 && scr_dyn_truthy(args[0])) {
+      /* a falsy argument is no payload, as stream.destroy(err) tests it */
+      ScrError *err = scr_error_from_dyn(args[0]);
+      if (scr_exc_pending()) return NULL;
+      scr_http_req_destroy_error(r, err);
+      scr_error_release(err);
+      return scr_dyn_retain(self);
     }
     scr_http_req_destroy(r);
     return scr_dyn_retain(self);
@@ -8413,6 +9206,9 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     if (scr_exc_pending()) return NULL;
     if (scr_http_dynh_name_is(name, "close")) {
       scr_http_res_on_close(r, scr_dyn_listener_closure0(cb), once);
+    } else if (scr_http_dynh_name_is(name, "error")) {
+      scr_http_res_on_error(r, scr_dyn_listener_closure_err(cb),
+                            (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
     } else if (scr_http_dynh_name_is(name, "finish")) {
       scr_http_res_on_finish(r, scr_dyn_listener_closure0(cb));
     } else if (scr_http_dynh_name_is(name, "prefinish")) {
@@ -8420,9 +9216,6 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       if (scr_exc_pending()) return NULL;
     } else if (scr_http_dynh_name_is(name, "drain")) {
       scr_http_res_on_drain(r, scr_dyn_listener_closure0(cb), once);
-    } else if (scr_http_dynh_name_is(name, "error")) {
-      scr_http_res_on_error(r, scr_dyn_listener_closure_err(cb),
-                            (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
     } else if (scr_http_dynh_name_is(name, "timeout") && r->sock != NULL) {
       /* the socket's idle timer — res.setTimeout's event, Node's delegation */
       scr_net_sock_on_timeout(r->sock, scr_dyn_listener_closure0(cb), once);
@@ -8437,29 +9230,44 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
      * end(chunk, enc, cb) — Node's whole shape family. */
     size_t i = 0;
     const ScrDyn *chunk = NULL;
+    const ScrDyn *enc = NULL;
     const ScrDyn *cb = NULL;
     ScrBytes *decoded = NULL;
     if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
-      cb = args[i++];
-    } else if (i < argc && args[i]->kind != SCR_DYN_UNDEF && args[i]->kind != SCR_DYN_NULL) {
-      if (!scr_http_dynh_chunk_ok(args[i])) return NULL;
-      chunk = args[i++];
-      if (i < argc && args[i]->kind == SCR_DYN_STR) { /* encoding */
-        if (!scr_http_dynh_encode(chunk, args[i], &decoded)) return NULL;
-        i++;
+      cb = args[i++]; /* end(cb) */
+    } else {
+      if (i < argc) chunk = args[i++]; /* end(chunk...), chunk may be undefined */
+      if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+        cb = args[i++]; /* end(chunk, cb): the encoding slot held the callback */
+      } else {
+        if (i < argc) enc = args[i++];
+        if (i < argc && args[i]->kind == SCR_DYN_FUNC) cb = args[i++];
       }
-      if (i < argc && args[i]->kind == SCR_DYN_FUNC) cb = args[i++];
     }
     if (i < argc && args[i]->kind != SCR_DYN_UNDEF) {
-      scr_bytes_release(decoded);
       scr_http_dynh_unsupported("ServerResponse", "end", "this argument shape is not modeled");
       return NULL;
+    }
+    /* Node's end(): a falsy chunk is end() — "" and undefined/null add
+     * nothing and skip both the type and the encoding checks, while an
+     * empty Buffer is an object and so still a chunk. A truthy chunk meets
+     * the state check first; only then its type and encoding. */
+    bool has_chunk = chunk != NULL && scr_dyn_truthy(chunk);
+    if (has_chunk && r->finished) {
+      /* the callback hears about the refusal from the same tick, ahead of
+       * the 'error' listeners */
+      scr_http_res_write_closed(r, cb != NULL ? scr_dyn_listener_closure0(cb) : NULL);
+      return scr_dyn_retain(self);
+    }
+    if (has_chunk) {
+      if (!scr_http_dynh_chunk_ok(chunk)) return NULL;
+      if (enc != NULL && !scr_http_dynh_encode(chunk, enc, &decoded)) return NULL;
     }
     if (cb) scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(cb));
     if (decoded != NULL) {
       scr_http_res_end_bytes(r, decoded);
       scr_bytes_release(decoded);
-    } else if (chunk == NULL) {
+    } else if (!has_chunk) {
       scr_http_res_end(r);
     } else if (chunk->kind == SCR_DYN_STR) {
       scr_http_res_end_str(r, chunk->v.str);
@@ -8470,19 +9278,38 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
   }
   if (strcmp(method, "write") == 0) {
     const ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
+    /* Node's write_ order: the chunk's own checks, then the message's
+     * state (a refused write answers false), then the encoding. */
     if (!scr_http_dynh_chunk_ok(chunk)) return NULL;
     ScrBytes *decoded = NULL;
+    ScrClosure *wcb = NULL;
+    const ScrDyn *enc = NULL;
     size_t i = 1;
-    if (i < argc && args[i]->kind == SCR_DYN_STR) { /* encoding */
-      if (!scr_http_dynh_encode(chunk, args[i], &decoded)) return NULL;
-      i++;
-    }
     if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+      wcb = scr_dyn_listener_closure0(args[i]);
+      i++;
+    } else {
+      if (i < argc && args[i]->kind != SCR_DYN_UNDEF && scr_dyn_truthy(args[i])) {
+        /* the encoding slot; Node ignores a falsy encoding */
+        enc = args[i++];
+      }
+      if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+        wcb = scr_dyn_listener_closure0(args[i]);
+        i++;
+      }
+    }
+    if (scr_http_res_write_closed(r, wcb)) return scr_dyn_new_bool(false);
+    if (enc != NULL && !scr_http_dynh_encode(chunk, enc, &decoded)) {
+      if (wcb != NULL) scr_closure_release(wcb);
+      return NULL;
+    }
+    if (wcb != NULL) {
       /* write(chunk[, enc], cb): fires from the queue once the chunk
        * entered the socket buffer — this surface's flush moment */
-      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[i]));
-      i++;
+      scr_http_res_on_write_flush(r, wcb);
     }
+    /* Node's write_ answer: false once writableLength reached the high
+     * water mark, and the message then emits 'drain'. */
     bool ok;
     if (decoded != NULL) {
       ok = scr_http_res_write_bytes(r, decoded);
@@ -8676,6 +9503,9 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
     return scr_dyn_new_handle(r->req_ref, SCR_DYNH_HTTP_REQ);
   }
   if (strcmp(key, "writableCorked") == 0) return scr_dyn_new_num(scr_http_res_writable_corked(r));
+  if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_res_writable_length_get(r));
+  if (strcmp(key, "writableNeedDrain") == 0)
+    return scr_dyn_new_bool(scr_http_res_writable_need_drain_get(r));
   if (strcmp(key, "writableFinished") == 0) return scr_dyn_new_bool(scr_http_res_writable_finished(r));
   if (strcmp(key, "writableHighWaterMark") == 0) return scr_dyn_new_num(scr_http_res_writable_high_water_mark(r));
   if (strcmp(key, "writableObjectMode") == 0) return scr_dyn_new_bool(scr_http_res_writable_object_mode(r));
@@ -8683,8 +9513,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);
   {
     static const char *const known[] = { "chunkedEncoding", "sendDate",
-      "strictContentLength", "writableLength", "writableNeedDrain",
-      "errored", NULL };
+      "strictContentLength", "errored", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("ServerResponse", key, NULL);
       return NULL;
@@ -8921,6 +9750,8 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     } else if (scr_http_dynh_name_is(name, "connect")) {
       scr_http_client_on_connect(c, scr_dyn_listener_closure_fn(cb, (void *)&scr_http_dynh_fire_handover),
                                  (ScrHttpUpgradeFn)&scr_http_dynh_fire_handover, once);
+    } else if (scr_http_dynh_name_is(name, "drain")) {
+      scr_http_client_on_drain(c, scr_dyn_listener_closure0(cb), once);
     } else {
       scr_http_dynh_event_unsupported("ClientRequest", name);
       return NULL;
@@ -8933,22 +9764,85 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "end") == 0) {
-    const ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
-    if (chunk->kind == SCR_DYN_STR) scr_http_client_end_str(c, chunk->v.str);
-    else if (chunk->kind == SCR_DYN_BYTES) scr_http_client_end_bytes(c, chunk->v.bytes);
-    else if (chunk->kind == SCR_DYN_UNDEF || chunk->kind == SCR_DYN_NULL) scr_http_client_end(c);
-    else {
-      scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", chunk);
+    /* end() / end(chunk) / end(chunk, enc) / end(cb) / end(chunk, cb) /
+     * end(chunk, enc, cb) — Node's shape family, as on the response. */
+    const ScrDyn *chunk = NULL;
+    const ScrDyn *enc = NULL;
+    const ScrDyn *cb = NULL;
+    ScrBytes *decoded = NULL;
+    size_t i = 0;
+    if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+      cb = args[i++]; /* end(cb) */
+    } else {
+      if (i < argc) chunk = args[i++]; /* end(chunk...), chunk may be undefined */
+      if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+        cb = args[i++]; /* end(chunk, cb): the encoding slot held the callback */
+      } else {
+        if (i < argc) enc = args[i++];
+        if (i < argc && args[i]->kind == SCR_DYN_FUNC) cb = args[i++];
+      }
+    }
+    if (i < argc && args[i]->kind != SCR_DYN_UNDEF) {
+      scr_http_dynh_unsupported("ClientRequest", "end", "this argument shape is not modeled");
       return NULL;
+    }
+    /* A falsy chunk is end(); a truthy one meets the message's state before
+     * its type and encoding (Node's end check order, as on the response). */
+    bool has_chunk = chunk != NULL && scr_dyn_truthy(chunk);
+    if (has_chunk && (c->ended || c->destroyed || c->close_emitted)) {
+      scr_http_client_write_closed(c, cb != NULL ? scr_dyn_listener_closure0(cb) : NULL);
+      return scr_dyn_retain(self);
+    }
+    if (has_chunk) {
+      if (!scr_http_dynh_chunk_ok(chunk)) return NULL;
+      if (enc != NULL && !scr_http_dynh_encode(chunk, enc, &decoded)) return NULL;
+    }
+    if (cb) scr_http_client_on_end_callback(c, scr_dyn_listener_closure0(cb));
+    if (decoded != NULL) {
+      scr_http_client_end_bytes(c, decoded);
+      scr_bytes_release(decoded);
+    } else if (!has_chunk) {
+      scr_http_client_end(c);
+    } else if (chunk->kind == SCR_DYN_STR) {
+      scr_http_client_end_str(c, chunk->v.str);
+    } else {
+      scr_http_client_end_bytes(c, chunk->v.bytes);
     }
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "write") == 0) {
     const ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
     if (!scr_http_dynh_chunk_ok(chunk)) return NULL;
-    if (chunk->kind == SCR_DYN_STR) scr_http_client_write_str(c, chunk->v.str);
-    else scr_http_client_write_bytes(c, chunk->v.bytes);
-    return scr_dyn_new_bool(true);
+    ScrBytes *decoded = NULL;
+    ScrClosure *wcb = NULL;
+    const ScrDyn *enc = NULL;
+    size_t i = 1;
+    if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+      wcb = scr_dyn_listener_closure0(args[i]);
+      i++;
+    } else {
+      if (i < argc && args[i]->kind != SCR_DYN_UNDEF && scr_dyn_truthy(args[i])) enc = args[i++];
+      if (i < argc && args[i]->kind == SCR_DYN_FUNC) {
+        wcb = scr_dyn_listener_closure0(args[i]);
+        i++;
+      }
+    }
+    if (scr_http_client_write_closed(c, wcb)) return scr_dyn_new_bool(false);
+    if (enc != NULL && !scr_http_dynh_encode(chunk, enc, &decoded)) {
+      if (wcb != NULL) scr_closure_release(wcb);
+      return NULL;
+    }
+    if (wcb != NULL) scr_http_client_on_write_flush(c, wcb);
+    bool ok;
+    if (decoded != NULL) {
+      ok = scr_http_client_write_bytes(c, decoded);
+      scr_bytes_release(decoded);
+    } else if (chunk->kind == SCR_DYN_STR) {
+      ok = scr_http_client_write_str(c, chunk->v.str);
+    } else {
+      ok = scr_http_client_write_bytes(c, chunk->v.bytes);
+    }
+    return scr_dyn_new_bool(ok);
   }
   if (strcmp(method, "destroy") == 0) {
     scr_http_client_destroy(c);
@@ -8999,6 +9893,9 @@ static ScrDyn *scr_http_dynh_client_get(void *h, const char *key, size_t key_len
   }
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_client_destroyed(c));
   if (strcmp(key, "writableEnded") == 0) return scr_dyn_new_bool(c->ended);
+  if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_client_writable_length_get(c));
+  if (strcmp(key, "writableNeedDrain") == 0)
+    return scr_dyn_new_bool(scr_http_client_writable_need_drain_get(c));
   if (strcmp(key, "path") == 0) {
     ScrDyn *d = scr_dyn_new_str(c->path);
     return d;
@@ -9425,23 +10322,50 @@ void scr_http_dyn_install(void) {
 /* Checked-dynamic chunks into TYPED res/client handles — the
  * scr_net_sock_write_dynv story (the static lowering's dyn-data arm). */
 bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d) {
+  if (!scr_http_chunk_ok(d)) return false;
   if (d->kind == SCR_DYN_STR) return scr_http_res_write_str(r, d->v.str);
-  if (d->kind == SCR_DYN_BYTES) return scr_http_res_write_bytes(r, d->v.bytes);
-  scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
-  return false;
+  return scr_http_res_write_bytes(r, d->v.bytes);
 }
 
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d) {
+  /* Node's end(): a falsy chunk (undefined, null, "") is no chunk at all —
+   * an empty Buffer is an object and stays one. */
+  bool has_chunk = d != NULL && scr_dyn_truthy(d);
+  if (has_chunk && r->finished) {
+    /* Node's end() reports WRITE_AFTER_END for any truthy chunk before it
+     * looks at the chunk's type; a falsy chunk is a quiet end(). */
+    scr_http_res_write_closed(r, NULL);
+    return;
+  }
   if (d->kind == SCR_DYN_STR) scr_http_res_end_str(r, d->v.str);
   else if (d->kind == SCR_DYN_BYTES) scr_http_res_end_bytes(r, d->v.bytes);
-  else if (d->kind == SCR_DYN_UNDEF || d->kind == SCR_DYN_NULL) scr_http_res_end(r);
+  else if (!has_chunk) scr_http_res_end(r);
   else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
 }
 
-void scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d) {
-  if (d->kind == SCR_DYN_STR) scr_http_client_write_str(c, d->v.str);
-  else if (d->kind == SCR_DYN_BYTES) scr_http_client_write_bytes(c, d->v.bytes);
-  else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+/* write(chunk, cb) with a checked-dynamic chunk. */
+bool scr_http_res_write_dynv_cb(ScrHttpRes *r, const ScrDyn *d, ScrClosure *cb /*moves*/) {
+  if (!scr_http_chunk_ok(d)) {
+    scr_closure_release(cb);
+    return false;
+  }
+  if (d->kind == SCR_DYN_STR) return scr_http_res_write_str_cb(r, d->v.str, cb);
+  return scr_http_res_write_bytes_cb(r, d->v.bytes, cb);
+}
+
+bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d) {
+  if (!scr_http_chunk_ok(d)) return false;
+  if (d->kind == SCR_DYN_STR) return scr_http_client_write_str(c, d->v.str);
+  return scr_http_client_write_bytes(c, d->v.bytes);
+}
+
+bool scr_http_client_write_dynv_cb(ScrHttpClientReq *c, const ScrDyn *d, ScrClosure *cb /*moves*/) {
+  if (!scr_http_chunk_ok(d)) {
+    scr_closure_release(cb);
+    return false;
+  }
+  if (d->kind == SCR_DYN_STR) return scr_http_client_write_str_cb(c, d->v.str, cb);
+  return scr_http_client_write_bytes_cb(c, d->v.bytes, cb);
 }
 
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d) {

@@ -885,7 +885,7 @@ function publicDetail(tier) {
       return "The static http Agent dials through net's connection normalization and queues requests on the tested maxSockets, maxTotalSockets, and keep-alive limits.";
     }
     if (/^compiler-feature:http\.response\.write(?:Continue|Processing|EarlyHints)$/.test(source)) {
-      return "Static HTTP/1.1 informational responses support the tested no-callback forms; Early Hints accepts string-valued fields.";
+      return "Static HTTP/1.1 informational responses support their callback forms; Early Hints takes a lowercase link string or array of links, and string, number, boolean or array field values.";
     }
     if (
       /^compiler-feature:http\.(?:response\.setTimeout|connection|req|sendDate|socket|statusMessage|strictContentLength|writableFinished)$/.test(
@@ -900,6 +900,13 @@ function publicDetail(tier) {
       )
     ) {
       return "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.";
+    }
+    if (
+      /^compiler-feature:http\.(?:request\.(?:setNoDelay|setSocketKeepAlive|setTimeout)|message\.(?:destroy|setTimeout)|server\.(?:setTimeout|closeAllConnections|closeIdleConnections)|maxHeadersCount|maxRequestsPerSocket|'(?:timeout|dropRequest|aborted)')$/.test(
+        source,
+      )
+    ) {
+      return "Static HTTP/1.1 client and server controls support the tested timeout, keep-alive and no-delay dials, the idle and forced connection closes, the header-count and per-socket request limits with 'dropRequest', and message destroy with its 'aborted' report.";
     }
     return "Implemented for the documented scriptc module-loader subset.";
   }

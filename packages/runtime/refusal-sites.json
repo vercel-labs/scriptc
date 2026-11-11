@@ -775,6 +775,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_dynh_client_invoke",
+  "message": "this argument shape is not modeled",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"

@@ -1194,6 +1194,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.promisesLookup",
   "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
+  // The stub resolver's checks (ERR_INVALID_ARG_TYPE/VALUE for a name,
+  // callback, options or rrtype; ERR_INVALID_IP_ADDRESS and
+  // ERR_SOCKET_BAD_PORT for setServers' entries; ERR_OUT_OF_RANGE for a
+  // Resolver's options), and reverse's synchronous EINVAL for an address
+  // c-ares cannot parse.
+  "dns.resolveChk",
+  "dns.resolvePromise",
+  "dns.resolveRrChk",
+  "dns.resolveRrPromise",
+  "dns.resolverNew",
+  "dns.setServers",
+  "dns.promisesSetServers",
   "net.connect",
   "net.connectCb",
   "net.connectPath",

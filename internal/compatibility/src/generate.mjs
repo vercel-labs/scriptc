@@ -857,6 +857,9 @@ function publicDetail(tier) {
     ) {
       return "Implemented for the documented static async-iteration subset.";
     }
+    if (source.startsWith("compiler-feature:dns.")) {
+      return "Answers A, AAAA, CAA, CNAME, MX, NAPTR, NS, PTR, SOA, SRV, TLSA, TXT and ANY queries and reverse lookups over UDP with the TCP retry, and Resolver instances carry Node's servers, options, cancellation and error codes.";
+    }
     if (source.startsWith("compiler-feature:http.http.validateHeader")) {
       return "Static header validation is implemented for the tested call shapes.";
     }

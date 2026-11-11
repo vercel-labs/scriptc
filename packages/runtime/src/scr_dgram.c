@@ -382,6 +382,12 @@ typedef struct ScrDnsPending {
 
 static SCR_TL ScrDnsPending *scr_dns_pending = NULL;
 
+/* The stub resolver's loop share and default-resolver server reading
+ * (scr_dns_resolve.c, linked only for programs that use it — the
+ * scr_dns_resolve_install story). NULL for dgram-only programs. */
+const ScrDnsqHooks *scr_dnsq_hooks = NULL;
+ScrDyn *(*scr_dns_servers_hook)(bool promises) = NULL;
+
 /* ── RC ──────────────────────────────────────────────────────────────── */
 
 static void scr_dgram_close_fd_raw(int fd); /* forget-then-close, defined below */
@@ -1690,6 +1696,7 @@ ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *
 /* dns.getServers(): the nameserver lines of /etc/resolv.conf, as c-ares
  * reads them ("[addr]:port" only for a port other than 53). +1. */
 ScrDyn *scr_dns_get_servers(void) {
+  if (scr_dns_servers_hook != NULL) return scr_dns_servers_hook(false);
   ScrDyn *out = scr_dyn_new_arr();
 #ifndef _WIN32
   FILE *f = fopen("/etc/resolv.conf", "r");
@@ -1722,6 +1729,7 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
 
 static bool scr_dgram_flags_pending(void) {
   if (scr_dns_pending) return true;
+  if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     if (s->pending_err || s->emit_listening || s->emit_connect) return true;
     if (s->closing && !s->close_emitted) return true;
@@ -1818,6 +1826,7 @@ static void scr_dgram_sweep(void) {
 
 static bool scr_dgram_pending(void) {
   if (scr_dns_pending) return true;
+  if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     /* Undelivered emits hold the loop even on an unref'd socket (they
      * are due NOW); otherwise an open registered socket holds it unless
@@ -1836,21 +1845,31 @@ static int scr_dgram_pollfd(void) {
 }
 
 static void scr_dgram_dispatch(void) {
-  if (!scr_dgram_socks && !scr_dns_pending) return;
-  for (;;) {
-    scr_dgram_sweep();
-    if (scr_exc_pending()) return;
-    if (scr_dgram_poller == NULL) return;
-    ScrPollerEvent evs[64];
-    int n = scrp_drain(scr_dgram_poller, evs, 64);
-    for (int i = 0; i < n; i++) {
-      ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
-      if (!s || s->fd < 0) continue; /* closed earlier in this batch */
-      scr_dgram_read(s);
+  if (!scr_dgram_socks && !scr_dns_pending &&
+      (scr_dnsq_hooks == NULL || !scr_dnsq_hooks->pending()))
+    return;
+  /* One poller drain per call, like the net unit (the events stay queued in
+   * the level-triggered poller and the loop calls back while its fd is
+   * readable). "Pending" here includes work that is only WAITING on an fd or
+   * a timer — a dns query in flight, a listening socket — so draining again
+   * straight away would spin to the next deadline and starve the other
+   * stations: a dns response answered by the program's own net server could
+   * never arrive. */
+  scr_dgram_sweep();
+  if (scr_exc_pending()) return;
+  if (scr_dgram_poller == NULL) return;
+  ScrPollerEvent evs[64];
+  int n = scrp_drain(scr_dgram_poller, evs, 64);
+  for (int i = 0; i < n; i++) {
+    if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->owns(evs[i].udata)) {
+      scr_dnsq_hooks->event(evs[i].udata, evs[i].events);
       if (scr_exc_pending()) return;
+      continue;
     }
-    if (!scr_dgram_flags_pending()) return;
-    if (scr_loop_has_ready()) return; /* microtasks interleave first */
+    ScrDgramSocket *s = (ScrDgramSocket *)evs[i].udata;
+    if (!s || s->fd < 0) continue; /* closed earlier in this batch */
+    scr_dgram_read(s);
+    if (scr_exc_pending()) return;
   }
 }
 
@@ -1858,6 +1877,7 @@ static void scr_dgram_dispatch(void) {
  * program legitimately leaves live at exit release their listeners and
  * registry references so the RC audit sees a clean heap. */
 static void scr_dgram_cleanup_atexit(void) {
+  if (scr_dnsq_hooks != NULL) scr_dnsq_hooks->cleanup();
   while (scr_dgram_socks) {
     ScrDgramSocket *s = scr_dgram_socks;
     scr_dgram_ls_drop(&s->msg_ls);
@@ -2227,4 +2247,46 @@ double scr_dgram_unix_close(double fd) {
 #else
   return close((int)fd) != 0 ? -(double)errno : 0;
 #endif
+}
+
+/* ── the stub resolver's primitives (scr_dns_resolve.c) ────────────────
+ * The unit poller and its watches/timers, the forget-then-close pair,
+ * and deferred delivery on the pending queue. Each is a thin spelling of
+ * an internal helper above, so the resolver's queries ride the dgram
+ * loop's exact lifecycle without a second poller. */
+void scr_dgram_poll_ready(void) { (void)scr_dgram_poller_init(); }
+
+void scr_dgram_poll_read(int fd, void *udata, bool on) {
+  scr_dgram_watch_read(fd, udata, on);
+}
+
+void scr_dgram_poll_write(int fd, void *udata, bool on) {
+  if (scr_dgram_poller == NULL || fd < 0) return;
+  (void)scrp_watch_write(scr_dgram_poller, fd, udata, on);
+}
+
+void scr_dgram_poll_forget(int fd) {
+  if (scr_dgram_poller == NULL || fd < 0) return;
+  scrp_forget(scr_dgram_poller, fd);
+}
+
+void scr_dgram_poll_close(int fd) { scr_dgram_close_fd_raw(fd); }
+
+bool scr_dgram_poll_timer(void *key, double ms, void *udata) {
+  if (scr_dgram_poller == NULL) return false;
+  return scrp_timer_arm(scr_dgram_poller, key, ms, udata);
+}
+
+void scr_dgram_poll_timer_cancel(void *key) {
+  if (scr_dgram_poller == NULL) return;
+  scrp_timer_cancel(scr_dgram_poller, key);
+}
+
+void scr_dns_deliver_dyn(ScrDyn *call) {
+  ScrDnsPending *p = calloc(1, sizeof *p);
+  if (!p) scr_dgram_oom();
+  p->call = call; /* moves */
+  ScrDnsPending **link = &scr_dns_pending;
+  while (*link) link = &(*link)->next;
+  *link = p;
 }

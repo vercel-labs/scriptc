@@ -12750,8 +12750,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     if (e->system_path) scr_dyn_obj_set(d, "path", 4, scr_dyn_new_str(e->system_path));
     if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
   } else {
-    /* errno rides fs errors (with syscall) and zlib errors (without). */
-    if (e->system_call || e->system_errno != 0)
+    /* errno rides fs errors (with syscall) and zlib errors (without); a
+     * DNSException presents it first, reading undefined. */
+    if (e->errno_undefined)
+      scr_dyn_obj_set(d, "errno", 5, scr_dyn_undefined());
+    else if (e->system_call || e->system_errno != 0)
       scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
     if (e->code) {
       scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
@@ -21650,6 +21653,9 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_array_buffer_methods,
 #endif
+    /* No own enumerable properties: JSON.stringify(ab) is "{}" (the TLSA
+     * record's data is an ArrayBuffer). */
+    .json_empty_object = true,
   };
   static const ScrDynHandleOps shared_ops = {
     "SharedArrayBuffer", &scr_bytes_retain_v, &scr_bytes_release_v,
@@ -21657,6 +21663,7 @@ ScrDyn *scr_array_buffer_from_bytes(ScrBytes *view) {
 #ifdef SCR_JS_OBJECT_MODEL
     .methods = scr_shared_array_buffer_methods,
 #endif
+    .json_empty_object = true,
   };
   ScrDynHandleTag tag = view->shared ? SCR_DYNH_SHARED_ARRAY_BUFFER : SCR_DYNH_ARRAY_BUFFER;
   scr_dyn_handle_install(tag, view->shared ? &shared_ops : &ops);

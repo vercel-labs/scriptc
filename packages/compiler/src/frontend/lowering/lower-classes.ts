@@ -245,6 +245,7 @@ import {
   usesStaticReceiver,
 } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
+import { lowerDnsResolverNew } from "./lower-dgram.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import {
@@ -11857,6 +11858,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
+  // the module's Resolver class builds a stub-resolver handle value.
+  {
+    const resolver = lowerDnsResolverNew(lowerer, expr);
+    if (resolver) return resolver;
   }
   // `new url.URL(input)` / `new url.URLSearchParams(init?)`: the node:url
   // member names the same class the named import does, so both take the

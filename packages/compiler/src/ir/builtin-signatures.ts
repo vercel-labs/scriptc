@@ -2190,6 +2190,27 @@ function buildLibFnSignatures() {
     "dns.getServers": { argTypes: [], result: DYN },
     "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
     "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
+    /** The stub resolver (scr_dns_resolve.c): the binding names the c-ares
+     * query ("queryA", "getHostByAddr", …), `typed` says the callback's
+     * result parameter cannot take the undefined Node passes on an error,
+     * and the promise forms fulfill with the dyn result. Argument errors
+     * throw synchronously in both forms (Node validates before it queues
+     * the query). */
+    "dns.resolveChk": { argTypes: [STRING, DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolvePromise": { argTypes: [STRING, DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** resolve(hostname, rrtype[, callback]): the rrtype picks the binding
+     * at run time (Node's resolveMap). */
+    "dns.resolveRrChk": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolveRrPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** The Resolver handle (SCR_DYNH_DNS_RESOLVER): the constructor's
+     * options, the instanceof test, and the servers of the module defaults.
+     * A handle's own methods are dyn calls on the handle value, so they need
+     * no entry here. */
+    "dns.resolverNew": { argTypes: [DYN, BOOL], result: DYN },
+    "dns.resolverIs": { argTypes: [DYN, BOOL], result: BOOL },
+    "dns.setServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesSetServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesGetServers": { argTypes: [BOOL], result: DYN },
     // node:test (scr_test.c). Bodies are program-dependent closures (0 or
     // 1 testCtx param, void or Promise<void> result — the spoke pinned the
     // shape): null slots. sub's result is the settled Promise<void> the

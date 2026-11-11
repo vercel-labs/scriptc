@@ -3,7 +3,6 @@
 // for marking the rows a verified absence instead of an unverified
 // registry gap.
 import { AsyncResource } from "node:async_hooks";
-import { Resolver } from "node:dns";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
@@ -47,7 +46,3 @@ emitter.emit("x");
 
 // fs: Blob-backed opens.
 console.log(await openAsBlob("/tmp/x"));
-
-// dns: a resolver instance.
-const resolver = new Resolver();
-resolver.cancel();

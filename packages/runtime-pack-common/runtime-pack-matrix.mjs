@@ -139,7 +139,17 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
+    any(
+      "dynAsync",
+      "dynInvoke",
+      "dc",
+      "fileHandle",
+      "nativeFetch",
+      "nodeIsland",
+      "nodeTest",
+      // The stub resolver settles its promise results through the unit.
+      "dnsResolve",
+    ),
   ],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
@@ -183,7 +193,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
-  ["scr_dyn_handle_class.c", "webStreams"],
+  // The class installs (scr_dyn_handle_class_install) that web streams and
+  // the stub resolver's Resolver classes need.
+  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
   ["scr_util_timing.c", "utilTiming"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
@@ -277,6 +289,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dgram.c", "dgram"],
   // The dns promise forms run over the dgram unit's callback forms.
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
+  // The stub resolver's queries (resolve/reverse/setServers, Resolver
+  // handles): the dgram unit's poller, and scr_idna.c's ToASCII for the
+  // query names (the link requirements pair dnsResolve with regex).
+  ["scr_dns_resolve.c", all("dgram", "dnsResolve")],
   // Sockets as untyped values run over the dgram unit.
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   // TextEncoder and TextDecoder records boxed as untyped values.

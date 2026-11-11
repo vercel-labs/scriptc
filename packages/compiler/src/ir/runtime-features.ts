@@ -1687,6 +1687,22 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** node:dns/promises: scr_dns_promises.c over the dgram unit. */
   dnsPromises: rule({ fns: ["dns.promisesLookup", "dns.promisesLookupService"] }),
+  /** dns.Resolver and the resolve/reverse/setServers forms (the stub
+   * resolver): scr_dns_resolve.c over the dgram unit, so programs that
+   * only look up names keep their exact link line. */
+  dnsResolve: rule({
+    fns: [
+      "dns.resolveChk",
+      "dns.resolvePromise",
+      "dns.resolveRrChk",
+      "dns.resolveRrPromise",
+      "dns.resolverNew",
+      "dns.resolverIs",
+      "dns.setServers",
+      "dns.promisesSetServers",
+      "dns.promisesGetServers",
+    ],
+  }),
   dynAsync: rule({
     initial: (mod) =>
       mod.workers === true ||
@@ -2484,6 +2500,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dgramDyn: false,
     textCodecDyn: false,
     dnsPromises: false,
+    dnsResolve: false,
     dynAsync: false,
     promiseGeneric: false,
     dynBuiltinClass: false,

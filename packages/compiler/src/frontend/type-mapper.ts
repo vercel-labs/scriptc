@@ -5458,6 +5458,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "dgramSocket" };
   }
+  // dns.Resolver / dns/promises.Resolver: one stub-resolver handle, a
+  // checked-dynamic value whose methods are dyn calls (scr_dns_resolve.c).
+  // Each module declares its own class, so the ambient module names it.
+  if (
+    psym !== undefined &&
+    psymName === "Resolver" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "dns") || isDeclaredInAmbientModule(d, "dns/promises")),
+    )
+  ) {
+    return DYN;
+  }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
   // both are the runner's node for the test or suite. @types/node's

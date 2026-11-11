@@ -21,8 +21,10 @@ import {
   type IrLibFn,
   type IrStmt,
   type IrType,
+  NULL_T,
   STRING,
   type SrcLoc,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   funcOf,
@@ -1563,6 +1565,24 @@ export function lowerFsWriteDescriptorCall(
       supported,
     );
   }
+  const encodingNode = expr.arguments.nodes[2];
+  if (encodingNode !== undefined) {
+    // Node reads the third argument over the descriptor too (its encoding
+    // and signal validation, the flush flag, and — for string data written
+    // as utf8 — the flag and mode ladders), so only an encoding that
+    // changes nothing is accepted here; every other value keeps the fence.
+    const encodingType = lowerer.typeOf(encodingNode);
+    if (
+      !encodingType.isStringLiteralType() ||
+      (encodingType.value !== "utf8" && encodingType.value !== "utf-8")
+    ) {
+      lowerer.noLowering(
+        "writeFileSync(fd) with an options argument",
+        encodingNode,
+        'the lowered descriptor form is writeFileSync(fd, data) and writeFileSync(fd, data, "utf8"); Node\'s option record over a descriptor (a non-utf8 encoding, flush, signal, or the flag and mode the utf8 fast path parses) has no lowering yet',
+      );
+    }
+  }
   const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
   return {
     kind: "libCall",
@@ -1924,14 +1944,32 @@ export function lowerFsSyncWriteOptionsCall(
   // open(2) bits, and a value the call site did not pin down runs
   // stringToFlags at the call's run time.
   let flagDyn = false;
-  const optionValues: { kind: "mode" | "encoding" | "flag"; node: ts.Expression }[] = [];
+  const optionValues: {
+    kind: "mode" | "encoding" | "flag";
+    node?: ts.Expression;
+    ir?: IrExpr;
+  }[] = [];
   const optsType = lowerer.typeOf(optsNode);
+  // A stored options record (a const, an argument, a call's result) whose
+  // fields are a subset of { mode, encoding, flag }: the record is
+  // evaluated once at the call, where Node evaluates the argument.
+  const stored =
+    optsType.isStringLiteralType() || optionsLiteralOf(lowerer, optsNode) !== null
+      ? null
+      : writeOptionsRecord(lowerer, optsNode);
   if (optsType.isStringLiteralType()) {
     // The bare-encoding spelling — writeFileSync(p, data, "latin1") — is
     // the options record's encoding key alone.
     if (!append && (optsType.value === "utf8" || optsType.value === "utf-8")) return null;
     optionValues.push({ kind: "encoding", node: optsNode });
     plain = false;
+  } else if (stored !== null) {
+    // Field types decide the slots: a record field is never a literal, so
+    // the encoding takes the runtime's name check and an unpinned mode or
+    // flag takes the parseFileMode / stringToFlags ladders.
+    plain = false;
+    if (stored.mode !== undefined && stored.mode.kind !== "f64") modeDyn = true;
+    if (stored.flag !== undefined && stored.flag.kind !== "string") flagDyn = true;
   } else {
     const literal = optionsLiteralOf(lowerer, optsNode);
     if (literal === null) return null;
@@ -2005,6 +2043,55 @@ export function lowerFsSyncWriteOptionsCall(
   let mode: IrExpr = box(numLit(0o666, loc));
   let encoding: IrExpr = strLit("utf8", loc);
   let flag: IrExpr = box(strLit(append ? "a" : "w", loc));
+  // A stored options record is evaluated whole after the path and the data,
+  // where Node evaluates the third argument, then read field by field.
+  if (stored !== null) {
+    const local = lowerer.declareHiddenLocal("%writeOptions", stored.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: stored.init, loc: stored.init.loc });
+    const obj = varRef(local.id, local.type, loc);
+    if (stored.mode !== undefined)
+      optionValues.push({
+        kind: "mode",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "mode",
+          stored.mode,
+          modeDyn ? "dyn" : "number",
+          box(numLit(0o666, loc)),
+          loc,
+        ),
+      });
+    if (stored.encoding !== undefined)
+      optionValues.push({
+        kind: "encoding",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "encoding",
+          stored.encoding,
+          "string",
+          strLit("utf8", loc),
+          loc,
+        ),
+      });
+    if (stored.flag !== undefined)
+      optionValues.push({
+        kind: "flag",
+        ir: writeOptionFieldValue(
+          lowerer,
+          stored.shapeId,
+          obj,
+          "flag",
+          stored.flag,
+          modeDyn ? "dyn" : "string",
+          box(strLit(append ? "a" : "w", loc)),
+          loc,
+        ),
+      });
+  }
   for (const option of optionValues) {
     const type =
       option.kind === "mode"
@@ -2023,8 +2110,8 @@ export function lowerFsSyncWriteOptionsCall(
     stmts.push({
       kind: "varDecl",
       localId: slot.id,
-      init: lowerer.lowerExprExpecting(option.node, type),
-      loc: locOf(option.node),
+      init: option.ir ?? lowerer.lowerExprExpecting(option.node!, type),
+      loc: option.ir?.loc ?? locOf(option.node!),
     });
     const ref = varRef(slot.id, slot.type, loc);
     if (option.kind === "mode") mode = ref;
@@ -2266,6 +2353,147 @@ function optionsLiteralOf(
     if (!m || !literalValue(m.value)) return null;
   }
   return value;
+}
+
+/** A mode or flag field may be absent (its nullish arm answers the write's
+ * default) or one of the two spellings the runtime's parseFileMode /
+ * stringToFlags ladders read; an encoding field is a name. */
+const WRITE_MODE_FIELD_ARMS: readonly IrType[] = [F64, STRING];
+const WRITE_ENCODING_FIELD_ARMS: readonly IrType[] = [STRING];
+
+/** Whether a stored options field's type is one the dynamic slot can carry:
+ * exactly one of `arms`, optionally with one nullish arm the default
+ * absorbs. */
+function writeOptionFieldOk(lowerer: Lowerer, ft: IrType, arms: readonly IrType[]): boolean {
+  const absent = (t: IrType): boolean => typeEquals(t, UNDEFINED_T) || typeEquals(t, NULL_T);
+  if (ft.kind !== "union") return arms.some((a) => typeEquals(ft, a));
+  const unionArms = lowerer.unions.get(ft.unionId)?.arms;
+  if (!unionArms || unionArms.length === 0) return false;
+  if (unionArms.filter(absent).length > 1) return false;
+  if (!unionArms.every((a) => absent(a) || arms.some((k) => typeEquals(a, k)))) return false;
+  return unionArms.some((a) => arms.some((k) => typeEquals(a, k)));
+}
+
+/** The options argument of a write whose value is not an object literal but
+ * whose type IS an object record with no more than the documented mode,
+ * encoding and flag keys: the record is staged once and its fields read
+ * from it. Null when any field's type cannot ride its slot (a name the
+ * value could never be, a key this lowering does not implement), so the
+ * caller keeps its fence. */
+function writeOptionsRecord(
+  lowerer: Lowerer,
+  optsNode: ts.Expression,
+): {
+  init: IrExpr;
+  type: IrType;
+  shapeId: string;
+  mode?: IrType;
+  encoding?: IrType;
+  flag?: IrType;
+} | null {
+  const opts = lowerer.lowerExpr(optsNode);
+  if (opts.type.kind !== "record") return null;
+  const shapeId = opts.type.shapeId;
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape || shape.tuple === true || shape.indexValue !== undefined) return null;
+  const out: {
+    init: IrExpr;
+    type: IrType;
+    shapeId: string;
+    mode?: IrType;
+    encoding?: IrType;
+    flag?: IrType;
+  } = { init: opts, type: opts.type, shapeId };
+  for (const field of shape.fields) {
+    if (field.optional === true) return null;
+    if (field.name === "mode") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_MODE_FIELD_ARMS)) return null;
+      out.mode = field.type;
+    } else if (field.name === "flag") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_MODE_FIELD_ARMS)) return null;
+      out.flag = field.type;
+    } else if (field.name === "encoding") {
+      if (!writeOptionFieldOk(lowerer, field.type, WRITE_ENCODING_FIELD_ARMS)) return null;
+      out.encoding = field.type;
+    } else {
+      // A key this lowering does not implement (flush, signal, or anything
+      // undocumented) keeps the fence.
+      return null;
+    }
+  }
+  return out;
+}
+
+/** A stored options record's field read. A field whose type carries a
+ * nullish arm answers `dflt` there (Node's `?? default`); every other arm
+ * is narrowed by its tag and, for the dynamic slot, boxed for the runtime
+ * ladder. `writeOptionsRecord` only hands over types this can carry. */
+function writeOptionFieldValue(
+  lowerer: Lowerer,
+  shapeId: string,
+  obj: IrExpr,
+  name: string,
+  ft: IrType,
+  slot: "number" | "string" | "dyn",
+  dflt: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const read: IrExpr = { kind: "recordGet", obj, shapeId, field: name, type: ft, loc };
+  if (slot === "number") return read;
+  if (ft.kind !== "union") {
+    if (slot === "string") return read;
+    return ft.kind === "dyn" ? read : { kind: "dynFrom", value: read, type: DYN, loc };
+  }
+  const arms = lowerer.unions.get(ft.unionId)!.arms;
+  const kept = arms.filter((a) => !typeEquals(a, UNDEFINED_T) && !typeEquals(a, NULL_T));
+  const narrowed = (arm: IrType): IrExpr => ({
+    kind: "unionNarrow",
+    unionId: ft.unionId,
+    tag: lowerer.armTag(ft.unionId, arm),
+    value: read,
+    type: arm,
+    loc,
+  });
+  const box = (value: IrExpr): IrExpr => ({ kind: "dynFrom", value, type: DYN, loc });
+  let held: IrExpr;
+  if (slot === "string") held = narrowed(STRING);
+  else if (kept.length === 1) held = box(narrowed(kept[0]!));
+  else
+    held = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: ft.unionId,
+        tag: lowerer.armTag(ft.unionId, kept[0]!),
+        negated: false,
+        value: read,
+        type: BOOL,
+        loc,
+      },
+      then: box(narrowed(kept[0]!)),
+      else_: box(narrowed(kept[1]!)),
+      type: DYN,
+      loc,
+    };
+  const absent = lowerer.armTag(ft.unionId, UNDEFINED_T);
+  const nullish = absent >= 0 ? absent : lowerer.armTag(ft.unionId, NULL_T);
+  if (kept.length === arms.length) return held;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId: ft.unionId,
+      tag: nullish,
+      negated: false,
+      value: read,
+      type: BOOL,
+      loc,
+    },
+    then: dflt,
+    else_: held,
+    type: dflt.type,
+    loc,
+  };
 }
 
 export function lowerFsReadPathCall(

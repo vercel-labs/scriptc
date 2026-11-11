@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -144,7 +145,11 @@ static size_t scr_fs_write_data_len(const ScrBytes *bytes) {
  * A local copy of scr_fs_flags.c's check keeps this gated unit free of
  * that one's symbols (see scr_fs_bytes_write_mode_ok above). */
 static bool scr_fs_bytes_write_encoding_ok(ScrStr *encoding) {
-  if (encoding->len == 0 || scr_bytes_is_encoding(encoding)) return true;
+  /* "buffer" passes assertEncoding; the string writer rejects it at
+   * Buffer.from (ERR_UNKNOWN_ENCODING), while byte data never decodes. */
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) ||
+      (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0))
+    return true;
   ScrDyn *value = scr_dyn_new_str(encoding);
   scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
   scr_dyn_release(value);

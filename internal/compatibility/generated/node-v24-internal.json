@@ -45477,7 +45477,9 @@
           "tests/corpus/fs-sync-dynamic-descriptors.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-write-callback-options.cjs",
           "tests/corpus/fs-write-options.ts",
+          "tests/corpus/fs-write-stored-options.ts",
           "tests/corpus/node24-fs-callback-numeric-flags.cjs",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
@@ -47417,11 +47419,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.appendFile",
         "tests": [
-          "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/fs-write-callback-options.cjs",
+          "tests/corpus/5548-fs-callback-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49010,11 +49012,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.writeFile",
         "tests": [
-          "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/fs-write-callback-options.cjs",
+          "tests/corpus/5548-fs-callback-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49143,16 +49145,12 @@
         "tests": [
           "tests/corpus/1403-buffer-fs.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
           "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/node24-fs-write-options-flags.ts",
+          "tests/corpus/fs-write-stored-options.ts",
+          "tests/corpus/fs-write-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -50425,7 +50423,9 @@
           "tests/corpus/8427-fs-copyfile-writefile-flags.ts",
           "tests/corpus/fs-write-options.ts",
           "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/node24-fs-write-options-flags.ts",
+          "tests/corpus/fs-write-stored-options.ts",
+          "tests/corpus/fs-write-callback-options.cjs"
         ]
       },
       "anchorSource": "exact"

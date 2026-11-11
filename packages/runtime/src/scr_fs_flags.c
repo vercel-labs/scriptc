@@ -203,15 +203,25 @@ static void scr_fs_write_bytes_at(ScrStr *path, const uint8_t *bytes, size_t len
   if (close(fd) != 0) scr_fs_throw(errno, "close", path);
 }
 
-/* The encoding name check both data kinds share: Node validates the
- * encoding option before it looks at the data, so an invalid name throws
- * even though Buffer data is written without it. An empty name is utf8. */
+/* getOptions' assertEncoding over a write's encoding name: an empty name is
+ * utf8, and "buffer" passes here too (Node's check skips it for
+ * Buffer.isEncoding's benefit) — Buffer.from rejects that name when a
+ * string has to be encoded, which happens later. */
 static bool scr_fs_write_encoding_ok(ScrStr *encoding) {
-  if (encoding->len == 0 || scr_bytes_is_encoding(encoding)) return true;
+  if (encoding->len == 0 || scr_bytes_is_encoding(encoding) ||
+      (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0))
+    return true;
   ScrDyn *value = scr_dyn_new_str(encoding);
   scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
   scr_dyn_release(value);
   return false;
+}
+
+/* Buffer.from(string, "buffer"): Node's decoder rejects the name
+ * getOptions let through, as ERR_UNKNOWN_ENCODING. */
+static void scr_fs_write_unknown_buffer(ScrStr *encoding) {
+  ScrStr *normalized = scr_bytes_normalize_encoding(encoding);
+  scr_str_release(normalized);
 }
 
 /* parseFileMode's ladder for the options record's mode when the call site
@@ -255,9 +265,15 @@ static void scr_fs_write_string_at(ScrStr *path, ScrStr *data, ScrStr *encoding,
 
 static void scr_fs_write_string(ScrStr *path, ScrStr *data, ScrStr *encoding, double mode,
                                 const ScrStr *flags, const char *defaultFlag) {
-  /* Node reads the options in this order: encoding, flag, mode, and only
-   * then the path, so each invalid value reports before the next. */
+  /* Node reads the options in this order: encoding, then Buffer.from(data,
+   * encoding) for string data, then openSync's getValidatedPath, flags and
+   * mode. Each invalid value reports before the next. */
   if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) {
+    scr_fs_write_unknown_buffer(encoding);
+    return;
+  }
+  if (!scr_fs_path_ok(path, "path")) return;
   int bits = 0;
   if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
   if (!scr_fs_write_mode_ok(mode)) return;
@@ -268,6 +284,11 @@ static void scr_fs_write_string_dyn(ScrStr *path, ScrStr *data, ScrStr *encoding
                                     const ScrDyn *mode, const ScrDyn *flags,
                                     const char *defaultFlag) {
   if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) {
+    scr_fs_write_unknown_buffer(encoding);
+    return;
+  }
+  if (!scr_fs_path_ok(path, "path")) return;
   int bits = 0;
   if (!scr_fs_write_flags_dyn(flags, defaultFlag, &bits)) return;
   double parsed;
@@ -287,7 +308,10 @@ static void scr_fs_write_blob_at(ScrStr *path, const ScrBytes *data, mode_t mode
 
 static void scr_fs_write_blob(ScrStr *path, const ScrBytes *data, ScrStr *encoding, double mode,
                               const ScrStr *flags, const char *defaultFlag) {
+  /* Byte data is never decoded, so "buffer" is just another name that
+   * passed assertEncoding; the path check precedes openSync's flags. */
   if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (!scr_fs_path_ok(path, "path")) return;
   int bits = 0;
   if (!scr_fs_write_flags_ok(flags, defaultFlag, &bits)) return;
   if (!scr_fs_write_mode_ok(mode)) return;
@@ -298,6 +322,7 @@ static void scr_fs_write_blob_dyn(ScrStr *path, const ScrBytes *data, ScrStr *en
                                   const ScrDyn *mode, const ScrDyn *flags,
                                   const char *defaultFlag) {
   if (!scr_fs_write_encoding_ok(encoding)) return;
+  if (!scr_fs_path_ok(path, "path")) return;
   int bits = 0;
   if (!scr_fs_write_flags_dyn(flags, defaultFlag, &bits)) return;
   double parsed;

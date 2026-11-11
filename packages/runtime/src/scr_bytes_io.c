@@ -718,6 +718,137 @@ static bool scr_fs_cb_stat_options(const ScrDyn *options, const ScrDyn **normali
   return valid;
 }
 
+/* writeFile/appendFile's getOptions, run before the path is looked at:
+ * null, undefined and functions take the defaults; a string is the
+ * encoding; any other non-object throws. An object's `encoding` is read
+ * for the 'buffer' comparison and, unless it is that name, read again for
+ * assertEncoding; a `signal` member that is not undefined is validated
+ * after the encoding (Node's order), with `options.signal` read twice. */
+static bool scr_fs_cb_write_options(const ScrDyn *options) {
+  if (scr_fs_dyn_absent(options) || options->kind == SCR_DYN_FUNC) return true;
+  if (options->kind == SCR_DYN_STR) return scr_fs_read_encoding_check(options);
+  /* getOptions tests typeof: every object-like box is an options record
+   * (its reads answer undefined for the keys it does not carry), and the
+   * primitives other than a string are the type error. */
+  if (options->kind == SCR_DYN_BOOL || options->kind == SCR_DYN_NUM ||
+      options->kind == SCR_DYN_BIGINT || options->kind == SCR_DYN_SYMBOL) {
+    scr_dyn_arg_type_fail("options", "one of type string or object", options);
+    return false;
+  }
+  ScrDyn *encoding = scr_fs_cb_option(options, "encoding");
+  if (!encoding) return false;
+  bool buffer = encoding->kind == SCR_DYN_STR && encoding->v.str->len == 6 &&
+                memcmp(encoding->v.str->data, "buffer", 6) == 0;
+  scr_dyn_release(encoding);
+  if (!buffer) {
+    ScrDyn *value = scr_fs_cb_option(options, "encoding");
+    if (!value) return false;
+    bool valid = scr_fs_read_encoding_check(value);
+    scr_dyn_release(value);
+    if (!valid) return false;
+  }
+  ScrDyn *signal = scr_fs_cb_option(options, "signal");
+  if (!signal) return false;
+  if (signal->kind == SCR_DYN_UNDEF) { scr_dyn_release(signal); return true; }
+  ScrDyn *value = scr_fs_cb_option(options, "signal");
+  if (!value) { scr_dyn_release(signal); return false; }
+  bool valid = scr_fs_read_signal_check(value);
+  scr_dyn_release(value);
+  scr_dyn_release(signal);
+  return valid;
+}
+
+/* writeFile's `const flush = options.flush ?? false; validateBoolean(flush,
+ * 'options.flush')`: undefined, null and booleans pass, every other value
+ * throws Node's property-shaped ERR_INVALID_ARG_TYPE. A function in the
+ * options position is the callback, and a string supplies the encoding
+ * only; both are the defaults record here, whose flush is false. */
+static bool scr_fs_cb_write_flush(const ScrDyn *options, bool *flush) {
+  *flush = false;
+  if (scr_fs_dyn_absent(options) || options->kind == SCR_DYN_FUNC || options->kind == SCR_DYN_STR)
+    return true;
+  ScrDyn *value = scr_fs_cb_option(options, "flush");
+  if (!value) return false;
+  bool ok = true;
+  if (value->kind == SCR_DYN_BOOL) *flush = value->v.b;
+  else if (value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NULL) {
+    scr_dyn_prop_type_fail("options.flush", "of type boolean", value);
+    ok = false;
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* Buffer.from(string, "buffer"), the one name assertEncoding lets through:
+ * the decoder rejects it with ERR_UNKNOWN_ENCODING. */
+static void scr_fs_cb_write_unknown_buffer(const ScrStr *encoding) {
+  ScrStr *normalized = scr_bytes_normalize_encoding(encoding);
+  scr_str_release(normalized);
+}
+
+/* writeFile's data check, then the string conversion it does at the call:
+ * a value that is not an ArrayBufferView must be a string (Node's
+ * validateStringAfterArrayBufferView), and a string encoded through
+ * "buffer" throws at Buffer.from before the path is seen. */
+static bool scr_fs_cb_write_data(const ScrDyn *data, const ScrDyn *options) {
+  if (data->kind == SCR_DYN_STR) {
+    ScrDyn *encoding = options->kind == SCR_DYN_STR
+                           ? scr_dyn_retain((ScrDyn *)options)
+                           : scr_fs_cb_option(options, "encoding");
+    if (!encoding) return false;
+    bool buffer = encoding->kind == SCR_DYN_STR && encoding->v.str->len == 6 &&
+                  memcmp(encoding->v.str->data, "buffer", 6) == 0;
+    if (buffer) scr_fs_cb_write_unknown_buffer(encoding->v.str);
+    scr_dyn_release(encoding);
+    if (buffer) return false;
+    return true;
+  }
+  if (data->kind == SCR_DYN_BYTES) return true;
+  scr_dyn_arg_type_fail("data", "of type string or an instance of Buffer, TypedArray, or DataView",
+                        data);
+  return false;
+}
+
+/* Node's isFd = isInt32: an int32 path is the descriptor the write targets
+ * without an open, negative values included (the write binding is what
+ * rejects those, with its fd range check). */
+static bool scr_fs_cb_write_fd(const ScrDyn *path, double *fd) {
+  if (path->kind != SCR_DYN_NUM) return false;
+  double value = path->v.num;
+  if (!(isfinite(value) && trunc(value) == value) || value < -2147483648.0 ||
+      value > 2147483647.0)
+    return false;
+  *fd = value;
+  return true;
+}
+
+/* Node's checkAborted for writeFile's path form (writeAll's own check for
+ * the descriptor form): an aborted signal runs the callback SYNCHRONOUSLY
+ * with the AbortError and the call answers undefined. True when the
+ * callback ran, so the call is over. */
+static bool scr_fs_cb_write_aborted(const ScrDyn *options, const ScrDyn *callback) {
+  if (scr_fs_dyn_absent(options) || options->kind == SCR_DYN_FUNC || options->kind == SCR_DYN_STR)
+    return false;
+  ScrDyn *signal = scr_fs_cb_option(options, "signal");
+  if (!signal) return false;
+  if (scr_fs_dyn_absent(signal)) { scr_dyn_release(signal); return false; }
+  ScrStr *key = scr_str_new("aborted", 7);
+  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+  scr_str_release(key);
+  bool cancelled = aborted && scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (!cancelled) { scr_dyn_release(signal); return false; }
+  ScrDyn *error = scr_fs_cb_abort_error_dyn(signal);
+  scr_dyn_release(signal);
+  if (!error) return false;
+  ScrDyn *arguments = scr_dyn_new_arr();
+  scr_dyn_arr_push(arguments, error);
+  ScrDyn *result = scr_dyn_apply(callback, arguments, "the filesystem callback");
+  scr_dyn_release(result);
+  scr_dyn_release(arguments);
+  return true;
+}
+
 /* Whether a length-delimited name is one of stringToFlags' spellings. The
  * length is the string's own, so an embedded NUL is part of the name and
  * never a terminator: "r\0x" is not "r" to Node either. */
@@ -1664,8 +1795,56 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       ((ARG(1)->kind != SCR_DYN_UNDEF &&
         !scr_fs_int_range_chk(ARG(1), "len", -9007199254740991.0, 9007199254740991.0, ">= -9007199254740991 && <= 9007199254740991")) ||
        !scr_fs_cb_chk(callback, "cb"))) return NULL;
-  ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
-  if (!descriptor && !path) return NULL;
+  /* writeFile and appendFile normalize their options (getOptions, the flush
+   * check, then the data conversion), inspect the path for a descriptor and
+   * check the signal, all before the path itself is validated: an aborted
+   * write runs its callback synchronously and never looks at the path, and
+   * an int32 path is a descriptor the write targets without an open, so no
+   * flag or mode is parsed for it. A negative descriptor fails fs.write's
+   * own fd check with a synchronous throw. */
+  bool write_descriptor = false;
+  double write_fd = -1;
+  bool write_flush = false;
+  if (!strcmp(op, "writeFile") || !strcmp(op, "appendFile")) {
+    const ScrDyn *options = ARG(2);
+    if (!scr_fs_cb_write_options(options) || !scr_fs_cb_write_flush(options, &write_flush) ||
+        !scr_fs_cb_write_data(ARG(1), options))
+      return NULL;
+    write_descriptor = scr_fs_cb_write_fd(ARG(0), &write_fd);
+    if (scr_fs_cb_write_aborted(options, callback)) return scr_dyn_retain(scr_dyn_undefined());
+    if (write_descriptor) {
+      ScrDyn *value = scr_dyn_new_num(write_fd);
+      bool ok = scr_fs_int_range_chk(value, "fd", 0, 2147483647.0, ">= 0 && <= 2147483647");
+      scr_dyn_release(value);
+      if (!ok) return NULL;
+    }
+  }
+  ScrStr *path = descriptor || write_descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
+  if (!descriptor && !write_descriptor && !path) return NULL;
+  /* writeFile's path form hands fs.open the flag and the mode, and open
+   * parses the mode before the flag — both synchronously, after the path
+   * check. The descriptor form never parses either. */
+  int write_bits = 0;
+  double write_mode = 0666;
+  if (!descriptor && !write_descriptor && (!strcmp(op, "writeFile") || !strcmp(op, "appendFile"))) {
+    const ScrDyn *options = ARG(2);
+    const ScrDyn *object = options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ? NULL : options;
+    if (object != NULL) {
+      ScrDyn *value = scr_fs_cb_option(object, "mode");
+      bool ok = !scr_exc_pending() &&
+                scr_fs_parse_file_mode(value, "mode", true, 0666, &write_mode);
+      scr_dyn_release(value);
+      if (!ok) { scr_str_release(path); return NULL; }
+      ScrDyn *flag = scr_fs_cb_option(object, "flag");
+      ok = !scr_exc_pending() &&
+           scr_fs_cb_open_bits(flag && scr_dyn_truthy(flag) ? flag : NULL,
+                               !strcmp(op, "appendFile") ? "a" : "w", &write_bits);
+      scr_dyn_release(flag);
+      if (!ok) { scr_str_release(path); return NULL; }
+    } else {
+      scr_fs_cb_open_bits(NULL, !strcmp(op, "appendFile") ? "a" : "w", &write_bits);
+    }
+  }
   /* fs.stat's checkAborted runs after the path check and before the
    * request: an aborted signal runs the callback synchronously and the
    * call answers undefined. */
@@ -1742,17 +1921,19 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     scr_dyn_release(encoding);
   } else if (!strcmp(op, "writeFile") || !strcmp(op, "appendFile")) {
     const ScrDyn *options = ARG(2);
-    if (options->kind != SCR_DYN_STR && !scr_fs_cb_signal(options)) goto done;
     ScrDyn *encoding = options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options) : scr_fs_cb_option(options, "encoding");
     ScrStr *codec = encoding && encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
     ScrBytes *data = encoding ? scr_buffer_from_dyn(ARG(1), codec) : NULL;
     scr_str_release(codec);
     scr_dyn_release(encoding);
     if (data) {
-      ScrDyn *flag = scr_fs_cb_option(options->kind == SCR_DYN_STR ? scr_dyn_undefined() : options, "flag");
-      double mode = scr_fs_cb_option_number(options->kind == SCR_DYN_STR ? scr_dyn_undefined() : options, "mode", 0666);
-      double fd = flag ? scr_fs_cb_open(path, flag, mode, !strcmp(op, "appendFile") ? "a" : "w") : -1;
-      scr_dyn_release(flag);
+      double fd = write_descriptor ? write_fd : -1;
+      if (!write_descriptor) {
+        /* The mode and flag were parsed synchronously above, after the path
+         * check; this is the request itself. */
+        fd = open(path->data, write_bits, (mode_t)write_mode);
+        if (fd < 0) scr_fs_throw(errno, "open", path);
+      }
       if (fd >= 0) {
         size_t offset = 0;
         while (offset < data->len && !scr_exc_pending()) {
@@ -1760,8 +1941,9 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
           if (written <= 0) break;
           offset += (size_t)written;
         }
+        if (write_flush && !scr_exc_pending()) scr_fs_fsync(fd);
         int saved = errno;
-        close((int)fd);
+        if (!write_descriptor) close((int)fd);
         errno = saved;
       }
       scr_bytes_release(data);
@@ -1948,7 +2130,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       if (!strcmp(op, "rename")) scr_fs_rename(path, destination);
       else if (!strcmp(op, "copyFile")) {
         double flags = scr_fs_cb_number(ARG(2), "mode", 0);
-        if (flags == 1 && scr_fs_exists(destination)) scr_fs_throw(EEXIST, "copyfile", destination);
+        if (flags == 1 && scr_fs_exists(destination)) scr_fs_throw2(EEXIST, "copyfile", path, destination);
         else if (flags != 0 && flags != 1) {
           static const char message[] = "fs.copyFile clone flags have no native lowering";
           scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");

@@ -578,6 +578,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.concatLen": "scr_buffer_concat_len",
   "buffer.concatDyn": "scr_buffer_concat_dyn",
   "buffer.concatLenDyn": "scr_buffer_concat_len_dyn",
+  "buffer.concatLenDynOpt": "scr_buffer_concat_len_dyn_opt",
   "buffer.alloc": "scr_buffer_alloc",
   "buffer.allocValue": "scr_buffer_alloc_value",
   "buffer.allocUnsafe": "scr_buffer_alloc_unsafe",

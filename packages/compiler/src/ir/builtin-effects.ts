@@ -1104,6 +1104,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.concatLen",
   "buffer.concatDyn",
   "buffer.concatLenDyn",
+  "buffer.concatLenDynOpt",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",

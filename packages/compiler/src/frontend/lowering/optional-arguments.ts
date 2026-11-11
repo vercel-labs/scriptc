@@ -106,12 +106,23 @@ export function lowerOptionalArgument(
   const value = lowerer.lowerExpr(node);
   if (value.type.kind === "union") {
     const def = lowerer.unions.get(value.type.unionId);
-    if (
-      def?.arms.length === 2 &&
-      def.arms.some((arm) => arm.kind === "undefinedT") &&
-      def.arms.some((arm) => typeEquals(arm, expected))
-    ) {
-      return { kind: "nullish", left: value, right: defaultValue, type: expected, loc: value.loc };
+    // The union carries undefined (an optional slot) and one present arm of
+    // the expected type. More than one unit arm is common — an iterated
+    // tuple's element type models absence as both null and undefined — and
+    // those extra arms cannot hold a present value, so they narrow the same
+    // way. A union whose present arms are anything else keeps the strict
+    // conversion below.
+    if (def !== undefined && def.arms.some((arm) => arm.kind === "undefinedT")) {
+      const rest = def.arms.filter((arm) => !isUnitType(arm));
+      if (rest.length === 1 && typeEquals(rest[0]!, expected)) {
+        return {
+          kind: "nullish",
+          left: value,
+          right: defaultValue,
+          type: expected,
+          loc: value.loc,
+        };
+      }
     }
   }
   return lowerer.coerceInto(node, value, expected);

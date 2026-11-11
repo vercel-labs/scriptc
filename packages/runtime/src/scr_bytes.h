@@ -647,6 +647,9 @@ extern struct ScrDyn *(*scr_bytes_buffer_member_fn)(const struct ScrDyn *value, 
  * Buffer.prototype methods by name (RuntimeFeatures dynBufferMembers). */
 void scr_bytes_buffer_members_install(void);
 ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
+/* Buffer.concat(list, totalLength?) with a total that may be undefined:
+ * undefined is the sum of the parts — Node's default. */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const struct ScrDyn *list, const struct ScrDyn *total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
 void scr_buffer_pool_reset(void);

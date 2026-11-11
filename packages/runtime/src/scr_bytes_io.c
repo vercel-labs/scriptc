@@ -1450,6 +1450,18 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
+/* Buffer.concat(list, totalLength) where the argument list kept an undefined
+ * total: Node's concat sums the parts when totalLength is undefined, before
+ * the list validates (an empty list answers an empty Buffer either way). */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const ScrDyn *list, const ScrDyn *total) {
+  if (total->kind == SCR_DYN_UNDEF) return scr_buffer_concat_dyn(list);
+  if (total->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", total);
+    return NULL;
+  }
+  return scr_buffer_concat_len_dyn(list, total->v.num);
+}
+
 /* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer
  * or SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer that shares its
  * memory. The offset converts with ToNumber, where a missing offset (NULL)

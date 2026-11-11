@@ -24039,7 +24039,7 @@ bool scr_dyn_checked_record_frozen(const ScrDyn *value) {
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_byte_length_str(value->v.str, encoding);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_byte_len(value->v.bytes);
-  if (scr_array_buffer_is(value)) return scr_bytes_byte_len(value->v.handle.ptr);
+  if (scr_buffer_storage_is(value)) return scr_bytes_byte_len(value->v.handle.ptr);
   static const char message[] = "The string argument must be of type string or an instance of Buffer or ArrayBuffer";
   scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
   return 0;

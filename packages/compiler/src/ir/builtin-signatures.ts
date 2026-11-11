@@ -3804,6 +3804,7 @@ function buildLibFnSignatures() {
      * negative/non-integer total (may-throw seed). */
     "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
     "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
+    "buffer.concatLenDynOpt": { argTypes: [DYN, DYN], result: BYTES_U8 },
     // The checked-dynamic compare/equals validators (Node's argument
     // ladders over dyn-boxed invalid-input probes).
     /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —

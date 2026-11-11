@@ -4231,9 +4231,10 @@ static double scr_bytes_index_of_ucs2(const ScrBytes *haystack, const ScrBytes *
 }
 
 /* The shared search core: needle bytes, a coerced byteOffset (trunc; NaN
- * means 'search everything' — 0 forward, the end backward; negatives
- * count from the end, and a still-negative backward search answers -1),
- * and the alignment: 2 searches utf16le units (scr_bytes_index_of_ucs2). */
+ * means 'search everything' — 0 forward, the end backward; negatives count
+ * from the end, and a still-negative position clamps to 0 forward and for
+ * an empty needle, while a non-empty backward search finds nothing), and
+ * the alignment: 2 searches utf16le units (scr_bytes_index_of_ucs2). */
 double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off, double align, bool fwd) {
   SCR_BYTES_SNAPSHOT(b);
   SCR_BYTES_SNAPSHOT(needle);
@@ -4242,8 +4243,10 @@ double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off,
   double o = (off != off) ? (fwd ? 0 : (double)len) : trunc(off);
   if (o < 0) {
     o += (double)len;
+    /* A backward search that still starts before the buffer finds nothing —
+     * unless the needle is empty, which matches at 0. */
     if (o < 0) {
-      if (!fwd) return -1;
+      if (!fwd && nlen != 0) return -1;
       o = 0;
     }
   }
@@ -4401,12 +4404,20 @@ ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
  * ladder — fractional indices TRUNCATE without an error, targetStart/sourceEnd
  * check only >= 0 (past-the-end clamps to nothing), sourceStart is
  * bounded by the source length. Returns the byte count copied. */
+/* Node's copy offsets convert with util's toInteger: NaN and every
+ * non-finite value are 0, other fractions floor (so a negative fraction
+ * throws below, where the floor is negative). */
+static double scr_bytes_copy_offset(double v) {
+  if (!isfinite(v) || v == 0) return 0;
+  return floor(v);
+}
+
 double scr_bytes_copy_into(const ScrBytes *src, ScrBytes *dst, double nargs,
                            double ts, double ss, double se) {
   size_t n = (size_t)nargs;
-  ts = n < 1 ? 0 : trunc(ts);
-  ss = n < 2 ? 0 : trunc(ss);
-  se = n < 3 ? (double)src->len : trunc(se);
+  ts = n < 1 ? 0 : scr_bytes_copy_offset(ts);
+  ss = n < 2 ? 0 : scr_bytes_copy_offset(ss);
+  se = n < 3 ? (double)src->len : scr_bytes_copy_offset(se);
   if (!scr_bytes_validate_off("targetStart", ts, -1)) return 0;
   if (!scr_bytes_validate_off("sourceStart", ss, (double)src->len)) return 0;
   if (!scr_bytes_validate_off("sourceEnd", se, -1)) return 0;

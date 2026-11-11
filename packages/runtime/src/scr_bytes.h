@@ -555,6 +555,7 @@ void *scr_string_decoder_from_dyn(const ScrDyn *d, const struct ScrDynPath *path
 bool scr_buffer_is_ascii(const ScrDyn *input);
 bool scr_buffer_is_utf8(const ScrDyn *input);
 ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const ScrDyn *to);
+ScrDyn *scr_buffer_resolve_object_url(ScrStr *id);
 ScrBytes *scr_bytes_buffer_source(const ScrDyn *value);
 ScrBytes *scr_text_decoder_input(const ScrDyn *value, double encoding, const ScrDyn *state, bool stream);
 bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name);

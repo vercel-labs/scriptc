@@ -50,6 +50,8 @@ import { nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
+import { programMayWriteGlobalName } from "../global-object-writes.js";
+import { staticTypeofAnswer } from "../static-typeof.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   // typeof is a READ, not a use: Node has these constructors, so the answer is
@@ -299,7 +301,9 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
       // A name no declaration binds: Node's answer for a name its global
       // object has or inherits (`toString`), else "undefined". In a `.js`
       // source the global object's own property of that name, when the
-      // program created one, answers first.
+      // program created one, answers first — and only a name the program
+      // writes on the global object somewhere can have one (the census of
+      // global-object-writes.ts), so every other name keeps the constant.
       const inherited = undeclaredGlobalTypeof(tested.text);
       const fallback: IrExpr = {
         kind: "strLit",
@@ -307,7 +311,11 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         type: STRING,
         loc,
       };
-      if (!isJsSourceFile(ts.getSourceFileOfNode(tested))) return fallback;
+      if (
+        !isJsSourceFile(ts.getSourceFileOfNode(tested)) ||
+        !programMayWriteGlobalName(lowerer, tested.text, tested)
+      )
+        return fallback;
       const name: IrExpr = { kind: "strLit", value: tested.text, type: STRING, loc };
       const own: IrExpr = {
         kind: "libCall",
@@ -644,16 +652,18 @@ export function lowerDynTypeofTest(
     if (!ts.isStringLiteral(b)) continue;
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
     // `typeof undeclared === "..."` in a JavaScript source is a runtime
-    // question: the program can have created the global object's own
-    // property of that name (`globalThis.X = ...`, in this module or
-    // another) and Node's answer follows it, so a folded constant would pick
-    // the wrong branch of a feature-detection guard. lowerTypeofExpr answers
-    // through the global object without reading the name (an absent one
-    // answers "undefined" instead of throwing), so compare that value.
+    // question only when the program can have created the global object's
+    // own property of that name (`globalThis.X = ...`, in this module or
+    // another): Node's answer follows the write, so a folded constant would
+    // pick the wrong branch of a feature-detection guard. lowerTypeofExpr
+    // answers through the global object without reading the name (an absent
+    // one answers "undefined" instead of throwing), so compare that value.
+    // A name the program never writes on the global object is absent at
+    // every point, and the comparison stays the constant.
     // A name only a library of the project's `lib` declares in a TypeScript
-    // source cannot be written that way: Node answers "undefined" without
-    // ever reading it — the test is that constant's comparison, never a read
-    // (a read throws).
+    // source cannot be written that way either: Node answers "undefined"
+    // without ever reading it — the test is that constant's comparison,
+    // never a read (a read throws).
     {
       let operand = a.expression;
       while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
@@ -662,7 +672,10 @@ export function lowerDynTypeofTest(
         lowerer.resolveValueSymbol(operand) === null &&
         !isUnresolvedCjsExports(lowerer, operand)
       ) {
-        if (isJsSourceFile(ts.getSourceFileOfNode(operand)))
+        if (
+          isJsSourceFile(ts.getSourceFileOfNode(operand)) &&
+          programMayWriteGlobalName(lowerer, operand.text, operand)
+        )
           return {
             kind: "strEq",
             negated,
@@ -671,10 +684,15 @@ export function lowerDynTypeofTest(
             type: BOOL,
             loc,
           };
-        if (lowerer.projectLibraryNameAt(operand))
+        if (
+          isJsSourceFile(ts.getSourceFileOfNode(operand)) ||
+          lowerer.projectLibraryNameAt(operand)
+        )
           return {
             kind: "boolLit",
-            value: (b.text === "undefined") !== negated,
+            // The same answer the value form gives for this name (Node's
+            // inherited member, or "undefined"), never a read.
+            value: (b.text === (staticTypeofAnswer(lowerer, operand) ?? "undefined")) !== negated,
             type: BOOL,
             loc,
           };

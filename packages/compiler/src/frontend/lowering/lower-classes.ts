@@ -8627,6 +8627,69 @@ export function findMethodOn(
   return null;
 }
 
+/** The nearest declaration of `name` at or above `info` that has a body.
+ * An abstract declaration emits no prototype member, so JavaScript's
+ * prototype chain walks past it to the implementation above; null when no
+ * class in the chain implements the method. */
+export function findImplementationOn(
+  lowerer: Lowerer,
+  info: ClassInfo | null,
+  name: string,
+): ReturnType<typeof findMethodOn> {
+  for (
+    let found = findMethodOn(lowerer, info, name);
+    found;
+    found = findMethodOn(lowerer, found.declarer.base, name)
+  ) {
+    if (found.sig.abstract !== true) return found;
+  }
+  return null;
+}
+
+/** The Object.prototype methods every class instance inherits. */
+const OBJECT_PROTOTYPE_METHODS: ReadonlySet<string> = new Set([
+  "toString",
+  "toLocaleString",
+  "valueOf",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+]);
+
+/** True when a built-in supplies `name` above `declarer`'s abstract
+ * re-declaration: Object.prototype for every class, or a member of the
+ * built-in class the chain extends (Array, Date, EventEmitter, ...). When
+ * no program class implements the method (findImplementationOn is null),
+ * the prototype chain still reaches that built-in's function, so a call
+ * does not throw. */
+export function builtinSuppliesMethod(
+  lowerer: Lowerer,
+  declarer: ClassInfo,
+  name: string,
+): boolean {
+  if (OBJECT_PROTOTYPE_METHODS.has(name)) return true;
+  const seen = new Set<ts.Node>();
+  for (let cls: ts.Node | undefined = declarer.decl ?? undefined; cls && !seen.has(cls);) {
+    seen.add(cls);
+    if (!ts.isClassLikeDeclaration(cls)) return false;
+    const base = cls.heritageClauses?.nodes.find(
+      (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+    )?.types.nodes[0];
+    if (!base) return false;
+    // The nearest declaration of `name` above `cls`: a built-in's, or a
+    // program class's abstract re-declaration, whose own base is next.
+    const prop = lowerer.checker.getPropertyOfType(lowerer.checker.getTypeAtLocation(base), name);
+    if (!prop) return false;
+    if (lowerer.isStdlibSymbol(prop)) return true;
+    cls = prop.declarations.find((d) => d.parent && ts.isClassLikeDeclaration(d.parent))?.parent;
+  }
+  return false;
+}
+
 /** True when `sub` is a STRICT descendant of `sup` in the class graph. */
 export function isSubclassOf(lowerer: Lowerer, sub: string, sup: string): boolean {
   if (sub === sup) return false;
@@ -13112,7 +13175,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         SharedArrayBuffer:
           "no shared-memory threads exist in a compiled program — Uint8Array is the byte storage",
         ArrayBuffer:
-          "native ArrayBuffer construction supports fixed-length storage; resizable buffers remain unsupported",
+          "construct it directly: new ArrayBuffer(byteLength, { maxByteLength }) — a constructor held as a value has no lowering",
         Proxy: "native Proxy construction requires checked-native plain targets and handlers",
         Function:
           "runtime code generation cannot be compiled ahead of time (the eval stance) — write the function",

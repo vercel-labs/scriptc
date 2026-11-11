@@ -1524,7 +1524,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
-      : [`  call void @${mangleFunction(emitter.mod.entry)}()`]),
+      : // The entry runs once: `noinline` keeps LLVM from inlining the
+        // program into this function and re-optimizing it here. The entry's
+        // own calls into the file initializers carry it too (emitter.ts
+        // entryChainCall), so the top-level code is optimized where it is
+        // written rather than again at every level of the chain.
+        [`  call void @${mangleFunction(emitter.mod.entry)}() noinline`]),
     // Uncaught exception from top-level code: Node exits 1.
     ...(entryMayThrow && !asyncEntry
       ? [

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import ts5 from "typescript";
+import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";

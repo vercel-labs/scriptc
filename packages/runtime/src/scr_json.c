@@ -1345,31 +1345,75 @@ static void scr_typed_ref_forget(ScrDyn *value) {
  * on every crossing. Instead, the capsules that last died with nothing but
  * their referent and adapters stay interned in this ring, still holding
  * their referent. A conversion of the same referent with the same adapters
- * revives the capsule (scr_dyn_typed_ref_new), so it keeps its identity,
- * and a revived capsule keeps its slot. A slot is reused in turn: a parked
- * capsule (rc 0) that loses its slot is disposed, a live one only leaves
- * the ring. The ring is also flushed before every collector pass
- * (scr_cyc_pass_hook) and at the context's exit, and a capsule disposed
- * any other way leaves it first (scr_typed_ref_unpark). */
+ * finds the capsule interned and retains it (scr_dyn_typed_ref_new), so it
+ * keeps its identity.
+ *
+ * The ring owns one reference to each capsule in it: a capsule that dies
+ * parkable is given that reference instead of being disposed. While it is
+ * in the ring its count therefore never reaches zero, however often it is
+ * retained and released again, so it is never parked twice and never
+ * disposed behind the ring's back, and neither path has to search the
+ * ring. A slot is reused in turn: the capsule that loses its slot loses the
+ * ring's reference, and is disposed when that was its last. The ring's
+ * reference is one the collector cannot trace, so the ring is flushed
+ * before every collector pass (scr_cyc_pass_hook), and at the context's
+ * exit. */
 #ifndef SCR_RC_AUDIT
 #define SCR_TYPED_REF_PARKED 16
 static SCR_TL ScrDyn *scr_typed_ref_parked[SCR_TYPED_REF_PARKED];
 static SCR_TL unsigned scr_typed_ref_park_next;
 static SCR_TL bool scr_typed_ref_unparking;
 static void scr_dyn_dispose(ScrDyn *d, bool collected);
+static void scr_dyn_destroy(void *ptr);
 
-/* Disposes every parked capsule and empties the ring. */
+/* A capsule with nothing but its referent and adapters. */
+static inline bool scr_typed_ref_bare(const ScrDyn *d) {
+  return !d->prototype && !d->symbol_properties && !d->symbol_keys &&
+         !d->v.typed_ref.materialized && !d->v.typed_ref.casts;
+}
+
+/* Gives up the ring's reference to a capsule that has just left its slot.
+ * A capsule something else still holds loses a reference like any other
+ * (it may have become a cycle's root), and one made immortal while it was
+ * in the ring has no count to give up: both are scr_dyn_release's own
+ * cases, so no second caller pulls the survivor's bookkeeping into a
+ * program whose emitted code never calls it. A capsule that nothing else
+ * holds is disposed, and may not park again on the way.
+ *
+ * Out of line: scr_dyn_release parks every capsule that dies, and with
+ * this body inlined there (it calls scr_dyn_release in turn) every release
+ * of every dynamic value would pay for its frame. */
+static __attribute__((noinline)) void scr_typed_ref_drop_parked(ScrDyn *d) {
+  if (d->rc != 1) {
+    scr_dyn_release(d);
+    return;
+  }
+  d->rc = 0;
+  scr_cyc_dead(d);
+  bool unparking = scr_typed_ref_unparking;
+  scr_typed_ref_unparking = true;
+  /* A capsule that gained a snapshot or casts while it was held again
+   * tears those down within the depth budget. */
+  if (scr_typed_ref_bare(d)) scr_dyn_dispose(d, false);
+  else scr_rc_destroy(d, scr_dyn_destroy);
+  scr_typed_ref_unparking = unparking;
+}
+
+/* Gives up the ring's reference to every capsule and empties the ring. */
 static void scr_typed_ref_flush_parked(void) {
+  bool unparking = scr_typed_ref_unparking;
   scr_typed_ref_unparking = true;
   for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++) {
     ScrDyn *parked = scr_typed_ref_parked[i];
     scr_typed_ref_parked[i] = NULL;
-    if (parked && parked->rc == 0) scr_dyn_dispose(parked, false);
+    if (parked) scr_typed_ref_drop_parked(parked);
   }
-  scr_typed_ref_unparking = false;
+  scr_typed_ref_unparking = unparking;
 }
 
-/* Drops a capsule from the ring before it is disposed. */
+/* Takes a capsule out of the ring: for the collector, which frees an
+ * object whatever its count says when a whole context is torn down. No
+ * release reaches this: a capsule in the ring is never released to zero. */
 static void scr_typed_ref_unpark(const ScrDyn *d) {
   for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
     if (scr_typed_ref_parked[i] == d) {
@@ -1380,25 +1424,20 @@ static void scr_typed_ref_unpark(const ScrDyn *d) {
 
 /* A dying capsule with nothing but its referent and adapters. */
 static inline bool scr_typed_ref_parkable(const ScrDyn *d) {
-  return d->kind == SCR_DYN_TYPED_REF && !d->prototype && !d->symbol_properties &&
-         !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
+  return d->kind == SCR_DYN_TYPED_REF && scr_typed_ref_bare(d) &&
          !scr_typed_ref_unparking && !scr_typed_ref_exited && scr_typed_ref_capacity;
 }
 
-/* Parks a dying capsule in its own slot, or in the next one in turn. */
+/* Parks a capsule whose count has just reached zero (so it is not in the
+ * ring) in the next slot in turn, with the ring's reference. */
 static void scr_typed_ref_park(ScrDyn *d) {
-  for (unsigned i = 0; i < SCR_TYPED_REF_PARKED; i++)
-    if (scr_typed_ref_parked[i] == d) return;
   if (!scr_cyc_pass_hook) scr_cyc_pass_hook = scr_typed_ref_flush_parked;
   unsigned slot = scr_typed_ref_park_next;
   scr_typed_ref_park_next = (slot + 1) % SCR_TYPED_REF_PARKED;
   ScrDyn *evicted = scr_typed_ref_parked[slot];
   scr_typed_ref_parked[slot] = d;
-  if (evicted && evicted->rc == 0) {
-    scr_typed_ref_unparking = true;
-    scr_dyn_dispose(evicted, false);
-    scr_typed_ref_unparking = false;
-  }
+  d->rc = 1;
+  if (evicted) scr_typed_ref_drop_parked(evicted);
 }
 
 #else
@@ -1550,17 +1589,71 @@ static bool scr_dyn_in_on_primitive(const ScrDyn *v, const ScrStr *key);
  * are never the native records the kept-source table is keyed by. */
 static SCR_TL bool scr_weak_observing;
 static void scr_weak_disposed(void *key);
-/* One bit per key address, set when a key enters the weak-key table: a
- * disposed object whose bit is clear was never a key, so its disposal makes
- * no call. Bits are cleared when the table empties. */
-#define SCR_WEAK_KEY_FILTER_BITS ((size_t)1 << 16)
-static SCR_TL uint64_t scr_weak_key_filter[SCR_WEAK_KEY_FILTER_BITS / 64];
-static inline size_t scr_weak_key_filter_bit(const void *key) {
-  return ((uintptr_t)key >> 4) & (SCR_WEAK_KEY_FILTER_BITS - 1);
+/* One bit per observed address, shared by every client of the dispose hook
+ * (weak keys, kept record sources, record links): a client sets the bit when
+ * an address enters its table, and the bits are cleared once every table is
+ * empty. A disposed object whose bit is clear has no observer: the hook
+ * returns on that one test (scr_dispose_observers), and this unit's own
+ * frees make the test before the call. A client that cannot name its
+ * addresses (the mutable-buffers registry) sets every bit. The filter is
+ * this unit's: a program that links no observer carries neither the table
+ * nor the test.
+ *
+ * The filter and everything that decides its clearing are one object:
+ * `noted` counts the bits set since the last clear
+ * (SCR_DISPOSE_FILTER_STALE), and the three tables keep their entry counts
+ * here (each table's own name for its count is defined below). So the
+ * clear reads nothing of a table the program does not link, and a program
+ * that links one observer carries no symbol of the others. */
+#define SCR_DISPOSE_FILTER_BITS ((size_t)1 << 16)
+static SCR_TL struct {
+  uint64_t bits[SCR_DISPOSE_FILTER_BITS / 64];
+  size_t noted;
+  size_t weak_keys, record_sources, record_links;
+} scr_dispose_filter;
+#define scr_weak_keys_used (scr_dispose_filter.weak_keys)
+#define scr_record_source_count (scr_dispose_filter.record_sources)
+#define scr_record_link_count (scr_dispose_filter.record_links)
+static inline size_t scr_dispose_filter_bit(const void *obj) {
+  return ((uintptr_t)obj >> 4) & (SCR_DISPOSE_FILTER_BITS - 1);
 }
+static inline bool scr_dispose_maybe_observed(const void *obj) {
+  size_t bit = scr_dispose_filter_bit(obj);
+  return (scr_dispose_filter.bits[bit >> 6] >> (bit & 63)) & 1;
+}
+static inline void scr_dispose_filter_note(const void *obj) {
+  size_t bit = scr_dispose_filter_bit(obj);
+  scr_dispose_filter.bits[bit >> 6] |= UINT64_C(1) << (bit & 63);
+}
+/* A key's bit in the shared dispose filter is set when the key enters the
+ * weak-key table: a disposed object whose bit is clear was never a key, so
+ * its disposal makes no call. */
 static inline bool scr_weak_maybe_key(const void *key) {
-  size_t bit = scr_weak_key_filter_bit(key);
-  return scr_weak_observing && (scr_weak_key_filter[bit >> 6] & (UINT64_C(1) << (bit & 63)));
+  return scr_weak_observing && scr_dispose_maybe_observed(key);
+}
+/* Clearing the filter writes all of it, and a table that holds one entry at
+ * a time empties on every removal, so the clear waits until the tables have
+ * set SCR_DISPOSE_FILTER_STALE bits since the last one: with fewer left
+ * behind, under one disposal in 64 takes the call for nothing, and that
+ * call finds every table empty. A key whose bit is already set counts
+ * nothing, so entries that come and go at the same few addresses never
+ * clear. */
+#define SCR_DISPOSE_FILTER_STALE (SCR_DISPOSE_FILTER_BITS / 64)
+/* An observer's table took `obj` as a key: name it in the filter. */
+static inline void scr_dispose_note(const void *obj) {
+  if (scr_dispose_maybe_observed(obj)) return;
+  scr_dispose_filter_note(obj);
+  scr_dispose_filter.noted++;
+}
+/* Called by a dispose observer whose table has just emptied: clears the
+ * shared filter once no observer has an entry left and enough bits are
+ * set. The count of noted bits is tested first: it is the one test a
+ * table that empties on every removal pays. */
+static inline void scr_dispose_filter_emptied(void) {
+  if (scr_dispose_filter.noted < SCR_DISPOSE_FILTER_STALE) return;
+  if (scr_weak_keys_used || scr_record_source_count || scr_record_link_count) return;
+  memset(scr_dispose_filter.bits, 0, sizeof scr_dispose_filter.bits);
+  scr_dispose_filter.noted = 0;
 }
 static inline void scr_dyn_weak_dispose(ScrDyn *d) {
   if (scr_weak_maybe_key(d)) scr_weak_disposed(d);
@@ -1574,15 +1667,18 @@ static inline void scr_dyn_release_child(ScrDyn *child) {
 
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
+  /* A capsule stays interned until it is disposed, so a conversion can
+   * retain one whose disposal still waits in scr_rc_destroy's queue: its
+   * count says it is alive again, and it is left alone. */
+  if (!collected && d->kind == SCR_DYN_TYPED_REF && d->rc != 0) return;
   /* A capsule with nothing but its referent and adapters: the common end
    * of a value that crossed into a dyn slot for one call. */
   if (!collected && scr_typed_ref_parkable(d)) {
     scr_typed_ref_park(d);
     return;
   }
-  if (d->kind == SCR_DYN_TYPED_REF) scr_typed_ref_unpark(d);
-  if (d->kind == SCR_DYN_TYPED_REF && !collected && !d->prototype && !d->symbol_properties &&
-      !d->symbol_keys && !d->v.typed_ref.materialized && !d->v.typed_ref.casts &&
+  if (collected && d->kind == SCR_DYN_TYPED_REF) scr_typed_ref_unpark(d);
+  if (d->kind == SCR_DYN_TYPED_REF && !collected && scr_typed_ref_bare(d) &&
       scr_dyn_free_count < SCR_DYN_FREE_MAX) {
     scr_typed_ref_forget(d);
     d->v.typed_ref.release(d->v.typed_ref.ptr);
@@ -1701,7 +1797,10 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #endif
   if (d->kind == SCR_DYN_ARR) scr_mem_free(d->v.arr.items);
   else if (d->kind == SCR_DYN_OBJ) scr_dyn_obj_drop_keys(d, false);
-  scr_cyc_free_inline(d);
+  /* scr_cyc_free_inline with the filter's test before the hook's call: a
+   * node no observer holds makes none. */
+  if (scr_weak_dispose_hook && scr_dispose_maybe_observed(d)) scr_weak_dispose_hook(d);
+  scr_cyc_free_unobserved_inline(d);
 }
 
 static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
@@ -4242,7 +4341,7 @@ ScrDyn *scr_dyn_new_buffer(const ScrBytes *b) {
  * through untyped references persist after the capsule is gone, and the
  * typed serializers of such a record go through its capsule. */
 static SCR_TL ScrRecordSource *scr_record_sources;
-static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
+static SCR_TL size_t scr_record_source_capacity;
 /* Deleted slots keep this marker so probe runs stay intact without moving
  * entries (records free in conversion order, so a backward shift would
  * rescan the same run on every deletion); insertion reuses them and the
@@ -4321,6 +4420,7 @@ static void scr_record_source_drop(ScrRecordSource *found) {
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
+  if (!scr_record_source_count) scr_dispose_filter_emptied();
   scr_dyn_release(view);
   if (capsule) {
     scr_record_view_forget(capsule, rec);
@@ -4338,9 +4438,31 @@ static void scr_record_source_disposed(void *rec) {
 /* The single native dispose hook serves weak collections and the table
  * above; each observer runs only while it has entries to forget. */
 static void scr_record_link_disposed(void *copy);
-static SCR_TL size_t scr_record_link_count;
 
+static void scr_dispose_observed(void *object);
+
+/* Emitted frees and the frees of the units every executable links call the
+ * hook for every object they free, and nearly all of them have no observer.
+ * The one test that says so is the shared filter's, which every observer's
+ * table notes its keys in: it stays in this leaf, which keeps no register
+ * and builds no frame, and the observers are out of line. This unit's own
+ * frees make the same test before the call (scr_dyn_dispose,
+ * scr_dyn_weak_dispose). */
 static void scr_dispose_observers(void *object) {
+  if (scr_dispose_maybe_observed(object)) scr_dispose_observed(object);
+}
+
+/* Out of line, not cold: a program that keeps a source for every record it
+ * checks comes here for every record it frees.
+ *
+ * INVARIANT: the filter only saves calls. Its bits can be stale (an address
+ * that left every table keeps its bit until the filter is cleared) and two
+ * addresses can share one, so a set bit says nothing about `object`: each
+ * observer below acts only on an address its own table holds, which it
+ * finds by lookup (scr_weak_key_slot, scr_record_source_slot,
+ * scr_record_link_find, scr_js_buffer_disposed's own). A call for an
+ * address no table holds changes nothing in any state. */
+static __attribute__((noinline)) void scr_dispose_observed(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
   /* The mutable-buffers registry forgets a freed view or owner (t262-dc);
    * a program without the fact has no table to consult. */
@@ -4354,7 +4476,15 @@ static void scr_dispose_observers(void *object) {
 #ifdef SCR_JS_OBJECT_MODEL
 /* scr_js_buffers_arm: the registry must see frees even in a program that
  * creates no weak collection, so it installs the one dispose hook. */
-void scr_js_dispose_hook_install(void) { scr_weak_dispose_hook = &scr_dispose_observers; }
+void scr_js_dispose_hook_install(void) {
+  /* The registry's views and owners are not noted one by one: every bit
+   * is set, and the filter stays full. With every bit set no table notes a
+   * new one, so the count of noted bits stays at zero, below the bar a
+   * clear waits for (scr_dispose_filter_emptied). */
+  memset(scr_dispose_filter.bits, 0xff, sizeof scr_dispose_filter.bits);
+  scr_dispose_filter.noted = 0;
+  scr_weak_dispose_hook = &scr_dispose_observers;
+}
 #endif
 
 /* Keeps live entries plus deleted markers at most half the table: grows
@@ -4463,6 +4593,7 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
   scr_record_sources[slot] = *entry;
   scr_record_source_count++;
+  scr_dispose_note(entry->rec);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -4675,6 +4806,7 @@ void scr_record_link(void *copy, void *source, void (*release)(void *), uint32_t
   if (scr_record_links[slot].copy == SCR_RECORD_LINK_DELETED) scr_record_link_deleted--;
   scr_record_links[slot] = (ScrRecordLink){ copy, source, release, pair };
   scr_record_link_count++;
+  scr_dispose_note(copy);
   scr_weak_dispose_hook = &scr_dispose_observers;
 }
 
@@ -4696,6 +4828,7 @@ static void scr_record_link_disposed(void *copy) {
   *link = (ScrRecordLink){ .copy = SCR_RECORD_LINK_DELETED };
   scr_record_link_count--;
   scr_record_link_deleted++;
+  if (!scr_record_link_count) scr_dispose_filter_emptied();
   release(source);
 }
 
@@ -21975,7 +22108,7 @@ static SCR_TL ScrWeakEntry **scr_weak_index;
 static SCR_TL size_t scr_weak_index_mask, scr_weak_index_used;
 typedef struct { void *key; ScrWeakEntry *head; } ScrWeakKeySlot;
 static SCR_TL ScrWeakKeySlot *scr_weak_keys;
-static SCR_TL size_t scr_weak_keys_mask, scr_weak_keys_used;
+static SCR_TL size_t scr_weak_keys_mask;
 
 /* Mixed in 64 bits on every target: uintptr_t is 32 bits on wasm32, where
  * these shifts would exceed its width. */
@@ -22069,8 +22202,7 @@ static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
     scr_weak_keys[j].key = key;
     scr_weak_keys[j].head = NULL;
     scr_weak_keys_used++;
-    size_t bit = scr_weak_key_filter_bit(key);
-    scr_weak_key_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+    scr_dispose_note(key);
   }
   return &scr_weak_keys[j];
 }
@@ -22080,7 +22212,7 @@ static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   if (--scr_weak_keys_used == 0) {
     free(scr_weak_keys);
     scr_weak_keys = NULL;
-    memset(scr_weak_key_filter, 0, sizeof scr_weak_key_filter);
+    scr_dispose_filter_emptied();
     return;
   }
   for (size_t k = i;;) {

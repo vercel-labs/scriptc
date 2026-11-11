@@ -5,10 +5,11 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   LINUX_ARM64_GNU_TARGET,
@@ -20,6 +21,7 @@ import { loadProgram, loadProgramWithServices } from "../frontend/program-node.j
 import { FrontendServices } from "../frontend/services.js";
 import { Ts7Api, ts7Executable } from "../frontend/ts7/rpc-api.js";
 import { deserializeModule } from "../ir/serialize.js";
+import { libnodePackPackage } from "../node-islands/libnode-pack.js";
 import { NativeCache, partsDigest } from "./cache.js";
 import { prepareNativeExecutable } from "./prepare.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -449,6 +451,150 @@ test("an x86-64 level is refused for targets that are not x86-64 before the fron
       ["SC3002", "--target-cpu=x86-64-v3 requires an x86-64 target"],
     ]);
   }
+});
+
+/** The fixture's project with the package `tiny` in a Node island, and a
+ * frontend that passes the island set on (it reaches the frontend through
+ * its options) and counts its loads. */
+function islandFixture() {
+  const f = fixture();
+  const pkg = join(f.root, "node_modules", "tiny");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(
+    join(pkg, "package.json"),
+    JSON.stringify({ name: "tiny", version: "1.0.0", main: "index.js", types: "index.d.ts" }),
+  );
+  const moduleFile = join(pkg, "index.js");
+  writeFileSync(moduleFile, 'exports.greet = (name) => "hello " + name;\n');
+  writeFileSync(join(pkg, "index.d.ts"), "export declare function greet(name: string): string;\n");
+  writeFileSync(
+    join(f.root, "package.json"),
+    JSON.stringify({ type: "module", scriptc: { packages: { tiny: "node" } } }),
+  );
+  writeFileSync(f.entry, 'import { greet } from "tiny"; console.log(greet("island"));\n');
+  let loads = 0;
+  const frontend: FrontendFactory = (path, npmStatic, externalTypes, libraryNpmStatic, options) => {
+    loads++;
+    return runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
+  };
+  const prepare = (extra: { outputKind?: "exe" | "ir" | "llvm"; libnode?: string } = {}) =>
+    prepareNativeExecutable(
+      f.entry,
+      { ...f.options, ...extra },
+      null,
+      fixtureToolchain(),
+      frontend,
+      f.cache,
+    );
+  return { ...f, moduleFile, prepare, loads: () => loads };
+}
+
+/** The island module data an LLVM text carries: the length the install call
+ * passes and the length of the constant it names. */
+function islandModuleData(llvm: string): { passed: number; constant: number } | null {
+  const call =
+    /call void @scr_node_island_install_modules\(ptr [^,]+, i64 \d+, ptr (@sc_node_island_modules|null), i64 (\d+), /.exec(
+      llvm,
+    );
+  const constant = /@sc_node_island_modules = private unnamed_addr constant \[(\d+) x i8\]/.exec(
+    llvm,
+  );
+  if (call === null) return null;
+  return { passed: Number(call[2]), constant: constant === null ? 0 : Number(constant[1]) };
+}
+
+test("a program with a Node island carries its island modules and loads them eagerly without a pack", () => {
+  const f = islandFixture();
+  // LLVM text needs no libnode pack: the module tree's bytes are in the
+  // text, and the install call passes them.
+  const llvm = f.prepare({ outputKind: "llvm" });
+  expect(llvm.ok).toBe(true);
+  if (!llvm.ok) return;
+  const data = islandModuleData(llvm.llvm.join(""));
+  expect(data).not.toBeNull();
+  expect(data!.passed).toBeGreaterThanOrEqual(readFileSync(f.moduleFile).length);
+  expect(data!.constant).toBe(data!.passed);
+  expect(llvm.features.nodeIsland).toBe(true);
+  expect(llvm.islands).toEqual({ packages: ["tiny"], modules: [] });
+  // IR: without a pack to probe in, every island load is the eager one.
+  const ir = f.prepare({ outputKind: "ir" });
+  expect(ir.ok).toBe(true);
+  if (!ir.ok) return;
+  const text = ir.ir!.join("");
+  expect(text).toContain('"nodeIsland.require"');
+  expect(text).not.toContain('"nodeIsland.defer"');
+});
+
+test("an executable with a Node island needs a libnode pack", () => {
+  vi.stubEnv("SCRIPTC_LIBNODE", "");
+  const f = islandFixture();
+  const result = f.prepare({ outputKind: "exe" });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  // The hint is the Node-hosted driver's: the use, then this target's
+  // install line.
+  const target = fixtureToolchain().target.name;
+  const hint = result.diagnostics[0]!.hint ?? "";
+  expect(hint).toContain(`${basename(f.entry)} uses `);
+  const pack = libnodePackPackage(target);
+  expect(hint).toContain(
+    pack === null ? "packages/libnode-common/build-pack.mjs" : `npm i ${pack}@`,
+  );
+});
+
+test("SC8005 from the native driver names a @scriptc/node call", () => {
+  // The program the libnode opt-in smoke test builds without a pack.
+  vi.stubEnv("SCRIPTC_LIBNODE", "");
+  const f = fixture();
+  mkdirSync(join(f.root, "node_modules", "@scriptc"), { recursive: true });
+  symlinkSync(
+    join(import.meta.dirname, "../../../node"),
+    join(f.root, "node_modules", "@scriptc", "node"),
+  );
+  writeFileSync(join(f.root, "island.cjs"), 'exports.answer = () => "native";\n');
+  writeFileSync(
+    f.entry,
+    'import { callSync } from "@scriptc/node";\n' +
+      'console.log(callSync<string>("./island.cjs", "answer"));\n',
+  );
+  const result = prepareNativeExecutable(
+    f.entry,
+    { ...f.options, outputKind: "exe" },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes, libraryNpmStatic, options) =>
+      runFrontend(path, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options),
+    f.cache,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((d) => d.code)).toEqual(["SC8005"]);
+  expect(result.diagnostics[0]!.hint).toContain("main.ts uses callSync (@scriptc/node)");
+});
+
+test("a cached island build is reused only while its libnode pack is unchanged", () => {
+  const f = islandFixture();
+  const pack = join(f.root, "..", "pack");
+  mkdirSync(pack);
+  writeFileSync(join(pack, "manifest.json"), '{"nodeVersion":"24.22.1","bridgeAbi":10}');
+  vi.stubEnv("SCRIPTC_LIBNODE", pack);
+  const first = f.prepare({ outputKind: "llvm" });
+  expect(first.ok).toBe(true);
+  const lowered = f.loads();
+  const again = f.prepare({ outputKind: "llvm" });
+  expect(f.loads()).toBe(lowered);
+  expect(text(again)).toEqual(text(first));
+  // The pack is replaced in place: same directory, another manifest.
+  writeFileSync(join(pack, "manifest.json"), '{"nodeVersion":"24.22.2","bridgeAbi":10}');
+  expect(f.prepare({ outputKind: "llvm" }).ok).toBe(true);
+  expect(f.loads()).toBeGreaterThan(lowered);
+  // An edit to an island module is an edit to the executable's contents.
+  const before = f.loads();
+  writeFileSync(f.moduleFile, 'exports.greet = (name) => "hi " + name; // edited\n');
+  const edited = f.prepare({ outputKind: "llvm" });
+  expect(f.loads()).toBeGreaterThan(before);
+  expect(edited.ok && first.ok && edited.llvm.join("") !== first.llvm.join("")).toBe(true);
 });
 
 /* Every kind of edit, against a cold build. A project is built, edited and

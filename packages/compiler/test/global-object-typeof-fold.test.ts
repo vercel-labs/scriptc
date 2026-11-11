@@ -1,0 +1,91 @@
+/* In a JavaScript source, `typeof` of a name no declaration binds is the
+ * global object's answer at run time — but only if the program can have
+ * given the global object that property. The program-wide census of
+ * global-object writes (global-object-writes.ts) answers that question, so a
+ * name nothing writes keeps its static answer and the guard around a feature
+ * the target does not have costs nothing. three.js's
+ * `typeof __THREE_DEVTOOLS__ !== "undefined"` guard is the case that reached
+ * the EventTarget surface in library mode when every such read lowered at
+ * run time. */
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, test } from "vitest";
+import { compile } from "../src/index.js";
+
+const BINDING_CALLS = /"fn":"global\.binding(?:Read|Value|Has)"/;
+
+/** The lowered IR text of a program whose entry is `main.mjs`. */
+async function irOf(files: Record<string, string>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-global-typeof-fold-"));
+  try {
+    for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source);
+    const out = join(dir, ".scriptc", "main.ir.json");
+    const result = await compile(join(dir, "main.mjs"), {
+      outDir: join(dir, ".scriptc"),
+      outPath: out,
+      outputKind: "ir",
+    });
+    expect(result.ok ? [] : result.diagnostics.map((diag) => diag.message)).toEqual([]);
+    return await readFile(out, "utf8");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const GUARD = `if (typeof __featureProbe__ !== "undefined") console.log(__featureProbe__.value);
+console.log(typeof __featureProbe__, typeof __featureProbe__ === "function");
+`;
+
+test("a name the program never writes on the global object keeps its static typeof", async () => {
+  const ir = await irOf({ "main.mjs": GUARD });
+  expect(BINDING_CALLS.test(ir)).toBe(false);
+});
+
+test("a name this module writes on the global object is a runtime typeof", async () => {
+  const ir = await irOf({ "main.mjs": `${GUARD}globalThis.__featureProbe__ = { value: 1 };\n` });
+  expect(BINDING_CALLS.test(ir)).toBe(true);
+});
+
+test("a name another module writes on the global object is a runtime typeof", async () => {
+  const ir = await irOf({
+    "main.mjs": `import "./install.mjs";\n${GUARD}`,
+    "install.mjs": `globalThis.__featureProbe__ = { value: 1 };\n`,
+  });
+  expect(BINDING_CALLS.test(ir)).toBe(true);
+});
+
+test("an own property installed by defineProperty marks the name written", async () => {
+  const ir = await irOf({
+    "main.mjs": `${GUARD}Object.defineProperty(globalThis, "__featureProbe__", { value: 1 });\n`,
+  });
+  expect(BINDING_CALLS.test(ir)).toBe(true);
+});
+
+test("an assignment by a computed key can name the property", async () => {
+  const ir = await irOf({
+    "main.mjs": `${GUARD}const key = "__featureProbe__";\nglobalThis[key] = { value: 1 };\n`,
+  });
+  expect(BINDING_CALLS.test(ir)).toBe(true);
+});
+
+test("a sloppy-mode this write can land on the global object", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-global-typeof-fold-"));
+  try {
+    await writeFile(
+      join(dir, "main.js"),
+      // The census reads the sources that mention the global object.
+      `function install() { this.__featureProbe__ = { value: 1 }; }\ninstall();\nconsole.log(typeof __featureProbe__);\n// global\n`,
+    );
+    const out = join(dir, ".scriptc", "main.ir.json");
+    const result = await compile(join(dir, "main.js"), {
+      outDir: join(dir, ".scriptc"),
+      outPath: out,
+      outputKind: "ir",
+    });
+    expect(result.ok ? [] : result.diagnostics.map((diag) => diag.message)).toEqual([]);
+    expect(BINDING_CALLS.test(await readFile(out, "utf8"))).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

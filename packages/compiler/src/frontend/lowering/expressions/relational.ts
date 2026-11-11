@@ -25,6 +25,7 @@ import {
   F64,
   type IrBytesElem,
   type IrExpr,
+  type IrRecordShape,
   type IrStmt,
   type IrType,
   RUNTIME_ERROR_CLASSES,
@@ -1744,6 +1745,40 @@ export const OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
   "toLocaleString",
 ]);
 
+/** A builtin class value held as a brand record (TextEncoder, TextDecoder,
+ * StringDecoder: only `%`-prefixed internal fields): its members are the
+ * class's prototype members, which the standard library declares, so
+ * `"encodeInto" in encoder` answers from the checker's type for that class,
+ * plus Object.prototype's keys. Null when the shape is not a brand record. */
+function brandRecordInAnswer(
+  lowerer: Lowerer,
+  shape: IrRecordShape | undefined,
+  classType: ts.Type,
+  key: string,
+): boolean | null {
+  if (!shape || shape.fields.length === 0 || !shape.fields.every((f) => f.name.startsWith("%")))
+    return null;
+  return (
+    lowerer.checker.getPropertyOfType(classType, key) !== undefined ||
+    OBJECT_PROTOTYPE_KEYS.has(key)
+  );
+}
+
+/** The checker type a union arm stands for: the receiver's own type when it
+ * maps to the arm, else the constituent that does. A `var` widened with an
+ * undefined arm (its storage can be read before the initializer runs) keeps
+ * one value type, so its single data constituent is the receiver's declared
+ * type. Null when no constituent maps to the arm. */
+function armCheckerType(lowerer: Lowerer, receiver: ts.Expression, arm: IrType): ts.Type | null {
+  const site = lowerer.typeOf(receiver);
+  const constituents = site.isUnionType() ? site.getTypes() : [site];
+  for (const constituent of constituents) {
+    const mapped = lowerer.mapTypeOf(constituent);
+    if (mapped !== null && typeEquals(mapped, arm)) return constituent;
+  }
+  return null;
+}
+
 /** The declarers of `key` on an instance of a compiled class: a declared
  * field (inherited included in `fields`), a method, an accessor half, or a
  * generic member (a generic method or a generic function field, which live
@@ -2595,16 +2630,14 @@ export function lowerInExpression(
   // encoder` answers from the checker's type, plus Object.prototype's keys.
   // The receiver evaluates for its effects.
   if (recv.type.kind === "record") {
-    const shape = lowerer.shapes.get(recv.type.shapeId);
-    if (shape && shape.fields.length > 0 && shape.fields.every((f) => f.name.startsWith("%"))) {
-      const declared =
-        lowerer.checker.getPropertyOfType(lowerer.typeOf(expr.right), key) !== undefined;
-      const answer: IrExpr = {
-        kind: "boolLit",
-        value: declared || OBJECT_PROTOTYPE_KEYS.has(key),
-        type: BOOL,
-        loc,
-      };
+    const brand = brandRecordInAnswer(
+      lowerer,
+      lowerer.shapes.get(recv.type.shapeId),
+      lowerer.typeOf(expr.right),
+      key,
+    );
+    if (brand !== null) {
+      const answer: IrExpr = { kind: "boolLit", value: brand, type: BOOL, loc };
       if (recv.kind === "varRef") return answer;
       return {
         kind: "seqExpr",
@@ -2924,6 +2957,17 @@ export function lowerInExpression(
       if (!shape || shape.tuple) {
         staticAnswers = false;
         break;
+      }
+      // A brand-record arm (a builtin class held as `%`-prefixed internal
+      // fields) answers from the class's declared prototype members, exactly
+      // the single-record receiver: its shape has no data fields to probe,
+      // and a hoisted `var`'s undefined arm must not turn the class members
+      // into an answer of false.
+      const brandType = armCheckerType(lowerer, expr.right, arm);
+      const brand = brandType === null ? null : brandRecordInAnswer(lowerer, shape, brandType, key);
+      if (brand !== null) {
+        answers.push({ tag, has: brand, arm });
+        continue;
       }
       const f = shape.fields.find((x) => x.name === key);
       const inherited = OBJECT_PROTOTYPE_KEYS.has(key);

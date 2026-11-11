@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/text-encoder-wasm-bindgen-probe.js"
+ ],
+ "diags": []
+}

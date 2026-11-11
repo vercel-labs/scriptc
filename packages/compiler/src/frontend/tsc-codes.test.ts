@@ -51,6 +51,7 @@ const OBSERVED_SC0001_JS_CODES: readonly number[] = [
   1320,
   1329,
   1341,
+  1345,
   1359,
   1368,
   1451,

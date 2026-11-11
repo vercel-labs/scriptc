@@ -4,6 +4,7 @@ import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { undeclaredGlobalTypeof } from "./global-object-names.js";
+import { programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
 import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
 
@@ -28,13 +29,16 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
   // object has or inherits it (`navigator`, `toString`). In a JavaScript
   // source there is one more answer: the program itself can give the global
   // object that property (`globalThis.feature = …`, here or in another
-  // module), so `typeof feature` follows the write and no constant folds.
-  // The comparison lowers through the global object's read instead
-  // (typeof.ts), which answers without reading the name.
-  if (lowerer.checker.getSymbolAtLocation(e) === undefined)
-    return isJsSourceFile(ts.getSourceFileOfNode(e))
-      ? null
-      : (undeclaredGlobalTypeof(e.text) ?? "undefined");
+  // module), so a `typeof feature` the program may see that write answers at
+  // run time and no constant folds; the comparison lowers through the
+  // global object's read instead (typeof.ts), which answers without reading
+  // the name. A name the program never writes on the global object is
+  // absent at every point, so its static answer stands.
+  if (lowerer.checker.getSymbolAtLocation(e) === undefined) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(e)) && programMayWriteGlobalName(lowerer, e.text, e))
+      return null;
+    return undeclaredGlobalTypeof(e.text) ?? "undefined";
+  }
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
   // A name the program declares ambiently but nothing defines (`declare

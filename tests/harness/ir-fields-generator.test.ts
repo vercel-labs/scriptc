@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import ts from "typescript";
+import ts from "typescript5";
 import { expect, test } from "vitest";
 import { generateIrFields } from "../../scripts/generate-ir-fields.mjs";
 

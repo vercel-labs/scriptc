@@ -211,6 +211,7 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (
     (e.kind === "optChain" ||
       e.kind === "nullish" ||
+      e.kind === "logical" ||
       e.kind === "ternary" ||
       e.kind === "arrIntrinsic") &&
     isScalarOptionalSource(e, emitter.unionSources)

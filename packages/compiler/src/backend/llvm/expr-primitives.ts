@@ -255,6 +255,9 @@ export function emitLiteralExpr(
         // An immortal Immutable constant: nothing to count.
         if (b.kind === "global" && host.immortalGlobals.has(e.localId))
           return host.markImmortal({ name: t, type: e.type });
+        // A borrowed tree local: the read is a copy of a pointer its owner
+        // keeps, and there is no count to raise (backend/tree-classes.ts).
+        if (host.isTreeBorrow(e.localId)) return { name: t, type: e.type };
         // The binding's last read takes over its reference (lastUseRead).
         if (host.takeLastUseMove(e, b.slot, b.type)) return host.own({ name: t, type: e.type });
         return host.own({ name: host.retainFrame(t, e.type), type: e.type });

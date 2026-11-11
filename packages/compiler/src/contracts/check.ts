@@ -333,6 +333,7 @@ class ContractChecker {
   run(): ContractCheckResult {
     this.checkProgramLifetime();
     this.checkInlineArrays();
+    this.checkSingleOwner();
     this.checkNoThrow();
     this.checkAcyclic();
     const elements = new Int32ElementContracts(this);
@@ -483,6 +484,33 @@ class ContractChecker {
     const kept = new Set<string>();
     for (const cls of plan.classes.values()) kept.add(`${cls.declaringClass}\0${cls.field}`);
     this.record("inlineArrays", [...kept]);
+  }
+
+  /* ── SingleOwner ── */
+
+  /** `class C implements SingleOwner` (experimental, backend/tree-classes.ts):
+   * instances carry no reference count, and releasing the owner frees the
+   * nodes it holds. The proof runs in the backend, which sees every use
+   * (tree-classes.ts); this records the marked classes and reports the builds
+   * in which the proof does not run: a library's host owns the lifetimes of
+   * the objects it receives, so the class keeps its count there. */
+  private checkSingleOwner(): void {
+    if (this.notes.singleOwner.size === 0) return;
+    const marked: string[] = [];
+    for (const [key, note] of this.notes.singleOwner)
+      for (const cls of this.classesAt(key)) {
+        if (this.mod.lib !== undefined) {
+          this.report(
+            "SC7010",
+            note.loc,
+            `'${note.name}' is declared SingleOwner in a library build`,
+            "a library's host owns the lifetimes of the objects it receives; SingleOwner is checked in executables only",
+          );
+          continue;
+        }
+        marked.push(cls.name);
+      }
+    this.record("singleOwner", marked);
   }
 
   /* ── Acyclic ── */

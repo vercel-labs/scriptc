@@ -48,6 +48,13 @@ export interface TreeClassPlan {
    * retain (llvm/emitter.ts takeLastUseMove), exactly as its own last-use
    * move does. */
   moves: ReadonlySet<IrExpr>;
+  /** Tree-typed locals that hold a reference their function does not own:
+   * a borrowed parameter, or an alias of a borrowed value, by function name
+   * and then local id (local ids are unique within a function only). The
+   * emitter stores one without a retain, reads it without counting it, and
+   * releases nothing when its scope ends (a tree release destroys the
+   * subtree its owner holds). */
+  borrows: ReadonlyMap<string, ReadonlySet<string>>;
   /** Why each rejected class kept the counted layout, in module order.
    * Diagnostics and tests only: the lowering never reads them. */
   rejected: ReadonlyMap<string, readonly string[]>;
@@ -78,7 +85,8 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
   const rejected = new Map<string, string[]>();
   const classes = new Set<string>();
   const moves = new Set<IrExpr>();
-  if (mod.lib !== undefined) return { classes, moves, rejected };
+  const borrows = new Map<string, Set<string>>();
+  if (mod.lib !== undefined) return { classes, moves, borrows, rejected };
   const defs = mod.classes ?? [];
   const unions = new Map<string, IrUnionDef>((mod.unions ?? []).map((u) => [u.id, u] as const));
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn] as const));
@@ -147,7 +155,9 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     for (const slot of mentioned().slots.get(name) ?? []) {
       const shape = treeShape(slot.type, name, unions);
       if (shape === null) {
-        reject(`${slot.where} holds it in a type that is neither the class nor null or it`);
+        reject(
+          `${slot.where} holds it in a type that is neither the class nor null, undefined or it`,
+        );
         continue;
       }
       if (shape === "nullable" && traced.unions.has(unionIdOf(slot.type))) {
@@ -170,9 +180,16 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
     for (const fn of mentioned().functions.get(name) ?? []) check.function(fn);
     for (const why of check.reasons()) reject(why);
     finish();
-    if (classes.has(name)) for (const move of check.moves()) moves.add(move);
+    if (classes.has(name)) {
+      for (const move of check.moves()) moves.add(move);
+      for (const [fn, ids] of check.borrows()) {
+        let held = borrows.get(fn);
+        if (held === undefined) borrows.set(fn, (held = new Set()));
+        for (const id of ids) held.add(id);
+      }
+    }
   }
-  return { classes, moves, rejected };
+  return { classes, moves, borrows, rejected };
 }
 
 /** The position a type occupies in the module. Only the slots in
@@ -346,8 +363,12 @@ function constructorEscaped(fn: IrFunction, thisId: string, baseCtor: string | n
 }
 
 /** A fresh value: allocated here or returned owned by a call. It has no
- * owner yet, so it may be moved, or destroyed when the statement ends. */
-type Provenance = "fresh" | "owned" | "borrowed" | "pending" | "none";
+ * owner yet, so it may be moved, or destroyed when the statement ends.
+ * `borrowed` is a reference the function does not own and that the caller
+ * keeps alive across the call; `view` is a reference into a node one of the
+ * function's own owners holds. An alias may copy a borrow (both die with the
+ * caller's call) but not a view: the owner could be released first. */
+type Provenance = "fresh" | "owned" | "borrowed" | "view" | "pending" | "none";
 
 /** What a local holds. `pending` is a constructor parameter: the call that
  * created the object owns it until the body stores it in a field. */
@@ -362,6 +383,7 @@ class LinearUse {
   private readonly found: string[] = [];
   private readonly treeLocals = new Map<string, IrLocal>();
   private readonly moved: IrExpr[] = [];
+  private readonly borrowed = new Map<string, Set<string>>();
   private fn: IrFunction | null = null;
 
   constructor(
@@ -378,6 +400,26 @@ class LinearUse {
   /** The varRef reads that took a node out of a local (see TreeClassPlan). */
   moves(): readonly IrExpr[] {
     return this.moved;
+  }
+
+  /** The tree locals that hold a borrow (see TreeClassPlan). */
+  borrows(): ReadonlyMap<string, Set<string>> {
+    return this.borrowed;
+  }
+
+  /** Records that the current function's `localId` holds a borrow. */
+  private borrow(localId: string): void {
+    const name = this.fn?.name;
+    if (name === undefined) return;
+    let held = this.borrowed.get(name);
+    if (held === undefined) this.borrowed.set(name, (held = new Set()));
+    held.add(localId);
+  }
+
+  /** A value this function does not own: a borrow of a value outside it,
+   * or a view into a node one of its own owners holds. */
+  private unowned(provenance: Provenance): boolean {
+    return provenance === "borrowed" || provenance === "view";
   }
 
   private fail(what: string): null {
@@ -468,8 +510,15 @@ class LinearUse {
           return this.fail(`local ${stmt.localId} is declared without a value`) !== null;
         const provenance = this.expr(stmt.init, "move", state);
         if (provenance === null) return false;
-        if (provenance === "borrowed")
+        if (provenance === "view")
           return this.fail(`local ${stmt.localId} aliases a node it does not own`) !== null;
+        // An alias of a borrow: the value stays alive for the call that
+        // lent it, which outlives the local.
+        if (provenance === "borrowed") {
+          this.borrow(stmt.localId);
+          state.set(stmt.localId, "borrowed");
+          return true;
+        }
         state.set(stmt.localId, "owned");
         return true;
       }
@@ -540,7 +589,7 @@ class LinearUse {
         if (!this.tree(stmt.value.type)) return this.expr(stmt.value, "borrow", state) !== null;
         const provenance = this.expr(stmt.value, "move", state);
         if (provenance === null) return false;
-        if (provenance === "borrowed")
+        if (this.unowned(provenance))
           return (
             this.fail(`field ${stmt.field} takes a node from a field it does not own`) !== null
           );
@@ -553,7 +602,7 @@ class LinearUse {
           return this.fail("returns a node from a function that does not declare one") !== null;
         const provenance = this.expr(stmt.value, "move", state);
         if (provenance === null) return false;
-        if (provenance === "borrowed") return this.fail("returns a node it only borrows") !== null;
+        if (this.unowned(provenance)) return this.fail("returns a node it only borrows") !== null;
         return true;
       }
       case "throw":
@@ -643,7 +692,7 @@ class LinearUse {
           }
           const provenance = this.expr(arg, "move", state);
           if (provenance === null) return null;
-          if (provenance === "borrowed")
+          if (this.unowned(provenance))
             return this.fail(`an argument from a field becomes a second owner`);
         }
         return "fresh";
@@ -671,19 +720,24 @@ class LinearUse {
           const borrows = borrowed?.has(i) === true;
           const provenance = this.expr(arg, borrows ? "borrow" : "move", state);
           if (provenance === null) return null;
-          if (!borrows && provenance === "borrowed")
+          if (!borrows && this.unowned(provenance))
             return this.fail(`callee ${expr.callee} consumes a node that comes from a field`);
         }
         return this.tree(expr.type) ? "fresh" : "none";
       }
       case "fieldGet": {
+        let through: Provenance = "none";
         if (this.tree(expr.obj.type)) {
           const provenance = this.expr(expr.obj, "borrow", state);
           if (provenance === null) return null;
           if (provenance === "fresh")
             return this.fail(`field ${expr.field} is read from a node the statement owns`);
+          through = provenance;
         } else if (!this.borrowOnly(expr.obj, state)) return null;
-        return this.tree(expr.type) ? "borrowed" : "none";
+        if (!this.tree(expr.type)) return "none";
+        // A field of a borrowed node is a borrow too; a field of an owner
+        // this function holds is only a view of it.
+        return through === "borrowed" ? "borrowed" : "view";
       }
       // Wrappers that move no ownership: unboxing, narrowing, upcasts and
       // the tag test of a nullable slot.
@@ -847,7 +901,7 @@ function indexMentions(mod: IrModule, classes: MentionedClasses): MentionIndex {
   }
   for (const record of mod.records ?? [])
     for (const field of record.fields)
-      add(field.type, `record ${record.id}`, " field ", field.name, "recordField");
+      add(field.type, "an object's", " field ", field.name, "recordField");
   for (const global of mod.globals ?? []) add(global.type, "global ", global.name, "", "global");
   for (const union of mod.unions ?? [])
     for (const arm of union.arms) add(arm, "union ", union.id, "", "expr");

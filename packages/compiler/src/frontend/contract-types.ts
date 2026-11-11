@@ -5,8 +5,8 @@
  * @scriptc/threads exports. TypeScript drops alias identity from inferred
  * types, so only annotations the program WRITES count: parameter, return,
  * variable and class field types, and the class markers (Acyclic,
- * ProgramLifetime) in heritage clauses. The IR-side checks live in
- * ir/contract-check.ts. */
+ * ProgramLifetime, and the experimental SingleOwner) in heritage clauses.
+ * The IR-side checks live in ir/contract-check.ts. */
 import { resolve } from "node:path";
 import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -18,11 +18,13 @@ import { type HeritageElement, isHeritageElement } from "./heritage-elements.js"
 
 export const CONTRACT_TYPES_MODULE = "@scriptc/types";
 
-/** The module and name of the inline array field marker, which is
- * experimental: `readonly f: InlineArray<C>` on an instance field of a
- * ProgramLifetime class (ir/inline-arrays.ts). */
-export const INLINE_ARRAY_MODULE = "@scriptc/experimental";
+/** The module the experimental markers are imported from: the inline array
+ * field marker (`readonly f: InlineArray<C>` on an instance field of a
+ * ProgramLifetime class, ir/inline-arrays.ts) and the single-owner class
+ * marker (`class C implements SingleOwner`, backend/tree-classes.ts). */
+export const EXPERIMENTAL_MODULE = "@scriptc/experimental";
 export const INLINE_ARRAY_MARKER = "InlineArray";
+export const SINGLE_OWNER_MARKER = "SingleOwner";
 
 export type ContractMarker =
   | "Int32"
@@ -30,7 +32,8 @@ export type ContractMarker =
   | "Immutable"
   | "Acyclic"
   | "ProgramLifetime"
-  | typeof INLINE_ARRAY_MARKER;
+  | typeof INLINE_ARRAY_MARKER
+  | typeof SINGLE_OWNER_MARKER;
 const MARKERS: ReadonlySet<string> = new Set([
   "Int32",
   "NoThrow",
@@ -38,11 +41,16 @@ const MARKERS: ReadonlySet<string> = new Set([
   "Acyclic",
   "ProgramLifetime",
   INLINE_ARRAY_MARKER,
+  SINGLE_OWNER_MARKER,
+]);
+const EXPERIMENTAL_MARKERS: ReadonlySet<string> = new Set([
+  INLINE_ARRAY_MARKER,
+  SINGLE_OWNER_MARKER,
 ]);
 
 /** The module a marker is imported from. */
 function markerModule(marker: string): string {
-  return marker === INLINE_ARRAY_MARKER ? INLINE_ARRAY_MODULE : CONTRACT_TYPES_MODULE;
+  return EXPERIMENTAL_MARKERS.has(marker) ? EXPERIMENTAL_MODULE : CONTRACT_TYPES_MODULE;
 }
 
 /** One written contract: what it promises and where the annotation is. */
@@ -90,6 +98,8 @@ export interface ContractAnnotations {
   /** Inline array fields (`readonly f: InlineArray<C>`) by
    * `${class key}\0${field name}`. */
   inlineArrays: Map<string, ContractNote>;
+  /** Single-owner classes (`implements SingleOwner`) by class key. */
+  singleOwner: Map<string, ContractNote>;
   diagnostics: ScrDiagnostic[];
   /** Number of annotations found (for timing and tests). */
   count: number;
@@ -154,7 +164,7 @@ function contractModuleOfFile(fileName: string): string | null {
       fileName,
     )
   )
-    return INLINE_ARRAY_MODULE;
+    return EXPERIMENTAL_MODULE;
   return null;
 }
 
@@ -302,7 +312,7 @@ function contractFiles(
     for (const statement of sf.statements.nodes) {
       const specifier = moduleSpecifierOf(statement);
       if (specifier === null) continue;
-      if (specifier === CONTRACT_TYPES_MODULE || specifier === INLINE_ARRAY_MODULE) {
+      if (specifier === CONTRACT_TYPES_MODULE || specifier === EXPERIMENTAL_MODULE) {
         add(sf);
         continue;
       }
@@ -419,6 +429,7 @@ export function collectContractAnnotations(
     acyclic: [],
     classes: new Map(),
     inlineArrays: new Map(),
+    singleOwner: new Map(),
     diagnostics: [],
     count: 0,
   };
@@ -451,7 +462,8 @@ export function collectContractAnnotations(
         }
         if (!ts.isTypeReferenceNode(node)) return;
         if (marker === "Acyclic") placeAcyclicAlias(out, checker, node, resolveUnit);
-        else if (marker === "ProgramLifetime") unsupported(out, node, marker);
+        else if (marker === "ProgramLifetime" || marker === SINGLE_OWNER_MARKER)
+          unsupported(out, node, marker);
         else if (marker === INLINE_ARRAY_MARKER) placeInlineArray(out, node);
         else place(out, checker, node, marker);
       },
@@ -496,6 +508,17 @@ function unsupported(out: ContractAnnotations, node: ts.Node, marker: ContractMa
     );
     return;
   }
+  if (marker === SINGLE_OWNER_MARKER) {
+    out.diagnostics.push(
+      contractDiag(
+        "SC7006",
+        locOf(node),
+        "the SingleOwner contract is not checked in this position (SingleOwner is checked in the implements clause of a class declaration)",
+        "declare it on the class itself: class Node implements SingleOwner { ... }",
+      ),
+    );
+    return;
+  }
   const where =
     marker === "NoThrow"
       ? "NoThrow wraps a function's written return type"
@@ -532,7 +555,7 @@ function placeHeritage(
 ): void {
   const clause = node.parent;
   const owner = clause?.parent;
-  if (marker === "ProgramLifetime") {
+  if (marker === "ProgramLifetime" || marker === SINGLE_OWNER_MARKER) {
     if (
       clause === undefined ||
       !ts.isHeritageClause(clause) ||
@@ -541,6 +564,14 @@ function placeHeritage(
       !ts.isClassDeclaration(owner)
     )
       return unsupported(out, node, marker);
+    if (marker === SINGLE_OWNER_MARKER) {
+      out.singleOwner.set(contractLocKey(locOf(owner)), {
+        marker,
+        loc: locOf(node),
+        name: nameText(owner.name),
+      });
+      return;
+    }
     out.classes.set(contractLocKey(locOf(owner)), {
       marker,
       loc: locOf(node),

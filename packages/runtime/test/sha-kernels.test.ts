@@ -35,6 +35,7 @@ const runtimeSources = [
   "scr_inspect.c",
   "scr_bigint.c",
   "scr_async.c",
+  "scr_context.c",
   "scr_async_dyn.c",
   "scr_child.c",
   "scr_path.c",

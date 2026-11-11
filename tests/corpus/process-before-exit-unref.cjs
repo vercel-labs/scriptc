@@ -7,7 +7,10 @@ process.on('beforeExit', (code) => {
   rounds++;
   console.log(`beforeExit ${rounds} code=${code}`);
   if (rounds === 1) {
-    const timer = setTimeout(() => console.log('unref timer ran'), 1);
+    // The delay is long enough that the timer cannot come due before the loop
+    // exhausts: a 1 ms timer sometimes fires while the process is still alive
+    // in this turn, so the program would print different lines from run to run.
+    const timer = setTimeout(() => console.log('unref timer ran'), 1000);
     timer.unref();
     setImmediate(() => console.log('ref immediate ran'));
   }

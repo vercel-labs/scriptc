@@ -145,21 +145,27 @@ static bool scr_fs_view_options_fail(void) {
 }
 
 /* The normalized options argument: the bag itself when it is one (NULL
- * otherwise) and the encoding member (+1, NULL when absent or falsy). */
+ * otherwise), the encoding member (+1, NULL when absent or falsy), and the
+ * user buffer (+1, NULL when absent): a factory or a Buffer/TypedArray/
+ * DataView to read into. */
 typedef struct {
   const ScrDyn *object;
   ScrDyn *encoding;
+  ScrDyn *buffer;
 } ScrFsReadOptions;
 
 static void scr_fs_read_options_release(ScrFsReadOptions *options) {
   if (options->encoding) scr_dyn_release(options->encoding);
+  if (options->buffer) scr_dyn_release(options->buffer);
   options->encoding = NULL;
+  options->buffer = NULL;
 }
 
 /* getOptions' normalization and checks. False with the exception pending. */
 static bool scr_fs_read_options_read(const ScrDyn *options, ScrFsReadOptions *out) {
   out->object = NULL;
   out->encoding = NULL;
+  out->buffer = NULL;
   if (options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL ||
       options->kind == SCR_DYN_FUNC)
     return true;
@@ -210,8 +216,34 @@ static bool scr_fs_read_options_read(const ScrDyn *options, ScrFsReadOptions *ou
   }
   bool ok = scr_fs_read_signal_check(signal);
   scr_dyn_release(signal);
-  if (!ok) scr_fs_read_options_release(out);
-  return ok;
+  if (!ok) {
+    scr_fs_read_options_release(out);
+    return false;
+  }
+  /* validateReadFileBufferOptions reads `buffer` last, before the path is
+   * validated and the file opens: an invalid value must not truncate a file
+   * a 'w+' flag would open. Only undefined, a function and an
+   * ArrayBufferView pass; a view is read into directly, a function is called
+   * with the file size. */
+  ScrDyn *buffer = scr_fs_read_member(options, "buffer");
+  if (!buffer) {
+    scr_fs_read_options_release(out);
+    return false;
+  }
+  if (buffer->kind != SCR_DYN_UNDEF) {
+    if (buffer->kind != SCR_DYN_FUNC && buffer->kind != SCR_DYN_BYTES) {
+      scr_dyn_prop_type_fail("options.buffer",
+                             "of type function or an instance of Buffer, TypedArray, or DataView",
+                             buffer);
+      scr_dyn_release(buffer);
+      scr_fs_read_options_release(out);
+      return false;
+    }
+    out->buffer = buffer;
+  } else {
+    scr_dyn_release(buffer);
+  }
+  return true;
 }
 
 /* getValidatedPath, then stringToFlags over the `flag` member, then open(2)
@@ -229,6 +261,132 @@ static int scr_fs_read_options_open(const ScrStr *path, const ScrDyn *options, c
   return fd;
 }
 
+/* tryStatSync's size: a regular file's size, else 0 (the descriptor then
+ * reads to EOF, which is what a pipe or character device needs). Never
+ * throws. */
+static double scr_fs_file_size(int fd) {
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+  return (double)st.st_size;
+}
+
+/* The name Node's too-small ERR_INVALID_ARG_VALUE reports: the property it
+ * read the byteLength from. */
+static const char *scr_fs_user_buffer_len_name(const ScrDyn *option) {
+  return option->kind == SCR_DYN_FUNC ? "options.buffer().byteLength"
+                                      : "options.buffer.byteLength";
+}
+
+/* getReadFileBuffer: a factory is called with the file size and its answer
+ * must be an ArrayBufferView; a non-Buffer view becomes a u8 Buffer over
+ * exactly its bytes (Node's Buffer.from(buffer.buffer, byteOffset,
+ * byteLength)); a buffer smaller than the file throws. +1; NULL with the
+ * exception pending. */
+static ScrBytes *scr_fs_user_buffer(const ScrDyn *option, double size) {
+  bool factory = option->kind == SCR_DYN_FUNC;
+  ScrDyn *value;
+  if (factory) {
+    ScrDyn *arg = scr_dyn_new_num(size);
+    value = scr_dyn_call(option, &arg, 1, "options.buffer");
+    scr_dyn_release(arg);
+    if (!value) return NULL;
+    if (value->kind != SCR_DYN_BYTES) {
+      scr_dyn_prop_type_fail("options.buffer()",
+                             "an instance of Buffer, TypedArray, or DataView", value);
+      scr_dyn_release(value);
+      return NULL;
+    }
+  } else {
+    value = scr_dyn_retain((ScrDyn *)option);
+  }
+  ScrBytes *src = scr_dyn_bytes_unbox(value);
+  double byte_length = scr_bytes_byte_len(src);
+  if (size > byte_length) {
+    char reason[64];
+    snprintf(reason, sizeof reason, "is smaller than the file size of %.0f bytes", size);
+    ScrDyn *got = scr_dyn_new_num(byte_length);
+    scr_dyn_arg_value_fail(scr_fs_user_buffer_len_name(option), reason, got);
+    scr_dyn_release(got);
+    scr_bytes_release(src);
+    scr_dyn_release(value);
+    return NULL;
+  }
+  if (value->buffer) {
+    scr_dyn_release(value);
+    return src;
+  }
+  ScrBytes *view = scr_bytes_buffer_view(src, SCR_BYTES_U8, scr_bytes_byte_offset(src), true,
+                                         byte_length);
+  scr_bytes_release(src);
+  scr_dyn_release(value);
+  if (!view) return NULL;
+  ScrBytes *buffer = scr_bytes_as_buffer(view);
+  scr_bytes_release(view);
+  return buffer;
+}
+
+/* Node's user-buffer read ladder over an open descriptor: a regular file's
+ * size bytes, else the buffer is filled and one extra byte decides whether
+ * it holds the entire file. Returns the bytes read, or -1 with the
+ * exception pending. */
+static double scr_fs_read_user_buffer(int fd, ScrBytes *buffer, double size, const ScrDyn *option) {
+  double pos = 0;
+  if (size != 0) {
+    double n;
+    do {
+      n = scr_fs_read_sync(fd, buffer, pos, size - pos, -1);
+      if (scr_exc_pending()) return -1;
+      pos += n;
+    } while (n != 0 && pos < size);
+    return pos;
+  }
+  while (pos < (double)buffer->len) {
+    double n = scr_fs_read_sync(fd, buffer, pos, (double)buffer->len - pos, -1);
+    if (scr_exc_pending()) return -1;
+    pos += n;
+    if (n == 0) return pos;
+  }
+  ScrBytes *extra = scr_bytes_new(SCR_BYTES_U8, 1);
+  double n = scr_fs_read_sync(fd, extra, 0, 1, -1);
+  scr_bytes_release(extra);
+  if (scr_exc_pending()) return -1;
+  if (n != 0) {
+    ScrDyn *got = scr_dyn_new_num((double)buffer->len);
+    scr_dyn_arg_value_fail(scr_fs_user_buffer_len_name(option),
+                           "is too small to contain the entire file", got);
+    scr_dyn_release(got);
+    return -1;
+  }
+  return pos;
+}
+
+/* Reads an open descriptor to its end and closes it: into options.buffer
+ * when the options named one (answering the view of the bytes read), else
+ * into a fresh Buffer. +1; NULL with the exception pending. The descriptor
+ * is closed either way. */
+static ScrBytes *scr_fs_read_sync_result(int fd, const ScrFsReadOptions *read) {
+  if (!read->buffer) {
+    ScrBytes *bytes = scr_fs_read_fd_bytes((double)fd);
+    int saved = errno;
+    scr_fs_raw_close(fd);
+    errno = saved;
+    return bytes;
+  }
+  double size = scr_fs_file_size(fd);
+  ScrBytes *buffer = scr_fs_user_buffer(read->buffer, size);
+  double pos = buffer ? scr_fs_read_user_buffer(fd, buffer, size, read->buffer) : -1;
+  int saved = errno;
+  scr_fs_raw_close(fd);
+  errno = saved;
+  if (pos < 0) {
+    scr_bytes_release(buffer);
+    return NULL;
+  }
+  ScrBytes *answer = scr_bytes_subarray(buffer, 0, pos);
+  scr_bytes_release(buffer);
+  return answer;
+}
+
 /* readFileSync(path, { encoding, flag }) answering a string: the truthy
  * encoding decodes (a falsy one is Node's Buffer answer, which this entry
  * cannot carry; the call site's type selected the string arm). */
@@ -241,10 +399,27 @@ ScrStr *scr_fs_read_file_str_opts(ScrStr *path, const ScrDyn *options) {
     return NULL;
   }
   ScrStr *text;
-  if (read.encoding && !scr_bytes_encoding_is_utf8(read.encoding->v.str))
-    text = scr_fs_decode_read(scr_fs_read_fd_bytes((double)fd), read.encoding->v.str);
-  else text = scr_fs_read_fd((double)fd);
-  scr_fs_raw_close(fd);
+  if (read.buffer) {
+    /* A user buffer takes Node's buffer path even for utf8: the bytes fill
+     * the buffer and a truthy encoding decodes from there. */
+    ScrBytes *bytes = scr_fs_read_sync_result(fd, &read);
+    if (!bytes) {
+      scr_fs_read_options_release(&read);
+      return NULL;
+    }
+    if (read.encoding) text = scr_fs_decode_read(bytes, read.encoding->v.str);
+    else {
+      ScrStr *utf8 = scr_str_new("utf8", 4);
+      text = scr_bytes_to_str(bytes, utf8);
+      scr_str_release(utf8);
+      scr_bytes_release(bytes);
+    }
+  } else {
+    if (read.encoding && !scr_bytes_encoding_is_utf8(read.encoding->v.str))
+      text = scr_fs_decode_read(scr_fs_read_fd_bytes((double)fd), read.encoding->v.str);
+    else text = scr_fs_read_fd((double)fd);
+    scr_fs_raw_close(fd);
+  }
   scr_fs_read_options_release(&read);
   return text;
 }
@@ -260,8 +435,7 @@ ScrBytes *scr_fs_read_file_bytes_opts(ScrStr *path, const ScrDyn *options) {
     scr_fs_read_options_release(&read);
     return NULL;
   }
-  ScrBytes *bytes = scr_fs_read_fd_bytes((double)fd);
-  scr_fs_raw_close(fd);
+  ScrBytes *bytes = scr_fs_read_sync_result(fd, &read);
   scr_fs_read_options_release(&read);
   return bytes;
 }
@@ -278,22 +452,31 @@ ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *options) {
     return NULL;
   }
   ScrDyn *value = NULL;
-  if (!read.encoding) {
-    ScrBytes *bytes = scr_fs_read_fd_bytes((double)fd);
-    if (bytes) {
-      value = scr_dyn_new_buffer(bytes);
-      scr_bytes_release(bytes);
-    }
-  } else {
-    ScrStr *text;
-    if (scr_bytes_encoding_is_utf8(read.encoding->v.str)) text = scr_fs_read_fd((double)fd);
-    else text = scr_fs_decode_read(scr_fs_read_fd_bytes((double)fd), read.encoding->v.str);
+  if (!read.buffer && read.encoding && scr_bytes_encoding_is_utf8(read.encoding->v.str)) {
+    /* Node's utf8 binding reads straight into string storage; a user buffer
+     * cannot be in the way here. */
+    ScrStr *text = scr_fs_read_fd((double)fd);
+    scr_fs_raw_close(fd);
     if (text) {
       value = scr_dyn_new_str(text);
       scr_str_release(text);
     }
+  } else {
+    ScrBytes *bytes = scr_fs_read_sync_result(fd, &read);
+    if (bytes) {
+      if (!read.encoding) {
+        value = scr_dyn_new_buffer(bytes);
+        scr_bytes_release(bytes);
+      } else {
+        /* scr_fs_decode_read consumes the bytes. */
+        ScrStr *text = scr_fs_decode_read(bytes, read.encoding->v.str);
+        if (text) {
+          value = scr_dyn_new_str(text);
+          scr_str_release(text);
+        }
+      }
+    }
   }
-  scr_fs_raw_close(fd);
   scr_fs_read_options_release(&read);
   return value;
 }
@@ -449,29 +632,54 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   return !scr_exc_pending();
 }
 
+/* Whether a length-delimited name is one of stringToFlags' spellings. The
+ * length is the string's own, so an embedded NUL is part of the name and
+ * never a terminator: "r\0x" is not "r" to Node either. */
+static bool scr_fs_flag_is(const char *s, size_t len, const char *want) {
+  size_t want_len = strlen(want);
+  return len == want_len && memcmp(s, want, want_len) == 0;
+}
+
 /* stringToFlags for the string spellings; -1 for an unknown one. */
-static int scr_fs_flag_bits(const char *f) {
-  if (!strcmp(f, "r")) return O_RDONLY;
-  if (!strcmp(f, "r+")) return O_RDWR;
-  if (!strcmp(f, "rs") || !strcmp(f, "sr")) return O_RDONLY | O_SYNC;
-  if (!strcmp(f, "rs+") || !strcmp(f, "sr+")) return O_RDWR | O_SYNC;
-  if (!strcmp(f, "w")) return O_WRONLY | O_CREAT | O_TRUNC;
-  if (!strcmp(f, "w+")) return O_RDWR | O_CREAT | O_TRUNC;
-  if (!strcmp(f, "wx") || !strcmp(f, "xw")) return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
-  if (!strcmp(f, "wx+") || !strcmp(f, "xw+")) return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
-  if (!strcmp(f, "a")) return O_WRONLY | O_CREAT | O_APPEND;
-  if (!strcmp(f, "a+")) return O_RDWR | O_CREAT | O_APPEND;
-  if (!strcmp(f, "ax") || !strcmp(f, "xa")) return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
-  if (!strcmp(f, "ax+") || !strcmp(f, "xa+")) return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
-  if (!strcmp(f, "as") || !strcmp(f, "sa")) return O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
-  if (!strcmp(f, "as+") || !strcmp(f, "sa+")) return O_RDWR | O_CREAT | O_APPEND | O_SYNC;
+static int scr_fs_flag_bits(const char *s, size_t len) {
+  if (scr_fs_flag_is(s, len, "r")) return O_RDONLY;
+  if (scr_fs_flag_is(s, len, "r+")) return O_RDWR;
+  if (scr_fs_flag_is(s, len, "rs") || scr_fs_flag_is(s, len, "sr")) return O_RDONLY | O_SYNC;
+  if (scr_fs_flag_is(s, len, "rs+") || scr_fs_flag_is(s, len, "sr+")) return O_RDWR | O_SYNC;
+  if (scr_fs_flag_is(s, len, "w")) return O_WRONLY | O_CREAT | O_TRUNC;
+  if (scr_fs_flag_is(s, len, "w+")) return O_RDWR | O_CREAT | O_TRUNC;
+  if (scr_fs_flag_is(s, len, "wx") || scr_fs_flag_is(s, len, "xw"))
+    return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
+  if (scr_fs_flag_is(s, len, "wx+") || scr_fs_flag_is(s, len, "xw+"))
+    return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
+  if (scr_fs_flag_is(s, len, "a")) return O_WRONLY | O_CREAT | O_APPEND;
+  if (scr_fs_flag_is(s, len, "a+")) return O_RDWR | O_CREAT | O_APPEND;
+  if (scr_fs_flag_is(s, len, "ax") || scr_fs_flag_is(s, len, "xa"))
+    return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
+  if (scr_fs_flag_is(s, len, "ax+") || scr_fs_flag_is(s, len, "xa+"))
+    return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
+  if (scr_fs_flag_is(s, len, "as") || scr_fs_flag_is(s, len, "sa"))
+    return O_WRONLY | O_CREAT | O_APPEND | O_SYNC;
+  if (scr_fs_flag_is(s, len, "as+") || scr_fs_flag_is(s, len, "sa+"))
+    return O_RDWR | O_CREAT | O_APPEND | O_SYNC;
   return -1;
 }
 
-static void scr_fs_flag_invalid(const char *f) {
-  char message[160];
-  int length = snprintf(message, sizeof message, "The argument 'flags' is invalid. Received '%s'", f);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)length, "ERR_INVALID_ARG_VALUE");
+/* stringToFlags' refusal: Node's ERR_INVALID_ARG_VALUE with the received
+ * flag rendered by util.inspect and truncated the way errors.js truncates
+ * it (128 UTF-16 units plus "..."), so the message is sized from the
+ * string it shows. A flag of any length, NUL bytes included, stays inside
+ * the string's own bytes. */
+static void scr_fs_flag_invalid(const ScrStr *f) {
+  ScrStr *shown = scr_str_inspect_quoted(f, true);
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "The argument 'flags' is invalid. Received ");
+  scr_jb_put_str(&message, shown);
+  scr_str_release(shown);
+  ScrStr *text = scr_jb_finish(&message);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(text);
 }
 
 /* stringToFlags over a dynamic value: an absent flag is the caller's
@@ -482,7 +690,7 @@ static void scr_fs_flag_invalid(const char *f) {
  * reaches *bits. */
 static bool scr_fs_cb_open_bits(const ScrDyn *flag, const char *fallback, int *bits) {
   if (flag == NULL || scr_fs_dyn_absent(flag)) {
-    *bits = scr_fs_flag_bits(fallback);
+    *bits = scr_fs_flag_bits(fallback, strlen(fallback));
     return true;
   }
   if (flag->kind == SCR_DYN_NUM) {
@@ -495,9 +703,9 @@ static bool scr_fs_cb_open_bits(const ScrDyn *flag, const char *fallback, int *b
     scr_dyn_arg_value_fail("flags", NULL, flag);
     return false;
   }
-  int of = scr_fs_flag_bits(flag->v.str->data);
+  int of = scr_fs_flag_bits(flag->v.str->data, flag->v.str->len);
   if (of < 0) {
-    scr_fs_flag_invalid(flag->v.str->data);
+    scr_fs_flag_invalid(flag->v.str);
     return false;
   }
   *bits = of;
@@ -863,6 +1071,23 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
 #endif
 }
 
+#ifndef SCR_LIB
+static void scr_fs_cb_throw_thunk(ScrClosure *closure) {
+  ScrDyn *error = scr_box_get_ref(closure->caps[0]);
+  scr_dyn_throw(error); /* moves */
+}
+
+/* fs.close(fd) with no callback runs Node's defaultCloseCallback, which
+ * throws a failed close when the request's completion runs: the loop's I/O
+ * phase, after timers, as an uncaught exception. */
+static void scr_fs_cb_defer_throw(ScrDyn *error) {
+  ScrClosure *closure = scr_closure_new((void *)scr_fs_cb_throw_thunk, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], error);
+  scr_loop_defer(closure);
+}
+#endif
+
 static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *,
                                  double *);
 static bool scr_fs_encoding_chk(const ScrDyn *);
@@ -1156,13 +1381,14 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   const ScrDyn *callback = scr_fs_cb_arg(args, argc, slot);
   /* These check their callback after the arguments Node validates first
    * (below); every other form checks it here, before its path. fs.close's
-   * callback is optional: Node's maybeCallback leaves an omitted or
-   * nullish callback as a noop, and only a non-callable value throws. */
+   * callback defaults only when it is OMITTED or undefined (Node's
+   * `callback = defaultCloseCallback`); null and every other non-callable
+   * value goes through makeCallback's check and throws, leaving the
+   * descriptor open. */
   bool late = !strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open") ||
               !strcmp(op, "mkdir") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate") || !strcmp(op, "truncate") ||
               !strcmp(op, "read") || !strcmp(op, "write");
-  bool optional_callback = !strcmp(op, "close") &&
-                           (callback->kind == SCR_DYN_UNDEF || callback->kind == SCR_DYN_NULL);
+  bool optional_callback = !strcmp(op, "close") && callback->kind == SCR_DYN_UNDEF;
   if (!late && !optional_callback && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
   size_t count = timestamp ? argc : slot < argc ? slot : argc;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
@@ -1381,7 +1607,25 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     bool stat = !strcmp(op, "stat");
     result = scr_fs_cb_stats(path, -1, ARG(1), !stat, stat);
   } else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, ARG(1), false, false);
-  else if (!strcmp(op, "close")) scr_fs_close(fd);
+  else if (!strcmp(op, "close")) {
+    if (!optional_callback) scr_fs_close(fd);
+    else {
+      /* fs.close(fd) without a callback runs Node's defaultCloseCallback,
+       * which throws a failed close from a later turn — not at the call.
+       * A library link has no event loop, so the exception stays pending
+       * there. */
+      int status = scr_fs_raw_close((int)fd);
+      if (status < 0) {
+        scr_fs_throw(-status, "close", NULL);
+#ifndef SCR_LIB
+        ScrCaught *caught = scr_exc_take();
+        ScrDyn *error = scr_caught_to_dyn(caught);
+        scr_caught_release(caught);
+        scr_fs_cb_defer_throw(error);
+#endif
+      }
+    }
+  }
   else if (!strcmp(op, "fsync")) scr_fs_fsync(fd);
   else if (!strcmp(op, "fdatasync")) scr_fs_fdatasync(fd);
   else if (!strcmp(op, "fchmod")) scr_fs_fchmod(fd, ARG(1)->kind == SCR_DYN_STR ? (double)strtol(ARG(1)->v.str->data, NULL, 8) : ARG(1)->v.num);
@@ -2587,14 +2831,26 @@ void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr
 ScrStr *scr_fs_stream_path(const ScrDyn *value) { return scr_fs_checked_path(value, "path"); }
 
 int scr_fs_stream_flags(const ScrDyn *flag, const char *fallback) {
-  const char *f = scr_fs_dyn_absent(flag) ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
+  bool absent = scr_fs_dyn_absent(flag);
+  const char *f = absent ? fallback : flag->kind == SCR_DYN_STR ? flag->v.str->data : NULL;
   if (!f) {
     static const char message[] = "Runtime numeric filesystem flags have no portable native lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return -1;
   }
-  int bits = scr_fs_flag_bits(f);
-  if (bits < 0) scr_fs_flag_invalid(f);
+  int bits = absent ? scr_fs_flag_bits(fallback, strlen(fallback))
+                    : scr_fs_flag_bits(flag->v.str->data, flag->v.str->len);
+  if (bits < 0) {
+    if (!absent) {
+      scr_fs_flag_invalid(flag->v.str);
+    } else {
+      /* the compiler's own fallback is a name from the table; a miss here
+       * still refuses through the same safe message */
+      ScrStr *text = scr_str_new(fallback, strlen(fallback));
+      scr_fs_flag_invalid(text);
+      scr_str_release(text);
+    }
+  }
   return bits;
 }
 

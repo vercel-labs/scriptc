@@ -4571,28 +4571,43 @@ double scr_fs_open(ScrStr *path, ScrStr *flags) {
  * the compiler with Node's 0o666 default; it is checked like
  * parseFileMode before the open, and open(2) ignores it unless the flags
  * create the file. */
+/* Whether a flag string is one of stringToFlags' spellings. The comparison
+ * is by the string's length, so an embedded NUL is a character of the flag
+ * rather than a terminator, as Node's string equality reads it. */
+static bool scr_fs_flag_name_is(const ScrStr *flags, const char *want) {
+  size_t len = strlen(want);
+  return flags->len == len && memcmp(flags->data, want, len) == 0;
+}
+
 /* Node's stringToFlags for the documented flag strings (and nullish →
- * O_RDONLY); anything else throws ERR_INVALID_ARG_VALUE naming the flags. */
+ * O_RDONLY); anything else throws ERR_INVALID_ARG_VALUE naming the flags.
+ * The name is rendered by util.inspect and truncated as errors.js does, so
+ * no flag length can copy past the message it is printed in. */
 bool scr_fs_flag_string(const ScrStr *flags, int *out) {
-  const char *f = flags->data;
-  if (strcmp(f, "r") == 0) *out = O_RDONLY;
-  else if (strcmp(f, "rs") == 0 || strcmp(f, "sr") == 0) *out = O_RDONLY | O_SYNC;
-  else if (strcmp(f, "r+") == 0) *out = O_RDWR;
-  else if (strcmp(f, "rs+") == 0 || strcmp(f, "sr+") == 0) *out = O_RDWR | O_SYNC;
-  else if (strcmp(f, "w") == 0) *out = O_TRUNC | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "wx") == 0 || strcmp(f, "xw") == 0) *out = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "w+") == 0) *out = O_TRUNC | O_CREAT | O_RDWR;
-  else if (strcmp(f, "wx+") == 0 || strcmp(f, "xw+") == 0) *out = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "a") == 0) *out = O_APPEND | O_CREAT | O_WRONLY;
-  else if (strcmp(f, "ax") == 0 || strcmp(f, "xa") == 0) *out = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
-  else if (strcmp(f, "as") == 0 || strcmp(f, "sa") == 0) *out = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
-  else if (strcmp(f, "a+") == 0) *out = O_APPEND | O_CREAT | O_RDWR;
-  else if (strcmp(f, "ax+") == 0 || strcmp(f, "xa+") == 0) *out = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
-  else if (strcmp(f, "as+") == 0 || strcmp(f, "sa+") == 0) *out = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
+  if (scr_fs_flag_name_is(flags, "r")) *out = O_RDONLY;
+  else if (scr_fs_flag_name_is(flags, "rs") || scr_fs_flag_name_is(flags, "sr")) *out = O_RDONLY | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "r+")) *out = O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "rs+") || scr_fs_flag_name_is(flags, "sr+")) *out = O_RDWR | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "w")) *out = O_TRUNC | O_CREAT | O_WRONLY;
+  else if (scr_fs_flag_name_is(flags, "wx") || scr_fs_flag_name_is(flags, "xw")) *out = O_TRUNC | O_CREAT | O_WRONLY | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "w+")) *out = O_TRUNC | O_CREAT | O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "wx+") || scr_fs_flag_name_is(flags, "xw+")) *out = O_TRUNC | O_CREAT | O_RDWR | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "a")) *out = O_APPEND | O_CREAT | O_WRONLY;
+  else if (scr_fs_flag_name_is(flags, "ax") || scr_fs_flag_name_is(flags, "xa")) *out = O_APPEND | O_CREAT | O_WRONLY | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "as") || scr_fs_flag_name_is(flags, "sa")) *out = O_APPEND | O_CREAT | O_WRONLY | O_SYNC;
+  else if (scr_fs_flag_name_is(flags, "a+")) *out = O_APPEND | O_CREAT | O_RDWR;
+  else if (scr_fs_flag_name_is(flags, "ax+") || scr_fs_flag_name_is(flags, "xa+")) *out = O_APPEND | O_CREAT | O_RDWR | O_EXCL;
+  else if (scr_fs_flag_name_is(flags, "as+") || scr_fs_flag_name_is(flags, "sa+")) *out = O_APPEND | O_CREAT | O_RDWR | O_SYNC;
   else {
-    char msg[160];
-    int len = snprintf(msg, sizeof msg, "The argument 'flags' is invalid. Received '%s'", f);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    ScrStr *shown = scr_str_inspect_quoted(flags, true);
+    ScrJsonBuf message;
+    scr_jb_init(&message);
+    scr_jb_puts(&message, "The argument 'flags' is invalid. Received ");
+    scr_jb_put_str(&message, shown);
+    scr_str_release(shown);
+    ScrStr *text = scr_jb_finish(&message);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+    scr_str_release(text);
     return false;
   }
   return true;

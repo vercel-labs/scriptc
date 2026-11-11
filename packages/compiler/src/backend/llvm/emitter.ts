@@ -3159,7 +3159,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };

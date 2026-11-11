@@ -181,6 +181,12 @@ export class NullableUnions {
   readonly retainWrappers = new Map<string, string>();
   /** Some nullable union encodes `null` with NULLABLE_NULL. */
   readonly usesNullSentinel: boolean = false;
+  /** The classes that are the reference arm of a nullable union encoding
+   * `null` with NULLABLE_NULL. Their retain and release entry points are
+   * called on the immortal sentinel itself (a value read as
+   * `C | null | undefined` and then owned), so their bodies must skip it:
+   * a lifetime-region class has no header word to test immortality in. */
+  private readonly nullSentinelArms = new Set<string>();
   /** Some Map or Set is keyed by a string-key union (stringKey): the
    * module defines the two key strings its unit arms are stored as
    * (string-union-keys.ts). */
@@ -232,7 +238,11 @@ export class NullableUnions {
         (classes !== null ? classUnion(def, classes) : null);
       if (!nullable) continue;
       this.byId.set(def.id, nullable);
-      if (nullable.nullTag >= 0) this.usesNullSentinel = true;
+      if (nullable.nullTag >= 0) {
+        this.usesNullSentinel = true;
+        if (nullable.repr === "single" && nullable.arm.kind === "object")
+          this.nullSentinelArms.add(nullable.arm.className);
+      }
       if (nullable.repr === "shapes")
         for (const arm of nullable.arms)
           if (!this.shapeNumbers.has(arm.shapeId))
@@ -263,6 +273,13 @@ export class NullableUnions {
    * hierarchy members do (classes.ts buildClassGraph). */
   taggedClasses(): ReadonlySet<string> {
     return this.tagged;
+  }
+
+  /** Whether `className` is the arm of a nullable union that spells `null`
+   * with NULLABLE_NULL: its retain and release bodies may receive the
+   * sentinel. */
+  holdsNullSentinel(className: string): boolean {
+    return this.nullSentinelArms.has(className);
   }
 
   /** The shape union whose release and trace helpers this one uses. */

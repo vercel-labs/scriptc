@@ -6,6 +6,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { zlibConstantsValue } from "../builtins/constants.js";
 import { legacyUrlClassValue } from "../builtins/url.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
@@ -787,6 +788,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       if (bi.module === "fs" && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
+      // `import { constants } from "node:zlib"`: the module's singleton
+      // record (zlibConstantsValue), the same object the property form
+      // answers.
+      if (bi.module === "zlib" && bi.member === "constants")
+        return zlibConstantsValue(lowerer, loc);
       // `import { O_RDONLY } from "constants"`: the member of the frozen
       // module object.
       if (bi.module === "constants") {

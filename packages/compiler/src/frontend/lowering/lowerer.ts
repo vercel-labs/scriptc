@@ -751,6 +751,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerPromiseStaticCall } from "./builtins/promises.js";
@@ -23079,6 +23080,8 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `zlib.constants` as a value: the module's singleton record.
+    if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23185,6 +23188,7 @@ export class Lowerer {
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     return null;
   }
 

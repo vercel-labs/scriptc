@@ -483,7 +483,7 @@
     { "chapter": "zlib", "signatures": ["Class: `zlib.ZstdCompress`", "Class: `ZstdOptions`"], "status": "partial", "evidence": ["tests/corpus/zstd-streams.ts", "tests/corpus/zstd-compress.cjs"] },
     { "chapter": "zlib", "signatures": ["Class: `zlib.ZstdDecompress`"], "status": "partial", "evidence": ["tests/corpus/zstd-streams.ts", "tests/corpus/zstd-decompress.cjs"] },
     { "chapter": "errors", "symbols": ["ERR_ZSTD_INVALID_PARAM"], "status": "partial", "evidence": ["tests/corpus/zstd-compress.cjs"] },
-    { "chapter": "zlib", "signatures": ["`zlib.constants`"], "status": "partial", "evidence": ["tests/corpus/5376-zlib-constants.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts"] },
+    { "chapter": "zlib", "signatures": ["`zlib.constants`"], "status": "supported", "evidence": ["tests/corpus/5376-zlib-constants.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts", "tests/corpus/zlib-constants-object.ts"] },
     { "chapter": "dns", "symbols": ["dns.lookup", "dns.lookupService", "dns.getServers", "dns.getDefaultResultOrder", "dns.setDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/5648-dns-lookup-forms.ts", "tests/corpus/5649-dns-service-servers.ts", "tests/corpus/5650-dns-lookup-errors-untyped.cjs"] },
     { "chapter": "dns", "symbols": ["dnsPromises.lookup", "dnsPromises.lookupService", "dnsPromises.getDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/dns-promises-lookup.ts", "tests/corpus/dns-promises-untyped.cjs"] },
     { "chapter": "webstreams", "symbols": ["ReadableStream"], "status": "partial", "evidence": ["tests/corpus/stream-web-readable.ts", "tests/corpus/web-stream-readable-untyped.mjs", "tests/corpus/stream-web-require.cjs", "tests/corpus/2862-web-readable-async-iteration.ts"] },

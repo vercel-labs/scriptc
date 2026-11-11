@@ -43,3 +43,8 @@ console.log(await openAsBlob("/tmp/x"));
 // dns: a resolver instance.
 const resolver = new Resolver();
 resolver.cancel();
+
+// process: the worker events and the execve entry point.
+process.on("worker", () => {});
+process.on("workerMessage", () => {});
+process.execve("/bin/true", []);

@@ -82305,6 +82305,7 @@
           "tests/corpus/compat-process-basics.ts",
           "tests/corpus/fs-write-options.ts",
           "tests/corpus/native-worker-environment.ts",
+          "tests/corpus/next-tick-commonjs-entry.cjs",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
           "tests/corpus/node24-env-imports.cjs",
@@ -82355,6 +82356,7 @@
           "tests/corpus/process-multiple-resolves.cjs",
           "tests/corpus/process-named-signals.cjs",
           "tests/corpus/process-next-tick-callback-checks.cjs",
+          "tests/corpus/process-next-tick-order.cjs",
           "tests/corpus/process-permission.ts",
           "tests/corpus/process-pid-ppid.mjs",
           "tests/corpus/process-platform-arch-version.mjs",
@@ -82384,6 +82386,7 @@
           "tests/corpus/stdio-write-errors.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdout-write-patch.ts",
+          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/fenced.ts",
@@ -82590,7 +82593,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.'workerMessage'",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82763,7 +82769,10 @@
       "nodeStability": null,
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.'worker'",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83070,7 +83079,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:process"
+        "evidence": "compiler-feature:process.process.execve",
+        "tests": [
+          "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83571,8 +83583,11 @@
         "status": "supported",
         "evidence": "compiler-feature:process.process.nextTick",
         "tests": [
+          "tests/corpus/compat-process-basics.ts",
           "tests/corpus/2310-process-next-tick.ts",
-          "tests/corpus/process-next-tick-callback-checks.cjs"
+          "tests/corpus/next-tick-commonjs-entry.cjs",
+          "tests/corpus/process-next-tick-callback-checks.cjs",
+          "tests/corpus/process-next-tick-order.cjs"
         ]
       },
       "anchorSource": "exact"

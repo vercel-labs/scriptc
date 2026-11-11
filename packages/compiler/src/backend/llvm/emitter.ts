@@ -431,6 +431,7 @@ import {
   recordViewTest,
 } from "./record-views.js";
 import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
+import { singleOwnerErrors } from "./single-owner.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -3243,6 +3244,15 @@ export class LlEmitter {
       });
       for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
       this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+      this.treeBorrows = plan.classes.size > 0 ? new Map(plan.borrows) : null;
+      // A class the program marked `implements SingleOwner` asked for this
+      // layout, so a rejection is an error here rather than the silent
+      // counted fallback an unmarked class gets (SC7010).
+      const marked = (mod.contracts?.singleOwner ?? []).filter((name) => plan.rejected.has(name));
+      if (marked.length > 0) {
+        const broken = singleOwnerErrors(mod, marked, plan.rejected);
+        if (broken[0] !== undefined) throw broken[0];
+      }
     }
     // Group arenas: off with lifetime regions, which own their classes'
     // allocation, and in libraries, whose exports any host code calls.
@@ -4627,6 +4637,13 @@ export class LlEmitter {
     return (
       arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
     );
+  }
+
+  /** Whether a tree local holds a borrow rather than an owner
+   * (backend/tree-classes.ts): reads of it copy no count, and its scope
+   * releases nothing — a release would destroy the owner's subtree. */
+  isTreeBorrow(localId: string): boolean {
+    return this.treeBorrows?.get(this.currentFunctionName)?.has(localId) === true;
   }
 
   /** The retained (+1) read of a refcounted value — type-directed through
@@ -9354,6 +9371,10 @@ export class LlEmitter {
    * the source slot is nulled and the value taken without a retain, since
    * a tree instance has no count to raise. */
   private treeMoves: Set<IrExpr> | null = null;
+  /** The tree locals that hold a borrow (backend/tree-classes.ts): their
+   * reads copy no count, and their scopes release nothing. Local ids are
+   * unique within a function, so the set is kept per function name. */
+  private treeBorrows: Map<string, ReadonlySet<string>> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();

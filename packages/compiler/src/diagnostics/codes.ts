@@ -134,6 +134,7 @@ export const DIAGNOSTIC_CODES = {
   SC7007: "Acyclic type can lie on a reference cycle",
   SC7008: "ProgramLifetime class extends another class",
   SC7009: "InlineArray field contract not kept",
+  SC7010: "SingleOwner class contract not kept",
   SC8001: "package or module runs in a Node island (note)",
   SC8002: "Node islands off for a package or module outside the native subset",
   SC8003: "package marked native is outside the native subset",

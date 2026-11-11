@@ -149,3 +149,39 @@ function visit(list: NodeList): void {
 - Instances of the class are not constructed through a class value. They may become dynamic values, for example through a conversion to `unknown` or an interface several classes implement, when the dynamic code that sees them uses the class's own members and does not read the field: scriptc follows such values through locals, parameters, return values, fields, the elements of arrays, Maps and Sets, the members of dynamic objects and arrays, calls through function values, and the callbacks of array methods such as `map` and `forEach`, and finds the first that reaches a read or write of the field's name or of a computed key, a checked cast to a record, array or collection type that has a record member of the field's name or holds a dynamic value, a call through a value no compiled function reaches (also as an array method's callback), or a library call other than printing, `JSON.stringify` without a replacer, `publish`, a worker's `workerData`, and class tests and casts. A dynamic view of an inline field would read it as a new array each time, so when such an operation exists the field keeps its elements in an ordinary array, which behaves as under Node.js, and scriptc reports a warning (SC6105).
 
 scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux, the elements stay in an ordinary array object.
+
+## SingleOwner
+
+`SingleOwner` marks a class whose instances scriptc can free without a reference count, because it proves each one has a single owner. It suits immutable structures built once and read many times, such as the nodes of a syntax tree or of a binary tree.
+
+```ts
+import type { SingleOwner } from "@scriptc/experimental";
+
+class TreeNode implements SingleOwner {
+  readonly left: TreeNode | null;
+  readonly right: TreeNode | null;
+  readonly weight: number;
+  constructor(left: TreeNode | null, right: TreeNode | null, weight: number) {
+    this.left = left;
+    this.right = right;
+    this.weight = weight;
+  }
+}
+
+function total(node: TreeNode | null): number {
+  if (node === null) return 0;
+  // Reading a field into a local is a borrow: `left` does not own the node.
+  const left = node.left;
+  return node.weight + total(left) + total(node.right);
+}
+```
+
+- Write `class C implements SingleOwner`. The class's own fields, its constructor and its uses decide the rest; there is no other annotation. A class name written as a type (not in an implements clause) is not a marker: scriptc reports it (SC7006).
+- Other code may read an instance through its owner, pass it to a function for the length of a call (a parameter the callee does not release is a borrow), read its fields into a local for as long as the node it came from is not released, and move it to a new owner by returning it or storing it at its last use.
+- A node may be held by the class's own fields (`C`, `C | null` or `C | undefined`) and by locals, parameters and returned values. Nothing else may hold one: another class's field, an array element, a record field, a module variable or a closure capture would be a second owner scriptc cannot follow.
+- The class's fields are written by the constructor only, so the structure is fixed once built, and the class is not part of a hierarchy.
+- When scriptc cannot prove the contract it reports the class and the expression that would hold a node twice (SC7010), and the program does not build. Remove the marker to keep the ordinary layout; the program behaves the same.
+- With the contract proved, instances carry no reference count and no collector header, and releasing the owner frees everything below it at once.
+- In a library build the class is reported (SC7010), since the library's host owns the lifetimes of the objects it receives. In a dev build (`--optimization=dev`) and in a program that uses `LifetimeRegion`, scriptc does not run the proof: the class keeps its reference count and the program behaves as without the marker.
+
+Under Node.js the marker is erased: the class is an ordinary class with the same behavior.

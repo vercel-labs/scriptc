@@ -404,3 +404,67 @@ Indexing the field, reading its `length` and iterating it with `for...of` read t
 Each element takes 4 bytes in the instance, and the field's own slot holds the count. The constructor copies the elements from the array it is passed, so that array can be released. The elements start at the same offset in every class of the hierarchy, after the largest set of fixed fields. A read that gets an array allocates a small header that refers to the instance's elements, and frees it when the read's value is released.
 
 The elements stay in an ordinary array object, and the field behaves like any other array field, in builds with sanitizers, in programs that use [`LifetimeRegion`](#lifetimeregion), and on platforms other than 64-bit Linux and macOS.
+
+## SingleOwner
+
+`SingleOwner` marks a class each of whose instances has one owner, so scriptc frees an instance without a reference count. It suits immutable structures built once and read many times, such as the nodes of a syntax tree or of a binary tree. Under Node.js the marker is a type and is erased.
+
+```ts:tree.ts
+import type { SingleOwner } from "@scriptc/experimental";
+
+class TreeNode implements SingleOwner {
+  readonly left: TreeNode | null;
+  readonly right: TreeNode | null;
+  readonly weight: number;
+  constructor(left: TreeNode | null, right: TreeNode | null, weight: number) {
+    this.left = left;
+    this.right = right;
+    this.weight = weight;
+  }
+}
+
+function build(depth: number): TreeNode | null {
+  if (depth === 0) return null;
+  return new TreeNode(build(depth - 1), build(depth - 1), 1);
+}
+
+function total(node: TreeNode | null): number {
+  if (node === null) return 0;
+  // Reading a field into a local is a borrow: `left` does not own the node.
+  const left = node.left;
+  return node.weight + total(left) + total(node.right);
+}
+
+console.log(total(build(4)));
+```
+
+Both runtimes print the same:
+
+```console
+$ node tree.ts
+15
+$ scriptc build tree.ts -o tree >/dev/null
+$ ./tree
+15
+```
+
+### The proof
+
+Write `class C implements SingleOwner`. The class's own fields, its constructor and its uses decide the rest; there is no other annotation. scriptc proves that no instance is ever held in two places. Other code may:
+
+- read an instance through its owner, pass it to a function for the length of a call (a parameter the callee does not release is a borrow), and read its fields into a local for as long as the node it came from is not released;
+- move it to a new owner by returning it or storing it at its last use.
+
+A node may be held by the class's own fields (`C`, `C | null` or `C | undefined`) and by locals, parameters and returned values. Nothing else may hold one: another class's field, an array element, a record field, a module variable or a closure capture would be a second owner scriptc cannot follow. The class's fields are written by the constructor only, so the structure is fixed once built, and the class is not part of a hierarchy.
+
+A class name written as a type, rather than in an `implements` clause, is not a marker: scriptc reports it (SC7006).
+
+### When the proof fails
+
+When scriptc cannot prove the contract it reports the class and the expression that would hold a node twice (SC7010), and the program does not build. The report names the function and the local as the source writes them, for example `in head, local 'first' aliases a node it does not own`. Remove the marker to keep the ordinary layout; the program behaves the same.
+
+### Single-owner cost
+
+With the contract proved, an instance carries no reference count and no collector header, and releasing the owner frees everything below it at once. A deep structure is therefore freed at one point in time, where counted objects are freed incrementally; that is visible as a pause, not as a behavior difference.
+
+A library build reports the class (SC7010), since the library's host owns the lifetimes of the objects it receives. In a dev build (`--optimization=dev`) and in a program that uses [`LifetimeRegion`](#lifetimeregion), scriptc does not run the proof: the class keeps its reference count and the program behaves as without the marker.

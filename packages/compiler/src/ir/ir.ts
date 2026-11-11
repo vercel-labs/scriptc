@@ -1348,6 +1348,11 @@ export interface IrContracts {
    * instance's lifetime, so the backend may keep them in the instance itself
    * (ir/inline-arrays.ts). */
   inlineArrays?: string[];
+  /** Classes declared `implements SingleOwner`: the instances of one may
+   * have a single owner, which backend/tree-classes.ts proves before it
+   * drops their reference count and frees a subtree through its owner. A
+   * class the proof rejects is a compile error (SC7010). */
+  singleOwner?: string[];
 }
 
 export type IrFfiValueParamClass =

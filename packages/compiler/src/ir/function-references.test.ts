@@ -233,6 +233,7 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "contracts.immortalGlobals[]": "other",
   "contracts.programLifetime[]": "other",
   "contracts.inlineArrays[]": "other",
+  "contracts.singleOwner[]": "other",
   "wasmModules[].sha256": "other",
   "wasmModules[].bytes": "other",
   "wasmUntranslated[].sha256": "other",

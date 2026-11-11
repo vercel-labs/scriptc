@@ -84,3 +84,17 @@ export declare class ThreadSlots<K extends object, V extends object> {
  * elements, frozen in scriptc builds; two reads need not give the same
  * array. Under Node.js it is the array the constructor stored. */
 export type InlineArray<T> = readonly T[];
+
+/** A class each of whose instances has one owner: the field or variable
+ * that holds it. Write it as `class C implements SingleOwner`. Other code
+ * may read an instance through its owner, pass it to a function for the
+ * length of a call, and move it to a new owner by returning it or storing
+ * it at its last use. scriptc proves that no instance is ever held in two
+ * places, or reports the class and the rule the program breaks. Its
+ * instances then carry no reference count and are freed, with everything
+ * they own, when their owner lets go of them. Under Node.js it is a type
+ * and is erased, so the program behaves the same either way. */
+export type SingleOwner<T extends object = SingleOwnerObject> = T;
+
+/** What `implements SingleOwner` names. */
+export interface SingleOwnerObject {}

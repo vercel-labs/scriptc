@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "0ca9e5c5b2ef2c72";
+export const IR_CODEC_LAYOUT = "0fe8af5b0ef0ebc8";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -28,7 +28,7 @@ const KEYS0: readonly string[] = ["irVersion","sourceFile","functions","classes"
 const KEYS1: readonly string[] = ["name","sourceName","displayName","ownsPrototype","params","returnType","locals","captures","classCaptures","body","loc","jsEntry","boxesSource","tier","speculativeDispatch","fastRead","plainLoops","async","generator","asyncCacheGlobal","asyncCycleCacheGlobal"];
 const KEYS2: readonly string[] = ["libnode","nodeVersion","modules"];
 const KEYS3: readonly string[] = ["profileName","prefix","initSymbol","sinkRegisterSymbol","collectSymbol","resultResetSymbol","threadInstances","callbackRegisterSymbol","callbacks","exports","trapOverlays","identity"];
-const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays"];
+const KEYS4: readonly string[] = ["int32Fields","int32Params","int32Returns","int32Locals","int32Elements","noThrow","acyclic","immortalGlobals","programLifetime","inlineArrays","singleOwner"];
 const KEYS5: readonly string[] = ["kind","elem","optionalElements"];
 const KEYS6: readonly string[] = ["kind"];
 const KEYS7: readonly string[] = ["kind"];
@@ -775,6 +775,11 @@ function encIrContracts(w: IrWriter, v: IrContracts): void {
     w.byte(1);
     encT8(w, v.inlineArrays);
   }
+  if (v.singleOwner === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    encT8(w, v.singleOwner);
+  }
 }
 function decIrContracts(r: IrReader): IrContracts {
   const f0 = r.tag(2, "IrModule.contracts.int32Fields") === 0 ? undefined : decT8(r);
@@ -787,7 +792,8 @@ function decIrContracts(r: IrReader): IrContracts {
   const f7 = r.tag(2, "IrModule.contracts.immortalGlobals") === 0 ? undefined : decT8(r);
   const f8 = r.tag(2, "IrModule.contracts.programLifetime") === 0 ? undefined : decT8(r);
   const f9 = r.tag(2, "IrModule.contracts.inlineArrays") === 0 ? undefined : decT8(r);
-  const o: IrContracts = { ...(f0 !== undefined ? { int32Fields: f0 } : {}), ...(f1 !== undefined ? { int32Params: f1 } : {}), ...(f2 !== undefined ? { int32Returns: f2 } : {}), ...(f3 !== undefined ? { int32Locals: f3 } : {}), ...(f4 !== undefined ? { int32Elements: f4 } : {}), ...(f5 !== undefined ? { noThrow: f5 } : {}), ...(f6 !== undefined ? { acyclic: f6 } : {}), ...(f7 !== undefined ? { immortalGlobals: f7 } : {}), ...(f8 !== undefined ? { programLifetime: f8 } : {}), ...(f9 !== undefined ? { inlineArrays: f9 } : {}) };
+  const f10 = r.tag(2, "IrModule.contracts.singleOwner") === 0 ? undefined : decT8(r);
+  const o: IrContracts = { ...(f0 !== undefined ? { int32Fields: f0 } : {}), ...(f1 !== undefined ? { int32Params: f1 } : {}), ...(f2 !== undefined ? { int32Returns: f2 } : {}), ...(f3 !== undefined ? { int32Locals: f3 } : {}), ...(f4 !== undefined ? { int32Elements: f4 } : {}), ...(f5 !== undefined ? { noThrow: f5 } : {}), ...(f6 !== undefined ? { acyclic: f6 } : {}), ...(f7 !== undefined ? { immortalGlobals: f7 } : {}), ...(f8 !== undefined ? { programLifetime: f8 } : {}), ...(f9 !== undefined ? { inlineArrays: f9 } : {}), ...(f10 !== undefined ? { singleOwner: f10 } : {}) };
   return o;
 }
 

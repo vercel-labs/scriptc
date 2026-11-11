@@ -476,5 +476,9 @@ $ scriptc build reject.ts
       <td>SC7009</td>
       <td>An <code>InlineArray</code> field is not on a <code>ProgramLifetime</code> class, is written other than once from a constructor parameter, or is read in a way that could tell its reads apart.</td>
     </tr>
+    <tr>
+      <td>SC7010</td>
+      <td>A <code>SingleOwner</code> class cannot be proved to give each instance one owner, or is declared in a library build. The message names the class and the expression that would hold an instance twice.</td>
+    </tr>
   </tbody>
 </table>

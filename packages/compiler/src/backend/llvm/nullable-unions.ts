@@ -181,6 +181,10 @@ export class NullableUnions {
   readonly retainWrappers = new Map<string, string>();
   /** Some nullable union encodes `null` with NULLABLE_NULL. */
   readonly usesNullSentinel: boolean = false;
+  /** The classes whose instances a value of the NULLABLE_NULL sentinel
+   * stands for: the reference arm of a two-unit-arm nullable union, whose
+   * values reach the arm's own release entry point. */
+  private readonly sentinelClasses = new Set<string>();
   /** Some Map or Set is keyed by a string-key union (stringKey): the
    * module defines the two key strings its unit arms are stored as
    * (string-union-keys.ts). */
@@ -232,7 +236,11 @@ export class NullableUnions {
         (classes !== null ? classUnion(def, classes) : null);
       if (!nullable) continue;
       this.byId.set(def.id, nullable);
-      if (nullable.nullTag >= 0) this.usesNullSentinel = true;
+      if (nullable.nullTag >= 0) {
+        this.usesNullSentinel = true;
+        if (nullable.repr === "single" && nullable.arm.kind === "object")
+          this.sentinelClasses.add(nullable.arm.className);
+      }
       if (nullable.repr === "shapes")
         for (const arm of nullable.arms)
           if (!this.shapeNumbers.has(arm.shapeId))
@@ -276,6 +284,22 @@ export class NullableUnions {
 
   of(type: IrType): PointerUnion | null {
     return type.kind === "union" ? this.get(type.unionId) : null;
+  }
+
+  /** Whether a value of `type` can be the NULLABLE_NULL sentinel: the type
+   * is a nullable union with both unit arms (`C | null | undefined`), where
+   * NULL is `undefined` and the sentinel is `null`. */
+  mayHoldNullSentinel(type: IrType): boolean {
+    const nullable = this.of(type);
+    return nullable?.repr === "single" && nullable.nullTag >= 0;
+  }
+
+  /** Whether a release of an instance of class `name` must skip the
+   * NULLABLE_NULL sentinel: the class is the reference arm of a two-unit-arm
+   * nullable union, so a value of that union reaches this class's release
+   * entry point as the sentinel, never as an instance. */
+  classMayBeNullSentinel(name: string): boolean {
+    return this.sentinelClasses.has(name);
   }
 
   /** The single-reference-arm form only (shape unions answer null). */

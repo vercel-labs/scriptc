@@ -36,8 +36,14 @@ typedef struct ScrRlIo {
   void (*release)(void *s);
   /* Node registers a 'resize' listener on a terminal interface's output
    * and removes it at close: on adds the interface's refreshing listener
-   * to the stream's 'resize' event, off (at close) removes it. */
-  void (*watch_resize)(void *s, double id, bool on);
+   * to the stream's 'resize' event, off (at close) removes it. refresh is
+   * the listener's body — the readline unit's redraw — which the stream
+   * unit only wraps in a function value: a stream output's listener lives
+   * in the stream unit's emitter, but the stream unit must not call into
+   * the readline units, which a program using streams alone does not
+   * link. */
+  void (*watch_resize)(void *s, double id, bool on,
+                       ScrDyn *(*refresh)(ScrClosure *cb, ScrDyn *const *args, size_t argc));
 } ScrRlIo;
 double scr_rl_open(const ScrRlIo *io, void *in /*+1 or NULL: stdin*/, void *out /*+1 or NULL*/,
                    bool out_stdout, double crlf_delay, ScrStr *prompt, ScrDyn *signal,

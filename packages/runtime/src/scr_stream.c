@@ -6161,17 +6161,15 @@ static void scr_stream_rl_atexit_once(void) {
   scr_atexit(scr_stream_rl_hooks_free);
 }
 
-/* The refresh listener is a function value, as Node's onresize is: an
- * untyped emit('resize') calls it the way it calls the program's own
- * listeners. */
-static ScrDyn *scr_stream_rl_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
-  (void)args;
-  (void)argc;
-  scr_rl_resize(scr_stream_rl_id(cb));
-  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
-}
-
-static void scr_stream_rl_watch_resize(void *sv, double id, bool on) {
+/* A terminal interface's 'resize' listener: a function value, as Node's
+ * onresize is, so an untyped emit('resize') calls it the way it calls the
+ * program's own listeners. Its body is the caller's — the readline unit's
+ * redraw, handed in through ScrRlIo.watch_resize — so this unit registers
+ * the listener without calling into the readline units, which a program
+ * using streams alone does not link. */
+static void scr_stream_rl_watch_resize(void *sv, double id, bool on,
+                                       ScrDyn *(*refresh)(ScrClosure *cb, ScrDyn *const *args,
+                                                          size_t argc)) {
   ScrStream *s = (ScrStream *)sv;
   ScrStr *name = scr_str_new("resize", 6);
   for (ScrRlResizeHook *h = scr_rl_resize_hooks; h; h = h->next) {
@@ -6193,10 +6191,10 @@ static void scr_stream_rl_watch_resize(void *sv, double id, bool on) {
     scr_stream_rl_atexit_once();
     ScrRlResizeHook *h = calloc(1, sizeof *h);
     if (!h) scr_stream_oom();
-    ScrClosure *clo = scr_stream_rl_listener((void *)&scr_stream_rl_resize_thunk, id);
+    ScrClosure *clo = scr_stream_rl_listener((void *)refresh, id);
     h->s = s;
     h->id = id;
-    h->cb = scr_dyn_new_func(clo, scr_stream_rl_resize_thunk, 0, "", "refreshLine");
+    h->cb = scr_dyn_new_func(clo, refresh, 0, "", "refreshLine");
     h->next = scr_rl_resize_hooks;
     scr_rl_resize_hooks = h;
     scr_emitter_release(scr_emitter_on_flex((ScrEmitter *)s, name, h->cb, false, false));

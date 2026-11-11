@@ -506,11 +506,23 @@ static ScrDyn *tty_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc
   return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* The stream output's 'resize' listener body: the stream unit owns the
+ * registration (the output's emitter), and hands this unit the function
+ * value's body through watch_resize, so the call into the interface's
+ * redraw stays in the unit a stream-only program does not link. */
+static ScrDyn *tty_stream_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  scr_rl_resize(scr_box_get_f64(cb->caps[0]));
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
 static void tty_watch_resize(ScrRl *rl, bool on) {
   ScrRlTty *t = rl->tty;
   if (!t || t->resize_watched == on) return;
   if (rl->out) {
-    if (rl->io && rl->io->watch_resize) rl->io->watch_resize(rl->out, rl->id, on);
+    if (rl->io && rl->io->watch_resize)
+      rl->io->watch_resize(rl->out, rl->id, on, &tty_stream_resize_thunk);
   } else if (rl->out_stdout) {
     if (on) {
       ScrClosure *cb = scr_closure_new(NULL, 1);

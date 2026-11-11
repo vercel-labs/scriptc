@@ -62,6 +62,53 @@
 #define SCR_STREAM_DEFAULT_HWM 65536
 #endif
 
+/* setDefaultHighWaterMark moves these; every stream built afterwards takes
+ * the new value. Node keeps them in module state (state.js), which a
+ * worker's fresh isolate does not inherit — thread-local, like that. */
+static SCR_TL double scr_stream_default_hwm_bytes = SCR_STREAM_DEFAULT_HWM;
+static SCR_TL double scr_stream_default_hwm_object = 16;
+
+/* scr_stream_state_new's hwm argument: >= 0 is the option's value; -1 asks
+ * for the byte-mode default; -3 for the object-mode one, which the compiler
+ * emits beside a side whose objectMode it knows statically (the sides do
+ * not know their mode before the constructor runs). Both sentinels resolve
+ * at construction, so a preceding setDefaultHighWaterMark applies. (-2 is
+ * the option ladders' "validation failed" marker, not a default.) */
+#define SCR_STREAM_HWM_OBJECT_DEFAULT (-3.0)
+
+double scr_stream_get_default_hwm(bool object_mode) {
+  return object_mode ? scr_stream_default_hwm_object : scr_stream_default_hwm_bytes;
+}
+
+/* The JS lane's twin: Node reads objectMode by truthiness. */
+double scr_stream_get_default_hwm_dyn(struct ScrDyn *object_mode) {
+  return scr_dyn_truthy(object_mode) ? scr_stream_default_hwm_object
+                                     : scr_stream_default_hwm_bytes;
+}
+
+/* setDefaultHighWaterMark's value gate: Node's validateInteger(value,
+ * 'value', 0) — a number (checked by the caller), then an integer in
+ * [0, MAX_SAFE_INTEGER]. Throws catchably; false when it did. */
+static bool scr_stream_check_default_hwm(double value) {
+  return scr_bytes_validate_off("value", value, 9007199254740991.0);
+}
+
+void scr_stream_set_default_hwm(bool object_mode, double value) {
+  if (!scr_stream_check_default_hwm(value)) return;
+  if (object_mode) scr_stream_default_hwm_object = value;
+  else scr_stream_default_hwm_bytes = value;
+}
+
+void scr_stream_set_default_hwm_dyn(struct ScrDyn *object_mode, struct ScrDyn *value) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("value", "of type number", value);
+    return;
+  }
+  if (!scr_stream_check_default_hwm(value->v.num)) return;
+  if (scr_dyn_truthy(object_mode)) scr_stream_default_hwm_object = value->v.num;
+  else scr_stream_default_hwm_bytes = value->v.num;
+}
+
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -308,6 +355,12 @@ struct ScrStreamState {
     ScrStream **src;
     size_t n, cap;
   } drain_srcs;
+  /* stream.duplexPair: the other side (an owned ref, traced — the two
+   * sides of a pair hold each other until the collector takes the pair)
+   * and whether a write on the other side waits for THIS side's next
+   * _read (Node's kCallback, stored on the side being read). */
+  ScrStream *pair_peer;
+  bool pair_cb_pending;
   /* Deferred construction (Node's _construct, used by the fs streams):
    * until construct_done's tick runs, reads, buffered writes, the finish
    * path and _destroy wait. A destroy() in that window marks the stream
@@ -481,6 +534,7 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
     for (size_t i = 0; i < st->fin.n; i++) scr_closure_release(st->fin.cb[i]);
     for (size_t i = 0; i < st->pipes.n; i++) scr_stream_release(st->pipes.dst[i]);
     for (size_t i = 0; i < st->drain_srcs.n; i++) scr_stream_release(st->drain_srcs.src[i]);
+    if (st->pair_peer) scr_stream_release(st->pair_peer);
   }
   for (size_t i = st->w.head; i < st->w.n; i++) {
     /* typed chunks are of types the collector does not trace */
@@ -539,6 +593,7 @@ void scr_stream_st_trace(ScrStreamState *st, ScrTraceVisit visit, void *ctx) {
   }
   for (size_t i = 0; i < st->pipes.n; i++) visit(st->pipes.dst[i], ctx);
   for (size_t i = 0; i < st->drain_srcs.n; i++) visit(st->drain_srcs.src[i], ctx);
+  if (st->pair_peer) visit(st->pair_peer, ctx);
 }
 
 void scr_stream_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -1865,7 +1920,7 @@ static ScrStream *scr_from_stream(ScrFromSrc *f, ScrStreamReadInv read_inv, bool
     return NULL;
   }
   if (hwm_kind == SCR_FROM_HWM_FROM && !f->single) hwm = 1;
-  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? 16 : -1;
+  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1;
   ScrClosure *read = scr_closure_new((void *)read_inv, 1);
   read->caps[0] = scr_box_new_obj(scr_from_src_retain_v, scr_from_src_release_v, NULL);
   scr_box_set_ref(read->caps[0], f); /* moves */
@@ -1897,7 +1952,7 @@ ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_
     return NULL;
   }
   bool object_mode = (bits & SCR_FROM_BYTE_MODE) == 0;
-  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? 16 : -1;
+  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1;
   else if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
   ScrStream *s = scr_from_new((bits & SCR_FROM_DUPLEX) != 0, hwm, read, read_inv, destroy, destroy_inv);
   if (object_mode) s->st->r.object_entries = true;
@@ -2739,6 +2794,14 @@ static void scr_stream_finish_maybe(ScrStream *s) {
 
 /* ── construction ─────────────────────────────────────────────────────── */
 
+/* A constructor's hwm argument, resolved against the current defaults
+ * (setDefaultHighWaterMark may have moved them since compile time). */
+static double scr_stream_resolve_hwm(double hwm) {
+  if (hwm >= 0) return hwm;
+  if (hwm == SCR_STREAM_HWM_OBJECT_DEFAULT) return scr_stream_default_hwm_object;
+  return scr_stream_default_hwm_bytes;
+}
+
 static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
                                             double rhwm, double whwm, bool auto_destroy,
                                             bool emit_close, bool allow_half_open) {
@@ -2749,8 +2812,8 @@ static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
   st->auto_destroy = auto_destroy;
   st->emit_close = emit_close;
   st->allow_half_open = allow_half_open;
-  st->r.hwm = rhwm >= 0 ? (size_t)rhwm : SCR_STREAM_DEFAULT_HWM;
-  st->w.hwm = whwm >= 0 ? (size_t)whwm : SCR_STREAM_DEFAULT_HWM;
+  st->r.hwm = (size_t)scr_stream_resolve_hwm(rhwm);
+  st->w.hwm = (size_t)scr_stream_resolve_hwm(whwm);
   st->r.flowing = -1;
   /* Node's ReadableState.sync starts TRUE: pushes before the first _read
    * attempt take the buffered path (never the direct 'data' emit). */
@@ -3026,58 +3089,77 @@ void scr_stream_init_passthrough(ScrStream *s, double rhwm, double whwm, bool au
       allow_half_open, transform, transform_inv, flush, flush_inv, destroy, destroy_inv);
 }
 
+/* Drop a callback slot: unlink first, then release. A callback's teardown
+ * can run the collector (a captured stream or context it was the last
+ * reference to), and the slot must already be empty when it does — a pass
+ * that found the released closure still linked would walk an edge whose
+ * reference was just given up. The evaluator's own setters
+ * (scr_stream_set_*) follow the same order. */
+static void scr_stream_drop_cb(ScrClosure **slot) {
+  ScrClosure *cb = *slot;
+  *slot = NULL;
+  if (cb != NULL) scr_closure_release(cb);
+}
+
 /* ── the underscore-method assignment surface ─────────────────────────
  * `r._read = fn` / `w._write = fn` (and _final/_destroy/_transform/
  * _flush) AFTER construction: Node assigns an own property that shadows
  * the prototype method, and the machinery calls through it from then on.
- * Here the same slot the option callbacks fill swaps its closure — the
- * old callback releases, the new one (+1, moves) takes the slot with its
- * compiler-emitted invoke thunk. In-flight operations already dispatched
- * through the OLD callback complete against it (they hold no further
- * reference); the next _read/_write/... dispatch uses the new one, which
- * is Node's own timing. A NULL state block (assignment before a
- * subclass's super()) cannot be reached from lowered code — super()
- * lowers before any statement that could see `this`. */
+ * Here the same slot the option callbacks fill swaps its closure: the new
+ * one (+1, moves) takes the slot with its compiler-emitted invoke thunk,
+ * and only then does the old callback release. In-flight operations
+ * already dispatched through the OLD callback complete against it (they
+ * hold no further reference); the next _read/_write/... dispatch uses the
+ * new one, which is Node's own timing. A NULL state block (assignment
+ * before a subclass's super()) cannot be reached from lowered code —
+ * super() lowers before any statement that could see `this`. */
+
 void scr_stream_set_read(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamReadInv inv) {
   ScrStreamState *st = s->st;
-  if (st->r.read_cb) scr_closure_release(st->r.read_cb);
-  st->r.read_cb = cb;
   st->r.read_inv = inv;
+  ScrClosure *old = st->r.read_cb;
+  st->r.read_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_write(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamChunkInv inv) {
   ScrStreamState *st = s->st;
-  if (st->w.write_cb) scr_closure_release(st->w.write_cb);
-  st->w.write_cb = cb;
   st->w.write_inv = inv;
+  ScrClosure *old = st->w.write_cb;
+  st->w.write_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_final(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlainInv inv) {
   ScrStreamState *st = s->st;
-  if (st->w.final_cb) scr_closure_release(st->w.final_cb);
-  st->w.final_cb = cb;
   st->w.final_inv = inv;
+  ScrClosure *old = st->w.final_cb;
+  st->w.final_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_destroy(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
   ScrStreamState *st = s->st;
-  if (st->destroy_cb) scr_closure_release(st->destroy_cb);
-  st->destroy_cb = cb;
   st->destroy_inv = inv;
+  ScrClosure *old = st->destroy_cb;
+  st->destroy_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_transform(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamChunkInv inv) {
   ScrStreamState *st = s->st;
-  if (st->transform_cb) scr_closure_release(st->transform_cb);
-  st->transform_cb = cb;
   st->transform_inv = inv;
+  ScrClosure *old = st->transform_cb;
+  st->transform_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_flush(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamPlainInv inv) {
   ScrStreamState *st = s->st;
-  if (st->flush_cb) scr_closure_release(st->flush_cb);
-  st->flush_cb = cb;
   st->flush_inv = inv;
+  ScrClosure *old = st->flush_cb;
+  st->flush_cb = cb;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_set_flush_on_prefinish(ScrStream *s) { s->st->flush_on_prefinish = true; }
@@ -3377,8 +3459,8 @@ static bool scr_stream_parse_dyn_opts(const ScrDyn *opts, char base, ScrStreamDy
     if (hwm == -2) return false;
     out->rhwm = out->whwm = hwm;
   }
-  if (out->rhwm == -1 && out->readable_object) out->rhwm = 16;
-  if (out->whwm == -1 && out->writable_object) out->whwm = 16;
+  if (out->rhwm == -1 && out->readable_object) out->rhwm = SCR_STREAM_HWM_OBJECT_DEFAULT;
+  if (out->whwm == -1 && out->writable_object) out->whwm = SCR_STREAM_HWM_OBJECT_DEFAULT;
   out->auto_destroy = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "autoDestroy", 11));
   out->emit_close = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "emitClose", 9));
   if (duplexish) {
@@ -3528,6 +3610,331 @@ ScrStream *scr_stream_new_transform_dyn(ScrDyn *opts) {
 ScrStream *scr_stream_new_passthrough_dyn(ScrDyn *opts) {
   return scr_stream_new_transformish_dyn(opts, 'p');
 }
+
+/* ── stream.duplexPair ────────────────────────────────────────────────────
+ * Node's DuplexSide (internal/streams/duplexpair.js): each side is a Duplex
+ * whose _read/_write/_final/_destroy move one chunk at a time into the
+ * other side. A write completes only when the OTHER side is read (Node
+ * stores the write callback on the side being read, as kCallback), so a
+ * slow reader back-pressures the writer; an empty chunk completes on the
+ * next tick instead. Options are the Duplex constructor's, read for each
+ * side; a read/write/final/destroy option shadows the pair's method, as
+ * Node's own instance properties shadow DuplexSide's prototype. */
+
+/* _read: the peer's pending write completes now, which lets its next
+ * buffered chunk (if any) come through _write and into our buffer. */
+static void scr_pair_read_inv(ScrClosure *cb, ScrStream *s, double size) {
+  (void)cb;
+  (void)size;
+  if (!s->st->pair_cb_pending) return;
+  s->st->pair_cb_pending = false;
+  ScrStream *writer = s->st->pair_peer;
+  if (writer != NULL) scr_stream_write_done(writer, NULL);
+}
+
+/* The empty chunk's deferred completion (process.nextTick(callback)). */
+static void scr_pair_write_tick(ScrClosure *cb) {
+  ScrStream *s = scr_box_get_ref(cb->caps[0]);
+  scr_stream_write_done(s, NULL);
+  scr_stream_release(s);
+}
+
+/* Node's DuplexSide _write tests `chunk.length === 0` on the object-mode
+ * value too: an empty string, Buffer/view, array or object with a zero
+ * length completes on the next tick rather than being pushed. */
+static bool scr_pair_value_empty(ScrDyn *v) {
+  if (v == NULL) return false;
+  switch (v->kind) {
+  case SCR_DYN_STR:
+    return v->v.str->len == 0;
+  case SCR_DYN_BYTES:
+    return v->v.bytes->len == 0;
+  case SCR_DYN_ARR:
+    return scr_dyn_arr_length(v) == 0;
+  case SCR_DYN_OBJ: {
+    const ScrDyn *len = scr_dyn_obj_get(v, "length", 6);
+    return len != NULL && len->kind == SCR_DYN_NUM && len->v.num == 0;
+  }
+  default:
+    return false;
+  }
+}
+
+/* _write: the chunk becomes the peer's next entry (in byte mode; an
+ * object-mode write hands the peer the value), and our write completes
+ * when the peer is read. The pending mark goes up FIRST: a push into a
+ * flowing peer may deliver to a 'data' listener that reads it right here. */
+static void scr_pair_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  (void)cb;
+  ScrStream *peer = s->st->pair_peer;
+  if (peer == NULL) return; /* unlinked: construction failed */
+  const ScrStreamTypedDesc *desc = s->st->w.cur_desc;
+  bool values = scr_stream_writes_values(s);
+  bool empty = desc == NULL &&
+      (values ? scr_pair_value_empty((ScrDyn *)chunk) : chunk->len == 0);
+  if (empty) {
+    /* Node pushes nothing for an empty chunk: process.nextTick(callback) */
+    scr_next_tick(scr_stream_done_new(s, (void *)&scr_pair_write_tick));
+    return;
+  }
+  peer->st->pair_cb_pending = true;
+  if (desc != NULL) scr_stream_push_typed(peer, chunk, desc);
+  else if (scr_stream_writes_values(s)) scr_stream_push_dyn(peer, (ScrDyn *)chunk);
+  else scr_stream_add_chunk(peer, chunk, false);
+}
+
+/* _final: the peer's 'end' is this side's completion, then the peer sees
+ * EOF (Node's otherSide.on('end', callback); otherSide.push(null)). */
+static void scr_pair_final_end(ScrClosure *cb) {
+  ScrStream *self = scr_box_get_ref(cb->caps[0]);
+  scr_stream_final_done(self, NULL);
+  scr_stream_release(self);
+}
+
+static void scr_pair_final_inv(ScrClosure *cb, ScrStream *s) {
+  (void)cb;
+  ScrStream *peer = s->st->pair_peer;
+  if (peer == NULL) {
+    scr_stream_final_done(s, NULL);
+    return;
+  }
+  ScrStr *n = scr_str_new("end", 3);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)peer, n,
+      scr_stream_done_new(s, (void *)&scr_pair_final_end), scr_ee_inv_fixed0, false, false));
+  scr_str_release(n);
+  scr_stream_push_null(peer);
+}
+
+/* _destroy: on a tick, a live peer ends (a graceful close) or, after an
+ * error, is destroyed without the error (Node keeps the peer from
+ * crashing with an unhandled 'error' but does not hang it). */
+typedef struct {
+  size_t rc;
+  ScrStream *peer; /* owned */
+  ScrError *err;   /* owned, or NULL */
+} ScrPairKill;
+
+static void *scr_pair_kill_retain_v(void *p) {
+  ((ScrPairKill *)p)->rc++;
+  return p;
+}
+
+static void scr_pair_kill_release_v(void *p) {
+  ScrPairKill *k = p;
+  if (--k->rc > 0) return;
+  scr_stream_release(k->peer);
+  if (k->err) scr_error_release(k->err);
+  free(k);
+}
+
+static ScrClosure *scr_pair_kill_closure(void *fn, ScrPairKill *k) {
+  ScrClosure *job = scr_closure_new(fn, 1);
+  job->caps[0] = scr_box_new_obj(&scr_pair_kill_retain_v, &scr_pair_kill_release_v, NULL);
+  scr_box_set_ref(job->caps[0], scr_pair_kill_retain_v(k));
+  return job;
+}
+
+static void scr_pair_kill_tick(ScrClosure *job) {
+  ScrPairKill *k = scr_box_get_ref(job->caps[0]);
+  if (!k->peer->st->destroyed) {
+    if (k->err != NULL) scr_stream_release(scr_stream_destroy(k->peer, NULL));
+    else scr_stream_push_null(k->peer);
+  }
+  scr_pair_kill_release_v(k);
+}
+
+static void scr_pair_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)cb;
+  ScrStream *peer = s->st->pair_peer;
+  if (peer != NULL && !peer->st->destroyed) {
+    ScrPairKill *k = calloc(1, sizeof *k);
+    if (!k) scr_stream_oom();
+    k->rc = 1;
+    k->peer = scr_stream_retain(peer);
+    k->err = err ? scr_error_retain(err) : NULL;
+    scr_next_tick(scr_pair_kill_closure((void *)&scr_pair_kill_tick, k));
+    scr_pair_kill_release_v(k);
+  }
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
+/* One DuplexSide: a Duplex with the pair's methods as the fallbacks the
+ * options shadow, then (for the second and last call) the two sides linked
+ * to each other. `peer` is borrowed. */
+static ScrStream *scr_pair_side(ScrDyn *opts, ScrStream *peer) {
+  ScrStreamDynOpts o;
+  if (!scr_stream_parse_dyn_opts(opts, 'd', &o)) return NULL;
+  void *rinv = NULL, *winv = NULL, *finv = NULL, *dinv = NULL;
+  ScrClosure *read = scr_stream_dynopt_pick(o.read, (void *)&scr_stream_dynopt_read_inv,
+      scr_closure_new((void *)&scr_pair_read_inv, 0), (void *)&scr_pair_read_inv, &rinv);
+  ScrClosure *write = scr_stream_dynopt_pick(o.write, (void *)&scr_stream_dynopt_write_inv,
+      scr_closure_new((void *)&scr_pair_write_inv, 0), (void *)&scr_pair_write_inv, &winv);
+  ScrClosure *final_cb = scr_stream_dynopt_pick(o.final_fn, (void *)&scr_stream_dynopt_final_inv,
+      scr_closure_new((void *)&scr_pair_final_inv, 0), (void *)&scr_pair_final_inv, &finv);
+  ScrClosure *destroy = scr_stream_dynopt_pick(o.destroy, (void *)&scr_stream_dynopt_destroy_inv,
+      scr_closure_new((void *)&scr_pair_destroy_inv, 0), (void *)&scr_pair_destroy_inv, &dinv);
+  ScrStream *s = scr_stream_new_duplex(o.rhwm, o.whwm, o.auto_destroy, o.emit_close,
+      o.allow_half_open, o.readable_side, o.writable_side,
+      read, (ScrStreamReadInv)rinv, write, (ScrStreamChunkInv)winv,
+      final_cb, (ScrStreamPlainInv)finv, destroy, (ScrStreamErrInv)dinv);
+  if (s == NULL) return NULL;
+  scr_stream_dynopt_apply_object(s, &o);
+  scr_stream_dynopt_apply_enc(s, &o);
+  if (peer != NULL) {
+    s->st->pair_peer = scr_stream_retain(peer);
+    peer->st->pair_peer = scr_stream_retain(s);
+  }
+  return s;
+}
+
+/* duplexPair's two calls: the first side, then its peer (which links). */
+ScrStream *scr_stream_duplex_pair_side(ScrDyn *opts) { return scr_pair_side(opts, NULL); }
+
+ScrStream *scr_stream_duplex_pair_peer(ScrDyn *opts, ScrStream *first) {
+  return scr_pair_side(opts, first);
+}
+
+/* ── readable.wrap ────────────────────────────────────────────────────────
+ * Node's Readable.prototype.wrap: the receiver answers for the old-style
+ * source — each 'data' chunk is pushed into it (a push over the high-water
+ * mark pauses the source; the receiver's _read resumes it), 'end' is EOF,
+ * an 'error' destroys the receiver with it, and the source closing or
+ * destroying destroys the receiver. The source's own methods are not
+ * proxied (Node copies Object.keys(src)'s functions onto the receiver; a
+ * native stream has no own methods to copy). */
+typedef struct {
+  size_t rc;
+  ScrStream *self; /* owned */
+  ScrStream *src;  /* owned */
+  bool paused;
+} ScrWrap;
+
+static void *scr_wrap_retain_v(void *p) {
+  ((ScrWrap *)p)->rc++;
+  return p;
+}
+
+/* The collector's teardown: the two streams were visited by the trace and
+ * are released by the collector itself, so only the block is freed. */
+static void scr_wrap_gcfree(void *p) { scr_cyc_free(p); }
+
+/* The reference-count path's teardown: release the two streams, then free. */
+static void scr_wrap_destroy(void *p) {
+  ScrWrap *w = p;
+  ScrStream *self = w->self;
+  ScrStream *src = w->src;
+  w->self = NULL;
+  w->src = NULL;
+  scr_stream_release(self);
+  scr_stream_release(src);
+  scr_wrap_gcfree(w);
+}
+
+static void scr_wrap_release_v(void *p) {
+  ScrWrap *w = p;
+  if (--w->rc > 0) {
+    scr_cyc_released(w);
+    return;
+  }
+  scr_cyc_dead(w);
+  scr_rc_destroy(w, scr_wrap_destroy);
+}
+
+static void scr_wrap_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrWrap *w = p;
+  visit(w->self, ctx);
+  visit(w->src, ctx);
+}
+
+static ScrClosure *scr_wrap_closure(void *fn, ScrWrap *w) {
+  ScrClosure *c = scr_closure_new(fn, 1);
+  c->caps[0] = scr_box_new_obj(&scr_wrap_retain_v, &scr_wrap_release_v, &scr_wrap_trace);
+  scr_box_set_ref(c->caps[0], scr_wrap_retain_v(w));
+  return c;
+}
+
+static void scr_wrap_on(ScrStream *s, const char *name, ScrEeInvoke inv, void *fn, ScrWrap *w) {
+  ScrStr *n = scr_str_new(name, strlen(name));
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, n, scr_wrap_closure(fn, w), inv, false, false));
+  scr_str_release(n);
+}
+
+/* data: this.push(chunk), then pause the source once the receiver is full */
+static void scr_wrap_data(ScrClosure *cb, ScrBytes *bytes, ScrStr *str, ScrDyn *value) {
+  ScrWrap *w = scr_box_get_ref(cb->caps[0]);
+  ScrStream *self = w->self;
+  if (self != NULL) {
+    ScrStreamState *dst = self->st;
+    bool more;
+    if (dst->r.object_entries) {
+      more = value ? scr_stream_push_object(self, value) > 0
+                   : scr_stream_add_entry(self,
+                         str ? (void *)scr_str_retain(str) : (void *)scr_bytes_retain(bytes),
+                         str ? SCR_ENTRY_STR : SCR_ENTRY_BYTES) > 0;
+    } else if (value && !str && !bytes) {
+      more = scr_stream_push_dyn(self, value);
+    } else if (str) {
+      more = scr_stream_push_str(self, str);
+    } else {
+      more = scr_stream_push(self, bytes);
+    }
+    if (!more && !scr_exc_pending() && w->src != NULL) {
+      w->paused = true;
+      scr_stream_release(scr_stream_pause(w->src));
+    }
+  }
+  scr_wrap_release_v(w);
+}
+
+static void scr_wrap_end(ScrClosure *cb) {
+  ScrWrap *w = scr_box_get_ref(cb->caps[0]);
+  if (w->self != NULL) scr_stream_push_null(w->self);
+  scr_wrap_release_v(w);
+}
+
+/* error: errorOrDestroy(this, err) */
+static void scr_wrap_error(ScrClosure *cb, ScrError *err) {
+  ScrWrap *w = scr_box_get_ref(cb->caps[0]);
+  if (w->self != NULL) scr_stream_error_or_destroy(w->self, err);
+  scr_wrap_release_v(w);
+}
+
+/* close / destroy: this.destroy() */
+static void scr_wrap_closed(ScrClosure *cb) {
+  ScrWrap *w = scr_box_get_ref(cb->caps[0]);
+  if (w->self != NULL) scr_stream_release(scr_stream_destroy(w->self, NULL));
+  scr_wrap_release_v(w);
+}
+
+/* the receiver's _read: a paused source resumes */
+static void scr_wrap_read_inv(ScrClosure *cb, ScrStream *s, double size) {
+  (void)s;
+  (void)size;
+  ScrWrap *w = scr_box_get_ref(cb->caps[0]);
+  if (w->paused && w->src != NULL) {
+    w->paused = false;
+    scr_stream_release(scr_stream_resume(w->src));
+  }
+  scr_wrap_release_v(w);
+}
+
+ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src) {
+  static ScrCycType cyc_type = {&scr_wrap_trace, &scr_wrap_gcfree, SCR_CYC_KIND_NONE, 0};
+  ScrWrap *w = scr_cyc_alloc(sizeof *w, &cyc_type);
+  w->rc = 1;
+  w->self = scr_stream_retain(self);
+  w->src = scr_stream_retain(src);
+  scr_wrap_on(src, "data", &scr_ee_inv_fixed3, (void *)&scr_wrap_data, w);
+  scr_wrap_on(src, "end", &scr_ee_inv_fixed0, (void *)&scr_wrap_end, w);
+  scr_wrap_on(src, "error", &scr_ee_inv_fixed1, (void *)&scr_wrap_error, w);
+  scr_wrap_on(src, "close", &scr_ee_inv_fixed0, (void *)&scr_wrap_closed, w);
+  scr_wrap_on(src, "destroy", &scr_ee_inv_fixed0, (void *)&scr_wrap_closed, w);
+  scr_stream_set_read(self, scr_wrap_closure((void *)&scr_wrap_read_inv, w),
+                      (ScrStreamReadInv)&scr_wrap_read_inv);
+  scr_wrap_release_v(w);
+  return scr_stream_retain(self);
+}
+
 
 void scr_stream_init_readable_dyn(ScrStream *s, ScrDyn *opts,
     ScrClosure *read_fb, ScrStreamReadInv read_fb_inv,
@@ -3706,10 +4113,11 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
   ScrStreamState *st = s->st;
   for (size_t i = 0; i < st->fin.n; i++) {
     if (st->fin.cb[i] == cb) {
-      scr_closure_release(st->fin.cb[i]);
+      st->fin.cb[i] = NULL;
       memmove(&st->fin.cb[i], &st->fin.cb[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.cb);
       memmove(&st->fin.inv[i], &st->fin.inv[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.inv);
       st->fin.n--;
+      scr_closure_release(cb);
       break;
     }
   }
@@ -5206,7 +5614,8 @@ static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const S
   bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
   bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      object_mode ? 16 : -1, w_object ? 16 : -1, true, true, true, c->readable, c->writable,
+      object_mode ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1,
+      w_object ? SCR_STREAM_HWM_OBJECT_DEFAULT : -1, true, true, true, c->readable, c->writable,
       c->readable ? scr_compose_closure((void *)&scr_compose_read_inv, c) : NULL,
       c->readable ? &scr_compose_read_inv : NULL,
       c->writable ? scr_compose_closure((void *)&scr_compose_write_inv, c) : NULL,
@@ -8168,10 +8577,7 @@ static void scr_stream_constructed(ScrStream *s, ScrError *err) {
   }
   st->construct_finished = true;
   st->constructing = false;
-  if (st->construct_cb) {
-    scr_closure_release(st->construct_cb);
-    st->construct_cb = NULL;
-  }
+  scr_stream_drop_cb(&st->construct_cb);
   if (st->destroy_deferred) {
     st->destroy_deferred = false;
     ScrError *derr = st->destroy_err;
@@ -8237,9 +8643,10 @@ void scr_stream_replace_construct(ScrStream *s, ScrClosure *cb /*moves*/, ScrStr
     scr_closure_release(cb);
     return;
   }
-  scr_closure_release(st->construct_cb);
+  ScrClosure *old = st->construct_cb;
   st->construct_cb = cb;
   st->construct_inv = inv;
+  if (old) scr_closure_release(old);
 }
 
 /* A class's _writev under options that may carry their own writev (the
@@ -8259,9 +8666,10 @@ void scr_stream_set_writev(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamWrit
     scr_closure_release(cb);
     return;
   }
-  if (st->w.writev_cb) scr_closure_release(st->w.writev_cb);
+  ScrClosure *old = st->w.writev_cb;
   st->w.writev_cb = cb;
   st->w.writev_inv = inv;
+  if (old) scr_closure_release(old);
 }
 
 void scr_stream_fail(ScrStream *s, ScrError *err) { scr_stream_error_or_destroy(s, err); }
@@ -8462,15 +8870,15 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
          * a callback capturing its own stream forms, including the dyn-
          * options closures whose stream edge rides through a dyn function
          * value the cycle collector cannot traverse. */
-              if (st->r.read_cb) { scr_closure_release(st->r.read_cb); st->r.read_cb = NULL; }
-        if (st->w.write_cb) { scr_closure_release(st->w.write_cb); st->w.write_cb = NULL; }
-        if (st->w.final_cb) { scr_closure_release(st->w.final_cb); st->w.final_cb = NULL; }
-        if (st->w.writev_cb) { scr_closure_release(st->w.writev_cb); st->w.writev_cb = NULL; }
-        if (st->transform_cb) { scr_closure_release(st->transform_cb); st->transform_cb = NULL; }
-        if (st->flush_cb) { scr_closure_release(st->flush_cb); st->flush_cb = NULL; }
-        if (st->destroy_cb) { scr_closure_release(st->destroy_cb); st->destroy_cb = NULL; }
-        if (st->write_done) { scr_closure_release(st->write_done); st->write_done = NULL; }
-        if (st->done_cache) { scr_closure_release(st->done_cache); st->done_cache = NULL; }
+        scr_stream_drop_cb(&st->r.read_cb);
+        scr_stream_drop_cb(&st->w.write_cb);
+        scr_stream_drop_cb(&st->w.final_cb);
+        scr_stream_drop_cb(&st->w.writev_cb);
+        scr_stream_drop_cb(&st->transform_cb);
+        scr_stream_drop_cb(&st->flush_cb);
+        scr_stream_drop_cb(&st->destroy_cb);
+        scr_stream_drop_cb(&st->write_done);
+        scr_stream_drop_cb(&st->done_cache);
       }
       break;
     }

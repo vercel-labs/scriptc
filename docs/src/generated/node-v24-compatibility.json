@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3782,
+    "matrixRows": 3781,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 107,
+      "not-applicable": 108,
       "chapters": 6
     }
   },
@@ -314,8 +314,8 @@
     {
       "slug": "stream",
       "title": "Stream",
-      "entries": 140,
-      "apiEntries": 140
+      "entries": 139,
+      "apiEntries": 139
     },
     {
       "slug": "string_decoder",
@@ -59346,8 +59346,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.",
         "verification": "test-backed"
       }
     },
@@ -59369,9 +59369,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59852,8 +59852,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.",
         "verification": "test-backed"
       }
     },
@@ -59875,9 +59875,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.",
+        "verification": "test-backed"
       }
     },
     {
@@ -60749,9 +60749,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Answers for an old-style source: its data and end events feed this stream, a push past this stream's high-water mark pauses the source, and its error, close, or destroy destroys this stream.",
+        "verification": "test-backed"
       }
     },
     {
@@ -61646,9 +61646,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Returns a connected Duplex pair whose sides carry the tested write, end, destroy, and option-validation behavior.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62017,29 +62017,6 @@
         "status": "partial",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "stream:e5af5479aa86",
-      "chapter": "stream",
-      "kind": "misc",
-      "name": "`highwatermark`_discrepancy_after_calling_`readable.setencoding()`",
-      "signature": "`highWaterMark` discrepancy after calling `readable.setEncoding()`",
-      "label": "highWaterMark",
-      "apiSymbol": "highWaterMark",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "highwatermark-discrepancy-after-calling-readablesetencoding",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {

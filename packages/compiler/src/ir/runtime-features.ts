@@ -290,6 +290,12 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
   "stream.chunkDone",
+  "stream.getDefaultHwm",
+  "stream.getDefaultHwmDyn",
+  "stream.setDefaultHwm",
+  "stream.setDefaultHwmDyn",
+  "stream.duplexPairSide",
+  "stream.duplexPairPeer",
   "stream.objectMode",
   "stream.decodeStrings",
   "stream.optionValues",
@@ -2149,6 +2155,7 @@ const RUNTIME_FEATURE_RULES = {
   streamPipeEvents: rule({
     fns: [
       "readable.pipe",
+      "readable.wrap",
       "readable.pipeGeneral",
       "readable.unpipe",
       "stream.pipeline",

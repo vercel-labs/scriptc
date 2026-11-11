@@ -89570,6 +89570,7 @@
           "tests/corpus/1688-stream-writable-basics.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/2100-stream-default-hwm.ts",
           "tests/corpus/2861-readable-iterator-close.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
@@ -89609,7 +89610,10 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-readable-wrap.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -90380,21 +90384,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:stream.getDefaultHighWaterMark",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.stream.getDefaultHighWaterMark",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90417,10 +90411,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91059,21 +91054,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:stream.getDefaultHighWaterMark",
+        "status": "supported",
+        "evidence": "compiler-feature:stream.stream.getDefaultHighWaterMark",
         "tests": [
-          "tests/corpus/1685-stream-readable-basics.ts",
-          "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/corpus/stream-erased-data-listener.ts",
-          "tests/corpus/fs-stream-erased-open-listener.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91096,10 +91081,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-default-high-water-mark.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92366,10 +92352,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable.wrap",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-readable-wrap.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93457,10 +93443,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.duplexPair",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-duplex-pair.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94352,8 +94338,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:stream.highWaterMark"
       },
       "anchorSource": "exact"
     },

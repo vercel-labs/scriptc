@@ -838,6 +838,18 @@ function publicDetail(tier) {
     if (tier.status === "not-implemented")
       return "Not implemented in scriptc's static module-loader subset yet.";
     if (
+      source === "compiler-feature:stream.stream.getDefaultHighWaterMark" ||
+      source === "compiler-feature:stream.stream.setDefaultHighWaterMark"
+    ) {
+      return "Reads and sets the per-isolate byte-mode and object-mode default every stream built afterwards takes, with the setter's integer and range validation.";
+    }
+    if (source === "compiler-feature:stream.readable.wrap") {
+      return "Answers for an old-style source: its data and end events feed this stream, a push past this stream's high-water mark pauses the source, and its error, close, or destroy destroys this stream.";
+    }
+    if (source === "compiler-feature:stream.stream.duplexPair") {
+      return "Returns a connected Duplex pair whose sides carry the tested write, end, destroy, and option-validation behavior.";
+    }
+    if (
       source.startsWith("compiler-feature:stream.") ||
       source.startsWith("compiler-feature:webstreams.")
     ) {

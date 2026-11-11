@@ -6283,6 +6283,7 @@ function validateFunction(
         e.fn === "readable.unpipe" ||
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
+        e.fn === "readable.wrap" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||

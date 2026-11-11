@@ -5182,6 +5182,27 @@ function buildLibFnSignatures() {
      * unit (addAbortListener). */
     "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
     "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
+    /** stream.getDefaultHighWaterMark(objectMode): the current default the
+     * next stream takes; setDefaultHighWaterMark(objectMode, value) moves
+     * it (Node's validateInteger(value, 'value', 0) — a non-number is
+     * ERR_INVALID_ARG_TYPE, a non-integer or out-of-range one
+     * ERR_OUT_OF_RANGE). The Dyn twins take the JS lane's arguments as
+     * checked-dynamic values (objectMode by truthiness). */
+    "stream.getDefaultHwm": { argTypes: [BOOL], result: F64 },
+    "stream.getDefaultHwmDyn": { argTypes: [DYN], result: F64 },
+    "stream.setDefaultHwm": { argTypes: [BOOL, F64], result: VOID },
+    "stream.setDefaultHwmDyn": { argTypes: [DYN, DYN], result: VOID },
+    /** stream.duplexPair's two sides (internal/streams/duplexpair.js): the
+     * first makes one DuplexSide from the options record, the second makes
+     * its peer from the same record and links the two. */
+    "stream.duplexPairSide": {
+      argTypes: [DYN],
+      result: { kind: "object", className: "%Duplex" },
+    },
+    "stream.duplexPairPeer": {
+      argTypes: [DYN, { kind: "object", className: "%Duplex" }],
+      result: { kind: "object", className: "%Duplex" },
+    },
     "stream.finished": { argTypes: [null, null], result: VOID },
     "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
     "stream.pipeline": { argTypes: [F64], result: VOID },
@@ -5409,6 +5430,10 @@ function buildLibFnSignatures() {
     "readable.opOnceOptions": { argTypes: [], result: DYN },
     "readable.resume": { argTypes: [null], result: VOID },
     "readable.isPaused": { argTypes: [null], result: BOOL },
+    /** readable.wrap(src): the old-style source's events drive the receiver,
+     * which answers itself (Node's proxy of the source's own methods is a
+     * no-op for a native stream). */
+    "readable.wrap": { argTypes: [null, null], result: VOID },
     "readable.pipe": { argTypes: [null, null, BOOL], result: VOID },
     "readable.pipeGeneral": { argTypes: [null, null, BOOL], result: VOID },
     "readable.unpipe": { argTypes: [null], result: VOID },

@@ -192,6 +192,7 @@ export const STREAM_API_MEMBERS: ReadonlySet<string> = new Set([
   "setEncoding",
   "pipe",
   "unpipe",
+  "wrap",
   "destroy",
   "write",
   "end",
@@ -1070,8 +1071,11 @@ function parseStreamOptions(
         p.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
         p.initializer.kind !== ts.SyntaxKind.FalseKeyword,
     );
-  if (out.readableObject) out.hwmR = numLit(16, loc);
-  if (out.writableObject) out.hwmW = numLit(16, loc);
+  // -3 asks the runtime for the CURRENT object-mode default
+  // (setDefaultHighWaterMark may have moved it since 16 was Node's
+  // initial value); an explicit highWaterMark option overrides below.
+  if (out.readableObject) out.hwmR = numLit(-3, loc);
+  if (out.writableObject) out.hwmW = numLit(-3, loc);
   const tuples = cbTuples(lowerer);
   const present = new Map<string, IrExpr>();
   for (const prop of optsLit?.properties?.nodes ?? []) {
@@ -3930,20 +3934,131 @@ function lowerStreamModuleCallbackCall(
   if (bi.module !== "stream") return null;
   const args = call.arguments.nodes;
 
-  if (bi.member === "getDefaultHighWaterMark") {
-    // Node 24: 65536 bytes / 16 objects — compile-time literals only.
-    // The byte default is platform-split at Node's source
-    // (lib/internal/streams/state.js: win32 keeps 16 KiB), so the fold
-    // follows the TARGET platform like the path-module binding.
-    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.FalseKeyword) {
-      return numLit(lowerer.targetPlatform === "win32" ? 16384 : 65536, loc);
+  if (bi.member === "getDefaultHighWaterMark" || bi.member === "setDefaultHighWaterMark") {
+    // Node's state.js defaults: getDefaultHighWaterMark(objectMode) answers
+    // the current one, setDefaultHighWaterMark(objectMode, value) moves it
+    // for every stream built afterwards — so both are runtime calls (a fold
+    // would miss a preceding set). The setter runs validateInteger(value,
+    // 'value', 0): a non-number is ERR_INVALID_ARG_TYPE, a non-integer or
+    // out-of-range one ERR_OUT_OF_RANGE. A statically-typed pair takes the
+    // typed call; anything the static lane cannot vouch for (the JS lane's
+    // values, `any`, a non-number) goes through the checked-dynamic twin,
+    // which renders Node's errors. Node reads a missing objectMode as
+    // undefined (falsy) and a missing value as undefined (the type error).
+    const get = bi.member === "getDefaultHighWaterMark";
+    if (args.length > (get ? 1 : 2)) {
+      lowerer.noLowering(
+        `${bi.member} with ${args.length} arguments`,
+        call,
+        `the form is ${bi.member}(${get ? "objectMode)" : "objectMode, value)"}`,
+      );
     }
-    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.TrueKeyword) return numLit(16, loc);
-    lowerer.noLowering(
-      "getDefaultHighWaterMark with a non-literal argument",
-      call,
-      "the objectMode flag must be a compile-time boolean",
-    );
+    const modeNode = args[0];
+    const valueNode = args[1];
+    const modeT = modeNode ? lowerer.mapTypeOf(lowerer.typeOf(modeNode)) : undefined;
+    const valueT = valueNode ? lowerer.mapTypeOf(lowerer.typeOf(valueNode)) : undefined;
+    const typed = modeT?.kind === "bool" && (get || valueT?.kind === "f64");
+    if (typed) {
+      const mode = modeNode ? lowerer.lowerExprExpecting(modeNode, BOOL) : boolLit(false, loc);
+      if (get) {
+        return { kind: "libCall", fn: "stream.getDefaultHwm", args: [mode], type: F64, loc };
+      }
+      const value = lowerer.lowerExprExpecting(valueNode!, F64);
+      return {
+        kind: "libCall",
+        fn: "stream.setDefaultHwm",
+        args: [mode, value],
+        type: VOID,
+        loc,
+      };
+    }
+    const mode = modeNode ? lowerer.lowerExprExpecting(modeNode, DYN) : dynUndefinedExpr(loc);
+    if (get) {
+      return { kind: "libCall", fn: "stream.getDefaultHwmDyn", args: [mode], type: F64, loc };
+    }
+    const value = valueNode ? lowerer.lowerExprExpecting(valueNode, DYN) : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "stream.setDefaultHwmDyn",
+      args: [mode, value],
+      type: VOID,
+      loc,
+    };
+  }
+
+  if (bi.member === "duplexPair") {
+    // stream.duplexPair([options]) answers Node's DuplexSide pair
+    // (internal/streams/duplexpair.js): two Duplexes, each moving chunks
+    // written to it into the other, so a write completes only when the
+    // other side is read. Both constructors read the SAME options object
+    // (Node passes it twice), so the record is built once and both sides
+    // take it; the second call links the two. The result is Node's
+    // `[Duplex, Duplex]` tuple, built from the two sides.
+    if (args.length > 1) {
+      lowerer.noLowering(
+        `duplexPair with ${args.length} arguments`,
+        call,
+        "the supported form is duplexPair(options)",
+      );
+    }
+    const tuple = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const shape = tuple?.kind === "record" ? lowerer.shapes.get(tuple.shapeId) : undefined;
+    if (tuple?.kind !== "record" || shape?.tuple !== true || shape.fields.length !== 2) {
+      lowerer.noLowering(
+        "duplexPair outside its declared [Duplex, Duplex] result",
+        call,
+        "read the pair as a tuple of two duplexes",
+      );
+    }
+    const DUPLEX_T: IrType = { kind: "object", className: "%Duplex" };
+    const stmts: IrStmt[] = [];
+    const argNode = args[0];
+    const opts =
+      argNode === undefined
+        ? dynUndefinedExpr(loc)
+        : ts.isObjectLiteralExpression(argNode)
+          ? lowerDynObjectLiteral(lowerer, argNode)
+          : lowerer.lowerExprExpecting(argNode, DYN);
+    const optsLocal = lowerer.declareHiddenLocal("%duplexPairOptions", DYN);
+    stmts.push({ kind: "varDecl", localId: optsLocal.id, init: opts, loc });
+    const first = lowerer.declareHiddenLocal("%duplexPairSide", DUPLEX_T);
+    stmts.push({
+      kind: "varDecl",
+      localId: first.id,
+      init: {
+        kind: "libCall",
+        fn: "stream.duplexPairSide",
+        args: [varRef(optsLocal.id, DYN, loc)],
+        type: DUPLEX_T,
+        loc,
+      },
+      loc,
+    });
+    const second = lowerer.declareHiddenLocal("%duplexPairPeer", DUPLEX_T);
+    stmts.push({
+      kind: "varDecl",
+      localId: second.id,
+      init: {
+        kind: "libCall",
+        fn: "stream.duplexPairPeer",
+        args: [varRef(optsLocal.id, DYN, loc), varRef(first.id, DUPLEX_T, loc)],
+        type: DUPLEX_T,
+        loc,
+      },
+      loc,
+    });
+    const field = (localId: string, at: number): IrExpr =>
+      lowerer.coerceInto(call, varRef(localId, DUPLEX_T, loc), shape.fields[at]!.type);
+    const built: IrExpr = {
+      kind: "recordLit",
+      fields: [
+        { name: "0", value: field(first.id, 0) },
+        { name: "1", value: field(second.id, 1) },
+      ],
+      type: tuple,
+      loc,
+    };
+    return { kind: "seqExpr", stmts, result: built, type: tuple, loc };
   }
 
   const predicate = STREAM_PREDICATES.get(bi.member);
@@ -7249,6 +7364,43 @@ export function lowerStreamMethodCall(
     if (args.length !== 0) lowerer.noLowering(`isPaused with arguments`, call);
     const receiver = streamReceiverExpr(lowerer, access.expression);
     return { kind: "libCall", fn: "readable.isPaused", args: [receiver], type: BOOL, loc };
+  }
+
+  if (member === "wrap") {
+    requireSide(readableSide, "wrap");
+    if (args.length !== 1) lowerer.noLowering(`wrap with ${args.length} arguments`, call);
+    const receiver = streamReceiverExpr(lowerer, access.expression);
+    const src = lowerer.lowerExpr(args[0]!);
+    if (src.type.kind === "dyn") {
+      const native: IrExpr = {
+        kind: "libCall",
+        fn: "stream.unboxDyn",
+        args: [
+          src,
+          strLit("wrap sources other than native streams are not supported yet", src.loc),
+        ],
+        type: { kind: "object", className: "%Duplex" },
+        loc: src.loc,
+      };
+      return {
+        kind: "libCall",
+        fn: "readable.wrap",
+        args: [receiver, native],
+        type: receiver.type,
+        loc,
+      };
+    }
+    const info = src.type.kind === "object" ? lowerer.classes.get(src.type.className) : undefined;
+    if (streamSidesOf(lowerer, info) !== "r" && streamSidesOf(lowerer, info) !== "rw") {
+      lowerer.noLowering(`wrap of a '${lowerer.fmt(src.type)}'`, args[0]!);
+    }
+    return {
+      kind: "libCall",
+      fn: "readable.wrap",
+      args: [receiver, src],
+      type: receiver.type,
+      loc,
+    };
   }
 
   if (member === "pipe") {

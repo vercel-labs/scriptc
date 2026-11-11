@@ -232,6 +232,10 @@ declare module "stream" {
     setEncoding(encoding: string): this;
     pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
     unpipe(destination?: NodeJS.WritableStream): this;
+    /* An old-style source's 'data'/'end'/'error'/'close'/'destroy' events
+     * drive this stream; a push over the high-water mark pauses the source
+     * and the next read resumes it. */
+    wrap(stream: NodeJS.ReadableStream): this;
     destroy(error?: Error): this;
     readonly readable: boolean;
     readonly readableEnded: boolean;
@@ -607,9 +611,20 @@ declare module "stream" {
     options: FinishedOptions | null,
     callback: (err?: Error | null) => void,
   ): () => void;
-  /* Folds to the TARGET platform's default at compile time (win32 16384,
-   * else 65536 — Node's own state.js split); literal argument only. */
+  /* stream.duplexPair: two Duplexes that move chunks written to one side
+   * into the other, one chunk at a time — a write completes when the other
+   * side is read, so a slow reader back-pressures the writer. The options
+   * are the Duplex constructor's (a read/write/final/destroy option
+   * shadows the pair's method, as Node's instance fields do). */
+  function duplexPair(options?: DuplexOptions): [Duplex, Duplex];
+
+  /* The process-wide (per-isolate) defaults: every stream built afterwards
+   * takes the current one. The byte-mode default follows the TARGET
+   * platform (win32 16384, else 65536 — Node's own state.js split);
+   * object mode starts at 16. setDefaultHighWaterMark validates the value
+   * like Node's validateInteger(value, 'value', 0). */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  function setDefaultHighWaterMark(objectMode: boolean, value: number): void;
   /* Node's duck-typed state predicates. A native stream answers from its
    * state, and a primitive as Node's property reads do; isDestroyed,
    * isReadable and isWritable answer null for a value without that side.
@@ -651,10 +666,12 @@ declare module "stream" {
     PassThrough,
     Stream,
     addAbortSignal,
+    duplexPair,
     pipeline,
     compose,
     finished,
     getDefaultHighWaterMark,
+    setDefaultHighWaterMark,
     isDestroyed,
     isErrored,
     isReadable,

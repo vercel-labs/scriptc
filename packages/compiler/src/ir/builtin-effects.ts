@@ -560,6 +560,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.resume",
   "readable.pipe",
   "readable.pipeGeneral",
+  "readable.wrap",
   "readable.unpipe",
   "writable.write",
   "writable.writeStr",
@@ -740,6 +741,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.finishedOptsSignal",
   "stream.addAbortSignal",
   "stream.addAbortSignalFn",
+  // setDefaultHighWaterMark validates its value (ERR_INVALID_ARG_TYPE /
+  // ERR_OUT_OF_RANGE); the getter has no argument it could reject.
+  "stream.setDefaultHwm",
+  "stream.setDefaultHwmDyn",
+  // duplexPair reads its options through the Duplex constructor (hwm range,
+  // defaultEncoding): a bad one throws Node's ERR_INVALID_ARG_*.
+  "stream.duplexPairSide",
+  "stream.duplexPairPeer",
   "rl.pause",
   "rl.resume",
   "rl.prompt",

@@ -68,8 +68,20 @@ typedef void (*ScrStreamErrInv)(ScrClosure *cb, ScrStream *s, ScrError *err);
 /* writev(chunks, callback): chunks is the batch's dyn array (borrowed). */
 typedef void (*ScrStreamWritevInv)(ScrClosure *cb, ScrStream *s, struct ScrDyn *chunks);
 
+/* stream.get/setDefaultHighWaterMark: the per-isolate defaults streams
+ * built afterwards take. The setter runs Node's validateInteger(value,
+ * 'value', 0) and throws catchably (no return on failure); the dyn twin
+ * takes the JS lane's arguments unchecked — objectMode by truthiness, a
+ * non-number value failing ERR_INVALID_ARG_TYPE exactly as Node. */
+double scr_stream_get_default_hwm(bool object_mode);
+double scr_stream_get_default_hwm_dyn(struct ScrDyn *object_mode);
+void scr_stream_set_default_hwm(bool object_mode, double value);
+void scr_stream_set_default_hwm_dyn(struct ScrDyn *object_mode, struct ScrDyn *value);
+
 /* Constructors (+1 result; option callbacks MOVE; NULL = absent). hwm < 0
- * means the byte default (65536 — Node 24's getDefaultHighWaterMark). */
+ * means a default resolved at construction time: -1 the byte-mode one
+ * (65536, 16384 on win32) and -3 the object-mode one (16), whichever
+ * setDefaultHighWaterMark last set. */
 ScrStream *scr_stream_new_readable(double hwm, bool auto_destroy, bool emit_close,
     ScrClosure *read, ScrStreamReadInv read_inv,
     ScrClosure *destroy, ScrStreamErrInv destroy_inv);
@@ -176,6 +188,17 @@ ScrStream *scr_stream_dyn_native(const struct ScrDyn *value, double side);
 void scr_stream_pipe_dyn(ScrStream *src, struct ScrDyn *src_box, struct ScrDyn *dest, bool end);
 void scr_stream_unpipe_dyn(ScrStream *src, struct ScrDyn *dest);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
+/* stream.duplexPair: Node's DuplexSide pair. The first call makes one side
+ * from the options; the second makes its peer and links the two (each side
+ * holds the other). Options callbacks shadow the pair's own methods, as
+ * Node's instance properties shadow DuplexSide's prototype. */
+ScrStream *scr_stream_duplex_pair_side(struct ScrDyn *opts);
+ScrStream *scr_stream_duplex_pair_peer(struct ScrDyn *opts, ScrStream *first);
+/* readable.wrap(src): the receiver answers for an old-style source. Its push
+ * of each 'data' chunk pauses the source over the high-water mark, and its
+ * _read resumes it; 'end' is EOF, 'error' destroys the receiver with the
+ * error, and the source closing or being destroyed destroys the receiver. */
+ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_passthrough_dyn(struct ScrDyn *opts);
 void scr_stream_init_readable_dyn(ScrStream *s, struct ScrDyn *opts,

@@ -2368,6 +2368,7 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.x509Fingerprint256",
       "crypto.x509Fingerprint512",
       "crypto.x509InfoAccess",
+      "crypto.x509KeyUsage",
       "crypto.x509Issuer",
       "crypto.x509Raw",
       "crypto.x509RawDer",

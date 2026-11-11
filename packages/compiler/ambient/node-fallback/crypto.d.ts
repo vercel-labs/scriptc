@@ -893,6 +893,10 @@ declare module "crypto" {
     readonly subject: string;
     readonly subjectAltName: string | undefined;
     readonly infoAccess: string | undefined;
+    /* undefined when the certificate carries no extended key usage
+     * extension (Node answers undefined there, though @types/node declares
+     * the member non-optional). */
+    readonly keyUsage: string[] | undefined;
     readonly issuer: string;
     readonly raw: Buffer;
     readonly serialNumber: string;

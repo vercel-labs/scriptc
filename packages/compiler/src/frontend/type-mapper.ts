@@ -6340,10 +6340,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     const optionalString = withUndefinedArm(STRING, ctx.unions);
-    if (!optionalString) return null;
+    const optionalStrings = withUndefinedArm(arrayOf(STRING), ctx.unions);
+    if (!optionalString || !optionalStrings) return null;
     const fields = X509_FIELDS.map(([name, type]) => ({
       name,
-      type: type === "string?" ? optionalString : type,
+      type: type === "string?" ? optionalString : type === "string[]?" ? optionalStrings : type,
     }));
     return {
       kind: "record",
@@ -9356,7 +9357,7 @@ export const X509_DER_FIELD = "%der";
 /** The X509Certificate record's fields in @types/node's declaration order
  * ("string?" is string | undefined), then the hidden publicKey and DER
  * slots. */
-export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
+export const X509_FIELDS: readonly (readonly [string, IrType | "string?" | "string[]?"])[] = [
   ["ca", BOOL],
   ["fingerprint", STRING],
   ["fingerprint256", STRING],
@@ -9364,6 +9365,7 @@ export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
   ["subject", STRING],
   ["subjectAltName", "string?"],
   ["infoAccess", "string?"],
+  ["keyUsage", "string[]?"],
   ["issuer", STRING],
   ["raw", { kind: "bytes", elem: "u8" }],
   ["serialNumber", STRING],

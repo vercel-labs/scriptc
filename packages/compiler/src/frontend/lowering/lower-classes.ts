@@ -13792,6 +13792,7 @@ function x509RecordHelper(
     subject: () => call("crypto.x509Subject", STRING),
     subjectAltName: (type) => optionalText("san", "crypto.x509SubjectAltName", type),
     infoAccess: (type) => optionalText("access", "crypto.x509InfoAccess", type),
+    keyUsage: (type) => optionalArray("keyusage", "crypto.x509KeyUsage", type),
     issuer: () => call("crypto.x509Issuer", STRING),
     raw: () => raw,
     serialNumber: () => call("crypto.x509SerialNumber", STRING),
@@ -13842,6 +13843,44 @@ function x509RecordHelper(
         loc,
       },
       else_: { kind: "unionWrap", unionId: type.unionId, tag: stringTag, value: text, type, loc },
+      type,
+      loc,
+    };
+  }
+  /** A string[] | undefined field: the runtime's dynamic array, or undefined
+   * when the extension is absent. */
+  function optionalArray(local: string, fn: IrLibFn, type: IrType): IrExpr {
+    if (type.kind !== "union")
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field type");
+    const def = lowerer.unions.get(type.unionId);
+    const arrayTag = def ? def.arms.findIndex((a) => a.kind === "array") : -1;
+    const undefinedTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+    if (arrayTag < 0 || undefinedTag < 0)
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional array field arms");
+    const arrayType = def!.arms[arrayTag] as IrType & { kind: "array" };
+    const id = `${local}.0`;
+    locals.push({ id, name: local, type: DYN, mutable: false });
+    decls.push({ kind: "varDecl", localId: id, init: call(fn, DYN), loc });
+    const value: IrExpr = { kind: "varRef", localId: id, type: DYN, loc };
+    return {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "array", value, type: BOOL, loc },
+      then: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: arrayTag,
+        value: { kind: "dynCheck", value, type: arrayType, loc },
+        type,
+        loc,
+      },
+      else_: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: undefinedTag,
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+        loc,
+      },
       type,
       loc,
     };

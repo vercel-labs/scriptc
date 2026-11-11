@@ -1624,6 +1624,9 @@ function buildLibFnSignatures() {
     "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+    /** keyUsage: the extended key usage OIDs as a dynamic array, or
+     * undefined when the extension is absent. */
+    "crypto.x509KeyUsage": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },

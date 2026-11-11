@@ -1448,6 +1448,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.x509Issuer": "scr_crypto_x509_issuer",
   "crypto.x509SubjectAltName": "scr_crypto_x509_subject_alt_name",
   "crypto.x509InfoAccess": "scr_crypto_x509_info_access",
+  "crypto.x509KeyUsage": "scr_crypto_x509_key_usage",
   "crypto.x509SerialNumber": "scr_crypto_x509_serial_number",
   "crypto.x509Fingerprint256": "scr_crypto_x509_fingerprint256",
   "crypto.x509Fingerprint512": "scr_crypto_x509_fingerprint512",

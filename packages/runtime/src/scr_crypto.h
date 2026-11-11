@@ -410,6 +410,8 @@ ScrStr *scr_crypto_x509_check_email(ScrBytes *der, ScrDyn *email, ScrDyn *option
 ScrStr *scr_crypto_x509_check_ip(ScrBytes *der, ScrDyn *ip, ScrDyn *options);
 bool scr_crypto_x509_check_issued(ScrBytes *der, ScrBytes *issuer_der);
 ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der);
+/* The extended key usage OIDs, or undefined when the extension is absent. */
+ScrDyn *scr_crypto_x509_key_usage(ScrBytes *der);
 ScrDyn *scr_crypto_x509_public_key(ScrBytes *der);
 bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key);
 bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key);

@@ -19802,6 +19802,7 @@
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/x509-key-usage.ts",
           "tests/fixtures/node-types/cipher.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
@@ -24355,12 +24356,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:X509Certificate",
         "tests": [
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
-          "tests/corpus/6936-x509-certificate-fields.ts"
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "exact"
@@ -24383,7 +24385,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkEmail",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24413,7 +24415,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkHost",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24443,7 +24445,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIP",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24473,7 +24475,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkIssued",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24503,7 +24505,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.checkPrivateKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24533,7 +24535,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toJSON",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24563,7 +24565,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toLegacyObject",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24593,7 +24595,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.toString",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24623,7 +24625,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:x509.verify",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24653,11 +24655,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.ca",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24680,11 +24685,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24707,11 +24715,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint256",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24734,11 +24745,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.fingerprint512",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24761,8 +24775,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.infoAccess",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24784,11 +24805,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.issuer",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24834,8 +24858,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.keyUsage",
+        "tests": [
+          "tests/corpus/compat-x509-keyobject.mjs",
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -24857,7 +24888,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.publicKey",
         "tests": [
           "tests/corpus/7090-x509-check-names.ts",
@@ -24887,11 +24918,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.raw",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24914,11 +24948,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.serialNumber",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24941,11 +24978,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subject",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24968,11 +25008,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.subjectAltName",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -24995,11 +25038,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFrom",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25022,11 +25068,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validFromDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25049,11 +25098,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validTo",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25076,11 +25128,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.validToDate",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25103,11 +25158,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithm",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -25130,11 +25188,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.signatureAlgorithmOid",
         "tests": [
           "tests/corpus/compat-x509-keyobject.mjs",
-          "tests/corpus/compat-x509-keyobject.ts"
+          "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/x509-key-usage.ts"
         ]
       },
       "anchorSource": "ancestor"

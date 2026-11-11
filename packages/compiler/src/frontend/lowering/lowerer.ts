@@ -6023,6 +6023,10 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    // The census of the program's writes on the global object, a pure
+    // function of its modules, read again when a unit replays.
+    "globalObjectWrites",
+    "globalThisWrittenNames",
     // Asked only where no unit is recorded: a build that reuses units leaves
     // the conditions `--define` decides to the run (constant-conditions.ts).
     "computedEnvironmentWrite",

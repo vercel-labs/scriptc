@@ -12,6 +12,11 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_global_binding_value looks the name up in the global object's own
+  // properties and retains what it finds.
+  "global.bindingValue",
+  // scr_global_binding_has looks the name up in the same table.
+  "global.bindingHas",
   // scr_dyn_native_search_params_is compares the value's kind and handle tag.
   "dyn.nativeSearchParamsIs",
   // scr_dyn_adoptable compares the value's kind.

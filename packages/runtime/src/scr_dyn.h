@@ -2013,6 +2013,13 @@ bool scr_global_host_absent_has(ScrStr *key, ScrArr *present);
 void scr_global_values_install(ScrDyn *lookup);
 /* An object whose keys are what `for (key in globalThis)` visits (+1). */
 ScrDyn *scr_global_for_in_object(void);
+/* A read of a name no declaration binds (+1): the global object's own
+ * property of that name, or Node's ReferenceError (NULL, pending). */
+ScrDyn *scr_global_binding_read(ScrStr *name);
+/* The same property for `typeof name` (+1): undefined when absent. */
+ScrDyn *scr_global_binding_value(ScrStr *name);
+/* Whether the global object has that own property. */
+bool scr_global_binding_has(ScrStr *name);
 /* Node's navigator global (+1, one box per thread) and its members:
  * navigator.language (+1), navigator.languages (+1, one frozen array per
  * thread) and navigator.platform (+1). */

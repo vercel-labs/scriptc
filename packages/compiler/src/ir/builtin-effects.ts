@@ -629,6 +629,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // A read of a declare-d const nothing defines: always throws Node's
   // catchable ReferenceError.
   "global.undefRead",
+  // A read of an undeclared name the global object does not have: Node's
+  // catchable ReferenceError.
+  "global.bindingRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
   // An accessor over an error's own name or message runs user code.

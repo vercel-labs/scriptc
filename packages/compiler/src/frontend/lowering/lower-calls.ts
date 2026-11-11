@@ -81,6 +81,7 @@ import {
   lowerWithInlineRequireInit,
 } from "./cjs-inline-require.js";
 import { cjsExportCallIgnoresThis, cjsInFileExportGlobalOf } from "./cjs-exports-object.js";
+import { lowerCjsExportsReceiver } from "./cjs-exports-receiver.js";
 import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { lowerReadlineDisposeCall } from "./builtins/readline.js";
@@ -1894,24 +1895,34 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // `exports.f =` statement assigns.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
     const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
-    if (
-      g &&
-      (g.type.kind === "func" || g.type.kind === "dyn") &&
-      !cjsExportCallIgnoresThis(lowerer, ts.getSourceFileOfNode(expr), expr.expression.name.text)
-    ) {
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`,
-      );
-    }
     if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+      const sf = ts.getSourceFileOfNode(expr);
+      const member = expr.expression.name.text;
+      // A function that reads `this` only for its sibling exports gets them
+      // as its receiver (cjs-exports-receiver.ts).
+      const receiver = cjsExportCallIgnoresThis(lowerer, sf, member)
+        ? undefined
+        : (lowerCjsExportsReceiver(lowerer, expr, sf, member) ?? null);
+      const refusal = `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`;
+      if (receiver === null) lowerer.unsupported("SC1090", expr, refusal);
       const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
-      if (checked) return checked;
+      if (checked) {
+        if (receiver === undefined) return checked;
+        // Spread arguments take a call form that carries no receiver.
+        if (checked.kind !== "dynCall") lowerer.unsupported("SC1090", expr, refusal);
+        return { ...checked, receiver };
+      }
       if (callee.type.kind === "func") {
         const args = completeFuncValueArgs(lowerer, expr, callee.type, loc);
-        return { kind: "callValue", callee, args, type: callee.type.ret, loc };
+        return {
+          kind: "callValue",
+          callee,
+          ...(receiver ? { receiver } : {}),
+          args,
+          type: callee.type.ret,
+          loc,
+        };
       }
     }
   }

@@ -539,6 +539,7 @@ import {
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
   type ClassInfo,
@@ -3685,6 +3686,9 @@ export class Lowerer {
   readonly cjsNamespaceTargets = new Map<ts.SourceFile, ts.SourceFile | null>();
   /** Receiver proofs depend only on a module's source and stable bindings. */
   readonly cjsReceiverProofs = new Map<ts.SourceFile, Map<string, boolean>>();
+  /** Per CommonJS file, what its source shows of its exports object
+   * (cjs-exports-receiver.ts); null when it does not show every write. */
+  readonly cjsExportsShapes = new Map<ts.SourceFile, CjsExportsShape | null>();
   /** Member write sites by property name across the program, built on the
    * first query, and the exports each query proved change after their
    * module initializes (cjs-inline-require.ts). */
@@ -6091,6 +6095,7 @@ export class Lowerer {
     "cjsLiveMemberExports",
     "cjsNamespaceTargets",
     "cjsReceiverProofs",
+    "cjsExportsShapes",
     "cjsLateWrittenExports",
     "cjsMemberWritesByName",
     "cjsEsmBoundNames",

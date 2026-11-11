@@ -49,6 +49,7 @@ static ScrIpc *scr_ipc_retain(ScrIpc *ipc);
 static void scr_ipc_release(ScrIpc *ipc);
 static void scr_ipc_service(void);
 static bool scr_ipc_pending(void);
+static size_t scr_child_ipc_unreffed_watching(void);
 static bool scr_ipc_close_ready(const ScrIpc *ipc);
 static bool scr_ipc_close_dropped(const ScrIpc *ipc);
 static void scr_ipc_deliver(void);
@@ -3076,7 +3077,8 @@ void scr_child_unref(ScrChild *c) {
 }
 
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 ||
+         scr_child_streams_watching > scr_child_ipc_unreffed_watching() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 
@@ -6858,7 +6860,8 @@ void scr_child_unref(ScrChild *c) {
  * it may outlive the child's own settle when a grandchild holds the
  * write end). */
 bool scr_children_reffed_pending(void) {
-  return scr_children_reffed_n > 0 || scr_child_streams_watching > 0 ||
+  return scr_children_reffed_n > 0 ||
+         scr_child_streams_watching > scr_child_ipc_unreffed_watching() ||
          scr_child_writers_pending() || scr_ipc_pending();
 }
 
@@ -8676,6 +8679,19 @@ static void scr_ipc_service(void) {
   }
 }
 
+/* IPC readers of an unref'd child's channel do not keep the loop alive:
+ * Node's Control unrefs the pipe handle while the reader stays armed, so
+ * messages still arrive whenever the loop runs for other work. */
+static size_t scr_child_ipc_unreffed_watching(void) {
+  size_t n = 0;
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc == NULL || !scr_child_stream_watching(c->ipc->reader)) continue;
+    if (scr_child_liveness(c)) continue;
+    n++;
+  }
+  return n;
+}
+
 static bool scr_ipc_pending(void) {
   for (ScrIpc *ipc = scr_ipcs; ipc != NULL; ipc = ipc->next) {
     if (ipc->n_send > 0 || ipc->disconnect_pending || ipc->local_closing ||
@@ -8699,7 +8715,15 @@ static void scr_ipc_deliver(void) {
  * readable now, so read it and deliver its messages, and the
  * 'disconnect' an EOF read schedules, before 'exit'. */
 static void scr_ipc_settle(ScrIpc *ipc) {
-  if (ipc == NULL || !ipc->armed) return;
+  if (ipc == NULL) return;
+  if (!ipc->armed) {
+    /* No 'message' or 'disconnect' listener ever armed the reader, so
+     * nothing observes the pipe's EOF; the child's exit closed its end
+     * all the same, and Node's channel reads null from 'exit' on. */
+    ipc->connected = false;
+    ipc->eof = true;
+    return;
+  }
   scr_child_stream_drain_now(ipc->reader);
   if (!scr_exc_pending()) scr_ipc_service_one(ipc);
 }
@@ -9218,12 +9242,24 @@ ScrDyn *scr_child_channel(ScrChild *c) {
 }
 
 void scr_child_channel_ref(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrDyn *channel = scr_child_island_ops->channel(c->island);
+                if (channel->kind == SCR_DYN_HANDLE) {
+                  scr_dyn_release(scr_dyn_invoke(channel, "ref", NULL, 0, "channel.ref"));
+                }
+                scr_dyn_release(channel);
+                return);
   bool before = scr_child_liveness(c);
   if (c->ipc != NULL && !c->settled) c->channel_reffed = true;
   scr_child_liveness_apply(c, before);
 }
 
 void scr_child_channel_unref(ScrChild *c) {
+  SCR_IF_ISLAND(c, ScrDyn *channel = scr_child_island_ops->channel(c->island);
+                if (channel->kind == SCR_DYN_HANDLE) {
+                  scr_dyn_release(scr_dyn_invoke(channel, "unref", NULL, 0, "channel.unref"));
+                }
+                scr_dyn_release(channel);
+                return);
   bool before = scr_child_liveness(c);
   c->channel_reffed = false;
   scr_child_liveness_apply(c, before);

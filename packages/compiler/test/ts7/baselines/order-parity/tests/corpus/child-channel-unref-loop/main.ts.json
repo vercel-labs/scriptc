@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-channel-unref-loop/main.ts"
+ ],
+ "diags": []
+}

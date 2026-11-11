@@ -1227,6 +1227,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverOnConnect",
   "http.serverOnUpgrade",
   "http.serverOnClientError",
+  "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
   "http2.serverOnSessionError",

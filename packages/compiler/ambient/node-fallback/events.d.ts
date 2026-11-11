@@ -50,6 +50,14 @@ declare module "events" {
       eventName: string,
       options?: { signal?: AbortSignal },
     ): Promise<unknown[]>;
+    /* An EventTarget has no 'error' event semantics: the promise settles
+     * with the event at the front of the array, and a signal's abort
+     * rejects it with an AbortError. */
+    export function once(
+      target: EventTarget,
+      eventName: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<unknown[]>;
     /* The emitter's own listenerCount/getMaxListeners/setMaxListeners/
      * listeners, over EventEmitter instances and EventTargets. */
     export function listenerCount(

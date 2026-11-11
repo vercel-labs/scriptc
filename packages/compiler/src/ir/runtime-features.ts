@@ -1941,7 +1941,21 @@ const RUNTIME_FEATURE_RULES = {
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
-    fns: [...STREAM_LIB_FNS, ...BUILTIN_CLASS_LIB_FNS],
+    // The events-module helpers whose receiver is resolved at runtime
+    // answer a NodeEventTarget (a Worker or MessagePort) through its
+    // emitter, so those calls link the emitter unit as well.
+    fns: [
+      ...STREAM_LIB_FNS,
+      ...BUILTIN_CLASS_LIB_FNS,
+      "event.targetListeners",
+      "event.targetListenersDyn",
+      "event.targetListenerCount",
+      "event.targetListenerCountDyn",
+      "event.targetGetMax",
+      "event.targetSetMax",
+      "event.onceTarget",
+      "event.onceTargetSignal",
+    ],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box

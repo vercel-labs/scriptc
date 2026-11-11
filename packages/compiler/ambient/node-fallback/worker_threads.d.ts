@@ -33,7 +33,10 @@ declare module "worker_threads" {
     stdin?: boolean;
     [option: string]: unknown;
   }
-  export class Worker {
+  /* A Worker is a NodeEventTarget: an EventTarget whose listeners live in an
+   * emitter registry, so the EventEmitter spellings (on/once/off/emit and
+   * the rest) and the EventTarget spellings are both present in Node. */
+  export class Worker extends EventTarget {
     constructor(filename: string | URL, options?: WorkerOptions);
     readonly threadId: number;
     readonly resourceLimits?: ResourceLimits;
@@ -63,7 +66,9 @@ declare module "worker_threads" {
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }
-  export class MessagePort {
+  /* A port is a NodeEventTarget like a Worker: its listeners live in an
+   * emitter registry shared by the EventEmitter and EventTarget spellings. */
+  export class MessagePort extends EventTarget {
     on(event: "message", listener: (value: any) => void): this;
     on(event: "close", listener: () => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
@@ -73,6 +78,11 @@ declare module "worker_threads" {
     removeListener(event: string, listener: (...args: any[]) => void): this;
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    /* The target's raw dispatch: one argument, extra arguments ignored. */
+    emit(event: string, ...args: any[]): boolean;
+    eventNames(): string[];
+    getMaxListeners(): number;
+    setMaxListeners(n: number): this;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
     start(): void;
     close(callback?: () => void): void;

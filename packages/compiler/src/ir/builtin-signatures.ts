@@ -114,6 +114,19 @@ function buildLibFnSignatures() {
      * EventTarget: the target's limit, and its assignment. */
     "event.targetGetMax": { argTypes: [DYN], result: F64 },
     "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
+    /** events.once over an EventTarget (scr_event_target.c): [target,
+     * name] → a pending promise of the event's arguments, and the signal
+     * form with the checked-dynamic options.signal last. Never throws: a
+     * receiver that is not an EventTarget and a bad or aborted signal
+     * reject it. */
+    "event.onceTarget": {
+      argTypes: [DYN, STRING],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
+    "event.onceTargetSignal": {
+      argTypes: [DYN, STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },

@@ -2254,3 +2254,327 @@ ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource) {
   scr_promise_release(outer);
   return result;
 }
+
+/* ── events.once(target, name[, { signal }]) over EventTargets ─────────
+ * Node's lib/events.js `once` for a receiver that is not an EventEmitter:
+ * a plain EventTarget (a target, an AbortSignal, a compiled subclass or a
+ * BroadcastChannel) takes the event through addEventListener with
+ * `{ once: true, [kResistStopPropagation]: true }` and resolves with the
+ * event as the array's one element; a NodeEventTarget (a Worker or
+ * MessagePort handle) goes through its own `once()` and resolves with the
+ * emitted arguments, and — unless the awaited name is 'error' — a second
+ * once listener on 'error' rejects the promise. Any other receiver is
+ * Node's ERR_INVALID_ARG_TYPE. The options' signal is validated first (a
+ * non-signal rejects with ERR_INVALID_ARG_TYPE, an aborted one with the
+ * AbortError carrying its reason); otherwise a once, resist-stop-
+ * propagation 'abort' listener removes the target's listener and rejects.
+ *
+ * The result adopts the inner promise through a thenable job, as the async
+ * `once` function's return does. The state owns the inner promise, the
+ * receiver, the name and the signal; each registered listener reaches it
+ * through a link whose release clears the state's weak pointer to that
+ * listener, so a removal never compares a freed identity. The state never
+ * owns a listener: a target's core keeps the checked-dynamic function, an
+ * emitter's entry keeps the closure, and the listener list is what frees
+ * them. */
+
+static ScrArrOps scr_eot_arr_ops = { scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v };
+
+typedef struct ScrEotState ScrEotState;
+
+enum { SCR_EOT_EVENT, SCR_EOT_ERROR, SCR_EOT_ABORT };
+
+/* One registered listener as the state sees it: the value its list owns. A
+ * target's core keeps the checked-dynamic function (removeEventListener
+ * matches by it); an emitter's entry keeps the closure it was handed
+ * (removeListener matches by it). Weak either way. */
+typedef struct ScrEotSlot {
+  ScrDyn *dyn;     /* target path */
+  ScrClosure *clo; /* emitter path */
+} ScrEotSlot;
+
+typedef struct ScrEotLink {
+  size_t rc;
+  ScrEotState *st; /* owned */
+  int slot;
+} ScrEotLink;
+
+struct ScrEotState {
+  size_t rc;
+  ScrPromise *inner;      /* owned */
+  ScrDyn *target;         /* owned */
+  ScrStr *name;           /* owned */
+  ScrDyn *signal;         /* owned; undefined without one */
+  ScrEotSlot event;
+  ScrEotSlot error;
+  ScrEotSlot abort;
+  bool settled;
+  bool emitter; /* the receiver is a NodeEventTarget (its emitter) */
+};
+
+static void scr_eot_oom(void) { scr_trap("scriptc: out of memory in events.once\n"); }
+
+static void scr_eot_state_release(ScrEotState *st) {
+  if (--st->rc > 0) return;
+  scr_promise_release(st->inner);
+  scr_dyn_release(st->target);
+  scr_str_release(st->name);
+  scr_dyn_release(st->signal);
+  free(st);
+}
+
+static ScrEotSlot *scr_eot_slot(ScrEotState *st, int slot) {
+  return slot == SCR_EOT_EVENT ? &st->event : slot == SCR_EOT_ERROR ? &st->error : &st->abort;
+}
+
+static void *scr_eot_link_retain(void *p) {
+  ((ScrEotLink *)p)->rc++;
+  return p;
+}
+
+static void scr_eot_link_release(void *p) {
+  ScrEotLink *link = p;
+  if (--link->rc > 0) return;
+  ScrEotState *st = link->st;
+  ScrEotSlot *slot = scr_eot_slot(st, link->slot);
+  slot->dyn = NULL;
+  slot->clo = NULL;
+  scr_eot_state_release(st);
+  free(link);
+}
+
+static ScrBox *scr_eot_link_box(ScrEotState *st, int slot) {
+  ScrEotLink *link = calloc(1, sizeof *link);
+  if (!link) scr_eot_oom();
+  link->rc = 1;
+  link->st = st;
+  link->slot = slot;
+  st->rc++;
+  ScrBox *box = scr_box_new_obj(&scr_eot_link_retain, &scr_eot_link_release, NULL);
+  scr_box_set_ref(box, link);
+  return box;
+}
+
+/* A native listener function: caps[0] its link. +1. */
+static ScrDyn *scr_eot_listener(ScrDynThunk thunk, ScrEotState *st, int slot, uint32_t arity,
+                                const char *sig, const char *name) {
+  ScrClosure *clo = scr_closure_new(NULL, 1);
+  clo->caps[0] = scr_eot_link_box(st, slot);
+  return scr_dyn_new_func(clo, thunk, arity, sig, name);
+}
+
+/* The event's arguments as the fulfilled array. +1. */
+static ScrArr *scr_eot_values(ScrDyn *const *args, size_t argc) {
+  ScrArr *values = scr_arr_new_ops(&scr_eot_arr_ops, argc ? argc : 1);
+  for (size_t i = 0; i < argc; i++) scr_arr_set_ref(values, (double)i, scr_dyn_retain(args[i]));
+  return values;
+}
+
+/* eventTargetAgnosticRemoveListener(receiver, name, listener). */
+static void scr_eot_remove_name(ScrEotState *st, const ScrStr *name, const ScrEotSlot *slot) {
+  if (st->emitter) {
+    if (slot->clo == NULL) return;
+    ScrEmitter *em = scr_et_helper_emitter(st->target);
+    if (em) scr_emitter_release(scr_emitter_off(em, (ScrStr *)name, (ScrClosure *)slot->clo));
+    return;
+  }
+  if (slot->dyn == NULL) return;
+  ScrEventTargetCore *core = scr_et_core_of(st->target);
+  if (core == NULL) return;
+  ScrDyn *type = scr_dyn_new_str((ScrStr *)name);
+  ScrDyn *args[2] = {type, slot->dyn};
+  ScrDyn *result = scr_et_remove_listener(core, args, 2);
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(type);
+}
+
+/* eventTargetAgnosticRemoveListener(signal, 'abort', abortListener). */
+static void scr_eot_remove_abort(ScrEotState *st) {
+  if (st->abort.dyn == NULL) return;
+  bool aborted;
+  ScrEventTargetCore *core =
+      scr_et_signal_core_fn ? scr_et_signal_core_fn(st->signal, &aborted) : NULL;
+  if (core == NULL) return;
+  ScrStr *abort = scr_str_new("abort", 5);
+  ScrDyn *type = scr_dyn_new_str(abort);
+  scr_str_release(abort);
+  ScrDyn *args[2] = {type, st->abort.dyn};
+  ScrDyn *result = scr_et_remove_listener(core, args, 2);
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(type);
+}
+
+/* The event fired: Node's resolver removes the 'error' listener (an
+ * EventEmitter's), then the abort listener, and fulfills with the event's
+ * arguments. */
+static ScrDyn *scr_eot_fire(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrEotLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrEotState *st = link->st;
+  if (!st->settled) {
+    st->settled = true;
+    if (st->error.dyn != NULL || st->error.clo != NULL) {
+      ScrStr *error = scr_str_new("error", 5);
+      scr_eot_remove_name(st, error, &st->error);
+      scr_str_release(error);
+    }
+    scr_eot_remove_abort(st);
+    ScrArr *values = scr_eot_values(args, argc);
+    scr_promise_fulfill_ref(st->inner, values, scr_arr_retain_v, scr_arr_release_v,
+                            values->cyc ? scr_arr_trace_v : NULL);
+  }
+  scr_eot_link_release(link);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The receiver emitted 'error' while waiting: Node's errorListener removes
+ * the awaited listener and the abort listener, then rejects with the
+ * error value. */
+static ScrDyn *scr_eot_reject_error(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrEotLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrEotState *st = link->st;
+  if (!st->settled) {
+    st->settled = true;
+    scr_eot_remove_name(st, st->name, &st->event);
+    scr_eot_remove_abort(st);
+    scr_dyn_throw(scr_dyn_retain(argc ? args[0] : scr_dyn_undefined()));
+    scr_promise_reject_pending(st->inner);
+  }
+  scr_eot_link_release(link);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The signal aborted: both listeners leave and the promise rejects with the
+ * AbortError. */
+static ScrDyn *scr_eot_reject_abort(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEotLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrEotState *st = link->st;
+  if (!st->settled) {
+    st->settled = true;
+    scr_eot_remove_name(st, st->name, &st->event);
+    if (st->error.dyn != NULL || st->error.clo != NULL) {
+      ScrStr *error = scr_str_new("error", 5);
+      scr_eot_remove_name(st, error, &st->error);
+      scr_str_release(error);
+    }
+    scr_tp_throw_abort(st->signal);
+    scr_promise_reject_pending(st->inner);
+  }
+  scr_eot_link_release(link);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrBox *scr_eot_promise_box(ScrPromise *p) {
+  ScrBox *box = scr_box_new_obj(&scr_promise_retain_v, &scr_promise_release_v, &scr_promise_trace_v);
+  scr_box_set_ref(box, scr_promise_retain(p));
+  return box;
+}
+
+static void scr_eot_adopt_job(ScrClosure *job) {
+  ScrPromise *outer = scr_box_get_ref(job->caps[0]);
+  ScrPromise *inner = scr_box_get_ref(job->caps[1]);
+  scr_promise_race_join(outer, inner, &scr_promise_adapt_copy);
+  scr_promise_release(inner);
+  scr_promise_release(outer);
+}
+
+/* The once() result adopts `inner` one turn after it settles, as the async
+ * function's return does. Moves `inner` in; the result is +1. */
+static ScrPromise *scr_eot_adopt(ScrPromise *inner) {
+  ScrPromise *outer = scr_promise_new();
+  ScrClosure *job = scr_closure_new((void *)&scr_eot_adopt_job, 2);
+  job->caps[0] = scr_eot_promise_box(outer);
+  job->caps[1] = scr_eot_promise_box(inner);
+  scr_promise_release(inner);
+  scr_queue_microtask(job);
+  return outer;
+}
+
+static ScrPromise *scr_events_once_target_impl(ScrDyn *target, ScrStr *name, ScrDyn *signal) {
+  /* `signal != null`: Node takes an undefined options.signal as none, a
+   * null one as the wrong type. */
+  bool has_signal = signal != NULL && signal->kind != SCR_DYN_UNDEF;
+  bool aborted = false;
+  ScrEventTargetCore *sig_core = NULL;
+  if (has_signal) {
+    sig_core = scr_et_signal_core_fn ? scr_et_signal_core_fn(signal, &aborted) : NULL;
+    if (!sig_core) scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+    else if (aborted) scr_tp_throw_abort(signal);
+  }
+  ScrEventTargetCore *core = NULL;
+  ScrEmitter *em = NULL;
+  if (!scr_exc_pending()) {
+    core = scr_et_core_of(target);
+    if (core == NULL) {
+      em = scr_et_helper_emitter(target);
+      if (em == NULL) scr_dyn_arg_type_fail("emitter", "an instance of EventEmitter", target);
+    }
+  }
+  if (scr_exc_pending()) {
+    /* The async function's rejection: validation happens before the
+     * promise's executor runs. */
+    ScrPromise *rejected = scr_promise_new();
+    scr_promise_reject_pending(rejected);
+    return rejected;
+  }
+  ScrPromise *inner = scr_promise_new();
+  ScrEotState *st = calloc(1, sizeof *st);
+  if (!st) scr_eot_oom();
+  st->rc = 1;
+  st->inner = inner;
+  st->target = scr_dyn_retain(target);
+  st->name = scr_str_retain(name);
+  st->signal = scr_dyn_retain(has_signal ? signal : scr_dyn_undefined());
+  st->emitter = em != NULL;
+  ScrDyn *event_listener =
+      scr_eot_listener(&scr_eot_fire, st, SCR_EOT_EVENT, 1, "native:function", "resolver");
+  if (em != NULL) {
+    st->event.clo = event_listener->v.fn.clo;
+    scr_emitter_release(scr_emitter_on_flex(em, name, event_listener, true, false));
+    if (!scr_exc_pending() && !(name->len == 5 && !memcmp(name->data, "error", 5))) {
+      /* An EventEmitter waits on 'error' too (unless that is the awaited
+       * name): the error rejects the promise instead of throwing. */
+      ScrDyn *error_listener = scr_eot_listener(&scr_eot_reject_error, st, SCR_EOT_ERROR, 1,
+                                                "native:function", "errorListener");
+      ScrStr *error_name = scr_str_new("error", 5);
+      ScrEmitter *added = scr_emitter_on_flex(em, error_name, error_listener, true, false);
+      if (added) scr_emitter_release(added);
+      if (!scr_exc_pending()) st->error.clo = error_listener->v.fn.clo;
+      scr_str_release(error_name);
+      scr_dyn_release(error_listener);
+    }
+  } else {
+    st->event.dyn = event_listener;
+    bool duplicate;
+    (void)scr_et_append(core, name, event_listener, SCR_ET_ONCE | SCR_ET_RESIST, &duplicate);
+  }
+  scr_dyn_release(event_listener);
+  if (scr_exc_pending()) {
+    /* A throwing 'newListener' listener rejects the promise, as a throw
+     * inside the executor does; no abort listener follows it. */
+    st->settled = true;
+    scr_promise_reject_pending(inner);
+  } else if (sig_core != NULL) {
+    ScrDyn *abort_listener =
+        scr_eot_listener(&scr_eot_reject_abort, st, SCR_EOT_ABORT, 0, "()", "abortListener");
+    st->abort.dyn = abort_listener;
+    ScrStr *abort = scr_str_new("abort", 5);
+    bool duplicate;
+    (void)scr_et_append(sig_core, abort, abort_listener, SCR_ET_ONCE | SCR_ET_RESIST, &duplicate);
+    scr_str_release(abort);
+    scr_dyn_release(abort_listener);
+  }
+  scr_eot_state_release(st); /* the creator's reference */
+  return scr_eot_adopt(scr_promise_retain(inner));
+}
+
+/* events.once(target, name) */
+ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name) {
+  return scr_events_once_target_impl(target, name, NULL);
+}
+
+/* events.once(target, name, { signal }) */
+ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal) {
+  return scr_events_once_target_impl(target, name, signal);
+}

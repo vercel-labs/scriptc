@@ -1179,6 +1179,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.targetListenerCountDyn": "scr_event_target_listener_count_dyn",
   "event.targetGetMax": "scr_event_target_get_max",
   "event.targetSetMax": "scr_event_target_set_max",
+  "event.onceTarget": "scr_events_once_target",
+  "event.onceTargetSignal": "scr_events_once_target_signal",
   "event.call": "scr_event_obj_call",
   "event.get": "scr_event_obj_get",
   "event.set": "scr_event_obj_set",

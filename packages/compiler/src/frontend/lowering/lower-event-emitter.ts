@@ -3134,9 +3134,10 @@ function eventsOnceSignal(lowerer: Lowerer, node: ts.Expression): IrExpr | null 
  * AbortError. The emitter's listeners are typed by the program-wide event
  * table (a stream's runtime-emitted events by their fixed tuples), so the
  * runtime registers one-shot typed listeners whose compiler-built boxers
- * turn the event's tuple into the array. EventTarget receivers, a stream's
- * 'data' event, computed names and options other than a literal { signal }
- * are refused. */
+ * turn the event's tuple into the array. Everything else — an EventTarget,
+ * a NodeEventTarget or any other value — resolves at runtime (event.*
+ * libCalls). A stream's 'data' event, computed names and options other
+ * than a literal { signal } are refused. */
 export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
@@ -3207,14 +3208,46 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   const info =
     receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
   if (!emitterRooted(lowerer, info)) {
-    // A NodeJS stream interface slot that holds a stdio handle here: the
-    // program lowers again with the runtime stream classes.
-    requestGeneralStreamSurface(lowerer, args[0]!);
-    lowerer.noLowering(
-      "events.once over this value",
-      args[0]!,
-      "the emitter must be an EventEmitter or stream instance; EventTarget receivers are not supported yet",
-    );
+    if (nodeStreamInterfaceSide(lowerer, lowerer.typeOf(args[0]!)) !== null) {
+      // A NodeJS stream interface slot that holds a stdio handle here: the
+      // program lowers again with the runtime stream classes.
+      requestGeneralStreamSurface(lowerer, args[0]!);
+      lowerer.noLowering(
+        "events.once over this value",
+        args[0]!,
+        "the emitter must be an EventEmitter or stream instance; stream arguments are not supported yet",
+      );
+    }
+    // Everything else is resolved at runtime, as the events-module helpers
+    // do: an EventTarget (a plain target, an AbortSignal, a compiled
+    // subclass or a BroadcastChannel) resolves with the event it dispatches,
+    // a NodeEventTarget through its own once(), and any other value rejects
+    // with Node's ERR_INVALID_ARG_TYPE. The event name is a string; a name
+    // that is not a string is Node's error for the target, and the target
+    // overload types exclude symbols.
+    const target = lowerer.coerceToExpected(receiver, DYN);
+    if (target.type.kind !== "dyn") {
+      lowerer.noLowering(
+        "events.once over this value",
+        args[0]!,
+        "pass an EventEmitter, an EventTarget, or a value of a checked-dynamic type",
+      );
+    }
+    const targetName = lowerer.lowerExprExpecting(args[1]!, STRING);
+    if (targetName.type.kind !== "string") {
+      lowerer.noLowering(
+        `events.once with a '${lowerer.fmt(targetName.type)}' event name`,
+        args[1]!,
+      );
+    }
+    const targetSignal = args.length > 2 ? eventsOnceSignal(lowerer, args[2]!) : null;
+    return {
+      kind: "libCall",
+      fn: targetSignal === null ? "event.onceTarget" : "event.onceTargetSignal",
+      args: targetSignal === null ? [target, targetName] : [target, targetName, targetSignal],
+      type: resultT,
+      loc,
+    };
   }
   const name = literalEventName(lowerer, args[1]!);
   if (name === null || META_EVENTS.has(name) || name === ERROR_MONITOR_EVENT) {

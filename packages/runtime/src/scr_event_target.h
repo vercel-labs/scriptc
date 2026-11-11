@@ -136,6 +136,12 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d);
 ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+/* events.once(target, name) and events.once(target, name, { signal }) over
+ * a receiver resolved at runtime: an EventTarget, an EventEmitter (a
+ * NodeEventTarget handle, through its own once()) or any other value.
+ * Never throw; +1, and every failure rejects the promise. */
+ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name);
+ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal);
 /* timers/promises setTimeout(delay, value, options) and setImmediate(value,
  * options) with options.signal (an undefined signal takes the plain form):
  * `value` is the already-resolved promise of the resolve value, borrowed.

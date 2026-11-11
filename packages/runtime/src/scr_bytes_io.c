@@ -1452,14 +1452,30 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
 
 /* Buffer.concat(list, totalLength) where the argument list kept an undefined
  * total: Node's concat sums the parts when totalLength is undefined, before
- * the list validates (an empty list answers an empty Buffer either way). */
+ * the list validates (an empty list answers an empty Buffer either way). A
+ * supplied total follows Node's own order — the list is an Array, an empty
+ * one answers an empty Buffer, and only then does the total convert and
+ * range — so a null total on an empty list does not throw, and an invalid
+ * list is reported as the list. */
 ScrBytes *scr_buffer_concat_len_dyn_opt(const ScrDyn *list, const ScrDyn *total) {
   if (total->kind == SCR_DYN_UNDEF) return scr_buffer_concat_dyn(list);
-  if (total->kind != SCR_DYN_NUM) {
-    scr_dyn_arg_type_fail("length", "of type number", total);
-    return NULL;
+  ScrDyn *materialized = NULL;
+  if (list->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(list) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(list);
+    list = materialized;
   }
-  return scr_buffer_concat_len_dyn(list, total->v.num);
+  ScrBytes *out = NULL;
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("list", "an instance of Array", list);
+  } else if (list->v.arr.len == 0) {
+    out = scr_buffer_concat_dyn(list);
+  } else if (total->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", total);
+  } else {
+    out = scr_buffer_concat_len_dyn(list, total->v.num);
+  }
+  scr_dyn_release(materialized);
+  return out;
 }
 
 /* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer

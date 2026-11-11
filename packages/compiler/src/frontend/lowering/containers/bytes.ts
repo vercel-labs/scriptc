@@ -3028,20 +3028,33 @@ function lowerBufferStaticValue(
               ? value.type
               : checkerIr
             : checkerIr;
-        // JS callback storage can be native DYN even when the checker
-        // reports any (or a narrowed Buffer). Dispatch on its actual ABI.
-        if (value.type.kind === "dyn") {
-          const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, value, args[1], loc);
+        // The run-time form: dispatch on the value's kind, with Node's
+        // conversion for a string, a u8 view or an array, its TypeError for
+        // everything else, and the encoding argument's own conversions.
+        const dynSource = (src: IrExpr): IrExpr => {
+          const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, src, args[1], loc);
           if (runtimeEncoding) return runtimeEncoding;
           const encName = args[1] ? bufEncoding(lowerer, "Buffer.from", args[1]) : "utf8";
           const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
           return {
             kind: "libCall",
             fn: "buffer.poolFromDyn",
-            args: [value, enc],
+            args: [src, enc],
             type: BYTES_U8,
             loc,
           };
+        };
+        // JS callback storage can be native DYN even when the checker
+        // reports any (or a narrowed Buffer). Dispatch on its actual ABI.
+        if (value.type.kind === "dyn") return dynSource(value);
+        // A record value the checker types (an object literal, or a variable
+        // of an interface type) is only a Buffer source at run time: the
+        // run-time form reads `{type: "Buffer", data}` and array-like
+        // objects, and throws Node's TypeError for the other shapes. A deep
+        // copy (dynFrom) keeps it a plain dynamic object; a live reference
+        // would hand the runtime an opaque record.
+        if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
+          return dynSource({ kind: "dynFrom", value, type: DYN, loc });
         }
         if (srcIr?.kind === "string") {
           const s = lowerer.coerceInto(argNode, value, STRING);
@@ -3144,7 +3157,25 @@ function lowerBufferStaticValue(
             };
           }
         }
+        // Anything else that converts to a dynamic value (a number, a
+        // boolean, null, undefined) is still no Buffer source: the run-time
+        // conversion reads its kind and throws Node's first-argument error
+        // before it ever reads the encoding.
+        if (lowerer.dynConvertible(value.type)) {
+          return dynSource({ kind: "dynFrom", value, type: DYN, loc });
+        }
       }
+    }
+    // No argument at all: the run-time conversion receives undefined and
+    // throws the first-argument error, as Node's does.
+    if (args.length === 0) {
+      return {
+        kind: "libCall",
+        fn: "buffer.poolFromDyn",
+        args: [dynUndefinedExpr(loc), { kind: "strLit", value: "utf8", type: STRING, loc }],
+        type: BYTES_U8,
+        loc,
+      };
     }
     lowerer.noLowering(
       "Buffer.from with this argument shape",

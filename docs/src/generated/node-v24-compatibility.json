@@ -2089,7 +2089,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Validates bytes in ArrayBuffer and typed-array views with Node-compatible argument errors.",
         "verification": "test-backed"
       }
@@ -2112,7 +2112,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Validates bytes in ArrayBuffer and typed-array views with Node-compatible argument errors.",
         "verification": "test-backed"
       }
@@ -2158,7 +2158,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Converts Buffer and Uint8Array inputs among ASCII, Latin-1, UTF-8, and UTF-16LE, including encoding aliases and conversion errors.",
         "verification": "test-backed"
       }
@@ -2273,8 +2273,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -2296,9 +2296,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2320,7 +2320,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -2343,7 +2343,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -2366,7 +2366,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -2388,9 +2388,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2412,7 +2412,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -2434,9 +2434,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2458,7 +2458,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -4090,8 +4090,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -33067,8 +33067,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },
@@ -33412,8 +33412,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.",
         "verification": "test-backed"
       }
     },

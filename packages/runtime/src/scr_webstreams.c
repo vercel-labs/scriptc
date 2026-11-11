@@ -2316,7 +2316,8 @@ typedef struct WsOver {
   WsObj obj;
   WsReadable *stream; /* +1 */
   const ScrWebStreamSource *source;
-  void *ctx; /* released through source->release */
+  void *ctx;  /* released through source->release */
+  bool bytes; /* a byte stream: chunks take the copying enqueue */
 } WsOver;
 
 static void ws_over_trace(void *obj, ScrTraceVisit visit, void *ctx) { ws_visit(((WsOver *)obj)->stream, visit, ctx); }
@@ -2343,7 +2344,7 @@ static void ws_over_chunk(void *ctx, ScrDyn *value) {
   WsOver *o = ctx;
   WsRController *c = ws_over_controller(o);
   if (c) {
-    if (ws_rcontroller_enqueue(c, value)) {
+    if (o->bytes ? ws_bytes_enqueue(c, value) : ws_rcontroller_enqueue(c, value)) {
       ws_pull_fulfilled(c, NULL);
     } else {
       ScrDyn *error = ws_take_pending();
@@ -2357,7 +2358,10 @@ static void ws_over_chunk(void *ctx, ScrDyn *value) {
 static void ws_over_close(void *ctx) {
   WsOver *o = ctx;
   WsRController *c = ws_over_controller(o);
-  if (c) ws_rcontroller_close(c);
+  if (c) {
+    if (o->bytes) ws_bytes_close(c);
+    else ws_rcontroller_close(c);
+  }
   ws_release(o);
 }
 
@@ -2388,16 +2392,25 @@ static ScrPromise *ws_over_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
 
 static const WsSourceOps ws_over_source_ops = {ws_over_pull, ws_over_cancel};
 
-ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx) {
+static ScrDyn *ws_readable_over(const ScrWebStreamSource *source, void *ctx, bool bytes) {
   ws_install();
   WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
   o->source = source;
   o->ctx = ctx;
-  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0, false);
+  o->bytes = bytes;
+  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0, bytes);
   o->stream = ws_readable_retain(s);
   ScrDyn *box = ws_stream_box(s);
   ws_readable_release(s);
   return box;
+}
+
+ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx) {
+  return ws_readable_over(source, ctx, false);
+}
+
+ScrDyn *scr_webstream_readable_over_bytes(const ScrWebStreamSource *source, void *ctx) {
+  return ws_readable_over(source, ctx, true);
 }
 
 /* ── async iteration (ReadableStream.prototype.values) ────────────── */

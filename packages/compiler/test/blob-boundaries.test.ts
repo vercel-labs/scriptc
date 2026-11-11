@@ -23,9 +23,6 @@ async function compileSource(source: string) {
 // handle fail during compilation instead of reaching a missing runtime
 // operation.
 test.each([
-  ["Blob.stream()", 'new Blob(["a"]).stream();'],
-  ["File.stream()", 'new File(["a"], "a.txt").stream();'],
-  ["Blob.textStream()", 'new Blob(["a"]).textStream();'],
   ["Blob.constructor", 'console.log(new Blob(["a"]).constructor);'],
   ["File.valueOf", 'console.log(new File([], "f").valueOf());'],
 ])("%s fails during compilation", async (what, use) => {
@@ -49,6 +46,7 @@ console.log(blob instanceof B, file instanceof File, blob.slice(1, 2, "x/y").siz
 void blob.text().then((text) => console.log(text));
 void file.bytes().then((bytes) => console.log(bytes.length));
 void new B([]).arrayBuffer().then((buffer) => console.log(buffer.byteLength));
+console.log(blob.stream() instanceof ReadableStream, file.textStream() instanceof ReadableStream);
 console.log(structuredClone(file).name, JSON.stringify(blob), Object.keys(blob));
 `);
   expect(result.ok, JSON.stringify(result.ok ? [] : result.diagnostics)).toBe(true);

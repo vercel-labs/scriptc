@@ -699,6 +699,11 @@ function publicDetail(tier) {
     if (source === "compiler-feature:buffer.buffer.transcode") {
       return "Converts Buffer and Uint8Array inputs among ASCII, Latin-1, UTF-8, and UTF-16LE, including encoding aliases and conversion errors.";
     }
+    if (
+      /^compiler-feature:(?:buffer\.(?:Blob|File|blob\.\w+)|globals\.(?:Blob|File))$/.test(source)
+    ) {
+      return "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.";
+    }
     if (source === "compiler-feature:util.textEncoder.encodeInto") {
       return "Writes complete UTF-8 characters into Uint8Array or Buffer views and reports UTF-16 units read and bytes written.";
     }

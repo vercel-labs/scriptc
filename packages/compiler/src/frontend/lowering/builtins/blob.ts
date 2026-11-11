@@ -7,19 +7,16 @@ import { stdlibGlobalNameOf } from "../surfaces.js";
 import { builtinImportOf } from "./module-bindings.js";
 
 /* Blob and File (node:buffer, also globals) are native checked-dynamic
- * handles (scr_blob.c). Construction, slice() and the three readers lower
- * to dedicated libCalls; size, type, name and lastModified are handle
- * property reads. Every other member is fenced at compile time so no
- * call can reach a missing runtime operation. */
+ * handles (scr_blob.c). Construction, slice(), the three readers and the
+ * two stream readers lower to dedicated libCalls; size, type, name and
+ * lastModified are handle property reads. Every other member is fenced at
+ * compile time so no call can reach a missing runtime operation. */
 
 type BlobClass = "Blob" | "File";
 
 const BLOB_READS = new Set(["size", "type"]);
 const FILE_READS = new Set(["size", "type", "name", "lastModified"]);
-const BLOB_CALLS = new Set(["slice", "text", "bytes", "arrayBuffer"]);
-// The stream readers Node 24 defines (textStream() is newer than some type
-// declarations, so it is matched by name).
-const STREAM_MEMBERS = new Set(["stream", "textStream"]);
+const BLOB_CALLS = new Set(["slice", "text", "bytes", "arrayBuffer", "stream", "textStream"]);
 // Object.prototype members other than toString() (the handle answers the
 // class tag): the native handle has no prototype chain to answer them.
 const OBJECT_PROTOTYPE_MEMBERS = new Set([
@@ -87,7 +84,8 @@ export function lowerBlobNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr |
   };
 }
 
-/** slice(), text(), bytes() and arrayBuffer() on a Blob or File. */
+/** slice(), text(), bytes(), arrayBuffer(), stream() and textStream() on a
+ * Blob or File. */
 export function lowerStaticBlobCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
   const access = call.expression;
@@ -106,6 +104,23 @@ export function lowerStaticBlobCall(lowerer: Lowerer, call: ts.CallExpression): 
       type: DYN,
       loc,
     };
+  }
+  if (member === "stream" || member === "textStream") {
+    const stream = (recv: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: member === "stream" ? "blob.stream" : "blob.textStream",
+      args: [recv],
+      type: DYN,
+      loc,
+    });
+    if (args.length === 0) return stream(receiver);
+    const local = lowerer.declareHiddenLocal("%blobReceiver", DYN);
+    const stmts: IrStmt[] = [
+      { kind: "varDecl", localId: local.id, init: receiver, loc },
+      ...args.map((arg): IrStmt => ({ kind: "exprStmt", expr: arg, loc: arg.loc })),
+    ];
+    const result = stream({ kind: "varRef", localId: local.id, type: DYN, loc });
+    return { kind: "seqExpr", stmts, result, type: result.type, loc };
   }
   const read = (recv: IrExpr): IrExpr => ({
     kind: "libCall",
@@ -146,7 +161,7 @@ export function lowerBlobInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
 
 /** Members outside the native surface: Node keeps Blob's state in internal
  * slots behind prototype getters and methods, so only the modeled reads
- * and calls lower; stream() and the rest are refused here. */
+ * and calls lower; everything else is refused here. */
 export function fenceStaticBlobMember(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
@@ -162,24 +177,13 @@ export function fenceStaticBlobMember(
     // (undefined reads, Node's "is not a function" TypeError, and the
     // handle's toString()).
     const type = lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(access.expression));
-    if (
-      !OBJECT_PROTOTYPE_MEMBERS.has(member) &&
-      !STREAM_MEMBERS.has(member) &&
-      !lowerer.checker.getPropertyOfType(type, member)
-    ) {
+    if (!OBJECT_PROTOTYPE_MEMBERS.has(member) && !lowerer.checker.getPropertyOfType(type, member)) {
       return null;
     }
-  }
-  if (member !== null && STREAM_MEMBERS.has(member)) {
-    lowerer.noLowering(
-      `${cls}.${member}()`,
-      access,
-      "Blob streams are not supported yet; read the contents with bytes(), arrayBuffer() or text()",
-    );
   }
   lowerer.noLowering(
     member === null ? `computed ${cls} members` : `${cls}.${member}`,
     access,
-    `the native ${cls} surface is ${cls === "File" ? "name, lastModified, " : ""}size and type plus slice(), text(), bytes() and arrayBuffer()`,
+    `the native ${cls} surface is ${cls === "File" ? "name, lastModified, " : ""}size and type plus slice(), text(), bytes(), arrayBuffer(), stream() and textStream()`,
   );
 }

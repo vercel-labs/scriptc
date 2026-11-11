@@ -527,6 +527,120 @@ static ScrPromise *scr_blob_read(const ScrDyn *self, ScrBlobRead mode, bool boxe
   return scr_blob_after_turns(p, turns);
 }
 
+/* ── stream() and textStream() ───────────────────────────────────────── */
+
+/* Node reads a Blob's stream the way its queue holds it: one part per
+ * pull, the part's bytes as a Uint8Array, and nothing for a zero-length
+ * part. textStream() is that stream through a utf-8 TextDecoderStream:
+ * each part is decoded with stream: true and the non-empty output
+ * enqueued, then the flush's output when it has any. A part that ends
+ * mid-sequence decodes to nothing and is completed by the next part. */
+typedef struct ScrBlobStream {
+  ScrBlob *blob;   /* +1 */
+  size_t part;     /* first part not yet read */
+  ScrDyn *decoder; /* +1 when text: the streaming decoder's state */
+  bool text;
+} ScrBlobStream;
+
+static void scr_blob_stream_release(void *ctx) {
+  ScrBlobStream *s = ctx;
+  scr_blob_release_v(s->blob);
+  scr_dyn_release(s->decoder);
+  free(s);
+}
+
+/* The next non-empty part's bytes, or NULL once they are read out. */
+static ScrBytes *scr_blob_stream_next(ScrBlobStream *s) {
+  ScrBlob *b = s->blob;
+  while (s->part < b->nparts && b->parts[s->part] == 0) s->part++;
+  if (s->part >= b->nparts) return NULL;
+  size_t start = b->off;
+  for (size_t i = 0; i < s->part; i++) start += b->parts[i];
+  size_t len = b->parts[s->part++];
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  memcpy(bytes->data, b->store->data + start, len);
+  return bytes;
+}
+
+/* Decodes one part (or, with stream false, the end of the input) and
+ * enqueues the result when it has any; *produced says whether it did.
+ * false with the exception pending. */
+static bool scr_blob_stream_text(ScrBlobStream *s, const ScrBytes *bytes, bool stream, const ScrFetchReadSink *sink,
+                                 void *sink_ctx, bool *produced) {
+  ScrStr *text = scr_text_decode_stream(s->decoder, bytes, -1, false, false, stream);
+  if (!text) return false;
+  *produced = text->len != 0;
+  if (*produced) {
+    ScrDyn *value = scr_dyn_new_str(text);
+    scr_str_release(text);
+    sink->chunk(sink_ctx, value);
+    scr_dyn_release(value);
+  } else {
+    scr_str_release(text);
+  }
+  return true;
+}
+
+static bool scr_blob_stream_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
+  ScrBlobStream *s = ctx;
+  for (;;) {
+    ScrBytes *bytes = scr_blob_stream_next(s);
+    if (!bytes) {
+      if (s->text) {
+        ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+        bool produced = false;
+        bool ok = scr_blob_stream_text(s, empty, false, sink, sink_ctx, &produced);
+        scr_bytes_release(empty);
+        if (!ok) return false;
+        /* A request ends with the one callback it makes: the flush's
+         * chunk takes this request, and the close comes with the next
+         * pull (a second flush decodes nothing). */
+        if (produced) return true;
+      }
+      sink->close(sink_ctx);
+      return true;
+    }
+    if (!s->text) {
+      ScrDyn *value = scr_dyn_new_bytes(bytes);
+      scr_bytes_release(bytes);
+      sink->chunk(sink_ctx, value);
+      scr_dyn_release(value);
+      return true;
+    }
+    bool produced = false;
+    bool ok = scr_blob_stream_text(s, bytes, true, sink, sink_ctx, &produced);
+    scr_bytes_release(bytes);
+    if (!ok) return false;
+    /* A part that ends mid-sequence decodes to nothing; the decoder holds
+     * it until the part that completes it. */
+    if (produced) return true;
+  }
+}
+
+static ScrPromise *scr_blob_stream_cancel(void *ctx, ScrDyn *reason) {
+  (void)ctx;
+  (void)reason;
+  return scr_promise_settled_void();
+}
+
+static const ScrWebStreamSource scr_blob_stream_source = {
+    scr_blob_stream_read_into,
+    scr_blob_stream_cancel,
+    scr_blob_stream_release,
+};
+
+/* Blob.stream() / Blob.textStream(): the new ReadableStream. */
+static ScrDyn *scr_blob_stream_of(ScrBlob *b, bool text) {
+  ScrBlobStream *s = calloc(1, sizeof *s);
+  if (!s) scr_trap("scriptc: out of memory\n");
+  b->rc++;
+  s->blob = b;
+  s->text = text;
+  if (text) s->decoder = scr_dyn_new_obj();
+  return text ? scr_webstream_readable_over(&scr_blob_stream_source, s)
+              : scr_webstream_readable_over_bytes(&scr_blob_stream_source, s);
+}
+
 static ScrDyn *scr_blob_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                                size_t argc, const char *what) {
   ScrBlob *b = ptr;
@@ -549,11 +663,10 @@ static ScrDyn *scr_blob_invoke(void *ptr, ScrDyn *self, const char *method, ScrD
     mode = SCR_BLOB_READ_TEXT;
   } else if (strcmp(method, "bytes") == 0) {
     mode = SCR_BLOB_READ_BYTES;
-  } else if (strcmp(method, "stream") == 0 || strcmp(method, "textStream") == 0) {
-    char message[64];
-    snprintf(message, sizeof message, "Blob.%s() is not supported yet", method);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020");
-    return NULL;
+  } else if (strcmp(method, "stream") == 0) {
+    return scr_blob_stream_of(b, false);
+  } else if (strcmp(method, "textStream") == 0) {
+    return scr_blob_stream_of(b, true);
   } else {
     char message[256];
     snprintf(message, sizeof message, "%s is not a function", what);
@@ -619,6 +732,91 @@ static ScrDyn *scr_blob_clone(void *ptr) {
   return scr_blob_box(out);
 }
 
+/* ── structured clone ────────────────────────────────────────────────── */
+
+/* A Blob or File as the payload a message carries: the bytes, the part
+ * lengths, and the type and File name as plain UTF-8. Everything is plain
+ * malloc'd memory, so the adopting thread reads it without touching this
+ * thread's ScrStr or ScrDyn objects. */
+typedef struct ScrBlobTransfer {
+  size_t len;
+  uint8_t *data;
+  size_t nparts;
+  size_t *parts;
+  size_t type_len;
+  char *type;
+  size_t name_len;
+  char *name; /* NULL for a Blob */
+  double last_modified;
+} ScrBlobTransfer;
+
+static char *scr_blob_transfer_text(const ScrStr *s, size_t *len) {
+  *len = s ? s->len : 0;
+  if (!*len) return NULL;
+  char *copy = malloc(*len);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, s->data, *len);
+  return copy;
+}
+
+static void *scr_blob_share(void *h) {
+  ScrBlob *b = h;
+  ScrBlobTransfer *p = calloc(1, sizeof *p);
+  if (!p) scr_trap("scriptc: out of memory\n");
+  p->len = b->len;
+  if (b->len) {
+    p->data = malloc(b->len);
+    if (!p->data) scr_trap("scriptc: out of memory\n");
+    memcpy(p->data, b->store->data + b->off, b->len);
+  }
+  p->nparts = b->nparts;
+  if (b->nparts) {
+    p->parts = malloc(b->nparts * sizeof *p->parts);
+    if (!p->parts) scr_trap("scriptc: out of memory\n");
+    memcpy(p->parts, b->parts, b->nparts * sizeof *p->parts);
+  }
+  p->type = scr_blob_transfer_text(b->type, &p->type_len);
+  p->name = scr_blob_transfer_text(b->name, &p->name_len);
+  p->last_modified = b->last_modified;
+  return p;
+}
+
+/* Takes the payload's contents (the message drops it after the adopt). */
+static ScrDyn *scr_blob_adopt(void *payload) {
+  ScrBlobTransfer *p = payload;
+  scr_blob_install();
+  ScrBlobStore *store = malloc(sizeof *store + p->len);
+  if (!store) scr_trap("scriptc: out of memory\n");
+  store->rc = 1;
+  store->len = p->len;
+  if (p->len) memcpy(store->data, p->data, p->len);
+  ScrBlob *b = scr_blob_alloc();
+  b->store = store;
+  b->len = p->len;
+  b->nparts = p->nparts;
+  if (p->nparts) {
+    b->parts = malloc(p->nparts * sizeof *b->parts);
+    if (!b->parts) scr_trap("scriptc: out of memory\n");
+    memcpy(b->parts, p->parts, p->nparts * sizeof *b->parts);
+  }
+  b->type = scr_str_new(p->type ? p->type : "", p->type_len);
+  if (p->name) b->name = scr_str_new(p->name, p->name_len);
+  b->last_modified = p->last_modified;
+  return scr_blob_box(b);
+}
+
+static void scr_blob_drop(void *payload) {
+  ScrBlobTransfer *p = payload;
+  free(p->data);
+  free(p->parts);
+  free(p->type);
+  free(p->name);
+  free(p);
+}
+
+static const ScrDynHandleTransfer scr_blob_transfer = {
+    .share = scr_blob_share, .adopt = scr_blob_adopt, .drop = scr_blob_drop};
+
 static const ScrDynHandleOps scr_blob_ops = {
     .cls = "Blob",
     .retain = scr_blob_retain_v,
@@ -628,6 +826,7 @@ static const ScrDynHandleOps scr_blob_ops = {
     .set = scr_blob_set,
     .inspect_view = scr_blob_inspect_view,
     .clone = scr_blob_clone,
+    .transfer = &scr_blob_transfer,
     .json_empty_object = true,
     .inspect_bracketed_past_depth = true,
 };
@@ -641,6 +840,7 @@ static const ScrDynHandleOps scr_file_ops = {
     .set = scr_blob_set,
     .inspect_view = scr_blob_inspect_view,
     .clone = scr_blob_clone,
+    .transfer = &scr_blob_transfer,
     .json_empty_object = true,
     .inspect_bracketed_past_depth = true,
 };
@@ -721,6 +921,24 @@ ScrPromise *scr_blob_bytes(ScrDyn *self) { return scr_blob_read(self, SCR_BLOB_R
 
 ScrPromise *scr_blob_array_buffer(ScrDyn *self) {
   return scr_blob_read(self, SCR_BLOB_READ_BUFFER, false);
+}
+
+ScrDyn *scr_blob_stream(ScrDyn *self) {
+  ScrBlob *b = scr_blob_of(self);
+  if (!b) {
+    scr_blob_invalid_this("Blob");
+    return NULL;
+  }
+  return scr_blob_stream_of(b, false);
+}
+
+ScrDyn *scr_blob_text_stream(ScrDyn *self) {
+  ScrBlob *b = scr_blob_of(self);
+  if (!b) {
+    scr_blob_invalid_this("Blob");
+    return NULL;
+  }
+  return scr_blob_stream_of(b, true);
 }
 
 bool scr_blob_is(const ScrDyn *value, double kind) {

@@ -178,7 +178,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.is",
   "blob.new",
   "blob.slice",
+  "blob.stream",
   "blob.text",
+  "blob.textStream",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "dc.chanUnbindStore",
@@ -1963,6 +1965,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
+  /** Blob and File (scr_blob.c): their handle unit, selected by any blob.*
+   * call. Its stream readers answer through the web stream unit's
+   * over-readers, so a Blob program links that unit too. */
+  blob: rule({ prefixes: ["blob."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
@@ -2476,6 +2482,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     asyncContext: false,
     bigint: false,
     bigstats: false,
+    blob: false,
     childProcess: false,
     cipher: false,
     copying: false,
@@ -2695,6 +2702,24 @@ function scanRuntimeFeatures(
     features.dynTier = mod.functions.some(
       (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
     );
+  // scr_blob.c boxes its reads as dyn promises and answers stream() and
+  // textStream() through scr_webstreams.c's over-readers, whose classes it
+  // hands out: a Blob program links both units.
+  if (features.blob) {
+    features.dynAsync = true;
+    features.webStreams = true;
+  }
+  // scr_webstreams.c's install table brands its classes with well-known
+  // symbols, formats ReadableStream.from's non-iterable argument through
+  // the inspector, and attaches a pipe-to abort through the event target's
+  // addAbortListener, which the signal unit carries. A program that links
+  // the web stream unit links those units too.
+  if (features.webStreams) {
+    features.symbol = true;
+    features.inspect = true;
+    features.eventTarget = true;
+    features.abortSignal = true;
+  }
   return features;
 }
 

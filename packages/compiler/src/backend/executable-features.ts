@@ -97,6 +97,7 @@ export function executableLinkFeatures(
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
+    ...(features.blob ? { blob: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
     // A Node island can hand its own AbortSignal to any native receiver of

@@ -249,6 +249,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.new",
   "blob.fileNew",
   "blob.slice",
+  "blob.stream",
+  "blob.textStream",
   "wasm.compile",
   "wasm.validate",
   "wasm.instantiate",

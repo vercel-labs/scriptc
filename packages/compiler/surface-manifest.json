@@ -4687,7 +4687,7 @@
       "kind": "stdlib",
       "name": "Blob",
       "status": "static",
-      "note": "immutable bytes with size, type, slice(), text(), bytes(), arrayBuffer() and structured cloning"
+      "note": "immutable bytes with size, type, slice(), text(), bytes(), arrayBuffer(), stream(), textStream() and structured cloning"
     },
     {
       "id": "stdlib.date.UTC",

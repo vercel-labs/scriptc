@@ -929,6 +929,7 @@ async function compileExecutableNative(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
+    ...(features.blob ? { blob: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.

@@ -128,6 +128,8 @@ function buildLibFnSignatures() {
     "blob.text": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
     "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
     "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "blob.stream": { argTypes: [DYN], result: DYN },
+    "blob.textStream": { argTypes: [DYN], result: DYN },
     "blob.is": { argTypes: [DYN, F64], result: BOOL },
     /** WebAssembly (scr_wasm.c): modules translated at build time
      * (wasm/translate.ts), found at run time by the SHA-256 of their bytes.

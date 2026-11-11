@@ -2883,6 +2883,9 @@ void scr_dyn_check_listener(const ScrDyn *cb, const char *argname);
  * generic ERR_INVALID_ARG_TYPE thrower over it (`expected` is the whole
  * "of type ..." clause). The handle dispatchers' per-arg gates. */
 const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
+/* The same tail with its true length in *len: a string value keeps the NUL
+ * bytes %s would stop at, so the message builders append it by length. */
+const char *scr_dyn_specific_type_len(const ScrDyn *v, char *buf, size_t cap, size_t *len);
 /* ERR_INVALID_ARG_TYPE with the runtime-rendered Received tail (the
  * error.argTypeThrow libCall). Borrows all three; always throws. */
 SCR_COLD void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const ScrDyn *got);

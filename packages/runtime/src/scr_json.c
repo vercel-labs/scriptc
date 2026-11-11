@@ -8318,8 +8318,10 @@ const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d) {
  * when the shape needs a payload; returns the text either way. Lives
  * beside the dyn core (not the gated handle unit) because the always-
  * linked argument validators (bytes, fs) render through it too. */
-const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
+static const char *scr_dyn_specific_type_impl(const ScrDyn *cb, char *detail, size_t cap, size_t *len) {
   const char *d = detail;
+  size_t exact = 0;
+  bool have_exact = false;
   switch (cb->kind) {
   case SCR_DYN_NULL: d = "null"; break;
   case SCR_DYN_UNDEF: d = "undefined"; break;
@@ -8330,7 +8332,20 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
       for (size_t i = 0; i < cb->v.obj.len && !keys; i++) keys = scr_dyn_obj_dict_entries(cb)[i].enumerable;
       d = keys ? "[Object: null prototype]" : "[Object: null prototype] {}";
     } else {
-      d = "an instance of Object";
+      /* A prototype chain names the class (a primitive wrapper answers
+       * "String", "Number" or "Boolean"); a plain dictionary has none. */
+      const char *class_name = scr_dyn_class_name(cb);
+      if (class_name) {
+        snprintf(detail, cap, "an instance of %s", class_name);
+        break;
+      }
+      ScrStr *tag = scr_dyn_object_tag(cb);
+      if (tag && tag->len > 10 && memcmp(tag->data, "[object ", 8) == 0 && tag->data[tag->len - 1] == ']' &&
+          !(tag->len == 15 && memcmp(tag->data + 8, "Object", 6) == 0))
+        snprintf(detail, cap, "an instance of %.*s", (int)(tag->len - 9), tag->data + 8);
+      else
+        d = "an instance of Object";
+      scr_str_release(tag);
     }
     break;
   case SCR_DYN_ARR: d = "an instance of Array"; break;
@@ -8406,14 +8421,29 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
     }
     scr_jb_putc(&shown, ')');
     ScrStr *text = scr_jb_finish(&shown);
-    snprintf(detail, cap, "%.*s", (int)text->len, text->data);
+    /* Copied by length: the value's NUL bytes are part of the message and
+     * %s would end the tail at the first one. The 28-unit cut above keeps
+     * the escaped text well inside the callers' buffers. */
+    size_t n = text->len < cap - 1 ? text->len : cap - 1;
+    memcpy(detail, text->data, n);
+    exact = n;
+    have_exact = true;
     scr_str_release(text);
     scr_str_release(value);
     break;
   }
   default: d = "an instance of Object"; break;
   }
+  if (len != NULL) *len = have_exact ? exact : (d == detail ? strlen(detail) : strlen(d));
   return d;
+}
+
+const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
+  return scr_dyn_specific_type_impl(cb, detail, cap, NULL);
+}
+
+const char *scr_dyn_specific_type_len(const ScrDyn *cb, char *detail, size_t cap, size_t *len) {
+  return scr_dyn_specific_type_impl(cb, detail, cap, len);
 }
 
 /* Node's ERR_INVALID_ARG_TYPE thrower ("The \"chunk\" argument must be
@@ -8431,7 +8461,8 @@ void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const Scr
 
 void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrDyn *got) {
   char detail[256];
-  const char *d = scr_dyn_specific_type(got, detail, sizeof detail);
+  size_t dlen = 0;
+  const char *d = scr_dyn_specific_type_len(got, detail, sizeof detail, &dlen);
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "The \"");
@@ -8440,7 +8471,7 @@ void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrD
   scr_jb_puts(&b, strchr(argname, '.') ? "\" property must be " : "\" argument must be ");
   scr_jb_puts(&b, expected);
   scr_jb_puts(&b, ". Received ");
-  scr_jb_puts(&b, d);
+  scr_jb_write(&b, d, dlen);
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len,
                            "ERR_INVALID_ARG_TYPE");
@@ -8453,7 +8484,8 @@ void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrD
  * one). Same runtime-rendered Received tail; always throws catchably. */
 void scr_dyn_prop_type_fail(const char *name, const char *expected, const ScrDyn *got) {
   char detail[256];
-  const char *d = scr_dyn_specific_type(got, detail, sizeof detail);
+  size_t dlen = 0;
+  const char *d = scr_dyn_specific_type_len(got, detail, sizeof detail, &dlen);
   ScrJsonBuf b;
   scr_jb_init(&b);
   scr_jb_puts(&b, "The \"");
@@ -8461,7 +8493,7 @@ void scr_dyn_prop_type_fail(const char *name, const char *expected, const ScrDyn
   scr_jb_puts(&b, "\" property must be ");
   scr_jb_puts(&b, expected);
   scr_jb_puts(&b, ". Received ");
-  scr_jb_puts(&b, d);
+  scr_jb_write(&b, d, dlen);
   ScrStr *msg = scr_jb_finish(&b);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len,
                            "ERR_INVALID_ARG_TYPE");

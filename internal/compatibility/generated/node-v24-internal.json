@@ -2741,7 +2741,11 @@
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/buffer-slowbuffer.cjs",
           "tests/corpus/buffer-to-json.ts",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
+          "tests/corpus/compat-blob-streams.ts",
           "tests/corpus/compat-buffer-copy-offsets.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/corpus/compat-buffer-instance-methods.ts",
           "tests/corpus/compat-buffer-optional-slots.ts",
           "tests/corpus/compat-buffer-search-needles.ts",
@@ -3048,11 +3052,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.isAscii",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3076,11 +3081,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.isUtf8",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3127,11 +3133,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.transcode",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3306,11 +3313,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Blob",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
           "tests/fixtures/node-types/blob-file.ts"
         ]
       },
@@ -3334,8 +3343,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.Blob",
+        "tests": [
+          "tests/corpus/compat-blob-message-channel.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3450,8 +3462,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.stream",
+        "tests": [
+          "tests/corpus/compat-blob-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3504,8 +3519,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.textStream",
+        "tests": [
+          "tests/corpus/compat-blob-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -5570,11 +5588,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.File",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
           "tests/fixtures/node-types/blob-file.ts"
         ]
       },
@@ -53962,6 +53982,9 @@
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
           "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
+          "tests/corpus/compat-blob-streams.ts",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
@@ -54276,14 +54299,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.Blob",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
           "tests/corpus/5288-blob-validation.js",
-          "tests/corpus/5290-blob-dynamic.js"
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-streams.ts",
+          "tests/corpus/compat-blob-message-channel.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54684,14 +54710,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.File",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
           "tests/corpus/5288-blob-validation.js",
-          "tests/corpus/5290-blob-dynamic.js"
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-streams.ts",
+          "tests/corpus/compat-blob-message-channel.ts"
         ]
       },
       "anchorSource": "exact"

@@ -1543,10 +1543,49 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
     return scr_buffer_from_array_like(value, (double)value->v.arr.len);
   }
   if (value->kind == SCR_DYN_OBJ) {
-    const ScrDyn *hook = scr_dyn_obj_get(value, "valueOf", 7);
-    if (hook && scr_dyn_truthy(hook)) {
-      return scr_buffer_from_refusal("with a custom valueOf");
+    /* Node's from() reads the object's valueOf() first: a string answer is
+     * the source, an object answer other than the value itself converts the
+     * same way, and anything else (including the inherited
+     * Object.prototype.valueOf, which answers the object itself) falls
+     * through to the shape checks below. A non-callable valueOf throws the
+     * same "is not a function" TypeError Node's call raises. A dictionary
+     * object has no prototype to read; an object that has one (a primitive
+     * wrapper, Object.create) reads it through the chain, where a String
+     * wrapper's valueOf answers the primitive string. */
+    const ScrDyn *hook = NULL;
+    ScrDyn *inherited = NULL;
+    if (value->prototype) {
+      ScrStr *name = scr_str_new("valueOf", 7);
+      ScrDyn *key = scr_dyn_new_str(name);
+      scr_str_release(name);
+      inherited = scr_dyn_reflect_get((ScrDyn *)value, key, (ScrDyn *)value);
+      scr_dyn_release(key);
+      if (!inherited) return NULL;
+      hook = inherited;
+    } else {
+      hook = scr_dyn_obj_get(value, "valueOf", 7);
     }
+    ScrBytes *value_of_result = NULL;
+    bool value_of_threw = false;
+    if (hook && scr_dyn_truthy(hook)) {
+      scr_dyn_this_push_dyn(value);
+      ScrDyn *answer = scr_dyn_call(hook, NULL, 0, "value.valueOf");
+      scr_dyn_this_pop();
+      if (!answer) {
+        scr_dyn_release(inherited);
+        return NULL;
+      }
+      if (answer->kind == SCR_DYN_STR) {
+        value_of_result = scr_bytes_from_str(answer->v.str, encoding);
+      } else if (answer != value && (answer->kind == SCR_DYN_OBJ || answer->kind == SCR_DYN_ARR ||
+                                     answer->kind == SCR_DYN_BYTES)) {
+        value_of_result = scr_buffer_from_dyn(answer, encoding);
+      }
+      value_of_threw = scr_exc_pending();
+      scr_dyn_release(answer);
+    }
+    scr_dyn_release(inherited);
+    if (value_of_result || value_of_threw) return value_of_result;
     const ScrDyn *length = scr_dyn_obj_get(value, "length", 6);
     if (length && length->kind != SCR_DYN_UNDEF) {
       return scr_buffer_from_array_like(value, length->kind == SCR_DYN_NUM ? length->v.num : 0);
@@ -1561,6 +1600,19 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
       scr_dyn_release(held);
       return out;
     }
+  }
+  if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE) {
+    /* Node's from() finds no length, buffer or Buffer shape on a Date and
+     * falls to Symbol.toPrimitive, whose "string" hint renders the date as
+     * its toString does. */
+    ScrStr *text = scr_dyn_to_string(value, NULL);
+    if (!text || scr_exc_pending()) {
+      scr_str_release(text);
+      return NULL;
+    }
+    ScrBytes *out = scr_bytes_from_str(text, encoding);
+    scr_str_release(text);
+    return out;
   }
   if (value->kind == SCR_DYN_TYPED_REF || value->kind == SCR_DYN_HANDLE) {
     return scr_buffer_from_refusal("with an opaque reference");

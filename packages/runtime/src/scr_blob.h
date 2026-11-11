@@ -21,6 +21,11 @@ ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
 ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
+/* stream() (a byte ReadableStream of the Blob's parts) and textStream()
+ * (that stream through a utf-8 decoder): +1 ReadableStream handle, or NULL
+ * with the exception pending. */
+ScrDyn *scr_blob_stream(ScrDyn *self);
+ScrDyn *scr_blob_text_stream(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
 /* A Blob or File as a fetch body: the blob's bytes (+1) and its type
  * (+1, NULL when the Blob has none), which becomes Content-Type. False,

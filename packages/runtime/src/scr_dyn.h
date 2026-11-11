@@ -1069,6 +1069,9 @@ ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value);
 /* The own property stored under a symbol key on an object (borrowed), or
  * NULL when it has none. */
 ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key);
+/* Whether `object` owns a callable Symbol.toPrimitive member (Node's
+ * hasBuiltInToString consults it before the toString owner). */
+bool scr_dyn_has_own_to_primitive(const ScrDyn *object);
 /* The own symbol-keyed property `key` of `object` as a property view
  * (scr_dyn_obj_prop_at; `key` and `key_len` name its private storage
  * key); false when there is none. */

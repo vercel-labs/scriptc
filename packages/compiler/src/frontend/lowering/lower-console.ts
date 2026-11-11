@@ -20,10 +20,12 @@ import {
   lowerFormatCall,
   lowerInspectValue,
   lowerRuntimeFormat,
+  lowerRuntimeInspectDir,
   runtimeFormatString,
   formatStringConverts,
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
+import { programTouchesInspectTables } from "./inspect-tables.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
  * representation the stdlib Console type maps to) over two output
@@ -353,6 +355,12 @@ export function lowerConsoleOutput(
   surface: string,
   loc: SrcLoc,
 ): IrExpr {
+  // A program that reads util.inspect's value can change the tables every
+  // console line's inspection reads (defaultOptions, colors, styles), so
+  // the whole line renders through the runtime formatter, which reads them
+  // per call.
+  if (programTouchesInspectTables(lowerer))
+    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, expr.arguments.nodes, loc)], loc);
   // A LITERAL format string with %-specifiers and further arguments
   // (`console.log('Mismatched %s function calls. Expected %s, actual
   // %d.', name, seg, n)` — test/common's exit report): Node's console
@@ -834,7 +842,9 @@ export function lowerConsoleMethodCall(
       const rendered =
         valueNode === undefined
           ? strLit("undefined", loc)
-          : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
+          : programTouchesInspectTables(lowerer)
+            ? lowerRuntimeInspectDir(lowerer, valueNode, optionsNode, args.length, loc)
+            : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
       if (rest.length === 0) return consoleWrite(true, [rendered], loc);
       const text = hoist(lowerer, stmts, "%consoleDir", rendered, loc);
       evaluateIgnored(lowerer, rest, stmts, loc);

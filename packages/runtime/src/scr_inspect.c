@@ -28,6 +28,7 @@
  * Ownership: ScrStr/ScrBytes/ScrDyn/ScrError arguments are BORROWED;
  * ScrStr results return +1. Nothing here throws; OOM aborts. */
 #include "scr_runtime.h"
+#include "scr_util_style.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -163,6 +164,14 @@ static size_t insp_width(const char *data, size_t len) {
  * renderings never run with it set. */
 static SCR_TL bool g_colors;
 
+/* util.inspect as a function value (the custom functions' third
+ * argument): a fresh inspect context over the call's arguments, the
+ * caller's restored afterwards. One function per thread, so the argument
+ * compares equal to util.inspect. +1. It is also the object whose colors
+ * and styles members the colored render reads per leaf, so a program that
+ * never read it as a value cannot have replaced them. */
+static SCR_TL ScrDyn *g_inspect_function;
+
 typedef enum {
   INSP_SPECIAL,
   INSP_NUMBER,
@@ -175,7 +184,10 @@ typedef enum {
   INSP_DATE,
 } InspStyle;
 
-/* inspect.styles mapped through inspect.colors: [open, close]. */
+/* inspect.styles mapped through inspect.colors: [open, close]. These are
+ * the tables' defaults; a program that read util.inspect's function value
+ * can have replaced either table, and the render reads them live then
+ * (insp_style_pair_any). */
 static const unsigned char insp_style_codes[][2] = {
     {36, 39}, /* special: cyan */
     {33, 39}, /* number: yellow */
@@ -188,25 +200,92 @@ static const unsigned char insp_style_codes[][2] = {
     {35, 39}, /* date: magenta */
 };
 
+/* The styleType name Node's inspect.styles keys each InspStyle by. */
+static const char *insp_style_name(InspStyle style) {
+  switch (style) {
+    case INSP_SPECIAL:
+      return "special";
+    case INSP_NUMBER:
+      return "number";
+    case INSP_BIGINT:
+      return "bigint";
+    case INSP_BOOLEAN:
+      return "boolean";
+    case INSP_UNDEFINED:
+      return "undefined";
+    case INSP_NULL:
+      return "null";
+    case INSP_STRING:
+      return "string";
+    case INSP_SYMBOL:
+      return "symbol";
+    case INSP_DATE:
+      return "date";
+  }
+  return "special";
+}
+
+/* insp_style_pair_any below, which answers the SGR codes as text. */
+static bool insp_style_pair_any(const char *type, size_t len, ScrStr **open, ScrStr **close);
+
+/* One SGR code: `\x1b[<code>m`. */
+static void insp_style_emit(InspBuf *b, const ScrStr *code) {
+  ib_cstr(b, "\x1b[");
+  ib_str(b, code);
+  ib_char(b, 'm');
+}
+
 static void insp_style_open(InspBuf *b, InspStyle style) {
-  char code[8];
-  int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][0]);
-  ib_bytes(b, code, (size_t)n);
+  if (!g_inspect_function) {
+    char code[8];
+    int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][0]);
+    ib_bytes(b, code, (size_t)n);
+    return;
+  }
+  ScrStr *open = NULL, *close = NULL;
+  const char *type = insp_style_name(style);
+  if (!insp_style_pair_any(type, strlen(type), &open, &close)) return;
+  insp_style_emit(b, open);
+  scr_str_release(open);
+  scr_str_release(close);
 }
 
 static void insp_style_close(InspBuf *b, InspStyle style) {
-  char code[8];
-  int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][1]);
-  ib_bytes(b, code, (size_t)n);
+  if (!g_inspect_function) {
+    char code[8];
+    int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][1]);
+    ib_bytes(b, code, (size_t)n);
+    return;
+  }
+  ScrStr *open = NULL, *close = NULL;
+  const char *type = insp_style_name(style);
+  if (!insp_style_pair_any(type, strlen(type), &open, &close)) return;
+  insp_style_emit(b, close);
+  scr_str_release(open);
+  scr_str_release(close);
 }
 
 /* ctx.stylize(text, style): +1; moves `text` in. */
 static ScrStr *insp_styled(ScrStr *text, InspStyle style) {
   if (!g_colors) return text;
   InspBuf b = {0};
-  insp_style_open(&b, style);
-  ib_str(&b, text);
-  insp_style_close(&b, style);
+  if (!g_inspect_function) {
+    insp_style_open(&b, style);
+    ib_str(&b, text);
+    insp_style_close(&b, style);
+  } else {
+    ScrStr *open = NULL, *close = NULL;
+    const char *type = insp_style_name(style);
+    if (insp_style_pair_any(type, strlen(type), &open, &close)) {
+      insp_style_emit(&b, open);
+      ib_str(&b, text);
+      insp_style_emit(&b, close);
+    } else {
+      ib_str(&b, text);
+    }
+    scr_str_release(open);
+    scr_str_release(close);
+  }
   scr_str_release(text);
   return ib_take(&b);
 }
@@ -2979,22 +3058,144 @@ static void insp_call_unwind(size_t ncall) { insp_call_options_restore(ncall); }
 
 static size_t insp_call_depth(void) { return g_ncall_saved; }
 
-/* The style inspect.styles maps a styleType to, as [open, close] codes:
- * the styles above plus regexp (red) and module (underline). false when
- * the type has no style. */
-static bool insp_style_of(const ScrStr *type, unsigned *open, unsigned *close) {
+/* The current `inspect.styles` or `inspect.colors` value: the data property
+ * of the inspect function value, +1, or NULL when util.inspect was never
+ * used (the built-in tables below are Node's defaults then). */
+static ScrDyn *insp_inspect_member(const char *key);
+
+/* A color pair's `code` member as Node's template interpolation renders
+ * it: ToString, so a number is its digits and a missing member is
+ * "undefined". null (rather than undefined) throws the property read's
+ * TypeError, as Node's `color[0]` does. +1, or NULL with the exception
+ * pending. */
+static ScrStr *insp_color_component(const ScrDyn *pair, double index) {
+  if (pair->kind == SCR_DYN_TYPED_REF) {
+    /* A pair the source typed (a tuple or an array field of a record)
+     * reads through its materialized view, as a plain array would. */
+    ScrDyn *view = scr_dyn_typed_ref_materialize(pair);
+    if (!view) return NULL;
+    ScrStr *text = insp_color_component(view, index);
+    scr_dyn_release(view);
+    return text;
+  }
+  if (pair->kind == SCR_DYN_NULL) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of null (reading '%.0f')",
+                     index);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  ScrDyn *value = NULL;
+  if (pair->kind == SCR_DYN_ARR) value = scr_dyn_index_get(pair, index);
+  if (!value && pair->kind == SCR_DYN_STR)
+    value = scr_dyn_string_index_get(pair, index);
+  if (!value) {
+    char key[4];
+    int n = snprintf(key, sizeof key, "%.0f", index);
+    value = scr_dyn_obj_read(pair, key, (size_t)n);
+  }
+  if (!value) return NULL;
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  scr_dyn_release(value);
+  return text;
+}
+
+/* The SGR pair inspect.styles maps a styleType to through inspect.colors:
+ * the color name the styles table holds for `type`, then the codes that
+ * name has in the colors table. Node leaves the text plain when either
+ * lookup answers undefined, and a null or undefined table throws the
+ * property read's TypeError. false when there is no pair to apply (with
+ * the exception pending for the throwing cases). */
+/* A table the program assigned may be a typed record (a literal with a
+ * known shape): its members read through the materialized view, as a
+ * plain object's would. Moves `table` in; answers the view (+1). */
+static ScrDyn *insp_table_view(ScrDyn *table) {
+  if (table->kind != SCR_DYN_TYPED_REF) return table;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(table);
+  scr_dyn_release(table);
+  return view;
+}
+
+static bool insp_style_pair(const char *type, size_t len, ScrStr **open, ScrStr **close) {
+  ScrDyn *styles = insp_inspect_member("styles");
+  if (!styles) return false;
+  styles = insp_table_view(styles);
+  if (!styles) return false;
+  if (styles->kind == SCR_DYN_NULL || styles->kind == SCR_DYN_UNDEF) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading '%.*s')",
+                     styles->kind == SCR_DYN_NULL ? "null" : "undefined", (int)len, type);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    scr_dyn_release(styles);
+    return false;
+  }
+  if (styles->kind != SCR_DYN_OBJ) {
+    scr_dyn_release(styles);
+    return false;
+  }
+  ScrDyn *color = scr_dyn_obj_read(styles, type, len);
+  scr_dyn_release(styles);
+  if (!color) return false;
+  if (color->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(color);
+    return false;
+  }
+  ScrStr *name = scr_dyn_string_coerce_js(color);
+  scr_dyn_release(color);
+  if (!name) return false;
+  ScrDyn *colors = insp_inspect_member("colors");
+  if (colors) colors = insp_table_view(colors);
+  if (colors && (colors->kind == SCR_DYN_NULL || colors->kind == SCR_DYN_UNDEF)) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading '%.*s')",
+                     colors->kind == SCR_DYN_NULL ? "null" : "undefined", (int)name->len,
+                     name->data);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    scr_dyn_release(colors);
+    scr_str_release(name);
+    return false;
+  }
+  ScrDyn *pair = colors ? scr_dyn_obj_read(colors, name->data, name->len) : NULL;
+  scr_dyn_release(colors);
+  scr_str_release(name);
+  if (!pair) return false;
+  if (pair->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(pair);
+    return false;
+  }
+  ScrStr *open_code = insp_color_component(pair, 0);
+  ScrStr *close_code = open_code ? insp_color_component(pair, 1) : NULL;
+  scr_dyn_release(pair);
+  if (!open_code || !close_code) {
+    scr_str_release(open_code);
+    return false;
+  }
+  *open = open_code;
+  *close = close_code;
+  return true;
+}
+
+/* The codes for one styleType, as strings: the live tables when the program
+ * has util.inspect's function value (it can have replaced either), the
+ * built-in defaults otherwise. The built-ins also cover regexp (red) and
+ * module (underline), which only a custom styles table names. */
+static bool insp_style_pair_any(const char *type, size_t len, ScrStr **open, ScrStr **close) {
+  if (g_inspect_function) return insp_style_pair(type, len, open, close);
   static const struct {
     const char *name;
     unsigned open, close;
-  } styles[] = {
+  } builtins[] = {
       {"special", 36, 39}, {"number", 33, 39}, {"bigint", 33, 39}, {"boolean", 33, 39},
       {"undefined", 90, 39}, {"null", 1, 22},  {"string", 32, 39}, {"symbol", 32, 39},
       {"date", 35, 39},    {"regexp", 31, 39}, {"module", 4, 24},
   };
-  for (size_t i = 0; i < sizeof styles / sizeof *styles; i++) {
-    if (type->len == strlen(styles[i].name) && memcmp(type->data, styles[i].name, type->len) == 0) {
-      *open = styles[i].open;
-      *close = styles[i].close;
+  for (size_t i = 0; i < sizeof builtins / sizeof *builtins; i++) {
+    if (len == strlen(builtins[i].name) && memcmp(type, builtins[i].name, len) == 0) {
+      char codes[2][8];
+      int a = snprintf(codes[0], sizeof codes[0], "%u", builtins[i].open);
+      int b = snprintf(codes[1], sizeof codes[1], "%u", builtins[i].close);
+      *open = scr_str_new(codes[0], (size_t)a);
+      *close = scr_str_new(codes[1], (size_t)b);
       return true;
     }
   }
@@ -3012,20 +3213,24 @@ static ScrDyn *insp_stylize_call(ScrClosure *closure, ScrDyn *const *args, size_
   if (!colored) return scr_dyn_retain(text);
   ScrStr *str = scr_dyn_string_coerce_js(text);
   if (!str) return NULL;
-  unsigned open, close;
+  ScrStr *open = NULL, *close = NULL;
   ScrStr *type = argc > 1 && args[1]->kind == SCR_DYN_STR ? args[1]->v.str : NULL;
-  if (!type || !insp_style_of(type, &open, &close)) {
+  if (!type || !insp_style_pair_any(type->data, type->len, &open, &close)) {
+    scr_str_release(open);
+    if (scr_exc_pending()) {
+      scr_str_release(str);
+      return NULL;
+    }
     ScrDyn *out = scr_dyn_new_str(str);
     scr_str_release(str);
     return out;
   }
   InspBuf b = {0};
-  char code[8];
-  int n = snprintf(code, sizeof code, "\x1b[%um", open);
-  ib_bytes(&b, code, (size_t)n);
+  insp_style_emit(&b, open);
   ib_str(&b, str);
-  n = snprintf(code, sizeof code, "\x1b[%um", close);
-  ib_bytes(&b, code, (size_t)n);
+  insp_style_emit(&b, close);
+  scr_str_release(open);
+  scr_str_release(close);
   scr_str_release(str);
   ScrStr *styled = ib_take(&b);
   ScrDyn *out = scr_dyn_new_str(styled);
@@ -3045,27 +3250,160 @@ static bool insp_own_stylize(const ScrDyn *value, bool colors) {
   return colored == colors;
 }
 
-/* util.inspect as a function value (the custom functions' third
- * argument): a fresh inspect context over the call's arguments, the
- * caller's restored afterwards. One function per thread, so the argument
- * compares equal to util.inspect. +1. */
-static SCR_TL ScrDyn *g_inspect_function;
-
 static void insp_inspect_function_cleanup(void) {
   scr_dyn_release(g_inspect_function);
   g_inspect_function = NULL;
 }
 
-/* util.inspect's own members (custom, colors, styles, defaultOptions)
- * read or written through the function value: the tables are not modeled,
- * so each throws SC2020 instead of answering undefined. */
-static ScrDyn *insp_inspect_member_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)args; (void)argc;
-  char message[128];
-  int n = snprintf(message, sizeof message, "util.inspect.%s through the inspect function is not supported yet",
-                   (const char *)closure->fn);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
-  return NULL;
+/* util.inspect's own members: custom is the custom-inspect symbol, colors
+ * and styles are the writable data properties the colored render reads,
+ * and defaultOptions is the accessor whose object every later inspect uses
+ * for the options it does not give. */
+static ScrDyn *insp_inspect_member(const char *key) {
+  if (!g_inspect_function) return NULL;
+  return scr_dyn_fn_get(g_inspect_function, key, strlen(key));
+}
+
+/* inspect.colors: Node's standard names as enumerable properties, the
+ * aliases (grey, faint, ...) as non-enumerable ones, [open, close] each. */
+static ScrDyn *insp_color_table(void) {
+  ScrDyn *table = scr_dyn_new_obj_null_proto();
+  size_t enumerable = scr_util_style_color_enumerable_count();
+  for (size_t i = 0; i < scr_util_style_color_count(); i++) {
+    ScrDyn *pair = scr_dyn_new_arr();
+    scr_dyn_arr_push(pair, scr_dyn_new_num((double)scr_util_style_color_open(i)));
+    scr_dyn_arr_push(pair, scr_dyn_new_num((double)scr_util_style_color_close(i)));
+    const char *name = scr_util_style_color_name(i);
+    scr_dyn_obj_set(table, name, strlen(name), pair);
+    if (i >= enumerable)
+      scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, true, false, true);
+  }
+  return table;
+}
+
+/* inspect.styles: the styleType → color name map the colored render uses. */
+static ScrDyn *insp_style_table(void) {
+  static const struct {
+    const char *type, *color;
+  } styles[] = {
+      {"special", "cyan"},  {"number", "yellow"}, {"bigint", "yellow"}, {"boolean", "yellow"},
+      {"undefined", "grey"}, {"null", "bold"},    {"string", "green"},  {"symbol", "green"},
+      {"date", "magenta"},  {"regexp", "red"},    {"module", "underline"},
+  };
+  ScrDyn *table = scr_dyn_new_obj_null_proto();
+  for (size_t i = 0; i < sizeof styles / sizeof *styles; i++) {
+    ScrStr *color = scr_str_new(styles[i].color, strlen(styles[i].color));
+    scr_dyn_obj_set(table, styles[i].type, strlen(styles[i].type), scr_dyn_new_str(color));
+    scr_str_release(color);
+  }
+  return table;
+}
+
+/* inspect.defaultOptions: Node's twelve defaults in its order, on a sealed
+ * object (writable, non-configurable properties; not extensible). */
+static ScrDyn *insp_default_options_object(void) {
+  ScrDyn *o = scr_dyn_new_obj();
+  scr_dyn_obj_set(o, "showHidden", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(o, "depth", 5, scr_dyn_new_num(2));
+  scr_dyn_obj_set(o, "colors", 6, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(o, "customInspect", 13, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(o, "showProxy", 9, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(o, "maxArrayLength", 14, scr_dyn_new_num(100));
+  scr_dyn_obj_set(o, "maxStringLength", 15, scr_dyn_new_num(10000));
+  scr_dyn_obj_set(o, "breakLength", 11, scr_dyn_new_num(80));
+  scr_dyn_obj_set(o, "compact", 7, scr_dyn_new_num(3));
+  scr_dyn_obj_set(o, "sorted", 6, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(o, "getters", 7, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(o, "numericSeparator", 16, scr_dyn_new_bool(false));
+  ScrDyn *sealed = scr_dyn_seal(o);
+  scr_dyn_release(o);
+  return sealed;
+}
+
+static SCR_TL ScrDyn *g_inspect_default_options;
+
+static void insp_default_options_cleanup(void) {
+  scr_dyn_release(g_inspect_default_options);
+  g_inspect_default_options = NULL;
+}
+
+/* The defaults object, built on first access. Borrowed; NULL with the
+ * exception pending when sealing failed. */
+static ScrDyn *insp_default_options(void) {
+  if (!g_inspect_default_options) {
+    ScrDyn *o = insp_default_options_object();
+    if (!o) return NULL;
+    g_inspect_default_options = o;
+    scr_atexit(insp_default_options_cleanup);
+  }
+  return g_inspect_default_options;
+}
+
+static ScrDyn *insp_default_options_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  ScrDyn *options = insp_default_options();
+  return options ? scr_dyn_retain(options) : NULL;
+}
+
+/* validateObject(options, 'options'), then the source's own enumerable
+ * properties copied over the defaults, skipping undefined values (Node's
+ * setter). A key the sealed object does not have throws the property
+ * assignment's non-extensible TypeError. */
+static ScrDyn *insp_default_options_set(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  ScrDyn *value = argc > 0 ? args[0] : (ScrDyn *)scr_dyn_undefined();
+  bool object = value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_TYPED_REF ||
+                value->kind == SCR_DYN_HANDLE || value->kind == SCR_DYN_PROMISE ||
+                value->kind == SCR_DYN_PROXY || value->kind == SCR_DYN_BYTES;
+  if (!object) {
+    scr_dyn_arg_type_fail("options", "of type object", value);
+    return NULL;
+  }
+  ScrDyn *target = insp_default_options();
+  if (!target) return NULL;
+  ScrDyn *view = value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(value)
+                                                   : scr_dyn_retain(value);
+  if (!view) return NULL;
+  if (view->kind == SCR_DYN_OBJ) {
+    for (size_t i = 0; i < scr_dyn_obj_count(view); i++) {
+      ScrDynProp ent = scr_dyn_obj_prop_at(view, i);
+      if (!ent.enumerable) continue;
+      ScrDyn *member = scr_dyn_obj_read(view, ent.key, ent.key_len);
+      if (!member) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+      /* Object.assign: an undefined value is assigned like any other, so a
+       * later render sees that key as undefined. */
+      scr_dyn_obj_set(target, ent.key, ent.key_len, member);
+      if (scr_exc_pending()) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+    }
+  } else if (view->kind == SCR_DYN_ARR) {
+    /* Object.assign copies an array's own enumerable indices, which the
+     * sealed object does not have: the write throws for the first one. */
+    size_t length = scr_dyn_arr_length(view);
+    for (size_t i = 0; i < length; i++) {
+      char key[24];
+      int n = snprintf(key, sizeof key, "%zu", i);
+      ScrDyn *member = scr_dyn_index_get(view, (double)i);
+      if (!member) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+      scr_dyn_obj_set(target, key, (size_t)n, member);
+      if (scr_exc_pending()) {
+        scr_dyn_release(view);
+        return NULL;
+      }
+    }
+  }
+  scr_dyn_release(view);
+  return scr_dyn_retain(scr_dyn_undefined());
 }
 
 static ScrDyn *insp_inspect_value(void) {
@@ -3074,16 +3412,31 @@ static ScrDyn *insp_inspect_value(void) {
     g_inspect_function =
         scr_dyn_new_func(closure, insp_inspect_call, 2, "native:util.inspect", "inspect");
     scr_atexit(insp_inspect_function_cleanup);
-    static const char *const members[] = {"custom", "defaultOptions", "colors", "styles"};
     ScrDyn *table = scr_dyn_function_properties(g_inspect_function);
-    for (size_t i = 0; i < sizeof members / sizeof members[0]; i++) {
-      ScrDyn *get = scr_dyn_new_func(scr_closure_new((void *)members[i], 0), insp_inspect_member_call, 0,
-                                     "native:function", members[i]);
-      ScrDyn *set = scr_dyn_new_func(scr_closure_new((void *)members[i], 0), insp_inspect_member_call, 1,
-                                     "native:function", members[i]);
-      scr_dyn_obj_set_accessor(table, members[i], strlen(members[i]), get, set);
-      scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, true, false, true);
+    ScrDyn *custom = scr_dyn_inspect_custom_symbol();
+    if (!custom && scr_sym_for_fn) {
+      /* Node's util module registers the key while it loads, so custom is
+       * there before any user code runs. A program that reads
+       * util.inspect as a value installs Symbol.for for this object
+       * (runtime-features: inspectFunctionValue), and interning the key
+       * now gives one identity with the program's own Symbol.for calls.
+       * The call answers its own reference, which this eager intern does
+       * not use. */
+      ScrStr *desc = scr_str_new("nodejs.util.inspect.custom", 26);
+      ScrSym *interned = scr_sym_for_fn(desc);
+      scr_str_release(desc);
+      if (interned && scr_sym_event_ops) scr_sym_event_ops->release(interned);
+      custom = scr_dyn_inspect_custom_symbol();
     }
+    if (custom) scr_dyn_obj_set(table, "custom", 6, scr_dyn_retain(custom));
+    ScrDyn *get = scr_dyn_new_func(scr_closure_new(NULL, 0), insp_default_options_get, 0,
+                                   "native:function", "defaultOptions");
+    ScrDyn *set = scr_dyn_new_func(scr_closure_new(NULL, 0), insp_default_options_set, 1,
+                                   "native:function", "defaultOptions");
+    scr_dyn_obj_set_accessor(table, "defaultOptions", 14, get, set);
+    scr_dyn_obj_set_attrs_at(table, scr_dyn_obj_count(table) - 1, true, false, false);
+    scr_dyn_obj_set(table, "colors", 6, insp_color_table());
+    scr_dyn_obj_set(table, "styles", 6, insp_style_table());
     scr_dyn_release(table);
   }
   return scr_dyn_retain(g_inspect_function);
@@ -4003,14 +4356,6 @@ ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   return scr_insp_dyn(d, 0, depth);
 }
 
-ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
-  /* hasBuiltInToString is false for MIMEType and MIMEParams (their
-   * constructors are not globals): %s prints String(value). */
-  if (d->kind == SCR_DYN_HANDLE && (d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS))
-    return scr_dyn_string_coerce_js(d);
-  return scr_insp_dyn_s(d, depth);
-}
-
 /* ── util.format over checked-dynamic values ─────────────────────────────
  * formatWithOptionsInternal over argument values whose types are known
  * only at run time: util.format and util.formatWithOptions with a runtime
@@ -4048,6 +4393,52 @@ static bool insp_fmt_object(const ScrDyn *value) {
   }
 }
 
+/* The values a program put on util.inspect.defaultOptions, as the options
+ * an inspect/format call uses when it does not supply its own. Node copies
+ * the object over the defaults with spread semantics: an undefined value
+ * keeps the built-in default, null depth and maxArrayLength mean no limit,
+ * and every other key is read for its truthiness or number. */
+static void insp_apply_default_options(ScrInspFormatOptions *o) {
+  const ScrDyn *v;
+#define INSP_DEFAULT(key) scr_dyn_obj_get(g_inspect_default_options, key, strlen(key))
+  if ((v = INSP_DEFAULT("showHidden"))) o->show_hidden = scr_dyn_truthy(v);
+  if ((v = INSP_DEFAULT("depth")) && v->kind != SCR_DYN_UNDEF) {
+    if (v->kind == SCR_DYN_NUM) {
+      o->depth = isnan(v->v.num) ? INFINITY : v->v.num;
+      o->depth_kind = 0;
+      o->depth_number = v->v.num;
+    } else if (v->kind == SCR_DYN_NULL) {
+      o->depth = INFINITY;
+      o->depth_kind = 1;
+    }
+  }
+  if ((v = INSP_DEFAULT("colors"))) o->colors = scr_dyn_truthy(v);
+  if ((v = INSP_DEFAULT("customInspect"))) o->custom_inspect = scr_dyn_truthy(v);
+  if ((v = INSP_DEFAULT("numericSeparator"))) o->numeric_separator = scr_dyn_truthy(v);
+  if ((v = INSP_DEFAULT("sorted"))) o->sorted = scr_dyn_truthy(v);
+  if ((v = INSP_DEFAULT("compact"))) {
+    if (v->kind == SCR_DYN_NUM) o->compact = v->v.num < 0 ? 0 : v->v.num;
+    else if (v->kind == SCR_DYN_BOOL && !v->v.b) o->compact = -1;
+  }
+  if ((v = INSP_DEFAULT("breakLength")) && v->kind == SCR_DYN_NUM) o->break_length = v->v.num;
+  if ((v = INSP_DEFAULT("maxArrayLength"))) {
+    if (v->kind == SCR_DYN_NULL) o->max_array_length = INFINITY;
+    else if (v->kind == SCR_DYN_NUM && v->v.num >= 0) o->max_array_length = v->v.num;
+  }
+  if ((v = INSP_DEFAULT("maxStringLength"))) {
+    if (v->kind == SCR_DYN_NULL) o->max_string_length = INFINITY;
+    else if (v->kind == SCR_DYN_NUM && v->v.num >= 0) o->max_string_length = v->v.num;
+  }
+  if ((v = INSP_DEFAULT("getters"))) {
+    if (v->kind == SCR_DYN_BOOL && v->v.b) o->getters = 1;
+    else if (v->kind == SCR_DYN_STR && v->v.str->len == 3 &&
+             (memcmp(v->v.str->data, "get", 3) == 0 || memcmp(v->v.str->data, "set", 3) == 0))
+      o->getters = v->v.str->data[0] == 'g' ? 2 : 3;
+    else o->getters = 0;
+  }
+#undef INSP_DEFAULT
+}
+
 void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->surface = surface;
   o->depth = 2;
@@ -4065,6 +4456,9 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->max_string_length = 10000;
   o->getters = 0;
   o->user_options = NULL;
+  /* Only a program that touched util.inspect.defaultOptions created the
+   * object; until then the built-in defaults above are Node's own. */
+  if (g_inspect_default_options) insp_apply_default_options(o);
 }
 
 /* inspect(value, options) at the given depth, compact and colors, with
@@ -4143,7 +4537,12 @@ static int insp_fmt_custom_to_string(const ScrDyn *value) {
   }
   int custom = 0;
   for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) {
+    /* An own callable Symbol.toPrimitive decides ToPrimitive before
+     * toString does, and its hint-sensitive answer has no %s lowering
+     * here; any other symbol-keyed member (an inspect.custom hook, say)
+     * leaves the toString walk in charge, as Node's hasBuiltInToString
+     * does. */
+    if (current->symbol_properties && scr_dyn_has_own_to_primitive(current)) {
       custom = -1;
       break;
     }
@@ -4161,7 +4560,21 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
   if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
   if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
   if (value->kind == SCR_DYN_BIGINT) return scr_insp_bigint(value->v.bigint);
-  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_MIME_TYPE || value->v.handle.tag == SCR_DYNH_MIME_PARAMS))
+  /* URL, URLSearchParams and the MIME handles own a toString on their
+   * prototypes, and they are not among the ECMAScript globals Node's
+   * hasBuiltInToString knows, so %s takes String(value) here: the href, the
+   * serialized list, the MIME text. Date, RegExp, Map and Set are, and
+   * inspect. */
+  if (value->kind == SCR_DYN_HANDLE &&
+      (value->v.handle.tag == SCR_DYNH_MIME_TYPE || value->v.handle.tag == SCR_DYNH_MIME_PARAMS ||
+       value->v.handle.tag == SCR_DYNH_URL || value->v.handle.tag == SCR_DYNH_SEARCH_PARAMS))
+    return scr_dyn_string_coerce_js(value);
+  /* A typed array or Buffer is the one object family whose toString owner
+   * is not a global constructor (%TypedArray% and Buffer's own method), so
+   * hasBuiltInToString answers false and Node prints String(value): the
+   * elements joined, or a Buffer's decoded bytes. A DataView's toString
+   * comes from Object.prototype and inspects. */
+  if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view)
     return scr_dyn_string_coerce_js(value);
   if (value->kind == SCR_DYN_FUNC) {
     insp_fmt_fence(o, "%s of a function prints its source text, which a compiled binary does not keep");
@@ -4171,19 +4584,50 @@ static ScrStr *insp_fmt_s(ScrDyn *value, const ScrInspFormatOptions *o) {
       value->kind == SCR_DYN_TYPED_REF) {
     int custom = insp_fmt_custom_to_string(value);
     if (scr_exc_pending()) return NULL;
-    if (custom == -2) {
-      insp_fmt_fence(o, "%s of a class instance whose class defines toString has no lowering");
-      return NULL;
-    }
-    if (custom < 0) {
-      insp_fmt_fence(o, "%s of objects with symbol-keyed members has no lowering");
-      return NULL;
-    }
-    if (custom) return scr_dyn_string_coerce_js(value);
+    /* A program-owned conversion is String(value): the own toString, or —
+     * for an own Symbol.toPrimitive (custom -1) and a class instance whose
+     * class defines toString (-2) — the full ToPrimitive protocol the
+     * runtime's ToString runs. */
+    if (custom) return scr_util_to_string(value);
   }
   if (!insp_fmt_object(value)) return scr_insp_dyn(value, 0, 0);
   /* inspect(arg, { ...inspectOptions, depth: 0, colors: false, compact: 3 }) */
   return insp_fmt_inspect(value, o, 0, 3, false);
+}
+
+/* The options of the format whose layout is installed: the lowered format
+ * calls run under scr_insp_layout with their options (util.format's
+ * defaults, or formatWithOptions' literal ones), and the runtime
+ * conversions read them from there. */
+static void insp_fmt_options_from_globals(ScrInspFormatOptions *o, const char *surface) {
+  scr_insp_format_defaults(o, surface);
+  o->break_length = g_break_length;
+  o->sorted = g_sorted;
+  o->max_array_length = g_max_array_length;
+  o->max_string_length = g_max_string_length;
+  o->numeric_separator = g_numeric_separator;
+  o->getters = g_getters;
+  o->custom_inspect = g_custom_inspect;
+  o->show_hidden = g_show_hidden;
+  o->hidden_spec = g_hidden_spec;
+  o->depth_kind = g_depth_kind;
+  o->depth_number = g_depth_number;
+  o->user_options = g_user_options;
+  o->colors = g_colors;
+}
+
+/* util.format's %s over a checked-dynamic value, from the lowered call
+ * sites (and over a record reached through its index signature). Node's
+ * rule, exactly as the typed lanes apply it: a string passes verbatim, a
+ * number formats by formatNumber and a bigint by formatBigInt, and an
+ * object takes String(arg) when the toString it reaches is the program's
+ * own, otherwise inspect at depth 0 with compact 3 and no colors. The
+ * depth argument is the caller's and is not used — %s pins depth 0. */
+ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) {
+  (void)depth;
+  ScrInspFormatOptions o;
+  insp_fmt_options_from_globals(&o, "util.format");
+  return insp_fmt_s(d, &o);
 }
 
 static ScrStr *insp_fmt_number(ScrDyn *value, int spec) {
@@ -4682,6 +5126,23 @@ ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *
   if (options->kind == SCR_DYN_BOOL) {
     o.show_hidden = options->v.b;
   } else if (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF) {
+    if (!scr_insp_format_read_options(options, &o)) return NULL;
+  }
+  return insp_fmt_inspect(value, &o, o.depth, o.compact, o.colors);
+}
+
+/* console.dir(value[, options]): Node inspects with { customInspect:
+ * false, ...options }, where the defaults answer every key the call does
+ * not give. `argc` counts the call's arguments (the options argument is
+ * undefined when argc is 1). +1, or NULL with the exception pending. */
+ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc) {
+  ScrInspFormatOptions o;
+  scr_insp_format_defaults(&o, "console.dir");
+  o.custom_inspect = false;
+  /* `{ ...options }` copies the enumerable members of an object; null,
+   * undefined, arrays (numeric keys only) and primitives contribute no
+   * option. */
+  if (argc > 1 && (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF)) {
     if (!scr_insp_format_read_options(options, &o)) return NULL;
   }
   return insp_fmt_inspect(value, &o, o.depth, o.compact, o.colors);

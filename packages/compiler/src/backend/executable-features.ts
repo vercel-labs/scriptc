@@ -121,7 +121,10 @@ export function executableLinkFeatures(
     // registries (scope-B NI-3).
     events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
-    symbol: features.symbol,
+    // util.inspect's function value carries
+    // Symbol.for('nodejs.util.inspect.custom') (inspectFunctionValue): its
+    // object is built in scr_inspect.c through the symbol unit's Symbol.for.
+    symbol: features.symbol || features.inspectFunctionValue === true,
     bigint: features.bigint,
     ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,

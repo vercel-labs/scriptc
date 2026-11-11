@@ -197,7 +197,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util.c", "parseArgs"],
   // Utility objects must only reference runtime families selected with them.
   ["scr_util_compare.c", all("parseArgs", "symbol")],
-  ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  ["scr_util_style.c", "inspect"],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   // util.promisify over an untyped function creates dyn promises and calls.
   ["scr_util_promisify.c", all("utilPromisify", "dynAsync", "dynInvoke")],

@@ -4312,7 +4312,7 @@ function buildLibFnSignatures() {
      * (scr_module_namespace_dyn_value): the module id, its sorted export
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
-    "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN, BOOL], result: DYN },
     /** A module namespace built from its export values as a JavaScript
      * source takes one (scr_module_namespace_copy_value): the module id and
      * the object holding the values. One marked object per module, so the
@@ -5649,6 +5649,7 @@ function buildLibFnSignatures() {
      * count: the runtime reads the options and renders the checked-dynamic
      * view. */
     "insp.inspect": { argTypes: [DYN, DYN, DYN, DYN, F64], result: STRING },
+    "insp.inspectDir": { argTypes: [DYN, DYN, F64], result: STRING },
     /** A [util.inspect.custom] method's call: whether ctx.customInspect is
      * set, its depth argument (the remaining depth at recursion r of depth
      * d), its options object and util.inspect, then its result rendered: a

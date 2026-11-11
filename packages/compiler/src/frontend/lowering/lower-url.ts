@@ -15,6 +15,7 @@ import {
 import { locOf } from "../program.js";
 import { staticForkString } from "../fork-target.js";
 import { lowerStaticallyUndefinedArgument } from "./optional-arguments.js";
+import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
 /** Both argument expressions run before the constructor converts input,
  * then base. Keep that ordering even when a conversion invokes user code. */
@@ -68,7 +69,11 @@ function lowerUrlOperation(
   const values = args.map((node): IrExpr => {
     const absent = lowerStaticallyUndefinedArgument(lowerer, node);
     if (absent !== null) {
-      stmts.push({ kind: "exprStmt", expr: absent, loc: locOf(node) });
+      // The literal `undefined` itself is a bare unitLit, which has no
+      // statement form; only a value with effects (a `void f()`) is kept.
+      if (!isSafeToDiscard(absent)) {
+        stmts.push({ kind: "exprStmt", expr: absent, loc: locOf(node) });
+      }
       return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(node) };
     }
     const value = lowerer.lowerExpr(node);

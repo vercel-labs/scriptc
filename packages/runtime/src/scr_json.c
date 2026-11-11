@@ -9730,6 +9730,19 @@ ScrDynEntry *scr_dyn_own_symbol_entry(const ScrDyn *object, const ScrDyn *key) {
   return object->symbol_properties ? scr_dyn_symbol_entry(object, key, true) : NULL;
 }
 
+/* Whether `object` owns a callable Symbol.toPrimitive member: Node's
+ * hasBuiltInToString asks before it walks to the toString owner, and a
+ * member that is not a function leaves the walk in charge (ToPrimitive
+ * ignores it too). */
+bool scr_dyn_has_own_to_primitive(const ScrDyn *object) {
+  if (scr_to_primitive_symbol == NULL || object == NULL || object->kind != SCR_DYN_OBJ ||
+      object->symbol_properties == NULL)
+    return false;
+  const ScrDynEntry *entry = scr_dyn_own_symbol_entry(object, scr_to_primitive_symbol);
+  return entry != NULL && !entry->accessor && entry->value != NULL &&
+         scr_dyn_is_callable(entry->value);
+}
+
 ScrStr *scr_dyn_symbol_storage_name(const ScrDyn *key) { return scr_dyn_symbol_storage_key(key); }
 
 void scr_dyn_symbol_init_own(ScrDyn *object, ScrDyn *key, const ScrStr *storage, ScrDyn *value) {
@@ -13331,8 +13344,11 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return text;
     }
   }
+    /* URLSearchParams.prototype.toString serializes the list, so
+     * ToString(params) answers `a=1&b=2` as it does in Node. */
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||
-        d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS) {
+        d->v.handle.tag == SCR_DYNH_MIME_TYPE || d->v.handle.tag == SCR_DYNH_MIME_PARAMS ||
+        d->v.handle.tag == SCR_DYNH_SEARCH_PARAMS) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
       /* ToPrimitive takes the member's answer as the primitive and ToString
@@ -19224,6 +19240,16 @@ ScrDyn *scr_dyn_function_apply(void) {
 }
 
 ScrDyn *scr_dyn_obj_read(const ScrDyn *d, const char *key, size_t key_len) {
+  /* A native handle is a JavaScript object: its members are the class's
+   * getters and methods, which the handle's ops answer. This is the read a
+   * record shape performs on an object it checks (a MIMEType's `type`, a
+   * URL's `href`), and Node answers those through the prototype. */
+  if (d->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(d)) {
+    ScrStr *name = scr_str_new(key, key_len);
+    ScrDyn *value = scr_dyn_handle_key_get(d, name);
+    scr_str_release(name);
+    return value;
+  }
   if (d->kind == SCR_DYN_PROXY) {
     ScrStr *name = scr_str_new(key, key_len);
     ScrDyn *value = scr_dyn_visit_proxy_get(d, name);

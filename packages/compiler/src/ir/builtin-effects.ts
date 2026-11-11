@@ -296,6 +296,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   // A getter the walk invokes renders its result, and that rendering can
   // refuse (SC2020) exactly like the walk's own.
   "insp.accessorValue",

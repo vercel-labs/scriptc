@@ -1901,6 +1901,11 @@ const RUNTIME_FEATURE_RULES = {
    * Symbol.for for scr_bytes_dyn.c, which registers
    * Symbol(nodejs.util.inspect.custom) as one of its keys. */
   bufferPrototypeObject: rule({ fns: ["buffer.prototypeObject"] }),
+  /** util.inspect read as a value (insp.inspectFunction): the function
+   * object the runtime builds carries
+   * Symbol.for('nodejs.util.inspect.custom') as `custom`, so the program
+   * installs the symbol unit's Symbol.for for it. */
+  inspectFunctionValue: rule({ fns: ["insp.inspectFunction"] }),
   /** createRequire's require and require.resolve with specifiers computed
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
@@ -2576,6 +2581,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBufferMembers: false,
     genReceiver: false,
     bufferPrototypeObject: false,
+    inspectFunctionValue: false,
     fsPathValue: false,
     builtinValues: false,
     computedRequire: false,

@@ -2,6 +2,7 @@ import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
 import { arrayOf, funcOf } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import {
+  BOOL,
   DYN,
   STRING,
   SYMBOL_T,
@@ -450,6 +451,7 @@ export function moduleNamespaceDynValue(
         type: DYN,
         loc,
       },
+      { kind: "boolLit", value: true, type: BOOL, loc },
     ],
     type: DYN,
     loc,
@@ -498,6 +500,13 @@ export function moduleNamespaceBuiltinDynValue(
   lowerer: Lowerer,
   moduleId: string,
   loc: SrcLoc,
+  /** Whether the value is the module's ES module namespace object (an
+   * `import * as ns` or dynamic import value), which Node brands as a
+   * module namespace. A sub-namespace member (`fs.promises`,
+   * `util.types`) is the module's CommonJS exports object instead: the same
+   * object shape without the brand (util.types.isModuleNamespaceObject
+   * answers false for it). */
+  esmNamespace = true,
 ): IrExpr | null {
   if (!moduleId.startsWith("builtin:")) return null;
   const module = moduleId.slice("builtin:".length);
@@ -580,6 +589,12 @@ export function moduleNamespaceBuiltinDynValue(
           loc,
         },
         type: DYN,
+        loc,
+      },
+      {
+        kind: "boolLit",
+        value: esmNamespace,
+        type: BOOL,
         loc,
       },
     ],

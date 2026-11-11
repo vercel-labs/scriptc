@@ -392,24 +392,20 @@ static ScrDyn *scr_mime_empty_view(void *h) {
   return scr_dyn_new_obj();
 }
 
-/* A method read as a value (`params.get` without a call) has no dyn
- * function value here: it throws the "not supported yet" Error; other
- * names answer undefined. */
-static ScrDyn *scr_mime_member_get(const char *cls, const char *const *methods, const char *key, size_t len) {
-  for (size_t i = 0; methods[i]; i++) {
-    if (strlen(methods[i]) != len || memcmp(methods[i], key, len) != 0) continue;
-    char message[128];
-    int n = snprintf(message, sizeof message, "'%s.prototype.%s' as a value is not supported yet", cls, methods[i]);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
-    return NULL;
-  }
-  return NULL;
-}
+/* The methods as values (ScrDynHandleMethod): `params.get` read without a
+ * call is the class's function, and `"get" in params` answers true. Names
+ * no class member covers answer NULL, so the read is undefined. */
+static const ScrDynHandleMethod scr_mime_params_methods[] = {
+    {"delete", 1, false}, {"entries", 0, false}, {"get", 1, false},
+    {"has", 1, false}, {"keys", 0, false}, {"set", 2, false},
+    {"values", 0, false}, {"toString", 0, false}, {"toJSON", 0, false},
+    {NULL, 0, false}};
 
 static ScrDyn *scr_mime_params_get(void *h, const char *key, size_t len) {
   (void)h;
-  static const char *const methods[] = {"delete", "entries", "get", "has", "keys", "set", "values", "toString", "toJSON", NULL};
-  return scr_mime_member_get("MIMEParams", methods, key, len);
+  (void)key;
+  (void)len;
+  return NULL;
 }
 
 static ScrDyn *scr_mime_params_box(ScrMimeParams *p) {
@@ -419,6 +415,7 @@ static ScrDyn *scr_mime_params_box(ScrMimeParams *p) {
       .release = scr_mime_params_release,
       .invoke = scr_mime_params_invoke,
       .get = scr_mime_params_get,
+      .methods = scr_mime_params_methods,
       .iter_step = scr_mime_params_step,
       .inspect_view = scr_mime_empty_view,
       .inspect_view_empty = true,
@@ -477,6 +474,9 @@ static ScrStr *scr_mime_type_to_string(const ScrMimeType *t) {
   return scr_jb_finish(&b);
 }
 
+static const ScrDynHandleMethod scr_mime_type_methods[] = {
+    {"toString", 0, false}, {"toJSON", 0, false}, {NULL, 0, false}};
+
 static ScrDyn *scr_mime_type_get(void *h, const char *key, size_t len) {
   ScrMimeType *t = h;
   if (len == 4 && !memcmp(key, "type", 4)) return scr_dyn_new_str(t->type);
@@ -493,8 +493,9 @@ static ScrDyn *scr_mime_type_get(void *h, const char *key, size_t len) {
     scr_str_release(text);
     return out;
   }
-  static const char *const methods[] = {"toString", "toJSON", NULL};
-  return scr_mime_member_get("MIMEType", methods, key, len);
+  (void)key;
+  (void)len;
+  return NULL;
 }
 
 static bool scr_mime_type_set(void *h, const char *key, size_t len, const ScrDyn *value) {
@@ -563,6 +564,7 @@ static ScrDyn *scr_mime_type_make(const ScrDyn *input, bool no_throw) {
       .release = scr_mime_type_release,
       .invoke = scr_mime_type_invoke,
       .get = scr_mime_type_get,
+      .methods = scr_mime_type_methods,
       .set = scr_mime_type_set,
       .inspect_view = scr_mime_empty_view,
       .inspect_view_empty = true,

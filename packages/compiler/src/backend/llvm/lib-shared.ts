@@ -1381,6 +1381,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.formatList": "scr_insp_format_list",
   "insp.formatWithOptions": "scr_insp_format_with_options",
   "insp.inspect": "scr_insp_inspect",
+  "insp.inspectDir": "scr_insp_inspect_dir",
   "insp.customEnabled": "scr_insp_custom_enabled",
   "insp.registerCustom": "scr_insp_register_custom",
   "insp.customInspect": "scr_insp_custom_inspect",

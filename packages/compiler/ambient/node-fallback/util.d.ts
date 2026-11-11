@@ -360,6 +360,14 @@ declare module "util" {
     /* The key of an object's custom inspect function:
      * Symbol.for('nodejs.util.inspect.custom'). */
     const custom: unique symbol;
+    /* The SGR pair the colored render applies to each style, and the style
+     * type → color name map it reads: both are writable objects, and the
+     * render reads them per styled leaf. */
+    let colors: Record<string, [number, number]>;
+    let styles: Record<string, string>;
+    /* The options every inspect/format call uses when it does not supply
+     * its own (a sealed object with Node's twelve defaults). */
+    let defaultOptions: InspectOptions;
   }
   export function format(format?: unknown, ...args: unknown[]): string;
   export function formatWithOptions(

@@ -2263,6 +2263,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   ) {
     const iterator = lowerStringIteratorCall(lowerer, expr, expr.expression);
     if (iterator) return iterator;
+    const spIterator = lowerSearchParamsIteratorElementCall(lowerer, expr, expr.expression);
+    if (spIterator) return spIterator;
   }
 
   // The element spelling of an unsupported native Web method must fence
@@ -4600,6 +4602,38 @@ function lowerStringIteratorCall(
   const value = lowerStringIteratorValue(lowerer, receiver, type, locOf(call));
   if (!value) lowerer.unsupported("SC1090", call, "this string iterator type");
   return value;
+}
+
+/** `sp[Symbol.iterator]()` on a URLSearchParams receiver: Node makes
+ * URLSearchParams.prototype[Symbol.iterator] the same function as
+ * entries(), so the call answers the live pair iterator the checked-
+ * dynamic view's entries() does (appends made after it was created are
+ * visited). Null for other element calls. */
+function lowerSearchParamsIteratorElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (
+    !ts.isPropertyAccessExpression(key) ||
+    lowerer.stdlibGlobalMember(key, "Symbol") !== "iterator"
+  )
+    return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "searchParams") return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
+    method: "entries",
+    calleeName: v8CalleeText(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }
 
 /** Iterator types with checked runtime receivers, whose helper calls lower

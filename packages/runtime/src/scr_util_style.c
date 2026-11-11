@@ -387,3 +387,30 @@ done:
   scr_str_release(processed);
   return result;
 }
+
+/* The table above, read by util.inspect for its colors object: Node's
+ * inspect.colors orders the standard names first and the aliases (grey,
+ * blackBright, ..., doubleUnderline) after them as non-enumerable
+ * properties. */
+size_t scr_util_style_color_count(void) {
+  return sizeof util_text_styles / sizeof util_text_styles[0];
+}
+
+size_t scr_util_style_color_enumerable_count(void) {
+  static const size_t aliases = 12; /* grey, blackBright, bgGrey, bgBlackBright,
+                                       faint, crossedout, strikeThrough, crossedOut,
+                                       conceal, swapColors, swapcolors, doubleUnderline */
+  return scr_util_style_color_count() - aliases;
+}
+
+const char *scr_util_style_color_name(size_t index) {
+  return util_text_styles[index].name;
+}
+
+unsigned scr_util_style_color_open(size_t index) {
+  return util_text_styles[index].open;
+}
+
+unsigned scr_util_style_color_close(size_t index) {
+  return util_text_styles[index].close;
+}

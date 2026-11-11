@@ -35,6 +35,11 @@
 typedef struct ScrModuleNamespaceDyn {
   ScrStr *id;
   ScrDyn *object; /* retained for the program's lifetime */
+  /* Whether the object is the ES module namespace value (branded as a
+   * module namespace) rather than the CommonJS exports object a
+   * sub-namespace member (`fs.promises`, `util.types`) answers: the same
+   * shape, distinct object and brand, as in Node. */
+  bool is_namespace;
   struct ScrModuleNamespaceDyn *next;
 } ScrModuleNamespaceDyn;
 
@@ -99,7 +104,8 @@ static ScrDyn *scr_module_namespace_dyn_fn(ScrDynThunk thunk, ScrDyn *first, Scr
 /* The namespace object: null prototype, one enumerable read-only accessor per
  * export in `keys` order, a non-writable Symbol.toStringTag of "Module", and
  * not extensible. */
-static ScrDyn *scr_module_namespace_dyn_build(ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key) {
+static ScrDyn *scr_module_namespace_dyn_build(ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key,
+                                              bool is_namespace) {
   ScrDyn *object = scr_dyn_new_obj_null_proto();
   for (size_t i = 0; i < keys->len; i++) {
     ScrStr *key = scr_arr_get_ref(keys, (double)i); /* +1 */
@@ -126,7 +132,10 @@ static ScrDyn *scr_module_namespace_dyn_build(ScrArr *keys, ScrDyn *getter, ScrD
     scr_dyn_release(object);
     return NULL;
   }
-  scr_dyn_mark_module_namespace(object);
+  /* Only the ES module namespace value carries Node's brand; the CommonJS
+   * exports object of a sub-namespace member (`fs.promises`, `util.types`)
+   * is the same shape unbranded. */
+  if (is_namespace) scr_dyn_mark_module_namespace(object);
   return object;
 }
 
@@ -175,8 +184,10 @@ ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object) {
   return scr_dyn_retain(object);
 }
 
-ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key) {
+ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key,
+                                       bool is_namespace) {
   for (ScrModuleNamespaceDyn *ns = scr_module_namespace_dyns; ns; ns = ns->next) {
+    if (ns->is_namespace != is_namespace) continue;
     if (ns->id->len == id->len && memcmp(ns->id->data, id->data, id->len) == 0)
       return scr_dyn_retain(ns->object);
   }
@@ -184,11 +195,12 @@ ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter,
     scr_atexit(scr_module_namespace_dyn_cleanup);
     scr_module_namespace_dyn_cleanup_registered = true;
   }
-  ScrDyn *object = scr_module_namespace_dyn_build(keys, getter, tag_key);
+  ScrDyn *object = scr_module_namespace_dyn_build(keys, getter, tag_key, is_namespace);
   if (!object) return NULL;
   ScrModuleNamespaceDyn *ns = malloc(sizeof(*ns));
   if (!ns) scr_trap("scriptc: out of memory\n");
-  *ns = (ScrModuleNamespaceDyn){ scr_str_retain(id), scr_dyn_retain(object), scr_module_namespace_dyns };
+  *ns = (ScrModuleNamespaceDyn){ scr_str_retain(id), scr_dyn_retain(object), is_namespace,
+                                 scr_module_namespace_dyns };
   scr_module_namespace_dyns = ns;
   return object;
 }

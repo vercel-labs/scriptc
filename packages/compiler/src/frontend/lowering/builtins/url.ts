@@ -2,7 +2,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { nodeThrowExpr, countedFor, strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import {
@@ -29,6 +29,7 @@ import {
 import { optionalStringTags } from "./arguments.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { lowerDynDispatchMethodCall } from "../lower-calls.js";
+import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 
 /** URL component assignment captures its receiver and RHS once, and yields
  * the original RHS after the setter performs string conversion. */
@@ -229,30 +230,45 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
   if (ts.isIdentifier(arg) && arg.text === "undefined") {
     return { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
   }
-  // The object-literal init: `{ a: "1", b: "2" }` appends pairs in
-  // source order — fold to nested sp.with calls over the empty list.
-  // Only plain property assignments (tsc's index-signature contextual
-  // type already rejects spreads' surprises, but keep the fence tight).
+  // The object-literal init: fold `{ a: "1", b: "2" }` into nested
+  // sp.with calls over the empty list. The order is Node's
+  // Reflect.ownKeys order for the literal rather than its source order:
+  // its integer index keys ascending first, then the other string keys in
+  // source order (`{ length: 2, 0: "a", 1: "b" }` answers
+  // `0=a&1=b&length=2`). Only plain property assignments (tsc's
+  // index-signature contextual type already rejects spreads' surprises,
+  // but keep the fence tight).
   if (ts.isObjectLiteralExpression(arg)) {
     let acc: IrExpr = { kind: "libCall", fn: "sp.new", args: [], type: SEARCH_PARAMS_T, loc };
+    // Each value is a USVString. A typed value lowers into the string
+    // slot. A JavaScript source's value may be untyped: it crosses into
+    // the checked-dynamic tree and stringifies there, Node's ToString
+    // (`{ a: "1", b: 2 }` answers `b=2`).
+    const valueOf = (node: ts.Node, lower: () => IrExpr): IrExpr => {
+      if (!isJsSourceFile(ts.getSourceFileOfNode(arg)))
+        return lowerer.lowerExprExpecting(node as ts.Expression, STRING);
+      const value = lower();
+      if (value.type.kind === "string") return value;
+      if (!lowerer.dynConvertible(value.type)) return lowerer.coerceInto(node, value, STRING);
+      return {
+        kind: "libCall",
+        fn: "dyn.toStringCoerce",
+        args: [{ kind: "dynFrom", value, type: DYN, loc: value.loc }],
+        type: STRING,
+        loc: value.loc,
+      };
+    };
+    const pairs: { key: string; keyLoc: SrcLoc; value: IrExpr }[] = [];
     for (const prop of arg.properties.nodes) {
       // `{ model }` appends the binding's value under its own name, like
       // the `{ model: model }` spelling.
       if (ts.isShorthandPropertyAssignment(prop)) {
-        const keyExpr: IrExpr = {
-          kind: "strLit",
-          value: (prop.name as ts.Identifier | ts.StringLiteral).text,
-          type: STRING,
-          loc: locOf(prop.name),
-        };
-        const value = lowerer.coerceInto(prop.name, lowerer.lowerShorthandValue(prop), STRING);
-        acc = {
-          kind: "libCall",
-          fn: "sp.with",
-          args: [acc, keyExpr, value],
-          type: SEARCH_PARAMS_T,
-          loc,
-        };
+        const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
+        pairs.push({
+          key,
+          keyLoc: locOf(prop.name),
+          value: valueOf(prop.name, () => lowerer.lowerShorthandValue(prop)),
+        });
         continue;
       }
       if (!ts.isPropertyAssignment(prop) || prop.name === undefined) {
@@ -265,6 +281,10 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
       let key: string;
       if (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) {
         key = prop.name.text;
+      } else if (ts.isNumericLiteral(prop.name)) {
+        // A numeric literal names its property by ToString of the value
+        // (`{ 1e3: v }` is `"1000"`, `{ 0o10: v }` is `"8"`).
+        key = String(Number(prop.name.text));
       } else {
         lowerer.unsupported(
           "SC1090",
@@ -272,12 +292,30 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
           "non-literal keys in a URLSearchParams record init",
         );
       }
-      const value = lowerer.lowerExprExpecting(prop.initializer, STRING);
-      const keyExpr: IrExpr = { kind: "strLit", value: key, type: STRING, loc: locOf(prop.name) };
+      pairs.push({
+        key,
+        keyLoc: locOf(prop.name),
+        value: valueOf(prop.initializer, () => lowerer.lowerExpr(prop.initializer)),
+      });
+    }
+    // Reflect.ownKeys order: the integer index keys ascending, then the
+    // other string keys in source order. (tsc rejects a literal that names
+    // one property twice, so every key here is distinct.)
+    const isIndexKey = (key: string): boolean =>
+      /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+    const ordered = [
+      ...pairs.filter((pair) => isIndexKey(pair.key)).sort((a, b) => Number(a.key) - Number(b.key)),
+      ...pairs.filter((pair) => !isIndexKey(pair.key)),
+    ];
+    for (const pair of ordered) {
       acc = {
         kind: "libCall",
         fn: "sp.with",
-        args: [acc, keyExpr, value],
+        args: [
+          acc,
+          { kind: "strLit", value: pair.key, type: STRING, loc: pair.keyLoc },
+          pair.value,
+        ],
         type: SEARCH_PARAMS_T,
         loc,
       };
@@ -314,6 +352,19 @@ function lowerSearchParamsInit(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc
       arg,
       "URLSearchParams from tuple rows other than [string, string] (type the pairs as [string, string][] or string[][])",
     );
+  }
+  // A JavaScript source's init the static shapes do not name (a number or
+  // other primitive, a pair array whose members are untyped): the
+  // checked-dynamic constructor applies the WHATWG algorithm — iterate a
+  // sequence, enumerate a record, else String(init).
+  if (isJsSourceFile(ts.getSourceFileOfNode(arg)) && lowerer.dynConvertible(init.type)) {
+    return {
+      kind: "libCall",
+      fn: "sp.newChecked",
+      args: [{ kind: "dynFrom", value: init, type: DYN, loc: init.loc }],
+      type: SEARCH_PARAMS_T,
+      loc,
+    };
   }
   lowerer.unsupported(
     "SC1090",
@@ -504,9 +555,9 @@ export function lowerSearchParamsMethodCall(
   const args = call.arguments.nodes;
   // The WHATWG arity ladder: too few arguments throw Node's
   // ERR_MISSING_ARGS before any conversion (the invalid-input probes'
-  // `params.get()`). Claimed for effect-free receivers only — the
-  // throw replaces the whole call, so an effectful receiver expression
-  // keeps the fence below.
+  // `params.get()`). Node evaluates the receiver and the present
+  // arguments first, then throws, so the receiver's effects are kept and
+  // only the missing slot is not converted.
   const required: Record<string, [number, string] | undefined> = {
     get: [1, 'The "name" argument must be specified'],
     getAll: [1, 'The "name" argument must be specified'],
@@ -516,19 +567,23 @@ export function lowerSearchParamsMethodCall(
     set: [2, 'The "name" and "value" arguments must be specified'],
   };
   const req = own(required, name);
-  if (req && args.length < req[0] && ts.isIdentifier(access.expression)) {
-    // The present-but-short forms still convert nothing in Node — the
-    // arity check runs first; present arguments are identifierish
-    // probes ('a') whose evaluation is pure in every suite shape, and
-    // effectful ones would land here too (statement-coarsening, the
-    // runtimeFence precedent).
-    return nodeThrowExpr(
+  if (req && args.length < req[0]) {
+    const receiver = lowerer.lowerExpr(access.expression);
+    const thrown = nodeThrowExpr(
       1,
       "ERR_MISSING_ARGS",
       req[1],
       lowerer.mapTypeOf(lowerer.typeOf(call)) ?? VOID,
       loc,
     );
+    if (isSafeToDiscard(receiver)) return thrown;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiver, loc: receiver.loc }],
+      result: thrown,
+      type: thrown.type,
+      loc,
+    };
   }
   // One name/value slot, WHATWG USVString rules: statically-string
   // arguments lower directly; a symbol can never convert (V8's
@@ -676,8 +731,18 @@ export function lowerSearchParamsMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "sp.toString", args: [receiver], type: STRING, loc };
   }
-  if (name === "forEach" && (args.length === 1 || args.length === 2)) {
-    return lowerSpForEachCall(lowerer, call, access);
+  if (name === "forEach" && args.length <= 2) {
+    const callback = args[0];
+    const callbackType = callback ? lowerer.mapTypeOf(lowerer.typeOf(callback)) : undefined;
+    // A callable of the lowered slots unrolls the index walk statically.
+    // Every other shape — a JavaScript source's missing or non-function
+    // argument — takes the native handle's forEach, which applies Node's
+    // ERR_INVALID_ARG_TYPE gate at the point the call runs.
+    if (callbackType?.kind === "func" && spForEachSlotFits(callbackType.params))
+      return lowerSpForEachCall(lowerer, call, access);
+    const boxed = lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN);
+    const dyn = lowerDynDispatchMethodCall(lowerer, call, access, boxed, false);
+    if (dyn) return dyn;
   }
   if ((name === "keys" || name === "values" || name === "entries") && args.length === 0) {
     // Outside a for-of head the iterator is a live object: the checked-
@@ -688,11 +753,42 @@ export function lowerSearchParamsMethodCall(
     const iterator = lowerDynDispatchMethodCall(lowerer, call, access, boxed, false);
     if (iterator) return iterator;
   }
+  // A JavaScript source's surplus arguments: WebIDL ignores them after
+  // evaluating them, so the native handle's method reads the slots it
+  // needs and drops the rest (`params.get("a", "b")` answers `get("a")`).
+  if (
+    (name === "get" ||
+      name === "getAll" ||
+      name === "has" ||
+      name === "delete" ||
+      name === "append" ||
+      name === "set" ||
+      name === "sort" ||
+      name === "toString") &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+  ) {
+    const boxed = lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN);
+    const dyn = lowerDynDispatchMethodCall(lowerer, call, access, boxed, false);
+    if (dyn) return dyn;
+  }
   lowerer.noLowering(
     `URLSearchParams.${name}`,
     call,
     "get, getAll, set, append, delete, has, sort, size, toString(), forEach, and for-of iteration are the supported URLSearchParams members",
     lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** A forEach callback whose parameters the static index walk can fill: the
+ * value and name slots are strings, the third is the list itself, and a
+ * parameter the checker leaves untyped (a JavaScript source's callback, or
+ * an `any`/`unknown` spelling) lowers as the checked-dynamic value. */
+function spForEachSlotFits(params: readonly IrType[]): boolean {
+  if (params.length > 3) return false;
+  return params.every((type, index) =>
+    index < 2
+      ? type.kind === "string" || type.kind === "dyn"
+      : type.kind === "searchParams" || type.kind === "dyn",
   );
 }
 
@@ -714,13 +810,7 @@ function lowerSpForEachCall(
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0]!;
   const fnArg = lowerer.lowerExpr(argNode);
-  if (
-    fnArg.type.kind !== "func" ||
-    fnArg.type.params.length > 3 ||
-    (fnArg.type.params.length >= 1 && fnArg.type.params[0]!.kind !== "string") ||
-    (fnArg.type.params.length >= 2 && fnArg.type.params[1]!.kind !== "string") ||
-    (fnArg.type.params.length === 3 && fnArg.type.params[2]!.kind !== "searchParams")
-  ) {
+  if (fnArg.type.kind !== "func" || !spForEachSlotFits(fnArg.type.params)) {
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const receiver = lowerer.lowerExpr(access.expression);
@@ -731,12 +821,18 @@ function lowerSpForEachCall(
   // collection forEach helpers use.
   const thisArgNode = call.arguments.nodes[1];
   const thisArg = thisArgNode === undefined ? null : lowerer.lowerExprExpecting(thisArgNode, DYN);
-  const key = `${arity}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
+  // The helper's own parameter list is the callback's (string slots stay
+  // static, untyped ones cross as the checked-dynamic value), so the
+  // interned key spells it too.
+  const paramKinds = fnArg.type.params.map((type) => type.kind).join(",");
+  const key = `${arity}:${paramKinds}:${typeKey(fnRet)}${thisArg ? ":this" : ""}`;
   let helper = lowerer.spHofHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%sp.forEach", key);
     lowerer.spHofHelpers.set(key, helper);
-    lowerer.liftedFns.push(buildSpForEachFn(helper, arity, fnRet, loc, thisArg !== null));
+    lowerer.liftedFns.push(
+      buildSpForEachFn(helper, fnArg.type.params, fnRet, loc, thisArg !== null),
+    );
   }
   return {
     kind: "call",
@@ -747,23 +843,19 @@ function lowerSpForEachCall(
   };
 }
 
-/** The Sp.forEach helper's body (see lowerSpForEachCall). */
+/** The Sp.forEach helper's body (see lowerSpForEachCall). `paramTypes` is
+ * the callback's own parameter list: a string slot takes the walked value
+ * directly, and a checked-dynamic slot (an untyped or `any` callback
+ * parameter) takes the same value boxed. */
 function buildSpForEachFn(
   name: string,
-  arity: number,
+  paramTypes: readonly IrType[],
   fnRet: IrType,
   loc: SrcLoc,
   withThis = false,
 ): IrFunction {
-  const paramTypes: IrType[] =
-    arity === 0
-      ? []
-      : arity === 1
-        ? [STRING]
-        : arity === 2
-          ? [STRING, STRING]
-          : [STRING, STRING, SEARCH_PARAMS_T];
-  const fnT = funcOf(paramTypes, fnRet);
+  const arity = paramTypes.length;
+  const fnT = funcOf([...paramTypes], fnRet);
   const sp = (fn: "sp.size" | "sp.keyAt" | "sp.valAt", extra: IrExpr[], type: IrType): IrExpr => ({
     kind: "libCall",
     fn,
@@ -778,6 +870,8 @@ function buildSpForEachFn(
   ];
   const callArgs: IrExpr[] = [];
   const body: IrStmt[] = [];
+  const intoSlot = (value: IrExpr, slot: IrType): IrExpr =>
+    slot.kind === "dyn" ? { kind: "dynFrom", value, type: DYN, loc } : value;
   if (arity >= 1) {
     locals.push({ id: "v.0", name: "v", type: STRING, mutable: false });
     body.push({
@@ -786,7 +880,7 @@ function buildSpForEachFn(
       init: sp("sp.valAt", [varRef("i.0", F64, loc)], STRING),
       loc,
     });
-    callArgs.push(varRef("v.0", STRING, loc));
+    callArgs.push(intoSlot(varRef("v.0", STRING, loc), paramTypes[0]!));
   }
   if (arity >= 2) {
     locals.push({ id: "k.0", name: "k", type: STRING, mutable: false });
@@ -796,9 +890,9 @@ function buildSpForEachFn(
       init: sp("sp.keyAt", [varRef("i.0", F64, loc)], STRING),
       loc,
     });
-    callArgs.push(varRef("k.0", STRING, loc));
+    callArgs.push(intoSlot(varRef("k.0", STRING, loc), paramTypes[1]!));
   }
-  if (arity === 3) callArgs.push(varRef("sp.0", SEARCH_PARAMS_T, loc));
+  if (arity === 3) callArgs.push(intoSlot(varRef("sp.0", SEARCH_PARAMS_T, loc), paramTypes[2]!));
   body.push({
     kind: "exprStmt",
     expr: {

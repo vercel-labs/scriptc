@@ -381,7 +381,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
   unit((u) => u.opts.parseArgs, "scr_util.c"),
   unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
-  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  unit((u) => u.opts.inspect, "scr_util_style.c"),
   unit(
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",

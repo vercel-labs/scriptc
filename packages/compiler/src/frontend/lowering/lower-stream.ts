@@ -1,4 +1,5 @@
 import { refuseCallbackThis } from "./callback-arg.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
 import {
@@ -3968,7 +3969,8 @@ export function lowerStreamModuleCall(
       // stream and not an iterable), then expands a lone array argument as
       // the stage list.
       const lastArg = args[args.length - 1];
-      const lastUnwrapped = lastArg === undefined ? undefined : withoutExpressionWrappers(lastArg);
+      const lastUnwrapped =
+        lastArg === undefined ? undefined : withoutParenthesesTypeWrappers(lastArg);
       const optsNode =
         args.length >= 2 &&
         lastUnwrapped !== undefined &&
@@ -4516,7 +4518,7 @@ function constArrayLiteral(
   lowerer: Lowerer,
   node: ts.Expression,
 ): ts.ArrayLiteralExpression | null {
-  const direct = withoutExpressionWrappers(node);
+  const direct = withoutParenthesesTypeWrappers(node);
   if (ts.isArrayLiteralExpression(direct)) return direct;
   if (!ts.isIdentifier(direct)) return null;
   const resolve = (ident: ts.Identifier): ts.Symbol | undefined => {
@@ -4534,7 +4536,7 @@ function constArrayLiteral(
   if ((decl.parent.flags & ts.NodeFlags.Const) === 0) return null;
   if (lowerer.isStdlibFile(ts.getSourceFileOfNode(decl))) return null;
   if (!bindingNeverReassigned(lowerer.bindingScope(), symbol, decl, resolve)) return null;
-  const init = withoutExpressionWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   return ts.isArrayLiteralExpression(init) ? init : null;
 }
 
@@ -4545,21 +4547,6 @@ function arrayTypedValue(lowerer: Lowerer, node: ts.Expression): boolean {
     return lowerer.checker.isArrayType(t) || lowerer.checker.isTupleType(t);
   } catch {
     return false;
-  }
-}
-
-function withoutExpressionWrappers(node: ts.Expression): ts.Expression {
-  let cur = node;
-  for (;;) {
-    if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
-    else if (
-      ts.isAsExpression(cur) ||
-      ts.isSatisfiesExpression(cur) ||
-      ts.isNonNullExpression(cur) ||
-      ts.isTypeAssertion(cur)
-    )
-      cur = cur.expression;
-    else return cur;
   }
 }
 

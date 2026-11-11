@@ -660,6 +660,11 @@ export function variantsFor(source) {
       when: { streamWriteErrors: true },
       defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
+    // The pair's empty-chunk test asks an object-mode array chunk for its
+    // length, which the object model build keeps apart from the dense prefix
+    // (scr_dyn.h's scr_dyn_arr_length). Pushed last, so each build above
+    // gets a counterpart.
+    withJsObjectModel(variants);
   }
   // fs.ReadStream / fs.WriteStream options that can hold a `signal`: the
   // fs stream unit applies it, with the event-target unit's abort listener;

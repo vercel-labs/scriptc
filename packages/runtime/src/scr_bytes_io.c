@@ -269,25 +269,17 @@ static bool scr_fs_cb_read_buffer_option(const ScrDyn *options) {
   return absent;
 }
 
-/* getOptions' validateAbortSignal (any object with an `aborted` member
- * passes, null and primitives throw), then checkAborted's `aborted ===
- * true`. The signal is only a value bag here — the sync syscall has
- * nothing to cancel, the documented divergence. A string options value
- * carries the defaults (no signal member). */
-static bool scr_fs_cb_signal(const ScrDyn *options) {
-  if (options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
-      scr_fs_dyn_absent(options))
-    return true;
-  ScrDyn *signal = scr_fs_dyn_member(options, "signal");
-  if (!signal) return false;
+/* getOptions' validateAbortSignal: undefined passes, and any object with an
+ * `aborted` member is an AbortSignal; null and primitives throw. Answers
+ * true when valid, false with the TypeError pending. The caller releases
+ * the member. */
+static bool scr_fs_signal_valid(const ScrDyn *signal) {
+  if (signal->kind == SCR_DYN_UNDEF) return true;
   bool object = signal->kind != SCR_DYN_NULL && signal->kind != SCR_DYN_BOOL &&
                 signal->kind != SCR_DYN_NUM && signal->kind != SCR_DYN_BIGINT &&
-                signal->kind != SCR_DYN_SYMBOL && signal->kind != SCR_DYN_STR &&
-                signal->kind != SCR_DYN_UNDEF;
-  if (signal->kind == SCR_DYN_UNDEF) { scr_dyn_release(signal); return true; }
+                signal->kind != SCR_DYN_SYMBOL && signal->kind != SCR_DYN_STR;
   if (!object) {
     scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", signal);
-    scr_dyn_release(signal);
     return false;
   }
   bool has_aborted;
@@ -303,6 +295,23 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
   }
   if (!has_aborted) {
     scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return false;
+  }
+  return true;
+}
+
+/* getOptions' validateAbortSignal, then checkAborted's `aborted ===
+ * true`. The signal is only a value bag here — the sync syscall has
+ * nothing to cancel, the documented divergence. A string options value
+ * carries the defaults (no signal member). */
+static bool scr_fs_cb_signal(const ScrDyn *options) {
+  if (options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
+      scr_fs_dyn_absent(options))
+    return true;
+  ScrDyn *signal = scr_fs_dyn_member(options, "signal");
+  if (!signal) return false;
+  bool valid = scr_fs_signal_valid(signal);
+  if (!valid) {
     scr_dyn_release(signal);
     return false;
   }
@@ -321,6 +330,19 @@ static bool scr_fs_cb_signal(const ScrDyn *options) {
     scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
   }
   return !scr_exc_pending();
+}
+
+/* readdir's signal check: validateAbortSignal alone — readdir never calls
+ * checkAborted, so an already-aborted signal is ignored. */
+static bool scr_fs_readdir_signal(const ScrDyn *options) {
+  if (options->kind == SCR_DYN_STR || options->kind == SCR_DYN_FUNC ||
+      scr_fs_dyn_absent(options))
+    return true;
+  ScrDyn *signal = scr_fs_dyn_member(options, "signal");
+  if (!signal) return false;
+  bool valid = scr_fs_signal_valid(signal);
+  scr_dyn_release(signal);
+  return valid;
 }
 
 /* stringToFlags for the string spellings; -1 for an unknown one. */
@@ -2064,6 +2086,176 @@ ScrDyn *scr_fs_read_file_dyn_path_options(const ScrDyn *path, const ScrDyn *opti
   ScrDyn *result = scr_fs_read_file_string_options(checked, options);
   scr_str_release(checked);
   return result;
+}
+
+/* Whether a resolved readdir encoding asks for raw name bytes. */
+static bool scr_fs_readdir_encoding_is_buffer(const ScrStr *encoding) {
+  return encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0;
+}
+
+/* readdir's getOptions encoding name: the string options value itself, else
+ * the object's `encoding` member, "" for the utf8 default (+1). */
+static ScrStr *scr_fs_readdir_encoding_name(const ScrDyn *options) {  ScrDyn *encoding = NULL;
+  if (options->kind == SCR_DYN_STR) encoding = scr_dyn_retain((ScrDyn *)options);
+  else if (!scr_fs_dyn_absent(options) && options->kind != SCR_DYN_FUNC)
+    encoding = scr_fs_dyn_member(options, "encoding");
+  ScrStr *name = encoding && encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str)
+                                                           : scr_str_new("", 0);
+  scr_dyn_release(encoding);
+  return name;
+}
+
+/* readdir's option ladder in Node's order: getOptions (the options kind and
+ * encoding, then validateAbortSignal — readdir never checks an aborted
+ * signal), getValidatedPath, then options.recursive (validateBoolean in the
+ * sync forms, truthiness in the promise form) and options.withFileTypes
+ * (a truthiness test, never validated). Answers the +1 encoding name
+ * ("" for the utf8 default), the recursive flag and the withFileTypes
+ * flag; NULL with the exception pending. */
+static ScrStr *scr_fs_readdir_resolve(ScrStr *path, const ScrDyn *options, bool sync,
+                                      bool *recursive, bool *with_file_types) {
+  *recursive = false;
+  *with_file_types = false;
+  if (!scr_fs_encoding_chk(options)) return NULL;
+  if (!scr_fs_readdir_signal(options)) return NULL;
+  if (scr_exc_pending()) return NULL;
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  ScrDyn *flag = scr_fs_dyn_member(options, "recursive");
+  if (!flag) return NULL;
+  if (sync && flag->kind != SCR_DYN_UNDEF && flag->kind != SCR_DYN_NULL &&
+      flag->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("options.recursive", "of type boolean", flag);
+    scr_dyn_release(flag);
+    return NULL;
+  }
+  *recursive = scr_dyn_truthy(flag);
+  scr_dyn_release(flag);
+  ScrDyn *types = scr_fs_dyn_member(options, "withFileTypes");
+  if (!types) return NULL;
+  *with_file_types = scr_dyn_truthy(types);
+  scr_dyn_release(types);
+  return scr_fs_readdir_encoding_name(options);
+}
+
+/* The call site's type says which answer shape the compiled call can hold; an
+ * options value typed `any` or `unknown` can resolve to another shape, which
+ * Node would answer. Reading one shape as the other would hand the program a
+ * value of the wrong type, so the call throws a catchable scriptc error
+ * naming the gap instead. */
+static void scr_fs_readdir_shape_with_file_types(void) {
+  static const char message[] =
+      "readdir's options value resolved to withFileTypes at run time, but the call site's type "
+      "holds the names array (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_buffer(void) {
+  static const char message[] =
+      "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's "
+      "type holds strings (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_names(void) {
+  static const char message[] =
+      "readdir's options value did not resolve to encoding: 'buffer' at run time, but the call "
+      "site's type holds Buffers (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_not_types(void) {
+  static const char message[] =
+      "readdir's options value did not resolve to withFileTypes at run time, but the call site's "
+      "type holds Dirent rows (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_fs_readdir_shape_name_strings(void) {
+  static const char message[] =
+      "readdir's options value resolved to encoding: 'buffer' at run time, but the call site's "
+      "type holds string names (the options value's members are only known at run time)";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+/* readdirSync / fs.promises.readdir with any options value: Node's ladder
+ * over the flat listing (the directory's own entries) or, when the options
+ * say recursive, the walk below the path in `lifo` queue order
+ * (fs.promises pops the queue's end, the sync form advances an index).
+ * `expected` is the call site's answer shape (0 strings, 1 Buffers); a
+ * resolved shape that differs throws. Answers the names as strings, or
+ * Buffers for encoding: 'buffer'; NULL with the exception pending. */
+ScrArr *scr_fs_readdir_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                            double expected) {
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_with_file_types();
+    return NULL;
+  }
+  if (scr_fs_readdir_encoding_is_buffer(encoding) != (expected == 1)) {
+    scr_str_release(encoding);
+    if (expected == 1) scr_fs_readdir_shape_names();
+    else scr_fs_readdir_shape_buffer();
+    return NULL;
+  }
+  ScrArr *arr = recursive ? scr_fs_readdir_recursive_enc(path, encoding, lifo)
+                          : scr_fs_readdir_enc(path, encoding);
+  scr_str_release(encoding);
+  return arr;
+}
+
+/* The same call whose declared result is `string[] | Buffer[]`: the walk's
+ * array boxed in the union arm its element kind names. The tags are the
+ * call site's arm indices, chosen HERE because only the runtime encoding
+ * decides which arm answers. */
+ScrUnion *scr_fs_readdir_opts_union(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                    double str_tag, double bytes_tag) {
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_with_file_types();
+    return NULL;
+  }
+  bool buffers = scr_fs_readdir_encoding_is_buffer(encoding);
+  ScrArr *arr = recursive ? scr_fs_readdir_recursive_enc(path, encoding, lifo)
+                          : scr_fs_readdir_enc(path, encoding);
+  scr_str_release(encoding);
+  if (!arr) return NULL;
+  return scr_union_new_ref((uint32_t)(buffers ? bytes_tag : str_tag), arr, &scr_arr_retain_v,
+                           &scr_arr_release_v, NULL);
+}
+
+/* readdir's withFileTypes form over any options value: the same ladder,
+ * then the listing snapshot the Dirent emitter walks with the promise
+ * form's descent rule (kind == directory, no symlink following) or the
+ * sync form's (the kind, or internalModuleStat(fullPath) === 1). `lifo`
+ * carries the promise form's pop order. *is_buffer reports whether the
+ * names are raw bytes. NULL with the exception pending. */
+ScrFsListing *scr_fs_listing_opts(ScrStr *path, const ScrDyn *options, bool sync, bool lifo,
+                                  bool follow, bool *is_buffer, double expected) {
+  *is_buffer = false;
+  bool recursive = false, with_file_types = false;
+  ScrStr *encoding = scr_fs_readdir_resolve(path, options, sync, &recursive, &with_file_types);
+  if (!encoding) return NULL;
+  if (!with_file_types) {
+    scr_str_release(encoding);
+    scr_fs_readdir_shape_not_types();
+    return NULL;
+  }
+  *is_buffer = scr_fs_readdir_encoding_is_buffer(encoding);
+  if (*is_buffer != (expected == 1)) {
+    scr_str_release(encoding);
+    if (expected == 1) scr_fs_readdir_shape_names();
+    else scr_fs_readdir_shape_name_strings();
+    return NULL;
+  }
+  ScrFsListing *listing = scr_fs_listing_new(path, encoding, recursive, lifo, follow);
+  scr_str_release(encoding);
+  return listing;
 }
 
 /* fs.promises.chmod(path, mode) with a typed string mode: Node parses the

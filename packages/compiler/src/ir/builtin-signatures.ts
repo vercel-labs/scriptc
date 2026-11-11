@@ -815,7 +815,20 @@ function buildLibFnSignatures() {
      * assembles the rows from the snapshot. Byte order on POSIX (libuv
      * sorts), the directory's order on Windows; no "."/"..". Throws
      * Node's scandir errno error (may-throw seed set); fresh +1 array. */
-    "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+    "fs.readdirTypesSync": { argTypes: [STRING, DYN], result: VOID },
+    /** `fs.readdirSync(path, options)` — the options value is dyn; the
+     * runtime runs Node's ladder over it (getOptions, assertEncoding,
+     * validateAbortSignal, validateBoolean(options.recursive), the path)
+     * and the form picks the answer: names decoded with the options'
+     * encoding (string[]), the raw name bytes (encoding: 'buffer'), or —
+     * the union form — whichever of the two the encoding selects, boxed
+     * with the call site's arm tags. */
+    "fs.readdirSyncOpts": { argTypes: [STRING, DYN], result: arrayOf(STRING) },
+    "fs.readdirSyncBytesOpts": { argTypes: [STRING, DYN], result: arrayOf(BYTES_U8) },
+    // Result is the call site's string[] | Buffer[] union (VOID sentinel,
+    // the readdirTypesSync pattern; the union's arms are validated in
+    // validate.ts). Args: path, options, string-arm tag, Buffer-arm tag.
+    "fs.readdirSyncOptsUnion": { argTypes: [STRING, DYN, F64, F64], result: VOID },
     /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
      * lib/internal/fs/glob.js walk): pattern and options are dyn values the
      * runtime validates in Node's order. The string forms answer string[];
@@ -4223,7 +4236,24 @@ function buildLibFnSignatures() {
      * promise twin of fs.readdirTypesSync. The backends assemble the same
      * call-site-shaped Dirent rows, then move the array into a promise;
      * scandir failure becomes its rejection. */
-    "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    "fsp.readdirTypes": { argTypes: [STRING, DYN], result: { kind: "promise", inner: VOID } },
+    /** `fs.promises.readdir(path, options)` — the settled-promise twin of
+     * fs.readdirSyncOpts; the runtime walks in Node's promise order (LIFO
+     * queue, eager child readdir), and errors become the rejection. */
+    "fsp.readdirOpts": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
+    "fsp.readdirBytesOpts": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(BYTES_U8) },
+    },
+    // Result is promise<call-site string[] | Buffer[] union> (VOID sentinel
+    // checked in validate.ts). Args: path, options, arm tags.
+    "fsp.readdirOptsUnion": {
+      argTypes: [STRING, DYN, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
      * behind a settled promise; their errors become its rejection. */

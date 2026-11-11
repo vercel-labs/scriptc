@@ -5300,8 +5300,8 @@ function validateFunction(
       e.fn === "fsp.globTypes"
     ) {
       // Result: the interned Dirent record array — {%dtype: f64,
-      // name: string, parentPath: string} rows (canonical field
-      // order; the structure lowerFsReaddirTypesCall pinned). The glob
+      // name: string|bytes, parentPath: string} rows (canonical field
+      // order; the structure lowerFsReaddirOptionsCall pinned). The glob
       // forms answer the array itself.
       const result =
         e.fn === "fsp.readdirTypes"
@@ -5317,6 +5317,29 @@ function validateFunction(
       if (!ok) {
         err(
           `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          e.loc,
+        );
+      }
+      return true;
+    }
+    if (e.fn === "fs.readdirSyncOptsUnion" || e.fn === "fsp.readdirOptsUnion") {
+      // Result: the call site's `string[] | Buffer[]` union, boxed by the
+      // runtime in the arm its encoding selects. Args 2 and 3 carry those
+      // arms' tags, so both arms must be present.
+      const result =
+        e.fn === "fsp.readdirOptsUnion"
+          ? e.type.kind === "promise"
+            ? e.type.inner
+            : undefined
+          : e.type;
+      const def = result?.kind === "union" ? unions.get(result.unionId) : undefined;
+      const names = def?.arms.some((a) => a.kind === "array" && a.elem.kind === "string");
+      const buffers = def?.arms.some(
+        (a) => a.kind === "array" && a.elem.kind === "bytes" && a.elem.elem === "u8",
+      );
+      if (!def || !names || !buffers) {
+        err(
+          `libCall ${e.fn} must return ${e.fn === "fsp.readdirOptsUnion" ? "a promise of " : ""}the string[] | Buffer[] union`,
           e.loc,
         );
       }

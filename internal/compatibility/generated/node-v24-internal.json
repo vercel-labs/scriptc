@@ -45487,6 +45487,10 @@
           "tests/corpus/fs-promises-rmdir-options.ts",
           "tests/corpus/fs-promises-stat-options.ts",
           "tests/corpus/fs-promises-write-file-dynamic-options.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-options-errors.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts",
+          "tests/corpus/fs-readdir-union-options.ts",
           "tests/corpus/fs-realpath-callback-dynamic-options.cjs",
           "tests/corpus/fs-realpath-callback-options.ts",
           "tests/corpus/fs-stats-date-cache.ts",
@@ -46933,7 +46937,11 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.readdir",
         "tests": [
-          "tests/corpus/2942-fsp-readdir-dirent.ts"
+          "tests/corpus/2942-fsp-readdir-dirent.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-options-errors.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts",
+          "tests/corpus/fs-readdir-union-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49828,7 +49836,11 @@
           "tests/corpus/2919-fs-function-values.ts",
           "tests/corpus/2920-fs-promises-function-values.ts",
           "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-write-options.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-options-errors.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts",
+          "tests/corpus/fs-readdir-union-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50785,7 +50797,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fs.Dirent",
         "tests": [
-          "tests/corpus/compat-fs-dirent-realpath.ts"
+          "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -51007,7 +51021,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.name",
         "tests": [
-          "tests/corpus/compat-fs-dirent-realpath.ts"
+          "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -51033,7 +51049,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.parentPath",
         "tests": [
-          "tests/corpus/compat-fs-dirent-realpath.ts"
+          "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-options.ts"
         ]
       },
       "anchorSource": "ancestor"

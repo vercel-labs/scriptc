@@ -2554,8 +2554,15 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
-    // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
-    readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
+    // The { withFileTypes: true } Dirent form, the { recursive: true } walk,
+    // and the options forms whose encoding is resolved at run time.
+    readdirSync: [
+      "fs.readdirTypesSync",
+      "fs.readdirRecursiveSync",
+      "fs.readdirSyncOpts",
+      "fs.readdirSyncBytesOpts",
+      "fs.readdirSyncOptsUnion",
+    ],
     // The { throwIfNoEntry } probe form.
     statSync: ["fs.statProbeSync"],
     // realpathSync and realpathSync.native read as function values.
@@ -2591,8 +2598,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fsp.writeFileData",
       "fsp.writeFileDataFlags",
     ],
-    // The { withFileTypes: true } Dirent form.
-    readdir: ["fsp.readdirTypes"],
+    // The { withFileTypes: true } Dirent form and the options forms whose
+    // encoding is resolved at run time.
+    readdir: [
+      "fsp.readdirTypes",
+      "fsp.readdirOpts",
+      "fsp.readdirBytesOpts",
+      "fsp.readdirOptsUnion",
+    ],
     glob: ["fsp.globTypes"],
     // The bytes-data form and the checked-data-argument form.
     appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],

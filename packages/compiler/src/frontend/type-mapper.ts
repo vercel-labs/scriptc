@@ -6106,10 +6106,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // A row converted to dyn takes Node's Dirent prototype and Symbol(type)
   // key, with %dtype non-enumerable (scr_dyn_dirent_finish), and inspect
   // renders rows through that view. @types/node declares Dirent<Name>
-  // generic over the name's encoding — only the string instantiation maps (the
-  // encoding:'buffer' readdir form has no lowering); the shipped fallback
-  // declares it concrete (an interface; @types/node uses a class — both
-  // provenance-checked, the Buffer/URL pattern).
+  // generic over the name's encoding: the string instantiation (the
+  // default) and the Buffer one (readdir's encoding: 'buffer' form) map —
+  // both keep Node's parentPath (always a string). The shipped fallback
+  // declares the same generic (an interface; @types/node uses a class —
+  // both provenance-checked, the Buffer/URL pattern).
   if (
     psym !== undefined &&
     psymName === "Dirent" &&
@@ -6121,16 +6122,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     const args = checker.getTypeArguments(widened as ts.TypeReference);
     if (args.length > 1) return null;
+    let nameType: IrType = STRING;
     if (args.length === 1) {
       const t = args[0] && mapType(args[0], ctx);
-      if (!t || t.kind !== "string") return null;
+      if (!t || (t.kind !== "string" && !(t.kind === "bytes" && t.elem === "u8"))) return null;
+      nameType = t;
     }
     return {
       kind: "record",
       shapeId: ctx.shapes.intern(
         [
           { name: "%dtype", type: F64 },
-          { name: "name", type: STRING },
+          { name: "name", type: nameType },
           { name: "parentPath", type: STRING },
         ],
         false,

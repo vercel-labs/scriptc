@@ -230,22 +230,64 @@ declare module "node:fs" {
   ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
-  /* The recursive form: every entry below the path, relative to it. */
+  /* The recursive form and the utf8 default: every entry below the path,
+   * relative to it, decoded as a string. (The overload order keeps this
+   * form, whose runtime answer is always string[], a plain string[].) */
   export function readdirSync(
     path: string | URL,
-    options: {
+    options?: {
       recursive?: boolean;
       withFileTypes?: false;
       encoding?: "utf8" | "utf-8";
       [option: string]: unknown;
     },
   ): string[];
+  /* A known encoding name — BufferEncoding does not include 'buffer' —
+   * decodes every name as a string; the bare string spelling is the same
+   * answer. */
+  export function readdirSync(
+    path: string | URL,
+    options:
+      | BufferEncoding
+      | null
+      | {
+          encoding: BufferEncoding | null;
+          recursive?: boolean;
+          withFileTypes?: false;
+          [option: string]: unknown;
+        },
+  ): string[];
+  /* encoding: 'buffer' names decode as Buffers; the shorthand string form
+   * is the same answer. */
+  export function readdirSync(
+    path: string | URL,
+    options:
+      | "buffer"
+      | {
+          encoding: "buffer";
+          recursive?: boolean;
+          withFileTypes?: false;
+          [option: string]: unknown;
+        },
+  ): Buffer[];
+  /* An options value whose encoding is only known at run time, 'buffer'
+   * included: the runtime picks the arm its resolved encoding names. */
+  export function readdirSync(
+    path: string | URL,
+    options: {
+      encoding?: BufferEncoding | "buffer" | null;
+      recursive?: boolean;
+      withFileTypes?: false;
+      [option: string]: unknown;
+    },
+  ): string[] | Buffer[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
    * probes). The type is interned explicitly in type-mapper.ts (the
    * record's hidden %dtype field carries the entry kind; the probes lower
-   * as reads of it in builtins/filesystem.ts). */
-  export interface Dirent {
-    name: string;
+   * as reads of it in builtins/filesystem.ts). @types/node's Name type
+   * parameter selects the name's encoding; parentPath stays a string. */
+  export interface Dirent<Name extends string | Buffer = string> {
+    name: Name;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
@@ -257,9 +299,21 @@ declare module "node:fs" {
   }
   export function readdirSync(
     path: string | URL,
-    /* The options-record stance (see http.RequestOptions): recursive
-     * fences by name at the call site; undocumented keys drop like Node. */
-    options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
+    options: {
+      withFileTypes: true;
+      encoding: "buffer";
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
+  ): Dirent<Buffer>[];
+  export function readdirSync(
+    path: string | URL,
+    options: {
+      withFileTypes: true;
+      encoding?: BufferEncoding | null;
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
   ): Dirent[];
   /* fs.globSync / fs.glob: Node's glob walk over the file system. Patterns
    * are minimatch globs (case-insensitive on macOS and Windows); results

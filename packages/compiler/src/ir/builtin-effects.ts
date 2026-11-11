@@ -1006,6 +1006,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  // The options forms run Node's getOptions/assertEncoding/abort ladder, so
+  // argument errors throw before the walk; the promise twins mint their
+  // answer from the same walk (pending errors become the rejection).
+  "fs.readdirSyncOpts",
+  "fs.readdirSyncBytesOpts",
+  "fs.readdirSyncOptsUnion",
+  "fsp.readdirOpts",
+  "fsp.readdirBytesOpts",
+  "fsp.readdirOptsUnion",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",

@@ -2013,6 +2013,7 @@ export function shapeKeyOrders(shape: IrRecordShape): readonly (readonly string[
 /** fs.Dirent rows: the hidden %dtype entry kind (libuv's UV_DIRENT
  * encoding), then name and parentPath (type-mapper's interned shape). */
 export function isDirentShape(shape: IrRecordShape): boolean {
+  const name = shape.fields[1]?.type;
   return (
     !shape.tuple &&
     shape.indexValue === undefined &&
@@ -2020,7 +2021,7 @@ export function isDirentShape(shape: IrRecordShape): boolean {
     shape.fields[0]!.name === "%dtype" &&
     shape.fields[0]!.type.kind === "f64" &&
     shape.fields[1]!.name === "name" &&
-    shape.fields[1]!.type.kind === "string" &&
+    (name?.kind === "string" || (name?.kind === "bytes" && name.elem === "u8")) &&
     shape.fields[2]!.name === "parentPath" &&
     shape.fields[2]!.type.kind === "string"
   );

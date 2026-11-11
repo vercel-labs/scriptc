@@ -341,6 +341,16 @@ void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
+/* readdir's encoding option: the names decoded by `encoding` (Buffer.toString's
+ * rules; an empty name is utf8), or encoding: 'buffer' answering the raw bytes
+ * as Buffers. An encoding that is not a Buffer encoding throws Node's
+ * ERR_INVALID_ARG_VALUE before the path is read. */
+ScrArr *scr_fs_readdir_enc(ScrStr *path, const ScrStr *encoding); /* strings, or Buffers for 'buffer' */
+/* The recursive form in `lifo` queue order (fs.promises pops, the sync form
+ * advances); the recursive names form joins each directory's DECODED name
+ * and descends by stat(2), so a non-round-trip encoding stops the walk and
+ * 'buffer' throws path.join's TypeError on the first entry. */
+ScrArr *scr_fs_readdir_recursive_enc(ScrStr *base, const ScrStr *encoding, bool lifo);
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report

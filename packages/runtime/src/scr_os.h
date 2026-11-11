@@ -87,8 +87,36 @@ typedef struct ScrScandir ScrScandir;
 ScrScandir *scr_fs_scandir(ScrStr *path); /* or throws (NULL) */
 size_t scr_fs_scandir_count(const ScrScandir *s); /* NULL -> 0 */
 ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i); /* +1 */
+/* The entry name decoded by a runtime encoding (+1) — Buffer.toString's
+ * rules, an empty name decoding as utf8 — and the raw name bytes as a
+ * Buffer (+1) for encoding: 'buffer'. */
+ScrStr *scr_fs_scandir_name_enc(const ScrScandir *s, size_t i, const ScrStr *encoding);
+ScrBytes *scr_fs_scandir_name_bytes(const ScrScandir *s, size_t i);
 double scr_fs_scandir_type(const ScrScandir *s, size_t i);
 void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */
+
+/* readdir's withFileTypes form (scr_lib.c): the listing snapshot the
+ * Dirent emitter walks, flat or recursive. Each row keeps the decoded
+ * name (or its raw bytes for encoding: 'buffer'), the parent path Node
+ * reports (the path argument as given for a flat listing, path.join of
+ * the walked directories for a recursive one) and the UV_DIRENT kind
+ * above. A recursive walk descends into rows whose kind is a directory,
+ * in `lifo` queue order (fs.promises pops the queue's end, the sync form
+ * advances an index); `follow` adds the sync form's
+ * internalModuleStat(fullPath) === 1 test, which follows a symlink to a
+ * directory. A recursive 'buffer' walk throws path.join's TypeError at the
+ * first entry (an empty directory is an empty listing). scr_fs_listing_new
+ * throws Node's scandir error (or the encoding's) and answers NULL; the
+ * accessors answer +1 values, and free is NULL-tolerant. */
+typedef struct ScrFsListing ScrFsListing;
+ScrFsListing *scr_fs_listing_new(ScrStr *path, const ScrStr *encoding, bool recursive, bool lifo,
+                                 bool follow);
+size_t scr_fs_listing_count(const ScrFsListing *l);
+ScrStr *scr_fs_listing_name(const ScrFsListing *l, size_t i);          /* +1 */
+ScrBytes *scr_fs_listing_name_bytes(const ScrFsListing *l, size_t i); /* +1 Buffer */
+ScrStr *scr_fs_listing_parent(const ScrFsListing *l, size_t i);       /* +1 */
+double scr_fs_listing_type(const ScrFsListing *l, size_t i);
+void scr_fs_listing_free(ScrFsListing *l);
 
 /* fs.Dir (opendirSync, fs.promises.opendir; scr_lib.c): an open directory
  * stream read one entry at a time in OS order, like libuv's uv_fs_readdir.

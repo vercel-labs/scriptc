@@ -229,10 +229,63 @@ declare module "fs/promises" {
     options: { recursive?: boolean; mode?: number | string },
   ): Promise<string | undefined>;
   export function readdir(path: string | URL): Promise<string[]>;
+  /* The recursive names form: the same overload order as readdirSync's
+   * (the utf8/recursive form's runtime answer is always string[], a plain
+   * string[]), then the Buffer, open-encoding and Dirent forms. */
+  export function readdir(
+    path: string | URL,
+    options?: {
+      encoding?: "utf8" | "utf-8";
+      withFileTypes?: false;
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
+  ): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options:
+      | BufferEncoding
+      | null
+      | {
+          encoding: BufferEncoding | null;
+          withFileTypes?: false;
+          recursive?: boolean;
+          [option: string]: unknown;
+        },
+  ): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options:
+      | "buffer"
+      | {
+          encoding: "buffer";
+          withFileTypes?: false;
+          recursive?: boolean;
+          [option: string]: unknown;
+        },
+  ): Promise<Buffer[]>;
   export function readdir(
     path: string | URL,
     options: {
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding | "buffer" | null;
+      withFileTypes?: false;
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
+  ): Promise<string[] | Buffer[]>;
+  export function readdir(
+    path: string | URL,
+    options: {
+      encoding: "buffer";
+      withFileTypes: true;
+      recursive?: boolean;
+      [option: string]: unknown;
+    },
+  ): Promise<import("node:fs").Dirent<Buffer>[]>;
+  export function readdir(
+    path: string | URL,
+    options: {
+      encoding?: BufferEncoding | null;
       withFileTypes: true;
       recursive?: boolean;
       [option: string]: unknown;

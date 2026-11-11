@@ -63,7 +63,7 @@ import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
 import {
   lowerFsWatchCall,
-  lowerFsReaddirTypesCall,
+  lowerFsReaddirOptionsCall,
   lowerFsPromisesStatOptionsCall,
   lowerFsStatFdOptionsCall,
   lowerFsStatOptionsCall,
@@ -191,17 +191,15 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "os" && bi.member === "networkInterfaces") {
     return lowerOsNetworkInterfacesCall(lowerer, expr, loc);
   }
-  // fs.readdirSync/fs.promises.readdir(path, { withFileTypes: true }) —
-  // the Dirent forms, routed BEFORE the 1-arg table completion. The
-  // options must be an object literal with withFileTypes: true (encoding
-  // "utf8"/"utf-8" is accepted as the default it is; recursive and
-  // encoding:'buffer' fence), and the call site's mapped type must carry
-  // the interned Dirent record array (type-mapper.ts) — the userInfo
-  // verification stance.
-  const syncReaddirTypes = bi.module === "fs" && bi.member === "readdirSync";
-  const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
-  if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
-    return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
+  // fs.readdirSync/fs.promises.readdir(path, options) — every documented
+  // options value (an encoding name or record, recursive, withFileTypes) is
+  // lowered through the runtime's getOptions ladder; the call site's mapped
+  // result type selects the string, Buffer, union or Dirent array form.
+  // Routed BEFORE the 1-arg table completion.
+  const syncReaddir = bi.module === "fs" && bi.member === "readdirSync";
+  const promiseReaddir = bi.module === "fs/promises" && bi.member === "readdir";
+  if ((syncReaddir || promiseReaddir) && expr.arguments.nodes.length === 2) {
+    return lowerFsReaddirOptionsCall(lowerer, expr, loc, promiseReaddir);
   }
   // fs.existsSync(path) over a Buffer path or a value whose type only the
   // runtime knows (`any`): Node answers false for a non-path and reports

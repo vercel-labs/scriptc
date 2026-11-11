@@ -3809,6 +3809,22 @@ ScrPromise *scr_fsp_read_file_dyn_path(const ScrDyn *path, const ScrDyn *options
   return scr_promise_settled_ref(result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
 }
 
+/* fs.promises.readdir over any options value: the names array (strings, or
+ * Buffers for encoding: 'buffer') in the promise form's pop order. A
+ * failed walk rejects with its pending exception. */
+ScrPromise *scr_fsp_readdir_opts(ScrStr *path, const ScrDyn *options, double expected) {
+  ScrArr *arr = scr_fs_readdir_opts(path, options, false, true, expected);
+  return scr_promise_settled_ref(arr, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+/* The `string[] | Buffer[]` result: the walk answers the boxed arm the
+ * runtime encoding selects. */
+ScrPromise *scr_fsp_readdir_opts_union(ScrStr *path, const ScrDyn *options, double str_tag,
+                                       double bytes_tag) {
+  ScrUnion *box = scr_fs_readdir_opts_union(path, options, false, true, str_tag, bytes_tag);
+  return scr_promise_settled_ref(box, &scr_union_retain_v, &scr_union_release_v, NULL);
+}
+
 ScrPromise *scr_fsp_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_file(path, data);
   return scr_promise_settled_void();

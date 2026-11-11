@@ -7,15 +7,6 @@ fenced.ts:5:13 - error SC2020: 'process.hasUncaughtExceptionCaptureCallback' is 
 
   hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-fenced.ts:15:1 - error SC2020: 'Timeout.close' is typed by @types/node but has no scriptc lowering yet
-
-  14 | timer.refresh();
-  15 | timer.close();
-     | ^~~~~~~~~~~~~
-  16 | /* The web-platform globals ride in with @types/node (undici). Fetch,
-
-  hint: unref(), ref(), hasRef(), and refresh() are the supported Timeout methods
-
 fenced.ts:27:15 - error SC2020: 'Response.type' is typed by @types/node but has no scriptc lowering yet
 
   26 |   const response = await fetch(url);

@@ -2325,6 +2325,13 @@ function buildLibFnSignatures() {
     "http.serverCloseAllConnections": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverCloseIdleConnections": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverTimeoutSet": { argTypes: [NETSERVER_T, F64, F64], result: VOID },
+    /** server.maxHeadersCount / server.maxRequestsPerSocket — ordinary
+     * writable properties (any value is kept as assigned; only a number
+     * counts), so reads and writes cross the dyn tier. */
+    "net.serverMaxHeadersCountGet": { argTypes: [NETSERVER_T], result: DYN },
+    "net.serverMaxHeadersCountSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.serverMaxRequestsPerSocketGet": { argTypes: [NETSERVER_T], result: DYN },
+    "net.serverMaxRequestsPerSocketSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
     /** server.on("listening", cb) — the deferred listen-callback list. */
     "net.serverOnListening": {
@@ -2494,6 +2501,9 @@ function buildLibFnSignatures() {
      * default 400/413/431 answer, as in Node. (err, socket) and shorter
      * prefixes (the libCall case checks). */
     "http.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+    /** server.on("dropRequest", (req, socket) => ...): a request past
+     * maxRequestsPerSocket, answered by the server with 503. */
+    "http.serverOnDropRequest": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     "http.reqSocket": { argTypes: [HTTPREQ_T], result: NETSOCKET_T },
     // reqH2Stream's program-interned Http2Stream | undefined result is
     // checked in the special libCall cases in validate.ts.
@@ -2616,6 +2626,9 @@ function buildLibFnSignatures() {
      * MAY THROW. */
     "http.serverMaxHeaderSize": { argTypes: [NETSERVER_T, F64], result: VOID },
     "http.clientMaxHeaderSize": { argTypes: [HTTPCLIENTREQ_T, F64], result: VOID },
+    /** request.maxHeadersCount — the client's header-line budget. */
+    "http.clientMaxHeadersCountGet": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
+    "http.clientMaxHeadersCountSet": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** req.destroy(err): err becomes the request's 'error'. */
     "http.clientDestroyError": {
       argTypes: [HTTPCLIENTREQ_T, { kind: "object", className: "%Error" }],

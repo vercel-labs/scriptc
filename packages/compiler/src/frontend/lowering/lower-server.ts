@@ -1665,7 +1665,13 @@ export function lowerNetServerMaxConnectionsAssignment(
 ): IrStmt | null {
   if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
   const name = left.name.text;
-  if (name !== "maxConnections" && name !== "dropMaxConnection") return null;
+  if (
+    name !== "maxConnections" &&
+    name !== "dropMaxConnection" &&
+    name !== "maxHeadersCount" &&
+    name !== "maxRequestsPerSocket"
+  )
+    return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "netServer") return null;
   if (!lowerer.isStdlibMember(left)) return null;
   const receiver = coerceToHandle(lowerer, left.expression, NETSERVER_T);
@@ -1677,7 +1683,39 @@ export function lowerNetServerMaxConnectionsAssignment(
       fn:
         name === "maxConnections"
           ? "net.serverMaxConnectionsSet"
-          : "net.serverDropMaxConnectionSet",
+          : name === "dropMaxConnection"
+            ? "net.serverDropMaxConnectionSet"
+            : name === "maxHeadersCount"
+              ? "net.serverMaxHeadersCountSet"
+              : "net.serverMaxRequestsPerSocketSet",
+      args: [receiver, value],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+}
+
+/** request.maxHeadersCount = n — the client's header-line budget (Node's
+ * parser.maxHeaderPairs). An ordinary property: the value is stored as
+ * assigned and only a number counts. */
+export function lowerHttpClientMaxHeadersCountAssignment(
+  lowerer: Lowerer,
+  left: ts.Expression,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  if (!ts.isPropertyAccessExpression(left) || left.questionDotToken) return null;
+  if (left.name.text !== "maxHeadersCount") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "httpClientReq") return null;
+  if (!lowerer.isStdlibMember(left)) return null;
+  const receiver = coerceToHandle(lowerer, left.expression, HTTPCLIENTREQ_T);
+  const value = lowerer.coerceToExpected(lowerer.lowerExpr(right), DYN);
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "http.clientMaxHeadersCountSet",
       args: [receiver, value],
       type: VOID,
       loc,
@@ -1708,6 +1746,7 @@ const HTTP_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
   upgrade: 4,
   connect: 5,
   clientError: 6,
+  dropRequest: 7,
 };
 
 function serverEventKind(
@@ -1743,6 +1782,8 @@ function serverEventListenerType(event: string | null): IrType {
     case "upgrade":
     case "connect":
       return funcOf([HTTPREQ_T, NETSOCKET_T, BYTES_U8], VOID);
+    case "dropRequest":
+      return funcOf([HTTPREQ_T, NETSOCKET_T], VOID);
     default:
       return funcOf([ERROR_T], VOID);
   }
@@ -2675,6 +2716,37 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "dropRequest") {
+      // (req, socket): an HTTP/1.1 request past server.maxRequestsPerSocket.
+      // The listeners run and the server answers 503 itself, so the
+      // connection stays usable for the next (also dropped) request.
+      const cb = lowerer.lowerExpr(args[1]!);
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
+        lowerer.unsupported(
+          "SC1090",
+          args[1]!,
+          "dropRequest listeners with more than two parameters or returning a value (use (req, socket) with a block body)",
+        );
+      }
+      const [req, socket] = cb.type.params;
+      if (
+        (req !== undefined && req.kind !== "httpReq") ||
+        (socket !== undefined && socket.kind !== "netSocket")
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          args[1]!,
+          "dropRequest listeners whose parameters are not (req: IncomingMessage, socket: Socket)",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http.serverOnDropRequest",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "clientError") {
       // (err, socket): a request the parser rejects, or a connection error,
       // goes to the listeners instead of the default answer.
@@ -2739,7 +2811,7 @@ function lowerNetServerMethodCall(
     lowerer.noLowering(
       `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"connection", "request", "checkContinue", "checkExpectation", "clientError", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
+      '"connection", "request", "checkContinue", "checkExpectation", "clientError", "dropRequest", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
     );
   }
   if ((name === "off" || name === "removeListener") && args.length === 2) {
@@ -2756,7 +2828,7 @@ function lowerNetServerMethodCall(
       lowerer.noLowering(
         `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
         args[0]!,
-        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", and "clientError" are the events off/removeListener removes (as literals)',
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", "clientError", and "dropRequest" are the events off/removeListener removes (as literals)',
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
@@ -2790,7 +2862,7 @@ function lowerNetServerMethodCall(
       lowerer.noLowering(
         `server.listeners(${event === null ? "non-literal event" : `"${event}"`})`,
         args[0]!,
-        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", and "clientError" are the events listeners() reads (as literals)',
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", "drop", "newListener", "tlsClientError", "request", "checkContinue", "checkExpectation", "upgrade", "connect", "clientError", and "dropRequest" are the events listeners() reads (as literals)',
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
@@ -4467,14 +4539,23 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
       return { kind: "libCall", fn: "net.serverListening", args: [receiver], type: BOOL, loc };
     }
-    if (expr.name.text === "maxConnections" || expr.name.text === "dropMaxConnection") {
+    if (
+      expr.name.text === "maxConnections" ||
+      expr.name.text === "dropMaxConnection" ||
+      expr.name.text === "maxHeadersCount" ||
+      expr.name.text === "maxRequestsPerSocket"
+    ) {
       const receiver = coerceToHandle(lowerer, expr.expression, NETSERVER_T);
       const value: IrExpr = {
         kind: "libCall",
         fn:
           expr.name.text === "maxConnections"
             ? "net.serverMaxConnectionsGet"
-            : "net.serverDropMaxConnectionGet",
+            : expr.name.text === "dropMaxConnection"
+              ? "net.serverDropMaxConnectionGet"
+              : expr.name.text === "maxHeadersCount"
+                ? "net.serverMaxHeadersCountGet"
+                : "net.serverMaxRequestsPerSocketGet",
         args: [receiver],
         type: DYN,
         loc,
@@ -4855,6 +4936,25 @@ export function lowerServerProperty(
     if (boolFn !== null) {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPCLIENTREQ_T);
       return { kind: "libCall", fn: boolFn, args: [receiver], type: BOOL, loc };
+    }
+    if (name === "maxHeadersCount") {
+      // `number | null`, ordinary property storage: the dyn read coerces
+      // into whatever the checker sees at this site.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPCLIENTREQ_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "http.clientMaxHeadersCountGet",
+        args: [receiver],
+        type: DYN,
+        loc,
+      };
+      const sym = lowerer.checker.getSymbolAtLocation(expr.name);
+      const declared = lowerer.mapTypeOf(
+        sym ? lowerer.checker.getTypeOfSymbol(sym) : lowerer.typeOf(expr),
+      );
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
     }
   }
   if (httpReqFieldCollection(lowerer, expr.expression) !== null) {

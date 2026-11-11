@@ -44,8 +44,8 @@
    "message": "Property 'signal' does not exist on type 'IncomingMessage'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 844,
-    "end": 850
+    "start": 746,
+    "end": 752
    }
   },
   {
@@ -53,8 +53,8 @@
    "message": "Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1000,
-    "end": 1010
+    "start": 902,
+    "end": 912
    }
   },
   {
@@ -62,8 +62,8 @@
    "message": "Property 'writeInformation' does not exist on type 'ServerResponse'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1048,
-    "end": 1064
+    "start": 950,
+    "end": 966
    }
   },
   {
@@ -71,8 +71,8 @@
    "message": "Property 'writableLength' does not exist on type 'ServerResponse'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1129,
-    "end": 1143
+    "start": 1031,
+    "end": 1045
    }
   },
   {
@@ -80,35 +80,8 @@
    "message": "Argument of type '\"drain\"' is not assignable to parameter of type '\"close\" | \"finish\" | \"prefinish\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1160,
-    "end": 1167
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxHeadersCount' does not exist on type 'Server'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1221,
-    "end": 1236
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxRequestsPerSocket' does not exist on type 'Server'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1245,
-    "end": 1265
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"dropRequest\"' is not assignable to parameter of type '\"checkContinue\" | \"checkExpectation\" | \"request\"'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1278,
-    "end": 1291
+    "start": 1062,
+    "end": 1069
    }
   },
   {
@@ -116,17 +89,8 @@
    "message": "Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.\n  Property '[SymbolConstructor.asyncDispose]' does not exist on type 'Server'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1310,
-    "end": 1337
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxHeadersCount' does not exist on type 'ClientRequest'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1482,
-    "end": 1497
+    "start": 1110,
+    "end": 1137
    }
   },
   {
@@ -134,8 +98,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1591,
-    "end": 1612
+    "start": 1213,
+    "end": 1234
    }
   },
   {
@@ -143,17 +107,8 @@
    "message": "Type '{}' is missing the following properties from type 'ServerOptions': cert, key",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1686,
-    "end": 1688
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxHeadersCount' does not exist on type 'Server'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1750,
-    "end": 1765
+    "start": 1307,
+    "end": 1309
    }
   },
   {
@@ -161,8 +116,8 @@
    "message": "Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.\n  Property '[SymbolConstructor.asyncDispose]' does not exist on type 'Server'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1774,
-    "end": 1801
+    "start": 1358,
+    "end": 1385
    }
   }
  ]

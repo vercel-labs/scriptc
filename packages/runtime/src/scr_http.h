@@ -123,6 +123,7 @@ enum {
   SCR_HTTP_OFF_UPGRADE = 4,
   SCR_HTTP_OFF_CONNECT = 5,
   SCR_HTTP_OFF_CLIENT_ERROR = 6,
+  SCR_HTTP_OFF_DROP_REQUEST = 7,
 };
 void scr_http_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 ScrArr *scr_http_server_listeners(ScrNetServer *s, double kind);
@@ -208,6 +209,10 @@ void scr_http_server_on_connect(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                  ScrHttpUpgradeFn h1_fn, ScrHttpConnectH2Fn h2_fn,
                                  bool once);
 void scr_http_server_on_upgrade(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);
+/* server.on("dropRequest", (req, socket) => ...) — a request past
+ * maxRequestsPerSocket (HTTP/1.1 only). */
+void scr_http_server_on_drop_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn,
+                                     bool once);
 typedef void (*ScrHttpClientErrorFn)(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 void scr_http_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                      ScrHttpClientErrorFn fn, bool once);

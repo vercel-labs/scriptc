@@ -1,9 +1,11 @@
 // child_process: the sync exec capture's encoding option decodes stdout,
 // stderr and a failure's outputs with any Buffer encoding name, on
 // execSync and execFileSync alike. The default echo of a captured stderr
-// prints Node's decoded text, and an encoding chosen at run time through a
-// BufferEncoding value decodes per call.
+// prints Node's decoded text, an encoding chosen at run time through a
+// BufferEncoding value decodes per call, and a string `input` is encoded
+// with the same name before it reaches the child's stdin.
 import { execFileSync, execSync } from "node:child_process";
+import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 
 const emit = "printf 'A\\377\\376\\000B'";
 
@@ -66,5 +68,23 @@ function capture(command: string, encoding: BufferEncoding): string {
 }
 console.log("runtime name:", JSON.stringify(capture("printf 'r\\377'", "latin1")));
 console.log("runtime hex:", capture("printf 'rk'", "hex"));
+
+// A string input is encoded with the options encoding, exactly Node's
+// Buffer.from(input, encoding): latin1 writes one byte per code point and
+// hex decodes the text. A typed options record carries any Buffer encoding
+// name to stdin and to the capture.
+console.log(
+  "input latin1:",
+  JSON.stringify(execSync("od -An -tx1", { input: "éA", encoding: "latin1" })),
+);
+console.log("input hex:", JSON.stringify(execSync("od -An -tx1", { input: "4142", encoding: "hex" })));
+const latinFile: ExecFileSyncOptionsWithStringEncoding = { encoding: "latin1", input: "éA" };
+console.log("typed latin1:", JSON.stringify(execFileSync("od", ["-An", "-tx1"], latinFile)));
+const hexFile: ExecFileSyncOptionsWithStringEncoding = { encoding: "hex", input: "4142" };
+console.log("typed hex:", JSON.stringify(execFileSync("od", ["-An", "-tx1"], hexFile)));
+function captureInput(command: string, encoding: BufferEncoding): string {
+  return execSync(command, { input: "éA", encoding });
+}
+console.log("runtime input:", JSON.stringify(captureInput("od -An -tx1", "binary")));
 
 console.log("done");

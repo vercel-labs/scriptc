@@ -2,7 +2,8 @@
 // as Node's normalizeSpawnArguments does — a Buffer encoding name makes
 // stdout/stderr the decoded strings, while "buffer", null and an absent
 // option keep the Buffer capture. A typed options value reads its encoding
-// at the call, and maxBuffer bounds the combined capture (error: ENOBUFS).
+// at the call (stdin's string input is encoded with it), and maxBuffer
+// bounds the combined capture (error: ENOBUFS).
 import { spawnSync } from "node:child_process";
 import type { SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 
@@ -37,6 +38,21 @@ console.log("typed:", typeof typed.stdout, JSON.stringify(typed.stdout), typed.s
 const hexOpts: SpawnSyncOptionsWithStringEncoding = { encoding: "hex", shell: true };
 console.log("typed hex:", JSON.stringify(spawnSync("printf 'rk'", [], hexOpts).stdout));
 
+// A string input is encoded with the options encoding, exactly Node's
+// Buffer.from(input, encoding): latin1 writes one byte per code point, utf8
+// its multi-byte form. A typed options record carries its encoding to stdin
+// too.
+console.log(
+  "input latin1:",
+  JSON.stringify(spawnSync("od", ["-An", "-tx1"], { input: "éA", encoding: "latin1" }).stdout),
+);
+console.log(
+  "input utf8:",
+  JSON.stringify(spawnSync("od", ["-An", "-tx1"], { input: "éA", encoding: "utf8" }).stdout),
+);
+const latinIn: SpawnSyncOptionsWithStringEncoding = { encoding: "latin1", input: "éA", shell: true };
+console.log("typed input:", JSON.stringify(spawnSync("od -An -tx1", [], latinIn).stdout));
+
 // maxBuffer: within the limit the capture is clean; past it Node kills the
 // child and reports error ENOBUFS with a null status.
 const within = spawnSync("/bin/sh", ["-c", "printf 0123456789"], { maxBuffer: 1024, encoding: "utf8" });
@@ -47,7 +63,9 @@ console.log("over:", over.status, over.signal, overErr?.code, typeof over.stdout
 console.log("over message:", JSON.stringify(overErr?.message));
 
 // The limit counts BYTES, not characters: three two-byte é are six bytes.
-const multiOver = spawnSync("/bin/sh", ["-c", "printf '\\303\\251\\303\\251\\303\\251'"], {
+// The child sleeps past the limit so the kill always lands while it runs;
+// a child that exits first would make status/signal timing-dependent.
+const multiOver = spawnSync("/bin/sh", ["-c", "printf '\\303\\251\\303\\251\\303\\251'; sleep 5"], {
   maxBuffer: 5,
   encoding: "utf8",
 });

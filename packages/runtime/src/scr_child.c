@@ -206,6 +206,36 @@ static ScrStr *scr_child_capture_text(const ScrStr *raw, const ScrStr *encoding)
   return text;
 }
 
+/* The stdin bytes of an `input` string: Node encodes the string with the
+ * options encoding (Buffer.from(input, encoding)), and a name its tables do
+ * not hold throws ERR_UNKNOWN_ENCODING at the call; without an encoding
+ * option the string's utf8 bytes are written. `encoding` is ""/NULL for the
+ * unencoded form. `*owned` / `*bytes` receive what the caller releases, and
+ * `*len` is the byte count to write. `strict` is the throwable forms' read
+ * (a name Node rejects answers NULL with the exception pending, before the
+ * child is spawned); the never-throwing spawnSync shape writes utf8 for such
+ * a name instead of leaving the pending throw behind. */
+static const char *scr_exec_input_bytes(const ScrStr *input, const ScrStr *encoding,
+                                        bool strict, char **owned, ScrBytes **bytes,
+                                        size_t *len) {
+  *owned = NULL;
+  *bytes = NULL;
+  *len = 0;
+  if (encoding != NULL && encoding->len > 0) {
+    ScrStr *name = strict ? scr_bytes_normalize_encoding(encoding)
+                          : scr_bytes_normalize_encoding_or_utf8(encoding);
+    if (name == NULL) return NULL; /* strict: ERR_UNKNOWN_ENCODING is pending */
+    ScrBytes *b = scr_bytes_from_str(input, name);
+    scr_str_release(name);
+    *bytes = b;
+    *len = b->len;
+    return (const char *)b->data;
+  }
+  const char *data = scr_str_utf8(input, owned);
+  *len = input->len;
+  return data;
+}
+
 /* The inheritStderr echo (no stdio option given). Node writes the
  * result's `stderr`, the DECODED capture when an encoding option is set,
  * so the console encodes that text as utf8; without one the child's own
@@ -1115,8 +1145,8 @@ typedef struct {
  * capture stops at maxBuffer: both outputs together, or each stream with
  * exec's cut when per_stream (the promisified forms). */
 static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
-                             int in_mode, int out_mode, int err_mode,
-                             const ScrStr *cwd, ScrArr *env_pairs,
+                             const ScrStr *encoding, int in_mode, int out_mode,
+                             int err_mode, const ScrStr *cwd, ScrArr *env_pairs,
                              double timeout_ms, bool per_stream, ScrWinSyncRes *res) {
   double max_buffer = scr_child_max_take();
   res->enobufs = false;
@@ -1137,6 +1167,13 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     fflush(stderr);
   }
 
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *input_bytes =
+      input != NULL ? scr_exec_input_bytes(input, encoding, false, &input_owned,
+                                           &input_bytes_buf, &in_len)
+                    : NULL;
   HANDLE in_child = NULL, in_parent = NULL;
   HANDLE out_child = NULL, out_parent = NULL;
   HANDLE err_child = NULL, err_parent = NULL;
@@ -1186,6 +1223,8 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     if (in_parent != NULL) CloseHandle(in_parent);
     if (out_parent != NULL) CloseHandle(out_parent);
     if (err_parent != NULL) CloseHandle(err_parent);
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     res->spawn_errname = sp.errname;
     return;
   }
@@ -1199,8 +1238,6 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   bool out_open = out_parent != NULL, err_open = err_parent != NULL;
   bool in_open = in_parent != NULL;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *input_bytes = in_open ? scr_str_utf8(input, &input_owned) : NULL;
   bool exited = false;
   double out_text = 0, err_text = 0;
   double deadline = timeout_ms > 0 ? scr_now_ms() + timeout_ms : 0;
@@ -1229,7 +1266,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
     if (in_open) {
       /* Small chunks: PIPE_NOWAIT's partial-write behavior is only
        * dependable for writes no larger than the pipe buffer. */
-      DWORD want = input->len - in_at > 2048 ? 2048 : (DWORD)(input->len - in_at);
+      DWORD want = in_len - in_at > 2048 ? 2048 : (DWORD)(in_len - in_at);
       DWORD wrote = 0;
       if (want == 0) {
         CloseHandle(in_parent);
@@ -1239,7 +1276,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
           in_at += wrote;
           progress = true;
         }
-        if (in_at >= input->len) {
+        if (in_at >= in_len) {
           CloseHandle(in_parent);
           in_open = false;
         }
@@ -1273,6 +1310,7 @@ static void scr_win_run_sync(ScrStr *cmd, ScrArr *args, const ScrStr *input,
   }
   if (in_open) CloseHandle(in_parent);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
   (void)GetExitCodeProcess(sp.proc, &res->exit_code);
   CloseHandle(sp.proc);
 }
@@ -1434,7 +1472,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
                                         int killsig, int in_mode, int out_mode,
                                         int err_mode, ScrArr *env_pairs) {
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, NULL, in_mode, out_mode, err_mode, NULL, env_pairs,
+  scr_win_run_sync(cmd, args, NULL, NULL, in_mode, out_mode, err_mode, NULL, env_pairs,
                    timeout_ms, false, &w);
   if (w.spawn_errname != NULL) {
     free(w.out.data);
@@ -1625,7 +1663,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   bool cap_out = stdout_mode == 1;
   bool cap_err = stderr_mode == 0 || stderr_mode == 1;
   ScrWinSyncRes w;
-  scr_win_run_sync(cmd, args, input, stdin_inherit ? 2 : 0,
+  scr_win_run_sync(cmd, args, input, encoding, stdin_inherit ? 2 : 0,
                    cap_out ? 0 : (stdout_mode == 2 ? 2 : 1),
                    cap_err ? 0 : (stderr_mode == 3 ? 2 : 1), cwd,
                    env_pairs, timeout_ms, async_shape, &w);
@@ -3627,7 +3665,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
                                             ScrStr *cwd, ScrStr *input, bool has_input,
-                                            bool shell) {
+                                            bool shell, ScrStr *encoding) {
   ScrWinSyncRes w;
   /* `shell`: the command runs through cmd.exe /d /s /c, Node's Windows
    * shape. The compiler emits the form with an EMPTY args list only (a
@@ -3647,8 +3685,9 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     scr_arr_push_ref(shell_args, scr_str_retain(cmd));
     run_args = shell_args;
   }
-  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, in_mode, out_mode, err_mode,
-                   cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms, false, &w);
+  scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, encoding, in_mode, out_mode,
+                   err_mode, cwd != NULL && cwd->len > 0 ? cwd : NULL, env_pairs, timeout_ms,
+                   false, &w);
   if (shell_args != NULL) {
     scr_str_release(run_cmd);
     scr_arr_release(shell_args);
@@ -3697,7 +3736,7 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   return scr_child_res_encoded(
       scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                               (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                              has_input, shell),
+                              has_input, shell, encoding),
       encoding);
 }
 
@@ -4520,6 +4559,17 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     fflush(stderr);
   }
   bool has_input = o->input != NULL;
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *input = NULL;
+  if (has_input) {
+    /* The encoding read happens before the spawn: Node's Buffer.from throws
+     * ERR_UNKNOWN_ENCODING and no child starts. */
+    input = scr_exec_input_bytes(o->input, o->encoding, true, &input_owned,
+                                 &input_bytes_buf, &in_len);
+    if (input == NULL) return NULL;
+  }
   if ((cap_out && pipe(outfd) != 0) || (cap_err && pipe(errfd) != 0) ||
       (has_input && pipe(infd) != 0)) {
     fputs("scriptc: pipe() failed\n", stderr);
@@ -4585,6 +4635,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
       scr_child_error_self(e);
       scr_child_error_sync_fields(e, false, 0, NULL, 0, false, NULL, NULL);
     }
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     scr_exec_throw(e);
     return NULL;
   }
@@ -4597,8 +4649,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   scr_cap_init(&err);
   bool out_open = cap_out, err_open = cap_err, in_open = has_input;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *input = has_input ? scr_str_utf8(o->input, &input_owned) : NULL;
+
   bool timed_out = false;
   bool enobufs = false;    /* the sync forms: both outputs together passed maxBuffer */
   const char *over = NULL; /* the async shape: the stream that passed it */
@@ -4653,13 +4704,13 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
           close(infd[1]);
           in_open = false; /* child closed stdin early: fine, like Node */
         } else if (fds[i].revents & POLLOUT) {
-          ssize_t wrote = write(infd[1], input + in_at, o->input->len - in_at);
+          ssize_t wrote = write(infd[1], input + in_at, in_len - in_at);
           if (wrote > 0) in_at += (size_t)wrote;
           else if (wrote < 0 && errno != EINTR && errno != EAGAIN) {
             close(infd[1]);
             in_open = false;
           }
-          if (in_at >= o->input->len) {
+          if (in_at >= in_len) {
             close(infd[1]);
             in_open = false;
           }
@@ -4681,6 +4732,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   scr_cap_close(&errfd[0]);
   if (in_open) close(infd[1]);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
 
   /* Reap. A live deadline still applies here: a child that closed its
    * stdio but keeps running (the pipes-drained daemon shape) must still be
@@ -7573,9 +7625,16 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                             int killsig, int in_mode, int out_mode,
                                             int err_mode, ScrArr *env_pairs,
                                             ScrStr *cwd, ScrStr *input, bool has_input,
-                                            bool shell) {
+                                            bool shell, ScrStr *encoding) {
   double max_buffer = scr_child_max_take();
   bool use_cwd = cwd != NULL && cwd->len > 0;
+  char *input_owned = NULL;
+  ScrBytes *input_bytes_buf = NULL;
+  size_t in_len = 0;
+  const char *in_data =
+      has_input ? scr_exec_input_bytes(input, encoding, false, &input_owned, &input_bytes_buf,
+                                       &in_len)
+                : NULL;
   if (out_mode == 2 || err_mode == 2) {
     /* Inherited output fds: flush the parent's buffers first so earlier
      * logs precede the child's writes (Node's practical ordering). */
@@ -7653,6 +7712,8 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     if (cap_out) close(outfd[0]);
     if (cap_err) close(errfd[0]);
     if (has_input) close(infd[1]);
+    scr_str_utf8_end(input_owned);
+    scr_bytes_release(input_bytes_buf);
     ScrSpawnRes *r = scr_spawn_res_new(false, 0, scr_str_new("", 0), scr_str_new("", 0));
     r->spawn_errname = scr_errname(spawn_err);
     r->cmd = scr_str_retain(cmd);
@@ -7671,9 +7732,6 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   scr_cap_init(&err);
   bool out_open = cap_out, err_open = cap_err, in_open = has_input;
   size_t in_at = 0;
-  char *input_owned = NULL;
-  const char *in_data = has_input ? scr_str_utf8(input, &input_owned) : NULL;
-  size_t in_len = has_input ? input->len : 0;
   bool timed_out = false;
   bool enobufs = false; /* the outputs together passed maxBuffer */
   double deadline = timeout_ms > 0 ? scr_now_ms() + timeout_ms : 0;
@@ -7741,6 +7799,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   scr_cap_close(&errfd[0]);
   if (in_open) close(infd[1]);
   scr_str_utf8_end(input_owned);
+  scr_bytes_release(input_bytes_buf);
 
   /* Reap. With nothing captured the deadline lives here: WNOHANG-poll
    * until the child exits or the timeout kill fires. */
@@ -7811,7 +7870,7 @@ ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms
   return scr_child_res_encoded(
       scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
                               (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                              has_input, shell),
+                              has_input, shell, encoding),
       encoding);
 }
 

@@ -502,8 +502,8 @@ export function lowerExecSyncCall(
  * argument whose type mapped to the interned exec-options record
  * (ExecFileSyncOptionsWithStringEncoding). cwd/input/timeout read their
  * fields with the literal path's defaults on the undefined arm; the
- * stdio modes (and the encoding gate) compute through interned helpers
- * over the record. The options expression re-reads per member, so only
+ * stdio modes compute through interned helpers over the record. The
+ * options expression re-reads per member, so only
  * side-effect-free reads qualify (the `in`-operator fold discipline) —
  * bind computed options to a const first. Null when the shape isn't the
  * exec-options record (the caller keeps its fence). */
@@ -609,8 +609,8 @@ function lowerExecSyncRuntimeOptions(
  * applies to all three fds, an array reads its fd's entry ("pipe" when
  * the array is short — Node's default per fd). Any other runtime string
  * throws the catchable TypeError the literal path fences at compile
- * time; the fd-1 helper also gates the encoding (utf8/utf-8 only —
- * outputs are captured utf8). */
+ * time. Any encoding the record carries decodes the capture (the runtime
+ * normalizes the name; a string `input` is encoded with it too). */
 function execStdioModeHelper(
   lowerer: Lowerer,
   shapeId: string,
@@ -656,7 +656,6 @@ function execStdioModeHelper(
     { id: "o.0", name: "o", type: optsT, mutable: false },
     { id: "s.0", name: "s", type: STRING, mutable: false },
     { id: "a.0", name: "a", type: arrayOf(STRING), mutable: false },
-    { id: "e.0", name: "e", type: STRING, mutable: false },
   ];
   // pipe/ignore → the fd's mode; anything else throws (the literal
   // path's fence, moved to runtime). fd 1: pipe=1 (capture), ignore=0.
@@ -685,55 +684,6 @@ function execStdioModeHelper(
     ),
   ];
   const body: IrStmt[] = [];
-  if (fd === 1) {
-    // The encoding gate rides the first helper call: outputs are
-    // captured utf8, and a runtime encoding this lowering would
-    // mislabel throws instead.
-    body.push({
-      kind: "varDecl",
-      localId: "e.0",
-      init: { kind: "recordGet", obj: o, shapeId, field: "encoding", type: STRING, loc },
-      loc,
-    });
-    body.push({
-      kind: "if",
-      cond: {
-        kind: "logical",
-        op: "&&",
-        left: {
-          kind: "strEq",
-          negated: true,
-          left: varRef("e.0", STRING, loc),
-          right: strLit("utf8", loc),
-          type: BOOL,
-          loc,
-        },
-        right: {
-          kind: "strEq",
-          negated: true,
-          left: varRef("e.0", STRING, loc),
-          right: strLit("utf-8", loc),
-          type: BOOL,
-          loc,
-        },
-        type: BOOL,
-        loc,
-      },
-      then: [
-        throwType(
-          concat(
-            concat(
-              strLit('execSync output is captured as utf8 — encoding "', loc),
-              varRef("e.0", STRING, loc),
-            ),
-            strLit('" has no static lowering', loc),
-          ),
-        ),
-      ],
-      else_: null,
-      loc,
-    });
-  }
   if (stdioT.kind !== "union")
     throw new InternalCompilerError("emitter bug: exec-options stdio is not a union");
   const uTag = lowerer.armTag(stdioT.unionId, UNDEFINED_T);

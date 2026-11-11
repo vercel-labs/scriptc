@@ -59,6 +59,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.dhGroupNew",
   // Node's nameOrNid and options errors.
   "crypto.getCipherInfo",
+  // Reading the deprecated crypto.fips reports DEP0093 through
+  // process.emitWarning, whose replacement may throw.
+  "crypto.fipsGet",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",

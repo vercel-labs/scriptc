@@ -104,7 +104,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
-  "scr_pki.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
+  // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
+  // that reaches it (the deprecated crypto.fips read) selects the
+  // dyn-async unit as well.
+  "scr_pki.c -> scr_async_dyn.c": [
+    "scr_emit_warning",
+    "scr_warning_emit_deferred",
+    "scr_warning_new",
+  ],
   // readline reading from a stream: creating the interface (rl.create)
   // selects the events units.
   "scr_stream.c -> scr_readline.c": [

@@ -4093,8 +4093,41 @@ static bool sp_oaep_encode(const SpRsaOp *op, const ScrBytes *in, unsigned char 
   return true;
 }
 
+/* OpenSSL's constant-time building blocks (crypto/constant_time.c): the
+ * padding checks below run on values derived from a secret, so the masks are
+ * computed without branches and a select keeps both operands live. */
+static unsigned int sp_ct_barrier(unsigned int a) {
+#if defined(__GNUC__)
+  unsigned int r;
+  __asm__("" : "=r"(r) : "0"(a));
+#else
+  volatile unsigned int r = a;
+#endif
+  return r;
+}
+
+static unsigned int sp_ct_msb(unsigned int a) { return 0 - (a >> (sizeof(a) * 8 - 1)); }
+
+static unsigned int sp_ct_lt(unsigned int a, unsigned int b) {
+  return sp_ct_msb(a ^ ((a ^ b) | ((a - b) ^ b)));
+}
+
+static unsigned int sp_ct_ge(unsigned int a, unsigned int b) { return ~sp_ct_lt(a, b); }
+
+static unsigned int sp_ct_is_zero(unsigned int a) { return sp_ct_msb(~a & (a - 1)); }
+
+static unsigned int sp_ct_select(unsigned int mask, unsigned int a, unsigned int b) {
+  return (sp_ct_barrier(mask) & a) | (sp_ct_barrier(~mask) & b);
+}
+
+static unsigned char sp_ct_select_8(unsigned int mask, unsigned char a, unsigned char b) {
+  return (unsigned char)sp_ct_select(mask, a, b);
+}
+
 /* OAEP's decoding (RFC 8017 7.1.2) of the k-byte message. Every check that
- * fails is the provider's one decoding error. */
+ * fails is the provider's one decoding error, and the checks are made the way
+ * OpenSSL's RSA_padding_check_PKCS1_OAEP_mgf1 makes them: a rejected block
+ * takes the same time as an accepted one. */
 static ScrDyn *sp_oaep_decode(const SpRsaOp *op, const unsigned char *em, size_t k) {
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(op->md);
   size_t h = mbedtls_md_get_size(info);
@@ -4103,6 +4136,7 @@ static ScrDyn *sp_oaep_decode(const SpRsaOp *op, const unsigned char *em, size_t
     return NULL;
   }
   size_t db_len = k - h - 1;
+  size_t limit = db_len - h - 1; /* the longest message the block can hold */
   unsigned char *work = malloc(h + db_len);
   if (!work) scr_trap("scriptc: out of memory\n");
   unsigned char *seed = work;
@@ -4112,18 +4146,63 @@ static ScrDyn *sp_oaep_decode(const SpRsaOp *op, const unsigned char *em, size_t
   /* seed ^= MGF1(maskedDB); DB ^= MGF1(seed) */
   sp_mgf1_xor(op->mgf1, db, db_len, seed, h);
   sp_mgf1_xor(op->mgf1, seed, h, db, db_len);
+
+  /* Manger's attack reads a branch on the leading byte, so it is compared
+   * without one, as is the label hash. */
+  unsigned int good = sp_ct_is_zero(em[0]);
   unsigned char lhash[MBEDTLS_MD_MAX_SIZE];
   mbedtls_md(info, op->label ? op->label->data : NULL,
              op->label ? (size_t)scr_bytes_byte_len(op->label) : 0, lhash);
-  bool good = em[0] == 0 && memcmp(db, lhash, h) == 0;
-  size_t i = h;
-  while (i < db_len && db[i] == 0) i++;
-  good = good && i < db_len && db[i] == 0x01;
-  ScrDyn *out = NULL;
-  if (good) out = sp_dyn_buffer(db + i + 1, db_len - i - 1);
+  unsigned int diff = 0;
+  for (size_t i = 0; i < h; i++) diff |= (unsigned int)(db[i] ^ lhash[i]);
+  good &= sp_ct_is_zero(diff);
+  mbedtls_platform_zeroize(lhash, sizeof lhash);
+
+  /* DB = lHash || PS || 0x01 || M. The separator is the first byte that is
+   * not a zero of the padding and not the 0x01, and every byte of DB is
+   * read for it. */
+  unsigned int found_one_byte = 0;
+  unsigned int one_index = 0;
+  for (size_t i = h; i < db_len; i++) {
+    unsigned int equals_one = sp_ct_is_zero((unsigned int)db[i] ^ 0x01);
+    unsigned int equals_zero = sp_ct_is_zero(db[i]);
+    one_index = sp_ct_select(~found_one_byte & equals_one, (unsigned int)i, one_index);
+    found_one_byte |= equals_one;
+    good &= found_one_byte | equals_zero;
+  }
+  good &= found_one_byte;
+
+  unsigned int msg_index = one_index + 1;
+  unsigned int mlen = (unsigned int)db_len - msg_index;
+  good &= sp_ct_ge((unsigned int)limit, mlen); /* the message fits output */
+
+  /* Move the message to the offset the copy below reads with a barrel shift,
+   * so that neither does the copy address depend on the separator found. A
+   * rejected block does not move anything, which the masks make no faster. */
+  unsigned int shift = sp_ct_select(good, (unsigned int)(db_len - h - 1) - mlen, 0);
+  for (size_t step = 1; step < limit; step <<= 1) {
+    unsigned int mask = ~sp_ct_is_zero((unsigned int)step & shift);
+    for (size_t i = h + 1; i < db_len - step; i++) db[i] = sp_ct_select_8(mask, db[i + step], db[i]);
+  }
+
+  /* Copy the message in place; the bytes past its end are selected away, so
+   * the copy reads and writes the same bytes whichever way the check went. */
+  size_t room = limit ? limit : 1;
+  unsigned char *message = malloc(room);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < limit; i++)
+    message[i] = sp_ct_select_8(good & sp_ct_lt((unsigned int)i, mlen), db[h + 1 + i], 0);
   mbedtls_platform_zeroize(work, h + db_len);
   free(work);
-  if (!out) sp_rsa_error("02000079", "oaep decoding error", "ERR_OSSL_RSA_OAEP_DECODING_ERROR");
+  if (!good) {
+    mbedtls_platform_zeroize(message, room);
+    free(message);
+    sp_rsa_error("02000079", "oaep decoding error", "ERR_OSSL_RSA_OAEP_DECODING_ERROR");
+    return NULL;
+  }
+  ScrDyn *out = sp_dyn_buffer(message, mlen);
+  mbedtls_platform_zeroize(message, room);
+  free(message);
   return out;
 }
 
@@ -4241,24 +4320,20 @@ static int sp_rsa_prf(const unsigned char kdk[32], const char *label, size_t lle
   return r;
 }
 
-/* OpenSSL's implicit rejection of a PKCS#1 v1.5 decryption whose padding
- * does not check out: a synthetic plaintext, always the same for a given
- * ciphertext, derived from the private exponent and the ciphertext so that
- * a caller cannot tell the padding failed. `block` is the decrypted
- * message, `ct` the ciphertext. +1. */
-static ScrDyn *sp_pkcs1_reject(mbedtls_rsa_context *rsa, const unsigned char *block, size_t k,
-                               const ScrBytes *ct) {
-  (void)block;
+/* OpenSSL's implicit rejection key derivation: HMAC-SHA256 keyed by
+ * SHA-256 of the private exponent over the ciphertext zero-padded to the
+ * modulus length. False when the key carries no private exponent, which
+ * does not depend on the ciphertext. */
+static bool sp_rsa_kdk(mbedtls_rsa_context *rsa, const unsigned char *ct, size_t ct_len, size_t k,
+                       unsigned char kdk[32]) {
   unsigned char d[MBEDTLS_MPI_MAX_SIZE];
   if (mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(D), d, k) != 0) {
     sp_rsa_error("020000B3", "missing private key", "ERR_OSSL_RSA_MISSING_PRIVATE_KEY");
-    return NULL;
+    return false;
   }
-  /* kdk = HMAC-SHA256(SHA-256(d), ciphertext zero-padded to k) */
-  unsigned char d_hash[32], kdk[32];
+  unsigned char d_hash[32];
   mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), d, k, d_hash);
   mbedtls_platform_zeroize(d, k);
-  size_t ct_len = (size_t)scr_bytes_byte_len(ct);
   mbedtls_md_context_t ctx;
   mbedtls_md_init(&ctx);
   int r = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
@@ -4267,52 +4342,76 @@ static ScrDyn *sp_pkcs1_reject(mbedtls_rsa_context *rsa, const unsigned char *bl
     static const unsigned char zeros[MBEDTLS_MPI_MAX_SIZE] = {0};
     r = mbedtls_md_hmac_update(&ctx, zeros, k - ct_len);
   }
-  if (r == 0) r = mbedtls_md_hmac_update(&ctx, ct->data, ct_len);
+  if (r == 0) r = mbedtls_md_hmac_update(&ctx, ct, ct_len);
   if (r == 0) r = mbedtls_md_hmac_finish(&ctx, kdk);
   mbedtls_md_free(&ctx);
-
-  ScrDyn *out = NULL;
-  unsigned char *synthetic = NULL;
-  unsigned char *candidates = NULL;
-  if (r == 0 && (synthetic = malloc(k)) != NULL && (candidates = malloc(256)) != NULL &&
-      sp_rsa_prf(kdk, "message", 7, synthetic, k, (uint16_t)(k * 8)) == 0 &&
-      sp_rsa_prf(kdk, "length", 6, candidates, 256, 256 * 8) == 0) {
-    /* The message ends at the last generated length below k - 10. */
-    uint16_t max_sep_offset = (uint16_t)(k - 10);
-    uint16_t mask = max_sep_offset;
-    mask |= mask >> 1;
-    mask |= mask >> 2;
-    mask |= mask >> 4;
-    mask |= mask >> 8;
-    size_t synthetic_length = 0;
-    for (size_t i = 0; i < 256; i += 2) {
-      uint16_t candidate = (uint16_t)((candidates[i] << 8) | candidates[i + 1]) & mask;
-      if (candidate < max_sep_offset) synthetic_length = candidate;
-    }
-    out = sp_dyn_buffer(synthetic + k - synthetic_length, synthetic_length);
-  }
-  mbedtls_platform_zeroize(kdk, sizeof kdk);
   mbedtls_platform_zeroize(d_hash, sizeof d_hash);
-  free(synthetic);
-  free(candidates);
-  return out;
+  if (r != 0) scr_trap("scriptc: crypto: PKCS#1 v1.5 key derivation failed\n");
+  return true;
 }
 
 /* PKCS#1 v1.5 type 2's check of a decrypted block, with the implicit
- * rejection a failure ends in. */
+ * rejection a failure ends in: a synthetic plaintext, always the same for a
+ * given ciphertext, derived from the private exponent and the ciphertext so
+ * that a caller cannot tell the padding failed. The synthetic message is
+ * generated for every call, the check reads the whole block without
+ * branching, and the message, its start and its length are chosen with
+ * masks, so a decryption takes the same time whichever way the padding
+ * checks (OpenSSL's ossl_rsa_padding_check_PKCS1_type_2). */
 static ScrDyn *sp_pkcs1_decrypt(mbedtls_rsa_context *rsa, const unsigned char *buf, size_t k, const ScrBytes *ct) {
-  bool good = buf[0] == 0x00 && buf[1] == 0x02;
-  size_t zero = 0;
-  bool found = false;
-  for (size_t i = 2; i < k; i++) {
-    if (!found && buf[i] == 0x00) {
-      zero = i;
-      found = true;
-    }
+  unsigned char kdk[32];
+  if (!sp_rsa_kdk(rsa, ct->data, (size_t)scr_bytes_byte_len(ct), k, kdk)) return NULL;
+
+  unsigned char *synthetic = malloc(k);
+  unsigned char *candidates = malloc(256);
+  if (!synthetic || !candidates) scr_trap("scriptc: out of memory\n");
+  if (sp_rsa_prf(kdk, "message", 7, synthetic, k, (uint16_t)(k * 8)) != 0 ||
+      sp_rsa_prf(kdk, "length", 6, candidates, 256, 256 * 8) != 0)
+    scr_trap("scriptc: crypto: PKCS#1 v1.5 rejection stream failed\n");
+  mbedtls_platform_zeroize(kdk, sizeof kdk);
+
+  /* The synthetic message ends at the last generated length below k - 10. */
+  uint16_t max_sep_offset = (uint16_t)(k - 10);
+  uint16_t length_mask = max_sep_offset;
+  length_mask |= length_mask >> 1;
+  length_mask |= length_mask >> 2;
+  length_mask |= length_mask >> 4;
+  length_mask |= length_mask >> 8;
+  unsigned int synthetic_length = 0;
+  for (size_t i = 0; i < 256; i += 2) {
+    uint16_t candidate = (uint16_t)((candidates[i] << 8) | candidates[i + 1]) & length_mask;
+    synthetic_length = sp_ct_select(sp_ct_lt(candidate, max_sep_offset), candidate, synthetic_length);
   }
-  good = good && found && zero >= 10;
-  if (good) return sp_dyn_buffer(buf + zero + 1, k - zero - 1);
-  return sp_pkcs1_reject(rsa, buf, k, ct);
+  free(candidates);
+
+  /* 00 || 02 || PS || 00, with at least eight bytes of PS. */
+  unsigned int good = sp_ct_is_zero(buf[0]);
+  good &= sp_ct_is_zero((unsigned int)buf[1] ^ 0x02);
+  unsigned int found_zero_byte = 0;
+  unsigned int zero_index = 0;
+  for (size_t i = 2; i < k; i++) {
+    unsigned int equals_zero = sp_ct_is_zero(buf[i]);
+    zero_index = sp_ct_select(~found_zero_byte & equals_zero, (unsigned int)i, zero_index);
+    found_zero_byte |= equals_zero;
+  }
+  good &= sp_ct_ge(zero_index, 2 + 8);
+  unsigned int msg_index = zero_index + 1;
+  /* The message has to fit the output, which is as long as the modulus. */
+  good &= sp_ct_ge((unsigned int)k, (unsigned int)k - msg_index);
+  msg_index = sp_ct_select(good, msg_index, (unsigned int)k - synthetic_length);
+
+  /* Every output byte reads the real block and the synthetic message, so
+   * neither the padding's validity nor the message's content decides a
+   * branch or a cache access. */
+  unsigned char *message = malloc(k);
+  if (!message) scr_trap("scriptc: out of memory\n");
+  size_t length = 0;
+  for (size_t i = msg_index; i < k && length < k; i++, length++)
+    message[length] = sp_ct_select_8(good, buf[i], synthetic[i]);
+  free(synthetic);
+  ScrDyn *out = sp_dyn_buffer(message, length);
+  free(message);
+  return out;
 }
 
 /* publicEncrypt: EVP_PKEY_encrypt. */

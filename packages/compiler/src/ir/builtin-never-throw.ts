@@ -100,4 +100,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // scr_crypto_secure_heap_used builds a fresh record of constants (0, 0,
+  // NaN, 2); no accessor runs and running out of memory ends the process.
+  "crypto.secureHeapUsed",
 ]);

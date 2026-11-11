@@ -269,30 +269,6 @@ export function emitLiteralExpr(
   }
 }
 
-/** Whether evaluating an expression again is unobservable: a plain read of
- * a local, a literal, a field or an element of one of those. */
-function repeatableRead(e: IrExpr): boolean {
-  switch (e.kind) {
-    case "varRef":
-    case "numLit":
-      return true;
-    case "fieldGet":
-    case "recordGet":
-      return repeatableRead(e.obj);
-    case "unionNarrow":
-    case "downcast":
-      return repeatableRead(e.value);
-    case "bytesIntrinsic":
-      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
-    case "arrIntrinsic":
-      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
-    case "strIntrinsic":
-      return repeatableRead(e.receiver) && e.args.every(repeatableRead);
-    default:
-      return false;
-  }
-}
-
 /** The quotient range of two integer ranges, in exact integer arithmetic
  * (BigInt division truncates toward zero, as does the instruction). */
 function quotientRange(left: IntegerRange, divisor: number): IntegerRange {
@@ -302,33 +278,50 @@ function quotientRange(left: IntegerRange, divisor: number): IntegerRange {
   return { min: Math.min(low, high), max: Math.max(low, high) };
 }
 
-/** `(x / c) | 0`, `(x / c) ^ 0`, `(x / c) & -1`, `(x / c) << 0` and
- * `(x / c) >> 0` for an integer dividend `x` within int32 and a constant
- * nonzero integer divisor `c`: the truncated quotient. ToInt32 of a real
- * quotient truncates toward zero, which integer division does for every
- * dividend and divisor, and a quotient of an int32 dividend stays inside
- * int32, so the conversion wraps nothing. Null for any other shape, which
- * keeps the ToInt32 path (a fractional dividend, a non-constant or
- * non-integer divisor, `>>>`). */
-function emitIntegerQuotient(host: LlvmEmitterContext, e: ExprOf<"bin">): LlValue | null {
+/** The division whose ToInt32 conversion a bitwise operator performs, when
+ * the operator is one of the identity conversions: `(x / c) | 0`,
+ * `(x / c) ^ 0`, `(x / c) & -1`, `(x / c) << 0` and `(x / c) >> 0` for a
+ * constant divisor `c`. Null for any other shape, which keeps the ToInt32
+ * path (`>>>`, a shift whose count is not the identity operand, a literal
+ * shift count on the right of a shifted value).
+ *
+ * The identity operand is the one `bitwiseIdentityOperand` names, which for
+ * a shift is the count on the RIGHT: a literal on the left is the shifted
+ * value, so `0 << (10 / 3)` is `0 << 3`, not `10 / 3`. */
+function constantIntegerQuotient(
+  e: ExprOf<"bin">,
+): { division: IrExpr & { kind: "bin" }; divisor: number } | null {
   if (e.op === ">>>") return null;
-  const neutral = (literal: IrExpr): boolean => {
-    if (literal.kind !== "numLit") return false;
-    if (e.op === "&") return (literal.value | 0) === -1;
-    if (e.op === "|" || e.op === "^") return (literal.value | 0) === 0;
-    return ((literal.value >>> 0) & 31) === 0;
-  };
-  const division =
-    neutral(e.right) && e.left.kind === "bin" && e.left.op === "/"
-      ? e.left
-      : neutral(e.left) && e.right.kind === "bin" && e.right.op === "/"
-        ? e.right
-        : null;
-  if (division === null || !repeatableRead(division.left)) return null;
+  const value = bitwiseIdentityOperand(e);
+  const division = value === "left" ? e.left : value === "right" ? e.right : null;
+  if (division === null || division.kind !== "bin" || division.op !== "/") return null;
   if (division.right.kind !== "numLit") return null;
   const divisor = division.right.value;
-  if (!Number.isInteger(divisor) || divisor === 0) return null;
-  const numerator = host.emitExpr(division.left);
+  // The instruction takes an i64 constant, so the divisor must be exactly
+  // representable there: 2 ** 64 is an integer double that truncates to 0
+  // in the emitted literal and divides by zero at run time. A safe integer
+  // is exact in a double and inside i64; a larger divisor gives the zero
+  // quotient for every int32 dividend, so the real division costs nothing
+  // and stays the ToInt32 path.
+  if (!Number.isSafeInteger(divisor) || divisor === 0) return null;
+  return { division, divisor };
+}
+
+/** The truncated quotient `(x / c)` of a dividend `x` whose integer range is
+ * within int32 and a constant nonzero integer divisor `c`: ToInt32 of a real
+ * quotient truncates toward zero, which integer division does for every
+ * dividend and divisor, and a quotient of an int32 dividend stays inside
+ * int32, so the conversion wraps nothing. The dividend is emitted by the
+ * caller exactly once and passed in, so the fallback never re-evaluates it.
+ * Null when the dividend's range is not proven, which keeps ToInt32 of the
+ * real quotient. */
+function emitIntegerQuotient(
+  host: LlvmEmitterContext,
+  e: ExprOf<"bin">,
+  division: IrExpr & { kind: "bin" },
+  divisor: number,
+  numerator: LlValue,
+): LlValue | null {
   const B = host.B;
   // The dividend's integer: an exact one, or the integer an element read
   // holds when it found one (`nanInteger`), with NaN reading as the zero
@@ -414,18 +407,36 @@ export function emitOperatorExpr(
         host.llType(e.left.type) === "ptr";
       // A sum that only feeds the conversion of a bitwise operator can be
       // computed in 32 bits (emitWrappingSum).
+      let preLeft: LlValue | null = null;
+      let preRight: LlValue | null = null;
       if (isBitwiseOp(e.op)) {
         markWrappingOperands(host, e.left, e.right);
         // `(x / c) | 0` with a constant integer c and an integer x is the
         // truncated quotient: ToInt32 of a real quotient truncates toward
-        // zero, which is what integer division does. Decided before the
-        // operands are emitted, so the real division is never built.
-        const quotient = emitIntegerQuotient(host, e);
-        if (quotient !== null) return quotient;
+        // zero, which is what integer division does. The dividend is
+        // evaluated once, before the path is chosen, because the fallback
+        // is a ToInt32 of the same division: re-emitting it would run an
+        // operand with side effects twice (`(a.push(1) / 2) | 0` appends
+        // once, not twice).
+        const shape = constantIntegerQuotient(e);
+        if (shape !== null) {
+          const dividend = host.emitExpr(shape.division.left);
+          const quotient = emitIntegerQuotient(host, e, shape.division, shape.divisor, dividend);
+          if (quotient !== null) return quotient;
+          // The range was not proven: build the real ToInt32 operand from
+          // the dividend already emitted, never from the expression again.
+          const divided = B.tmp();
+          B.line(`${divided} = fdiv double ${dividend.name}, ${f64Lit(shape.divisor)}`);
+          const value: LlValue = { name: divided, type: shape.division.type };
+          // The operand opposite the division is the neutral literal, so
+          // emitting it after the dividend keeps left-to-right evaluation.
+          if (shape.division === e.left) preLeft = value;
+          else preRight = value;
+        }
       }
       const operands = identity
         ? emitBorrowedInputs(host, [e.left, e.right])
-        : [host.emitExpr(e.left), host.emitExpr(e.right)];
+        : [preLeft ?? host.emitExpr(e.left), preRight ?? host.emitExpr(e.right)];
       const l = operands[0]!;
       const r = operands[1]!;
       const t = B.tmp();

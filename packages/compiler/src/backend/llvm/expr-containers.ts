@@ -22,6 +22,7 @@ import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, f64Lit, loadArrCount, sizeToDouble } from "./common.js";
 import { MUTATING_COLLECTION_METHODS } from "../publication.js";
 import { borrowsStringInputs, emitStringInputs } from "./string-lifetimes.js";
+import { emitCursorStrIntrinsic } from "./string-cursor-loops.js";
 import {
   emitMapLookupKey,
   borrowsMapReadInputs,
@@ -359,6 +360,10 @@ export function emitStrIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "strIntrinsic" },
 ): LlValue {
+  if (e.receiver.kind === "varRef") {
+    const cursor = host.stringCursors.get(e.receiver.localId);
+    if (cursor !== undefined) return emitCursorStrIntrinsic(host, e, cursor);
+  }
   // String/array-returning methods hand back a +1 reference, including
   // identity returns. Inputs keep either a proven owner or a frame temp.
   // Omitted optional args get the C-side defaults from docs/ir.md.

@@ -45452,12 +45452,16 @@
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-access-truncate-optional.ts",
           "tests/corpus/fs-close-callback.cjs",
+          "tests/corpus/fs-descriptor-family.cjs",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-exists-optional-path.ts",
+          "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
@@ -45465,6 +45469,7 @@
           "tests/corpus/fs-stat-callback-options.cjs",
           "tests/corpus/fs-stat-runtime-options.ts",
           "tests/corpus/fs-stat-sync-ladder.cjs",
+          "tests/corpus/fs-statfs-family.ts",
           "tests/corpus/fs-stats-bigint-fields.ts",
           "tests/corpus/fs-stats-fields.ts",
           "tests/corpus/fs-stats-member-tables.cjs",
@@ -45479,7 +45484,6 @@
           "tests/corpus/node24-fs-links-options.cjs",
           "tests/corpus/node24-fs-links-promise-errors.cjs",
           "tests/corpus/node24-fs-links-promises.ts",
-          "tests/corpus/node24-fs-links.ts",
           "tests/corpus/node24-fs-mkdir-sync.ts",
           "tests/corpus/node24-fs-modes-sync.ts",
           "tests/corpus/node24-fs-open-sync.ts",
@@ -47385,10 +47389,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.access",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47488,10 +47494,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.chown",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47686,10 +47694,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.fchmod",
         "tests": [
-          "tests/corpus/3137-fs-vector-callbacks.cjs"
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/fs-descriptor-family.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47712,10 +47721,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.fchown",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47738,10 +47749,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.fdatasync",
         "tests": [
-          "tests/corpus/3137-fs-vector-callbacks.cjs"
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/fs-descriptor-family.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47820,10 +47832,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.ftruncate",
         "tests": [
-          "tests/corpus/3137-fs-vector-callbacks.cjs"
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/fs-descriptor-family.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47846,12 +47859,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.futimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-callbacks.cjs",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
-          "tests/corpus/node24-fs-timestamps-errors.cjs"
+          "tests/corpus/node24-fs-timestamps-errors.cjs",
+          "tests/corpus/fs-links-times.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47928,10 +47942,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.lchown",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47954,12 +47970,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.lutimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-callbacks.cjs",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
-          "tests/corpus/node24-fs-timestamps-errors.cjs"
+          "tests/corpus/node24-fs-timestamps-errors.cjs",
+          "tests/corpus/fs-links-times.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47982,12 +47999,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.link",
         "tests": [
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -48353,12 +48371,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.readlink",
         "tests": [
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -48382,10 +48401,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.readv",
         "tests": [
-          "tests/corpus/3137-fs-vector-callbacks.cjs"
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/fs-descriptor-family.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48581,12 +48601,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.statfs",
         "tests": [
           "tests/corpus/node24-fs-statfs-callbacks.cjs",
           "tests/corpus/node24-fs-statfs-options.cjs",
           "tests/corpus/node24-fs-statfs-errors.cjs",
+          "tests/corpus/fs-statfs-family.ts",
           "tests/fixtures/node-types/fs-statfs.ts"
         ]
       },
@@ -48610,12 +48631,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.symlink",
         "tests": [
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -48639,10 +48661,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.truncate",
         "tests": [
-          "tests/corpus/5542-fs-promises-parity.cjs"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48720,12 +48744,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.utimes",
         "tests": [
           "tests/corpus/node24-fs-timestamps-callbacks.cjs",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
-          "tests/corpus/node24-fs-timestamps-errors.cjs"
+          "tests/corpus/node24-fs-timestamps-errors.cjs",
+          "tests/corpus/fs-links-times.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49035,10 +49060,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.writev",
         "tests": [
-          "tests/corpus/3137-fs-vector-callbacks.cjs"
+          "tests/corpus/3137-fs-vector-callbacks.cjs",
+          "tests/corpus/fs-descriptor-family.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49084,21 +49110,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.accessSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.accessSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49195,21 +49212,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.chownSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.chownSync",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts",
-          "tests/corpus/node24-fs-callback-numeric-flags.cjs",
-          "tests/corpus/node24-fs-mkdir-sync.ts",
-          "tests/corpus/node24-fs-modes-sync.ts",
-          "tests/corpus/node24-fs-open-sync.ts",
-          "tests/corpus/node24-fs-write-modes-sync.ts",
-          "tests/corpus/node24-fs-write-options-flags.ts"
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49601,11 +49609,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.lchownSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.lchownSync",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49628,12 +49637,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.lutimesSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.lutimesSync",
         "tests": [
-          "tests/corpus/node24-fs-timestamps.ts",
+          "tests/corpus/node24-fs-timestamps-callbacks.cjs",
           "tests/corpus/node24-fs-timestamps-symlinks.ts",
-          "tests/corpus/node24-fs-timestamps-errors.cjs"
+          "tests/corpus/node24-fs-timestamps-errors.cjs",
+          "tests/corpus/fs-links-times.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -49656,12 +49666,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.linkSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.linkSync",
         "tests": [
-          "tests/corpus/2950-fs-descriptor-publication.ts",
-          "tests/corpus/node24-fs-links.ts",
+          "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
+          "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -49929,12 +49940,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.readlinkSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.readlinkSync",
         "tests": [
-          "tests/corpus/node24-fs-links.ts",
-          "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
+          "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -50249,12 +50261,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.statfsSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.statfsSync",
         "tests": [
-          "tests/corpus/node24-fs-statfs.ts",
+          "tests/corpus/node24-fs-statfs-callbacks.cjs",
           "tests/corpus/node24-fs-statfs-options.cjs",
           "tests/corpus/node24-fs-statfs-errors.cjs",
+          "tests/corpus/fs-statfs-family.ts",
           "tests/fixtures/node-types/fs-statfs.ts"
         ]
       },
@@ -50278,12 +50291,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.symlinkSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.symlinkSync",
         "tests": [
-          "tests/corpus/node24-fs-links.ts",
-          "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
+          "tests/corpus/node24-fs-links-options.cjs",
+          "tests/corpus/fs-links-times.cjs",
           "tests/fixtures/node-types/fs-links.ts"
         ]
       },
@@ -50307,11 +50321,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.truncateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.truncateSync",
         "tests": [
           "tests/corpus/5542-fs-promises-parity.cjs",
-          "tests/corpus/5543-fs-promises-typed.ts"
+          "tests/corpus/fs-permissions-family.cjs",
+          "tests/corpus/fs-access-truncate-optional.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50371,12 +50386,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.utimesSync",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.utimesSync",
         "tests": [
-          "tests/corpus/node24-fs-timestamps.ts",
+          "tests/corpus/node24-fs-timestamps-callbacks.cjs",
+          "tests/corpus/node24-fs-timestamps-symlinks.ts",
           "tests/corpus/node24-fs-timestamps-errors.cjs",
-          "tests/fixtures/node-types/fs-timestamps.ts"
+          "tests/corpus/fs-links-times.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -52494,11 +52510,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.StatFs",
         "tests": [
           "tests/corpus/node24-fs-statfs.ts",
           "tests/corpus/node24-fs-statfs-options.cjs",
+          "tests/corpus/fs-statfs-family.ts",
           "tests/fixtures/node-types/fs-statfs.ts"
         ]
       },
@@ -52634,10 +52651,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.frsize",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/fs-statfs-family.ts"
         ]
       },
       "anchorSource": "ancestor"

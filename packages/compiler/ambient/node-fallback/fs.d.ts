@@ -675,6 +675,7 @@ declare module "node:fs" {
   export interface StatsFsBase<T> {
     type: T;
     bsize: T;
+    frsize: T;
     blocks: T;
     bfree: T;
     bavail: T;

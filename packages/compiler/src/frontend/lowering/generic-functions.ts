@@ -3248,7 +3248,12 @@ function implicitDeclaredReturn(lowerer: Lowerer, info: GenericFnInfo): IrType |
       functionCanReturnUndefined(info.decl)
     )
       return lowerer.withUndefinedArmOf(mapped) ?? mapped;
-    return mapped;
+    // A body that can return a missing indexed read yields undefined there
+    // (`charAt(n) { return this.buffer[pos + n] }`). The runtime-optionality
+    // analysis records that per declaration (runtimeOptionalGenericReturns);
+    // the instance IS that body, so its result admits undefined too instead
+    // of narrowing the missing value away.
+    return mapped === null ? null : runtimeReturnType(lowerer, info, mapped);
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
     return null;
@@ -3366,6 +3371,18 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
     const represented = tryLowerExpression(lowerer, arg);
     if (represented?.type.kind === "dyn" || represented?.type.kind === "func")
       return represented.type;
+    // A call whose result keeps the undefined arm the checker leaves out
+    // (`charAt(n)` answering a missing buffer read) reaches an inferred
+    // parameter at that widened type, exactly as an unchecked element read
+    // does. Binding the checker's bare arm would narrow the value away and
+    // throw on the miss the callee is written to handle.
+    if (represented && represented.type.kind === "union") {
+      const checkerType = lowerer.mapTypeOf(
+        lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)),
+      );
+      if (checkerType && lowerer.runtimeOptionalWidening(represented.type, checkerType) !== null)
+        return represented.type;
+    }
   }
   if (ts.isCallExpression(arg) && ts.isIdentifier(arg.expression)) {
     const callee = storedImplicitArgumentType(lowerer, arg.expression);
@@ -3509,6 +3526,20 @@ export function implicitCallInstance(
           storedArms.length > 0 &&
           storedArms.every((arm) => arm.kind === "array" || arm.kind === "bytes")
         ) {
+          argTypes.set(sym, lowerer.typeOf(arg));
+          shapes.push({ type: stored, mode: "required" });
+          return;
+        }
+      }
+      // A call result that keeps a hidden undefined arm (a missing indexed
+      // read the callee answers with undefined) is the value the parameter
+      // receives; binding the checker's bare arm would narrow the miss away
+      // at the call and throw where the body handles it.
+      if (stored?.kind === "union") {
+        const checkerType = lowerer.mapTypeOf(
+          lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(arg)),
+        );
+        if (checkerType && lowerer.runtimeOptionalWidening(stored, checkerType) !== null) {
           argTypes.set(sym, lowerer.typeOf(arg));
           shapes.push({ type: stored, mode: "required" });
           return;

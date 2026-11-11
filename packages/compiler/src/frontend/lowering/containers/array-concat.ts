@@ -30,14 +30,15 @@ export function arrayConcatHelper(
   shape: (IrType | null | "dyn")[],
   node: ts.CallExpression,
   loc: SrcLoc,
+  receiverElem: IrType = elem,
 ): string {
-  const key = `concat:${typeKey(elem)}:${shape.map((type) => (type === "dyn" ? "d" : type ? `a:${typeKey(type)}` : "e")).join(";")}`;
+  const key = `concat:${typeKey(elem)}:${typeKey(receiverElem)}:${shape.map((type) => (type === "dyn" ? "d" : type ? `a:${typeKey(type)}` : "e")).join(";")}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.concat", key);
   const arrT = arrayOf(elem);
   const params = [
-    { localId: "a.0", name: "a", type: arrT },
+    { localId: "a.0", name: "a", type: arrayOf(receiverElem) },
     ...shape.map((type, i) => ({
       localId: `x.${i}`,
       name: `x${i}`,
@@ -221,7 +222,7 @@ export function arrayConcatHelper(
       init: { kind: "arrayLit", elems: [], type: arrT, loc },
       loc,
     },
-    ...append(varRef("a.0", arrT, loc), elem, node.expression),
+    ...append(varRef("a.0", arrayOf(receiverElem), loc), receiverElem, node.expression),
     ...shape.flatMap((type, i) =>
       type === "dyn"
         ? appendDyn(varRef(`x.${i}`, DYN, loc), node.arguments.nodes[i]!)
@@ -233,7 +234,10 @@ export function arrayConcatHelper(
     ),
     { kind: "return", value: out, loc },
   ];
-  if (shape.some((type) => type !== null && type !== "dyn" && !typeEquals(type, elem))) {
+  if (
+    !typeEquals(receiverElem, elem) ||
+    shape.some((type) => type !== null && type !== "dyn" && !typeEquals(type, elem))
+  ) {
     for (const id of ["i.0", "offset.0", "count.0"])
       locals.push({ id, name: id, type: F64, mutable: true });
   }

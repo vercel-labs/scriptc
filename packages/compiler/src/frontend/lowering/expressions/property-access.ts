@@ -4001,7 +4001,7 @@ function staticRegexFlagsOf(lowerer: Lowerer, node: ts.Expression): string | nul
     return init !== null ? staticRegexFlagsOf(lowerer, init) : null;
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp")
   ) {

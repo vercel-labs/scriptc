@@ -4216,8 +4216,9 @@ export function collectClassShapeInner(
               overrideReturnAbi(lowerer, ft.ret, overridden.sig.ret, className, base),
             ))
         ) {
+          const jsMember = isJsSourceFile(ts.getSourceFileOfNode(member));
           const fencedJsOverride =
-            isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+            jsMember &&
             overridden.declarer.decl !== null &&
             isJsSourceFile(ts.getSourceFileOfNode(overridden.declarer.decl)) &&
             overridden.sig.gen === undefined;
@@ -4252,7 +4253,13 @@ export function collectClassShapeInner(
             // `arguments` would miss them, so it keeps the fence.
             (shapes.length >= overridden.sig.params.length || confinesMemberRefusals) &&
             (shapes.length === overridden.sig.params.length || !bodyReadsArguments(member)) &&
-            shapes.slice(overridden.sig.params.length).every((p) => p.mode === "omittable") &&
+            // A JavaScript method needs no `?` on a parameter the inherited
+            // ABI does not carry: a caller that stops at the inherited
+            // arity passes nothing and JavaScript binds undefined, which is
+            // what the slot supplies (`toString(compact)` over Error's).
+            shapes
+              .slice(overridden.sig.params.length)
+              .every((p) => p.mode === "omittable" || jsMember) &&
             overridden.sig.params.every(
               (p, i) =>
                 (p.mode === "required" || p.mode === "omittable") &&
@@ -11817,6 +11824,95 @@ function stdlibUrlClassOf(
   return null;
 }
 
+/** `new RegExp(pattern, flags?)` and the call form `RegExp(pattern, flags?)`:
+ * runtime construction over the same libregexp engine the literals ride.
+ * The pattern compiles EAGERLY, so bad input throws Node's catchable
+ * SyntaxError at construction. Checked arguments retain native regexes and
+ * perform runtime coercion. The one difference between the two forms is
+ * `RegExp(re)` with no flags, which JavaScript returns as `re` itself; the
+ * call form preserves that identity (see lower-calls.ts). */
+export function lowerRegExpConstruction(
+  lowerer: Lowerer,
+  args: readonly ts.Expression[],
+  node: ts.Node,
+  loc: SrcLoc,
+  callForm: boolean,
+): IrExpr {
+  const what = callForm ? "RegExp" : "new RegExp";
+  if (args.length > 2) {
+    lowerer.noLowering(`${what} with ${args.length} arguments`, node);
+  }
+  if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${what} with spread arguments`, node);
+  const values = args.map((arg) => lowerer.lowerExpr(arg));
+  if (callForm && values.length === 1 && values[0]!.type.kind === "regex") return values[0]!;
+  // The statically spelled form below needs a string or undefined in
+  // each slot. Every other value — a `dyn` or `regex` argument, and
+  // any primitive or object the static form cannot spell, such as a
+  // boolean, number or null flags argument — reaches the runtime's
+  // JavaScript ToString, exactly the coercion the spec's RegExp
+  // builtin performs, so an invalid flags string throws Node's
+  // SyntaxError at construction instead of refusing the build.
+  const stringSlot = (value: IrExpr): boolean =>
+    value.type.kind === "string" ||
+    value.type.kind === "undefinedT" ||
+    (value.type.kind === "union" &&
+      (lowerer.unions
+        .get(value.type.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
+        false));
+  if (
+    values.some(
+      (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
+    )
+  ) {
+    const checked = [0, 1].map((index): IrExpr =>
+      values[index] ? lowerer.coerceInto(args[index]!, values[index]!, DYN) : dynUndefinedExpr(loc),
+    );
+    return {
+      kind: "libCall",
+      fn: "regex.newChecked",
+      args: checked,
+      type: { kind: "regex" },
+      loc,
+    };
+  }
+  // Every slot reaches here as a string or a nullish cover of one: the
+  // checked path above took every other value.
+  const strArg = (a: ts.Expression | undefined): IrExpr => {
+    if (!a) return { kind: "strLit", value: "", type: STRING, loc };
+    const v = values[args.indexOf(a)]!;
+    const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+    if (v.type.kind === "undefinedT") {
+      if (v.kind === "unitLit") return empty;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: locOf(a) }],
+        result: empty,
+        type: STRING,
+        loc,
+      };
+    }
+    if (v.type.kind === "union") {
+      return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
+    }
+    return v;
+  };
+  const pattern = strArg(args[0]);
+  const flags = strArg(args[1]);
+  // Node accepts the 'd' flag the engine does not have; a literal
+  // flags string refuses here like the literal regex form.
+  if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
+    lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
+  }
+  return {
+    kind: "libCall",
+    fn: "regex.new",
+    args: [pattern, flags],
+    type: { kind: "regex" },
+    loc,
+  };
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   // Constructing a Node 24 global the native runtime does not provide
@@ -12448,81 +12544,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // so bad input throws Node's catchable SyntaxError at construction.
     // Checked arguments retain native regexes and perform runtime coercion.
     if (symbol && ts.symbolName(symbol) === "RegExp" && lowerer.isStdlibSymbol(symbol)) {
-      const args = expr.arguments?.nodes ?? [];
-      if (args.length > 2) {
-        lowerer.noLowering(`new RegExp with ${args.length} arguments`, expr);
-      }
-      if (args.some(ts.isSpreadElement))
-        lowerer.noLowering("new RegExp with spread arguments", expr);
-      const values = args.map((arg) => lowerer.lowerExpr(arg));
-      // The statically spelled form below needs a string or undefined in
-      // each slot. Every other value — a `dyn` or `regex` argument, and
-      // any primitive or object the static form cannot spell, such as a
-      // boolean, number or null flags argument — reaches the runtime's
-      // JavaScript ToString, exactly the coercion the spec's RegExp
-      // builtin performs, so an invalid flags string throws Node's
-      // SyntaxError at construction instead of refusing the build.
-      const stringSlot = (value: IrExpr): boolean =>
-        value.type.kind === "string" ||
-        value.type.kind === "undefinedT" ||
-        (value.type.kind === "union" &&
-          (lowerer.unions
-            .get(value.type.unionId)
-            ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
-            false));
-      if (
-        values.some(
-          (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
-        )
-      ) {
-        const checked = [0, 1].map((index): IrExpr =>
-          values[index]
-            ? lowerer.coerceInto(args[index]!, values[index]!, DYN)
-            : dynUndefinedExpr(loc),
-        );
-        return {
-          kind: "libCall",
-          fn: "regex.newChecked",
-          args: checked,
-          type: { kind: "regex" },
-          loc,
-        };
-      }
-      // Every slot reaches here as a string or a nullish cover of one: the
-      // checked path above took every other value.
-      const strArg = (a: ts.Expression | undefined): IrExpr => {
-        if (!a) return { kind: "strLit", value: "", type: STRING, loc };
-        const v = values[args.indexOf(a)]!;
-        const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-        if (v.type.kind === "undefinedT") {
-          if (v.kind === "unitLit") return empty;
-          return {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: locOf(a) }],
-            result: empty,
-            type: STRING,
-            loc,
-          };
-        }
-        if (v.type.kind === "union") {
-          return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
-        }
-        return v;
-      };
-      const pattern = strArg(args[0]);
-      const flags = strArg(args[1]);
-      // Node accepts the 'd' flag the engine does not have; a literal
-      // flags string refuses here like the literal regex form.
-      if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
-        lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
-      }
-      return {
-        kind: "libCall",
-        fn: "regex.new",
-        args: [pattern, flags],
-        type: { kind: "regex" },
-        loc,
-      };
+      return lowerRegExpConstruction(lowerer, expr.arguments?.nodes ?? [], expr, loc, false);
     }
     if (symbol && ts.symbolName(symbol) === "URL" && lowerer.isStdlibSymbol(symbol)) {
       return lowerUrlNew(lowerer, expr);
@@ -12787,6 +12809,35 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         if (ctx && ctxMap !== null) {
           tsType = ctx;
           mapped = ctxMap;
+        }
+      }
+      // A JavaScript source's pair-literal seed whose entries do not all
+      // match the slot tsc inferred: `new Map([["a", xs], ["b", ys]])`
+      // takes V from the FIRST entry, and with checkJs off the later
+      // entries are type errors the checker reports nowhere. Node stores
+      // each entry's own value, so the map's slot really holds whatever
+      // the entries hold: type that slot checked-dynamic (`unknown`)
+      // instead of refusing the first entry whose conversion has no
+      // layout mapping. A typed seed (type arguments, a contextual map
+      // layout) keeps its declared layout.
+      if (
+        entriesLit !== null &&
+        mapped?.kind === "map" &&
+        (expr.typeArguments?.nodes.length ?? 0) === 0 &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr))
+      ) {
+        const contextual = lowerer.checker.getContextualType(expr);
+        if (contextual === undefined || contextualMapLayout(lowerer, contextual) === null) {
+          const slotTypeOf = (node: ts.Expression): IrType | null =>
+            lowerer.mapTypeOf(lowerer.typeOf(node));
+          const disagrees = (index: 0 | 1, slot: IrType): boolean =>
+            entriesLit.some((pair) => {
+              const type = slotTypeOf(pair.elements.nodes[index]!);
+              return type === null || !typeEquals(type, slot);
+            });
+          const key = disagrees(0, mapped.key) ? DYN : mapped.key;
+          const value = disagrees(1, mapped.value) ? DYN : mapped.value;
+          if (key.kind === "dyn" || value.kind === "dyn") mapped = { kind: "map", key, value };
         }
       }
       // `new Map(source)` the checker types `Map<any, any>` because the

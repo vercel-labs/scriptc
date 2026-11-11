@@ -255,18 +255,21 @@ function classConversion(
     : result;
 }
 
-/** A class of the program whose chain reaches no builtin base: its
- * instances inherit Object.prototype's conversions. */
+/** A class of the program whose chain reaches no base that converts
+ * values a way the compiler cannot see: with only Object.prototype's
+ * conversions the per-class plans are the whole answer. A runtime base
+ * declares its method surface in its ClassInfo (`builtinError` names
+ * toString there), so a chain that passes a runtime base WITHOUT a
+ * conversion method still inherits Object.prototype's — `class Bus extends
+ * EventEmitter {}` converts as "[object Object]", exactly as in Node. */
 function plainProgramClass(info: ClassInfo): boolean {
   for (let cls: ClassInfo | null = info; cls; cls = cls.base) {
-    if (
-      cls.def.runtime ||
-      cls.builtinError ||
-      cls.builtinEmitter ||
-      cls.builtinStream ||
-      cls.callableBase !== undefined
-    )
-      return false;
+    if (cls.builtinError || cls.callableBase !== undefined) return false;
+    if (cls.def.runtime) {
+      for (const method of ["toString", "valueOf", "sym:toPrimitive", "get:sym:toStringTag"])
+        if (cls.methods.has(method)) return false;
+      if (cls.fields.has(TO_STRING_TAG_FIELD)) return false;
+    }
   }
   return true;
 }

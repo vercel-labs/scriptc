@@ -21,6 +21,7 @@ import {
   canDynCheckTo,
   isRefCounted,
   isUnitType,
+  sortArms,
   typeEquals,
 } from "../../../ir/ir.js";
 import { ARRAY_METHODS } from "../surfaces.js";
@@ -522,6 +523,47 @@ const RECEIVER_WRITING_METHODS = new Set([
   "splice",
   "unshift",
 ]);
+
+/** The element type a `concat` result holds. `elem` itself when every
+ * argument's element type already enters it without a structural copy (the
+ * case the helper copies, unchanged, as before); otherwise the union of
+ * `elem` and the element types the checker gave the arguments, which JS's
+ * reference copy can hold in one array. A contribution the union cannot
+ * describe (a checked-dynamic or untyped argument, an arm that is itself
+ * checked-dynamic) is left out and keeps the conversion the element needs. */
+function widenedConcatElement(
+  lowerer: Lowerer,
+  elem: IrType,
+  shape: (IrType | null | "dyn")[],
+  elementCheckerTypes: (IrType | null)[],
+): IrType {
+  const arms = elem.kind === "union" ? [...lowerer.unions.get(elem.unionId)!.arms] : [elem];
+  let widened = elem;
+  let changed = false;
+  const addArm = (arm: IrType): void => {
+    if (identityPreservingWidening(lowerer, arm, widened, true)) return;
+    if (arms.some((existing) => typeEquals(existing, arm))) return;
+    arms.push(arm);
+    widened = { kind: "union", unionId: lowerer.unions.intern(sortArms(arms)) };
+    changed = true;
+  };
+  const contribute = (type: IrType | null): void => {
+    if (type === null || type.kind === "dyn") return;
+    if (type.kind === "union") {
+      const union = lowerer.unions.get(type.unionId);
+      if (union === undefined || union.arms.some((arm) => arm.kind === "dyn")) return;
+      for (const arm of union.arms) addArm(arm);
+      return;
+    }
+    addArm(type);
+  };
+  for (let i = 0; i < shape.length; i++) {
+    const entry = shape[i];
+    if (entry === null) contribute(elementCheckerTypes[i] ?? null);
+    else if (entry !== undefined && entry !== "dyn") contribute(entry);
+  }
+  return changed ? widened : elem;
+}
 
 export function lowerArrayMethodCall(
   lowerer: Lowerer,
@@ -1299,7 +1341,11 @@ export function lowerArrayMethodCall(
     // types it as an element but JS would SPREAD it — is fenced.
     const receiver = lowerer.lowerExpr(access.expression);
     const shape: (IrType | null | "dyn")[] = [];
-    const args: IrExpr[] = [];
+    // Lowered array arguments, in call order; an element argument is lowered
+    // once the result's element type is known.
+    const lowered: (IrExpr | null)[] = [];
+    const elementNodes: (ts.Expression | null)[] = [];
+    const elementCheckerTypes: (IrType | null)[] = [];
     for (const argNode of call.arguments.nodes) {
       if (ts.isSpreadElement(argNode)) {
         lowerer.unsupported(
@@ -1329,7 +1375,9 @@ export function lowerArrayMethodCall(
         if (arg.type.kind === "dyn") arg = lowerer.coerceInto(argNode, arg, argArrayType);
         if (arg.type.kind !== "array") lowerer.badType(argNode, lowerer.typeOf(argNode));
         shape.push(arg.type.elem);
-        args.push(arg);
+        lowered.push(arg);
+        elementNodes.push(null);
+        elementCheckerTypes.push(null);
         continue;
       }
       // A checked-dynamic value: whether JS spreads it is decided at run
@@ -1339,15 +1387,38 @@ export function lowerArrayMethodCall(
         (probedArg ?? tryLowerExpression(lowerer, argNode))?.type.kind === "dyn"
       ) {
         shape.push("dyn");
-        args.push(lowerer.lowerExpr(argNode));
+        lowered.push(lowerer.lowerExpr(argNode));
+        elementNodes.push(null);
+        elementCheckerTypes.push(null);
         continue;
       }
       // An element value — union elements wrap exactly like a push.
       shape.push(null);
-      args.push(lowerer.lowerExprExpecting(argNode, elem));
+      lowered.push(null);
+      elementNodes.push(argNode);
+      elementCheckerTypes.push(argIr);
     }
-    const helper = arrayConcatHelper(lowerer, elem, shape, call, loc);
-    return { kind: "call", callee: helper, args: [receiver, ...args], type: receiverIr, loc };
+    // JS concat copies references, so an argument whose element type the
+    // receiver's does not hold still lands in the result. Widen the result's
+    // element type to a union with every contribution the checker gave the
+    // arguments (a union wide enough to hold them without a structural
+    // copy); a contribution it cannot describe is left to the conversion the
+    // element itself needs.
+    const resultElem = widenedConcatElement(lowerer, elem, shape, elementCheckerTypes);
+    const args: IrExpr[] = lowered.map(
+      (arg, i) => arg ?? lowerer.lowerExprExpecting(elementNodes[i]!, resultElem),
+    );
+    const helper =
+      resultElem === elem
+        ? arrayConcatHelper(lowerer, elem, shape, call, loc)
+        : arrayConcatHelper(lowerer, resultElem, shape, call, loc, elem);
+    return {
+      kind: "call",
+      callee: helper,
+      args: [receiver, ...args],
+      type: resultElem === elem ? receiverIr : arrayOf(resultElem),
+      loc,
+    };
   }
   if (name === "slice") {
     const receiver = lowerer.lowerExpr(access.expression);

@@ -1,8 +1,9 @@
 // zlib.constants read as an object rather than member by member: Node's
 // module answers one mutable singleton whose keys are inserted in its own
 // order. Read it whole (typeof, identity, keys, spread, entries, for-in,
-// JSON), read it by name, destructure it, pass it to a function and use its
-// members in a codec call.
+// JSON), read it by name, destructure it, reach it through the bracket and
+// namespace spellings, pass it to a function and use its members in a codec
+// call.
 // BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH is skipped in the aggregate
 // checks: the compiled table carries it (the pinned Node has it), some
 // 24.22 builds do not, so naming it would make the program host-dependent.
@@ -19,6 +20,24 @@ console.log(
   zlib.constants === constants,
   table === zlib.constants,
 );
+
+// The bracket spellings and the namespace's destructuring answer the same
+// singleton the property form does, and the namespace's own key list names
+// it. A bracket read reaches the namespace box the compiler builds for a
+// namespace read as a value, so the box must serve this member.
+const byLiteral: zlib.ZlibConstants = zlib["constants"];
+const key: "constants" = "constants";
+const byKey: zlib.ZlibConstants = zlib[key];
+const { constants: viaNamespace } = zlib;
+console.log(
+  "spellings",
+  byLiteral === table,
+  byKey === table,
+  viaNamespace === table,
+  viaNamespace.ZSTD_CLEVEL_DEFAULT,
+);
+const namespaceKeys = Object.keys(zlib);
+console.log("namespace keys", namespaceKeys.includes("constants"), namespaceKeys.length);
 
 const keys = Object.keys(table).filter((key) => key !== EXTRA);
 console.log("keys", keys.length, keys[0], keys[1], keys[keys.length - 2], keys[keys.length - 1]);

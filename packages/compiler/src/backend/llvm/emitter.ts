@@ -8137,6 +8137,14 @@ export class LlEmitter {
     return emitOperatorExpr(this, e);
   }
 
+  /** Runs `body` as an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). */
+  emitInSequenceScope<T>(body: () => T): T {
+    return this.emitSequence(body);
+  }
+
   /** Saved operands can feed later call arguments. Transfer ownership of a
    * sequence's locals to this expression's frame so they survive those
    * reads and still die on the path that created them, including inside

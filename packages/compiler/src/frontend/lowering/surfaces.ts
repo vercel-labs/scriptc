@@ -1,5 +1,6 @@
 import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import { isLoweredConsoleMember } from "./builtins/console.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -1641,11 +1642,24 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         fn: "os.getPriority",
         params: [F64],
         result: F64,
-        valueParams: [{ mode: "optional", type: F64, defaultValue: 0 }],
+        valueParams: [{ mode: "optional", type: F64, defaultValue: 0, name: "pid" }],
+        // Untyped callers' adapter: Node's default pid and validateInteger's
+        // type error, rendered from the value itself.
+        checked: { fn: "os.getPriorityChk", args: [] },
       },
       // A one-argument call is setPriority(0, priority)
-      // (lowerOsSetPriorityCall completes it).
-      setPriority: { fn: "os.setPriority", params: [F64, F64], result: VOID },
+      // (lowerOsSetPriorityCall completes it). Untyped callers' adapter
+      // keeps Node's one-argument shift and argument checks.
+      setPriority: {
+        fn: "os.setPriority",
+        params: [F64, F64],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: F64, name: "pid" },
+          { mode: "required", type: F64, name: "priority" },
+        ],
+        checked: { fn: "os.setPriorityChk", args: [] },
+      },
       // Special-cased (lowerOsCpusCall): the call site's CpuInfo[] assembles
       // from one uv_cpu_info snapshot.
       cpus: { fn: "os.cpusTake", params: [], result: VOID },
@@ -3721,6 +3735,39 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     !(lowerer.isStdlibGlobal(recv, "console") && !isLoweredConsoleMember(member))
   )
     return;
+  // A JavaScript read off a value the lowering BUILT as a record (os.cpus()'s
+  // rows, os.userInfo()'s record, a stdlib data interface filled field by
+  // field): the checker's property symbol is the stdlib declaration, but the
+  // value on hand is the record, so the field read the property lowering
+  // performs below is the honest one. Only a record answers here: the
+  // receiver must still be a value the checker reads as data, not a stdlib
+  // global or constructor whose members keep their fence (`globalThis.Set
+  // .prototype` is not a record field).
+  {
+    const lowered = tryLowerExpression(lowerer, recv);
+    // The checker spells a data interface whose record the lowering never
+    // materialized (os.cpus()'s rows read through a binding in JavaScript,
+    // where the value on hand is checked-dynamic): the boxed member read is
+    // the honest one, so the keyed-read claim below this fence applies
+    // exactly as for a checker-dyn receiver. The interface's shape must
+    // carry the member, which keeps stdlib globals and constructors
+    // (`globalThis.Set.prototype`) and non-record types (`any[]`'s
+    // methods) behind the fence.
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(recv));
+    const declared =
+      mapped?.kind === "record"
+        ? lowerer.shapes.get(mapped.shapeId)
+        : lowered?.type.kind === "record"
+          ? lowerer.shapes.get(lowered.type.shapeId)
+          : undefined;
+    if (
+      declared !== undefined &&
+      !declared.tuple &&
+      declared.fields.some((f) => f.name === member) &&
+      (lowered?.type.kind === "dyn" || lowered?.type.kind === "record")
+    )
+      return;
+  }
   // JavaScript reads web stream values (read results, sources, strategies)
   // as checked-dynamic objects (web-streams-dyn.ts).
   if (isWebStreamMemberInJavaScript(lowerer, access)) return;

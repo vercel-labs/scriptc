@@ -385,6 +385,46 @@ void scr_os_set_priority(double pid, double priority) {
 #endif
 }
 
+/* ── the checked-dynamic priority forms ───────────────────────────────
+ * os.getPriority and os.setPriority called with arguments only the
+ * runtime knows (untyped JavaScript's strings, booleans and objects).
+ * Node's own ladder runs here: getPriority's default pid, setPriority's
+ * one-argument shift, and validateInteger's type error rendered from the
+ * value itself ("Received type string ('1')", "Received an instance of
+ * Array", ...). A valid number still answers the real priority. */
+static bool scr_os_priority_arg(const char *name, const ScrDyn *value, double *out) {
+  if (value->kind == SCR_DYN_NUM) {
+    *out = value->v.num;
+    return true;
+  }
+  scr_dyn_arg_type_fail(name, "of type number", value);
+  return false;
+}
+
+double scr_os_get_priority_chk(const ScrDyn *pid) {
+  double value;
+  /* Node's default parameter: an undefined pid reads the current
+   * process's priority. */
+  if (pid->kind == SCR_DYN_UNDEF) return scr_os_get_priority(0);
+  if (!scr_os_priority_arg("pid", pid, &value)) return 0;
+  return scr_os_get_priority(value);
+}
+
+void scr_os_set_priority_chk(const ScrDyn *pid_arg, const ScrDyn *priority_arg) {
+  double pid = 0;
+  double priority = 0;
+  if (priority_arg->kind == SCR_DYN_UNDEF) {
+    /* Node's one-argument form: the first argument IS the priority (the
+     * type error names "priority", not "pid"). */
+    if (!scr_os_priority_arg("priority", pid_arg, &priority)) return;
+  } else {
+    /* Node validates the pid before the priority. */
+    if (!scr_os_priority_arg("pid", pid_arg, &pid)) return;
+    if (!scr_os_priority_arg("priority", priority_arg, &priority)) return;
+  }
+  scr_os_set_priority(pid, priority);
+}
+
 /* ── cpus ─────────────────────────────────────────────────────────────
  * uv_cpu_info, snapshotted once per os.cpus() call: scr_os_cpus_take
  * reads every CPU and answers the count; the accessors read that

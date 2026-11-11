@@ -49583,7 +49583,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -49606,8 +49606,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49629,8 +49629,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49652,8 +49652,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Enumerates the host's logical CPUs with Node's model, speed, and times fields; JavaScript reads them through an intermediate binding too.",
         "verification": "test-backed"
       }
     },
@@ -49675,8 +49675,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49698,8 +49698,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49721,8 +49721,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads and sets process scheduling priorities with Node's default pid, one-argument shift, range checks, and argument errors.",
         "verification": "test-backed"
       }
     },
@@ -49744,8 +49744,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the environment first (HOME, or Node's TMPDIR/TMP/TEMP cascade with its single trailing-slash trim) and falls back to the passwd entry or the platform default.",
         "verification": "test-backed"
       }
     },
@@ -49767,8 +49767,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49790,8 +49790,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49813,8 +49813,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49836,8 +49836,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Enumerates the network interfaces with Node's row shape, including the per-family fields, the MAC, the netmask-derived cidr and the IPv6 scopeid.",
         "verification": "test-backed"
       }
     },
@@ -49859,8 +49859,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49882,8 +49882,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49905,8 +49905,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads and sets process scheduling priorities with Node's default pid, one-argument shift, range checks, and argument errors.",
         "verification": "test-backed"
       }
     },
@@ -49928,8 +49928,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the environment first (HOME, or Node's TMPDIR/TMP/TEMP cascade with its single trailing-slash trim) and falls back to the passwd entry or the platform default.",
         "verification": "test-backed"
       }
     },
@@ -49951,8 +49951,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49974,8 +49974,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -49997,8 +49997,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -50020,8 +50020,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the passwd entry with Node's encoding options (Buffer and string encodings); an argument that is not an object answers the utf8 record.",
         "verification": "test-backed"
       }
     },
@@ -50043,8 +50043,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -50066,8 +50066,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },
@@ -50089,8 +50089,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Answers Node's null-prototype constant groups with the platform's signal, errno, priority, dlopen and libuv values.",
         "verification": "test-backed"
       }
     },
@@ -50112,8 +50112,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.",
         "verification": "test-backed"
       }
     },

@@ -919,6 +919,14 @@ function buildLibFnSignatures() {
      * -20..19, RangeError ERR_OUT_OF_RANGE), then the priority; a failure
      * throws Node's SystemError. */
     "os.setPriority": { argTypes: [F64, F64], result: VOID },
+    /** The checked-dynamic forms, for arguments untyped JavaScript supplies
+     * (a string, a boolean, an object, a value only the runtime knows):
+     * Node's whole argument ladder runs in the runtime — getPriority's
+     * default pid, setPriority's one-argument shift, validateInteger's
+     * ERR_INVALID_ARG_TYPE rendered from the value, then the range checks
+     * and the call. May throw. */
+    "os.getPriorityChk": { argTypes: [DYN], result: F64 },
+    "os.setPriorityChk": { argTypes: [DYN, DYN], result: VOID },
     /** os.cpus(): cpusTake snapshots every CPU and answers the count;
      * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
      * 4 idle, 5 irq) read the snapshot. Never throw. */

@@ -975,6 +975,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.chdir",
   "os.getPriority",
   "os.setPriority",
+  "os.getPriorityChk",
+  "os.setPriorityChk",
   // Node's SystemError when the passwd entry of the effective uid answers
   // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
   // take their own lookup when the record's begin call did not run.

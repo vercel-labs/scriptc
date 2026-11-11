@@ -880,6 +880,35 @@ function publicDetail(tier) {
     ) {
       return "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.";
     }
+    if (
+      source === "compiler-feature:os.os.availableParallelism" ||
+      /^compiler-feature:os\.(?:os\.(?:arch|endianness|freemem|hostname|loadavg|machine|platform|release|totalmem|type|uptime|version)|EOL|devNull)$/.test(
+        source,
+      )
+    ) {
+      return "Reads the host's platform, CPU, memory, load and uname facts with Node's values on the same machine, and its documented invariants where the value changes between processes.";
+    }
+    if (source === "compiler-feature:os.os.networkInterfaces") {
+      return "Enumerates the network interfaces with Node's row shape, including the per-family fields, the MAC, the netmask-derived cidr and the IPv6 scopeid.";
+    }
+    if (source === "compiler-feature:os.constants") {
+      return "Answers Node's null-prototype constant groups with the platform's signal, errno, priority, dlopen and libuv values.";
+    }
+    if (source === "compiler-feature:os.os.cpus") {
+      return "Enumerates the host's logical CPUs with Node's model, speed, and times fields; JavaScript reads them through an intermediate binding too.";
+    }
+    if (
+      source === "compiler-feature:os.os.getPriority" ||
+      source === "compiler-feature:os.os.setPriority"
+    ) {
+      return "Reads and sets process scheduling priorities with Node's default pid, one-argument shift, range checks, and argument errors.";
+    }
+    if (source === "compiler-feature:os.os.userInfo") {
+      return "Reads the passwd entry with Node's encoding options (Buffer and string encodings); an argument that is not an object answers the utf8 record.";
+    }
+    if (source === "compiler-feature:os.os.homedir" || source === "compiler-feature:os.os.tmpdir") {
+      return "Reads the environment first (HOME, or Node's TMPDIR/TMP/TEMP cascade with its single trailing-slash trim) and falls back to the passwd entry or the platform default.";
+    }
     return "Implemented for the documented scriptc module-loader subset.";
   }
   if (source.startsWith("compiler-chapter-policy:")) {

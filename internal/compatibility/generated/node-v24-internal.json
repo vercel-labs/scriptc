@@ -76847,19 +76847,30 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/1353-os-basics.ts",
           "tests/corpus/1480-os-network-interfaces.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts",
           "tests/corpus/1540-os-userinfo.ts",
+          "tests/corpus/2096-os-type.ts",
           "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/4598-os-available-parallelism.ts",
           "tests/corpus/5140-os-host-facts.ts",
           "tests/corpus/5141-os-constants.ts",
           "tests/corpus/5883-os-set-priority.ts",
           "tests/corpus/9204-os-user-info-buffer.ts",
+          "tests/corpus/os-cpus-rows.cjs",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/os-priority-callable.cjs",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
           "tests/corpus/os-user-info-encoding.ts",
-          "tests/corpus/os-userinfo-passwd-entry.ts"
+          "tests/corpus/os-userinfo-options.cjs",
+          "tests/corpus/os-userinfo-passwd-entry.ts",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -77066,10 +77077,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.availableParallelism",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.availableParallelism",
         "tests": [
-          "tests/corpus/4598-os-available-parallelism.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77092,10 +77108,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.arch",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.arch",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77118,10 +77139,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.cpus",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.cpus",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/os-cpus-rows.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77144,10 +77166,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.endianness",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.endianness",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77170,10 +77197,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.freemem",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.freemem",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77196,10 +77228,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.getPriority",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.getPriority",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-priority-callable.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77222,11 +77257,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.homedir",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.homedir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77249,10 +77286,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.hostname",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.hostname",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77275,10 +77317,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.loadavg",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.loadavg",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77301,10 +77348,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.machine",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.machine",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77327,8 +77379,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.networkInterfaces",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.networkInterfaces",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
           "tests/corpus/2917-builtin-callable-widths.ts"
@@ -77354,11 +77406,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.platform",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.platform",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77381,11 +77437,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.release",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.release",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77408,10 +77468,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.setPriority",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.setPriority",
         "tests": [
-          "tests/corpus/5883-os-set-priority.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5883-os-set-priority.ts",
+          "tests/corpus/os-priority-numeric-arguments.cjs",
+          "tests/corpus/os-priority-callable.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77434,11 +77497,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.tmpdir",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.tmpdir",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/os-homedir-env-cascade.ts",
+          "tests/corpus/os-tmpdir-homedir-env.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77461,11 +77526,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.totalmem",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.totalmem",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77488,11 +77557,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.type",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.type",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77515,10 +77588,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.uptime",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.uptime",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77541,15 +77619,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.userInfo",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.userInfo",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts",
           "tests/corpus/1540-os-userinfo.ts",
           "tests/corpus/os-userinfo-passwd-entry.ts",
           "tests/corpus/9204-os-user-info-buffer.ts",
-          "tests/corpus/os-user-info-encoding.ts"
+          "tests/corpus/os-user-info-encoding.ts",
+          "tests/corpus/os-userinfo-options.cjs",
+          "tests/harness/os-homedir-passwd.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77572,10 +77650,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.version",
+        "status": "supported",
+        "evidence": "compiler-feature:os.os.version",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "exact"
@@ -77598,11 +77681,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.EOL",
+        "status": "supported",
+        "evidence": "compiler-feature:os.EOL",
         "tests": [
-          "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -77625,8 +77712,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.constants",
+        "status": "supported",
+        "evidence": "compiler-feature:os.constants",
         "tests": [
           "tests/corpus/5141-os-constants.ts"
         ]
@@ -77651,10 +77738,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.os.devNull",
+        "status": "supported",
+        "evidence": "compiler-feature:os.devNull",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/os-host-facts-exact.ts",
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/1353-os-basics.ts",
+          "tests/corpus/2096-os-type.ts",
+          "tests/corpus/4598-os-available-parallelism.ts",
+          "tests/corpus/1537-os-release-spawnsync-stdio.ts"
         ]
       },
       "anchorSource": "chapter"

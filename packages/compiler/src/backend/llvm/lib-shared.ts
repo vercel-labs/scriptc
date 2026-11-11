@@ -271,6 +271,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.loadavg": "scr_os_loadavg",
   "os.getPriority": "scr_os_get_priority",
   "os.setPriority": "scr_os_set_priority",
+  "os.getPriorityChk": "scr_os_get_priority_chk",
+  "os.setPriorityChk": "scr_os_set_priority_chk",
   "os.cpusTake": "scr_os_cpus_take",
   "os.cpusModel": "scr_os_cpus_model",
   "os.cpusField": "scr_os_cpus_field",

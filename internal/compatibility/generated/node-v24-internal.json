@@ -119951,9 +119951,18 @@
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
           "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
           "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-stream-classes.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts",
           "tests/corpus/zstd-compress.cjs",
           "tests/corpus/zstd-decompress.cjs",
           "tests/corpus/zstd-streams.ts"
@@ -120492,7 +120501,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.Deflate",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120501,7 +120510,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120524,7 +120535,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.DeflateRaw",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120533,7 +120544,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120556,7 +120569,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.Gunzip",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120565,7 +120578,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120588,7 +120603,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.Gzip",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120597,7 +120612,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120620,7 +120637,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.Inflate",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120629,7 +120646,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120652,7 +120671,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.InflateRaw",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120661,7 +120680,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120684,7 +120705,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.Unzip",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120693,7 +120714,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120720,12 +120743,8 @@
         "evidence": "compiler-feature:zlib.zlib.ZlibBase",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5372-zlib-stream-errors.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
-          "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120748,7 +120767,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.close",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120757,7 +120776,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120780,7 +120801,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.flush",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120789,7 +120810,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120812,7 +120835,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.params",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120821,7 +120844,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120844,7 +120869,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.reset",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120853,7 +120878,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120876,7 +120903,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.bytesWritten",
         "tests": [
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
@@ -120885,7 +120912,9 @@
           "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5374-zlib-stream-flush-params.ts",
           "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120962,18 +120991,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.crc32",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.crc32",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121049,18 +121071,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createDeflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createDeflate",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121083,18 +121105,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createDeflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createDeflateRaw",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121117,18 +121139,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createGunzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createGunzip",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121151,18 +121173,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createGzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createGzip",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121185,18 +121207,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createInflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createInflate",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121219,18 +121241,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createInflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createInflateRaw",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121253,18 +121275,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createUnzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createUnzip",
         "tests": [
-          "tests/corpus/1404-zlib-crypto-bytes.ts",
-          "tests/corpus/2921-zlib-callbacks.ts",
-          "tests/corpus/3115-zlib-static-compression-levels.ts",
           "tests/corpus/5370-zlib-stream-roundtrip.ts",
           "tests/corpus/5371-zlib-stream-chunking.cjs",
+          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5378-zlib-sync-options.cjs",
-          "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/5375-zlib-stream-promises.ts",
+          "tests/corpus/5377-zlib-stream-backpressure.cjs",
+          "tests/corpus/5975-zlib-class-values.ts",
+          "tests/corpus/zlib-stream-classes.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121445,18 +121467,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflate",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121479,18 +121505,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121513,18 +121543,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateRaw",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121547,18 +121581,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateRawSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateRawSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121581,18 +121619,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gunzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gunzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121615,18 +121657,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gunzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gunzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121649,18 +121695,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121683,18 +121733,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121717,18 +121771,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflate",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121751,18 +121809,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121785,18 +121847,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateRaw",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121819,18 +121885,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateRawSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateRawSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121853,18 +121923,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.unzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.unzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121887,18 +121961,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.unzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.unzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122423,13 +122501,10 @@
         "status": "partial",
         "evidence": "compiler-feature:zlib.Options",
         "tests": [
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5372-zlib-stream-errors.cjs",
           "tests/corpus/5373-zlib-stream-options.cjs",
-          "tests/corpus/5374-zlib-stream-flush-params.ts",
-          "tests/corpus/5375-zlib-stream-promises.ts",
-          "tests/corpus/5377-zlib-stream-backpressure.cjs"
+          "tests/corpus/5378-zlib-sync-options.cjs",
+          "tests/corpus/5379-zlib-callback-options.ts",
+          "tests/corpus/5633-zlib-typed-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122634,18 +122709,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflate",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122668,18 +122747,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122702,18 +122785,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateRaw",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122736,18 +122823,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.deflateRawSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.deflateRawSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122770,18 +122861,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gunzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gunzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122804,18 +122899,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gunzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gunzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122838,18 +122937,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122872,18 +122975,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.gzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.gzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122906,18 +123013,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflate",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflate",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122940,18 +123051,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122974,18 +123089,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateRaw",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateRaw",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123008,18 +123127,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.inflateRawSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.inflateRawSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123042,18 +123165,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.unzip",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.unzip",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123076,18 +123203,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.unzipSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.unzipSync",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",
           "tests/corpus/2921-zlib-callbacks.ts",
           "tests/corpus/3115-zlib-static-compression-levels.ts",
-          "tests/corpus/5370-zlib-stream-roundtrip.ts",
-          "tests/corpus/5371-zlib-stream-chunking.cjs",
-          "tests/corpus/5373-zlib-stream-options.cjs",
           "tests/corpus/5378-zlib-sync-options.cjs",
           "tests/corpus/5379-zlib-callback-options.ts",
-          "tests/corpus/5415-zlib-dynamic-inputs.cjs"
+          "tests/corpus/5415-zlib-dynamic-inputs.cjs",
+          "tests/corpus/5630-promisify-zlib.ts",
+          "tests/corpus/5633-zlib-typed-options.ts",
+          "tests/corpus/6920-zlib-callback-error-result.ts",
+          "tests/corpus/8405-zlib-compressed-bytes.ts",
+          "tests/corpus/8406-zlib-inflate-chunks.cjs",
+          "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-typed-view-inputs.ts"
         ]
       },
       "anchorSource": "ancestor"

@@ -1,7 +1,8 @@
 /// <reference path="./stream.d.ts" />
 
-/* node:zlib — the one-shot zlib/raw/gzip codecs lower for string/Buffer
- * inputs with Node's default options; libz links only into zlib-using
+/* node:zlib — the one-shot zlib/raw/gzip/brotli/zstd codecs lower for
+ * Node's byte inputs (a string, a Buffer/TypedArray/DataView view, or —
+ * except crc32 — an ArrayBuffer); libz links only into zlib-using
  * binaries. Callback forms use the executable worker pool. Options stay
  * declared so reached uses receive a named SC2020 refusal. The Deflate,
  * Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip, BrotliCompress
@@ -13,95 +14,161 @@ declare module "zlib" {
     [option: string]: unknown;
   }
   export type ZlibCallback = (error: NodeJS.ErrnoException | null, result: Buffer) => void;
-  export function deflate(data: string | Uint8Array, callback: ZlibCallback): void;
   export function deflate(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function deflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function deflateSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function inflate(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function deflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function inflate(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function inflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function inflateSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function deflateRaw(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function inflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function deflateRaw(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function deflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function deflateRawSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function inflateRaw(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function deflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function inflateRaw(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function inflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function inflateRawSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function gzip(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function inflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function gzip(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function gzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function gzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function gunzip(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function gzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function gunzip(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function gunzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function gunzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function unzip(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function gunzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
   export function unzip(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function unzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
-  export function unzipSync(data: string | Uint8Array, options?: ZlibOptions): Buffer;
-  export function crc32(data: string | Uint8Array, value?: number): number;
+  export function unzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZlibOptions,
+  ): Buffer;
+  export function crc32(data: string | ScriptcBufferView, value?: number): number;
   /* Brotli over the vendored brotli 1.2.0 (scr_brotli.c): `params` keys
    * are the numeric BROTLI_PARAM_* and BROTLI_DECODER_PARAM_* constants. */
   export interface BrotliOptions {
     [option: string]: unknown;
   }
-  export function brotliCompress(data: string | Uint8Array, callback: ZlibCallback): void;
   export function brotliCompress(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: BrotliOptions,
     callback: ZlibCallback,
   ): void;
-  export function brotliCompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
-  export function brotliDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function brotliCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: BrotliOptions,
+  ): Buffer;
   export function brotliDecompress(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: BrotliOptions,
     callback: ZlibCallback,
   ): void;
-  export function brotliDecompressSync(data: string | Uint8Array, options?: BrotliOptions): Buffer;
+  export function brotliDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: BrotliOptions,
+  ): Buffer;
   /* Zstd over the vendored zstd 1.5.7 (scr_zstd.c): `params` keys are the
    * numeric ZSTD_c_* and ZSTD_d_* constants, and `dictionary` and
    * `pledgedSrcSize` take Node's values. */
   export interface ZstdOptions {
     [option: string]: unknown;
   }
-  export function zstdCompress(data: string | Uint8Array, callback: ZlibCallback): void;
   export function zstdCompress(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function zstdCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZstdOptions,
     callback: ZlibCallback,
   ): void;
-  export function zstdCompressSync(data: string | Uint8Array, options?: ZstdOptions): Buffer;
-  export function zstdDecompress(data: string | Uint8Array, callback: ZlibCallback): void;
+  export function zstdCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZstdOptions,
+  ): Buffer;
   export function zstdDecompress(
-    data: string | Uint8Array,
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    callback: ZlibCallback,
+  ): void;
+  export function zstdDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZstdOptions,
     callback: ZlibCallback,
   ): void;
-  export function zstdDecompressSync(data: string | Uint8Array, options?: ZstdOptions): Buffer;
+  export function zstdDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options?: ZstdOptions,
+  ): Buffer;
   /* The stream classes: runtime Transform streams over the zlib engine
    * (scr_zlib_stream.c). createGzip(options) and new Gzip(options) build
    * the same stream; options are validated at runtime with Node's rules.

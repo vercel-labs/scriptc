@@ -110,6 +110,103 @@ void (async () => {
       .end();
   });
 
+  // A checkContinue listener can refuse the body with an ordinary response
+  // instead of calling writeContinue; 'request' still does not fire.
+  const declined = http.createServer((_req, res) => {
+    console.log("declined request");
+    res.end("unexpected");
+  });
+  declined.on("checkContinue", (req, res) => {
+    console.log("declined checkContinue", req.headers.expect);
+    res.statusCode = 400;
+    res.end("no body");
+  });
+  const declinedPort = await listen(declined);
+  await new Promise<void>((resolve) => {
+    const req = http.request(
+      {
+        host: origin,
+        port: declinedPort,
+        method: "POST",
+        headers: { expect: "100-continue", "content-length": "4" },
+        agent: false,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          console.log("declined status", res.statusCode, Buffer.concat(chunks).toString());
+          declined.close(() => resolve());
+        });
+      },
+    );
+    req.on("continue", () => console.log("declined continue"));
+    req.on("error", () => {});
+    req.end("body");
+  });
+
+  // Without a checkContinue listener the server answers 100 Continue
+  // itself and still emits 'request'.
+  const automatic = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      console.log("automatic request body", Buffer.concat(chunks).toString());
+      res.end("automatic");
+    });
+  });
+  const automaticPort = await listen(automatic);
+  await new Promise<void>((resolve) => {
+    const req = http.request(
+      {
+        host: origin,
+        port: automaticPort,
+        method: "POST",
+        path: "/automatic",
+        headers: { expect: "100-continue", "content-length": "4" },
+        agent: false,
+      },
+      (res) => {
+        console.log("automatic status", res.statusCode);
+        res.resume();
+        res.on("end", () => {
+          automatic.close(() => resolve());
+        });
+      },
+    );
+    req.on("continue", () => console.log("automatic continue"));
+    req.end("body");
+  });
+
+  // Without a checkExpectation listener the server answers 417 and does
+  // not emit 'request'.
+  const rejected = http.createServer((_req, res) => {
+    console.log("rejected request");
+    res.end("unexpected");
+  });
+  const rejectedPort = await listen(rejected);
+  await new Promise<void>((resolve) => {
+    http
+      .request(
+        {
+          host: origin,
+          port: rejectedPort,
+          method: "POST",
+          headers: { expect: "something-else", "content-length": "0" },
+          agent: false,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("end", () => {
+            console.log("rejected status", res.statusCode, Buffer.concat(chunks).toString());
+            rejected.close(() => resolve());
+          });
+        },
+      )
+      .end();
+  });
+
   // 'close' fires after the last connection drained.
   const closing = http.createServer((_req, res) => res.end("ok"));
   const closingPort = await listen(closing);

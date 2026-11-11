@@ -1184,6 +1184,20 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.realpathEncoded",
   "fsp.realpathBuffer",
   "fsp.openOptions",
+  // readFile's option ladder and the chmod/lchmod mode spellings validate
+  // before they touch the filesystem (and the read itself raises), then
+  // settle the error into the rejection; stat's null options value is a
+  // TypeError raised after the path check, and the FileHandle options
+  // record reads its members with the same order.
+  "fsp.readFileDyn",
+  "fsp.readFileDynPath",
+  "fsp.readFileStrOptions",
+  "fsp.readFileBytesOptions",
+  "fsp.chmodString",
+  "fsp.chmodChk",
+  "fsp.lchmodString",
+  "fsp.statNullOptions",
+  "fileHandle.statOptions",
   "fileHandle.writeFileData",
   // The options record's own validation ladder, then the write, all before
   // the promise exists.

@@ -45474,12 +45474,16 @@
           "tests/corpus/fs-open-as-blob.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
+          "tests/corpus/fs-promises-chmod-modes-js.js",
+          "tests/corpus/fs-promises-chmod-modes.ts",
           "tests/corpus/fs-promises-copyfile-mode.ts",
           "tests/corpus/fs-promises-lchmod.ts",
           "tests/corpus/fs-promises-mkdir-options.ts",
           "tests/corpus/fs-promises-open-flags.ts",
           "tests/corpus/fs-promises-optionless-ops.ts",
           "tests/corpus/fs-promises-path-encoding.ts",
+          "tests/corpus/fs-promises-read-options-js.js",
+          "tests/corpus/fs-promises-read-options.ts",
           "tests/corpus/fs-promises-rmdir-options.ts",
           "tests/corpus/fs-promises-stat-options.ts",
           "tests/corpus/fs-promises-write-file-dynamic-options.ts",
@@ -46507,9 +46511,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.chmod",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.chmod",
         "tests": [
+          "tests/corpus/fs-promises-chmod-modes.ts",
+          "tests/corpus/fs-promises-chmod-modes-js.js",
           "tests/corpus/fs-promises-optionless-ops.ts"
         ]
       },
@@ -46651,9 +46657,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.lchmod",
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lchmod",
         "tests": [
+          "tests/corpus/fs-promises-chmod-modes.ts",
+          "tests/corpus/fs-promises-chmod-modes-js.js",
           "tests/corpus/fs-promises-lchmod.ts"
         ]
       },
@@ -46949,14 +46957,12 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.readFile",
+        "evidence": "compiler-feature:fs.fsPromises.readFile",
         "tests": [
-          "tests/corpus/1403-buffer-fs.ts",
-          "tests/corpus/2595-fs-arg-ladders.cjs",
-          "tests/corpus/2919-fs-function-values.ts",
-          "tests/corpus/2920-fs-promises-function-values.ts",
-          "tests/corpus/fs-exists-optional-path.ts",
-          "tests/corpus/fs-write-options.ts"
+          "tests/corpus/fs-promises-read-options.ts",
+          "tests/corpus/fs-promises-read-options-js.js",
+          "tests/corpus/5542-fs-promises-parity.cjs",
+          "tests/corpus/5543-fs-promises-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47117,7 +47123,7 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "surface-manifest:node-builtin.fs.promises.stat",
+        "evidence": "compiler-feature:fs.fsPromises.stat",
         "tests": [
           "tests/corpus/fs-promises-stat-options.ts"
         ]

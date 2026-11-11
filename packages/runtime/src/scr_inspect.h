@@ -277,6 +277,21 @@ void scr_fs_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
 /* fs/promises readFile(path) [no encoding]: the same read behind an
  * already-settled promise — failure REJECTS (catchable at the await). */
 ScrPromise *scr_fsp_read_file_bytes(ScrStr *path); /* +1 */
+/* fs/promises readFile's options ladder (scr_bytes_io.c): Node's
+ * getOptions/validate/checkAborted/open order over any options spelling.
+ * Answers a Buffer or a string. */
+ScrDyn *scr_fs_read_file_options_dyn(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrDyn *scr_fs_read_file_dyn_path_options(const ScrDyn *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_dyn(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_str_options(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_bytes_options(ScrStr *path, const ScrDyn *options); /* +1 */
+ScrPromise *scr_fsp_read_file_dyn_path(const ScrDyn *path, const ScrDyn *options); /* +1 */
+/* fs/promises chmod/lchmod with an octal-string mode (typed or JS-source). */
+ScrPromise *scr_fsp_chmod_string(ScrStr *path, ScrStr *mode); /* +1 */
+ScrPromise *scr_fsp_chmod_chk(const ScrDyn *path, const ScrDyn *mode); /* +1 */
+ScrPromise *scr_fsp_lchmod_string(ScrStr *path, ScrStr *mode); /* +1 */
+/* fs/promises stat/lstat(path, null): the rejection Node's member read makes. */
+ScrPromise *scr_fsp_stat_null_options(ScrStr *path); /* +1 */
 
 /* crypto.randomBytes(n) → a real u8 Buffer. Out-of-range n THROWS Node's
  * RangeError catchably (same check as scr_crypto_random_string). */

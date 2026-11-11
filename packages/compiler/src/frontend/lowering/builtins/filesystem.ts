@@ -296,9 +296,25 @@ export function lowerFsLadderCall(
       const a = dynArgs([args[0], args[1]]);
       return a && chk("fsp.mkdtempDisposableChk", a, { kind: "promise", inner: DYN });
     }
-    if (bi.member !== "lchmod" || args.length !== 2) return null;
+    if (bi.member === "readFile" && (args.length === 1 || args.length === 2)) {
+      // readFile(path[, options]): the runner runs Node's getOptions ladder
+      // (the options kind, the encoding name, the signal), opens with the
+      // flag, and answers whatever the encoding asks for — a type the JS
+      // source does not pin down.
+      const options = args.length === 2 ? dynArg(args[1]) : dynUndefinedExpr(loc);
+      const path = dynArg(args[0]);
+      if (!options || !path) return null;
+      return chk("fsp.readFileDynPath", [path, options], { kind: "promise", inner: DYN });
+    }
+    if ((bi.member !== "lchmod" && bi.member !== "chmod") || args.length !== 2) return null;
     const a = dynArgs([args[0], args[1]]);
-    return a && chk("fsp.lchmodChk", a, { kind: "promise", inner: VOID });
+    return (
+      a &&
+      chk(bi.member === "chmod" ? "fsp.chmodChk" : "fsp.lchmodChk", a, {
+        kind: "promise",
+        inner: VOID,
+      })
+    );
   }
   switch (bi.member) {
     case "exists": {
@@ -2298,6 +2314,26 @@ const FS_STAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint", "thro
  * throwIfNoEntry. */
 const FS_FSTAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint"]);
 
+/** Value kinds that provably carry no `bigint` member: Node's stat reads
+ * options.bigint off them and gets undefined, so they are the defaults.
+ * Records, unions, dyn values and class instances stay out — a member
+ * could be there. */
+const STAT_OPTIONS_MEMBERLESS_KINDS: ReadonlySet<string> = new Set([
+  "f64",
+  "bool",
+  "string",
+  "bytes",
+  "bigint",
+  "symbol",
+  "array",
+  "func",
+  "date",
+  "regex",
+  "url",
+  "map",
+  "set",
+]);
+
 /** The stat representation a mapped result type carries: BigIntStats and
  * `BigIntStats | undefined` read the bigint member table, Stats and
  * `Stats | undefined` the number one; anything else is neither. A promise
@@ -2661,6 +2697,18 @@ export function lowerFsPromisesStatOptionsCall(
   const spelling = noFollow ? "fs.promises.lstat" : "fs.promises.stat";
   const optsNode = call.arguments.nodes[1]!;
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  // A statically null options value: the default parameter covers only
+  // undefined, so Node validates the path and then reads options.bigint off
+  // the null — the promise rejects with "Cannot read properties of null".
+  if ((lowerer.typeOf(optsNode).flags & ts.TypeFlags.Null) !== 0) {
+    return {
+      kind: "libCall",
+      fn: "fsp.statNullOptions",
+      args: [path],
+      type: { kind: "promise", inner: STATS_T },
+      loc,
+    };
+  }
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const inner = callType?.kind === "promise" ? callType.inner : undefined;
   const def = inner?.kind === "union" ? lowerer.unions.get(inner.unionId) : undefined;
@@ -2704,6 +2752,15 @@ export function lowerFsPromisesStatOptionsCall(
   const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
   if (undefinedOptions !== null) {
     return pathThen(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions, plain);
+  }
+  // Any other non-object options value — a number, string, boolean, array,
+  // function, Buffer — has no bigint member to read, so Node's reads answer
+  // undefined and the call is stat's defaults. The value itself still
+  // evaluates (arguments do), which pathThen's effect slot carries.
+  const optsKind = lowerer.mapTypeOf(lowerer.typeOf(optsNode))?.kind;
+  if (optsKind !== undefined && STAT_OPTIONS_MEMBERLESS_KINDS.has(optsKind)) {
+    const value = lowerer.lowerExpr(optsNode);
+    return pathThen(isSafeToDiscard(value) ? null : value, plain);
   }
   let throwIfNoEntry: IrExpr | null = null;
   const recordOptions = !ts.isObjectLiteralExpression(optsNode);

@@ -136,6 +136,14 @@ declare module "fs/promises" {
     signal?: AbortSignal;
     [option: string]: unknown;
   }
+  /* The options record fs.promises.readFile accepts: the encoding, the
+   * open flag, and an AbortSignal Node checks before the open. */
+  export interface ReadFileOptions {
+    encoding?: BufferEncoding | null;
+    flag?: string;
+    signal?: AbortSignal;
+    [option: string]: unknown;
+  }
   export interface RmdirOptions {
     recursive?: boolean;
     retryDelay?: number;
@@ -184,11 +192,21 @@ declare module "fs/promises" {
     mtime: number | string | Date,
   ): Promise<void>;
   export function readFile(path: string | URL, encoding: "utf8" | "utf-8"): Promise<string>;
+  /* Node's readFile overloads: no options (and an explicit null, or an
+   * encoding of null) read raw bytes; an encoding name answers text; every
+   * other options object may answer either, at the runtime encoding. */
   export function readFile(
     path: string | URL,
-    options: BufferEncoding | { encoding: BufferEncoding },
+    options?: (ReadFileOptions & { encoding?: null }) | null,
+  ): Promise<Buffer>;
+  export function readFile(
+    path: string | URL,
+    options: BufferEncoding | (ReadFileOptions & { encoding: BufferEncoding }),
   ): Promise<string>;
-  export function readFile(path: string | URL): Promise<Buffer>;
+  export function readFile(
+    path: string | URL,
+    options?: BufferEncoding | ReadFileOptions | null,
+  ): Promise<string | Buffer>;
   export function writeFile(
     path: string | URL,
     data: string | ScriptcBufferView,
@@ -304,7 +322,8 @@ declare module "fs/promises" {
     options: StatOptions,
   ): Promise<import("node:fs").Stats | import("node:fs").BigIntStats>;
   export function unlink(path: string | URL): Promise<void>;
-  export function chmod(path: string | URL, mode: number): Promise<void>;
+  /* parseFileMode: a 32-bit unsigned integer or an octal string. */
+  export function chmod(path: string | URL, mode: number | string): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
@@ -336,7 +355,7 @@ declare module "fs/promises" {
   ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rmdir(path: string | URL, options: RmdirOptions): Promise<void>;
-  export function lchmod(path: string | URL, mode: number): Promise<void>;
+  export function lchmod(path: string | URL, mode: number | string): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
     path: string | URL,

@@ -836,6 +836,45 @@ export function lowerFsPromisesEncodedRead(
   };
 }
 
+/** fs.promises.readFile(path, options) beyond the literal-utf8 encoded
+ * read: the runtime runs Node's getOptions ladder over the options value —
+ * nullish and function values (the defaults), a string (the encoding with
+ * flag 'r'), an object's encoding/signal members, options.flag — and reads
+ * the descriptor, answering a Buffer or a string. The result must be the
+ * promise form's payload: a dynamic box, a string, or bytes. A statically
+ * typed string/Buffer spelling keeps the table's entries. Null for other
+ * shapes. */
+export function lowerFsPromisesReadOptionsCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expr.arguments.nodes.length !== 2 || expr.arguments.nodes.some(ts.isSpreadElement))
+    return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "promise") return null;
+  const inner = result.inner;
+  const fn =
+    inner.kind === "dyn"
+      ? "fsp.readFileDyn"
+      : inner.kind === "string"
+        ? "fsp.readFileStrOptions"
+        : inner.kind === "bytes" && inner.elem === "u8"
+          ? "fsp.readFileBytesOptions"
+          : null;
+  if (fn === null) return null;
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const raw = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+  const options: IrExpr | null =
+    raw.type.kind === "dyn"
+      ? raw
+      : raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)
+        ? { kind: "dynFrom", value: raw, type: DYN, loc }
+        : null;
+  if (options === null) return null;
+  return { kind: "libCall", fn, args: [path, options], type: result, loc };
+}
+
 /** opendirSync(path[, options]) and fs.promises.opendir: the options are a
  * literal `{ bufferSize?: <number>, encoding?: "utf8" }`. bufferSize
  * defaults to Node's 32 and is checked by the runtime after the directory

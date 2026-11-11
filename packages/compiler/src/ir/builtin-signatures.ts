@@ -4108,6 +4108,10 @@ function buildLibFnSignatures() {
     },
     "fsp.unlink": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    /** chmod(path, mode) with an octal-string mode (parseFileMode). */
+    "fsp.chmodString": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
+    /** chmod with a dyn mode: parseFileMode's number / octal-string ladder. */
+    "fsp.chmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
@@ -4181,6 +4185,19 @@ function buildLibFnSignatures() {
       argTypes: [STRING, STRING],
       result: { kind: "promise", inner: STRING },
     },
+    /** readFile(path, options) with the options value as a dyn: Node's
+     * getOptions ladder, the flag, the encoding and the signal, answering
+     * whatever the encoding asks for. */
+    "fsp.readFileDyn": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
+    "fsp.readFileDynPath": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    "fsp.readFileStrOptions": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: STRING },
+    },
+    "fsp.readFileBytesOptions": {
+      argTypes: [STRING, DYN],
+      result: { kind: "promise", inner: BYTES_U8 },
+    },
     "fsp.rmdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** fs.promises.rmdir(path, options): validateRmdirOptions and the
      * recursive form's DEP0147 report, in the dyn-async unit. */
@@ -4188,6 +4205,7 @@ function buildLibFnSignatures() {
     /** fs.promises.lchmod(path, mode): Node's stub on Linux (where
      * O_SYMLINK does not exist) and the real lchmod(2) on macOS. */
     "fsp.lchmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmodString": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.link": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.symlink": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.cp": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
@@ -4216,6 +4234,9 @@ function buildLibFnSignatures() {
     },
     "fsp.stat": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
     "fsp.statProbe": { argTypes: [STRING, BOOL], result: { kind: "promise", inner: VOID } },
+    /** stat(path, null): Node reads options.bigint off the null and throws
+     * the TypeError ("Cannot read properties of null"). */
+    "fsp.statNullOptions": { argTypes: [STRING], result: { kind: "promise", inner: STATS_T } },
     "fsp.realpath": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
     "fsp.realpathEncoded": {
       argTypes: [STRING, STRING],

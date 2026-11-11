@@ -19,6 +19,7 @@ import {
   lowerFsWriteDescriptorCall,
   lowerFsEncodedRead,
   lowerFsPromisesEncodedRead,
+  lowerFsPromisesReadOptionsCall,
   lowerFsMkdirSyncCall,
   lowerFsOpendirCall,
   lowerFsStreamCreate,
@@ -353,6 +354,8 @@ export function lowerBuiltinModuleCall(
   ) {
     const encoded = lowerFsPromisesEncodedRead(lowerer, expr, loc);
     if (encoded) return encoded;
+    const options = lowerFsPromisesReadOptionsCall(lowerer, expr, loc);
+    if (options) return options;
   }
   if (
     bi.module === "fs/promises" &&
@@ -399,6 +402,53 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "fs/promises" && bi.member === "rm" && expr.arguments.nodes.length === 2) {
     return lowerFsRemoveCall(lowerer, expr, loc, true);
+  }
+  // chmod(path, mode) / lchmod(path, mode): parseFileMode takes the number
+  // the table form already carries or an octal string, which the fixed-width
+  // ABI has no slot for — a string mode takes the string entry point, and a
+  // dyn mode (a `Mode` union value) takes the checked one.
+  if (
+    bi.module === "fs/promises" &&
+    (bi.member === "chmod" || bi.member === "lchmod") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    const modeType = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
+    const chmod = bi.member === "chmod";
+    if (modeType?.kind === "string") {
+      const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+      const mode = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+      return {
+        kind: "libCall",
+        fn: chmod ? "fsp.chmodString" : "fsp.lchmodString",
+        args: [path, mode],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
+    const modeUnion =
+      modeType?.kind === "union" &&
+      lowerer.unions
+        .get(modeType.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || arm.kind === "f64");
+    if (modeType?.kind === "dyn" || modeUnion) {
+      const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+      const mode = lowerer.lowerExpr(expr.arguments.nodes[1]!);
+      return {
+        kind: "libCall",
+        fn: chmod ? "fsp.chmodChk" : "fsp.lchmodChk",
+        args: [
+          {
+            kind: "dynFrom",
+            value: path,
+            type: DYN,
+            loc,
+          },
+          mode.type.kind === "dyn" ? mode : { kind: "dynFrom", value: mode, type: DYN, loc },
+        ],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+    }
   }
   // accessSync(p, mode?) and truncateSync(p, len?), with their promise
   // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.

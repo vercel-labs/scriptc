@@ -3776,6 +3776,39 @@ ScrPromise *scr_fsp_read_file(ScrStr *path) {
   return scr_promise_settled_str(scr_fs_read_file(path));
 }
 
+/* readFile's options ladder behind the settled promise: the dynamic form
+ * fulfills with the Buffer-or-string box, the typed forms extract the
+ * payload their declaration named. */
+ScrPromise *scr_fsp_read_file_dyn(ScrStr *path, const ScrDyn *options) {
+  ScrDyn *result = scr_fs_read_file_options_dyn(path, options);
+  return scr_promise_settled_ref(result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+}
+
+ScrPromise *scr_fsp_read_file_str_options(ScrStr *path, const ScrDyn *options) {
+  ScrDyn *result = scr_fs_read_file_options_dyn(path, options);
+  ScrStr *text = result && result->kind == SCR_DYN_STR ? scr_str_retain(result->v.str) : NULL;
+  if (result && result->kind != SCR_DYN_STR) {
+    scr_dyn_release(result);
+    return scr_promise_settled_str(NULL);
+  }
+  scr_dyn_release(result);
+  return scr_promise_settled_str(text);
+}
+
+ScrPromise *scr_fsp_read_file_bytes_options(ScrStr *path, const ScrDyn *options) {
+  ScrDyn *result = scr_fs_read_file_options_dyn(path, options);
+  ScrBytes *bytes = result ? scr_dyn_bytes_unbox(result) : NULL;
+  scr_dyn_release(result);
+  return scr_promise_settled_ref(bytes, &scr_bytes_retain_v, &scr_bytes_release_v, NULL);
+}
+
+/* readFile with a checked-dynamic path and options value (the JS-source
+ * lane): the answer is whatever the encoding asks for. */
+ScrPromise *scr_fsp_read_file_dyn_path(const ScrDyn *path, const ScrDyn *options) {
+  ScrDyn *result = scr_fs_read_file_dyn_path_options(path, options);
+  return scr_promise_settled_ref(result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+}
+
 ScrPromise *scr_fsp_write_file(ScrStr *path, ScrStr *data) {
   scr_fs_write_file(path, data);
   return scr_promise_settled_void();

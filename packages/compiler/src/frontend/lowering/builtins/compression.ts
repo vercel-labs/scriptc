@@ -86,10 +86,26 @@ export function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void
 const ZLIB_STREAM_CLASS = "%Transform";
 export const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
 
-/** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
- * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
- * data, which the runtime converts after validating the options — Node's
- * order). Other static types keep the byte-input fence. */
+/** A typed array or DataView of another element kind as the u8 view the
+ * static zlib libCalls read. Node reads a view's bytes, not its elements
+ * (it converts a non-Uint8Array view with `Buffer.from(buffer.buffer,
+ * byteOffset, byteLength)`), and bytes.bufferSource is exactly that
+ * no-copy u8 view of the same memory range. */
+function zlibByteView(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "bytes.bufferSource",
+    args: [lowerer.coerceInto(node, value, DYN)],
+    type: BYTES_U8,
+    loc: locOf(node),
+  };
+}
+
+/** A zlib data argument, lowered once: Buffer/Uint8Array bytes, another
+ * view's bytes, a string (UTF-8 encoded here), or a checked-dynamic value
+ * (an ArrayBuffer, the JS lane's untyped data, which the runtime converts
+ * after validating the options — Node's order). Other static types keep
+ * the byte-input fence. */
 function zlibInput(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -97,7 +113,10 @@ function zlibInput(
 ): { value: IrExpr; dyn: boolean } {
   const value = lowerer.lowerExpr(node);
   if (value.type.kind === "dyn") return { value, dyn: true };
-  if (value.type.kind === "bytes" && value.type.elem === "u8") return { value, dyn: false };
+  if (value.type.kind === "bytes") {
+    if (value.type.elem === "u8") return { value, dyn: false };
+    return { value: zlibByteView(lowerer, node, value), dyn: false };
+  }
   if (value.type.kind === "string") {
     return {
       value: {
@@ -120,7 +139,7 @@ function zlibInput(
   lowerer.noLowering(
     `zlib byte input of '${lowerer.fmt(value.type)}' values`,
     node,
-    "string and Buffer/Uint8Array values are supported",
+    "strings, Buffers, TypedArrays, DataViews and ArrayBuffers are supported",
   );
 }
 

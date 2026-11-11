@@ -15,13 +15,13 @@ import { compile } from "../src/index.js";
 
 const BINDING_CALLS = /"fn":"global\.binding(?:Read|Value|Has)"/;
 
-/** The lowered IR text of a program whose entry is `main.mjs`. */
-async function irOf(files: Record<string, string>): Promise<string> {
+/** The lowered IR text of a program whose entry is `entry` (default `main.mjs`). */
+async function irOf(files: Record<string, string>, entry = "main.mjs"): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-global-typeof-fold-"));
   try {
     for (const [name, source] of Object.entries(files)) await writeFile(join(dir, name), source);
-    const out = join(dir, ".scriptc", "main.ir.json");
-    const result = await compile(join(dir, "main.mjs"), {
+    const out = join(dir, ".scriptc", `${entry}.ir.json`);
+    const result = await compile(join(dir, entry), {
       outDir: join(dir, ".scriptc"),
       outPath: out,
       outputKind: "ir",
@@ -70,22 +70,24 @@ test("an assignment by a computed key can name the property", async () => {
 });
 
 test("a sloppy-mode this write can land on the global object", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "scriptc-global-typeof-fold-"));
-  try {
-    await writeFile(
-      join(dir, "main.js"),
-      // The census reads the sources that mention the global object.
-      `function install() { this.__featureProbe__ = { value: 1 }; }\ninstall();\nconsole.log(typeof __featureProbe__);\n// global\n`,
-    );
-    const out = join(dir, ".scriptc", "main.ir.json");
-    const result = await compile(join(dir, "main.js"), {
-      outDir: join(dir, ".scriptc"),
-      outPath: out,
-      outputKind: "ir",
-    });
-    expect(result.ok ? [] : result.diagnostics.map((diag) => diag.message)).toEqual([]);
-    expect(BINDING_CALLS.test(await readFile(out, "utf8"))).toBe(true);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  // The source never spells `globalThis` or `global`: the write is the one
+  // spelling of a global-object write that does not, and the census has to
+  // read the source for it anyway.
+  const ir = await irOf(
+    {
+      "main.js": `function install() { this.__featureProbe__ = { value: 1 }; }\ninstall();\nconsole.log(typeof __featureProbe__);\n`,
+    },
+    "main.js",
+  );
+  expect(BINDING_CALLS.test(ir)).toBe(true);
+});
+
+test("a sloppy-mode this write by a computed key can name any property", async () => {
+  const ir = await irOf(
+    {
+      "main.js": `function install(key) { this[key] = { value: 1 }; }\ninstall("__otherProbe__");\nconsole.log(typeof __featureProbe__);\n`,
+    },
+    "main.js",
+  );
+  expect(BINDING_CALLS.test(ir)).toBe(true);
 });

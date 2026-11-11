@@ -720,12 +720,22 @@ function publicDetail(tier) {
     if (/^compiler-feature:process\.std(?:in|out|err)$/.test(source)) {
       return "Stored JavaScript process streams support native input listeners, pause/resume and buffered reads, synchronous output writes, and output write replacement; other stream operations remain unsupported.";
     }
+    if (source === "compiler-feature:zlib.Options") {
+      return "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd; the info option and the largest chunkSize values are not supported yet.";
+    }
     if (
-      /^compiler-feature:zlib\.(?:zlib\.(?:Deflate|Inflate|Gzip|Gunzip|DeflateRaw|InflateRaw|Unzip|ZlibBase|close|flush|params|reset)|bytesWritten|Options)$/.test(
+      /^compiler-feature:zlib\.(?:zlib\.(?:Deflate|Inflate|Gzip|Gunzip|DeflateRaw|InflateRaw|Unzip|ZlibBase|close|flush|params|reset)|bytesWritten)$/.test(
         source,
       )
     ) {
       return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.";
+    }
+    if (
+      /^compiler-feature:zlib\.zlib\.(?:deflate|deflateSync|inflate|inflateSync|deflateRaw|deflateRawSync|inflateRaw|inflateRawSync|gzip|gzipSync|gunzip|gunzipSync|unzip|unzipSync|crc32|create(?:Deflate|Inflate|DeflateRaw|InflateRaw|Gzip|Gunzip|Unzip))$/.test(
+        source,
+      )
+    ) {
+      return "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.";
     }
     if (
       /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(

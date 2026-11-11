@@ -28,7 +28,11 @@
  * (whose `this` is the global object when the function is called with
  * undefined or null). A key the checker types as a symbol does not count
  * either way, in any spelling (`Reflect.set(G, KEY, v)` with `KEY` a
- * `Symbol.for(…)`): a symbol names no property an identifier reads. */
+ * `Symbol.for(…)`): a symbol names no property an identifier reads.
+ *
+ * The scan reads a source only when its text can spell one of those writes:
+ * `globalThis` and `global` contain "global", and a sloppy-mode `this`
+ * write — the one spelling that does not — contains "this". */
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isStrictCode } from "./strict-mode.js";
@@ -130,8 +134,13 @@ export function globalObjectWrites(lowerer: Lowerer, globalType: ts.Type): Globa
     }
   };
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    // Every spelling of the global object contains "global".
-    if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "global")) continue;
+    // `globalThis` and `global` spell "global"; a sloppy-mode `this.<name> = v`
+    // write, the one spelling that does not, spells "this".
+    if (
+      sf.isDeclarationFile ||
+      (!ts.sourceTextIncludes(sf, "global") && !ts.sourceTextIncludes(sf, "this"))
+    )
+      continue;
     ts.walkPreorder(sf, (node) => {
       if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
         member(node.left, true);

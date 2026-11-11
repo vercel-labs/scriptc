@@ -45457,6 +45457,8 @@
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
           "tests/corpus/compat-fs-dirent-realpath.ts",
+          "tests/corpus/fs-close-callback-forms.ts",
+          "tests/corpus/fs-close-dynamic-arguments.cjs",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-file-handle-chown.ts",
@@ -45472,6 +45474,8 @@
           "tests/corpus/fs-promises-rmdir-options.ts",
           "tests/corpus/fs-promises-stat-options.ts",
           "tests/corpus/fs-promises-write-file-dynamic-options.ts",
+          "tests/corpus/fs-realpath-callback-dynamic-options.cjs",
+          "tests/corpus/fs-realpath-callback-options.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/fs-watch-ref-keepalive.ts",
@@ -47453,8 +47457,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.close",
+        "tests": [
+          "tests/corpus/fs-close-callback-forms.ts",
+          "tests/corpus/fs-close-dynamic-arguments.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -48344,7 +48352,9 @@
         "evidence": "compiler-feature:fs.fs.realpath",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-realpath-callback-options.ts",
+          "tests/corpus/fs-realpath-callback-dynamic-options.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48367,8 +48377,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.realpath.native",
+        "tests": [
+          "tests/corpus/fs-realpath-callback-options.ts",
+          "tests/corpus/fs-realpath-callback-dynamic-options.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

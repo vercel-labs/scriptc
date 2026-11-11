@@ -1086,7 +1086,7 @@ export function lowerFileHandleMethodCall(
   lowerer.noLowering(
     `FileHandle.${name}`,
     call,
-    "fd, close(), read(), write(), readv(), writev(), readFile(), writeFile(), appendFile(), stat(), sync(), datasync(), truncate(), and chmod() are the supported FileHandle members",
+    "fd, close(), read(), write(), readv(), writev(), readFile(), writeFile(), appendFile(), stat(), sync(), datasync(), truncate(), chmod(), and chown() are the supported FileHandle members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

@@ -311,6 +311,13 @@ ScrStr *scr_fs_read_file(ScrStr *path);
  * spelling (syscall "lstat"). */
 ScrStr *scr_fs_realpath(ScrStr *path);
 ScrStr *scr_fs_realpath_promise(ScrStr *path);
+/* fs.realpath's callback implementation: Node runs it in JavaScript
+ * (lib/fs.js), walking one component at a time with lstat/stat/readlink so
+ * a failure names the first missing component (syscall "lstat") or the
+ * link that loops ("stat"). `absolute` is already path.resolve'd; the
+ * answer is the walk's accumulated path. +1, or NULL with the exception
+ * pending. Windows answers through scr_fs_realpath. */
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute);
 void scr_fs_write_file(ScrStr *path, ScrStr *data);
 /* writeFileSync(fd, data): a write(2) loop over the whole string at the
  * descriptor's current offset; the descriptor stays open (closeSync owns

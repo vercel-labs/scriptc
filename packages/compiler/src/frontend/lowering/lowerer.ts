@@ -22870,6 +22870,10 @@ export class Lowerer {
       if (imported?.module === "fs" && imported.member === "realpathSync") {
         return { module: "fs", member: "realpathSync.native" };
       }
+      // fs.realpath.native is the callback form of the same binding.
+      if (imported?.module === "fs" && imported.member === "realpath") {
+        return { module: "fs", member: "realpath.native" };
+      }
     }
     // timers/promises scheduler.wait / scheduler.yield: methods of the
     // module's scheduler object, dispatched as module members.

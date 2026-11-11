@@ -545,6 +545,10 @@ declare module "node:fs" {
   export function openSync(path: string | URL, flags: string, mode?: number): number;
   export function openSync(path: string | URL, flags: number, mode?: number): number;
   export function closeSync(fd: number): void;
+  /* close(fd[, callback]): the descriptor closes when called. A failure
+   * reaches the callback; without one Node's default callback throws it as
+   * an uncaught exception on a later turn (never for the call itself). */
+  export function close(fd: number, callback?: (err: NodeJS.ErrnoException | null) => void): void;
   export function fdatasyncSync(fd: number): void;
   export function ftruncateSync(fd: number, len?: number): void;
   export function utimesSync(
@@ -628,6 +632,34 @@ declare module "node:fs" {
   export function realpathSync(path: string | URL): string;
   export namespace realpathSync {
     function native(path: string | URL): string;
+  }
+  /* The callback forms, and the native binding (`fs.realpath.native`).
+   * The plain form follows Node's JavaScript walk — `path += ''` for a
+   * non-string path, `path.resolve`, then lstat/stat/readlink per component
+   * — so a missing entry is named by the first missing component (syscall
+   * "lstat") and a link cycle fails in "stat". The native binding is one
+   * realpath(2) call whose errors name the path as given. An unknown
+   * encoding is rejected before the path is touched, and "buffer" answers
+   * a Buffer. */
+  export function realpath(
+    path: string | Uint8Array | URL,
+    callback: (err: NodeJS.ErrnoException | null, resolvedPath: string) => void,
+  ): void;
+  export function realpath(
+    path: string | Uint8Array | URL,
+    options: BufferEncoding | { encoding?: BufferEncoding | null },
+    callback: (err: NodeJS.ErrnoException | null, resolvedPath: string) => void,
+  ): void;
+  export namespace realpath {
+    function native(
+      path: string | Uint8Array | URL,
+      callback: (err: NodeJS.ErrnoException | null, resolvedPath: string) => void,
+    ): void;
+    function native(
+      path: string | Uint8Array | URL,
+      options: BufferEncoding | { encoding?: BufferEncoding | null },
+      callback: (err: NodeJS.ErrnoException | null, resolvedPath: string) => void,
+    ): void;
   }
   /* statfs(2)/statvfs(3) — the filesystem-capacity snapshot (the fields
    * Node's statfsSync reports; bavail × bsize is the free-space probe). */

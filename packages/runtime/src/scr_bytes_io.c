@@ -565,6 +565,53 @@ static ScrDyn *scr_fs_cb_encoded_path(ScrStr *text, const ScrDyn *options) {
   return value;
 }
 
+/* fs.realpath's path in the plain callback form. Node runs this form in
+ * JavaScript, which does toPathIfFileURL(path), then `path += ''` for every
+ * value that is not a string, then validatePath's null-byte check and
+ * path.resolve — so a number or null becomes its text instead of throwing,
+ * a Symbol throws the conversion TypeError, and an object's toString runs.
+ * The native binding takes getValidatedPath instead. */
+static ScrStr *scr_fs_realpath_cb_path(const ScrDyn *value) {
+  const ScrDyn *given = value;
+  ScrDyn *from_url = NULL;
+  if (scr_dyn_native_url_is(value)) {
+    ScrStr *path = scr_url_checked_to_path(value);
+    if (path == NULL) return NULL;
+    from_url = scr_dyn_new_str(path);
+    scr_str_release(path);
+    given = from_url;
+  }
+  ScrStr *text;
+  if (given->kind == SCR_DYN_STR) {
+    text = scr_str_retain(given->v.str);
+  } else {
+    /* `+= ''` is dynamic addition with the empty string: its ToPrimitive
+     * is the one JavaScript uses (valueOf first for an object), and a
+     * Symbol is the conversion's TypeError. */
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *suffix = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+    ScrDyn *coerced = suffix ? scr_dyn_add(given, suffix) : NULL;
+    scr_dyn_release(suffix);
+    if (coerced == NULL) { scr_dyn_release(from_url); return NULL; }
+    text = coerced->kind == SCR_DYN_STR ? scr_str_retain(coerced->v.str) : scr_dyn_to_string(coerced, NULL);
+    scr_dyn_release(coerced);
+    if (text == NULL) { scr_dyn_release(from_url); return NULL; }
+  }
+  scr_dyn_release(from_url);
+  if (memchr(text->data, 0, text->len)) {
+    scr_fs_invalid_named_path(value, text, "path");
+    scr_str_release(text);
+    return NULL;
+  }
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
+  scr_arr_push_ref(parts, scr_str_retain(text));
+  ScrStr *absolute = scr_path_resolve(parts);
+  scr_arr_release(parts);
+  scr_str_release(text);
+  return absolute;
+}
+
 static ScrStr *scr_fs_cb_join(const ScrStr *directory, const char *name) {
   ScrStr *suffix = scr_str_new("/", 1);
   ScrStr *base = scr_str_concat((ScrStr *)directory, suffix);
@@ -619,6 +666,15 @@ static void scr_fs_cb_fire(ScrClosure *closure) {
   ScrDyn *arguments = scr_box_get_ref(closure->caps[1]);
   ScrDyn *result = scr_dyn_apply(callback, arguments, "the filesystem callback");
   scr_dyn_release(result); scr_dyn_release(callback); scr_dyn_release(arguments);
+}
+
+/* fs.close's default callback: Node substitutes one that rethrows the
+ * error, which is how a failed close without a user callback ends up as an
+ * uncaught exception rather than a synchronous throw. */
+static ScrDyn *scr_fs_cb_close_default(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  if (argc >= 1 && !scr_dyn_is_nullish(args[0])) scr_dyn_throw(scr_dyn_retain(args[0]));
+  return scr_dyn_undefined();
 }
 #endif
 
@@ -779,6 +835,12 @@ static ScrArr *scr_fs_cb_vectors(const ScrDyn *buffers) {
 
 static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc) {
   const char *op = member->data;
+  /* fs.realpath.native is the binding's realpath(2) call: unlike the plain
+   * form it validates the path instead of coercing it, and its errors name
+   * the path as given with syscall "realpath". The callback ladder is the
+   * same (options-only calls report the options value as the missing cb). */
+  bool native_realpath = !strcmp(op, "realpath.native");
+  if (native_realpath) op = "realpath";
   if (!strcmp(op, "cp")) {
     /* fs.cp(src, dest[, options], callback): makeCallback, then the option
      * and path validation (thrown), then the copy, whose error reaches the
@@ -920,14 +982,28 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   bool legacy = !strcmp(op, "glob") || !strcmp(op, "rm");
   size_t slot = timestamp ? 3 : legacy ? (argc ? argc - 1 : 0) : scr_fs_cb_slot(op, args, argc);
   const ScrDyn *callback = scr_fs_cb_arg(args, argc, slot);
+  /* close(fd[, callback]): Node's default parameter supplies its throwing
+   * callback only for undefined (or absent) — an explicit null reaches
+   * makeCallback and throws its TypeError. A failure reaches the default
+   * callback on a later turn, so the call itself never throws for a bad
+   * descriptor. */
+  bool close_defaulted = !strcmp(op, "close") && callback->kind == SCR_DYN_UNDEF;
+  size_t count = timestamp ? argc : slot < argc ? slot : argc;
+#define ARG(index) scr_fs_cb_arg(args, count, index)
+  /* realpath.native takes `callback || options`: a call that supplies only
+   * an options value reports that value as its missing callback. */
+  const ScrDyn *callback_arg = callback;
+  if (native_realpath && slot >= argc && argc >= 2 && args[argc - 1]->kind != SCR_DYN_FUNC)
+    callback_arg = args[argc - 1];
   /* These check their callback after the arguments Node validates first
    * (below); every other form checks it here, before its path. */
   bool late = !strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open") ||
               !strcmp(op, "mkdir") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate") || !strcmp(op, "truncate") ||
               !strcmp(op, "read") || !strcmp(op, "write");
-  if (!late && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
-  size_t count = timestamp ? argc : slot < argc ? slot : argc;
-#define ARG(index) scr_fs_cb_arg(args, count, index)
+  if (!late && !close_defaulted && !scr_fs_cb_chk(callback_arg, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
+  /* realpath's getOptions and assertEncoding run after its callback and
+   * before its path (an unknown encoding throws at the call). */
+  if (!strcmp(op, "realpath") && !scr_fs_encoding_chk(ARG(1))) { scr_arr_release(vectors); return NULL; }
   /* fchmod and ftruncate check their mode or len, then the callback; the
    * binding checks the fd last. */
   if (newControl) {
@@ -999,7 +1075,11 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       ((ARG(1)->kind != SCR_DYN_UNDEF &&
         !scr_fs_int_range_chk(ARG(1), "len", -9007199254740991.0, 9007199254740991.0, ">= -9007199254740991 && <= 9007199254740991")) ||
        !scr_fs_cb_chk(callback, "cb"))) return NULL;
-  ScrStr *path = descriptor ? NULL : timestamp ? scr_fs_timestamp_path(ARG(0)) : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
+  ScrStr *path = descriptor ? NULL
+    : timestamp ? scr_fs_timestamp_path(ARG(0))
+    : !strcmp(op, "realpath") ? (native_realpath ? scr_fs_checked_path(ARG(0), "path")
+                                                 : scr_fs_realpath_cb_path(ARG(0)))
+    : scr_fs_cb_path(ARG(0), !strcmp(op, "mkdtemp") ? "prefix" : !strcmp(op, "copyFile") ? "src" : !strcmp(op, "rename") ? "oldPath" : "path");
   if (!descriptor && !path) return NULL;
   if (timestamp && !timestamp_fd && !scr_fs_callback_times(ARG(1), ARG(2), false, &access, &modified)) { scr_str_release(path); return NULL; }
   if ((timestamp_fd || !strcmp(op, "fchown")) && !scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
@@ -1109,7 +1189,11 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
   else if (!strcmp(op, "chown")) scr_fs_chown(path, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "lchown")) scr_fs_lchown(path, ARG(1)->v.num, ARG(2)->v.num);
   else if (!strcmp(op, "fchown")) scr_fs_fchown(fd, ARG(1)->v.num, ARG(2)->v.num);
-  else if (!strcmp(op, "realpath")) result = scr_fs_cb_string(scr_fs_realpath(path));
+  else if (!strcmp(op, "realpath"))
+    /* The plain form walks the path in JavaScript (lib/fs.js); the native
+     * binding resolves it in one realpath(2), so its errors name the
+     * syscall "realpath" and the path as given. */
+    result = scr_fs_cb_encoded_path(native_realpath ? scr_fs_realpath_promise(path) : scr_fs_realpath_walk(path), ARG(1));
   else if (!strcmp(op, "stat") || !strcmp(op, "lstat")) result = scr_fs_cb_stats(path, -1, ARG(1), !strcmp(op, "lstat"));
   else if (!strcmp(op, "fstat")) result = scr_fs_cb_stats(NULL, fd, ARG(1), false);
   else if (!strcmp(op, "close")) scr_fs_close(fd);
@@ -1268,7 +1352,16 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
 #undef ARG
 done:
   scr_str_release(path);
+#ifndef SCR_LIB
+  ScrDyn *close_default = close_defaulted
+                              ? scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fs_cb_close_default, 1,
+                                                 "(err)", "")
+                              : NULL;
+  scr_fs_cb_schedule(close_default ? close_default : callback, result, buffer);
+  scr_dyn_release(close_default);
+#else
   scr_fs_cb_schedule(callback, result, buffer);
+#endif
   return scr_dyn_retain(scr_dyn_undefined());
 }
 

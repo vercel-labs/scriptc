@@ -3818,7 +3818,7 @@ static const char *scr_errno_text(int e) {
   case EFBIG: return "file too large";
   case EPIPE: return "broken pipe";
   case ESPIPE: return "invalid seek";
-  case ELOOP: return "too many levels of symbolic links";
+  case ELOOP: return "too many symbolic links encountered";
   case ENOSYS: return "function not implemented";
   default: return strerror(e);
   }
@@ -4238,6 +4238,228 @@ ScrStr *scr_fs_realpath(ScrStr *path) {
 ScrStr *scr_fs_realpath_promise(ScrStr *path) {
   return scr_fs_realpath_common(path, "realpath");
 }
+
+#ifdef _WIN32
+
+/* Windows keeps the handle-based realpath above: it is the native
+ * equivalent of the walk (final path of the opened object) and already
+ * answers the normalized form Node's JavaScript walk builds. */
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
+  return scr_fs_realpath(absolute);
+}
+
+#else
+
+/* Node v24 implements the callback API's realpath in lib/fs.js: it
+ * resolves the path, then walks it one component at a time, lstat'ing each
+ * prefix, stat'ing and readlink'ing a symlink, and substituting the link's
+ * target before restarting at the new path's root. Porting the walk (rather
+ * than calling realpath(3)) keeps every error Node's: the first missing
+ * component is named with syscall "lstat", and a link cycle fails in the
+ * stat that follows it ("stat"). knownHard caches the prefixes already
+ * proven link-free; seenLinks reuses a target read earlier for the same
+ * dev:ino pair. */
+
+typedef struct {
+  char **keys;
+  char **values; /* NULL for a membership-only entry */
+  size_t len;
+  size_t cap;
+} ScrFsWalkTable;
+
+static const char *scr_fs_walk_table_get(const ScrFsWalkTable *table, const char *key) {
+  for (size_t i = 0; i < table->len; i++)
+    if (!strcmp(table->keys[i], key)) return table->values ? table->values[i] : (const char *)1;
+  return NULL;
+}
+
+static void scr_fs_walk_table_free(ScrFsWalkTable *table) {
+  for (size_t i = 0; i < table->len; i++) {
+    free(table->keys[i]);
+    if (table->values) free(table->values[i]);
+  }
+  free(table->keys);
+  free(table->values);
+  table->keys = NULL;
+  table->values = NULL;
+  table->len = table->cap = 0;
+}
+
+/* Adds `key` (copied). A NULL `value` adds a membership-only entry; a
+ * non-NULL one is copied too. Tables are tiny (one entry per path component
+ * or per distinct link), so a linear scan is the whole lookup. */
+static void scr_fs_walk_table_add(ScrFsWalkTable *table, const char *key, const char *value) {
+  if (table->len == table->cap) {
+    size_t cap = table->cap ? table->cap * 2 : 8;
+    char **keys = realloc(table->keys, cap * sizeof *keys);
+    if (!keys) scr_trap("scriptc: out of memory\n");
+    table->keys = keys;
+    if (value) {
+      char **values = realloc(table->values, cap * sizeof *values);
+      if (!values) scr_trap("scriptc: out of memory\n");
+      table->values = values;
+    }
+    table->cap = cap;
+  }
+  size_t n = strlen(key);
+  char *copy = malloc(n + 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, key, n + 1);
+  table->keys[table->len] = copy;
+  if (table->values) {
+    size_t v = strlen(value);
+    char *target = malloc(v + 1);
+    if (!target) scr_trap("scriptc: out of memory\n");
+    memcpy(target, value, v + 1);
+    table->values[table->len] = target;
+  }
+  table->len++;
+}
+
+static char *scr_fs_walk_dup_n(const char *s, size_t n) {
+  char *out = malloc(n + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  memcpy(out, s, n);
+  out[n] = 0;
+  return out;
+}
+
+static char *scr_fs_walk_concat(const char *head, const char *tail, size_t tail_len) {
+  size_t head_len = strlen(head);
+  char *out = malloc(head_len + tail_len + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  memcpy(out, head, head_len);
+  memcpy(out + head_len, tail, tail_len);
+  out[head_len + tail_len] = 0;
+  return out;
+}
+
+/* path.resolve(a, b) for the walk's two string arguments. */
+static ScrStr *scr_fs_walk_resolve(const char *a, const char *b, size_t b_len) {
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+  scr_arr_push_ref(parts, scr_str_new(a, strlen(a)));
+  scr_arr_push_ref(parts, scr_str_new(b, b_len));
+  ScrStr *out = scr_path_resolve(parts);
+  scr_arr_release(parts);
+  return out;
+}
+
+ScrStr *scr_fs_realpath_walk(ScrStr *absolute) {
+  size_t length = absolute->len;
+  char *p = scr_fs_walk_dup_n(absolute->data, length);
+  ScrFsWalkTable known = {0}, seen = {0};
+  ScrStr *answer = NULL;
+  bool reached_pipe_or_socket = false;
+  size_t root = 0;
+  while (p[root] == '/') root++;
+  char *current = scr_fs_walk_dup_n(p, root);
+  char *base = scr_fs_walk_dup_n(p, root);
+  /* The prefix that owned `current` before this component; a link target
+   * resolves against it, so it outlives the append and is freed at the top
+   * of the next round. */
+  char *retired = NULL;
+  size_t pos = root;
+  for (;;) {
+    free(retired);
+    retired = NULL;
+    size_t p_len = strlen(p);
+    /* Stop if scanned past the end of the path: the accumulated path is
+     * the answer (encodeRealpathResult applies the caller's encoding). */
+    if (pos >= p_len) {
+      answer = scr_str_new(p, p_len);
+      break;
+    }
+    const char *slash = strchr(p + pos, '/');
+    char *previous = current;
+    char *prior_base = base;
+    if (slash == NULL) {
+      size_t rest = p_len - pos;
+      current = scr_fs_walk_concat(previous, p + pos, rest);
+      base = scr_fs_walk_concat(previous, p + pos, rest);
+      pos = p_len;
+    } else {
+      size_t at = (size_t)(slash - p);
+      current = scr_fs_walk_concat(previous, p + pos, at + 1 - pos);
+      base = scr_fs_walk_concat(previous, p + pos, at - pos);
+      pos = at + 1;
+    }
+    free(prior_base);
+    retired = previous;
+    if (scr_fs_walk_table_get(&known, base) != NULL) {
+      /* A pipe or socket ended an earlier walk: nothing below it can be
+       * a link, so the path as it stands is final. */
+      if (reached_pipe_or_socket) {
+        answer = scr_str_new(p, p_len);
+        break;
+      }
+      continue;
+    }
+    ScrStr *base_path = scr_str_new(base, strlen(base));
+    ScrStats *snapshot = scr_fs_lstat(base_path);
+    if (snapshot == NULL) {
+      scr_str_release(base_path);
+      break; /* the lstat's error is the exception */
+    }
+    if (!scr_stats_is_symlink(snapshot)) {
+      scr_stats_release(snapshot);
+      scr_fs_walk_table_add(&known, base, NULL);
+      scr_str_release(base_path);
+      continue;
+    }
+    char id[64];
+    snprintf(id, sizeof id, "%.0f:%.0f", scr_stats_dev(snapshot), scr_stats_ino(snapshot));
+    scr_stats_release(snapshot);
+    const char *target = scr_fs_walk_table_get(&seen, id);
+    if (target == NULL) {
+      /* The link's target decides whether the walk stops: a FIFO or
+       * socket cannot be resolved further, as in Node. */
+      ScrStats *followed = scr_fs_stat(base_path);
+      if (followed == NULL) {
+        scr_str_release(base_path);
+        break; /* the stat's error is the exception ("stat", a cycle) */
+      }
+      reached_pipe_or_socket = scr_stats_is_fifo(followed) || scr_stats_is_socket(followed);
+      scr_stats_release(followed);
+      ScrBytes *link = scr_fs_readlink_bytes(base_path);
+      if (link == NULL) {
+        scr_str_release(base_path);
+        break;
+      }
+      ScrStr *text = scr_bytes_to_str(link, NULL);
+      scr_bytes_release(link);
+      scr_fs_walk_table_add(&seen, id, text->data);
+      scr_str_release(text);
+      target = scr_fs_walk_table_get(&seen, id);
+    }
+    scr_str_release(base_path);
+    /* gotResolvedLink: resolve the link against the directory prefix, then
+     * the part of the path that follows the link component, and restart
+     * the walk at the root of that answer. */
+    ScrStr *resolved_link = scr_fs_walk_resolve(previous, target, strlen(target));
+    ScrStr *joined = scr_fs_walk_resolve(resolved_link->data, p + pos, p_len - pos);
+    scr_str_release(resolved_link);
+    if (joined == NULL) break;
+    free(p);
+    p = scr_fs_walk_dup_n(joined->data, joined->len);
+    scr_str_release(joined);
+    free(current);
+    free(base);
+    size_t new_root = 0;
+    while (p[new_root] == '/') new_root++;
+    current = scr_fs_walk_dup_n(p, new_root);
+    base = scr_fs_walk_dup_n(p, new_root);
+    pos = new_root;
+  }
+  free(retired);
+  free(p);
+  free(current);
+  free(base);
+  scr_fs_walk_table_free(&known);
+  scr_fs_walk_table_free(&seen);
+  return answer;
+}
+
+#endif
 
 static void scr_fs_write_common(ScrStr *path, ScrStr *data, const char *mode) {
   if (!scr_fs_path_ok(path, "path")) return;

@@ -54,6 +54,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childResume",
   "stream.childIsPaused",
   "stream.childFlowing",
+  // scr_stream_get_default_hwm reads the private the setter stored, and the
+  // dyn form only asks its argument for truthiness; neither coerces or
+  // allocates, so neither can fail.
+  "stream.getDefaultHwm",
+  "stream.getDefaultHwmDyn",
   // Builds the flags object once from constants and retains it.
   "process.features",
   // Stores the encoding's spelling beside the decoder setEncoding installed.

@@ -1076,6 +1076,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestDyn",
   "crypto.hmacDigestDyn",
   "crypto.hashOneshot",
+  // The checked-dynamic constructors and the callback pbkdf2 run Node's
+  // argument validation and can raise catchable TypeErrors; the callback
+  // form also runs program code.
+  "crypto.hashNewAny",
+  "crypto.hmacNewAny",
+  "crypto.hashOneshotAny",
+  "crypto.pbkdf2Any",
+  "crypto.pbkdf2AnyCb",
   "crypto.timingSafeEqual",
   "crypto.timingSafeEqualDyn",
   "crypto.randomFill",

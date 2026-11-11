@@ -11306,10 +11306,12 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
 
-/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c): the deferral
- * lives in that unit, so scr_lib.c calls it through this pointer and a
- * program that links scr_lib.c without the crypto async unit still links. */
-void (*scr_crypto_defer_callback)(ScrDyn *, ScrDyn *, ScrDyn *) = NULL;
+/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c). That unit is a
+ * base unit of the runtime pack, so every compiled program has it; the weak
+ * reference keeps the minimal C utility builds, which compile scr_lib.c
+ * without it, linkable, and lets a program that never calls pbkdf2 strip the
+ * completion's machinery instead of retaining it from a constructor. */
+extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
 
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
@@ -11723,8 +11725,8 @@ void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterati
         delivery = scr_dyn_new_buffer(value);
         scr_bytes_release(value);
       }
-      if (scr_crypto_defer_callback)
-        scr_crypto_defer_callback(scr_dyn_retain(callback_value), error, delivery);
+      if (scr_crypto_defer_dyn_callback)
+        scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), error, delivery);
     }
   }
   scr_bytes_release(sl);

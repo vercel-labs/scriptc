@@ -161,13 +161,6 @@ void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* move
                             ScrCryptoBytesFn fn);
 void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                           ScrCryptoBytesFn fn);
-/* A checked-dynamic callback(error, value) delivered in a later macrotask;
- * a NULL value calls it with the error alone. Every argument is moved.
- * Set by the callback-style wrappers (scr_crypto_async.c), which the pack
- * always links as a base unit and the minimal runtime tests do not: the
- * deferral lives there, so a build of scr_lib.c alone stays linkable. */
-extern void (*scr_crypto_defer_callback)(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
-                                         ScrDyn *value /* moves, may be NULL */);
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,

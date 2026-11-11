@@ -318,6 +318,7 @@ import {
 import { staticAssertInstanceDecl } from "./assert-instances.js";
 import {
   lowerHttpClientFnBindingDecl,
+  lowerHttpClientMaxHeadersCountAssignment,
   lowerHttpResPropertyAssignment,
   lowerHttpServerTimeoutAssignment,
   lowerNetServerMaxConnectionsAssignment,
@@ -11109,7 +11110,8 @@ export function lowerExprStatement(
           );
           if (timeoutProp) return timeoutProp;
         }
-        // server.maxConnections — net.Server's connection cap.
+        // server.maxConnections / server.maxHeadersCount /
+        // server.maxRequestsPerSocket — writable server limits.
         {
           const capProp = lowerNetServerMaxConnectionsAssignment(
             lowerer,
@@ -11118,6 +11120,16 @@ export function lowerExprStatement(
             locOf(expr),
           );
           if (capProp) return capProp;
+        }
+        // request.maxHeadersCount — the client's header-line budget.
+        {
+          const clientLimit = lowerHttpClientMaxHeadersCountAssignment(
+            lowerer,
+            expr.left,
+            expr.right,
+            locOf(expr),
+          );
+          if (clientLimit) return clientLimit;
         }
         // `N.x = v` — a namespace-qualified write: exported `let`
         // members are module globals, so the qualified spelling assigns

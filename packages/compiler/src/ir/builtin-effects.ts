@@ -1018,6 +1018,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "url.new",
   "url.newBase",
+  // ERR_INVALID_ARG_TYPE when the argument is not a Blob or File.
+  "url.createObjectURL",
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",

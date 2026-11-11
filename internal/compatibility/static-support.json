@@ -550,7 +550,7 @@
     { "chapter": "console", "parent": "Class: `Console`", "signatures": ["`console.trace([message][, ...args])`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-lowerings.ts"] },
     { "chapter": "stream", "parent": "Stream", "signatures": ["`stream.Readable.toWeb(streamReadable[, options])`", "`stream.Writable.toWeb(streamWritable)`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
     { "chapter": "stream", "parent": "API for stream consumers", "signatures": ["`stream.Readable.toWeb(streamReadable[, options])`", "`stream.Writable.toWeb(streamWritable)`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
-    { "chapter": "url", "parent": "Class: `URL`", "signatures": ["`URL.createObjectURL(blob)`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
+    { "chapter": "url", "parent": "Class: `URL`", "signatures": ["`URL.createObjectURL(blob)`"], "status": "supported", "evidence": ["tests/corpus/url-create-object-url.ts", "tests/corpus/url-create-object-url-args.cjs"] },
     { "chapter": "timers", "parent": "Class: `Timeout`", "signatures": ["`timeout.close()`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
     { "chapter": "perf_hooks", "parent": "Performance measurement APIs", "signatures": ["Class: `PerformanceObserver`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
     { "chapter": "globals", "parent": "Global objects", "signatures": ["Class: `PerformanceObserver`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },

@@ -37,12 +37,10 @@ import { win32 } from "path";
 openAsBlob("x");
 on(new EventEmitter(), "tick");
 console.log(win32.sep);
-/* URL getters and serialization lower under @types/node, but object-URL
- * registry operations still fence by member name with the supported
- * list; searchParams and its method surface lower under
- * @types/node's declarations (provenance-mapped like URL itself). */
+/* URL getters, serialization, the object-URL registry and searchParams'
+ * method surface all lower under @types/node's declarations
+ * (provenance-mapped like URL itself). */
 const u = new URL("https://example.com/x?a=1");
-console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
 /* The one-shot zlib/raw/gzip and Brotli codecs take Node's options (the
  * deflateSync and brotliCompressSync calls lower). */

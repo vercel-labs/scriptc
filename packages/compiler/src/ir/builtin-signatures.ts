@@ -1311,9 +1311,14 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
-    /** URL.revokeObjectURL(id): the id arrives already converted. A
-     * compiled program registers no blob URLs, so Node's registry lookup
-     * always misses and the call answers undefined. Never throws. */
+    /** URL.createObjectURL(blob): the argument arrives as a checked
+     * dynamic value and must be a Blob or File handle — any other value
+     * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. A registered blob
+     * answers a fresh "blob:nodedata:<uuid v4>" id. */
+    "url.createObjectURL": { argTypes: [DYN], result: STRING },
+    /** URL.revokeObjectURL(id): the id arrives already converted and the
+     * registration under exactly that string is dropped; ids that were
+     * never registered (or were revoked) miss. Never throws. */
     "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },

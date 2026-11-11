@@ -285,6 +285,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "os.userName": "scr_os_user_name",
   "os.userShell": "scr_os_user_shell",
   "os.userHomedir": "scr_os_user_homedir",
+  "url.createObjectURL": "scr_url_create_object_url",
   "url.revokeObjectURL": "scr_url_revoke_object_url",
   "os.userNameBuf": "scr_os_user_name_bytes",
   "os.userShellBuf": "scr_os_user_shell_bytes",

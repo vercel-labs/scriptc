@@ -1895,10 +1895,96 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows) {
 ScrStr *scr_url_to_path_w32(ScrUrl *u) { return scr_url_to_path_impl(u, true); }
 ScrUrl *scr_url_from_path_w32(ScrStr *path) { return scr_url_from_path_impl(path, true); }
 
-/* URL.revokeObjectURL(id) past the coercion: a compiled program cannot
- * create a blob URL, so nothing is ever registered and Node's lookup
- * misses. The argument is borrowed; the caller releases it. */
-void scr_url_revoke_object_url(ScrStr *id) { (void)id; }
+/* ── object URLs ─────────────────────────────────────────────────────
+ * URL.createObjectURL(blob) registers the Blob or File under a fresh
+ * "blob:nodedata:<uuid v4>" and answers that id; fetch() of the id
+ * resolves the registered blob's bytes. The registry is per thread like
+ * Node's per-environment one, and it holds one reference to each id and
+ * blob until revokeObjectURL (or the thread's cleanup) drops it. */
+typedef struct ScrUrlObjectUrl {
+  struct ScrUrlObjectUrl *next;
+  ScrStr *id;   /* +1, the full "blob:nodedata:<uuid>" key */
+  ScrDyn *blob; /* +1, a Blob or File handle */
+} ScrUrlObjectUrl;
+
+static SCR_TL ScrUrlObjectUrl *scr_url_object_urls;
+static SCR_TL bool scr_url_object_urls_armed;
+
+static void scr_url_object_urls_teardown(void) {
+  ScrUrlObjectUrl *entry = scr_url_object_urls;
+  scr_url_object_urls = NULL;
+  while (entry) {
+    ScrUrlObjectUrl *next = entry->next;
+    scr_str_release(entry->id);
+    scr_dyn_release(entry->blob);
+    free(entry);
+    entry = next;
+  }
+}
+
+static void scr_url_object_urls_arm(void) {
+  if (scr_url_object_urls_armed) return;
+  scr_url_object_urls_armed = true;
+  scr_atexit(scr_url_object_urls_teardown);
+}
+
+/* URL.createObjectURL(blob): a Blob or File answers a fresh id; any other
+ * value throws Node's ERR_INVALID_ARG_TYPE naming `obj`. */
+ScrStr *scr_url_create_object_url(ScrDyn *blob) {
+  if (blob == NULL) blob = scr_dyn_undefined();
+  if (blob->kind != SCR_DYN_HANDLE ||
+      (blob->v.handle.tag != SCR_DYNH_BLOB &&
+       blob->v.handle.tag != SCR_DYNH_FILE)) {
+    scr_dyn_arg_type_fail("obj", "an instance of Blob", blob);
+    return NULL;
+  }
+  ScrUrlObjectUrl *entry = calloc(1, sizeof *entry);
+  if (!entry) scr_trap("scriptc: out of memory\n");
+  ScrStr *uuid = scr_crypto_random_uuid();
+  ScrJsonBuf id_buf;
+  scr_jb_init(&id_buf);
+  scr_jb_puts(&id_buf, "blob:nodedata:");
+  scr_jb_write(&id_buf, uuid->data, uuid->len);
+  scr_str_release(uuid);
+  entry->id = scr_jb_finish(&id_buf);
+  entry->blob = scr_dyn_retain(blob);
+  scr_url_object_urls_arm();
+  entry->next = scr_url_object_urls;
+  scr_url_object_urls = entry;
+  return scr_str_retain(entry->id);
+}
+
+/* fetch()'s lookup: the registered Blob (+1) for exactly this serialized
+ * URL, or NULL when nothing is registered under it. */
+ScrDyn *scr_url_lookup_object_url(const ScrStr *id) {
+  for (const ScrUrlObjectUrl *entry = scr_url_object_urls; entry;
+       entry = entry->next) {
+    if (entry->id->len == id->len &&
+        memcmp(entry->id->data, id->data, id->len) == 0)
+      return scr_dyn_retain(entry->blob);
+  }
+  return NULL;
+}
+
+/* URL.revokeObjectURL(id) past the coercion: the registration whose id is
+ * exactly this string is dropped (one reference to the id and the blob
+ * released). Any other string misses, like Node. The argument is
+ * borrowed; the caller releases it. */
+void scr_url_revoke_object_url(ScrStr *id) {
+  ScrUrlObjectUrl **link = &scr_url_object_urls;
+  while (*link) {
+    ScrUrlObjectUrl *entry = *link;
+    if (entry->id->len == id->len &&
+        memcmp(entry->id->data, id->data, id->len) == 0) {
+      *link = entry->next;
+      scr_str_release(entry->id);
+      scr_dyn_release(entry->blob);
+      free(entry);
+      return;
+    }
+    link = &entry->next;
+  }
+}
 
 /* WHATWG search getter: "" for no query AND for the bare-'?' query;
  * "?..." verbatim otherwise. */

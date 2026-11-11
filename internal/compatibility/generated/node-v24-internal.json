@@ -103001,6 +103001,8 @@
           "tests/corpus/node24-url-mutation.ts",
           "tests/corpus/url-Url-value.cjs",
           "tests/corpus/url-Url-value.ts",
+          "tests/corpus/url-create-object-url-args.cjs",
+          "tests/corpus/url-create-object-url.ts",
           "tests/corpus/url-factories-js.js",
           "tests/corpus/url-factories.ts",
           "tests/corpus/url-file-url.ts",
@@ -103010,7 +103012,6 @@
           "tests/corpus/url-search-params-class.ts",
           "tests/corpus/url-search-params-js.js",
           "tests/corpus/url-whatwg-properties.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/file-url-conversion.ts",
           "tests/fixtures/node-types/url-factories.ts",
@@ -103200,10 +103201,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:url.URL.createObjectURL",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/url-create-object-url.ts",
+          "tests/corpus/url-create-object-url-args.cjs"
         ]
       },
       "anchorSource": "exact"

@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3782,
+    "matrixRows": 3779,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 107,
+      "not-applicable": 110,
       "chapters": 6
     }
   },
@@ -170,8 +170,8 @@
     {
       "slug": "fs",
       "title": "File system",
-      "entries": 279,
-      "apiEntries": 279
+      "entries": 276,
+      "apiEntries": 276
     },
     {
       "slug": "globals",
@@ -26610,52 +26610,6 @@
       }
     },
     {
-      "id": "fs:3eddc68c4823",
-      "chapter": "fs",
-      "kind": "method",
-      "name": "pull",
-      "signature": "`filehandle.pull([...transforms][, options])`",
-      "label": "filehandle.pull([...transforms][, options])",
-      "apiSymbol": "filehandle.pull",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "filehandlepulltransforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "fs:236cfefb2bd7",
-      "chapter": "fs",
-      "kind": "method",
-      "name": "pullSync",
-      "signature": "`filehandle.pullSync([...transforms][, options])`",
-      "label": "filehandle.pullSync([...transforms][, options])",
-      "apiSymbol": "filehandle.pullSync",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "filehandlepullsynctransforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "fs:8bff339d602d",
       "chapter": "fs",
       "kind": "method",
@@ -27021,29 +26975,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "fs:db142178f3b2",
-      "chapter": "fs",
-      "kind": "method",
-      "name": "writer",
-      "signature": "`filehandle.writer([options])`",
-      "label": "filehandle.writer([options])",
-      "apiSymbol": "filehandle.writer",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "filehandlewriteroptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {

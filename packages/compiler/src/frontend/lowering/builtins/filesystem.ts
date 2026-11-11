@@ -658,23 +658,31 @@ export function lowerFileHandleMethodCall(
     }
     return { value: lowerer.coerceInto(node ?? call, value, F64), defaulted: boolLit(false, loc) };
   };
-  const utf8 = (node: ts.Expression | undefined): IrExpr => {
-    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
-    if (!node) return dflt;
+  // Whether an argument is only ever a string (or undefined/null): the
+  // spellings whose whole meaning is an encoding name.
+  const stringish = (node: ts.Expression): boolean => {
     const nodeType = lowerer.typeOf(node);
     const parts: readonly ts.Type[] = nodeType.isUnionType()
       ? ts.constituentTypes(nodeType)
       : [nodeType];
-    const supported = parts.every(
+    return parts.every(
       (t) =>
         (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
-        (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")),
+        lowerer.mapTypeOf(t)?.kind === "string",
     );
+  };
+  // A runtime encoding name: the "utf8" default when the argument is absent
+  // (or undefined/null), the expression itself when it is a string, and the
+  // record's `encoding` member when an options record is passed.
+  const encoding = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    const supported = stringish(node);
     if (!supported) {
       lowerer.noLowering(
-        `FileHandle.${name} with a non-utf8 encoding`,
+        `FileHandle.${name} with a non-string encoding`,
         node,
-        "only utf8 data is supported",
+        "pass a BufferEncoding name",
       );
     }
     return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
@@ -871,12 +879,40 @@ export function lowerFileHandleMethodCall(
     }
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
-    const encoding = utf8(call.arguments.nodes[0]);
+    const arg = call.arguments.nodes[0];
+    // readFile({ encoding }) reads the record's `encoding` member through the
+    // same runtime ladder as the bare string spelling; only that member is
+    // read, so every other key (an options object Node would ignore for a
+    // handle) has no lowering.
+    let encodingExpr: IrExpr;
+    const argType = arg ? lowerer.mapTypeOf(lowerer.typeOf(arg)) : undefined;
+    if (arg && argType?.kind === "record" && typeEquals(type.inner, STRING)) {
+      const fields = lowerer.shapes.get(argType.shapeId)?.fields;
+      if (
+        fields === undefined ||
+        fields.find((entry) => entry.name === "encoding")?.type.kind !== "string" ||
+        fields.some((entry) => entry.name !== "encoding")
+      ) {
+        lowerer.noLowering(
+          "FileHandle.readFile with this options record",
+          arg,
+          "pass { encoding }: the record's encoding selects the decode",
+        );
+      }
+      encodingExpr = {
+        kind: "recordGet",
+        obj: lowerer.lowerExprExpecting(arg, argType),
+        shapeId: argType.shapeId,
+        field: "encoding",
+        type: STRING,
+        loc,
+      };
+    } else encodingExpr = encoding(arg);
     if (typeEquals(type.inner, BYTES_U8)) {
       return {
         kind: "libCall",
         fn: "fileHandle.readFileBytes",
-        args: [receiver(), encoding],
+        args: [receiver(), encoding(arg)],
         type,
         loc,
       };
@@ -885,7 +921,7 @@ export function lowerFileHandleMethodCall(
     return {
       kind: "libCall",
       fn: "fileHandle.readFile",
-      args: [receiver(), encoding],
+      args: [receiver(), encodingExpr],
       type,
       loc,
     };
@@ -897,14 +933,68 @@ export function lowerFileHandleMethodCall(
     }
     const dataNode = call.arguments.nodes[0]!;
     const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
-    // Evaluate a supplied utf8 encoding even for Buffer data, matching
-    // Node's argument order; it does not affect the bytes.
-    const encoding = utf8(call.arguments.nodes[1]);
+    const optsNode = call.arguments.nodes[1];
+    // An options value that is not only a string runs Node's whole ladder in
+    // the runtime — getOptions' type gate, the encoding, the signal's type
+    // and the flush checkbox, then the data — so the three arguments are
+    // staged in source order and cross as one call. A record and a value the
+    // call site does not pin down both take this path.
+    if (optsNode && !stringish(optsNode)) {
+      const dataType: IrType =
+        dataT?.kind === "string"
+          ? STRING
+          : dataT?.kind === "bytes" && dataT.elem === "u8"
+            ? BYTES_U8
+            : DYN;
+      const optionsFn: IrLibFn =
+        dataType.kind === "string"
+          ? "fileHandle.writeFileOptions"
+          : dataType.kind === "bytes"
+            ? "fileHandle.writeFileOptionsBytes"
+            : "fileHandle.writeFileOptionsData";
+      const handleLocal = lowerer.declareHiddenLocal("%fhWriteHandle", FILEHANDLE_T);
+      const dataLocal = lowerer.declareHiddenLocal("%fhWriteData", dataType);
+      const optionsLocal = lowerer.declareHiddenLocal("%fhWriteOptions", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: handleLocal.id, init: receiver(), loc },
+          {
+            kind: "varDecl",
+            localId: dataLocal.id,
+            init: lowerer.lowerExprExpecting(dataNode, dataType),
+            loc: locOf(dataNode),
+          },
+          {
+            kind: "varDecl",
+            localId: optionsLocal.id,
+            init: lowerer.lowerExprExpecting(optsNode!, DYN),
+            loc: locOf(optsNode!),
+          },
+        ],
+        result: {
+          kind: "libCall",
+          fn: optionsFn,
+          args: [
+            varRef(handleLocal.id, FILEHANDLE_T, loc),
+            varRef(dataLocal.id, dataType, loc),
+            varRef(optionsLocal.id, DYN, loc),
+          ],
+          type: promise(VOID),
+          loc,
+        },
+        type: promise(VOID),
+        loc,
+      };
+    }
+    // Evaluate a supplied encoding even for Buffer data, matching Node's
+    // argument order; it does not affect the bytes.
+    const enc = encoding(optsNode);
     if (dataT?.kind === "string") {
       return {
         kind: "libCall",
         fn: "fileHandle.writeFile",
-        args: [receiver(), lowerer.lowerExprExpecting(dataNode, STRING), encoding],
+        args: [receiver(), lowerer.lowerExprExpecting(dataNode, STRING), enc],
         type: promise(VOID),
         loc,
       };
@@ -913,7 +1003,7 @@ export function lowerFileHandleMethodCall(
       return {
         kind: "libCall",
         fn: "fileHandle.writeFileBytes",
-        args: [receiver(), lowerer.lowerExprExpecting(dataNode, BYTES_U8), encoding],
+        args: [receiver(), lowerer.lowerExprExpecting(dataNode, BYTES_U8), enc],
         type: promise(VOID),
         loc,
       };
@@ -924,7 +1014,7 @@ export function lowerFileHandleMethodCall(
     return {
       kind: "libCall",
       fn: "fileHandle.writeFileData",
-      args: [receiver(), lowerer.lowerExprExpecting(dataNode, DYN), encoding],
+      args: [receiver(), lowerer.lowerExprExpecting(dataNode, DYN), enc],
       type: promise(VOID),
       loc,
     };
@@ -1085,7 +1175,7 @@ export function lowerFileHandleMethodCall(
           receiver(),
           lowerer.lowerExprExpecting(dataNode, STRING),
           position.value,
-          utf8(call.arguments.nodes[2]),
+          encoding(call.arguments.nodes[2]),
         ],
         type,
         loc,

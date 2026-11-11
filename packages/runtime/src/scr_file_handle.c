@@ -509,9 +509,45 @@ double scr_file_handle_write_str(ScrFileHandle *h, ScrStr *data,
   return scr_fs_write_str_sync((double)h->fd, data, position, encoding);
 }
 
-ScrStr *scr_file_handle_read_file(ScrFileHandle *h) {
+/* Node's assertEncoding over a whole-file write's encoding: an empty name,
+ * a Buffer encoding name and the literal "buffer" pass; "buffer" is
+ * Buffer.from's/toString's unknown encoding, reported when the data is
+ * encoded. Any other name is ERR_INVALID_ARG_VALUE. False with the
+ * exception pending. */
+static bool scr_file_handle_encoding_check(ScrStr *encoding) {
+  if (encoding == NULL || encoding->len == 0) return true;
+  if (encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) return true;
+  if (scr_bytes_is_encoding(encoding)) return true;
+  ScrDyn *value = scr_dyn_new_str(encoding);
+  scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+  scr_dyn_release(value);
+  return false;
+}
+
+/* FileHandle.readFile's encoding ladder: the closed check, assertEncoding,
+ * then Buffer's resolution of the name — "buffer" reports
+ * ERR_UNKNOWN_ENCODING before the descriptor is read — and the decode. */
+ScrStr *scr_file_handle_read_file(ScrFileHandle *h, ScrStr *encoding) {
   if (!scr_file_handle_require_open(h, "readFile")) return NULL;
-  return scr_fs_read_fd((double)h->fd);
+  if (encoding->len == 0) return scr_fs_read_fd((double)h->fd);
+  if (!(encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0) &&
+      !scr_bytes_is_encoding(encoding)) {
+    ScrDyn *value = scr_dyn_new_str(encoding);
+    scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+    scr_dyn_release(value);
+    return NULL;
+  }
+  ScrStr *normalized = scr_bytes_normalize_encoding(encoding);
+  if (normalized == NULL) return NULL;
+  if (scr_bytes_encoding_is_utf8(normalized)) {
+    scr_str_release(normalized);
+    return scr_fs_read_fd((double)h->fd);
+  }
+  ScrBytes *bytes = scr_fs_read_fd_bytes((double)h->fd);
+  ScrStr *text = bytes ? scr_bytes_to_str(bytes, normalized) : NULL;
+  scr_bytes_release(bytes);
+  scr_str_release(normalized);
+  return text;
 }
 
 ScrBytes *scr_file_handle_read_file_bytes(ScrFileHandle *h) {
@@ -537,11 +573,28 @@ static void scr_file_handle_write_all(ScrFileHandle *h, const void *data,
   }
 }
 
-void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data) {
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  scr_file_handle_write_all(h, bytes, data->len);
-  scr_str_utf8_end(owned);
+/* The string payload of FileHandle.writeFile: Buffer.from(data, encoding),
+ * with the empty name and utf8 copying the string's own bytes. A "buffer"
+ * name reports Buffer.from's ERR_UNKNOWN_ENCODING; the caller ran
+ * assertEncoding first, so no other unknown name reaches here. */
+static void scr_file_handle_write_string(ScrFileHandle *h, ScrStr *data,
+                                         ScrStr *encoding) {
+  if (encoding == NULL || encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    scr_file_handle_write_all(h, bytes, data->len);
+    scr_str_utf8_end(owned);
+    return;
+  }
+  ScrBytes *bytes = scr_bytes_from_str_checked(data, encoding);
+  if (bytes == NULL) return;
+  scr_file_handle_write_all(h, (const char *)bytes->data,
+                            bytes->len * scr_bytes_elem_size(bytes->elem));
+  scr_bytes_release(bytes);
+}
+
+void scr_file_handle_write_file(ScrFileHandle *h, ScrStr *data, ScrStr *encoding) {
+  scr_file_handle_write_string(h, data, encoding);
 }
 
 void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
@@ -550,11 +603,13 @@ void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
                             data->len * scr_bytes_elem_size(data->elem));
 }
 
-/* FileHandle.writeFile over a checked data argument: a string or any
- * Buffer/TypedArray/DataView, whose bytes are written as they are. */
-static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data) {
+/* FileHandle.writeFile over a checked data argument: a string encoded with
+ * the requested name, or any Buffer/TypedArray/DataView, whose bytes are
+ * written as they are. */
+static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data,
+                                            ScrStr *encoding) {
   if (data->kind == SCR_DYN_STR) {
-    scr_file_handle_write_file(h, data->v.str);
+    scr_file_handle_write_string(h, data->v.str, encoding);
     return;
   }
   if (data->kind == SCR_DYN_BYTES) {
@@ -649,8 +704,7 @@ double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position
 
 ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h,
                                               ScrStr *encoding) {
-  (void)encoding;
-  return scr_promise_settled_str(scr_file_handle_read_file(h));
+  return scr_promise_settled_str(scr_file_handle_read_file(h, encoding));
 }
 
 ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h,
@@ -661,28 +715,234 @@ ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h,
                                  &scr_bytes_release_v, NULL);
 }
 
+/* The closed handle reports first (Node's FileHandle members all check it
+ * before validating arguments), then the encoding, then the write. */
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h,
                                                ScrStr *data,
                                                ScrStr *encoding) {
-  (void)encoding; /* frontend admits utf8 only; evaluation is observable */
-  scr_file_handle_write_file(h, data);
+  if (!scr_file_handle_require_open(h, "writeFile")) return scr_promise_settled_void();
+  if (scr_file_handle_encoding_check(encoding)) scr_file_handle_write_file(h, data, encoding);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h,
                                                      ScrBytes *data,
                                                      ScrStr *encoding) {
-  (void)encoding;
-  scr_file_handle_write_file_bytes(h, data);
+  if (!scr_file_handle_require_open(h, "writeFile")) return scr_promise_settled_void();
+  /* The encoding is validated even though byte data is written as it is. */
+  if (scr_file_handle_encoding_check(encoding)) scr_file_handle_write_file_bytes(h, data);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h,
                                                     const ScrDyn *data,
                                                     ScrStr *encoding) {
-  (void)encoding;
-  scr_file_handle_write_file_data(h, data);
+  if (!scr_file_handle_require_open(h, "writeFile")) return scr_promise_settled_void();
+  if (scr_file_handle_encoding_check(encoding)) scr_file_handle_write_file_data(h, data, encoding);
   return scr_promise_settled_void();
+}
+
+/* ── FileHandle.writeFile/appendFile over Node's options record ─────────
+ *
+ * FileHandle.writeFile and appendFile both route through fs/promises'
+ * writeFile, so the record runs Node's whole ladder: getOptions (the type,
+ * then the encoding, then the signal's type), the flush boolean, the data's
+ * type, Buffer.from's encode of a string, then checkAborted — and only then
+ * the write. appendFile differs only in the flag its own path form would
+ * open with, which a descriptor has already settled. */
+
+typedef struct {
+  const ScrDyn *record; /* borrowed; flush is read from it in the data's step */
+  ScrStr *encoding;     /* +1; the raw name ("buffer" included); NULL for utf8 */
+  ScrDyn *signal;       /* +1; NULL when absent or undefined */
+} ScrFileHandleWriteOptions;
+
+static void scr_file_handle_write_options_clear(ScrFileHandleWriteOptions *o) {
+  scr_str_release(o->encoding);
+  scr_dyn_release(o->signal);
+}
+
+/* getOptions' own gate: a string is the encoding-only spelling, a function
+ * means the defaults, and any other primitive is ERR_INVALID_ARG_TYPE. */
+static bool scr_file_handle_write_options_type_ok(const ScrDyn *options) {
+  switch (options->kind) {
+    case SCR_DYN_NUM:
+    case SCR_DYN_BOOL:
+    case SCR_DYN_BIGINT:
+    case SCR_DYN_SYMBOL:
+      scr_dyn_arg_type_fail("options", "one of type string or object", options);
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool scr_file_handle_write_options_read(const ScrDyn *options,
+                                               ScrFileHandleWriteOptions *o) {
+  memset(o, 0, sizeof *o);
+  o->record = options;
+  if (!scr_file_handle_write_options_type_ok(options)) return false;
+  /* getOptions' encoding: the string spelling is the encoding alone, and
+   * assertEncoding runs unless the record names "buffer". A "buffer" name
+   * stays in the raw form so Buffer.from reports it for string data. */
+  ScrDyn *value = options->kind == SCR_DYN_STR ? scr_dyn_retain((ScrDyn *)options)
+                                               : scr_fs_option_get(options, "encoding");
+  if (value == NULL) return false;
+  bool ok = true;
+  if (value->kind == SCR_DYN_STR) {
+    if (value->v.str->len > 0) {
+      if (!scr_file_handle_encoding_check(value->v.str)) ok = false;
+      else o->encoding = scr_str_retain(value->v.str);
+    }
+  } else if (scr_dyn_truthy(value)) {
+    /* assertEncoding: only falsy non-strings pass unvalidated. */
+    scr_dyn_arg_value_fail("encoding", "is invalid encoding", value);
+    ok = false;
+  }
+  scr_dyn_release(value);
+  if (!ok) return false;
+  /* getOptions validates the signal's type when it is not undefined;
+   * checkAborted reads `aborted` later, after the data. */
+  ScrDyn *signal = scr_fs_option_get(options, "signal");
+  if (signal == NULL) return false;
+  if (signal->kind != SCR_DYN_UNDEF) {
+    if (signal->kind != SCR_DYN_HANDLE || signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+      scr_dyn_arg_type_fail("options.signal", "an instance of AbortSignal", signal);
+      scr_dyn_release(signal);
+      return false;
+    }
+    o->signal = signal;
+  } else {
+    scr_dyn_release(signal);
+  }
+  return true;
+}
+
+/* `options.flush ?? false` through validateBoolean: null and undefined are
+ * the false default, every other non-boolean throws. A handle's writeFile
+ * never syncs, but Node validates the option before it reads the data. */
+static bool scr_file_handle_write_options_flush(const ScrFileHandleWriteOptions *o) {
+  ScrDyn *flush = scr_fs_option_get(o->record, "flush");
+  if (flush == NULL) return false;
+  bool ok = true;
+  if (flush->kind != SCR_DYN_NULL && flush->kind != SCR_DYN_UNDEF &&
+      flush->kind != SCR_DYN_BOOL) {
+    scr_dyn_prop_type_fail("options.flush", "of type boolean", flush);
+    ok = false;
+  }
+  scr_dyn_release(flush);
+  return ok;
+}
+
+/* checkAborted: an aborted signal rejects with Node's AbortError (the
+ * signal's reason as `cause`) before the first byte is written. */
+static bool scr_file_handle_check_aborted(const ScrDyn *signal) {
+  if (signal == NULL) return false;
+  ScrStr *key = scr_str_new("aborted", 7);
+  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+  scr_str_release(key);
+  bool cancelled = aborted && scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (!cancelled) return false;
+  ScrStr *reason_key = scr_str_new("reason", 6);
+  ScrDyn *reason = scr_dyn_handle_key_get(signal, reason_key);
+  scr_str_release(reason_key);
+  ScrError *error = scr_error_abort(reason);
+  scr_dyn_release(reason);
+  scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
+  return true;
+}
+
+/* The data of the options form: exactly one of the three spellings. */
+typedef struct {
+  ScrStr *str;           /* borrowed */
+  const ScrBytes *bytes; /* borrowed */
+  const ScrDyn *dyn;     /* borrowed; the checked-data spelling */
+} ScrFileHandleWritePayload;
+
+/* Node's steps after getOptions: the flush option, the data's type,
+ * Buffer.from's encode of a string, then checkAborted — and only then the
+ * writes. A handle's writeFile ignores the flag and mode it never opens
+ * with, and writes at the descriptor's current offset. */
+static void scr_file_handle_write_options_run(ScrFileHandle *h,
+                                              const ScrFileHandleWritePayload *payload,
+                                              const ScrFileHandleWriteOptions *o) {
+  if (!scr_file_handle_write_options_flush(o)) return;
+  ScrStr *text = payload->str;
+  const ScrBytes *view = payload->bytes;
+  if (text == NULL && view == NULL) {
+    if (payload->dyn->kind == SCR_DYN_STR) {
+      text = payload->dyn->v.str;
+    } else if (payload->dyn->kind == SCR_DYN_BYTES) {
+      view = payload->dyn->v.bytes;
+    } else {
+      scr_dyn_arg_type_fail("data",
+                            "of type string or an instance of Buffer, TypedArray, or DataView",
+                            payload->dyn);
+      return;
+    }
+  }
+  /* The snapshot of a shared view outlives this function's block. */
+  SCR_BYTES_SNAPSHOT(view);
+  char *owned = NULL;
+  ScrBytes *encoded = NULL;
+  const void *bytes = NULL;
+  size_t len = 0;
+  if (text != NULL) {
+    if (o->encoding == NULL || o->encoding->len == 0 ||
+        scr_bytes_encoding_is_utf8(o->encoding)) {
+      bytes = scr_str_utf8(text, &owned);
+      len = text->len;
+    } else {
+      /* "buffer" reaches Buffer.from's ERR_UNKNOWN_ENCODING here, after the
+       * flush option was validated. */
+      encoded = scr_bytes_from_str_checked(text, o->encoding);
+      if (encoded != NULL) {
+        bytes = encoded->data;
+        len = encoded->len * scr_bytes_elem_size(encoded->elem);
+      }
+    }
+  } else {
+    bytes = view->data;
+    len = view->len * scr_bytes_elem_size(view->elem);
+  }
+  if (bytes != NULL && !scr_file_handle_check_aborted(o->signal))
+    scr_file_handle_write_all(h, bytes, len);
+  scr_str_utf8_end(owned);
+  scr_bytes_release(encoded);
+}
+
+/* One options write: the closed check, the record's ladder, then the data. */
+static ScrPromise *scr_file_handle_write_options_promise(ScrFileHandle *h,
+                                                         const ScrFileHandleWritePayload *payload,
+                                                         const ScrDyn *options) {
+  if (!scr_file_handle_require_open(h, "writeFile")) return scr_promise_settled_void();
+  ScrFileHandleWriteOptions o;
+  if (scr_file_handle_write_options_read(options, &o))
+    scr_file_handle_write_options_run(h, payload, &o);
+  scr_file_handle_write_options_clear(&o);
+  return scr_promise_settled_void();
+}
+
+ScrPromise *scr_file_handle_write_file_options_promise(ScrFileHandle *h,
+                                                       ScrStr *data,
+                                                       const ScrDyn *options) {
+  const ScrFileHandleWritePayload payload = {.str = data};
+  return scr_file_handle_write_options_promise(h, &payload, options);
+}
+
+ScrPromise *scr_file_handle_write_file_options_bytes_promise(ScrFileHandle *h,
+                                                             ScrBytes *data,
+                                                             const ScrDyn *options) {
+  const ScrFileHandleWritePayload payload = {.bytes = data};
+  return scr_file_handle_write_options_promise(h, &payload, options);
+}
+
+ScrPromise *scr_file_handle_write_file_options_data_promise(ScrFileHandle *h,
+                                                            const ScrDyn *data,
+                                                            const ScrDyn *options) {
+  const ScrFileHandleWritePayload payload = {.dyn = data};
+  return scr_file_handle_write_options_promise(h, &payload, options);
 }
 
 ScrPromise *scr_file_handle_stat_promise(ScrFileHandle *h) {

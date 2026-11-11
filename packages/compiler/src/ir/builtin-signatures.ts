@@ -4289,6 +4289,22 @@ function buildLibFnSignatures() {
       argTypes: [FILEHANDLE_T, DYN, STRING],
       result: { kind: "promise", inner: VOID },
     },
+    // writeFile/appendFile over Node's options record (encoding, flush and
+    // signal); the same ladder serves both members, as Node's do behind the
+    // handle. Split by the data's static spelling, like fsp.writeFileOptions
+    // and its pairs.
+    "fileHandle.writeFileOptions": {
+      argTypes: [FILEHANDLE_T, STRING, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFileOptionsBytes": {
+      argTypes: [FILEHANDLE_T, BYTES_U8, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fileHandle.writeFileOptionsData": {
+      argTypes: [FILEHANDLE_T, DYN, DYN],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
     // The Node runtime flag a node:test binary took out of process.argv

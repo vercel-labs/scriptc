@@ -5,7 +5,9 @@
  * error (catchable at the await, like Node). DOCUMENTED DIVERGENCE
  * (SEMANTICS.md): the syscall blocks the event loop, so I/O never
  * interleaves with timers or other fibers — observable only in concurrent
- * code. readFile is utf8-only, like readFileSync. */
+ * code. The whole-file reads and writes encode and decode every
+ * BufferEncoding name, and an options record's string data is written in
+ * its encoding. */
 declare module "fs/promises" {
   export interface FileReadResult<T extends Uint8Array> {
     bytesRead: number;
@@ -95,12 +97,19 @@ declare module "fs/promises" {
     write(
       data: string,
       position?: number | null,
-      encoding?: "utf8" | "utf-8" | null,
+      encoding?: BufferEncoding | null,
     ): Promise<FileWriteResult<string>>;
     readFile(options?: null): Promise<Buffer>;
-    readFile(encoding: "utf8" | "utf-8"): Promise<string>;
-    writeFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    appendFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    readFile(encoding: BufferEncoding): Promise<string>;
+    readFile(options: { encoding: BufferEncoding }): Promise<string>;
+    writeFile(
+      data: string | ScriptcBufferView,
+      options?: WriteFileOptions | BufferEncoding | null,
+    ): Promise<void>;
+    appendFile(
+      data: string | ScriptcBufferView,
+      options?: WriteFileOptions | BufferEncoding | null,
+    ): Promise<void>;
     stat(options?: null | { bigint?: false }): Promise<import("node:fs").Stats>;
     stat(options: { bigint: true }): Promise<import("node:fs").BigIntStats>;
     stat(options: {

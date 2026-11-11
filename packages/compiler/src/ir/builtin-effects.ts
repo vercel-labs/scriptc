@@ -1184,6 +1184,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.realpathBuffer",
   "fsp.openOptions",
   "fileHandle.writeFileData",
+  // The options record's own validation ladder, then the write, all before
+  // the promise exists.
+  "fileHandle.writeFileOptions",
+  "fileHandle.writeFileOptionsBytes",
+  "fileHandle.writeFileOptionsData",
   "fileHandle.chown",
   "zlib.inflateSync",
   "zlib.inflateRawSync",

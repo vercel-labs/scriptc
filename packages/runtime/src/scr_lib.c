@@ -5300,13 +5300,30 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
   return scr_fs_write_mem(fd, buf->data + off, (size_t)length, position);
 }
 
+/* FileHandle.write(string, position, encoding): writeString normalizes the
+ * name and falls back to utf8 for one it does not know, so "buffer", unknown
+ * names and non-string encodings all write the string's utf8 bytes. The
+ * position follows the write rules above (anything but a safe nonnegative
+ * integer writes at the current offset). */
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding) {
-  (void)encoding; /* frontend proves utf8; the argument still evaluates */
-  char *owned;
-  const char *bytes = scr_str_utf8(data, &owned);
-  double wrote = scr_fs_write_mem(fd, bytes, data->len, position);
-  scr_str_utf8_end(owned);
+  ScrStr *normalized = scr_bytes_normalize_encoding_or_utf8(encoding);
+  if (normalized == NULL) return 0;
+  double wrote;
+  if (scr_bytes_encoding_is_utf8(normalized)) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    wrote = scr_fs_write_mem(fd, bytes, data->len, position);
+    scr_str_utf8_end(owned);
+  } else {
+    ScrBytes *bytes = scr_bytes_from_str(data, normalized);
+    wrote = bytes ? scr_fs_write_mem(fd, bytes->data,
+                                     bytes->len * scr_bytes_elem_size(bytes->elem),
+                                     position)
+                  : 0;
+    scr_bytes_release(bytes);
+  }
+  scr_str_release(normalized);
   return wrote;
 }
 

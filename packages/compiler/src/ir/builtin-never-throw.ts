@@ -72,6 +72,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",
+  // scr_watcher_ref/scr_watcher_unref flip one flag of an open watcher (a
+  // closed one is a no-op) and answer the receiver; no error, no callback.
+  "watcher.ref",
+  "watcher.unref",
   // scr_promise_all_settled subscribes a countdown reaction to each entry
   // and queues one job for the entries already settled; the builder runs
   // later, inside the combinator's settlement, never in this call.
@@ -105,4 +109,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // The header-limit properties are plain storage: the getters retain the
+  // stored value (or answer null / 0) and the setters retain the new value
+  // and release the old one. No accessor, coercion or listener runs, and
+  // the HTTP layer reads the stored value when it parses a message.
+  "net.serverMaxHeadersCountGet",
+  "net.serverMaxHeadersCountSet",
+  "net.serverMaxRequestsPerSocketGet",
+  "net.serverMaxRequestsPerSocketSet",
+  "http.clientMaxHeadersCountGet",
+  "http.clientMaxHeadersCountSet",
 ]);

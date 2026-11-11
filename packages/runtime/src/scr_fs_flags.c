@@ -469,11 +469,15 @@ static void scr_fs_write_bytes_flush(ScrStr *path, const uint8_t *bytes, size_t 
     }
     at += (size_t)wrote;
   }
-  if (flush && fsync(fd) != 0) {
-    int e = errno;
-    close(fd);
-    scr_fs_throw(e, "fsync", NULL);
-    return;
+  if (flush) {
+    /* The portable flush: `_commit` on Windows, where the CRT declares no
+     * fsync, and fsync everywhere else (scr_lib.c's scr_fs_raw_fsync). */
+    int synced = scr_fs_raw_fsync(fd);
+    if (synced != 0) {
+      close(fd);
+      scr_fs_throw(-synced, "fsync", NULL);
+      return;
+    }
   }
   if (close(fd) != 0) scr_fs_throw(errno, "close", NULL);
 }

@@ -30,15 +30,21 @@ t("negative", () => fs.close(-1, noop));
 t("fractional", () => fs.close(2.5, noop));
 t("too large", () => fs.close(2 ** 31, noop));
 
-// A valid descriptor without a callback closes synchronously.
+// A valid descriptor without a callback still closes. Node's close is
+// asynchronous even then (the default callback only reports the error), so
+// the descriptor may be open right after the call; by the time the loop
+// drains it is closed. Reading it at exit makes the observation
+// deterministic.
 const fd = fs.openSync(file, "r");
 fs.close(fd);
-try {
-  fs.fstatSync(fd);
-  console.log("still readable");
-} catch (error) {
-  console.log("closed without callback", error.code);
-}
+process.on("exit", () => {
+  try {
+    fs.fstatSync(fd);
+    console.log("still readable");
+  } catch (error) {
+    console.log("closed without callback", error.code);
+  }
+});
 
 // A boolean is not an integer either.
 t("boolean", () => fs.close(true, noop));

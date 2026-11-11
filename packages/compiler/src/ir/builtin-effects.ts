@@ -1168,6 +1168,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.appendFileOptionsData",
   "fsp.rmdirOptions",
   "fsp.lchmod",
+  // The promise forms that validate an argument or run the filesystem call
+  // before the promise exists: the error is raised, then settled into the
+  // rejection (scr_async.c's settled constructors, scr_file_handle.c's open).
+  "fsp.mkdirModeOctal",
+  "fsp.mkdirRecursiveFirst",
+  "fsp.mkdirRecursiveFirstOctal",
+  "fsp.mkdtempEncoded",
+  "fsp.mkdtempBuffer",
+  "fsp.statProbe",
+  "fsp.realpathEncoded",
+  "fsp.realpathBuffer",
+  "fsp.openOptions",
   "fileHandle.writeFileData",
   "fileHandle.chown",
   "zlib.inflateSync",
@@ -1236,6 +1248,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverOnConnect",
   "http.serverOnUpgrade",
   "http.serverOnClientError",
+  "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
   "http2.serverOnSessionError",

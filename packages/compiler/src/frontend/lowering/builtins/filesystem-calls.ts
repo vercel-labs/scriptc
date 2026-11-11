@@ -1640,6 +1640,26 @@ export function lowerFsPromisesWriteOptionsCall(
     )
       return null;
   }
+  // A bare `__proto__: <object>` entry changes the record's prototype, and
+  // the lowered record is read through its own keys only, so the inherited
+  // options could be dropped without a diagnostic: fence it by name, as the
+  // static option walks do (a primitive value is the no-op Node makes of
+  // it, so it stays accepted).
+  const optionsLiteral = optionsLiteralOf(lowerer, optsNode);
+  if (optionsLiteral !== null) {
+    const operation = append ? "fs.promises.appendFile" : "fs.promises.writeFile";
+    for (const property of optionsLiteral.properties.nodes) {
+      if (optionMember(property)?.name !== "__proto__") continue;
+      fenceOrDropOptionKey(
+        lowerer,
+        property,
+        "__proto__",
+        operation,
+        FS_WRITE_FILE_DOCUMENTED_OPTIONS,
+        "the supported options are { encoding, flag, mode, flush, signal }",
+      );
+    }
+  }
   const dataNode = expr.arguments.nodes[1]!;
   const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
   const dataType: IrType =

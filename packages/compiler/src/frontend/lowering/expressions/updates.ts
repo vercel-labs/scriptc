@@ -437,6 +437,30 @@ export function lowerIncDec(
       return { kind: "seqExpr", stmts, result, type: result.type, loc };
     };
     const raw = lowerer.lowerExpr(access.expression);
+    // A native array's `length` is a writable number: `a.length++` writes
+    // length + 1, truncating or growing the storage as Node's length
+    // assignment does, and yields the old (postfix) or new (prefix) length.
+    if (
+      ts.isPropertyAccessExpression(access) &&
+      access.name.text === "length" &&
+      raw.type.kind === "array"
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      return finish(length, (value) => ({
+        kind: "arraySetLength",
+        arr: receiver,
+        length: value,
+        loc,
+      }));
+    }
     // Keep native array/byte storage: boxing a native array can create a
     // checked view, which is not a substitute for updating its slot.
     if (
@@ -1175,6 +1199,34 @@ export function lowerFieldCompoundValue(
     body.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
     return varRef(local.id, value.type, value.loc);
   };
+  // A native array's `length` is a writable number. `a.length op= rhs`
+  // reads the length, evaluates the right side, combines, then writes the
+  // result back through the same grow/truncate path as `a.length = n`
+  // (arraySetLength), yielding that result. The receiver and the length
+  // read are saved before the right side, as JavaScript's reference
+  // evaluation orders them.
+  if (ts.isPropertyAccessExpression(access) && access.name.text === "length" && rhsNode !== null) {
+    const probed = tryLowerExpression(lowerer, access.expression);
+    if (probed?.type.kind === "array") {
+      const receiver = save(lowerer.lowerExpr(access.expression), "%compoundArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      const old = save(length, "%compoundOld");
+      const rhs = save(lowerer.lowerExprExpecting(rhsNode, F64), "%compoundRhs");
+      const value = save(
+        { kind: "bin", op, left: old, right: rhs, type: F64, loc },
+        "%compoundResult",
+      );
+      body.push({ kind: "arraySetLength", arr: receiver, length: value, loc });
+      return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+    }
+  }
   // A CHECKED-DYNAMIC receiver (`context.actual++` — test/common's call
   // accounting; dot spelling only — symbol-keyed element targets are
   // static fields): read the member (dynKeyGet), VALIDATE it as a

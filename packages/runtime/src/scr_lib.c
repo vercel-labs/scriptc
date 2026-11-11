@@ -3820,6 +3820,7 @@ static const char *scr_errno_text(int e) {
   case ESPIPE: return "invalid seek";
   case ELOOP: return "too many symbolic links encountered";
   case ENOSYS: return "function not implemented";
+  case ENOTSUP: return "operation not supported on socket";
   default: return strerror(e);
   }
 }

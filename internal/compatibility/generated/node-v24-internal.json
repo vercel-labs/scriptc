@@ -19701,10 +19701,8 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5250-cipher-aes-gcm.ts",
           "tests/corpus/5251-cipher-aes-cbc.ts",
@@ -19764,12 +19762,15 @@
           "tests/corpus/7153-crypto-prime-errors.cjs",
           "tests/corpus/7154-crypto-cipher-info.cjs",
           "tests/corpus/7157-crypto-cipher-info-typed.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
           "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/crypto-fips-deprecated.cjs",
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
@@ -20272,15 +20273,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20304,15 +20307,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20336,15 +20341,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createDiffieHellmanGroup",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createDiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -20368,16 +20375,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.createECDH",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.createECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
-          "tests/corpus/6701-ecdh-formats.ts",
-          "tests/corpus/6702-ecdh-errors.js",
-          "tests/corpus/6703-ecdh-private-keys.ts",
-          "tests/corpus/6704-ecdh-set-public-key.cjs",
-          "tests/corpus/6705-ecdh-handles.ts",
-          "tests/fixtures/node-types/ecdh.ts"
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20715,18 +20724,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.diffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.diffieHellman",
         "tests": [
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
+          "tests/corpus/6706-dh-groups.ts",
+          "tests/corpus/6707-dh-explicit-params.ts",
+          "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/dh.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21026,15 +21035,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.getDiffieHellman",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.getDiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
+          "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
-          "tests/corpus/6708-dh-errors.js",
-          "tests/corpus/6709-dh-generate.ts",
-          "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/7451-crypto-diffie-hellman.ts",
+          "tests/corpus/7452-crypto-diffie-hellman-errors.mjs",
+          "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/dh.ts"
         ]
       },
@@ -22981,9 +22992,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellman",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23013,9 +23025,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23045,9 +23058,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23077,9 +23091,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getGenerator",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23109,9 +23124,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrime",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23141,9 +23157,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23173,9 +23190,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23205,9 +23223,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23237,9 +23256,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23269,9 +23289,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:diffieHellman.verifyError",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23301,9 +23322,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",
@@ -23333,9 +23355,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ECDH",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23365,9 +23388,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.computeSecret",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23397,9 +23421,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.generateKeys",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23429,9 +23454,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23461,9 +23487,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.getPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23493,9 +23520,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPrivateKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -23525,9 +23553,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -26247,9 +26276,10 @@
       "anchor": "dep0031-ecdhsetpublickey",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ecdh.setPublicKey",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6700-ecdh-shared-secret.ts",
           "tests/corpus/6701-ecdh-formats.ts",
           "tests/corpus/6702-ecdh-errors.js",
@@ -28714,9 +28744,10 @@
       "anchor": "dep0167-weak-diffiehellmangroup-instances-modp1-modp2-modp5",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:DiffieHellmanGroup",
         "tests": [
+          "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/6706-dh-groups.ts",
           "tests/corpus/6707-dh-explicit-params.ts",
           "tests/corpus/6708-dh-errors.js",

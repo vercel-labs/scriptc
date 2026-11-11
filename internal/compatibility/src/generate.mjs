@@ -880,6 +880,19 @@ function publicDetail(tier) {
     ) {
       return "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.";
     }
+    if (source === "compiler-feature:crypto.crypto.createECDH") {
+      return "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.";
+    }
+    if (
+      /^compiler-feature:crypto\.crypto\.(?:createDiffieHellman|createDiffieHellmanGroup|getDiffieHellman)$/.test(
+        source,
+      )
+    ) {
+      return "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.";
+    }
+    if (source === "compiler-feature:crypto.crypto.diffieHellman") {
+      return "Derives the shared secret a private KeyObject and a public KeyObject agree on for the supported curves and X25519, in its synchronous and callback forms, with Node's key-type, curve and key checks.";
+    }
     return "Implemented for the documented scriptc module-loader subset.";
   }
   if (source.startsWith("compiler-chapter-policy:")) {

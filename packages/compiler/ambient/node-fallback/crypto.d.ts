@@ -692,69 +692,138 @@ declare module "crypto" {
     options?: { authTagLength?: number },
   ): Decipheriv;
   export type ECDHKeyFormat = "compressed" | "uncompressed" | "hybrid";
+  /* Node answers every key result through its internal encode(): a falsy
+   * encoding and the string "buffer" answer the bytes themselves, and any
+   * other encoding answers buffer.toString(encoding). Each encoding-taking
+   * member therefore has a Buffer form for null, undefined, "" and
+   * "buffer", a string form for the spellings in Encoding, and a
+   * `Buffer | string` form for an encoding whose type is not known to be
+   * one of those (a union, or the encoding a variable holds).
+   * @types/node declares fewer forms, and declares computeSecret's view
+   * form with an output encoding where Node reads the second argument as
+   * the key's input encoding. */
   export class ECDH {
     private constructor();
     static convertKey(
       key: BinaryLike,
       curve: string,
-      inputEncoding?: BinaryToTextEncoding,
-      outputEncoding?: "latin1" | "hex" | "base64" | "base64url",
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
       format?: ECDHKeyFormat,
     ): Buffer | string;
     generateKeys(): Buffer;
-    generateKeys(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    generateKeys(encoding: Encoding, format?: ECDHKeyFormat): string;
+    generateKeys(encoding: null | undefined | "" | "buffer", format?: ECDHKeyFormat): Buffer;
+    generateKeys(
+      encoding?: Encoding | "" | "buffer" | null,
+      format?: ECDHKeyFormat,
+    ): Buffer | string;
+    /* computeSecret(key, inputEncoding, outputEncoding): a string key is
+     * read through inputEncoding (undefined, null and "" read utf8) and a
+     * view key ignores it, so a two-argument call answers a Buffer for
+     * either. */
     computeSecret(otherPublicKey: ScriptcBufferView): Buffer;
-    computeSecret(otherPublicKey: string, inputEncoding: BinaryToTextEncoding): Buffer;
-    computeSecret(otherPublicKey: ScriptcBufferView, outputEncoding: BinaryToTextEncoding): string;
+    computeSecret(otherPublicKey: string): Buffer;
+    computeSecret(otherPublicKey: string, inputEncoding: Encoding | ""): Buffer;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: null,
+    ): Buffer;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
+    ): string;
     computeSecret(
       otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
     getPrivateKey(): Buffer;
-    getPrivateKey(encoding: BinaryToTextEncoding): string;
-    getPublicKey(encoding?: null, format?: ECDHKeyFormat): Buffer;
-    getPublicKey(encoding: BinaryToTextEncoding, format?: ECDHKeyFormat): string;
+    getPrivateKey(encoding: Encoding): string;
+    getPrivateKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrivateKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
+    getPublicKey(encoding?: null | "" | "buffer", format?: ECDHKeyFormat): Buffer;
+    getPublicKey(encoding: Encoding, format?: ECDHKeyFormat): string;
+    getPublicKey(
+      encoding?: Encoding | "" | "buffer" | null,
+      format?: ECDHKeyFormat,
+    ): Buffer | string;
     setPrivateKey(privateKey: ScriptcBufferView): void;
-    setPrivateKey(privateKey: string, encoding: BinaryToTextEncoding): void;
+    setPrivateKey(privateKey: string, encoding?: Encoding | "" | null): void;
   }
   export function createECDH(curveName: string): ECDH;
+  /* The same encode() reading as ECDH above; DiffieHellmanGroup is this
+   * class without the key setters. */
   export class DiffieHellman {
     private constructor();
     generateKeys(): Buffer;
-    generateKeys(encoding: BinaryToTextEncoding): string;
+    generateKeys(encoding: Encoding): string;
+    generateKeys(encoding: null | undefined | "" | "buffer"): Buffer;
+    generateKeys(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
+    computeSecret(otherPublicKey: ScriptcBufferView): Buffer;
+    computeSecret(otherPublicKey: string): Buffer;
     computeSecret(
-      otherPublicKey: ScriptcBufferView,
-      inputEncoding?: null,
+      otherPublicKey: string,
+      inputEncoding: Encoding | "",
       outputEncoding?: null,
     ): Buffer;
     computeSecret(
-      otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
       outputEncoding?: null,
     ): Buffer;
     computeSecret(
       otherPublicKey: ScriptcBufferView,
-      inputEncoding: null,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
     computeSecret(
       otherPublicKey: string,
-      inputEncoding: BinaryToTextEncoding,
-      outputEncoding: BinaryToTextEncoding,
+      inputEncoding: Encoding | "" | null | undefined,
+      outputEncoding: Encoding,
     ): string;
+    computeSecret(
+      otherPublicKey: ScriptcBufferView,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
+    computeSecret(
+      otherPublicKey: string,
+      inputEncoding?: Encoding | "" | null,
+      outputEncoding?: Encoding | "" | "buffer" | null,
+    ): Buffer | string;
     getPrime(): Buffer;
-    getPrime(encoding: BinaryToTextEncoding): string;
+    getPrime(encoding: Encoding): string;
+    getPrime(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrime(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getGenerator(): Buffer;
-    getGenerator(encoding: BinaryToTextEncoding): string;
+    getGenerator(encoding: Encoding): string;
+    getGenerator(encoding: null | undefined | "" | "buffer"): Buffer;
+    getGenerator(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getPublicKey(): Buffer;
-    getPublicKey(encoding: BinaryToTextEncoding): string;
+    getPublicKey(encoding: Encoding): string;
+    getPublicKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPublicKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     getPrivateKey(): Buffer;
-    getPrivateKey(encoding: BinaryToTextEncoding): string;
+    getPrivateKey(encoding: Encoding): string;
+    getPrivateKey(encoding: null | undefined | "" | "buffer"): Buffer;
+    getPrivateKey(encoding?: Encoding | "" | "buffer" | null): Buffer | string;
     setPublicKey(publicKey: ScriptcBufferView): void;
-    setPublicKey(publicKey: string, encoding: BufferEncoding): void;
+    setPublicKey(publicKey: string, encoding?: Encoding | "" | null): void;
     setPrivateKey(privateKey: ScriptcBufferView): void;
-    setPrivateKey(privateKey: string, encoding: BufferEncoding): void;
+    setPrivateKey(privateKey: string, encoding?: Encoding | "" | null): void;
     verifyError: number;
   }
   export type DiffieHellmanGroup = Omit<DiffieHellman, "setPublicKey" | "setPrivateKey">;

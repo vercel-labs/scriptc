@@ -8422,10 +8422,18 @@ static const char *scr_dyn_specific_type_impl(const ScrDyn *cb, char *detail, si
     scr_jb_putc(&shown, ')');
     ScrStr *text = scr_jb_finish(&shown);
     /* Copied by length: the value's NUL bytes are part of the message and
-     * %s would end the tail at the first one. The 28-unit cut above keeps
-     * the escaped text well inside the callers' buffers. */
-    size_t n = text->len < cap - 1 ? text->len : cap - 1;
-    memcpy(detail, text->data, n);
+     * %s would end the tail at the first one. A text that fills the caller's
+     * buffer is cut to cap - 1 bytes, and the copy always ends with the NUL
+     * the %s consumers read to: the JSON form of 25 escaped units can be
+     * longer than the smallest callers' buffers, and an unterminated copy
+     * would hand those consumers whatever the buffer held. The counted
+     * length stays what was actually written for the length-aware callers. */
+    size_t n = 0;
+    if (cap > 0) {
+      n = text->len < cap ? text->len : cap - 1;
+      memcpy(detail, text->data, n);
+      detail[n] = '\0';
+    }
     exact = n;
     have_exact = true;
     scr_str_release(text);

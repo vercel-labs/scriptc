@@ -5,7 +5,19 @@ import { builtinConstLit } from "../surfaces.js";
 import { HTTP2_CONSTANTS } from "../http2-constants.js";
 import { CRYPTO_CONSTANTS } from "../crypto-tables.js";
 import { ZLIB_CONSTANTS } from "../zlib-constants.js";
-import { DYN, F64, type IrExpr, STRING, type SrcLoc } from "../../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  STRING,
+  type SrcLoc,
+} from "../../../ir/ir.js";
+import { varRef } from "../../../ir/build.js";
+import { InternalCompilerError } from "../../../errors.js";
+import { keyedHelperName } from "../stable-names.js";
 import { builtinImportOf } from "./module-bindings.js";
 
 /** The builtin modules whose `constants` object bakes as literals at
@@ -128,6 +140,82 @@ export function builtinConstantBindingOf(lowerer: Lowerer, ident: ts.Identifier)
   const value = own(BUILTIN_CONSTANTS_TABLES[module]!.table, key);
   if (value === undefined) return null;
   return builtinConstLit(value, locOf(ident));
+}
+
+/** `zlib.constants` as a VALUE: the object Node's module answers — one
+ * singleton per program, built on first use with the same table every
+ * member read bakes (lowerBuiltinConstantsProperty), so identity,
+ * `typeof`, `Object.keys`, spread and `JSON.stringify` see Node's object
+ * rather than a fresh literal per use. The record is the `ZlibConstants`
+ * shape the type mapper interns for the declared interface (the fields
+ * match one for one); the members stay baked literals where the program
+ * spells them, and the keys keep Node's insertion order (the table's). */
+export function zlibConstantsValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const keys = Object.keys(ZLIB_CONSTANTS);
+  const type: IrType & { kind: "record" } = {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(
+      keys
+        .map((name) => ({ name, type: F64 as IrType }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      false,
+      undefined,
+      keys,
+    ),
+  };
+  const name = keyedHelperName(lowerer, "%builtin.zlib.constants", type.shapeId);
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const shape = lowerer.shapes.get(type.shapeId);
+    const declared = new Set((shape?.fields ?? []).map((field) => field.name));
+    if (declared.size !== keys.length || keys.some((key) => !declared.has(key)))
+      throw new InternalCompilerError(
+        "zlib.constants table and the ZlibConstants record shape disagree",
+      );
+    const fields = keys.map((name) => ({
+      name,
+      value: builtinConstLit(ZLIB_CONSTANTS[name]!, loc),
+    }));
+    // Node inserts the keys in table order and Object.keys observes it:
+    // the literal carries the order.
+    const literal = lowerer.keyOrder.literal(
+      { kind: "recordLit", fields, type, loc },
+      keys.map((name) => ({ kind: "key" as const, name, definite: true })),
+    );
+    const storage = `%g.${name}`;
+    const ready = `${storage}%ready`;
+    lowerer.globalsList.push(
+      { id: storage, name: "zlib.constants", type, mutable: true },
+      { id: ready, name: "%ready", type: BOOL, mutable: true },
+    );
+    const body: IrStmt[] = [
+      {
+        kind: "if",
+        cond: varRef(ready, BOOL, loc),
+        then: [{ kind: "return", value: varRef(storage, type, loc), loc }],
+        else_: null,
+        loc,
+      },
+      { kind: "varDecl", localId: "constants.0", init: literal, loc },
+      { kind: "assign", localId: storage, value: varRef("constants.0", type, loc), loc },
+      {
+        kind: "assign",
+        localId: ready,
+        value: { kind: "boolLit", value: true, type: BOOL, loc },
+        loc,
+      },
+      { kind: "return", value: varRef(storage, type, loc), loc },
+    ];
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      locals: [{ id: "constants.0", name: "constants", type, mutable: false }],
+      returnType: type,
+      body,
+      loc,
+    });
+  }
+  lowerer.noteEdge(name);
+  return { kind: "call", callee: name, args: [], type, loc };
 }
 
 /** `constants.X_OK` where `constants` is a named fs import: the access-

@@ -119972,6 +119972,7 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-constants-object.ts",
           "tests/corpus/zlib-stream-classes.ts",
           "tests/corpus/zlib-typed-view-inputs.ts",
           "tests/corpus/zstd-compress.cjs",
@@ -122114,11 +122115,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.constants",
         "tests": [
           "tests/corpus/5376-zlib-constants.cjs",
-          "tests/corpus/5374-zlib-stream-flush-params.ts"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/zlib-constants-object.ts"
         ]
       },
       "anchorSource": "exact"

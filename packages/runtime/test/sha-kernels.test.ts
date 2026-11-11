@@ -33,6 +33,8 @@ const runtimeSources = [
   "scr_alloc.c",
   "scr_json.c",
   "scr_inspect.c",
+  // The color/style table the inspect unit reads through scr_util_style.h.
+  "scr_util_style.c",
   "scr_bigint.c",
   "scr_async.c",
   "scr_async_dyn.c",

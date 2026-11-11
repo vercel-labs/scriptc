@@ -177,7 +177,7 @@ static SCR_TL ScrDyn *g_inspect_function;
  * colors reads it per leaf; with no util.inspect value the built-in codes
  * alone answer, and a static rendering links no live-table reader. */
 SCR_TL bool (*scr_insp_style_pair_hook)(const char *type, size_t len, ScrStr **open,
-                                        ScrStr **close);
+                                        ScrStr **close) = NULL;
 
 typedef enum {
   INSP_SPECIAL,
@@ -3347,7 +3347,7 @@ static SCR_TL ScrDyn *g_inspect_default_options;
  * insp_apply_default_options in it when the program first reads
  * util.inspect.defaultOptions. A rendering that never did keeps the
  * built-in defaults and links no reader of the object. */
-SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
+SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o) = NULL;
 
 static void insp_default_options_cleanup(void) {
   scr_dyn_release(g_inspect_default_options);

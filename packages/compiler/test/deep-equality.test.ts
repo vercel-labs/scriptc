@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
-test("native deep equality keeps opaque values and accessors explicitly refused", async () => {
+test("native deep equality compares built-ins and classes, keeping accessors refused", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-deep-equality-"));
   try {
     const entry = join(dir, "main.cjs");
@@ -39,10 +39,10 @@ console.log("after");
     expect(child.status, child.stdout + child.stderr).toBe(0);
     expect(child.stderr).toBe("");
     expect(child.stdout).toBe(
-      "TypeError SC2020 util.isDeepStrictEqual over opaque native references is not supported yet\n" +
-        "TypeError SC2020 util.isDeepStrictEqual over native handles is not supported yet\n" +
-        "TypeError SC2020 util.isDeepStrictEqual over native handles is not supported yet\n" +
-        "TypeError SC2020 util.isDeepStrictEqual over native Error values is not supported yet\n" +
+      "true\n" +
+        "true\n" +
+        "true\n" +
+        "true\n" +
         "TypeError SC2020 util.isDeepStrictEqual over native accessor properties is not supported yet\n" +
         "TypeError SC2020 util.isDeepStrictEqual over native own constructor functions is not supported yet\nafter\n",
     );

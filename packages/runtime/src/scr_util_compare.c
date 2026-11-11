@@ -117,6 +117,289 @@ static bool util_deep_properties(const ScrDyn *a, const ScrDyn *b, bool skip,
   return true;
 }
 
+/* ── the built-in handle arms ──────────────────────────────────────────
+ * internal/util/comparisons.mjs compares each built-in object by its
+ * intrinsic value once the strict constructor and tag gates pass: a Date
+ * by its time (an invalid date equals another invalid one), a RegExp by
+ * source, flags and lastIndex, a Map or Set by its entries in any order,
+ * a URL by its href, a URLSearchParams (which holds no own enumerable
+ * properties) as equal to any other, and a WeakMap or WeakSet only by
+ * identity. A handle of any other kind keeps the refusal: its own
+ * enumerable properties are not modeled, so Node's key check has no
+ * honest answer here. */
+
+static bool util_deep_handle_known(const ScrDyn *d) {
+  if (d->kind != SCR_DYN_HANDLE) return false;
+  switch (d->v.handle.tag) {
+    case SCR_DYNH_DATE:
+    case SCR_DYNH_REGEXP:
+    case SCR_DYNH_MAP:
+    case SCR_DYNH_SET:
+    case SCR_DYNH_WEAK_MAP:
+    case SCR_DYNH_WEAK_SET:
+    case SCR_DYNH_URL:
+    case SCR_DYNH_SEARCH_PARAMS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* Node's constructor gate for strict mode: both sides must answer the same
+ * constructor value (a Date subclass object is not a Date). */
+static bool util_deep_same_constructor(const ScrDyn *a, const ScrDyn *b) {
+  ScrDyn *x = util_deep_constructor(a);
+  ScrDyn *y = !scr_exc_pending() ? util_deep_constructor(b) : NULL;
+  bool same = !scr_exc_pending() && scr_dyn_same_value(x, y);
+  scr_dyn_release(x);
+  scr_dyn_release(y);
+  return same;
+}
+
+static size_t util_deep_live_entries(const ScrMap *m) {
+  size_t live = 0;
+  for (double i = 0; i < scr_map_iter_count(m); i++) live += scr_map_iter_live(m, i);
+  return live;
+}
+
+/* A Set's elements or a Map's key/value pairs match member by member in any
+ * order, as Node's setObjectEquiv/mapObjectEquiv decide them: each entry of
+ * `b` pairs with a distinct deeply equal entry of `a`. `frame` carries the
+ * pair being compared, so a collection that holds itself terminates through
+ * the ancestor rule. */
+static bool util_deep_collections(const ScrDyn *a, const ScrDyn *b, bool skip,
+                                  const ScrDeepFrame *parent) {
+  const ScrMap *ma = a->v.handle.ptr, *mb = b->v.handle.ptr;
+  bool is_map = a->v.handle.tag == SCR_DYNH_MAP;
+  size_t na = util_deep_live_entries(ma), nb = util_deep_live_entries(mb);
+  if (na != nb) return false;
+  if (!skip && !util_deep_same_constructor(a, b)) return false;
+  if (nb == 0) return true;
+  if (parent && !parent->parent) {
+    if (parent->a == a) return parent->b == b;
+    if (parent->b == b) return false;
+  } else if (parent) {
+    bool seen_a = false, seen_b = false;
+    for (const ScrDeepFrame *p = parent; p; p = p->parent) {
+      seen_a |= a == p->a || a == p->b;
+      seen_b |= b == p->a || b == p->b;
+    }
+    if (seen_a || seen_b) return seen_a && seen_b;
+  }
+  bool *used = calloc(na, sizeof *used);
+  if (!used) scr_trap("scriptc: out of memory\n");
+  ScrDeepFrame frame = { a, b, parent };
+  bool same = true;
+  for (double j = 0; same && j < scr_map_iter_count(mb); j++) {
+    if (!scr_map_iter_live(mb, j)) continue;
+    ScrDyn *kb = scr_map_dyn_key(mb, j);
+    ScrDyn *vb = is_map ? scr_map_dyn_value(mb, j) : NULL;
+    bool matched = false;
+    size_t slot = 0;
+    for (double i = 0; same && !matched && i < scr_map_iter_count(ma); i++) {
+      if (!scr_map_iter_live(ma, i)) continue;
+      if (used[slot++]) continue;
+      ScrDyn *ka = scr_map_dyn_key(ma, i);
+      ScrDyn *va = is_map ? scr_map_dyn_value(ma, i) : NULL;
+      matched = util_deep_equal(ka, kb, skip, &frame) &&
+                (!is_map || util_deep_equal(va, vb, skip, &frame));
+      scr_dyn_release(ka);
+      scr_dyn_release(va);
+      if (scr_exc_pending()) same = false;
+    }
+    scr_dyn_release(kb);
+    scr_dyn_release(vb);
+    if (same && !matched) same = false;
+    if (same) used[slot - 1] = true;
+  }
+  free(used);
+  return same;
+}
+
+static bool util_deep_handles(const ScrDyn *a, const ScrDyn *b, bool skip,
+                              const ScrDeepFrame *parent) {
+  if (a->kind != SCR_DYN_HANDLE || b->kind != SCR_DYN_HANDLE) return false;
+  if (a->v.handle.tag != b->v.handle.tag) return false;
+  switch (a->v.handle.tag) {
+    case SCR_DYNH_DATE: {
+      if (!skip && !util_deep_same_constructor(a, b)) return false;
+      double t1 = scr_dyn_native_date_value(a), t2 = scr_dyn_native_date_value(b);
+      return t1 == t2 || (t1 != t1 && t2 != t2);
+    }
+    case SCR_DYNH_REGEXP: {
+      const ScrRegex *ra = a->v.handle.ptr, *rb = b->v.handle.ptr;
+      /* Read the fields directly rather than through scr_regex_source and
+       * scr_regex_flags: this unit links for util.parseArgs programs that
+       * do not pull in the regex unit, and the linker still needs the
+       * references resolved. */
+      ScrStr *sa = scr_str_retain(ra->source), *sb = scr_str_retain(rb->source);
+      bool same = scr_str_eq(sa, sb);
+      scr_str_release(sa);
+      scr_str_release(sb);
+      if (!same) return false;
+      ScrStr *fa = scr_str_retain(ra->flags), *fb = scr_str_retain(rb->flags);
+      same = scr_str_eq(fa, fb);
+      scr_str_release(fa);
+      scr_str_release(fb);
+      return same && ra->last_index == rb->last_index;
+    }
+    case SCR_DYNH_MAP:
+    case SCR_DYNH_SET:
+      return util_deep_collections(a, b, skip, parent);
+    case SCR_DYNH_WEAK_MAP:
+    case SCR_DYNH_WEAK_SET:
+      /* Node answers false for two distinct weak collections; the same
+       * handle never reaches this arm (same-value returns first). */
+      return false;
+    case SCR_DYNH_URL: {
+      if (!skip && !util_deep_same_constructor(a, b)) return false;
+      ScrStr *ha = scr_url_href(a->v.handle.ptr), *hb = scr_url_href(b->v.handle.ptr);
+      bool same = scr_str_eq(ha, hb);
+      scr_str_release(ha);
+      scr_str_release(hb);
+      return same;
+    }
+    case SCR_DYNH_SEARCH_PARAMS:
+      /* No own enumerable properties, so any two params compare equal. */
+      return true;
+    default:
+      return util_deep_refused("native handles");
+  }
+}
+
+/* Two capsules of the same checked type: the backend keeps one struct and
+ * one key per class, so the key answers Node's constructor gate for class
+ * instances whose checked view does not carry the class prototype. */
+static bool util_deep_same_type_key(const ScrDyn *a, const ScrDyn *b) {
+  return a->v.typed_ref.type_key_len == b->v.typed_ref.type_key_len &&
+         !memcmp(a->v.typed_ref.type_key, b->v.typed_ref.type_key,
+                 a->v.typed_ref.type_key_len);
+}
+
+/* Whether a capsule holds a class instance (its key is "object:<class>"). */
+static bool util_deep_class_capsule(const ScrDyn *d) {
+  return d->kind == SCR_DYN_TYPED_REF &&
+         d->v.typed_ref.type_key_len >= 7 &&
+         !strncmp(d->v.typed_ref.type_key, "object:", 7);
+}
+
+/* Node's Date arm covers instances of classes declared `extends Date`: the
+ * constructor gate separates them from a plain Date, the internal time
+ * values then compare (an invalid date equals another invalid one), and
+ * the instances' own enumerable properties still take part in keyCheck. */
+static bool util_deep_is_date(const ScrDyn *d, double *time) {
+  if (d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DATE) {
+    *time = scr_dyn_native_date_value(d);
+    return true;
+  }
+  return d->kind == SCR_DYN_TYPED_REF && scr_dyn_date_class_time(d, time);
+}
+
+static bool util_deep_date_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
+                               const ScrDeepFrame *parent) {
+  double ta, tb;
+  if (!util_deep_is_date(a, &ta) || !util_deep_is_date(b, &tb)) return false;
+  /* A plain Date never matches a subclass instance: their constructors
+   * differ, which the gate rejects before either time is read. */
+  if ((a->kind == SCR_DYN_HANDLE) != (b->kind == SCR_DYN_HANDLE)) return false;
+  ScrDyn *va = NULL, *vb = NULL;
+  bool same;
+  if (a->kind == SCR_DYN_HANDLE) {
+    same = skip || util_deep_same_constructor(a, b);
+  } else {
+    /* Two subclass instances: their checked views carry the class's
+     * prototype only when the class answers dynamic member reads, so the
+     * capsule's type key answers the constructor gate when the views
+     * cannot, and the views answer it exactly when they can. */
+    bool keyed = skip || util_deep_same_type_key(a, b);
+    va = keyed ? scr_dyn_typed_ref_materialize(a) : NULL;
+    vb = keyed && !scr_exc_pending() ? scr_dyn_typed_ref_materialize(b) : NULL;
+    same = keyed && va && vb && !scr_exc_pending();
+    if (same && !skip && va->prototype && vb->prototype)
+      same = util_deep_same_constructor(va, vb);
+  }
+  if (same && ta != tb && (ta == ta || tb == tb)) same = false;
+  if (same && !scr_exc_pending() && parent && !parent->parent) {
+    if (parent->a == a || parent->b == b) same = parent->a == a && parent->b == b;
+  } else if (same && !scr_exc_pending() && parent) {
+    bool seen_a = false, seen_b = false;
+    for (const ScrDeepFrame *p = parent; p; p = p->parent) {
+      seen_a |= a == p->a || a == p->b;
+      seen_b |= b == p->a || b == p->b;
+    }
+    if (seen_a || seen_b) same = seen_a && seen_b;
+  }
+  if (same && !scr_exc_pending() && va) {
+    ScrDeepFrame frame = { a, b, parent };
+    same = util_deep_same_keys(va, vb) &&
+           util_deep_same_keys(va->symbol_properties, vb->symbol_properties) &&
+           util_deep_properties(va, vb, skip, &frame) &&
+           util_deep_properties(va->symbol_properties, vb->symbol_properties, skip, &frame);
+  }
+  scr_dyn_release(va);
+  scr_dyn_release(vb);
+  return same && !scr_exc_pending();
+}
+
+/* Node's error arm: two errors match when their name and message match,
+ * their `cause` presence and value match, AggregateError's `errors` lists
+ * match, and their own enumerable properties match (the stack never takes
+ * part). `frame` carries the pair so a cause that points back terminates. */
+static bool util_deep_error_arm(const ScrDyn *a, const ScrDyn *b, bool skip,
+                                const ScrDeepFrame *parent) {
+  if (a->kind != SCR_DYN_OBJ || b->kind != SCR_DYN_OBJ) return false;
+  ScrError *ea = scr_errdyn_err_of(a);
+  ScrError *eb = scr_errdyn_err_of(b);
+  if (!ea || !eb) {
+    if (ea) scr_error_release(ea);
+    if (eb) scr_error_release(eb);
+    return false;
+  }
+  if (parent && !parent->parent) {
+    if (parent->a == a || parent->b == b) {
+      scr_error_release(ea);
+      scr_error_release(eb);
+      return parent->a == a && parent->b == b;
+    }
+  } else if (parent) {
+    bool seen_a = false, seen_b = false;
+    for (const ScrDeepFrame *p = parent; p; p = p->parent) {
+      seen_a |= a == p->a || a == p->b;
+      seen_b |= b == p->a || b == p->b;
+    }
+    if (seen_a || seen_b) {
+      scr_error_release(ea);
+      scr_error_release(eb);
+      return seen_a && seen_b;
+    }
+  }
+  ScrDeepFrame frame = { a, b, parent };
+  bool same = scr_str_eq(ea->name, eb->name) &&
+              scr_str_eq(ea->message, eb->message) &&
+              (ea->error_cause == NULL) == (eb->error_cause == NULL);
+  if (same && ea->error_cause && eb->error_cause)
+    same = util_deep_equal(ea->error_cause, eb->error_cause, skip, &frame);
+  if (same && !scr_exc_pending()) {
+    bool ga = ea->vt == &scr_error_vts[SCR_ERR_AGGREGATE];
+    bool gb = eb->vt == &scr_error_vts[SCR_ERR_AGGREGATE];
+    if (ga != gb) same = false;
+    else if (ga) {
+      ScrDyn *xa = scr_aggregate_errors(ea);
+      ScrDyn *xb = scr_aggregate_errors(eb);
+      same = xa && xb && util_deep_equal(xa, xb, skip, &frame);
+      if (xa) scr_dyn_release(xa);
+      if (xb) scr_dyn_release(xb);
+    }
+  }
+  if (same && !scr_exc_pending())
+    same = util_deep_same_keys(a, b) && util_deep_same_keys(a->symbol_properties, b->symbol_properties) &&
+           util_deep_properties(a, b, skip, &frame) &&
+           util_deep_properties(a->symbol_properties, b->symbol_properties, skip, &frame);
+  scr_error_release(ea);
+  scr_error_release(eb);
+  return same && !scr_exc_pending();
+}
+
 static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
                              const ScrDeepFrame *parent) {
   if (scr_dyn_same_value(a, b)) return true;
@@ -127,22 +410,76 @@ static bool util_deep_equal(const ScrDyn *a, const ScrDyn *b, bool skip,
     const ScrDyn *inputs[] = { a, b };
     for (size_t i = 0; i < 2; i++) {
       const ScrDyn *v = inputs[i];
+      if (v->kind == SCR_DYN_TYPED_REF) {
+        double time;
+        /* A class entered before the field snapshot can be a Date
+         * subclass; its time value lives outside the fields. */
+        if (scr_dyn_date_class_time(v, &time))
+          return util_deep_date_arm(a, b, skip, parent);
+      }
       if (v->kind == SCR_DYN_TYPED_REF &&
           strncmp(v->v.typed_ref.type_key, "record:", 7) &&
-          strncmp(v->v.typed_ref.type_key, "array<", 6))
+          strncmp(v->v.typed_ref.type_key, "array<", 6) &&
+          strncmp(v->v.typed_ref.type_key, "object:", 7))
         return util_deep_refused("opaque native references");
+    }
+    bool class_a = util_deep_class_capsule(a), class_b = util_deep_class_capsule(b);
+    /* A class instance never matches a built-in handle or a capsule of
+     * another shape (a record, an array): the constructor gate separates
+     * the classes, and no check of their contents could reunite them. */
+    if (!skip && (class_a || class_b)) {
+      /* Node compares the constructors (or, for a class that defines its
+       * own constructor property, the prototypes), and the fields cannot
+       * reunite two different ones. With the gate off, only the fields
+       * and tags take part, so the comparison continues below. */
+      const ScrDyn *other = class_a ? b : a;
+      if (other->kind == SCR_DYN_HANDLE ||
+          (other->kind == SCR_DYN_TYPED_REF && !util_deep_class_capsule(other)))
+        return false;
+      if (class_a && class_b && !skip && !util_deep_same_type_key(a, b)) return false;
     }
     ScrDyn *x = a->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(a) : scr_dyn_retain((ScrDyn *)a);
     ScrDyn *y = !scr_exc_pending() ? (b->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(b) : scr_dyn_retain((ScrDyn *)b)) : NULL;
     bool equal = !scr_exc_pending() && util_deep_equal(x, y, skip, parent);
+    /* A class view carries the class's prototype only when the class
+     * answers dynamic member reads. Without it the view is a plain object,
+     * and no constructor is left to compare a class instance with a value
+     * of another shape -- Node's gate would, so refuse instead of
+     * answering from the fields alone. */
+    if (equal && !skip && class_a != class_b) {
+      const ScrDyn *view = class_a ? x : y;
+      const ScrDyn *other = class_a ? y : x;
+      if (view && !view->prototype) {
+        /* The value's constructor decides Node's gate, and the capsule
+         * cannot name the class it holds. Only a class value on the other
+         * side could be that same class (reached through a dynamic class
+         * value); every other constructor -- Object.prototype's, Array's,
+         * an ordinary function's, none -- is a different one, so the gate
+         * answers false. */
+        ScrDyn *ctor = util_deep_constructor(other);
+        bool class_value = ctor && ctor->kind == SCR_DYN_FUNC && ctor->v.fn.class_obj;
+        scr_dyn_release(ctor);
+        if (class_value) equal = util_deep_refused("class instances without a prototype");
+        else equal = false;
+      }
+    }
     scr_dyn_release(x); scr_dyn_release(y);
     return equal;
   }
-  if (a->kind == SCR_DYN_HANDLE || b->kind == SCR_DYN_HANDLE)
-    return util_deep_refused("native handles");
-  ScrError *error = scr_errdyn_err_of(a);
-  if (!error) error = scr_errdyn_err_of(b);
-  if (error) { scr_error_release(error); return util_deep_refused("native Error values"); }
+  if (a->kind == SCR_DYN_HANDLE || b->kind == SCR_DYN_HANDLE) {
+    if (!util_deep_handle_known(a) && !util_deep_handle_known(b))
+      return util_deep_refused("native handles");
+    return util_deep_handles(a, b, skip, parent);
+  }
+  ScrError *ea = scr_errdyn_err_of(a);
+  ScrError *eb = scr_errdyn_err_of(b);
+  if (ea || eb) {
+    bool both = ea && eb && a->kind == SCR_DYN_OBJ && b->kind == SCR_DYN_OBJ;
+    if (ea) scr_error_release(ea);
+    if (eb) scr_error_release(eb);
+    if (!both) return false; /* Node's error arm requires an error on both sides */
+    return util_deep_error_arm(a, b, skip, parent);
+  }
   if (a->kind != b->kind) return false;
   if (a->kind != SCR_DYN_OBJ && a->kind != SCR_DYN_ARR && a->kind != SCR_DYN_BYTES) return false;
   if (!skip) {

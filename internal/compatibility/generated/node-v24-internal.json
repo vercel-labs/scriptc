@@ -105169,6 +105169,9 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-ansi-text.ts",
+          "tests/corpus/util-deep-equal-builtins.ts",
+          "tests/corpus/util-deep-equal-classes.ts",
+          "tests/corpus/util-deep-equal-errors.ts",
           "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-json-error.ts",
           "tests/corpus/util-inspect-colors-values.ts",
@@ -106900,7 +106903,10 @@
           "tests/corpus/node24-deep-equality.cjs",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/fixtures/node-types/deep-equality.ts",
-          "packages/compiler/test/deep-equality.test.ts"
+          "packages/compiler/test/deep-equality.test.ts",
+          "tests/corpus/util-deep-equal-builtins.ts",
+          "tests/corpus/util-deep-equal-classes.ts",
+          "tests/corpus/util-deep-equal-errors.ts"
         ]
       },
       "anchorSource": "exact"

@@ -91,7 +91,6 @@ const KNOWN: Record<string, Known> = {
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
   "node24-diagnostics-tracing": { run: "SC1090" },
-  "node24-env": { run: "SC1090" },
   "node24-esm-metadata": { island: true },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },

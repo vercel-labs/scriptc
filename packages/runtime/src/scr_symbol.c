@@ -967,6 +967,9 @@ static void scr_process_ref_toggle(ScrDyn *maybe, const char *key_name, const ch
   ScrSym *sym = scr_sym_for(key);
   scr_str_release(key);
   ScrDyn *sym_key = scr_dyn_new_symbol(sym);
+  /* The box retains the symbol for as long as it lives; this function's
+   * reference ends here (the global registry keeps its own). */
+  scr_sym_release(sym);
   ScrDyn *fn = scr_dyn_symbol_key_get(target, sym_key, true);
   scr_dyn_release(sym_key);
   if (fn == NULL) {

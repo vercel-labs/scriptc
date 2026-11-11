@@ -1383,6 +1383,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.mkdtempDisposableSync",
+      "kind": "node-builtin",
+      "name": "fs.mkdtempDisposableSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.mkdtempSync",
       "kind": "node-builtin",
       "name": "fs.mkdtempSync",
@@ -1489,6 +1495,12 @@
       "id": "node-builtin.fs.promises.mkdtemp",
       "kind": "node-builtin",
       "name": "fs/promises.mkdtemp",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.promises.mkdtempDisposable",
+      "kind": "node-builtin",
+      "name": "fs/promises.mkdtempDisposable",
       "status": "static"
     },
     {
@@ -1707,7 +1719,7 @@
       "kind": "node-builtin",
       "name": "fs.watchFile",
       "status": "static",
-      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
+      "note": "stat polling of a resolved path with Stats listeners; answers the path's StatWatcher record (ref/unref); bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",

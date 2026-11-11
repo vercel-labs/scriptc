@@ -365,6 +365,18 @@ declare module "node:fs" {
   ): WriteStream;
   export function accessSync(path: string | URL, mode?: number): void;
   export function mkdtempSync(prefix: string | URL): string;
+  /* fs.mkdtempDisposableSync (Node 24): the created directory as a
+   * disposable record. `remove` deletes the tree (recursively) and the
+   * [Symbol.dispose] method is what `using` calls. */
+  export interface DisposableTempDir {
+    path: string;
+    remove(): void;
+    [Symbol.dispose](): void;
+  }
+  export function mkdtempDisposableSync(
+    prefix: string | URL,
+    options?: BufferEncoding | { encoding?: BufferEncoding | null } | null,
+  ): DisposableTempDir;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;
@@ -758,9 +770,14 @@ declare module "node:fs" {
    * path that cannot be stat'd polls as all-zero Stats. One poller per
    * resolved path is shared by every listener on it. interval defaults to
    * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
-   * no lowering. The call is a statement: Node's StatWatcher has no
-   * lowering. */
-  export interface StatWatcher {}
+   * no lowering. The call answers the path's StatWatcher: one object per
+   * resolved path, its ref()/unref() deciding whether the active watcher
+   * keeps the event loop alive (both answer the watcher itself, so calls
+   * chain). */
+  export interface StatWatcher {
+    ref(): this;
+    unref(): this;
+  }
   export function watchFile(
     filename: string,
     options: { interval?: number; persistent?: boolean; bigint?: false },

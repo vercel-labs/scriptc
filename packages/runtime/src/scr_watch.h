@@ -60,12 +60,16 @@ void scr_watch_install(void);
  * when the program uses it). Stat polling in Node's shape: one poller per
  * RESOLVED path, shared by every listener on it. */
 typedef void (*ScrWatchFileFn)(ScrClosure *cb, ScrStats *current, ScrStats *previous);
+typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 /* fs.watchFile(path, { interval, persistent }, listener) — cb MOVES in;
  * the adapter calls the listener with (current, previous) Stats (+1 each).
  * The path is resolved (path.resolve) and keys the poller; a second call
- * on the same resolved path adds the listener and ignores its options. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn);
+ * on the same resolved path adds the listener and ignores its options.
+ * Answers the path's StatWatcher record (+1): one object per resolved
+ * path, carrying Node's ref()/unref() counters over the poll timer. NULL
+ * with the exception pending. */
+ScrDyn *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                          ScrWatchFileFn fn);
 /* fs.unwatchFile(path[, listener]) — cb borrowed, NULL removes every
  * listener; with none left the poller stops. */
 void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb);

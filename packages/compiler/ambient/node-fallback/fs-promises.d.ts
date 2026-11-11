@@ -314,6 +314,17 @@ declare module "fs/promises" {
     prefix: string | URL,
     options?: BufferEncoding | string | { encoding?: BufferEncoding | string | null } | null,
   ): Promise<string>;
+  /* fs.promises.mkdtempDisposable: an async-disposable record whose remove
+   * and [Symbol.asyncDispose] delete the tree and answer promises. */
+  export interface DisposableTempDir {
+    path: string;
+    remove(): Promise<void>;
+    [Symbol.asyncDispose](): Promise<void>;
+  }
+  export function mkdtempDisposable(
+    prefix: string | URL,
+    options?: BufferEncoding | { encoding?: BufferEncoding | null } | null,
+  ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rmdir(path: string | URL, options: RmdirOptions): Promise<void>;
   export function lchmod(path: string | URL, mode: number): Promise<void>;

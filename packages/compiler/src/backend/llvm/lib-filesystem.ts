@@ -567,7 +567,9 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     // (path, interval, persistent, listener) — the listener MOVES into
     // the poller's registry and the adapter is runtime-provided per
     // listener shape (zero, one or two Stats parameters). The poller
-    // re-arms a timer every interval, so this is a timer program. May
+    // re-arms a timer every interval, so this is a timer program. The
+    // answer is the path's StatWatcher record (an owned checked dynamic:
+    // the same object for the same resolved path, with ref()/unref()). May
     // throw (a null byte in the path, or an interval that is not a
     // uint32) — the standard pending check.
     host.usesTimers = true;
@@ -581,12 +583,14 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.toHeap(cb);
     const adapter = `scr_watch_file_thunk${cbT.params.length}`;
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    const t = B.tmp();
     B.line(
-      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${t} = call ptr @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
+    const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
-    return { name: "", type: e.type };
+    return out;
   }
   if (e.fn === "fs.unwatchFile") {
     // Removal is by closure identity: the listener stays borrowed

@@ -227,6 +227,26 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsPromisesEncodeOptionsCall(lowerer, expr, loc, bi.member === "mkdtemp");
   }
+  // fs.mkdtempDisposableSync(prefix, options) and
+  // fs.promises.mkdtempDisposable(prefix, options): the encoding option.
+  // The runtime runs Node's getOptions ladder (the options shape, then the
+  // encoding name) and builds the disposable record; the plain one-argument
+  // forms keep their table entries.
+  if (
+    ((bi.module === "fs" && bi.member === "mkdtempDisposableSync") ||
+      (bi.module === "fs/promises" && bi.member === "mkdtempDisposable")) &&
+    expr.arguments.nodes.length === 2 &&
+    !expr.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const [prefix, options] = expr.arguments.nodes;
+    return {
+      kind: "libCall",
+      fn: bi.module === "fs" ? "fs.mkdtempDisposableSyncChk" : "fsp.mkdtempDisposableChk",
+      args: [lowerer.lowerExprExpecting(prefix!, DYN), lowerer.lowerExprExpecting(options!, DYN)],
+      type: bi.module === "fs" ? DYN : { kind: "promise", inner: DYN },
+      loc,
+    };
+  }
   // fs.promises.stat/lstat(path, options): bigint and (stat only)
   // throwIfNoEntry, routed BEFORE the table completion.
   if (

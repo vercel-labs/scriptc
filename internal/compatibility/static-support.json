@@ -345,6 +345,9 @@
     { "chapter": "fs", "signatures": ["`dirent.isFile()`", "`dirent.isDirectory()`", "`dirent.isBlockDevice()`", "`dirent.isCharacterDevice()`", "`dirent.isSymbolicLink()`", "`dirent.isFIFO()`", "`dirent.isSocket()`"], "status": "partial", "evidence": ["tests/corpus/1541-fs-readdir-dirent.ts", "tests/corpus/5544-fs-opendir.cjs", "tests/corpus/fs-opendir-callbacks.ts"] },
     { "chapter": "fs", "symbols": ["fs.utimes", "fs.futimes", "fs.lutimes"], "status": "partial", "evidence": ["tests/corpus/node24-fs-timestamps-callbacks.cjs", "tests/corpus/node24-fs-timestamps-symlinks.ts", "tests/corpus/node24-fs-timestamps-errors.cjs"] },
     { "chapter": "fs", "parent": "Class: `fs.FSWatcher`", "symbols": ["watcher.close", "watcher.ref", "watcher.unref"], "status": "partial", "evidence": ["tests/corpus/fs-watch-ref-unref.ts", "tests/corpus/fs-watch-unref-exit.ts", "tests/corpus/fs-watch-ref-keepalive.ts", "tests/corpus/1564-fs-watch.ts"] },
+    { "chapter": "fs", "parent": "Class: `fs.FSWatcher`", "signatures": ["Event: `'change'`", "Event: `'close'`"], "status": "partial", "evidence": ["tests/corpus/fs-watch-listener-shapes.ts", "tests/corpus/fs-watch-ref-unref.ts", "tests/corpus/1564-fs-watch.ts"] },
+    { "chapter": "fs", "symbols": ["fs.StatWatcher"], "status": "partial", "evidence": ["tests/corpus/fs-watch-file-stat-watcher.ts", "tests/corpus/fs-watch-file-polling.ts"] },
+    { "chapter": "fs", "parent": "Class: `fs.StatWatcher`", "symbols": ["watcher.ref", "watcher.unref"], "status": "partial", "evidence": ["tests/corpus/fs-watch-file-stat-watcher.ts", "tests/corpus/fs-watch-file-polling.ts"] },
     { "chapter": "process", "signatures": ["`process.hrtime([time])`", "`process.hrtime.bigint()`"], "status": "partial", "evidence": ["tests/corpus/process-hrtime.js"] },
     { "chapter": "errors", "signatures": ["`stackTraceLimit` Type: {number}"], "status": "partial", "evidence": ["tests/corpus/error-stack-limit.ts"] },
     { "chapter": "errors", "signatures": ["`stack` Type: {string}"], "status": "partial", "evidence": ["tests/corpus/error-stack-frames.ts", "tests/corpus/error-stack-limit.ts"] },
@@ -822,7 +825,9 @@
     { "chapter": "single-executable-applications", "signatures": ["`sea.isSea()`", "`sea.getAsset(key[, encoding])`", "`sea.getAssetAsBlob(key[, options])`", "`sea.getRawAsset(key)`", "`sea.getAssetKeys()`"], "status": "partial", "evidence": ["tests/corpus/8894-node-sea-outside-application/main.ts", "tests/corpus/8895-node-sea-untyped.cjs"] },
     { "chapter": "fs", "symbols": ["fs.realpath"], "status": "partial", "evidence": ["tests/corpus/5548-fs-callback-arguments.cjs", "tests/corpus/5549-fs-callback-option-checks.cjs", "tests/corpus/fs-realpath-callback-options.ts", "tests/corpus/fs-realpath-callback-dynamic-options.cjs"] },
     { "chapter": "fs", "symbols": ["fs.realpath.native"], "status": "partial", "evidence": ["tests/corpus/fs-realpath-callback-options.ts", "tests/corpus/fs-realpath-callback-dynamic-options.cjs"] },
-    { "chapter": "fs", "symbols": ["fs.close"], "status": "partial", "evidence": ["tests/corpus/fs-close-callback-forms.ts", "tests/corpus/fs-close-dynamic-arguments.cjs"] }
+    { "chapter": "fs", "symbols": ["fs.close"], "status": "partial", "evidence": ["tests/corpus/fs-close-callback-forms.ts", "tests/corpus/fs-close-dynamic-arguments.cjs"] },
+    { "chapter": "fs", "symbols": ["fs.lchmod", "fs.lchmodSync"], "status": "partial", "evidence": ["tests/corpus/2595-fs-arg-ladders.cjs", "tests/corpus/fs-lchmod-member-reads.cjs"] },
+    { "chapter": "fs", "symbols": ["fs.mkdtempDisposableSync", "fsPromises.mkdtempDisposable"], "status": "partial", "evidence": ["tests/corpus/fs-mkdtemp-disposable.ts", "tests/corpus/fs-mkdtemp-disposable-arguments.cjs"] }
   ],
   "dedicated": [
     { "symbols": ["assert.doesNotThrow", "assert.doesNotReject"], "status": "partial", "evidence": ["tests/corpus/node24-no-error-assertions.ts", "tests/corpus/node24-no-error-assertions.cjs", "tests/corpus/node24-no-error-assertions-coercion.js", "tests/fixtures/node-types/no-error-assertions.ts", "tests/harness/project-config.test.ts"] },

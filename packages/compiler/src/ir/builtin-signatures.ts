@@ -1589,15 +1589,17 @@ function buildLibFnSignatures() {
     // the null slot pins the arity and the receiver.
     "watcher.on": { argTypes: [FSWATCHER_T, F64, F64, null], result: VOID },
     "watcher.off": { argTypes: [FSWATCHER_T, F64, null], result: VOID },
-    /** fs.watchFile(path, interval, persistent, listener) → void
-     * (scr_watch_file.c — its own gated unit; moduleUsesFsWatchFile is the
-     * switch, and scr_watch_file_install() is emitted with it). One
-     * libuv-shaped stat poller per RESOLVED path, shared by every listener
-     * on it; the listener's (current, previous) Stats func type is
-     * program-dependent, so the slot pins the arity. Statement position
-     * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
-     * takes a borrowed listener; the null slot is the absent one. */
-    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    /** fs.watchFile(path, interval, persistent, listener) → the path's
+     * StatWatcher record (scr_watch_file.c — its own gated unit;
+     * moduleUsesFsWatchFile is the switch, and scr_watch_file_install() is
+     * emitted with it). One libuv-shaped stat poller per RESOLVED path,
+     * shared by every listener on it; the listener's (current, previous)
+     * Stats func type is program-dependent, so the slot pins the arity. The
+     * answer is Node's record — the same object for the same resolved path,
+     * with ref()/unref() — so it crosses as the checked dynamic.
+     * fs.unwatchFile(path[, listener]) takes a borrowed listener; the null
+     * slot is the absent one. */
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: DYN },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
@@ -3869,6 +3871,8 @@ function buildLibFnSignatures() {
     "fs.watchFileChk": { argTypes: [DYN, DYN, STRING], result: VOID },
     "fs.lchmodChk": { argTypes: [DYN, DYN, DYN, STRING], result: VOID },
     "fs.lchmodSyncChk": { argTypes: [DYN, DYN], result: DYN },
+    "fs.mkdtempDisposableSyncChk": { argTypes: [DYN, DYN], result: DYN },
+    "fsp.mkdtempDisposableChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "fsp.lchmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fs.readChk": { argTypes: [DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },
     "fs.streamOptsChk": { argTypes: [DYN, DYN, STRING], result: VOID },
@@ -4156,6 +4160,7 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    "fsp.mkdtempDisposable": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
     "fsp.mkdtempEncoded": {
       argTypes: [STRING, STRING],
       result: { kind: "promise", inner: STRING },
@@ -6370,6 +6375,7 @@ function buildLibFnSignatures() {
      * outside uint32, before checking the path. */
     "fs.rmRetrySync": { argTypes: [STRING, BOOL, BOOL, F64, F64], result: VOID },
     "fs.mkdtempSync": { argTypes: [STRING], result: STRING },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: DYN },
     "fs.accessSync": { argTypes: [STRING, F64], result: VOID },
     "fs.readFdSync": { argTypes: [F64, STRING], result: STRING },
     /** The writeFileSync(fd, data) form: a write(2) loop over the whole

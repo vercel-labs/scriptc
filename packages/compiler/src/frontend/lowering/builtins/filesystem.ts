@@ -287,6 +287,13 @@ export function lowerFsLadderCall(
     loc,
   });
   if (bi.module === "fs/promises") {
+    if (bi.member === "mkdtempDisposable") {
+      // Node's async function: the options and prefix ladders run inside
+      // it, so every failure is a rejection, not a throw.
+      if (args.length > 2) return null;
+      const a = dynArgs([args[0], args[1]]);
+      return a && chk("fsp.mkdtempDisposableChk", a, { kind: "promise", inner: DYN });
+    }
     if (bi.member !== "lchmod" || args.length !== 2) return null;
     const a = dynArgs([args[0], args[1]]);
     return a && chk("fsp.lchmodChk", a, { kind: "promise", inner: VOID });
@@ -352,6 +359,14 @@ export function lowerFsLadderCall(
           STRING,
         )
       );
+    }
+    case "mkdtempDisposableSync": {
+      // Node's getOptions ladder (options shape, then the encoding name)
+      // runs before the 'prefix' slot; the record holds the created path,
+      // a remove() and a [Symbol.dispose] method.
+      if (args.length > 2) return null;
+      const a = dynArgs([args[0], args[1]]);
+      return a && chk("fs.mkdtempDisposableSyncChk", a, DYN);
     }
     case "readFile": {
       // readFile(path[, options], callback): callback, assertEncoding,
@@ -1474,8 +1489,10 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
  * follows the options-record stance: interval, persistent: true/false and
  * bigint: false are accepted; bigint: true fences (BigIntStats); other
  * documented keys fence by name; undocumented keys drop like Node.
- * Statement position only — Node returns a StatWatcher, which has no
- * lowering. Returns null for any untyped shape so the checked-dynamic
+ * Answers Node's StatWatcher record — one per resolved path, whose
+ * ref()/unref() move Node's counters over the poll timer — as the checked
+ * dynamic the runtime builds; a StatWatcher value maps to that same
+ * dynamic. Returns null for any untyped shape so the checked-dynamic
  * ladder (fs.watchFileChk) keeps its current IR. */
 export function lowerFsWatchFileCall(
   lowerer: Lowerer,
@@ -1501,14 +1518,6 @@ export function lowerFsWatchFileCall(
   if (nodes.length === 2 && hasOptions) return null; /* no listener */
   const listenerArg = nodes[nodes.length - 1]!;
   if (lowerer.mapTypeOf(lowerer.typeOf(listenerArg))?.kind !== "func") return null;
-  const parent = expr.parent;
-  if (!ts.isExpressionStatement(parent) && !(ts.isArrowFunction(parent) && parent.body === expr)) {
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "using the returned StatWatcher (register the fs.watchFile call as its own statement)",
-    );
-  }
   let interval: IrExpr | null = null;
   let persistent: IrExpr | null = null;
   if (hasOptions) {
@@ -1580,7 +1589,7 @@ export function lowerFsWatchFileCall(
     kind: "libCall",
     fn: "fs.watchFile",
     args: [path, interval ?? numLit(5007, loc), persistent ?? boolLit(true, loc), cb],
-    type: VOID,
+    type: DYN,
     loc,
   };
 }

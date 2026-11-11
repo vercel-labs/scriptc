@@ -361,6 +361,11 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
 bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
+/* fs.mkdtempDisposableSync: the created directory as Node 24's disposable
+ * record ({ path, remove(), [Symbol.dispose]() }); the Chk form is the
+ * untyped ladder over prefix and options. */
+ScrDyn *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix);
+ScrDyn *scr_fs_mkdtemp_disposable_sync_chk(const ScrDyn *prefix, const ScrDyn *opts);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 
@@ -636,6 +641,10 @@ ScrPromise *scr_fsp_copyfile_flags(ScrStr *src, ScrStr *dest, double mode);
 ScrPromise *scr_fsp_mkdtemp(ScrStr *prefix);
 ScrPromise *scr_fsp_mkdtemp_encoded(ScrStr *prefix, ScrStr *encoding);
 ScrPromise *scr_fsp_mkdtemp_buffer(ScrStr *prefix);
+/* fs.promises.mkdtempDisposable: the async-disposable record ({"path",
+ * async remove(), [Symbol.asyncDispose]()}), rejected for every failure. */
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix);
+ScrPromise *scr_fsp_mkdtemp_disposable_chk(const ScrDyn *prefix, const ScrDyn *opts);
 ScrPromise *scr_fsp_read_file_encoded(ScrStr *path, ScrStr *encoding);
 ScrPromise *scr_fsp_rmdir(ScrStr *path);
 ScrPromise *scr_fsp_truncate(ScrStr *path, double length);

@@ -4575,6 +4575,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // fs.mkdtempDisposableSync and fs.promises.mkdtempDisposable answer the
+  // record Node's binding builds at run time — `path`, a `remove` function
+  // and the dispose symbol (scr_bytes_io.c's disposable build). Both
+  // declarations (the fallback's and @types/node's, in the fs and
+  // fs/promises ambient modules) map to the checked dynamic the runtime
+  // record is; its members read through that view.
+  if (
+    isStdlibInterface("DisposableTempDir") &&
+    psym!.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  )
+    return DYN;
   // util.inspect as a value (a custom inspect method's third parameter is
   // `typeof inspect`): the runtime's inspect function, called through the
   // checked-dynamic boundary.
@@ -5229,6 +5244,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c). Module-checked
+  // like FSWatcher — @types/node declares it inside `declare module "fs"`
+  // (an interface in the pinned fixture and in current typings) and the
+  // shipped fallback mirrors it. The runtime record is a checked dynamic
+  // carrying Node's ref/unref counters, so the value crosses as one.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return DYN;
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the

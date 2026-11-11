@@ -121,6 +121,13 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "fs.callbackGlob",
   "fs.callbackValue",
+  // Every mkdtempDisposable record builder has both remove callbacks in the
+  // unit (the async form's boxes its outcome as a promise,
+  // scr_dyn_new_promise), whichever form the program calls.
+  "fs.mkdtempDisposableSync",
+  "fs.mkdtempDisposableSyncChk",
+  "fsp.mkdtempDisposable",
+  "fsp.mkdtempDisposableChk",
   "process.deprecationFlag",
   "process.emitWarning",
   "process.emitWarningText",
@@ -1907,9 +1914,12 @@ const RUNTIME_FEATURE_RULES = {
    * at run time (scr_require.c). */
   computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
   /** An untyped path of a synchronous fs function in a JavaScript source
-   * (scr_fs_path_value.c): a unit of its own, so no other executable
+   * (scr_fs_path_value.c), and the getValidatedPath of the mkdtempDisposable
+   * ladders of any source: a unit of its own, so no other executable
    * changes. */
-  fsPathValue: rule({ fns: ["dyn.validateFsPath"] }),
+  fsPathValue: rule({
+    fns: ["dyn.validateFsPath", "fs.mkdtempDisposableSyncChk", "fsp.mkdtempDisposableChk"],
+  }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -2214,11 +2224,19 @@ const RUNTIME_FEATURE_RULES = {
     prefixes: STREAM_LIB_PREFIXES,
   }),
   /** A Dirent row converted to dyn carries Node's Symbol(type) key
-   * (scr_dyn_dirent_finish, defined in scr_symbol.c), and a callback read
-   * builds its Dirent there. */
+   * (scr_dyn_dirent_finish, defined in scr_symbol.c), a callback read
+   * builds its Dirent there, and a mkdtempDisposable record keys its
+   * dispose member with Symbol.dispose or Symbol.asyncDispose. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
+    fns: [
+      ...SYMBOL_LIB_FNS,
+      "dir.readCb",
+      "fs.mkdtempDisposableSync",
+      "fs.mkdtempDisposableSyncChk",
+      "fsp.mkdtempDisposable",
+      "fsp.mkdtempDisposableChk",
+    ],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program

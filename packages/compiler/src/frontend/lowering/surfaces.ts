@@ -1253,6 +1253,9 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       globSync: { fn: "fs.globSync", params: [DYN, DYN], result: arrayOf(STRING) },
       statSync: { fn: "fs.statSync", params: [STRING], result: STATS_T },
       mkdtempSync: { fn: "fs.mkdtempSync", params: [STRING], result: STRING },
+      // The record is a checked-dynamic object: `path`, `remove` and the
+      // [Symbol.dispose] method stay behind it (Node's shape).
+      mkdtempDisposableSync: { fn: "fs.mkdtempDisposableSync", params: [STRING], result: DYN },
       // accessSync's omitted mode completes to 0 (F_OK) in the special case
       // in lowerBuiltinModuleCall — string `defaults` can't spell a number.
       accessSync: { fn: "fs.accessSync", params: [STRING, F64], result: VOID },
@@ -1527,6 +1530,11 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: { kind: "promise", inner: VOID },
       },
       mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
+      mkdtempDisposable: {
+        fn: "fsp.mkdtempDisposable",
+        params: [STRING],
+        result: { kind: "promise", inner: DYN },
+      },
       rmdir: { fn: "fsp.rmdir", params: [STRING], result: { kind: "promise", inner: VOID } },
       link: {
         fn: "fsp.link",
@@ -2549,6 +2557,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The JS-source validation-ladder variant (lowerFsLadderCall): the
     // real mkdtemp runs when the options leave utf8 semantics.
     mkdtempSync: ["fs.mkdtempSyncChk"],
+    // The same ladder for the disposable record: the runtime runs Node's
+    // options and prefix checks and then the real mkdtemp.
+    mkdtempDisposableSync: ["fs.mkdtempDisposableSyncChk"],
     // lchmodSync is chmod's no-follow spelling, JS-ladder only (TypeScript
     // callers fence per site); the ladder runs the REAL lchmod on APPLE,
     // so the chmod fence witnesses it — fencing one spelling fences the
@@ -2748,7 +2759,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       kind: "node-builtin",
       name: "fs.watchFile",
       fns: ["fs.watchFile"],
-      note: "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused",
+      note: "stat polling of a resolved path with Stats listeners; answers the path's StatWatcher record (ref/unref); bigint: true is refused",
     },
     {
       id: "node-builtin.fs.unwatchFile",

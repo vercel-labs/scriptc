@@ -45462,6 +45462,9 @@
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-exists-optional-path.ts",
           "tests/corpus/fs-file-handle-chown.ts",
+          "tests/corpus/fs-lchmod-member-reads.cjs",
+          "tests/corpus/fs-mkdtemp-disposable-arguments.cjs",
+          "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
@@ -45478,6 +45481,8 @@
           "tests/corpus/fs-realpath-callback-options.ts",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-file-stat-watcher.ts",
+          "tests/corpus/fs-watch-listener-shapes.ts",
           "tests/corpus/fs-watch-ref-keepalive.ts",
           "tests/corpus/fs-watch-ref-unref.ts",
           "tests/corpus/fs-watch-unref-exit.ts",
@@ -46789,8 +46794,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fsPromises.mkdtempDisposable",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts",
+          "tests/corpus/fs-mkdtemp-disposable-arguments.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47847,8 +47856,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.lchmod",
+        "tests": [
+          "tests/corpus/2595-fs-arg-ladders.cjs",
+          "tests/corpus/fs-lchmod-member-reads.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49468,8 +49481,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.lchmodSync",
+        "tests": [
+          "tests/corpus/2595-fs-arg-ladders.cjs",
+          "tests/corpus/fs-lchmod-member-reads.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49663,8 +49680,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.mkdtempDisposableSync",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts",
+          "tests/corpus/fs-mkdtemp-disposable-arguments.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51094,8 +51115,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'change'",
+        "tests": [
+          "tests/corpus/fs-watch-listener-shapes.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/1564-fs-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51117,8 +51143,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.'close'",
+        "tests": [
+          "tests/corpus/fs-watch-listener-shapes.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/1564-fs-watch.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51163,8 +51194,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.fs.StatWatcher",
+        "tests": [
+          "tests/corpus/fs-watch-file-stat-watcher.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51186,8 +51221,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/fs-watch-file-stat-watcher.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51209,8 +51248,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/fs-watch-file-stat-watcher.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },

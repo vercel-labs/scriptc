@@ -18256,9 +18256,9 @@
       "anchor": "err_console_writable_stream",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23346,9 +23346,9 @@
       "anchor": "err_uncaught_exception_capture_already_set",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23418,9 +23418,9 @@
       "anchor": "err_unknown_credential",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

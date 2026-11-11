@@ -33436,12 +33436,15 @@
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/console-error-codes.cjs",
           "tests/corpus/error-stack-frames.ts",
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/process-error-codes.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zstd-compress.cjs",
           "tests/diagnostics/compat-absent-node-apis.ts",
@@ -34482,8 +34485,11 @@
       "anchor": "err_console_writable_stream",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM",
+        "tests": [
+          "tests/corpus/console-error-codes.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37350,7 +37356,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_TYPE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -37371,7 +37379,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_VALUE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -38625,7 +38635,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_OUT_OF_RANGE",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -39842,7 +39854,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_SYSTEM_ERROR",
         "tests": [
-          "tests/corpus/5140-os-host-facts.ts"
+          "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -40346,10 +40359,10 @@
       "anchor": "err_uncaught_exception_capture_already_set",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:errors.ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/process-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -40430,8 +40443,11 @@
       "anchor": "err_unknown_credential",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL"
+        "status": "partial",
+        "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL",
+        "tests": [
+          "tests/corpus/process-error-codes.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40508,7 +40524,9 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_SIGNAL",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/os-error-codes.cjs"
         ]
       },
       "anchorSource": "exact"

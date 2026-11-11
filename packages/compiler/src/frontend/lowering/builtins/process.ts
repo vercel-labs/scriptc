@@ -2,6 +2,7 @@ import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import { checkedTimerStyleCallback } from "../lower-timers.js";
 import { isTimerHandleTyped } from "./timers.js";
 import * as ts from "../../ts7/adapter.js";
@@ -2242,13 +2243,16 @@ export function lowerProcessMethodCall(
     ts.isPropertyAccessExpression(access.expression) &&
     lowerer.stdlibGlobalMember(access.expression, "process") === "memoryUsage"
   ) {
-    if (call.arguments.nodes.length !== 0) {
-      lowerer.noLowering(
-        `process.memoryUsage.rss with ${call.arguments.nodes.length} arguments`,
-        call,
-      );
-    }
-    return { kind: "libCall", fn: "process.rss", args: [], type: F64, loc: locOf(call) };
+    // rss() reads on demand and takes no arguments; a JS caller's extras
+    // evaluate left to right and are ignored, as Node ignores them.
+    const rssLoc = locOf(call);
+    return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+      kind: "libCall",
+      fn: "process.rss",
+      args: [],
+      type: F64,
+      loc: rssLoc,
+    }));
   }
   const member = lowerer.stdlibGlobalMember(access, "process");
   if (member === null) return null;
@@ -2955,7 +2959,10 @@ export function lowerProcessMethodCall(
   // chdir(2) — throws Node's fs-shaped error on failure. Node validates
   // the directory with validateString first, and ignores extra arguments.
   if (member === "chdir") {
-    const dir = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    // chdir() with no argument reads as undefined, which Node's
+    // validateString rejects: the runtime throws ERR_INVALID_ARG_TYPE.
+    const dirNode = call.arguments.nodes[0];
+    const dir: IrExpr = dirNode ? lowerer.lowerExpr(dirNode) : dynUndefinedExpr(locOf(call));
     const surplus = call.arguments.nodes.slice(1);
     if (dir.type.kind === "string") {
       return withIgnoredArguments(lowerer, [dir], surplus, ([staged]) => ({
@@ -3004,29 +3011,34 @@ export function lowerProcessMethodCall(
   // callback takes precedence over an uncaughtException listener, and a
   // second callback throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET.
   if (member === "hasUncaughtExceptionCaptureCallback") {
-    if (call.arguments.nodes.length !== 0) {
-      lowerer.noLowering(
-        `process.hasUncaughtExceptionCaptureCallback with ${call.arguments.nodes.length} arguments`,
-        call,
-      );
-    }
-    return { kind: "libCall", fn: "process.hasUncaughtCapture", args: [], type: BOOL, loc };
+    // The query takes no arguments; a JS caller's extras evaluate.
+    return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+      kind: "libCall",
+      fn: "process.hasUncaughtCapture",
+      args: [],
+      type: BOOL,
+      loc,
+    }));
   }
   if (member === "setUncaughtExceptionCaptureCallback" || member === "setSourceMapsEnabled") {
     const fn: IrLibFn =
       member === "setUncaughtExceptionCaptureCallback"
         ? "process.setUncaughtCapture"
         : "process.setSourceMapsEnabled";
-    if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
-      lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
+    const first = call.arguments.nodes[0];
+    if (first !== undefined && ts.isSpreadElement(first)) {
+      lowerer.noLowering(`process.${member} with spread arguments`, call);
     }
-    return {
+    // A missing argument reads as undefined, which Node's validation
+    // rejects; arguments past the first only evaluate.
+    const arg: IrExpr = first ? lowerer.lowerExprExpecting(first, DYN) : dynUndefinedExpr(loc);
+    return withIgnoredArguments(lowerer, [arg], call.arguments.nodes.slice(1), ([staged]) => ({
       kind: "libCall",
       fn,
-      args: [lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
+      args: [staged!],
       type: VOID,
       loc,
-    };
+    }));
   }
   // process.ref(maybeRefable) / process.unref(maybeRefable): Node reads
   // the nodejs.ref / nodejs.unref symbol (else the member) and calls it
@@ -3296,44 +3308,6 @@ export function lowerProcessOptionalMethodCall(
   return processCredentialCall(member, locOf(expr));
 }
 
-/** Node's process functions ignore arguments past the ones they use, but
- * JavaScript still evaluates every argument left to right before the call,
- * and a JS caller (or an untyped one) can pass extras: `process.cwd(1, fn())`
- * runs fn and answers the cwd. The used arguments are staged in source
- * order, the ignored tail is evaluated after them, and `build` runs the
- * call over the staged values. */
-function withIgnoredArguments(
-  lowerer: Lowerer,
-  used: readonly IrExpr[],
-  surplus: readonly ts.Expression[],
-  build: (args: IrExpr[]) => IrExpr,
-): IrExpr {
-  if (surplus.length === 0) return build([...used]);
-  const stmts: IrStmt[] = [];
-  const staged = used.map((value, i) => {
-    const local = lowerer.declareHiddenLocal(`%arg${i}`, value.type);
-    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
-    return varRef(local.id, value.type, value.loc);
-  });
-  for (const extra of surplus) {
-    if (ts.isSpreadElement(extra)) {
-      lowerer.noLowering(
-        "a spread argument past the ones the call uses",
-        extra,
-        "write the ignored arguments out positionally",
-      );
-    }
-    const expr = lowerer.lowerExpr(extra);
-    // `null` and `undefined` lower to a bare unitLit: there is no effect to
-    // keep, and a bare unitLit is not a valid IR expression statement
-    // (SC9001). Every other surplus value still evaluates here.
-    if (expr.kind === "unitLit") continue;
-    stmts.push({ kind: "exprStmt", expr, loc: expr.loc });
-  }
-  const result = build(staged);
-  return { kind: "seqExpr", stmts, result, type: result.type, loc: result.loc };
-}
-
 /** process.memoryUsage()'s fields in Node's order — the runtime's
  * sample index. */
 const MEMORY_USAGE_FIELDS = ["rss", "heapTotal", "heapUsed", "external", "arrayBuffers"];
@@ -3378,19 +3352,25 @@ function processCredentialSetterCall(
   loc: SrcLoc,
 ): IrExpr {
   const setter = PROCESS_CREDENTIAL_SETTERS.get(member)!;
-  if (
-    call.arguments.nodes.length !== setter.arity ||
-    call.arguments.nodes.some(ts.isSpreadElement)
-  ) {
-    lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
+  const nodes = call.arguments.nodes;
+  if (nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`process.${member} with spread arguments`, call);
   }
-  return {
+  // Node reads the parameters it declares and ignores the rest; a missing
+  // one reads as undefined, which its runtime validation rejects. The used
+  // arguments are staged in source order and the ignored tail evaluates
+  // after them, as JavaScript evaluates every argument before the call.
+  const used: IrExpr[] = nodes
+    .slice(0, setter.arity)
+    .map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  while (used.length < setter.arity) used.push(dynUndefinedExpr(loc));
+  return withIgnoredArguments(lowerer, used, nodes.slice(setter.arity), (staged) => ({
     kind: "libCall",
     fn: setter.fn,
-    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: staged,
     type: VOID,
     loc,
-  };
+  }));
 }
 
 /** `process.getBuiltinModule("node:os")`: a string-literal id naming a

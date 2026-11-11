@@ -10,6 +10,7 @@ import {
 import * as ts from "../../ts7/adapter.js";
 import { spellsInertValue } from "../builtin-member-writes.js";
 import { isJsSourceFile } from "../../program.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import { knownBufEncoding } from "../containers/bytes.js";
 import { type Lowerer } from "../lowerer.js";
 import {
@@ -91,9 +92,6 @@ export function lowerOsUserInfoCall(
   loc: SrcLoc,
 ): IrExpr {
   const args = call.arguments.nodes;
-  if (args.length > 1) {
-    lowerer.noLowering(`userInfo with ${args.length} arguments`, call);
-  }
   // The options object names the encoding Node's binding hands the passwd
   // bytes to StringBytes::Encode: 'buffer' answers the three strings as
   // Buffers, any other Buffer encoding (aliases and letter case folded)
@@ -114,7 +112,12 @@ export function lowerOsUserInfoCall(
     if (expr.kind === "unitLit") return;
     sideEffects.push(expr);
   };
-  if (args.length === 1) {
+  if (args.length >= 1) {
+    // Node still reads `options.encoding` off the first argument when the
+    // call passes more; only arguments past it are ignored.
+    if (ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("userInfo with a spread options argument", args[0]!);
+    }
     let options: ts.Expression = args[0]!;
     while (ts.isParenthesizedExpression(options)) options = options.expression;
     const runtimeEncoding = (node: ts.Node): never =>
@@ -270,6 +273,18 @@ export function lowerOsUserInfoCall(
       else encoding = decision.text;
     }
   }
+  // Arguments past the options object are ignored, but a JavaScript caller
+  // still evaluates them — after the options object, as the call site does.
+  for (const extra of args.slice(1)) {
+    if (ts.isSpreadElement(extra)) {
+      lowerer.noLowering(
+        "a spread argument past the userInfo options",
+        extra,
+        "write the ignored arguments out positionally",
+      );
+    }
+    evaluate(extra);
+  }
   const fence: () => never = () =>
     lowerer.noLowering(
       "userInfo() where the result is not the UserInfo record",
@@ -401,13 +416,6 @@ export function lowerOsNetworkInterfacesCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.nodes.length !== 0) {
-    lowerer.noLowering(
-      `networkInterfaces with ${call.arguments.nodes.length} arguments`,
-      call,
-      "networkInterfaces() takes no arguments",
-    );
-  }
   // Annotated as a never-returning const so tsc's control flow narrows
   // through the structural checks below.
   const fence: () => never = () =>
@@ -476,7 +484,13 @@ export function lowerOsNetworkInterfacesCall(
     }
   }
   if (!saw4 || !saw6) fence();
-  return { kind: "libCall", fn: "os.networkInterfaces", args: [], type: result, loc };
+  return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+    kind: "libCall",
+    fn: "os.networkInterfaces",
+    args: [],
+    type: result,
+    loc,
+  }));
 }
 
 /** `os.cpus()` — one uv_cpu_info snapshot as the call site's CpuInfo[]:
@@ -485,13 +499,6 @@ export function lowerOsNetworkInterfacesCall(
  * record per CPU from the snapshot accessors, in the mapped shapes' own
  * field order. Other result shapes fence. */
 export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (call.arguments.nodes.length !== 0) {
-    lowerer.noLowering(
-      `cpus with ${call.arguments.nodes.length} arguments`,
-      call,
-      "cpus() takes no arguments",
-    );
-  }
   const fence: () => never = () =>
     lowerer.noLowering(
       "cpus() where the result is not the CpuInfo array",
@@ -614,7 +621,13 @@ export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: 
       loc,
     });
   }
-  return { kind: "call", callee: helper, args: [], type: result, loc };
+  return withIgnoredArguments(lowerer, [], call.arguments.nodes, () => ({
+    kind: "call",
+    callee: helper,
+    args: [],
+    type: result,
+    loc,
+  }));
 }
 
 const PATH_FIELDS = ["root", "dir", "base", "ext", "name"];
@@ -855,20 +868,20 @@ function priorityDynArg(lowerer: Lowerer, value: IrExpr): IrExpr | null {
 
 /** `os.setPriority([pid, ]priority)` — the one-argument form is pid 0
  * (Node's `if (priority === undefined) { priority = pid; pid = 0; }`);
- * the runtime validates both. */
+ * the runtime validates both. Arguments past the pair only evaluate. */
 export function lowerOsSetPriorityCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const args = call.arguments.nodes;
-  if (args.length > 2 || args.some(ts.isSpreadElement)) {
-    lowerer.noLowering(
-      "setPriority with these arguments",
-      call,
-      "setPriority(priority) or setPriority(pid, priority) takes numbers",
-    );
+  const all = call.arguments.nodes;
+  if (all.some(ts.isSpreadElement)) {
+    lowerer.noLowering("setPriority with spread arguments", call);
   }
+  const args = all.slice(0, 2);
+  const surplus = all.slice(2);
+  const finish = (used: readonly IrExpr[], build: (args: IrExpr[]) => IrExpr): IrExpr =>
+    withIgnoredArguments(lowerer, used, surplus, build);
   if (args.length === 0) {
     // Node's own `if (priority === undefined)` branch reads the missing
     // argument as undefined and validateInteger throws on it.
@@ -884,13 +897,13 @@ export function lowerOsSetPriorityCall(
   // order Node's own parameter evaluation uses.
   const values = args.map((arg) => lowerer.lowerExpr(arg));
   if (values.every((value) => value.type.kind === "f64")) {
-    return {
+    return finish(values, (staged) => ({
       kind: "libCall",
       fn: "os.setPriority",
-      args: values.length === 1 ? [numLit(0, loc), values[0]!] : [values[0]!, values[1]!],
+      args: staged.length === 1 ? [numLit(0, loc), staged[0]!] : [staged[0]!, staged[1]!],
       type: VOID,
       loc,
-    };
+    }));
   }
   // An argument that is not statically a number (untyped JavaScript's
   // strings, booleans and objects, and values only the runtime knows):
@@ -900,44 +913,43 @@ export function lowerOsSetPriorityCall(
   // priority.
   const dyns = values.map((value) => priorityDynArg(lowerer, value));
   if (dyns.every((dyn) => dyn !== null)) {
-    return {
+    const used = [dyns[0]!, dyns[1] ?? dynUndefinedExpr(loc)];
+    return finish(used, (staged) => ({
       kind: "libCall",
       fn: "os.setPriorityChk",
-      args: [dyns[0]!, dyns[1] ?? dynUndefinedExpr(loc)],
+      args: [staged[0]!, staged[1] ?? dynUndefinedExpr(loc)],
       type: VOID,
       loc,
-    };
+    }));
   }
   // A value outside the checked-dynamic tree: the usual checked
   // conversion, which raises its own TypeError for a non-number.
   const coerce = (value: IrExpr): IrExpr => lowerer.coerceToExpected(value, F64);
-  return {
+  return finish(values, (staged) => ({
     kind: "libCall",
     fn: "os.setPriority",
     args:
-      values.length === 1
-        ? [numLit(0, loc), coerce(values[0]!)]
-        : [coerce(values[0]!), coerce(values[1]!)],
+      staged.length === 1
+        ? [numLit(0, loc), coerce(staged[0]!)]
+        : [coerce(staged[0]!), coerce(staged[1]!)],
     type: VOID,
     loc,
-  };
+  }));
 }
 
 /** `os.getPriority(pid?)` — an omitted or undefined pid is 0 (Node's
- * default parameter); the runtime validates the rest. */
+ * default parameter); the runtime validates the rest. Arguments past the
+ * pid only evaluate. */
 export function lowerOsGetPriorityCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
   const arg = call.arguments.nodes[0];
-  if (call.arguments.nodes.length > 1 || (arg && ts.isSpreadElement(arg))) {
-    lowerer.noLowering(
-      "getPriority with these arguments",
-      call,
-      "getPriority(pid?) takes one number",
-    );
+  if (arg !== undefined && ts.isSpreadElement(arg)) {
+    lowerer.noLowering("getPriority with spread arguments", call);
   }
+  const surplus = call.arguments.nodes.slice(1);
   const direct = (pid: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "os.getPriority",
@@ -945,18 +957,20 @@ export function lowerOsGetPriorityCall(
     type: F64,
     loc,
   });
+  const finish = (used: IrExpr, build: (staged: IrExpr) => IrExpr): IrExpr =>
+    withIgnoredArguments(lowerer, [used], surplus, ([staged]) => build(staged!));
   if (!arg) return direct(numLit(0, loc));
   const value = lowerer.lowerExpr(arg);
-  if (value.type.kind === "f64") return direct(value);
+  if (value.type.kind === "f64") return finish(value, direct);
   if (value.type.kind === "undefinedT") {
     // Node's default parameter: an undefined pid reads the current
     // process's priority (pid 0). The expression still evaluates.
-    return direct(
-      value.kind === "unitLit"
+    return finish(value, (staged) =>
+      staged.kind === "unitLit"
         ? numLit(0, loc)
         : {
             kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            stmts: [{ kind: "exprStmt", expr: staged, loc }],
             result: numLit(0, loc),
             type: F64,
             loc,
@@ -967,6 +981,14 @@ export function lowerOsGetPriorityCall(
   // runtime knows): Node's validateInteger runs in the runtime, which
   // renders its type error from the value itself.
   const dyn = priorityDynArg(lowerer, value);
-  if (dyn) return { kind: "libCall", fn: "os.getPriorityChk", args: [dyn], type: F64, loc };
-  return direct(lowerer.coerceToExpected(value, F64));
+  if (dyn) {
+    return withIgnoredArguments(lowerer, [dyn], surplus, ([staged]) => ({
+      kind: "libCall",
+      fn: "os.getPriorityChk",
+      args: [staged!],
+      type: F64,
+      loc,
+    }));
+  }
+  return finish(value, (staged) => direct(lowerer.coerceToExpected(staged, F64)));
 }

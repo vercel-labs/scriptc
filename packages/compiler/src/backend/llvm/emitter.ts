@@ -3160,7 +3160,8 @@ export class LlEmitter {
       // Member names differ from LifetimeRegions' own, which keeps the
       // record from reading as that class's protocol.
       this.shapeHost.regions = {
-        rcBody: (fnName, ret, comment) => regions.countBody(fnName, ret, comment),
+        rcBody: (fnName, ret, comment, nullSentinel) =>
+          regions.countBody(fnName, ret, comment, nullSentinel),
         newAlloc: (className, sizeOf) => regions.allocLines(className, sizeOf),
         classDefinitions: (cls, sizeOf) => regions.classDefs(cls, sizeOf),
       };
@@ -8135,6 +8136,14 @@ export class LlEmitter {
         () => emitBorrowedFieldSequence(this, e) ?? emitOperatorExpr(this, e),
       );
     return emitOperatorExpr(this, e);
+  }
+
+  /** Runs `body` as an expression sequence emitted in place: the locals its
+   * statements declare transfer to the current frame when it ends, so they
+   * die with the statement or branch arm that created them (see
+   * emitSequence). */
+  emitInSequenceScope<T>(body: () => T): T {
+    return this.emitSequence(body);
   }
 
   /** Saved operands can feed later call arguments. Transfer ownership of a

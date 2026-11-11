@@ -1670,6 +1670,13 @@ export class ClassDynamicDispatch {
       branchIndex: number;
       dynamicKey: boolean;
       numericKey: boolean;
+      /** Whether a receiver at one of the helper's call sites can be a
+       * compiled class instance (receiverCanBeInstance). Only then does the
+       * helper get a branch per boxed class and a class key table; a receiver
+       * that can only be a record, array or other builtin value matches no
+       * class, and reading class state for it would expose values its own
+       * dynamic code cannot reach. */
+      instances: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
       /** The operation the helper's per-class key tables answer
        * (computedTableOperation). */
@@ -3086,7 +3093,17 @@ export class ClassDynamicDispatch {
             ...(sloppyWrite ? ["sloppy"] : []),
             ...(namedWrite ? ["named"] : []),
           ]);
+          const receiver: IrExpr = reflect
+            ? (reflectRead ?? reflectWrite)!.args[0]!
+            : computedRead
+              ? computedRead.value
+              : (computedWrite ?? computedProbe)!.args[0]!;
+          const receiverIsInstance = this.receiverCanBeInstance(lowerer, receiver);
           let dispatch = this.computed.get(key);
+          if (dispatch && receiverIsInstance && !dispatch.instances) {
+            dispatch.instances = true;
+            changed = true;
+          }
           if (!dispatch) {
             const loc = expr.loc;
             const params = [
@@ -3381,6 +3398,7 @@ export class ClassDynamicDispatch {
               branchIndex: dynamicKey ? 3 : indexKey ? 2 : 0,
               dynamicKey,
               numericKey,
+              instances: receiverIsInstance,
               probe,
               operation: computedTableOperation({
                 write: !!computedWrite,
@@ -4289,6 +4307,7 @@ export class ClassDynamicDispatch {
       }
     }
     for (const dispatch of this.computed.values()) {
+      if (!dispatch.instances) continue;
       for (const plan of this.propertyReceivers(lowerer, true)) {
         if (dispatch.classes.has(plan.key)) continue;
         const { info } = plan;
@@ -6533,6 +6552,45 @@ export class ClassDynamicDispatch {
       current.subclasses.forEach(add);
     };
     add(root);
+  }
+
+  /** Whether the dynamic value a computed-access helper is handed can be a
+   * compiled class instance. An object, which is a class instance, and an
+   * untyped value that may hold one need the helper's per-class branches.
+   * A record, array, bytes, string or other builtin value cannot be one: its
+   * members live in its property bag, which the helper's checked-dynamic
+   * fallthrough reads. A helper shared by such a site and a class site keeps
+   * its branches; one whose every site hands it a record or array answers
+   * from the fallthrough alone, so class state (Immutable fields included)
+   * stays out of reach of dynamic code at those sites. */
+  private receiverCanBeInstance(lowerer: Lowerer, receiver: IrExpr): boolean {
+    let value = receiver;
+    // A record made dynamic is still a record: the conversions that keep a
+    // value's identity while changing its static type do not change what it
+    // is. (dynCheck keeps its own type: a class instance fails a check to a
+    // record or array, so the checked type tells the whole story.)
+    for (let steps = 0; steps < 32; steps++) {
+      if (value.kind === "dynFrom") value = value.value;
+      else if (value.kind === "seqExpr") value = value.result;
+      else break;
+    }
+    const seen = new Set<string>();
+    const holdsInstance = (type: IrType): boolean => {
+      switch (type.kind) {
+        case "object":
+        case "dyn":
+        case "jsval":
+          return true;
+        case "union": {
+          if (seen.has(type.unionId)) return false;
+          seen.add(type.unionId);
+          return (lowerer.unions.get(type.unionId)?.arms ?? []).some(holdsInstance);
+        }
+        default:
+          return false;
+      }
+    };
+    return holdsInstance(value.type);
   }
 
   /** propertyReceivers results by mode, with the class graph they were

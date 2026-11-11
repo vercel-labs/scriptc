@@ -4146,15 +4146,20 @@ function validateFunction(
           !type.params.every((p, i) => typeEquals(p, params[i]!)) ||
           !typeEquals(type.ret, ret)
         )
-          err(`${e.name} argument ${index} must be ${typeKey({ kind: "func", params, ret })}`, e.loc);
+          err(
+            `${e.name} argument ${index} must be ${typeKey({ kind: "func", params, ret })}`,
+            e.loc,
+          );
       };
       const number = (index: number): void => {
         const arg = e.args[index];
-        if (arg !== undefined && arg.type.kind !== "f64") err(`${e.name} argument ${index} must be f64`, e.loc);
+        if (arg !== undefined && arg.type.kind !== "f64")
+          err(`${e.name} argument ${index} must be f64`, e.loc);
       };
       const bytes = (index: number): void => {
         const arg = e.args[index];
-        if (arg !== undefined && arg.type.kind !== "bytes") err(`${e.name} argument ${index} must be a typed array`, e.loc);
+        if (arg !== undefined && arg.type.kind !== "bytes")
+          err(`${e.name} argument ${index} must be a typed array`, e.loc);
       };
       if (e.name === "par.into") {
         if (e.args.length < 6) err("par.into takes a target, four numbers and a body", e.loc);
@@ -4166,7 +4171,8 @@ function validateFunction(
         }
         if (e.type.kind !== "void") err("par.into has type void", e.loc);
       } else if (e.name === "par.reduce") {
-        if (e.args.length !== 7) err("par.reduce takes a count, three numbers, an initial value and two callbacks", e.loc);
+        if (e.args.length !== 7)
+          err("par.reduce takes a count, three numbers, an initial value and two callbacks", e.loc);
         else {
           for (const index of [0, 1, 2, 3, 4]) number(index);
           if (e.args[3]!.type.kind !== "f64") err("par.reduce initial value must be f64", e.loc);

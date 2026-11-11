@@ -6,7 +6,7 @@
  * types, so only annotations the program WRITES count: parameter, return,
  * variable and class field types, and the class markers (Acyclic,
  * ProgramLifetime) in heritage clauses. The IR-side checks live in
- * ir/contract-check.ts. */
+ * contracts/check.ts. */
 import { resolve } from "node:path";
 import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";

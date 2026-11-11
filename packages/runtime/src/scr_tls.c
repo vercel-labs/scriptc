@@ -2202,14 +2202,24 @@ ScrHttpClientReq *scr_https_request_url(ScrStr *url /*borrowed*/, ScrStr *method
                                          ScrHttpRespFn fn) {
   ScrStr *host;
   ScrStr *path;
+  ScrStr *auth;
   double port;
-  if (!scr_http_url_parts(url, true, "https.request", &host, &port, &path)) {
+  if (!scr_http_url_parts(url, true, &host, &port, &path, &auth)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL pending */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
+  /* The URL's credentials are the constructor's auth value (the request
+   * turns them into the Authorization header). */
+  if (auth != NULL) {
+    ScrDyn *value = scr_dyn_new_str(auth);
+    scr_http_request_set_auth(value);
+    scr_dyn_release(value);
+    scr_str_release(auth);
+  }
   ScrHttpClientReq *c = scr_https_request(host, port, path, method, 0, pairs, auto_end,
                                            true /* rejectUnauthorized */, NULL, 0, cb, fn);
+  if (c == NULL) scr_http_request_set_auth(NULL); /* a throwing TLS setup leaves none */
   scr_arr_release(pairs);
   scr_str_release(host);
   scr_str_release(path);

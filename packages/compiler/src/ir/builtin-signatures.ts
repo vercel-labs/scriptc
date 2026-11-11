@@ -2380,6 +2380,12 @@ function buildLibFnSignatures() {
     "http.resGetHeaders": { argTypes: [HTTPRES_T], result: DYN },
     "http.resHasHeader": { argTypes: [HTTPRES_T, STRING], result: BOOL },
     "http.resRemoveHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
+    /** The trio over a name the compiler cannot see as a string (an
+     * untyped or `any` value): Node's validateString throws
+     * ERR_INVALID_ARG_TYPE for anything but a string. MAY THROW. */
+    "http.resGetHeaderDynName": { argTypes: [HTTPRES_T, DYN], result: DYN },
+    "http.resHasHeaderDynName": { argTypes: [HTTPRES_T, DYN], result: BOOL },
+    "http.resRemoveHeaderDynName": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resOnFinish": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -2628,6 +2634,11 @@ function buildLibFnSignatures() {
     "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroy": { argTypes: [HTTPRES_T], result: VOID },
+    /** res.destroy(err): the error is the connection's 'clientError'. */
+    "http.resDestroyError": {
+      argTypes: [HTTPRES_T, { kind: "object", className: "%Error" }],
+      result: VOID,
+    },
     "http.resOnClose": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
@@ -2707,6 +2718,10 @@ function buildLibFnSignatures() {
     "http.clientSignal": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     /** options.signal checked before the request is built (ERR_INVALID_ARG_TYPE). */
     "http.clientSignalCheck": { argTypes: [DYN], result: VOID },
+    /** The options.auth value of the next request: the runtime retains it
+     * until the request constructor turns a truthy value into the
+     * Authorization header (a value Buffer.from rejects throws there). */
+    "http.requestAuth": { argTypes: [DYN], result: VOID },
     /** options.protocol checked before the request is built: the declared
      * scheme against the agent's (the calling module's when the options
      * carry no Agent value). MAY THROW ERR_INVALID_PROTOCOL. */
@@ -2999,6 +3014,10 @@ function buildLibFnSignatures() {
     "tlsca.root": { argTypes: [], result: arrayOf(STRING) },
     "tlsca.set": { argTypes: [arrayOf(STRING)], result: VOID },
     "https.createServer": { argTypes: [null, null, null], result: NETSERVER_T },
+    /** https.createServer({ cert, key }) without a 'request' handler: the
+     * same TLS server with no handler installed; listeners arrive later via
+     * server.on("request", ...). cert/key are PEM. */
+    "https.createServerNoCb": { argTypes: [null, null], result: NETSERVER_T },
     // http2's allowHTTP1 compatibility server (divergence 57): cert/key
     // like tls.createServer; the 'request' handler arrives separately via
     // http.serverOnRequest (shape checked in the libCall case, like

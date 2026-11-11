@@ -77,6 +77,9 @@ declare module "http" {
     readonly url: string;
     readonly method: string;
     readonly httpVersion: string;
+    /* The parsed version's numbers: 1 and 1 for "1.1", Node's split. */
+    readonly httpVersionMajor: number;
+    readonly httpVersionMinor: number;
     readonly complete: boolean;
     readonly aborted: boolean;
     readonly destroyed: boolean;
@@ -182,7 +185,10 @@ declare module "http" {
     end(callback?: () => void): this;
     end(data: string | Uint8Array | undefined, callback?: () => void): this;
     end(data: string | Uint8Array, encoding: string, callback?: () => void): this;
-    destroy(): void;
+    /* destroy([error]): tears the connection down; an error argument is the
+     * connection's 'clientError' payload (Node's socket destroy carries
+     * it), where destroy() reports no error. */
+    destroy(error?: Error): void;
     /* An outgoing message is write-only: pipe() reports
      * ERR_STREAM_CANNOT_PIPE to the 'error' listeners, or throws it when the
      * response has none. */
@@ -276,6 +282,9 @@ declare module "http" {
     /* Node's base method: socket.ref() and request.reusedSocket = true. */
     reuseSocket(socket: Socket, request: ClientRequest): void;
     readonly keepAlive: boolean;
+    /* 'lifo' (Node's default) takes the newest free socket, 'fifo' the
+     * oldest. Settable, as Node's plain property is. */
+    scheduling: "fifo" | "lifo";
     readonly protocol: string;
     /* Settable — a portless request through this agent dials it (Node's
      * option merge). */

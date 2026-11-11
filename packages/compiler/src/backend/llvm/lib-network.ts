@@ -24,6 +24,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   if (
     [
       "https.createServer",
+      "https.createServerNoCb",
       "https.createServerDyn",
       "https.createServerDynCb",
       "https.requestAgent",

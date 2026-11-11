@@ -241,6 +241,12 @@ ScrArr *scr_http_res_get_raw_header_names(ScrHttpRes *r); /* +1 */
 ScrDyn *scr_http_res_get_headers(ScrHttpRes *r); /* +1 */
 bool scr_http_res_has_header_named(ScrHttpRes *r, ScrStr *name /*borrowed*/);
 void scr_http_res_remove_header(ScrHttpRes *r, ScrStr *name /*borrowed*/);
+/* The header CRUD trio over a checked-dynamic NAME: a non-string value
+ * throws Node's validateString error ("The \"name\" argument must be of
+ * type string. Received ..."), then the call lands as above. */
+ScrDyn *scr_http_res_get_header_dyn_name(ScrHttpRes *r, const ScrDyn *name);
+bool scr_http_res_has_header_dyn_name(ScrHttpRes *r, const ScrDyn *name);
+void scr_http_res_remove_header_dyn_name(ScrHttpRes *r, const ScrDyn *name);
 void scr_http_res_on_finish(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* 'prefinish': inside end(), once the last bytes are handed to the socket. */
 void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
@@ -323,6 +329,7 @@ void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err);
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_destroy(ScrHttpRes *r);
+void scr_http_res_destroy_error(ScrHttpRes *r, ScrError *err);
 void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed*/);
 
@@ -481,10 +488,17 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
 /* Its parse half, shared with scr_tls.c's https spelling: the scheme is
  * checked against `secure` (the calling module), so a mismatch is Node's
  * ERR_INVALID_PROTOCOL rather than an implicit scheme switch, and a URL
- * carrying credentials fences (`api` names the caller in the message).
+ * carrying credentials yields the decoded "user:pass" of Node's `auth`
+ * option in `auth_out` (+1, NULL when the URL has none).
  * false = the exception is pending and no out-parameter was written. */
-bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
-                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/);
+bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure,
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/,
+                         ScrStr **auth_out /*+1, nullable*/);
+/* The Authorization value (the `auth` option) the next request built
+ * through scr_http_request_agent_ex or scr_http_request_conn sends:
+ * taken and cleared at those entry points, so a caller sets it
+ * immediately before the request. Retains its argument; NULL clears. */
+void scr_http_request_set_auth(const ScrDyn *auth /*borrowed, nullable*/);
 /* ── the http Agent (new http.Agent(opts) — option surface, getName, the
  * maxSockets/maxTotalSockets queue, and keepAlive's free-socket pool).
  * agent_new answers the SCR_DYNH_HTTP_AGENT handle (+1 dyn) or throws.
@@ -537,6 +551,7 @@ typedef struct ScrHttpReqOpts {
   double timeout;        /* 0 = none */
   ScrArr *headers;       /* +1 name/value pairs */
   ScrDyn *agent;         /* +1, NULL = the global agent */
+  ScrDyn *auth;          /* +1, NULL = none (the Authorization header's source) */
   ScrDyn *signal;        /* +1, NULL = none */
   ScrStr *socket_path;   /* +1, NULL = dial host:port */
   double max_header_size;

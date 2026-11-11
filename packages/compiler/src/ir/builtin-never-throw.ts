@@ -32,6 +32,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_resolve_adopt queues a job; a promise resolved with itself is
   // rejected, not thrown.
   "promise.adopt",
+  // scr_http_request_set_auth retains the value and stores it in a
+  // thread-local; no user code runs.
+  "http.requestAuth",
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
@@ -134,4 +137,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_http_req_destroy_error retains the payload and tears the message
   // down; the 'error' it reports runs from the deferred emit queue.
   "http.reqDestroyError",
+  // scr_http_res_destroy_error retains the payload and tears the response
+  // down; the 'clientError' it reports runs from the deferred emit queue.
+  "http.resDestroyError",
 ]);

@@ -478,6 +478,10 @@ struct ScrNetServer {
   bool unrefd;        /* server.unref(): does not keep the loop alive */
   bool closing;       /* close() called; 'close' fires when conns drain */
   bool close_emitted; /* settled: off the registry, listeners dropped */
+  /* close() calls after the server settled: Node emits 'close' again for
+   * each one (its _emitCloseIfDrained schedules emitCloseNT whenever no
+   * handle remains), so the repeat emissions wait for the sweep. */
+  size_t reclose_pending;
   bool emit_listening;
   /* The writable http.Server timeout property values. Kept on the shared
    * server handle because http/https servers retain that handle identity;
@@ -2459,11 +2463,14 @@ ScrStr *scr_net_server_addr_family(ScrNetServer *s) {
  * recurse). */
 void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullable*/) {
   if (s->close_emitted) {
-    /* A closed server: Node runs the callback at the 'close' it emits
-     * again, with ERR_SERVER_NOT_RUNNING (the callback's adapter builds
-     * it: scr_net_server_close_dyn). The settled server has dropped its
-     * listeners, so only the callback runs. */
-    if (cb) scr_next_tick(cb);
+    /* A closed server: Node emits 'close' again and runs the callback at
+     * that emission, with ERR_SERVER_NOT_RUNNING (the callback's adapter
+     * builds it: scr_net_server_close_dyn). The 'close' listeners stay on
+     * the settled server for exactly this, so the emission joins the
+     * sweep like a first close's. */
+    if (cb) scr_net_ls_add(&s->close_ls, cb, NULL, true);
+    s->reclose_pending++;
+    scr_net_server_register(s);
     return;
   }
   scr_als_ctx_release(s->close_ctx);
@@ -6225,28 +6232,35 @@ static bool scr_net_flags_pending(void) {
   for (ScrNetServer *s = scr_net_servers; s; s = s->next) {
     if (s->pending_err || s->emit_listening) return true;
     if (s->closing && s->nconns == 0 && !s->close_emitted) return true;
+    /* A close() on the settled server owes its own 'close' emission. */
+    if (s->reclose_pending > 0) return true;
   }
   return false;
 }
 
 /* Settles a server whose 'close' is due: fires the close callbacks and
- * listeners, drops every listener list (the cycle story), and leaves the
- * registry. Shared by the server sweep and the socket settle below —
- * Node emits a DRAINED server's 'close' before the dying socket's own
- * 'close', so the socket settle calls this mid-flight. */
+ * listeners, drops the listener lists it no longer needs (the cycle
+ * story) — close_ls stays for a later close()'s repeat emission — and
+ * leaves the registry. Shared by the server sweep and the socket settle
+ * below — Node emits a DRAINED server's 'close' before the dying socket's
+ * own 'close', so the socket settle calls this mid-flight. */
 static void scr_net_server_settle(ScrNetServer *srv) {
   srv->close_emitted = true;
   scr_net_fire0_this(&srv->close_ls, srv, SCR_DYNH_NET_SERVER);
   scr_net_ls_drop(&srv->conn_ls);
   scr_net_ls_drop(&srv->err_ls);
-  scr_net_ls_drop(&srv->close_ls);
+  /* close_ls stays: the persistent 'close' listeners (the once entries
+   * left it as they fired) receive the 'close' each later close() call
+   * emits, as Node's do. It drops when the server itself is freed. */
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
   scr_net_ls_drop(&srv->new_listener_ls);
   scr_net_ls_drop(&srv->drop_ls);
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
-  scr_net_server_unregister(srv);
+  /* A close() a 'close' listener issued during this emission registered
+   * the server again for its own repeat emission: stay registered. */
+  if (srv->reclose_pending == 0) scr_net_server_unregister(srv);
 }
 
 /* Fires a closed socket's 'close' and settles it: its server's count
@@ -6489,16 +6503,28 @@ static void scr_net_sweep(void) {
    * called when several drain in one turn. */
   for (;;) {
     ScrNetServer *due = NULL;
+    bool repeat = false;
     for (ScrNetServer *it = scr_net_servers; it; it = it->next) {
-      if (it->closing && it->nconns == 0 && !it->close_emitted &&
-          (due == NULL || it->close_seq < due->close_seq)) {
+      bool settle = it->closing && it->nconns == 0 && !it->close_emitted;
+      bool again = it->close_emitted && it->reclose_pending > 0;
+      if (!settle && !again) continue;
+      if (due == NULL || it->close_seq < due->close_seq) {
         due = it;
+        repeat = again;
       }
     }
     if (due == NULL) return;
     scr_net_server_retain(due);
     ScrAlsCtx *prev = scr_als_dispatch_enter(due->close_ctx);
-    scr_net_server_settle(due);
+    if (repeat) {
+      /* A close() on the settled server emits 'close' once more; the
+       * callbacks added for it fire here (Node's nextTick emission). */
+      due->reclose_pending--;
+      scr_net_fire0_this(&due->close_ls, due, SCR_DYNH_NET_SERVER);
+      if (due->reclose_pending == 0) scr_net_server_unregister(due);
+    } else {
+      scr_net_server_settle(due);
+    }
     scr_als_dispatch_leave(prev);
     scr_net_server_release(due);
     if (scr_exc_pending()) return;

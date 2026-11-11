@@ -343,6 +343,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
+  // The header trio over a name the compiler cannot see as a string: a
+  // non-string value raises Node's validateString ERR_INVALID_ARG_TYPE.
+  "http.resGetHeaderDynName",
+  "http.resHasHeaderDynName",
+  "http.resRemoveHeaderDynName",
   "http.clientSignal",
   "http.clientSignalCheck",
   "http.clientProtocolCheck",
@@ -393,6 +398,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.createServerDynCb",
   "https.createServerDyn",
   "https.createServerDynCb",
+  // the literal cert/key pair is parsed by the runtime, whose PEM decoder
+  // throws on a malformed certificate or key.
+  "https.createServerNoCb",
   "http2.createSecureServerDyn",
   "http2.createSecureServerDynCb",
   "tls.connect",

@@ -2544,7 +2544,6 @@ function lowerNetServerMethodCall(
       : listenResult("net.listenCb", [receiver, port, cb]);
   }
   if (name === "close") {
-    requireStatementPosition(lowerer, call, "server.close(...)");
     if (args.length > 1) {
       lowerer.noLowering(
         `close with ${args.length} arguments`,
@@ -2553,8 +2552,14 @@ function lowerNetServerMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    // Node answers the server (`return this`); a statement discards it, a
+    // consumed result rides the receiver-returning helper like listen's.
+    const closeResult = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr =>
+      ts.isExpressionStatement(call.parent)
+        ? { kind: "libCall", fn, args: callArgs, type: VOID, loc }
+        : receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
     if (args.length === 0) {
-      return { kind: "libCall", fn: "net.serverClose", args: [receiver], type: VOID, loc };
+      return closeResult("net.serverClose", [receiver]);
     }
     if (
       lowerer.checker
@@ -2563,13 +2568,10 @@ function lowerNetServerMethodCall(
     ) {
       // close((err) => ...): undefined once the server closes, or Node's
       // ERR_SERVER_NOT_RUNNING when it was not listening.
-      return {
-        kind: "libCall",
-        fn: "net.serverCloseDyn",
-        args: [receiver, lowerSocketDynListener(lowerer, args[0]!, "close callbacks")],
-        type: VOID,
-        loc,
-      };
+      return closeResult("net.serverCloseDyn", [
+        receiver,
+        lowerSocketDynListener(lowerer, args[0]!, "close callbacks"),
+      ]);
     }
     const { cb } = lowerCallbackArg(
       lowerer,
@@ -2580,7 +2582,7 @@ function lowerNetServerMethodCall(
       "use ()",
       [],
     );
-    return { kind: "libCall", fn: "net.serverCloseCb", args: [receiver, cb], type: VOID, loc };
+    return closeResult("net.serverCloseCb", [receiver, cb]);
   }
   if (name === "addContext" || name === "setSecureContext") {
     // tls.Server's SNI table and default context (scr_tls.c): addContext
@@ -7146,8 +7148,8 @@ function lowerHttpsModuleCall(
     if (args.length === 1) {
       // The handler-less form: 'request' listeners arrive later via
       // server.on("request", ...) — the createSecureServer emission's
-      // NULL-handler shape, here for the runtime-options record only
-      // (the literal path keeps its historical two-argument surface).
+      // NULL-handler shape, for the runtime-options record and for the
+      // literal cert/key pair alike.
       if (opts.dyn !== undefined) {
         return {
           kind: "libCall",
@@ -7157,11 +7159,13 @@ function lowerHttpsModuleCall(
           loc,
         };
       }
-      lowerer.noLowering(
-        "createServer with 1 arguments",
-        expr,
-        "the supported form is createServer({ cert, key }, (req, res) => ...)",
-      );
+      return {
+        kind: "libCall",
+        fn: "https.createServerNoCb",
+        args: [opts.cert, opts.key],
+        type: NETSERVER_T,
+        loc,
+      };
     }
     const cb = lowerRequestHandlerArg(lowerer, args[1]!);
     return opts.dyn !== undefined
@@ -8154,6 +8158,9 @@ function lowerHttpClientCall(
   let agentVal: IrExpr | null = null;
   /** signal: an AbortSignal (checked at runtime) that destroys the request. */
   let signal: IrExpr | null = null;
+  /** auth: the credentials the constructor turns into the Authorization
+   * header (a truthy value over an absent Authorization header). */
+  let auth: IrExpr | null = null;
   /** servername: the TLS name for SNI and certificate verification. */
   let servername: IrExpr | null = null;
   /** maxHeaderSize: the response head's size bound. */
@@ -8299,6 +8306,21 @@ function lowerHttpClientCall(
             ? lowerer.lowerExpr(initializer)
             : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
         signal = lowerer.coerceToExpected(v, DYN);
+        break;
+      }
+      case "auth": {
+        // Node's constructor sets `Authorization: Basic
+        // <base64(Buffer.from(auth))>` when auth is truthy and the request
+        // carries no Authorization header; a value Buffer.from does not
+        // accept throws ERR_INVALID_ARG_TYPE from the constructor. Both
+        // happen when the request is built, so the value is carried as a
+        // checked-dynamic expression (a string, Buffer or Uint8Array all
+        // convert, and anything else throws there).
+        const v =
+          initializer !== null
+            ? lowerer.lowerExpr(initializer)
+            : lowerer.lowerShorthandValue(prop as ts.ShorthandPropertyAssignment);
+        auth = lowerer.coerceToExpected(v, DYN);
         break;
       }
       case "headers": {
@@ -8575,7 +8597,13 @@ function lowerHttpClientCall(
   // built request (an already aborted signal destroys it at once, like
   // Node's constructor).
   const withSignal = (request: IrExpr): IrExpr => {
-    if (signal === null && servername === null && maxHeaderSize === null && protocol === null)
+    if (
+      signal === null &&
+      servername === null &&
+      maxHeaderSize === null &&
+      protocol === null &&
+      auth === null
+    )
       return request;
     const local = lowerer.declareHiddenLocal("%requestOptions", HTTPCLIENTREQ_T);
     const ref = (): IrExpr => varRef(local.id, HTTPCLIENTREQ_T, loc);
@@ -8639,6 +8667,16 @@ function lowerHttpClientCall(
           type: VOID,
           loc,
         },
+        loc,
+      });
+    }
+    if (auth !== null) {
+      // The constructor sets Authorization before it dials (after the
+      // signal and protocol checks, Node's order): the request entry
+      // point takes the value and turns it into the header.
+      steps.push({
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "http.requestAuth", args: [auth], type: VOID, loc },
         loc,
       });
     }
@@ -10147,6 +10185,20 @@ function lowerHttpResMethodCall(
       const pairs: IrExpr = { kind: "call", callee: helper, args: [v], type: arrayOf(STRING), loc };
       return headResult("http.resWriteHeadPairs", [receiver, status, pairs]);
     }
+    // A string[] value writes one line per element, as setHeader's array
+    // arm stores it. The runtime's dynamic record walk sets every value that
+    // way already, so the whole literal rides it instead of the flat pairs,
+    // which cannot carry a run-time-sized array. The types are read before
+    // anything is lowered, so no initializer is lowered twice.
+    const hasArrayValue = headersNode.properties.nodes.some((prop) => {
+      if (!ts.isPropertyAssignment(prop)) return false;
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(prop.initializer));
+      return mapped?.kind === "array" && mapped.elem.kind === "string";
+    });
+    if (hasArrayValue) {
+      const dyn = lowerer.coerceToExpected(lowerer.lowerExpr(headersNode), DYN);
+      return headResult("http.resWriteHeadDyn", [receiver, status, dyn]);
+    }
     const names: IrExpr[] = [];
     const values: IrExpr[] = [];
     for (const prop of headersNode.properties.nodes) {
@@ -10219,13 +10271,22 @@ function lowerHttpResMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
-    const header = lowerer.lowerExprExpecting(args[0]!, STRING);
+    // A name whose type is a string rides the plain entry point; one the
+    // compiler cannot see as a string (an untyped or `any` value, or a
+    // string | undefined that may be absent) takes the checked-dynamic
+    // name, where Node's validateString throws ERR_INVALID_ARG_TYPE for
+    // anything but a string.
+    const plainName = lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string";
+    const header = plainName
+      ? lowerer.lowerExprExpecting(args[0]!, STRING)
+      : lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+    const fnOf = (plain: IrLibFn, dyn: IrLibFn): IrLibFn => (plainName ? plain : dyn);
     if (name === "getHeader") {
       // The value as set: number, string or string[] (undefined when
       // absent), checked against the declared result type.
       const value: IrExpr = {
         kind: "libCall",
-        fn: "http.resGetHeaderDyn",
+        fn: fnOf("http.resGetHeaderDyn", "http.resGetHeaderDynName"),
         args: [receiver, header],
         type: DYN,
         loc,
@@ -10238,16 +10299,42 @@ function lowerHttpResMethodCall(
     if (name === "hasHeader") {
       return {
         kind: "libCall",
-        fn: "http.resHasHeader",
+        fn: fnOf("http.resHasHeader", "http.resHasHeaderDynName"),
         args: [receiver, header],
         type: BOOL,
         loc,
       };
     }
+    const fn = fnOf("http.resRemoveHeader", "http.resRemoveHeaderDynName");
     const callArgs = [receiver, header];
     if (discardsResult(lowerer, call))
-      return { kind: "libCall", fn: "http.resRemoveHeader", args: callArgs, type: VOID, loc };
-    return receiverReturningCall(lowerer, "http.resRemoveHeader", callArgs, HTTPRES_T, loc);
+      return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+    return receiverReturningCall(lowerer, fn, callArgs, HTTPRES_T, loc);
+  }
+  if (name === "destroy" && args.length === 1) {
+    // destroy(err): Node's socket destroy carries the error to the
+    // connection's 'clientError' ('res.destroy()' reports none).
+    requireStatementPosition(lowerer, call, "res.destroy(err)");
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const err = lowerer.lowerExpr(args[0]!);
+    // destroy(undefined) is destroy(): there is no payload to report.
+    if (isUnitType(err.type)) {
+      return { kind: "libCall", fn: "http.resDestroy", args: [receiver], type: VOID, loc };
+    }
+    if (err.type.kind !== "object") {
+      lowerer.noLowering(
+        `destroy with a '${lowerer.fmt(err.type)}' argument`,
+        args[0]!,
+        "pass an Error value, or call destroy() without one",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http.resDestroyError",
+      args: [receiver, lowerer.coerceToExpected(err, ERROR_T)],
+      type: VOID,
+      loc,
+    };
   }
   if (name === "destroy") {
     requireStatementPosition(lowerer, call, "res.destroy()");

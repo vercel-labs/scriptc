@@ -26267,11 +26267,12 @@
       "anchor": "dep0044-utilisarray",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.isArray",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -26559,11 +26560,12 @@
       "anchor": "dep0060-util_extend",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util._extend",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util._extend",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105165,11 +105167,13 @@
           "tests/corpus/node24-util-types.ts",
           "tests/corpus/text-codec-values/main.ts",
           "tests/corpus/util-ansi-text.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts",
           "tests/corpus/util-format-json-error.ts",
           "tests/corpus/util-inspect-options.ts",
           "tests/corpus/util-mime-object-view.ts",
           "tests/corpus/util-system-errors.ts",
           "tests/corpus/util-text-codecs.ts",
+          "tests/corpus/util-timing-function-shape.ts",
           "tests/corpus/util-types-arguments-object.js",
           "tests/corpus/util-types-brand-matrix.ts",
           "tests/corpus/util-types-module-namespace-brand.ts",
@@ -105236,11 +105240,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util._extend",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util._extend",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105263,11 +105268,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.isArray",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.isArray",
         "tests": [
           "tests/corpus/7700-util-deprecated-helpers.cjs",
-          "tests/corpus/7701-util-deprecated-helpers.ts"
+          "tests/corpus/7701-util-deprecated-helpers.ts",
+          "tests/corpus/util-deprecated-helper-edges.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106152,8 +106158,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.convertProcessSignalToExitCode",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.convertProcessSignalToExitCode",
         "tests": [
           "tests/corpus/7702-util-signal-exit-code.cjs"
         ]
@@ -106178,8 +106184,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debuglog",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debuglog",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
           "tests/corpus/5193-util-debuglog.ts",
@@ -106206,7 +106212,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.debuglog",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
@@ -106234,11 +106240,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debug",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debug",
         "tests": [
           "tests/corpus/5192-util-debuglog.cjs",
-          "tests/corpus/5193-util-debuglog.ts"
+          "tests/corpus/5193-util-debuglog.ts",
+          "tests/fixtures/node-types/util-callables.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106261,8 +106268,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.deprecate",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.deprecate",
         "tests": [
           "tests/corpus/5187-util-deprecate.cjs",
           "tests/corpus/5188-util-deprecate-flags.cjs",
@@ -106290,11 +106297,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.debounce",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.debounce",
         "tests": [
           "tests/corpus/7710-util-debounce.cjs",
-          "tests/corpus/7712-util-debounce-throttle.ts"
+          "tests/corpus/7712-util-debounce-throttle.ts",
+          "tests/corpus/util-timing-function-shape.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106317,11 +106325,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.throttle",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.throttle",
         "tests": [
           "tests/corpus/7711-util-throttle.cjs",
-          "tests/corpus/7712-util-debounce-throttle.ts"
+          "tests/corpus/7712-util-debounce-throttle.ts",
+          "tests/corpus/util-timing-function-shape.ts"
         ]
       },
       "anchorSource": "exact"
@@ -106344,8 +106353,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.diff",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.diff",
         "tests": [
           "tests/corpus/7705-util-diff.cjs",
           "tests/corpus/7706-util-diff.ts"
@@ -106900,8 +106909,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.parseArgs",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.parseArgs",
         "tests": [
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/node24-parseargs.js"
@@ -106927,8 +106936,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.parseArgs",
+        "status": "supported",
+        "evidence": "compiler-dedicated:parseArgs",
         "tests": [
           "tests/corpus/2678-util-parseargs.ts",
           "tests/corpus/node24-parseargs.js"
@@ -106954,7 +106963,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:util.util.parseEnv",
         "tests": [
           "tests/corpus/node24-env-parse.ts",
@@ -107224,8 +107233,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.util.aborted",
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.aborted",
         "tests": [
           "tests/corpus/7703-util-aborted.cjs",
           "tests/corpus/7704-util-aborted.ts"

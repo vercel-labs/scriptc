@@ -69880,8 +69880,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -69903,8 +69903,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70547,8 +70547,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70570,8 +70570,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70593,7 +70593,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "The enabled getter tests the section on first read; the callback receives the section's implementation with its own enabled getter.",
         "verification": "test-backed"
       }
@@ -70616,8 +70616,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Matches sections against NODE_DEBUG as the process started and writes formatted SECTION PID lines to stderr; colored object output and %o over objects are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70639,8 +70639,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Warns once per code or wrapper on the next tick, forwards receivers, arguments, and construction, and observes process.noDeprecation and process.throwDeprecation; class constructors are refused.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70662,8 +70662,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70685,8 +70685,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -70708,8 +70708,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -71076,8 +71076,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -71099,8 +71099,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },
@@ -71122,7 +71122,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -71306,8 +71306,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
     },

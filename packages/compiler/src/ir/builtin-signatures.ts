@@ -6267,6 +6267,11 @@ function buildLibFnSignatures() {
     "text.decoderEncoding": { argTypes: [DYN], result: F64 },
     "text.decoderName": { argTypes: [F64], result: STRING },
     "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+    /** TextEncoder.encodeInto over a statically typed string and Uint8Array:
+     * scr_bytes.c's typed entry, which boxes nothing. Borrowed args; the
+     * result is the call site's own `{ read, written }` record (the backend
+     * fills it from two slots), so the signature names none. */
+    "text.encodeIntoStr": { argTypes: [STRING, BYTES_U8], result: DYN },
     /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
      * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
      * Borrowed; never throws. */

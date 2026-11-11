@@ -32,6 +32,29 @@ The installed compiler can build for its own platform out of the box. To build f
 2. Add the target's runtime pack to your project, at the same version as `scriptc --version`. Runtime packs are named `@scriptc/runtime-<target>`, for example `@scriptc/runtime-linux-arm64-gnu` or `@scriptc/runtime-wasm32-wasi`.
 3. Run `scriptc build` from your project with `SCRIPTC_TARGET` set to the target triple.
 
+The pack name does not always match the target triple. These are the packs per target:
+
+<table>
+  <thead>
+    <tr><th>Target</th><th>Runtime pack</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>macOS arm64</td><td><code>@scriptc/runtime-darwin-arm64</code></td></tr>
+    <tr><td>macOS x64</td><td><code>@scriptc/runtime-darwin-x64</code></td></tr>
+    <tr><td>Linux x64 (glibc)</td><td><code>@scriptc/runtime-linux-x64-gnu</code></td></tr>
+    <tr><td>Linux arm64 (glibc)</td><td><code>@scriptc/runtime-linux-arm64-gnu</code></td></tr>
+    <tr><td>Linux x64 (musl)</td><td><code>@scriptc/runtime-linux-x64-musl</code></td></tr>
+    <tr><td>Linux arm64 (musl)</td><td><code>@scriptc/runtime-linux-arm64-musl</code></td></tr>
+    <tr><td>Windows x64 (<code>x86_64-windows-gnu</code>)</td><td><code>@scriptc/runtime-win32-x64-msvc</code></td></tr>
+    <tr><td>WebAssembly (WASI)</td><td><code>@scriptc/runtime-wasm32-wasi</code></td></tr>
+    <tr><td>iOS arm64</td><td><code>@scriptc/runtime-ios-arm64</code></td></tr>
+    <tr><td>iOS simulator arm64</td><td><code>@scriptc/runtime-ios-simulator-arm64</code></td></tr>
+    <tr><td>Android arm64</td><td><code>@scriptc/runtime-android-arm64</code></td></tr>
+  </tbody>
+</table>
+
+The Windows pack uses Node's <code>win32</code> and <code>msvc</code> naming even though the target triple says <code>windows</code> and <code>gnu</code>.
+
 ```console
 $ npm install --save-dev @scriptc/runtime-linux-arm64-gnu@0.3.0
 $ SCRIPTC_TARGET=aarch64-linux-gnu.2.36 scriptc build fib.ts -o fib-linux >/dev/null

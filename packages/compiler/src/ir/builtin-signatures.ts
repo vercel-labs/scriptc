@@ -1830,7 +1830,7 @@ function buildLibFnSignatures() {
      * union (null = spawn failure or signal death, type-directed
      * construction in the backend like process.envGet); stdout/stderr are
      * +1 strings. */
-    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING)], result: SPAWNRES_T },
+    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING), STRING], result: SPAWNRES_T },
     // spawnSync's options form: timeout, killSignal name ("" = SIGTERM),
     // and the three stdio modes.
     /** spawnSync with options (scr_child.c): the cp.spawnSync core plus the
@@ -1844,13 +1844,13 @@ function buildLibFnSignatures() {
      * call site's `Signals | null` union (null = exited normally or spawn
      * failure), constructed type-directedly like spawnRes.status. */
     "cp.spawnSyncOpts": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
      * pairs replace the child's environment (recordToEnvPairs). */
     "cp.spawnSyncEnv": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING), STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
@@ -1859,7 +1859,7 @@ function buildLibFnSignatures() {
      * maps the value to the three modes. Args (cmd, argv, timeout,
      * killSignal, stdio). Never throws, like the other spawnSync forms. */
     "cp.spawnSyncStdioStr": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING, STRING],
       result: SPAWNRES_T,
     },
     /** spawnSync with the `cwd`, `input`, and `shell` options (the
@@ -1874,7 +1874,20 @@ function buildLibFnSignatures() {
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        BOOL,
+        STRING,
+      ],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -1893,6 +1906,7 @@ function buildLibFnSignatures() {
         BOOL,
         BOOL,
         arrayOf(STRING),
+        STRING,
       ],
       result: SPAWNRES_T,
     },
@@ -3198,13 +3212,13 @@ function buildLibFnSignatures() {
      * parameter, Node's event object. */
     "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, encoding —
      * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
      * (+ captured stderr) on non-zero exit or signal death, "spawnSync
      * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
      * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
-     * and stderr properties (Buffer outputs when buffers is set: no
-     * encoding option). Result is the captured utf8 stdout (+1). */
+     * and stderr properties (decoded strings: the encoding option's name).
+     * Result is the captured stdout decoded with that encoding (+1). */
     "cp.execSync": {
       argTypes: [
         STRING,
@@ -3218,9 +3232,30 @@ function buildLibFnSignatures() {
         F64,
         F64,
         F64,
-        BOOL,
+        STRING,
       ],
       result: STRING,
+    },
+    /** The unencoded execFileSync/execSync form (cp.execSyncBytes): the
+     * same call with Node's Buffer result and Buffer error outputs. Args:
+     * cmd, argv, shell, input, hasInput, cwd, hasEnv, envPairs, timeoutMs,
+     * stdoutMode, stderrMode. THROWS Node's exact errors, with the
+     * status/signal/output/pid/stdout/stderr properties. */
+    "cp.execSyncBytes": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        BOOL,
+        STRING,
+        BOOL,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+      ],
+      result: BYTES_U8,
     },
     /** The promisified-execFile/exec capture (args: cmd, argv, shell, cwd,
      * hasEnv, envPairs, timeoutMs; shell marks exec's /bin/sh -c argv, as

@@ -27,6 +27,7 @@ import {
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import { optionMember } from "./arguments.js";
+import { knownBufEncoding } from "../containers/bytes.js";
 
 /** The child-process args list: one string[] value. An omitted list
  * completes to an empty literal (Node's default); an array LITERAL
@@ -410,6 +411,30 @@ const NODE_SIGNAL_NAMES = new Set([
   "SIGINFO",
 ]);
 
+/** A run-time Buffer-encoding NAME — the value's type must be a union of
+ * Buffer encoding string literals (`BufferEncoding` and its spellings), so
+ * every run-time value is a name Node's tables accept, and the call
+ * decodes through it. A widened `string`, a "buffer" or nullish arm, and
+ * any other value make the capture's static type depend on the value, so
+ * they fence. */
+export function encodingNameValue(lowerer: Lowerer, what: string, node: ts.Expression): IrExpr {
+  const t = lowerer.typeOf(node);
+  const arms = t.flags & ts.TypeFlags.Union ? ts.constituentTypes(t) : [t];
+  const fence = (): never =>
+    lowerer.noLowering(
+      `${what} with this encoding value`,
+      node,
+      'encoding is a Buffer encoding name literal, or a value typed as a union of them; "buffer"/null select the Buffer result',
+    );
+  if (arms.length === 0) fence();
+  for (const arm of arms) {
+    if (!arm.isStringLiteralType() || knownBufEncoding(arm.value) === undefined) fence();
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "string") fence();
+  return value;
+}
+
 /** `spawnSync(command, args?, options?)` → one cp.spawnSync /
  * cp.spawnSyncOpts libCall. An omitted args list completes to an empty
  * string[] literal (Node's default). The options argument must be an
@@ -446,6 +471,13 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
 
   let timeout: IrExpr = numLit(0, loc);
   let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // The encoding option's canonical Buffer encoding name ("" = the
+  // unencoded Buffer form, Node's default): the STRING reads of the
+  // capture decode the bytes through it.
+  let encoding: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  // spawnSync's own maxBuffer: cp.maxBuffer validates it and arms it as the
+  // next capture's limit (Node's 1 MiB without it).
+  let maxBuffer: IrExpr | null = null;
   // stdio modes (scr_child.c's core): stdin 0 = /dev/null ("pipe" with
   // no input and "ignore" both read nothing), 1 = ignore, 2 = inherit;
   // stdout/stderr 0 = capture, 1 = ignore, 2 = inherit. A slot whose TYPE
@@ -485,7 +517,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // The options whose values reach the call, in source order: the
   // extended entry point's prelude evaluates them in this order. `stdio`
   // stands for a tuple whose slots resolve at the call.
-  const optionOrder: ("timeout" | "cwd" | "env" | "stdio" | "input" | "windowsHide")[] = [];
+  const optionOrder: (
+    | "timeout"
+    | "cwd"
+    | "env"
+    | "stdio"
+    | "input"
+    | "windowsHide"
+    | "encoding"
+    | "maxBuffer"
+  )[] = [];
   // A `windowsHide` value whose evaluation can be observed (a call, a
   // getter): it runs where the member sits, through the extended entry
   // point's ordered prelude.
@@ -519,12 +560,15 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
                 runtime.hasInput,
                 runtime.shell,
                 ...extra,
+                runtime.encoding,
               ],
               type: SPAWNRES_T,
               loc,
             },
             0,
-            (a) => ({ cwd: a[7], envPairs: a[11] }),
+            // The env pairs ride only when the entry point takes them; the
+            // trailing argument is the encoding otherwise.
+            (a) => ({ cwd: a[7], envPairs: extra.length > 0 ? a[11] : undefined }),
             loc,
           );
         // An absent `env` inherits our environment; a present one replaces
@@ -655,16 +699,38 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       }
       switch (m.name) {
         case "encoding": {
+          // Node's normalizeSpawnArguments: null/undefined mean the Buffer
+          // form; "buffer" is the same; otherwise the value must name a
+          // Buffer encoding, which the result's STRING reads decode with.
           const t = lowerer.typeOf(m.value);
-          if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-            lowerer.noLowering(
-              "spawnSync with a non-utf8 encoding",
-              m.value,
-              'outputs are captured as utf8 — pass { encoding: "utf8" }',
-            );
+          if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) break;
+          if (t.isStringLiteralType()) {
+            if (t.value === "buffer") break; // Node's normalizing of "buffer"
+            const lit = knownBufEncoding(t.value);
+            if (lit === undefined) {
+              lowerer.noLowering(
+                `spawnSync with encoding "${t.value}"`,
+                m.value,
+                'a Buffer encoding name (or "buffer"/null for the Buffer form) is the supported encoding option',
+              );
+            }
+            encoding = strLit(lit, loc);
+          } else {
+            // A value whose TYPE is a Buffer encoding name (BufferEncoding
+            // and its spellings): the runtime decodes per read with the
+            // name it holds. A nullish or "buffer" arm would make the
+            // capture's type depend on the value, which fences.
+            encoding = encodingNameValue(lowerer, "spawnSync", m.value);
           }
+          optionOrder.push("encoding");
+          plain = false;
           break;
         }
+        case "maxBuffer":
+          maxBuffer = lowerer.lowerExprExpecting(m.value, F64);
+          optionOrder.push("maxBuffer");
+          plain = false;
+          break;
         case "timeout":
           timeout = lowerer.lowerExprExpecting(m.value, F64);
           optionOrder.push("timeout");
@@ -806,7 +872,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   if (plain) {
     return withChildArgsCheck(
       lowerer,
-      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc },
+      { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv, encoding], type: SPAWNRES_T, loc },
       0,
       () => ({}),
       loc,
@@ -839,12 +905,12 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       {
         kind: "libCall",
         fn: "cp.spawnSyncStdioStr",
-        args: [cmd, argv, timeout, killSignal, stdioStr],
+        args: [cmd, argv, timeout, killSignal, stdioStr, encoding],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      () => ({}),
+      () => ({ maxBuffer: armedMaxBuffer(maxBuffer, true) }),
       loc,
     );
   }
@@ -882,6 +948,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
     let stdinModeArg = inMode;
     let outModeArg = outMode;
     let errModeArg = errMode;
+    let encodingArg = encoding;
+    let maxBufferArg = maxBuffer;
     for (const option of optionOrder) {
       if (option === "timeout") timeoutArg = bind("%spawnSyncTimeout", timeout);
       else if (option === "cwd") cwdArg = bind("%spawnSyncCwd", cwd);
@@ -898,6 +966,10 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       } else if (option === "windowsHide") {
         const value = windowsHideValues.shift();
         if (value !== undefined) bind("%spawnSyncWindowsHide", value);
+      } else if (option === "encoding") {
+        encodingArg = bind("%spawnSyncEncoding", encoding);
+      } else if (option === "maxBuffer" && maxBuffer !== null) {
+        maxBufferArg = bind("%spawnSyncMaxBuffer", maxBuffer);
       }
     }
     // An `input` option makes the call read the stdin slot's runtime mode
@@ -944,12 +1016,17 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           hasInputArg,
           shell,
           ...(envArg !== null ? [envArg] : []),
+          encodingArg,
         ],
         type: SPAWNRES_T,
         loc,
       },
       0,
-      (a) => ({ cwd: a[7], envPairs: a[11] }),
+      (a) => ({
+        cwd: a[7],
+        envPairs: envArg !== null ? a[11] : undefined,
+        maxBuffer: armedMaxBuffer(maxBufferArg, true),
+      }),
       loc,
     );
     return prelude.length === 0
@@ -970,12 +1047,16 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         outMode,
         errMode,
         ...(envPairs !== null ? [envPairs] : []),
+        encoding,
       ],
       type: SPAWNRES_T,
       loc,
     },
     0,
-    (a) => ({ envPairs: a[7] }),
+    (a) => ({
+      envPairs: envPairs !== null ? a[7] : undefined,
+      maxBuffer: armedMaxBuffer(maxBuffer, true),
+    }),
     loc,
   );
 }
@@ -1004,6 +1085,9 @@ function lowerSpawnSyncRuntimeOptions(
   inMode: IrExpr;
   outMode: IrExpr;
   errMode: IrExpr;
+  /** The encoding option's name (the record requires it): the STRING
+   * reads of the capture decode through it. */
+  encoding: IrExpr;
   /** The `env` member's presence test, null when the record has no such
    * member; the pairs ride only the present branch. */
   hasEnv: IrExpr | null;
@@ -1068,6 +1152,14 @@ function lowerSpawnSyncRuntimeOptions(
     loc,
   });
   const inMode = modeCall(0);
+  const encodingRead: IrExpr = {
+    kind: "recordGet",
+    obj: opts,
+    shapeId,
+    field: "encoding",
+    type: STRING,
+    loc,
+  };
   // input's PRESENCE rides separately (undefined = the option is absent —
   // no stdin pipe; "" pipes empty stdin), and Node IGNORES it when
   // stdio[0] takes the child's fd 0 away ("ignore"/"inherit"): the option
@@ -1169,6 +1261,7 @@ function lowerSpawnSyncRuntimeOptions(
     inMode,
     outMode: modeCall(1),
     errMode: modeCall(2),
+    encoding: encodingRead,
     hasEnv,
     envPairs,
   };

@@ -160,13 +160,18 @@ static void scr_child_error_outputs(ScrError *e, ScrStr *out, ScrStr *err) {
   scr_error_set_prop(e, "stderr", 6, scr_dyn_new_str(err));
 }
 
+static ScrStr *scr_child_capture_text(const ScrStr *raw, const ScrStr *encoding);
+
 /* A captured sync output as Node's result holds it: a Buffer, the utf8
  * string with an encoding option, or null for a stream that was not
  * piped. +1. */
-static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, bool buffers) {
+static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, bool buffers,
+                                     const ScrStr *encoding) {
   if (!piped) return scr_dyn_new_null();
   if (!buffers) {
-    ScrStr *s = scr_str_new(data, len);
+    ScrStr *raw = scr_str_new(data, len);
+    ScrStr *s = scr_child_capture_text(raw, encoding);
+    scr_str_release(raw);
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);
     return d;
@@ -177,6 +182,62 @@ static ScrDyn *scr_child_sync_output(const char *data, size_t len, bool piped, b
   ScrDyn *d = scr_dyn_new_buffer(b);
   scr_bytes_release(b);
   return d;
+}
+
+/* A spawnSync capture as the STRING read (spawnRes.stdout/stderr) answers
+ * it: the captured bytes decoded with the call's encoding option. `encoding`
+ * is a Buffer encoding name (any ASCII case; the compiler folds literals,
+ * a typed options record carries its own value) and "" is the unencoded
+ * form, whose reads answer the bytes as they stand — the unencoded
+ * spawnSync result types stdout/stderr Buffer, and only the typed Buffer
+ * reads are lowered, so that arm is a fallback. Unknown names read as utf8
+ * (Node refuses them at the call, which the compiler's encoding check
+ * enforces before one reaches here). +1. */
+static ScrStr *scr_child_capture_text(const ScrStr *raw, const ScrStr *encoding) {
+  if (raw == NULL) return scr_str_new("", 0);
+  if (encoding == NULL || encoding->len == 0) return scr_str_retain((ScrStr *)raw);
+  ScrBytes view = {
+      .rc = 1, .len = raw->len, .elem = SCR_BYTES_U8,
+      .data = (uint8_t *)raw->data, .backing = NULL,
+  };
+  ScrStr *name = scr_bytes_normalize_encoding_or_utf8(encoding);
+  ScrStr *text = scr_bytes_to_str(&view, name);
+  scr_str_release(name);
+  return text;
+}
+
+/* The inheritStderr echo (no stdio option given). Node writes the
+ * result's `stderr`, the DECODED capture when an encoding option is set,
+ * so the console encodes that text as utf8; without one the child's own
+ * bytes are forwarded. */
+static void scr_exec_echo_stderr(const char *data, size_t len, const ScrStr *encoding) {
+  if (len == 0) return;
+  scr_stdout_settle();
+  fflush(stdout);
+  if (encoding == NULL || encoding->len == 0) {
+    fwrite(data, 1, len, stderr);
+    return;
+  }
+  ScrStr *raw = scr_str_new(data, len);
+  ScrStr *text = scr_child_capture_text(raw, encoding);
+  scr_str_release(raw);
+  char *owned = NULL;
+  const char *bytes = scr_str_utf8(text, &owned);
+  fwrite(bytes, 1, text->len, stderr);
+  scr_str_utf8_end(owned);
+  scr_str_release(text);
+}
+
+/* The unencoded execSync result: the captured stdout bytes as the branded
+ * Buffer Node answers when no encoding option is given (+1). Moves
+ * `out_s`; NULL (an exception is pending) stays NULL. */
+static ScrBytes *scr_exec_bytes_from_str(ScrStr *out_s) {
+  if (out_s == NULL) return NULL;
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)out_s->len);
+  bytes->is_buffer = true;
+  if (out_s->len) memcpy(bytes->data, out_s->data, out_s->len);
+  scr_str_release(out_s);
+  return bytes;
 }
 
 /* The spawnSync capture accessors (scr_spawn_res_stdout_bytes /
@@ -1224,6 +1285,10 @@ struct ScrSpawnRes {
   double status;
   ScrStr *out;
   ScrStr *err;
+  /* The call's encoding option as a canonical Buffer encoding name (+1;
+   * NULL = the unencoded Buffer form). The STRING reads of stdout/stderr
+   * decode the captured bytes through it; the Buffer reads ignore it. */
+  ScrStr *encoding;
   const char *spawn_errname;
   ScrStr *cmd;
 #ifdef SCR_CHILD_ERR_FIELDS
@@ -1239,6 +1304,14 @@ struct ScrSpawnRes {
   const char *signal_name;
 };
 
+/* Stamp a finished spawnSync result with the call's encoding option
+ * (NULL or "" = the unencoded Buffer form). Borrows; the result takes its
+ * own reference. */
+static ScrSpawnRes *scr_child_res_encoded(ScrSpawnRes *r, ScrStr *encoding) {
+  if (r != NULL && encoding != NULL && encoding->len > 0) r->encoding = scr_str_retain(encoding);
+  return r;
+}
+
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
@@ -1249,6 +1322,7 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
   if (--r->rc == 0) {
     scr_str_release(r->out);
     scr_str_release(r->err);
+    scr_str_release(r->encoding);
     scr_str_release(r->cmd); /* NULL-safe */
 #ifdef SCR_CHILD_ERR_FIELDS
     if (r->args) scr_arr_release(r->args);
@@ -1262,8 +1336,14 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->out, r->encoding);
+}
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->err, r->encoding);
+}
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r) { return scr_str_retain(r->out); }
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r) { return scr_str_retain(r->err); }
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -1304,6 +1384,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->args = NULL;
 #endif
   r->cmd = NULL;
+  r->encoding = NULL;
   r->signal_name = NULL;
   return r;
 }
@@ -1392,31 +1473,35 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   return r;
 }
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL);
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding) {
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL), encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode,
-                                 double out_mode, double err_mode) {
+                                 double out_mode, double err_mode, ScrStr *encoding) {
   return scr_spawn_sync_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
-                            NULL);
+                            NULL, encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs) {
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
-                             (int)out_mode, (int)err_mode, env_pairs);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
+                          (int)out_mode, (int)err_mode, env_pairs),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                      ScrStr *killsignal, ScrStr *stdio) {
+                                      ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding) {
   double in_mode = 0, out_mode = 0, err_mode = 0; /* "pipe": the defaults */
   if (stdio->len == 7 && memcmp(stdio->data, "inherit", 7) == 0) {
     in_mode = 2;
@@ -1426,7 +1511,8 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
     out_mode = 1;
     err_mode = 1;
   }
-  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode);
+  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
+                             encoding);
 }
 
 /* ── execFileSync / execSync (the POSIX arm's message contracts) ─────── */
@@ -1463,20 +1549,40 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
 }
 
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
-                                       bool with_stderr, bool always_nl) {
+                                       bool with_stderr, bool always_nl,
+                                       const ScrStr *encoding) {
+  /* The message appends `stderr` as Node does: the DECODED capture with
+   * an encoding option, the Buffer's utf8 stringification without one. */
+  ScrStr *err_text = NULL;
+  ScrStr *utf8_name = NULL;
+  if (with_stderr && err_cap->len > 0) {
+    ScrStr *raw = scr_str_new(err_cap->data, err_cap->len);
+    /* No encoding option: Node appends the Buffer's utf8 stringification,
+     * so bytes above ASCII decode with replacement characters rather than
+     * reaching the message verbatim. */
+    const ScrStr *name = encoding;
+    if (name == NULL || name->len == 0) {
+      utf8_name = scr_str_new("utf8", 4);
+      name = utf8_name;
+    }
+    err_text = scr_child_capture_text(raw, name);
+    scr_str_release(raw);
+  }
   size_t dlen = strlen(display);
-  size_t elen = with_stderr ? err_cap->len : 0;
+  size_t elen = err_text != NULL ? err_text->len : 0;
   size_t cap = 16 + dlen + 1 + elen + 1;
   char *msg = malloc(cap);
   if (!msg) scr_child_oom();
   size_t at = (size_t)snprintf(msg, cap, "Command failed: %s", display);
   if (elen > 0 || always_nl) {
     msg[at++] = '\n';
-    memcpy(msg + at, err_cap->data, elen);
+    if (elen > 0) memcpy(msg + at, err_text->data, elen);
     at += elen;
   }
   ScrStr *message = scr_str_new(msg, at);
   free(msg);
+  if (utf8_name != NULL) scr_str_release(utf8_name);
+  if (err_text != NULL) scr_str_release(err_text);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(message);
   return e;
@@ -1512,7 +1618,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
                             const ScrStr *input, const ScrStr *cwd,
                             ScrArr *env_pairs, double timeout_ms,
                             int stdout_mode, int stderr_mode, bool async_shape,
-                            bool buffers, ScrStr **stderr_out) {
+                            bool buffers, const ScrStr *encoding, ScrStr **stderr_out) {
   /* stdio "inherit"'s stdin rides bit 4 of stdout_mode (scr_runtime.h). */
   bool stdin_inherit = (stdout_mode & 4) != 0;
   stdout_mode &= 3;
@@ -1544,11 +1650,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   /* Node's inheritStderr: no stdio option given → the captured stderr
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
-  if (stderr_mode == 0 && w.err.len > 0) {
-    scr_stdout_settle();
-    fflush(stdout);
-    fwrite(w.err.data, 1, w.err.len, stderr);
-  }
+  if (stderr_mode == 0) scr_exec_echo_stderr(w.err.data, w.err.len, encoding);
   if (w.timed_out && !async_shape) {
     /* The SYNC forms throw Node's spawnSync ETIMEDOUT; the async shape
      * reports the kill's death as an ordinary command failure below,
@@ -1556,8 +1658,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     ScrError *e = scr_exec_spawn_error(cmd, args, "ETIMEDOUT", false);
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, false, 0, "SIGTERM", (double)w.pid, true,
-                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     free(w.out.data);
     free(w.err.data);
     scr_exec_throw(e);
@@ -1571,8 +1673,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, exited, exited ? (double)w.exit_code : 0,
                                 exited ? NULL : "SIGTERM", (double)w.pid, true,
-                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     free(w.out.data);
     free(w.err.data);
     scr_exec_throw(e);
@@ -1596,7 +1698,7 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   bool failed = w.exit_code != 0 || w.timed_out;
   if (failed) {
     char *display = scr_exec_display(cmd, args, shell);
-    ScrError *e = scr_exec_failed_error(display, &w.err, cap_err, async_shape);
+    ScrError *e = scr_exec_failed_error(display, &w.err, cap_err, async_shape, encoding);
     /* libuv's kill emulation: a timed-out child died to the kill signal. */
     bool exited = !w.timed_out;
     if (async_shape) {
@@ -1611,8 +1713,8 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
     } else {
       scr_child_error_sync_fields(e, exited, (double)w.exit_code, exited ? NULL : "SIGTERM",
                                   (double)w.pid, true,
-                                  scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers),
-                                  scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers));
+                                  scr_child_sync_output(w.out.data, w.out.len, cap_out, buffers, encoding),
+                                  scr_child_sync_output(w.err.data, w.err.len, cap_err, buffers, encoding));
     }
     free(display);
     free(w.out.data);
@@ -1626,16 +1728,34 @@ static ScrStr *scr_exec_run(ScrStr *cmd, ScrArr *args, bool shell,
   ScrStr *out_s = scr_str_new(w.out.data, w.out.len);
   free(w.out.data);
   free(w.err.data);
+  if (!async_shape && encoding != NULL && encoding->len > 0) {
+    ScrStr *text = scr_child_capture_text(out_s, encoding);
+    scr_str_release(out_s);
+    out_s = text;
+  }
   return out_s;
 }
 
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                       bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                       double timeout_ms, double stdout_mode, double stderr_mode,
-                      bool buffers) {
+                      ScrStr *encoding) {
   return scr_exec_run(cmd, args, shell, has_input ? input : NULL,
                       cwd->len > 0 ? cwd : NULL, has_env ? env_pairs : NULL,
-                      timeout_ms, (int)stdout_mode, (int)stderr_mode, false, buffers, NULL);
+                      timeout_ms, (int)stdout_mode, (int)stderr_mode, false, false,
+                      encoding, NULL);
+}
+
+/* The unencoded form (cp.execSyncBytes): Node's Buffer result. The error
+ * outputs are Buffers too. */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode) {
+  ScrStr *out_s = scr_exec_run(cmd, args, shell, has_input ? input : NULL,
+                               cwd->len > 0 ? cwd : NULL, has_env ? env_pairs : NULL,
+                               timeout_ms, (int)stdout_mode, (int)stderr_mode, false, true,
+                               NULL, NULL);
+  return scr_exec_bytes_from_str(out_s);
 }
 
 ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd,
@@ -1643,7 +1763,7 @@ ScrSpawnRes *scr_exec_capture(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *cwd
   ScrStr *err_s = NULL;
   ScrStr *out_s = scr_exec_run(cmd, args, shell, NULL, cwd->len > 0 ? cwd : NULL,
                                has_env ? env_pairs : NULL, timeout_ms, 1, 1,
-                               true, false, &err_s);
+                               true, false, NULL, &err_s);
   if (out_s == NULL) return NULL; /* exception pending; dummy result */
   return scr_spawn_res_new(true, 0, out_s, err_s);
 }
@@ -3568,23 +3688,25 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
-                                 (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input, shell);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
+                              (int)out_mode, (int)err_mode, env_pairs, cwd, input,
+                              has_input, shell),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell) {
+                                 bool has_input, bool shell, ScrStr *encoding) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, shell, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL, encoding);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option. */
@@ -3668,8 +3790,12 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;  /* false: signal death or spawn failure (status null) */
   double status;
-  ScrStr *out; /* captured stdout, utf8 */
-  ScrStr *err; /* captured stderr, utf8 */
+  ScrStr *out; /* captured stdout bytes */
+  ScrStr *err; /* captured stderr bytes */
+  /* The call's encoding option as a canonical Buffer encoding name (+1;
+   * NULL = the unencoded Buffer form). The STRING reads of stdout/stderr
+   * decode the captured bytes through it; the Buffer reads ignore it. */
+  ScrStr *encoding;
   /* Spawn failure (Node's `error` property): the errno name for the
    * message ("spawnSync <file> ENOENT") and `code` stamp — a timeout kill
    * rides the same slot as ETIMEDOUT. NULL = no error — the property
@@ -3689,6 +3815,14 @@ struct ScrSpawnRes {
   const char *signal_name;
 };
 
+/* Stamp a finished spawnSync result with the call's encoding option
+ * (NULL or "" = the unencoded Buffer form). Borrows; the result takes its
+ * own reference. */
+static ScrSpawnRes *scr_child_res_encoded(ScrSpawnRes *r, ScrStr *encoding) {
+  if (r != NULL && encoding != NULL && encoding->len > 0) r->encoding = scr_str_retain(encoding);
+  return r;
+}
+
 ScrSpawnRes *scr_spawn_res_retain(ScrSpawnRes *r) {
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
@@ -3699,6 +3833,7 @@ void scr_spawn_res_release(ScrSpawnRes *r) {
   if (--r->rc == 0) {
     scr_str_release(r->out);
     scr_str_release(r->err);
+    scr_str_release(r->encoding);
     scr_str_release(r->cmd); /* NULL-safe */
 #ifdef SCR_CHILD_ERR_FIELDS
     if (r->args) scr_arr_release(r->args);
@@ -3712,8 +3847,14 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) { return scr_str_retain(r->out); }
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) { return scr_str_retain(r->err); }
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->out, r->encoding);
+}
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r) {
+  return scr_child_capture_text(r->err, r->encoding);
+}
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r) { return scr_str_retain(r->out); }
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r) { return scr_str_retain(r->err); }
 bool scr_spawn_res_has_signal(ScrSpawnRes *r) { return r->signal_name != NULL; }
 ScrStr *scr_spawn_res_signal(ScrSpawnRes *r) {
   return scr_str_new(r->signal_name, strlen(r->signal_name));
@@ -3831,6 +3972,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->args = NULL;
 #endif
   r->cmd = NULL;
+  r->encoding = NULL;
   r->signal_name = NULL;
   return r;
 }
@@ -4130,8 +4272,9 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   return r;
 }
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
-  return scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL);
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding) {
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, 0, SIGTERM, 0, 0, 0, NULL), encoding);
 }
 
 /* The options entry (cp.spawnSyncOpts): killSignal as a NAME ("" = the
@@ -4140,21 +4283,23 @@ ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args) {
  * to SIGTERM defensively), modes as doubles (the IR's scalar). */
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                   ScrStr *killsignal, double in_mode,
-                                  double out_mode, double err_mode) {
+                                  double out_mode, double err_mode, ScrStr *encoding) {
   return scr_spawn_sync_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
-                            NULL);
+                            NULL, encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs) {
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
-                             (int)out_mode, (int)err_mode, env_pairs);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core(cmd, args, timeout_ms, killsig, (int)in_mode,
+                          (int)out_mode, (int)err_mode, env_pairs),
+      encoding);
 }
 
 /* The runtime-string stdio entry (cp.spawnSyncStdioStr): the compiler
@@ -4162,14 +4307,16 @@ ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
  * literals (the defaultRunner idiom `stdio: options?.stdio ?? "pipe"`),
  * so mapping to the three modes happens here at the call. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                       ScrStr *killsignal, ScrStr *stdio) {
+                                       ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding) {
   double in_mode = 0, out_mode = 0, err_mode = 0; /* "pipe": the defaults */
   if (stdio->len == 7 && memcmp(stdio->data, "inherit", 7) == 0) {
     in_mode = 2; out_mode = 2; err_mode = 2;
   } else if (stdio->len == 6 && memcmp(stdio->data, "ignore", 6) == 0) {
     out_mode = 1; err_mode = 1;
   }
-  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode);
+  return scr_spawn_sync_opts(cmd, args, timeout_ms, killsignal, in_mode, out_mode, err_mode,
+                             encoding);
 }
 
 /* ── execFileSync / execSync ──────────────────────────────────────────
@@ -4212,6 +4359,10 @@ typedef struct {
   bool async_shape;
   /* The sync forms' error outputs are Buffers (no encoding option). */
   bool buffers;
+  /* The sync forms' encoding option (a Buffer encoding name; NULL = the
+   * unencoded form): success and error outputs decode the capture through
+   * it. Ignored when `buffers` is set. */
+  const ScrStr *encoding;
   /* async_shape success: the captured stderr string (+1) lands here. */
   ScrStr **stderr_out;
 } ScrExecOpts;
@@ -4283,20 +4434,40 @@ static void scr_exec_envp_free(char **envp) {
  * "\n<stderr>" unconditionally (a trailing newline on empty stderr),
  * where the sync form appends only when stderr is non-empty. */
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
-                                       bool with_stderr, bool always_nl) {
+                                       bool with_stderr, bool always_nl,
+                                       const ScrStr *encoding) {
+  /* The message appends `stderr` as Node does: the DECODED capture with
+   * an encoding option, the Buffer's utf8 stringification without one. */
+  ScrStr *err_text = NULL;
+  ScrStr *utf8_name = NULL;
+  if (with_stderr && err_cap->len > 0) {
+    ScrStr *raw = scr_str_new(err_cap->data, err_cap->len);
+    /* No encoding option: Node appends the Buffer's utf8 stringification,
+     * so bytes above ASCII decode with replacement characters rather than
+     * reaching the message verbatim. */
+    const ScrStr *name = encoding;
+    if (name == NULL || name->len == 0) {
+      utf8_name = scr_str_new("utf8", 4);
+      name = utf8_name;
+    }
+    err_text = scr_child_capture_text(raw, name);
+    scr_str_release(raw);
+  }
   size_t dlen = strlen(display);
-  size_t elen = with_stderr ? err_cap->len : 0;
+  size_t elen = err_text != NULL ? err_text->len : 0;
   size_t cap = 16 + dlen + 1 + elen + 1;
   char *msg = malloc(cap);
   if (!msg) scr_child_oom();
   size_t at = (size_t)snprintf(msg, cap, "Command failed: %s", display);
   if (elen > 0 || always_nl) {
     msg[at++] = '\n';
-    memcpy(msg + at, err_cap->data, elen);
+    if (elen > 0) memcpy(msg + at, err_text->data, elen);
     at += elen;
   }
   ScrStr *message = scr_str_new(msg, at);
   free(msg);
+  if (utf8_name != NULL) scr_str_release(utf8_name);
+  if (err_text != NULL) scr_str_release(err_text);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(message);
   return e;
@@ -4538,11 +4709,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   /* Node's inheritStderr: no stdio option given → the captured stderr
    * echoes to the parent's stderr AFTER completion, success, failure or
    * timeout. */
-  if (o->stderr_mode == 0 && err.len > 0) {
-    scr_stdout_settle();
-    fflush(stdout);
-    fwrite(err.data, 1, err.len, stderr);
-  }
+  if (o->stderr_mode == 0) scr_exec_echo_stderr(err.data, err.len, o->encoding);
   bool exited = WIFEXITED(st) && !(timed_out && !o->async_shape);
   const char *signal = WIFSIGNALED(st) ? scr_signal_name(WTERMSIG(st)) : NULL;
   if (timed_out && !o->async_shape) {
@@ -4553,8 +4720,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     ScrError *e = scr_exec_spawn_error(cmd, args, ETIMEDOUT, false);
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, false, 0, signal != NULL ? signal : "SIGTERM", (double)pid,
-                                true, scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                true, scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     free(out.data);
     free(err.data);
     scr_exec_throw(e);
@@ -4568,8 +4735,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     scr_child_error_self(e);
     scr_child_error_sync_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                 (double)pid, true,
-                                scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     free(out.data);
     free(err.data);
     scr_exec_throw(e);
@@ -4593,7 +4760,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   bool failed = !exited || WEXITSTATUS(st) != 0;
   if (failed) {
     char *display = scr_exec_display(cmd, args, o->shell);
-    ScrError *e = scr_exec_failed_error(display, &err, cap_err, o->async_shape);
+    ScrError *e = scr_exec_failed_error(display, &err, cap_err, o->async_shape, o->encoding);
     if (o->async_shape) {
       scr_child_error_exit_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                   timed_out);
@@ -4606,8 +4773,8 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
     } else {
       scr_child_error_sync_fields(e, exited, exited ? (double)WEXITSTATUS(st) : 0, signal,
                                   (double)pid, true,
-                                  scr_child_sync_output(out.data, out.len, cap_out, o->buffers),
-                                  scr_child_sync_output(err.data, err.len, cap_err, o->buffers));
+                                  scr_child_sync_output(out.data, out.len, cap_out, o->buffers, o->encoding),
+                                  scr_child_sync_output(err.data, err.len, cap_err, o->buffers, o->encoding));
     }
     free(display);
     free(out.data);
@@ -4621,6 +4788,11 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
   ScrStr *out_s = scr_str_new(out.data, out.len);
   free(out.data);
   free(err.data);
+  if (!o->async_shape && o->encoding != NULL && o->encoding->len > 0) {
+    ScrStr *text = scr_child_capture_text(out_s, o->encoding);
+    scr_str_release(out_s);
+    out_s = text;
+  }
   return out_s;
 }
 
@@ -4633,7 +4805,7 @@ ScrStr *scr_exec_sync_core(ScrStr *cmd, ScrArr *args, const ScrExecOpts *o) {
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
-                       bool buffers) {
+                       ScrStr *encoding) {
   ScrExecOpts o = {
       .shell = shell,
       .input = has_input ? input : NULL,
@@ -4645,9 +4817,29 @@ ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
       .stdout_mode = (int)stdout_mode & 3,
       .stderr_mode = (int)stderr_mode,
       .stdin_inherit = ((int)stdout_mode & 4) != 0,
-      .buffers = buffers,
+      .buffers = false,
+      .encoding = encoding,
   };
   return scr_exec_sync_core(cmd, args, &o);
+}
+
+/* The unencoded form (cp.execSyncBytes): Node's Buffer result. The error
+ * outputs are Buffers too. */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode) {
+  ScrExecOpts o = {
+      .shell = shell,
+      .input = has_input ? input : NULL,
+      .cwd = cwd->len > 0 ? cwd : NULL,
+      .env_pairs = has_env ? env_pairs : NULL,
+      .timeout_ms = timeout_ms,
+      .stdout_mode = (int)stdout_mode & 3,
+      .stderr_mode = (int)stderr_mode,
+      .stdin_inherit = ((int)stdout_mode & 4) != 0,
+      .buffers = true,
+  };
+  return scr_exec_bytes_from_str(scr_exec_sync_core(cmd, args, &o));
 }
 
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
@@ -7610,23 +7802,25 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs) {
+                                     bool has_input, bool shell, ScrArr *env_pairs, ScrStr *encoding) {
   int killsig = SIGTERM;
   if (killsignal->len > 0) {
     int resolved = scr_signal_from_name(killsignal);
     if (resolved > 0) killsig = resolved;
   }
-  return scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
-                                 (int)out_mode, (int)err_mode, env_pairs, cwd, input,
-                                 has_input, shell);
+  return scr_child_res_encoded(
+      scr_spawn_sync_core_ext(cmd, args, timeout_ms, killsig, (int)in_mode,
+                              (int)out_mode, (int)err_mode, env_pairs, cwd, input,
+                              has_input, shell),
+      encoding);
 }
 
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell) {
+                                 bool has_input, bool shell, ScrStr *encoding) {
   return scr_spawn_sync_ext_env(cmd, args, timeout_ms, killsignal, in_mode, out_mode,
-                                err_mode, cwd, input, has_input, shell, NULL);
+                                err_mode, cwd, input, has_input, shell, NULL, encoding);
 }
 
 /* exec/execFile (the callback slice) with the `cwd` option: scr_exec_file's

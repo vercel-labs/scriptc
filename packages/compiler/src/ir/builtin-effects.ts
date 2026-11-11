@@ -692,6 +692,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectLookup",
   "net.connectLookupDyn",
   "cp.execSync",
+  // The unencoded form throws the same spawn, maxBuffer and command errors.
+  "cp.execSyncBytes",
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",

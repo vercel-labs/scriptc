@@ -47,9 +47,19 @@ declare module "child_process" {
    * channel, so the compiler REFUSES `shell: true` with a non-empty args
    * list. */
   export interface SpawnSyncOptions {
-    encoding?: "utf8" | "utf-8";
+    /* The capture's decoding. A Buffer encoding name makes stdout/stderr
+     * the decoded strings; "buffer", null and an absent option keep
+     * Node's Buffer capture. Any BufferEncoding spelling is accepted
+     * (Node's own tables), and a value typed BufferEncoding is read at
+     * the call. */
+    encoding?: BufferEncoding | "buffer" | null;
     timeout?: number;
     killSignal?: string;
+    /* Node's 1 MiB default bounds the combined stdout+stderr capture:
+     * past it the child is killed and `error.code` is ENOBUFS, with a
+     * null status (Node's spawnSync reading). The typed options record
+     * does not carry maxBuffer — pass the options inline to set it. */
+    maxBuffer?: number;
     /* null is Node's default (every slot piped); a null/undefined tuple
      * entry is the default "pipe" for that slot. */
     stdio?:
@@ -72,10 +82,17 @@ declare module "child_process" {
      * shell arguments). */
     shell?: boolean;
   }
+  /* The Buffer form's named options type (@types/node's
+   * SpawnSyncOptionsWithBufferEncoding): "buffer" and null both ask for
+   * the unencoded capture. A TYPED value of this type is not a lowered
+   * options record — pass the options inline. */
+  export type SpawnSyncOptionsWithBufferEncoding = Omit<SpawnSyncOptions, "encoding"> & {
+    encoding?: "buffer" | null;
+  };
   export function spawnSync(
     command: string,
     args: string[] | undefined,
-    options: SpawnSyncOptions & { encoding: "utf8" | "utf-8" },
+    options: SpawnSyncOptions & { encoding: BufferEncoding },
   ): SpawnSyncReturns<string>;
   export function spawnSync(
     command: string,
@@ -91,7 +108,7 @@ declare module "child_process" {
    * parameter flows to spawnSync at runtime with its members read at the
    * call. */
   export interface SpawnSyncOptionsWithStringEncoding {
-    encoding: "utf8" | "utf-8";
+    encoding: BufferEncoding;
     cwd?: string;
     /* A REPLACEMENT environment; an absent member inherits ours. */
     env?: { [key: string]: string | undefined };
@@ -262,18 +279,19 @@ declare module "child_process" {
 
   /* The synchronous exec pair: execFileSync runs a file directly (no
    * shell), execSync runs a command through /bin/sh -c. Both capture
-   * stdout as a utf8 string (pass { encoding: "utf8" } so plain Node
-   * agrees — without it Node returns a Buffer) and THROW on a non-zero
-   * exit / signal death — the Error's message is Node's "Command failed:
-   * <cmd>" (with the captured stderr appended). Supported options:
-   * encoding ("utf8"), cwd, env (REPLACES the child environment), input
-   * (fed to stdin), timeout (ms — SIGTERMs the child, then throws
-   * ETIMEDOUT), stdio ("pipe"/"ignore" or a 3-tuple of those — the
-   * default captures stderr AND echoes it to the parent, like Node), and
-   * maxBuffer (accepted, not enforced). Node's status/stdout/stderr error
+   * stdout and THROW on a non-zero exit / signal death — the Error's
+   * message is Node's "Command failed: <cmd>" (with the captured stderr
+   * appended). The result is Node's: a Buffer without an encoding option
+   * ("buffer"/null included) and the decoded string with a Buffer
+   * encoding name. Supported options: encoding (any BufferEncoding
+   * spelling, or a value typed BufferEncoding read at the call), cwd, env
+   * (REPLACES the child environment), input (fed to stdin), timeout (ms —
+   * SIGTERMs the child, then throws ETIMEDOUT), stdio ("pipe"/"ignore" or
+   * a 3-tuple of those — the default captures stderr AND echoes it to the
+   * parent, like Node), and maxBuffer. Node's status/stdout/stderr error
    * properties are not carried (SEMANTICS.md). */
   interface ExecSyncOptions {
-    encoding?: "utf8" | "utf-8";
+    encoding?: BufferEncoding | "buffer" | null;
     cwd?: string;
     env?: { [k: string]: string | undefined };
     input?: string;
@@ -293,7 +311,7 @@ declare module "child_process" {
    * options parameter flows to execFileSync at runtime — the windows-ca
    * command-runner idiom. */
   export interface ExecFileSyncOptionsWithStringEncoding {
-    encoding: "utf8" | "utf-8";
+    encoding: BufferEncoding;
     cwd?: string;
     input?: string;
     timeout?: number;
@@ -301,8 +319,30 @@ declare module "child_process" {
     maxBuffer?: number;
     windowsHide?: boolean;
   }
-  export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): string;
-  export function execSync(command: string, options?: ExecSyncOptions): string;
+  /* The Buffer form's named options type (@types/node's
+   * ExecSyncOptionsWithBufferEncoding): "buffer" and null ask for the
+   * unencoded capture. A TYPED value of this type is not a lowered
+   * options record — pass the options inline. */
+  export type ExecSyncOptionsWithBufferEncoding = Omit<ExecSyncOptions, "encoding"> & {
+    encoding?: "buffer" | null;
+  };
+  export function execFileSync(
+    file: string,
+    args: string[] | undefined,
+    options: ExecSyncOptions & { encoding: BufferEncoding },
+  ): string;
+  export function execFileSync(file: string, args?: string[], options?: ExecSyncOptions): Buffer;
+  export function execSync(command: string): Buffer;
+  export function execSync(
+    command: string,
+    options: ExecSyncOptions & { encoding: BufferEncoding },
+  ): string;
+  export function execSync(command: string, options?: ExecSyncOptions): Buffer;
+  /* The async pair's options: both captures are decoded as utf8, so the
+   * encoding member keeps the utf8-only type (a non-utf8 name fences). */
+  export interface ExecAsyncOptions extends Omit<ExecSyncOptions, "encoding"> {
+    encoding?: "utf8" | "utf-8";
+  }
   export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
   /* The callback form starts an asynchronous child and captures utf8
    * stdout/stderr. The no-callback overload remains for util.promisify's
@@ -316,13 +356,13 @@ declare module "child_process" {
   export function execFile(
     file: string,
     args: string[] | null,
-    options: ExecSyncOptions,
+    options: ExecAsyncOptions,
     callback: ExecFileCallback,
   ): ChildProcess;
   export function execFile(
     file: string,
     args?: string[] | null,
-    options?: ExecSyncOptions,
+    options?: ExecAsyncOptions,
   ): unknown;
   /* The async shell form. The callback forms lower like execFile's, with
    * the command line run by /bin/sh -c, and util.promisify recognizes it
@@ -330,7 +370,7 @@ declare module "child_process" {
    * fence at their site. */
   export function exec(
     command: string,
-    options?: ExecSyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
+    options?: ExecAsyncOptions | ((error: Error | null, stdout: string, stderr: string) => void),
     callback?: (error: Error | null, stdout: string, stderr: string) => void,
   ): ChildProcess;
 }

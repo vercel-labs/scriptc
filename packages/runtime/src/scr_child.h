@@ -11,10 +11,14 @@
  * call). NEVER throws: spawn failure (nonexistent binary, EACCES) is data
  * — has_status false and empty outputs — like Node's `error` property
  * (Node types stdout/stderr null there; divergence in SEMANTICS.md).
- * A signal-killed child also has no status (Node's status: null). */
+ * A signal-killed child also has no status (Node's status: null).
+ * `encoding` names the call's encoding option (a Buffer encoding name;
+ * "" = the unencoded form, whose string reads answer the raw bytes). The
+ * STRING reads of stdout/stderr decode the capture through it; the Buffer
+ * reads (scr_spawn_res_*_bytes) always answer the captured bytes. */
 typedef struct ScrSpawnRes ScrSpawnRes;
 
-ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args); /* +1, never throws */
+ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args, ScrStr *encoding); /* +1, never throws */
 /* The options form (cp.spawnSyncOpts): timeout_ms > 0 sends killsignal
  * (a signal NAME; "" = SIGTERM) at the deadline and the result carries
  * error: ETIMEDOUT + the signal — never a throw. stdio modes: stdin 0 =
@@ -22,12 +26,12 @@ ScrSpawnRes *scr_spawn_sync(ScrStr *cmd, ScrArr *args); /* +1, never throws */
  * inherit (non-captured outputs read "" — the documented stance). */
 ScrSpawnRes *scr_spawn_sync_opts(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                   ScrStr *killsignal, double in_mode,
-                                  double out_mode, double err_mode);
+                                  double out_mode, double err_mode, ScrStr *encoding);
 /* scr_spawn_sync_opts with an `env` option: [k,v,...] pairs replace the
  * child's environment (NULL inherits the parent's). */
 ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                 ScrStr *killsignal, double in_mode, double out_mode,
-                                double err_mode, ScrArr *env_pairs);
+                                double err_mode, ScrArr *env_pairs, ScrStr *encoding);
 /* The cwd/input/shell forms (cp.spawnSyncExt / cp.spawnSyncExtEnv): the
  * options entry with the child started in `cwd` (NULL or "" = the
  * parent's directory), `input` written to its stdin (has_input false
@@ -42,15 +46,17 @@ ScrSpawnRes *scr_spawn_sync_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
 ScrSpawnRes *scr_spawn_sync_ext(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                  ScrStr *killsignal, double in_mode, double out_mode,
                                  double err_mode, ScrStr *cwd, ScrStr *input,
-                                 bool has_input, bool shell);
+                                 bool has_input, bool shell, ScrStr *encoding);
 ScrSpawnRes *scr_spawn_sync_ext_env(ScrStr *cmd, ScrArr *args, double timeout_ms,
                                      ScrStr *killsignal, double in_mode, double out_mode,
                                      double err_mode, ScrStr *cwd, ScrStr *input,
-                                     bool has_input, bool shell, ScrArr *env_pairs);
+                                     bool has_input, bool shell, ScrArr *env_pairs,
+                                     ScrStr *encoding);
 /* The runtime-string stdio entry: the compiler proved the value is
  * "pipe" | "ignore" | "inherit" by type; the mode mapping happens here. */
 ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_ms,
-                                       ScrStr *killsignal, ScrStr *stdio);
+                                       ScrStr *killsignal, ScrStr *stdio,
+                                       ScrStr *encoding);
 /* execFileSync/execSync behind one entry: posix_spawn(p) + piped utf8
  * capture + waitpid with Node's exact error shapes — non-zero exit or
  * signal death throws Error("Command failed: <cmd>[\n<stderr>]"), spawn
@@ -69,13 +75,20 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * no-stdio-option default), 1 captures only, 2 ignores, 3 inherits.
  * Result is the captured utf8 stdout (+1) — "" when nothing captures
  * (Node answers null there; discarded results cannot tell). A failure's
- * error carries Node's status, signal, output, pid, stdout and stderr;
- * `buffers` (no encoding option) makes those outputs Buffers. All args
+ * error carries Node's status, signal, output, pid, stdout and stderr.
+ * `encoding` is the encoding option's canonical Buffer encoding name: the
+ * result and those error outputs decode the captured bytes through it (the
+ * compiler validates the name; an unknown one reads as utf8). All args
  * borrowed. */
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
-                       bool buffers);
+                       ScrStr *encoding);
+/* The unencoded form (cp.execSyncBytes): the same call with Node's Buffer
+ * result and Buffer error outputs (+1). */
+ScrBytes *scr_exec_sync_bytes(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
+                              bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
+                              double timeout_ms, double stdout_mode, double stderr_mode);
 /* The promisified-execFile/exec capture (cp.execCapture; shell as for
  * scr_exec_sync — the /bin/sh -c argv): the same core in the
  * async shape — both streams captured (no echo), Node's ASYNC error
@@ -98,8 +111,12 @@ void *scr_spawn_res_retain_v(void *p);
 void scr_spawn_res_release_v(void *p);
 bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
-ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1 */
-ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1 */
+ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1, decoded per encoding */
+ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1, decoded per encoding */
+/* The captured bytes, undecoded (whatever the encoding option): the Buffer
+ * reads and the capture memo work from these. +1. */
+ScrStr *scr_spawn_res_stdout_raw(ScrSpawnRes *r);
+ScrStr *scr_spawn_res_stderr_raw(ScrSpawnRes *r);
 /* The Buffer captures (spawnSync without an encoding option): the same
  * bytes as a bytes<u8> value, carrying the Buffer brand Node's capture has
  * (+1). All three entries live in scr_child_capture.c, a unit linked only

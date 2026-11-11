@@ -11473,6 +11473,9 @@
           "tests/corpus/8921-child-max-buffer-sync.js",
           "tests/corpus/8922-child-max-buffer-async.ts",
           "tests/corpus/child-channel-control/main.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
           "tests/corpus/child-stdio-options/main.ts",
           "tests/corpus/compat-child-process-handle.ts",
@@ -11638,7 +11641,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11747,7 +11753,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11781,7 +11790,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11815,7 +11827,10 @@
           "tests/corpus/3127-spawn-runtime-options.ts",
           "tests/corpus/3130-child-generic-streams.ts",
           "tests/corpus/3131-child-rest-listeners.js",
-          "tests/corpus/3132-child-generic-stream-completion.ts"
+          "tests/corpus/3132-child-generic-stream-completion.ts",
+          "tests/corpus/child-exec-sync-buffer.ts",
+          "tests/corpus/child-exec-sync-encodings.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -11838,11 +11853,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:child_process.maxBuffer",
         "tests": [
           "tests/corpus/8921-child-max-buffer-sync.js",
-          "tests/corpus/8922-child-max-buffer-async.ts"
+          "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/child-spawn-sync-encodings.ts"
         ]
       },
       "anchorSource": "exact"

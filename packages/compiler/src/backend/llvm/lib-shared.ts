@@ -997,6 +997,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "cp.spawnSyncExt": "scr_spawn_sync_ext",
   "cp.spawnSyncExtEnv": "scr_spawn_sync_ext_env",
   "cp.execSync": "scr_exec_sync",
+  "cp.execSyncBytes": "scr_exec_sync_bytes",
   "cp.execCapture": "scr_exec_capture",
   "cp.maxBuffer": "scr_child_max_buffer",
   "spawnRes.stdout": "scr_spawn_res_stdout",

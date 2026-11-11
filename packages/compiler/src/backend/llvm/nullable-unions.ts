@@ -182,8 +182,11 @@ export class NullableUnions {
   /** Some nullable union encodes `null` with NULLABLE_NULL. */
   readonly usesNullSentinel: boolean = false;
   /** The classes whose instances a value of the NULLABLE_NULL sentinel
-   * stands for: the reference arm of a two-unit-arm nullable union, whose
-   * values reach the arm's own release entry point. */
+   * stands for: the reference arm of a two-unit-arm nullable union
+   * (`C | null | undefined`), whose values reach the arm's own retain and
+   * release entry points as the sentinel, never as an instance. A class with
+   * a lifetime region has no header word to test immortality in, so its
+   * bodies must skip the sentinel explicitly. */
   private readonly sentinelClasses = new Set<string>();
   /** Some Map or Set is keyed by a string-key union (stringKey): the
    * module defines the two key strings its unit arms are stored as
@@ -294,10 +297,10 @@ export class NullableUnions {
     return nullable?.repr === "single" && nullable.nullTag >= 0;
   }
 
-  /** Whether a release of an instance of class `name` must skip the
+  /** Whether a retain or release of an instance of class `name` must skip the
    * NULLABLE_NULL sentinel: the class is the reference arm of a two-unit-arm
-   * nullable union, so a value of that union reaches this class's release
-   * entry point as the sentinel, never as an instance. */
+   * nullable union, so a value of that union reaches this class's entry
+   * points as the sentinel, never as an instance. */
   classMayBeNullSentinel(name: string): boolean {
     return this.sentinelClasses.has(name);
   }

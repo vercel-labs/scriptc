@@ -11306,12 +11306,17 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
 
-/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c). That unit is a
- * base unit of the runtime pack, so every compiled program has it; the weak
- * reference keeps the minimal C utility builds, which compile scr_lib.c
- * without it, linkable, and lets a program that never calls pbkdf2 strip the
- * completion's machinery instead of retaining it from a constructor. */
+/* The checked-dynamic pbkdf2 completion (scr_crypto_async.c). Library mode
+ * leaves that unit and its loop out of the archive (LIB_RUNTIME_SOURCES),
+ * and its async_free gate refuses the callback form before emission
+ * (SC4005), so no reference exists there at all: a library archive's symbol
+ * table says nothing about this unit. Executable builds and the runtime
+ * unit tests, which link scr_lib.c on its own, take the reference as weak:
+ * the pack's unit always defines it, and a build without the unit still
+ * links. */
+#ifndef SCR_LIB
 extern void scr_crypto_defer_dyn_callback(ScrDyn *, ScrDyn *, ScrDyn *) __attribute__((weak));
+#endif
 
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
@@ -11677,6 +11682,7 @@ static bool scr_crypto_pbkdf2_values(const ScrDyn *digest, const ScrDyn *passwor
   return true;
 }
 
+#ifndef SCR_LIB
 /* The pending error taken as a checked-dynamic value (+1). */
 static ScrDyn *scr_crypto_take_error(void) {
   ScrCaught *caught = scr_exc_take();
@@ -11684,6 +11690,7 @@ static ScrDyn *scr_crypto_take_error(void) {
   scr_caught_release(caught);
   return error;
 }
+#endif
 
 /* pbkdf2(password, salt, iterations, keylen, digest, callback) over any
  * values: Node's checks (the callback last), then the job, whose result or
@@ -11715,6 +11722,7 @@ void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterati
   } else {
     const char *failure = NULL;
     ScrBytes *value = scr_crypto_pbkdf2_job(pw, sl, iteration_count, key_len, alg, &failure);
+#ifndef SCR_LIB
     if (!scr_exc_pending()) {
       ScrDyn *error = NULL, *delivery = NULL;
       if (failure) {
@@ -11728,6 +11736,13 @@ void scr_crypto_pbkdf2_any_async(ScrDyn *password, ScrDyn *salt, ScrDyn *iterati
       if (scr_crypto_defer_dyn_callback)
         scr_crypto_defer_dyn_callback(scr_dyn_retain(callback_value), error, delivery);
     }
+#else
+    /* Library mode compiles without the crypto async unit and its loop, and
+     * its async_free gate refuses this callback form before emission; the
+     * job's storage is all that is left to release. */
+    (void)failure;
+    if (value) scr_bytes_release(value);
+#endif
   }
   scr_bytes_release(sl);
   scr_bytes_release(pw);

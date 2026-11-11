@@ -161,6 +161,13 @@ void scr_crypto_defer_bytes(ScrBytes *value /* moves */, ScrError *error /* move
                             ScrCryptoBytesFn fn);
 void scr_crypto_defer_dyn(ScrDyn *value /* moves */, ScrError *error /* moves */, ScrClosure *cb /* moves */,
                           ScrCryptoBytesFn fn);
+/* A checked-dynamic callback(error, value) delivered in a later macrotask;
+ * a NULL value calls it with the error alone. Every argument is moved. The
+ * executable lane's checked-dynamic pbkdf2 reaches it from scr_lib.c;
+ * library mode leaves this unit (and the loop it defers on) out and refuses
+ * that callback form at SC4005. */
+void scr_crypto_defer_dyn_callback(ScrDyn *callback /* moves */, ScrDyn *error /* moves */,
+                                   ScrDyn *value /* moves, may be NULL */);
 /* randomFill and randomInt with callbacks (scr_crypto_async.c). `form` is
  * randomFill's argument count before the callback. */
 void scr_crypto_random_fill_async(ScrBytes *buf, double offset, double size, double form,

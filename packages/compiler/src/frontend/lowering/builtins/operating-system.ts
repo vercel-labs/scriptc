@@ -98,10 +98,22 @@ export function lowerOsUserInfoCall(
   // bytes to StringBytes::Encode: 'buffer' answers the three strings as
   // Buffers, any other Buffer encoding (aliases and letter case folded)
   // answers the passwd text re-encoded in it, and a spelling Node does not
-  // know reads as utf8 — its ParseEncoding default. The argument must
-  // spell the decision statically: a runtime encoding would make both the
-  // result shape and the decoder depend on the value.
+  // know reads as utf8 — its ParseEncoding default. Node evaluates the
+  // argument at the call site and then reads `options.encoding` off the
+  // object it built, so the argument's own expressions run here in source
+  // order and the last definition of the member decides the record. The
+  // shape must be spelled at compile time: a member whose value (or key)
+  // Node only learns while running the program fences, never reads absent.
   let encoding = "utf8";
+  const sideEffects: IrExpr[] = [];
+  const evaluate = (node: ts.Expression): void => {
+    if (spellsInertValue(node)) return;
+    const expr = lowerer.lowerExpr(node);
+    // `undefined` and `null` lower to a bare unitLit, which carries no
+    // effect and is not a valid IR expression statement.
+    if (expr.kind === "unitLit") return;
+    sideEffects.push(expr);
+  };
   if (args.length === 1) {
     let options: ts.Expression = args[0]!;
     while (ts.isParenthesizedExpression(options)) options = options.expression;
@@ -111,13 +123,33 @@ export function lowerOsUserInfoCall(
         node,
         "the encoding must be the literal 'buffer' or a non-buffer string literal in an options object spelled at the call site",
       );
-    // Node reads the encoding off the options object only when the argument
-    // IS an object: every other argument (undefined, null, a string, a
-    // number) means the default utf8 record, and so does an object whose
-    // type declares no `encoding` member. A type that may carry one at run
-    // time (any, unknown, a type parameter, a declared
-    // `{ encoding?: string }`) makes the decoder a runtime choice, so it
-    // keeps the fence.
+    /** The property key a member's name spells, or `undefined` when only
+     * the program can compute it. `run` is the expression a computed name
+     * evaluates at the call site beyond a literal the source spells. */
+    const staticKey = (name: ts.PropertyName): { key: string | undefined; run?: ts.Expression } => {
+      if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return { key: name.text };
+      if (ts.isNumericLiteral(name)) return { key: String(Number(name.text)) };
+      if (!ts.isComputedPropertyName(name)) return { key: undefined };
+      let expr: ts.Expression = name.expression;
+      while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+      if (ts.isStringLiteralLike(expr)) return { key: expr.text };
+      if (ts.isNumericLiteral(expr)) return { key: String(Number(expr.text)) };
+      // A computed key whose expression the checker pinned to a literal:
+      // ToPropertyKey answers that spelling, and the expression still runs.
+      const t = lowerer.typeOf(expr);
+      if ((t.flags & ts.TypeFlags.StringLiteral) !== 0)
+        return { key: (t as ts.StringLiteralType).value, run: expr };
+      if ((t.flags & ts.TypeFlags.NumberLiteral) !== 0)
+        return { key: String((t as ts.NumberLiteralType).value), run: expr };
+      return { key: undefined };
+    };
+    const encodingOf = (text: string): string =>
+      text.toLowerCase() === "buffer" ? "buffer" : (knownBufEncoding(text) ?? "utf8");
+    // Node reads `options.encoding` only when the argument is an object
+    // (every other value is replaced with null and answers the default utf8
+    // record), but the argument itself is always evaluated, so its effects
+    // stay. A declared type that may carry an encoding member makes the
+    // decoder a runtime choice, so it keeps the fence.
     if (!ts.isObjectLiteralExpression(options)) {
       const t = lowerer.typeOf(options);
       if (
@@ -125,45 +157,117 @@ export function lowerOsUserInfoCall(
         lowerer.checker.getPropertyOfType(t, "encoding") !== undefined
       )
         runtimeEncoding(options);
+      evaluate(options);
     } else {
-      let encodingExpr: ts.Expression | undefined;
+      // Walk the members the way Node builds the object: every computed key
+      // and property value runs (in source order, before the binding reads
+      // anything), a method or accessor is only defined, and the last
+      // definition of `encoding` is what the binding reads. Another
+      // member's value is dead unless spelling it runs something, so it is
+      // evaluated for its effects and dropped.
+      let decision: { text: string } | { runtime: ts.Node } = { text: "utf8" };
       for (const prop of options.properties.nodes) {
-        if (
-          !ts.isPropertyAssignment(prop) ||
-          !(ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name)) ||
-          prop.name.text !== "encoding"
-        ) {
-          // Node never reads another member. Dropping it is sound only when
-          // spelling it runs nothing: a method or accessor is defined, not
-          // run, and a literal value cannot throw.
-          const inert =
-            ts.isMethodDeclaration(prop) ||
-            ts.isGetAccessorDeclaration(prop) ||
-            ts.isSetAccessorDeclaration(prop) ||
-            (ts.isPropertyAssignment(prop) && spellsInertValue(prop.initializer));
-          if (!inert) {
-            lowerer.noLowering(
-              "userInfo options beyond a plain encoding property",
-              prop,
-              "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
-            );
+        if (ts.isSpreadAssignment(prop)) {
+          // The spread copies the source's own properties and reads them at
+          // call time: the encoding can come from the source.
+          lowerer.noLowering(
+            "userInfo options spread from another object",
+            prop,
+            "pass an options object literal with only the encoding property",
+          );
+        }
+        if (ts.isMethodDeclaration(prop)) {
+          // A method's value is a function, never the encoding string; its
+          // body does not run here. An unresolved computed key may name a
+          // member whose value the binding would read.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined) decision = { runtime: prop };
+          else if (k.key === "encoding") decision = { text: "utf8" };
+          continue;
+        }
+        if (ts.isGetAccessorDeclaration(prop)) {
+          // Node reads through the getter: its value is the program's to
+          // compute, and the record's shape depends on it.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined || k.key === "encoding") decision = { runtime: prop };
+          continue;
+        }
+        if (ts.isSetAccessorDeclaration(prop)) {
+          // A setter-only member reads as undefined: the utf8 default.
+          const k = staticKey(prop.name);
+          if (k.run) evaluate(k.run);
+          if (k.key === undefined) decision = { runtime: prop };
+          else if (k.key === "encoding") decision = { text: "utf8" };
+          continue;
+        }
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          if (ts.isIdentifier(prop.name) && prop.name.text !== "encoding") {
+            // Node evaluates the variable read; that read is the member's
+            // only effect, and dropping it would drop a dead-zone throw.
+            evaluate(prop.name);
+            continue;
+          }
+          if (!ts.isIdentifier(prop.name)) {
+            decision = { runtime: prop };
+            continue;
+          }
+          // The value is the variable's, not a literal spelled here: a
+          // constant whose type pins the spelling reads as that encoding.
+          const t = lowerer.typeOf(prop.name);
+          if ((t.flags & ts.TypeFlags.StringLiteral) !== 0) {
+            evaluate(prop.name);
+            decision = { text: encodingOf((t as ts.StringLiteralType).value) };
+          } else {
+            decision = { runtime: prop };
           }
           continue;
         }
-        encodingExpr = prop.initializer;
-      }
-      if (encodingExpr !== undefined) {
-        let value: ts.Expression = encodingExpr;
+        if (!ts.isPropertyAssignment(prop)) {
+          lowerer.noLowering(
+            "userInfo options beyond a plain encoding property",
+            prop,
+            "pass { encoding: 'buffer' } for Buffers or no argument for the string record",
+          );
+        }
+        const k = staticKey(prop.name);
+        if (k.run) evaluate(k.run);
+        if (k.key === undefined) {
+          // Whether the run-time key names `encoding` is the program's to
+          // decide.
+          evaluate(prop.initializer);
+          decision = { runtime: prop };
+          continue;
+        }
+        if (k.key !== "encoding") {
+          // Node never reads another member; evaluating the initializer
+          // keeps the effects spelling it runs.
+          evaluate(prop.initializer);
+          continue;
+        }
+        let value: ts.Expression = prop.initializer;
         while (ts.isParenthesizedExpression(value)) value = value.expression;
         if (ts.isStringLiteralLike(value)) {
-          encoding =
-            value.text.toLowerCase() === "buffer"
-              ? "buffer"
-              : (knownBufEncoding(value.text) ?? "utf8");
-        } else if (!absentEncodingValue(lowerer, value)) {
-          runtimeEncoding(encodingExpr);
+          decision = { text: encodingOf(value.text) };
+        } else {
+          const t = lowerer.typeOf(value);
+          if ((t.flags & ts.TypeFlags.StringLiteral) !== 0) {
+            // A constant whose type pins the spelling: the binding reads
+            // that string, and the read itself is evaluated.
+            evaluate(value);
+            decision = { text: encodingOf((t as ts.StringLiteralType).value) };
+          } else if (absentEncodingValue(lowerer, value)) {
+            // null, undefined and the other non-strings are ParseEncoding's
+            // utf8 default.
+            decision = { text: "utf8" };
+          } else {
+            decision = { runtime: prop };
+          }
         }
       }
+      if ("runtime" in decision) runtimeEncoding(decision.runtime);
+      else encoding = decision.text;
     }
   }
   const fence: () => never = () =>
@@ -279,6 +383,7 @@ export function lowerOsUserInfoCall(
   return {
     kind: "seqExpr",
     stmts: [
+      ...sideEffects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc: expr.loc })),
       {
         kind: "exprStmt",
         expr: { kind: "libCall", fn: "os.userInfoBegin", args: [], type: VOID, loc },

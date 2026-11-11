@@ -418,8 +418,11 @@ void scr_os_set_priority_chk(const ScrDyn *pid_arg, const ScrDyn *priority_arg) 
      * type error names "priority", not "pid"). */
     if (!scr_os_priority_arg("priority", pid_arg, &priority)) return;
   } else {
-    /* Node validates the pid before the priority. */
+    /* Node runs validateInt32(pid, 'pid') to completion — the type check
+     * and then the int32 range — before it looks at the priority, so a
+     * fractional pid with a nonnumber priority is the pid's RangeError. */
     if (!scr_os_priority_arg("pid", pid_arg, &pid)) return;
+    if (!scr_os_validate_int32("pid", pid)) return;
     if (!scr_os_priority_arg("priority", priority_arg, &priority)) return;
   }
   scr_os_set_priority(pid, priority);

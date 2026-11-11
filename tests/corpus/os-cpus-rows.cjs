@@ -42,17 +42,24 @@ const { times } = first;
 console.log("destructured", times.nice >= 0, typeof times.sys);
 
 // Each call takes a new snapshot: the rows are fresh objects the program
-// can change, and the next call answers the machine's data again.
+// can change, and the next call answers the machine's data again. CPU
+// times are live cumulative counters, so two snapshots are compared for
+// shape and monotonic growth — the user time of a CPU never decreases —
+// never for exact equality.
 const second = os.cpus();
 console.log("fresh", second !== list, second[0] !== first);
-const savedModel = second[0].model;
-const savedUser = second[0].times.user;
+const usersBefore = second.map((cpu) => cpu.times.user);
 second[0].model = "changed";
 second[0].times.user = -1;
 const third = os.cpus();
+const shared = Math.min(second.length, third.length);
+let monotonic = shared > 0;
+for (let i = 0; i < shared; i++) {
+  if (!Number.isInteger(third[i].times.user) || third[i].times.user < usersBefore[i]) monotonic = false;
+}
 console.log(
   "independent",
-  third[0].model === savedModel,
-  third[0].times.user === savedUser,
-  first.model === savedModel,
+  third[0] !== second[0],
+  third[0].model !== "changed",
+  monotonic,
 );

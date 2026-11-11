@@ -874,6 +874,10 @@ double scr_rl_open(const ScrRlIo *io, void *in, void *out, bool out_stdout, doub
         scr_stdin_on_end(scr_closure_new((void *)&scr_rl_end_thunk, 0), false);
       }
     }
+    /* Node's Interface constructor ends with input.resume(): a fresh
+     * interface on process.stdin resumes a stream a closed interface
+     * paused, so the 'end' (and any input) still reaches it. */
+    scr_stdin_resume();
   }
   if (signal && scr_dyn_truthy(signal)) scr_rl_watch_signal(rl, signal, add);
   return rl->id;

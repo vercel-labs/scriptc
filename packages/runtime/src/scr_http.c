@@ -1052,11 +1052,10 @@ struct ScrHttpRes {
   char *cork_buf;
   size_t cork_len, cork_cap;
   bool cork_wrote; /* a write() ran while corked: the flush sends a held head */
-  /* res.writableLength: the chunk framing Node counts for the write that
-   * sends the head (its size line and both CRLFs go to the socket with the
-   * head; later corked chunks wait unframed). */
-  size_t wl_framing;
-  bool autocorked; /* the cork is write()'s own, not res.cork() */
+  /* res.writableLength: the bytes of a head flushHeaders() sent while the
+   * response was corked. Node's corked socket still holds them until the
+   * uncork; here they already left, so the count is kept apart. */
+  size_t wl_corked_head;
   /* A write while corked commits the head (headersSent, Node's implicit
    * header) and holds its bytes here until the flush sends them first;
    * writeHead holds them here until the first write(), end() or
@@ -2039,10 +2038,6 @@ static void scr_http_cork_buffer(char **buf, size_t *held_len, size_t *held_cap,
 static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) {
   if (r->finished) return;
   if (r->corked > 0) {
-    /* Node's socket holds this chunk framed unless res.cork() is buffering
-     * chunks of a message whose head already went to the socket. */
-    bool head_pending = !r->head_sent || (r->held_head_len > 0 && !r->cork_wrote);
-    bool user_corked = r->corked > (r->autocorked ? 1 : 0);
     r->cork_wrote = true;
     /* Node's write_() builds the implicit head even while corked */
     if (!r->head_sent && r->h2_stream == NULL) {
@@ -2053,11 +2048,6 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
       r->held_head_cap = held.cap;
     }
     if (scr_exc_pending()) return;
-    if (r->chunked && len > 0 && r->h2_stream == NULL && (head_pending || !user_corked)) {
-      size_t digits = 1;
-      for (size_t n = len; n >= 16; n >>= 4) digits++;
-      r->wl_framing += digits + 4;
-    }
     scr_http_cork_buffer(&r->cork_buf, &r->cork_len, &r->cork_cap, data, len);
     return;
   }
@@ -2082,7 +2072,6 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
  * tick go out as one chunk. */
 static void scr_http_res_autocork_nt(ScrClosure *cb) {
   ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
-  r->autocorked = false;
   if (r->corked > 0) scr_http_res_uncork(r);
   scr_http_res_release(r);
 }
@@ -2090,7 +2079,6 @@ static void scr_http_res_autocork_nt(ScrClosure *cb) {
 static void scr_http_res_autocork(ScrHttpRes *r) {
   if (r->finished || r->h2_stream != NULL || r->sock == NULL || r->corked > 0) return;
   r->corked++;
-  r->autocorked = true;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_res_autocork_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
@@ -2144,7 +2132,17 @@ void scr_http_res_flush_headers(ScrHttpRes *r) {
     free(head.data);
     return;
   }
-  if (!r->head_sent && !r->finished) scr_http_res_send_head(r, -1);
+  if (!r->head_sent && !r->finished) {
+    if (r->corked > 0 && r->h2_stream == NULL && r->sock != NULL) {
+      ScrHttpBuf head = {NULL, 0, 0};
+      if (!scr_http_res_build_head(r, -1, &head)) return;
+      scr_net_sock_write_native(r->sock, head.data, head.len);
+      r->wl_corked_head += head.len;
+      free(head.data);
+      return;
+    }
+    scr_http_res_send_head(r, -1);
+  }
 }
 
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
@@ -2163,13 +2161,24 @@ void scr_http_res_uncork(ScrHttpRes *r) {
 
 double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
 
-/* res.writableLength: the bytes held for the socket. Node counts the head a
- * write committed and the chunks waiting for the uncork (its own write()
- * corks until the next tick), so the value is nonzero between a write and
- * the flush and zero otherwise. */
+/* res.writableLength, as Node 24.22 computes it: the chunks waiting for the
+ * uncork (write() corks until the next tick) as the ONE chunk they leave
+ * as, so their bytes plus that chunk's size line and two CRLFs, plus a head
+ * not yet sent; a fixed-length body's bytes as they are; and whatever the
+ * socket has not finished sending. A response that takes no body (HEAD,
+ * 1xx, 204, 304) ignores its writes and holds nothing. */
 double scr_http_res_writable_length(ScrHttpRes *r) {
-  if (r->finished) return 0;
-  return (double)((r->cork_wrote ? r->held_head_len : 0) + r->cork_len + r->wl_framing);
+  double pending =
+      r->sock != NULL && !r->socket_detached ? scr_net_sock_writable_length(r->sock) : 0;
+  if (r->finished || r->no_body || r->h2_stream != NULL) return pending;
+  size_t held = r->cork_len;
+  if (held > 0 && r->chunked) {
+    size_t digits = 1;
+    for (size_t n = held; n >= 16; n >>= 4) digits++;
+    held += digits + 4;
+  }
+  if (r->cork_len > 0 || r->cork_wrote) held += r->held_head_len;
+  return pending + (double)(held + r->wl_corked_head);
 }
 
 /* res.writableHighWaterMark and res.writableObjectMode: Node's default
@@ -2222,8 +2231,7 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
    * uncork() with no write while corked sends nothing. */
   bool wrote = r->cork_wrote;
   r->cork_wrote = false;
-  r->wl_framing = 0;
-  r->autocorked = false;
+  r->wl_corked_head = 0;
   if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) return;
   char *held = r->cork_buf;
   size_t held_len = r->cork_len;

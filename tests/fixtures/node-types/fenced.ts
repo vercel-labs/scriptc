@@ -31,10 +31,8 @@ void inspectResponse;
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */
-import { openAsBlob } from "fs";
 import { EventEmitter, on } from "node:events";
 import { win32 } from "path";
-openAsBlob("x");
 on(new EventEmitter(), "tick");
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL

@@ -377,6 +377,17 @@ declare module "node:fs" {
     prefix: string | URL,
     options?: BufferEncoding | { encoding?: BufferEncoding | null } | null,
   ): DisposableTempDir;
+  /* fs.openAsBlob (Node 24): a Blob over the file at `path`, read lazily.
+   * The call validates synchronously (the options, then the path) and
+   * answers an already-resolved promise; the blob's own reads reject with a
+   * NotReadableError when the file changed or went away since the call. */
+  export interface OpenAsBlobOptions {
+    type?: string;
+  }
+  export function openAsBlob(
+    path: string | Buffer | URL,
+    options?: OpenAsBlobOptions,
+  ): Promise<Blob>;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;

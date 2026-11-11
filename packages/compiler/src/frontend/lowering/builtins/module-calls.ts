@@ -10,6 +10,7 @@ import {
   lowerFsVectorOrTruncateCall,
   lowerFsNumericOpenCall,
   lowerFsOpenCall,
+  lowerFsOpenAsBlobCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -153,6 +154,8 @@ export function lowerBuiltinModuleCall(
     return lowerFsNumericOpenCall(lowerer, expr, loc);
   }
   if (bi.module === "fs" && bi.member === "openSync") return lowerFsOpenCall(lowerer, expr, loc);
+  if (bi.module === "fs" && bi.member === "openAsBlob")
+    return lowerFsOpenAsBlobCall(lowerer, expr, loc);
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
     return lowerer.lowerSpawnSyncCall(expr, loc);

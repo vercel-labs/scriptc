@@ -334,6 +334,43 @@ export function lowerFsPromisesOpenCall(
   };
 }
 
+// fs.openAsBlob(path[, options]) — Node's call is synchronous: it validates
+// the options object, its `type` string and the path (a URL's conversion and
+// the null-byte check included), stats the file, and answers a promise that
+// is already resolved. The runtime runs that whole ladder in Node's order,
+// so both arguments cross as dynamic values unlowered (the path keeps its
+// URL until the runtime converts it at the point Node does) and the runtime
+// owns every error shape.
+export function lowerFsOpenAsBlobCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  if (
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > 2 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    lowerer.noLowering(
+      `openAsBlob with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
+      expr,
+      "use openAsBlob(path[, options])",
+    );
+  }
+  const pathNode = expr.arguments.nodes[0]!;
+  const optionsNode = expr.arguments.nodes[1];
+  return {
+    kind: "libCall",
+    fn: "fs.openAsBlobChk",
+    args: [
+      lowerer.lowerExprExpecting(pathNode, DYN),
+      optionsNode ? lowerer.lowerExprExpecting(optionsNode, DYN) : dynUndefinedExpr(loc),
+    ],
+    type: { kind: "promise", inner: DYN },
+    loc,
+  };
+}
+
 // fs.rename(oldPath, newPath, callback): the callback is a
 // program-shaped closure (zero parameters are valid; the ordinary
 // form receives NodeJS.ErrnoException | null). Keep it typed here so

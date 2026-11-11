@@ -1136,6 +1136,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
   "fs.mkdtempDisposableSyncChk",
+  "fs.openAsBlobChk",
   "fsp.mkdtempDisposableChk",
   "fs.readChk",
   "fs.streamOptsChk",

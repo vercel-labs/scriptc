@@ -1,15 +1,20 @@
 /* Blob and File (node:buffer, also globals): Node 24's lib/internal/blob.js
  * and lib/internal/file.js over immutable native storage.
  *
- * A Blob is a window over a shared, immutable byte store plus the byte
- * length of every part it holds. Node keeps one data-queue entry per
- * source part (a Blob part contributes its own entries) and reads one
- * entry per pull, so the part list decides how many microtask turns
+ * A Blob is a list of parts plus the byte length of all of them. A part is
+ * either a window into a shared, immutable byte store or a window into a
+ * file that fs.openAsBlob opened (Node's libuv FdEntry): the file-backed
+ * part keeps the path and the size and modification-nanosecond snapshot
+ * taken when the Blob was made, and every read re-stats the file and fails
+ * with a NotReadableError when either changed. Node keeps one data-queue
+ * entry per source part (a Blob part contributes its own entries) and reads
+ * one entry per pull, so the part list decides how many microtask turns
  * arrayBuffer(), text() and bytes() take to settle; slice() keeps the
- * entries Node's queue slice keeps. Sources are copied when the Blob is
- * built, so later writes to a source buffer are not observed. */
+ * entries Node's queue slice keeps. Memory sources are copied when the Blob
+ * is built, so later writes to a source buffer are not observed. */
 #include "scr_runtime.h"
 
+#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,19 +26,43 @@ typedef struct ScrBlobStore {
   uint8_t data[];
 } ScrBlobStore;
 
+/* The file an fs.openAsBlob Blob reads, shared by every Blob that carries a
+ * window of it (slices, copies through the Blob constructor, clones) and
+ * by their own slices in turn. */
+typedef struct ScrBlobFile {
+  size_t rc;
+  ScrStr *path;
+  double size; /* st_size when the Blob was made */
+  int64_t mtime_nsec;
+} ScrBlobFile;
+
+typedef struct ScrBlobPart {
+  size_t len;
+  size_t off; /* into the store, or into file when it is not NULL */
+  ScrBlobFile *file;
+} ScrBlobPart;
+
 typedef struct ScrBlob {
   size_t rc;
-  ScrBlobStore *store;
-  size_t off, len; /* this Blob's window into store */
+  ScrBlobStore *store; /* NULL when every part is file-backed */
+  size_t len;
   size_t nparts;
-  size_t *parts; /* byte length of each part, in order; they sum to len */
+  ScrBlobPart *parts; /* in order; their lengths sum to len */
   ScrStr *type;
   ScrStr *name; /* File only; NULL for a Blob */
   double last_modified;
+  bool not_cloneable; /* Node's kNotCloneable: the direct openAsBlob Blob */
 } ScrBlob;
 
 static void scr_blob_store_release(ScrBlobStore *s) {
   if (s && --s->rc == 0) free(s);
+}
+
+static void scr_blob_file_release(ScrBlobFile *f) {
+  if (f && --f->rc == 0) {
+    scr_str_release(f->path);
+    free(f);
+  }
 }
 
 static void *scr_blob_retain_v(void *h) {
@@ -46,11 +75,13 @@ static void scr_blob_release_v(void *h) {
   if (--b->rc) return;
   scr_weak_dispose_inline(b);
   scr_blob_store_release(b->store);
+  for (size_t i = 0; i < b->nparts; i++) scr_blob_file_release(b->parts[i].file);
   free(b->parts);
   scr_str_release(b->type);
   if (b->name) scr_str_release(b->name);
   free(b);
 }
+
 
 static ScrBlob *scr_blob_alloc(void) {
   ScrBlob *b = calloc(1, sizeof *b);
@@ -64,11 +95,13 @@ static ScrBlob *scr_blob_alloc(void) {
 typedef struct {
   uint8_t *data;
   size_t len, cap;
-  size_t *parts;
+  ScrBlobPart *parts;
   size_t nparts, pcap;
 } ScrBlobBuild;
 
-static void scr_blob_build_bytes(ScrBlobBuild *bb, const uint8_t *data, size_t len) {
+/* Appends `len` bytes and answers the store offset they landed at. */
+static size_t scr_blob_build_bytes(ScrBlobBuild *bb, const uint8_t *data, size_t len) {
+  size_t start = bb->len;
   if (bb->len + len > bb->cap) {
     size_t cap = bb->cap ? bb->cap : 64;
     while (cap < bb->len + len) cap *= 2;
@@ -79,20 +112,24 @@ static void scr_blob_build_bytes(ScrBlobBuild *bb, const uint8_t *data, size_t l
   }
   if (len) memcpy(bb->data + bb->len, data, len);
   bb->len += len;
+  return start;
 }
 
-static void scr_blob_build_part(ScrBlobBuild *bb, size_t len) {
+/* Pushes a part. A file part retains the file it reads. */
+static void scr_blob_build_part(ScrBlobBuild *bb, size_t len, size_t off, ScrBlobFile *file) {
   if (bb->nparts == bb->pcap) {
     size_t cap = bb->pcap ? bb->pcap * 2 : 8;
-    size_t *grown = realloc(bb->parts, cap * sizeof *grown);
+    ScrBlobPart *grown = realloc(bb->parts, cap * sizeof *grown);
     if (!grown) scr_trap("scriptc: out of memory\n");
     bb->parts = grown;
     bb->pcap = cap;
   }
-  bb->parts[bb->nparts++] = len;
+  if (file) file->rc++;
+  bb->parts[bb->nparts++] = (ScrBlobPart){.len = len, .off = off, .file = file};
 }
 
 static void scr_blob_build_free(ScrBlobBuild *bb) {
+  for (size_t i = 0; i < bb->nparts; i++) scr_blob_file_release(bb->parts[i].file);
   free(bb->data);
   free(bb->parts);
 }
@@ -107,7 +144,11 @@ static ScrBlob *scr_blob_from_build(ScrBlobBuild *bb, ScrStr *type) {
   free(bb->data);
   ScrBlob *b = scr_blob_alloc();
   b->store = store;
+  /* The size counts every part: a file-backed part contributes its length,
+   * and only memory parts live in the store. */
   b->len = bb->len;
+  for (size_t i = 0; i < bb->nparts; i++)
+    if (bb->parts[i].file) b->len += bb->parts[i].len;
   b->nparts = bb->nparts;
   b->parts = bb->parts;
   b->type = type;
@@ -153,11 +194,16 @@ static ScrStr *scr_blob_type_of(ScrStr *s) {
 static bool scr_blob_add_source(ScrBlobBuild *bb, const ScrDyn *source, bool native) {
   ScrBlob *inner = scr_blob_of(source);
   if (inner) {
-    const uint8_t *at = inner->store->data + inner->off;
+    /* Node's Blob constructor copies a part Blob's ENTRIES, not its bytes:
+     * a file-backed part stays lazy (and keeps its creation-time snapshot). */
     for (size_t i = 0; i < inner->nparts; i++) {
-      scr_blob_build_bytes(bb, at, inner->parts[i]);
-      scr_blob_build_part(bb, inner->parts[i]);
-      at += inner->parts[i];
+      const ScrBlobPart *part = &inner->parts[i];
+      if (part->file) {
+        scr_blob_build_part(bb, part->len, part->off, part->file);
+        continue;
+      }
+      size_t at = scr_blob_build_bytes(bb, inner->store->data + part->off, part->len);
+      scr_blob_build_part(bb, part->len, at, NULL);
     }
     return true;
   }
@@ -165,8 +211,8 @@ static bool scr_blob_add_source(ScrBlobBuild *bb, const ScrDyn *source, bool nat
       scr_shared_array_buffer_is(source)) {
     ScrBytes *view = scr_bytes_buffer_source(source);
     if (!view) return false;
-    scr_blob_build_bytes(bb, view->data, view->len);
-    scr_blob_build_part(bb, view->len);
+    size_t at = scr_blob_build_bytes(bb, view->data, view->len);
+    scr_blob_build_part(bb, view->len, at, NULL);
     scr_bytes_release(view);
     return true;
   }
@@ -202,7 +248,7 @@ static bool scr_blob_add_source(ScrBlobBuild *bb, const ScrDyn *source, bool nat
   } else {
     scr_blob_build_bytes(bb, (const uint8_t *)well->data, well->len);
   }
-  scr_blob_build_part(bb, bb->len - start);
+  scr_blob_build_part(bb, bb->len - start, start, NULL);
   scr_str_release(well);
   return true;
 }
@@ -432,38 +478,102 @@ static ScrBlob *scr_blob_slice_of(ScrBlob *b, ScrDyn *const *args, size_t argc) 
   size_t from = (size_t)start;
   size_t span = end > start ? (size_t)(end - start) : 0;
   ScrBlob *out = scr_blob_alloc();
-  b->store->rc++;
+  if (b->store) b->store->rc++;
   out->store = b->store;
-  out->off = b->off + from;
   out->len = span;
   out->type = type;
   /* Node's queue slice: nothing for an empty span, otherwise every part
    * that ends at or after the start and begins before the end (a part
-   * ending exactly at the start stays as an empty entry). */
+   * ending exactly at the start stays as an empty entry). A slice shares
+   * the file entry, snapshot included. */
   if (span > 0) {
     out->parts = malloc(b->nparts * sizeof *out->parts);
     if (!out->parts) scr_trap("scriptc: out of memory\n");
     size_t pos = 0, to = from + span;
     for (size_t i = 0; i < b->nparts; i++) {
-      size_t lo = pos, hi = pos + b->parts[i];
+      const ScrBlobPart *part = &b->parts[i];
+      size_t lo = pos, hi = pos + part->len;
       pos = hi;
       if (hi < from || lo >= to) continue;
       size_t keep_lo = lo > from ? lo : from;
       size_t keep_hi = hi < to ? hi : to;
-      out->parts[out->nparts++] = keep_hi - keep_lo;
+      ScrBlobPart kept = *part;
+      kept.len = keep_hi - keep_lo;
+      kept.off += keep_lo - lo;
+      if (kept.file) kept.file->rc++;
+      out->parts[out->nparts++] = kept;
     }
   }
   return out;
 }
 
+/* libuv's FdEntry failed to open or re-stat the file, or the stat no longer
+ * matches the snapshot. */
+static void scr_blob_not_readable(void) {
+  static const char message[] = "The blob could not be read";
+  scr_throw_domex("NotReadableError", message);
+}
+
+/* One file part: open, re-stat, compare with the snapshot (size and mtime
+ * nanoseconds, exactly libuv's check), then read its bytes. False with the
+ * NotReadableError pending. */
+static bool scr_blob_read_file_part(const ScrBlobPart *part, uint8_t *out) {
+  int fd = scr_fs_raw_open(part->file->path->data, O_RDONLY, 0);
+  if (fd < 0) {
+    scr_blob_not_readable();
+    return false;
+  }
+  int error = 0;
+  ScrStats *st = scr_stats_of_fd(fd, &error);
+  bool same = st != NULL && scr_stats_size(st) == part->file->size &&
+              scr_stats_mtime_nsec(st) == part->file->mtime_nsec;
+  if (st) scr_stats_release(st);
+  if (!same) {
+    scr_fs_raw_close(fd);
+    scr_blob_not_readable();
+    return false;
+  }
+  size_t got = 0;
+  while (got < part->len) {
+    int64_t n = scr_fs_raw_read(fd, out + got, part->len - got, (double)(part->off + got));
+    if (n < 0) {
+      scr_fs_raw_close(fd);
+      scr_blob_not_readable();
+      return false;
+    }
+    if (n == 0) break;
+    got += (size_t)n;
+  }
+  scr_fs_raw_close(fd);
+  if (got < part->len) memset(out + got, 0, part->len - got);
+  return true;
+}
+
+/* The blob's bytes (+1); NULL with the exception pending when a file part
+ * cannot be read any more. */
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
-  if (b->len) memcpy(bytes->data, b->store->data + b->off, b->len);
+  size_t at = 0;
+  for (size_t i = 0; i < b->nparts; i++) {
+    const ScrBlobPart *part = &b->parts[i];
+    if (part->file) {
+      /* Even an empty part verifies the file, as the FdEntry reader does. */
+      if (!scr_blob_read_file_part(part, bytes->data + at)) {
+        scr_bytes_release(bytes);
+        return NULL;
+      }
+    } else if (part->len) {
+      memcpy(bytes->data + at, b->store->data + part->off, part->len);
+    }
+    at += part->len;
+  }
   return bytes;
 }
 
 /* extractBody's Blob/File arm: the body is the blob's bytes, not the
- * "[object Blob]" string the USVString fallback would send. */
+ * "[object Blob]" string the USVString fallback would send. A file part
+ * that cannot be read leaves the NotReadableError pending with *bytes
+ * NULL: the caller aborts the request. */
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type) {
   ScrBlob *b = scr_blob_of(value);
   if (!b) return false;
@@ -485,8 +595,16 @@ static ScrPromise *scr_blob_after_turns(ScrPromise *p, size_t turns) {
 
 /* Node pulls one part per read and queues a microtask between reads, so
  * arrayBuffer() settles 2n - 1 turns after the call for n parts (at once
- * for none); text() and bytes() convert in one more turn. */
-static size_t scr_blob_read_turns(const ScrBlob *b) { return b->nparts ? 2 * b->nparts - 1 : 0; }
+ * for none); text() and bytes() convert in one more turn. A zero-length
+ * file part resolves at once (its reader reports EOS synchronously), so it
+ * does not count as a pull. */
+static size_t scr_blob_read_turns(const ScrBlob *b) {
+  size_t pulls = 0;
+  for (size_t i = 0; i < b->nparts; i++) {
+    if (!b->parts[i].file || b->parts[i].len) pulls++;
+  }
+  return pulls ? 2 * pulls - 1 : 0;
+}
 
 typedef enum { SCR_BLOB_READ_BUFFER, SCR_BLOB_READ_TEXT, SCR_BLOB_READ_BYTES } ScrBlobRead;
 
@@ -501,6 +619,14 @@ static ScrPromise *scr_blob_read(const ScrDyn *self, ScrBlobRead mode, bool boxe
     return p;
   }
   ScrBytes *bytes = scr_blob_copy_bytes(b);
+  if (!bytes) {
+    /* Node's FdEntry reader reports the failure synchronously from the
+     * first pull, so the rejection is already in hand when the call
+     * returns (the read itself still rejects rather than throwing). */
+    ScrPromise *p = scr_promise_new();
+    scr_promise_reject_pending(p);
+    return p;
+  }
   ScrPromise *p;
   size_t turns = scr_blob_read_turns(b);
   if (mode == SCR_BLOB_READ_TEXT) {
@@ -599,19 +725,28 @@ static ScrDyn *scr_blob_inspect_view(void *ptr) {
   return view;
 }
 
-/* structuredClone: a new Blob (or File) over the same immutable store. */
+/* structuredClone: a new Blob (or File) over the same parts. The serializer
+ * shares a file entry (a clone still fails to read when the file changed);
+ * only the direct openAsBlob result refuses to be cloned at all. */
 static ScrDyn *scr_blob_clone(void *ptr) {
   ScrBlob *b = ptr;
+  if (b->not_cloneable) {
+    static const char message[] = "Invalid state: File-backed Blobs are not cloneable";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_STATE");
+    return NULL;
+  }
   ScrBlob *out = scr_blob_alloc();
-  b->store->rc++;
+  if (b->store) b->store->rc++;
   out->store = b->store;
-  out->off = b->off;
   out->len = b->len;
   out->nparts = b->nparts;
   if (b->nparts) {
     out->parts = malloc(b->nparts * sizeof *out->parts);
     if (!out->parts) scr_trap("scriptc: out of memory\n");
-    memcpy(out->parts, b->parts, b->nparts * sizeof *out->parts);
+    for (size_t i = 0; i < b->nparts; i++) {
+      out->parts[i] = b->parts[i];
+      if (out->parts[i].file) out->parts[i].file->rc++;
+    }
   }
   out->type = scr_str_retain(b->type);
   if (b->name) out->name = scr_str_retain(b->name);
@@ -726,4 +861,28 @@ ScrPromise *scr_blob_array_buffer(ScrDyn *self) {
 bool scr_blob_is(const ScrDyn *value, double kind) {
   ScrBlob *b = scr_blob_of(value);
   return b && (kind == 0 || b->name != NULL);
+}
+
+/* fs.openAsBlob: a Blob over one file part, `size` bytes from its start,
+ * created with the stat snapshot the caller just took. The type is stored
+ * VERBATIM (openAsBlob validates it as a string but applies neither the
+ * ASCII filter nor the lowercasing the Blob constructor does). Answers +1;
+ * borrows both arguments. */
+ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec) {
+  scr_blob_install();
+  ScrBlobFile *file = calloc(1, sizeof *file);
+  if (!file) scr_trap("scriptc: out of memory\n");
+  file->rc = 1;
+  file->path = scr_str_retain(path);
+  file->size = size;
+  file->mtime_nsec = mtime_nsec;
+  ScrBlob *b = scr_blob_alloc();
+  b->parts = malloc(sizeof *b->parts);
+  if (!b->parts) scr_trap("scriptc: out of memory\n");
+  b->parts[0] = (ScrBlobPart){.len = (size_t)size, .off = 0, .file = file};
+  b->nparts = 1;
+  b->len = (size_t)size;
+  b->type = scr_str_retain(type);
+  b->not_cloneable = true;
+  return scr_blob_box(b);
 }

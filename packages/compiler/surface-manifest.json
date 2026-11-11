@@ -1395,6 +1395,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.openAsBlob",
+      "kind": "node-builtin",
+      "name": "fs.openAsBlob",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.openSync",
       "kind": "node-builtin",
       "name": "fs.openSync",

@@ -409,6 +409,15 @@ export function lowerFsLadderCall(
       const a = dynArgs([args[0], args[1]]);
       return a && chk("fs.lchmodSyncChk", a, DYN);
     }
+    case "openAsBlob": {
+      // openAsBlob(path[, options]): Node's synchronous ladder (the options
+      // object, its type string, the path's conversion and null-byte check,
+      // then the stat) and the already-resolved promise for the lazily-read
+      // file-backed Blob both live in the runtime.
+      if (args.length > 2) return null;
+      const a = dynArgs([args[0], args[1]]);
+      return a && chk("fs.openAsBlobChk", a, { kind: "promise", inner: DYN });
+    }
     case "read": {
       // read(fd, buffer, offset, length, position, callback) — the
       // positional form's full ladder; options-object forms keep the

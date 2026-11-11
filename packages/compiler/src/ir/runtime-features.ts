@@ -1725,6 +1725,9 @@ const RUNTIME_FEATURE_RULES = {
       // A rejected entry's reason crosses as a checked-dynamic value
       // (Promise.allSettled's tuple form).
       "promise.entryReason",
+      // fs.openAsBlob answers a promise of a checked-dynamic Blob; the Blob
+      // unit lives over this one, so a non-awaited call links it too.
+      "fs.openAsBlobChk",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>
@@ -1918,7 +1921,14 @@ const RUNTIME_FEATURE_RULES = {
    * ladders of any source: a unit of its own, so no other executable
    * changes. */
   fsPathValue: rule({
-    fns: ["dyn.validateFsPath", "fs.mkdtempDisposableSyncChk", "fsp.mkdtempDisposableChk"],
+    fns: [
+      "dyn.validateFsPath",
+      "fs.mkdtempDisposableSyncChk",
+      "fsp.mkdtempDisposableChk",
+      // openAsBlob's ladder converts a URL path and checks null bytes in
+      // the runtime, at the point Node does (after the options).
+      "fs.openAsBlobChk",
+    ],
   }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({

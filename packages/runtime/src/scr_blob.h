@@ -24,8 +24,17 @@ ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
 /* A Blob or File as a fetch body: the blob's bytes (+1) and its type
  * (+1, NULL when the Blob has none), which becomes Content-Type. False,
- * touching neither output, for every other value. */
+ * touching neither output, for every other value. A file-backed Blob that
+ * cannot be read answers true with *bytes NULL and the NotReadableError
+ * pending. */
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
+/* fs.openAsBlob's Blob (scr_blob.c): one file part of `size` bytes from the
+ * path's start, read lazily at every read, which re-stats the file and
+ * fails with a NotReadableError when its size or mtime nanoseconds differ
+ * from the snapshot the caller took (libuv's FdEntry check). `type` is
+ * stored verbatim; the Blob is marked not cloneable, as Node marks the
+ * direct result. Answers +1; borrows both strings. */
+ScrDyn *scr_blob_open_file(ScrStr *path, ScrStr *type, double size, int64_t mtime_nsec);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

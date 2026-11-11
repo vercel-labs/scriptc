@@ -3872,6 +3872,10 @@ function buildLibFnSignatures() {
     "fs.lchmodChk": { argTypes: [DYN, DYN, DYN, STRING], result: VOID },
     "fs.lchmodSyncChk": { argTypes: [DYN, DYN], result: DYN },
     "fs.mkdtempDisposableSyncChk": { argTypes: [DYN, DYN], result: DYN },
+    /** openAsBlob's synchronous ladder (options object, its type string, the
+     * path, the stat) answering the already-resolved promise for the
+     * lazily-read file-backed Blob; it throws and may be caught. */
+    "fs.openAsBlobChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "fsp.mkdtempDisposableChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "fsp.lchmodChk": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fs.readChk": { argTypes: [DYN, DYN, DYN, DYN, DYN, STRING], result: VOID },

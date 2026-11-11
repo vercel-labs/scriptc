@@ -1407,6 +1407,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // argument; inline numeric O_* expressions route through
       // openNumericSync.
       openSync: { fn: "fs.openSync", params: [STRING, STRING, F64], result: F64 },
+      // fs.openAsBlob(path[, options]) — entirely special-cased
+      // (lowerFsOpenAsBlobCall): Node validates synchronously and answers
+      // an already-resolved promise for the lazily-read file-backed Blob.
+      // This entry only routes the dispatch.
+      openAsBlob: {
+        fn: "fs.openAsBlobChk",
+        params: [DYN, DYN],
+        result: { kind: "promise", inner: DYN },
+      },
       // The buffer forms (fd, buffer, offset, length[, position]). The
       // lowering completes an omitted or literal-null position to -1 (the
       // runtime's current-offset sentinel); numeric positions read without

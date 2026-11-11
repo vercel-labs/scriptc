@@ -634,6 +634,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.existsChk": "scr_fs_exists_async",
   "fs.mkdtempSyncChk": "scr_fs_mkdtemp_sync_chk",
   "fs.mkdtempDisposableSyncChk": "scr_fs_mkdtemp_disposable_sync_chk",
+  "fs.openAsBlobChk": "scr_fs_open_as_blob_chk",
   "net.connectAttempt": "scr_net_connect_attempt",
   "net.connectLookupDyn": "scr_net_connect_lookup_dyn",
   "fs.lchmodSyncChk": "scr_fs_lchmod_sync_chk",

@@ -366,6 +366,11 @@ ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error 
  * untyped ladder over prefix and options. */
 ScrDyn *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix);
 ScrDyn *scr_fs_mkdtemp_disposable_sync_chk(const ScrDyn *prefix, const ScrDyn *opts);
+/* fs.openAsBlob(path[, options]) — Node's synchronous validation ladder
+ * (options object, type string, path, null bytes, stat), answering the
+ * already-resolved promise for the lazily-read file-backed Blob. Throws on
+ * failure like Node's synchronous call; NULL with the exception pending. */
+ScrPromise *scr_fs_open_as_blob_chk(const ScrDyn *path, const ScrDyn *options);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 
@@ -533,6 +538,7 @@ double scr_stats_blocks(ScrStats *s); /* allocated size in 512-byte units */
 double scr_stats_nlink(ScrStats *s);
 double scr_stats_atime_ms(ScrStats *s); /* ms with the sub-second fraction */
 double scr_stats_mtime_ms(ScrStats *s); /* ms with the ns fraction */
+int64_t scr_stats_mtime_nsec(ScrStats *s); /* the raw mtime nanoseconds */
 double scr_stats_ctime_ms(ScrStats *s); /* ms with the ns fraction */
 double scr_stats_birthtime_ms(ScrStats *s);
 double scr_stats_mode(ScrStats *s);

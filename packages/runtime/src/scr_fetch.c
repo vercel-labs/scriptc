@@ -6592,7 +6592,10 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   if (!null_body && !json_body && !sf_is_stream_body(body)) {
 #ifdef SCR_WEB_BODIES
     if (sf_blob_body(body, &body_bytes, &web_type)) {
-      /* extractBody: the blob's bytes are the body, its type applies below. */
+      /* extractBody: the blob's bytes are the body, its type applies below.
+       * A file-backed Blob that cannot be read any more leaves its
+       * NotReadableError pending (Node reports it when the body is read). */
+      if (!body_bytes) goto fail;
     } else
 #endif
     if (body->kind == SCR_DYN_BYTES) {
@@ -7181,6 +7184,12 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (body_present) {
     ScrBytes *web_bytes = NULL;
     if (sf_blob_body(body, &web_bytes, &web_type)) {
+      if (!web_bytes) {
+        /* The file-backed Blob's read failed: fetch rejects with it. */
+        scr_str_release(web_type);
+        scr_promise_reject_pending(promise);
+        return promise;
+      }
       coerced_body = scr_dyn_new_bytes(web_bytes);
       scr_bytes_release(web_bytes);
       body = coerced_body;

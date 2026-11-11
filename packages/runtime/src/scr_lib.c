@@ -6558,6 +6558,9 @@ static double scr_stats_ms(const ScrStats *s, int which) {
 
 double scr_stats_atime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_ATIME); }
 double scr_stats_mtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_MTIME); }
+/* The raw nanosecond field: openAsBlob compares it exactly, as libuv's
+ * FdEntry does (the seconds are not part of that check). */
+int64_t scr_stats_mtime_nsec(ScrStats *s) { return s->nsec[SCR_STATS_MTIME]; }
 double scr_stats_ctime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_CTIME); }
 double scr_stats_birthtime_ms(ScrStats *s) { return scr_stats_ms(s, SCR_STATS_BIRTHTIME); }
 

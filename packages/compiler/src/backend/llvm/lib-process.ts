@@ -460,6 +460,7 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     e.fn === "timers.ref" ||
     e.fn === "timers.refresh" ||
     e.fn === "timers.close" ||
+    e.fn === "timers.immediateClose" ||
     e.fn === "timers.immediateUnref" ||
     e.fn === "timers.immediateRef"
   ) {
@@ -473,6 +474,7 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
         "timers.ref": "scr_timer_ref",
         "timers.refresh": "scr_timer_refresh",
         "timers.close": "scr_clear_interval",
+        "timers.immediateClose": "scr_clear_immediate",
         "timers.immediateUnref": "scr_immediate_unref",
         "timers.immediateRef": "scr_immediate_ref",
       }[e.fn];

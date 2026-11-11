@@ -72,15 +72,6 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_ecdh.c -> scr_async_dyn.c": ["scr_emit_warning"],
   "scr_event_target.c -> scr_async_dyn.c": ["scr_dyn_new_promise", "scr_promise_resolve_dyn"],
-  "scr_events_once_signal.c -> scr_events_emitter.c": [
-    "scr_emitter_off",
-    "scr_emitter_on",
-    "scr_emitter_release",
-    "scr_emitter_release_v",
-    "scr_emitter_retain",
-    "scr_emitter_retain_v",
-    "scr_emitter_unadd_quiet",
-  ],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
   // The checked-data writes with a mode, a flag or an options record

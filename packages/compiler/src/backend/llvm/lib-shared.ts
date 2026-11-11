@@ -975,6 +975,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // forms are special-cased in emitLibCall).
   "timers.hasRef": "scr_timer_has_ref",
   "timers.immediateHasRef": "scr_immediate_has_ref",
+  "timers.immediateClose": "scr_clear_immediate",
   "timers.clearImmediate": "scr_clear_immediate",
   // Process event removals (borrowed callbacks: removal is by pointer
   // identity); registration is special-cased above (ownership moves).
@@ -2064,7 +2065,7 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.setTimeoutHandle": "scr_test_mt_set_timeout_handle",
   "timers.setInterval": "scr_test_mt_set_interval",
   "timers.clearTimeout": "scr_test_mt_clear_timeout",
-  "timers.close": "scr_test_mt_clear_timeout",
+  "timers.close": "scr_test_mt_close",
   "timers.clearInterval": "scr_test_mt_clear_interval",
   "timers.unref": "scr_test_mt_unref",
   "timers.ref": "scr_test_mt_ref",
@@ -2072,6 +2073,7 @@ export const MOCK_TIMER_SYMS: Readonly<Record<string, string>> = {
   "timers.hasRef": "scr_test_mt_has_ref",
   "timers.setImmediate": "scr_test_mt_set_immediate",
   "timers.clearImmediate": "scr_test_mt_clear_immediate",
+  "timers.immediateClose": "scr_test_mt_immediate_close",
   "timers.immediateUnref": "scr_test_mt_immediate_unref",
   "timers.immediateRef": "scr_test_mt_immediate_ref",
   "timers.immediateHasRef": "scr_test_mt_immediate_has_ref",

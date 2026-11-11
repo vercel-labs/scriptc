@@ -246,6 +246,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetGetMax",
   "event.targetSetMax",
   "event.call",
+  // events.once over an EventTarget or a NodeEventTarget: the receiver's own
+  // once()/addEventListener() runs, and a bad receiver or signal throws
+  // Node's ERR_INVALID_ARG_TYPE (the promise's rejection is a value).
+  "event.onceTarget",
+  "event.onceTargetSignal",
   "blob.new",
   "blob.fileNew",
   "blob.slice",
@@ -1227,6 +1232,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverOnConnect",
   "http.serverOnUpgrade",
   "http.serverOnClientError",
+  "http.serverOnDropRequest",
   "http2.serverOnStream",
   "http2.serverOnSession",
   "http2.serverOnSessionError",

@@ -287,13 +287,16 @@ export function lowerTimerElementCall(
     return { kind: "libCall", fn: "timers.close", args: [handle], type: F64, loc };
   }
   if (symbolName !== "dispose") return null;
-  // Node's dispose methods clear and answer undefined (unlike close());
-  // the declared result is void, so the clear call's unit is the value.
+  // Node's Timeout.prototype[SymbolDispose] and Immediate.prototype
+  // [SymbolDispose] call the module's own clearTimeout/clearImmediate, not
+  // the global functions mock.timers replaces: they act on the handle
+  // whatever owns it, mock entry or loop timer. The call answers undefined
+  // (unlike close()), so the statement discards the handle these return.
   return {
     kind: "libCall",
-    fn: isImmediate ? "timers.clearImmediate" : "timers.clearTimeout",
+    fn: isImmediate ? "timers.immediateClose" : "timers.close",
     args: [lowerer.lowerExprExpecting(access.expression, F64)],
-    type: VOID,
+    type: F64,
     loc,
   };
 }

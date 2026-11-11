@@ -555,12 +555,15 @@ export class LlWalkers {
         this.puts(B, "%b", jsonObjectKeyLabel(f.name));
         if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
         this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`);
-        if (read.release !== null) B.line(read.release);
+        // Released once, at the join both arms reach: a present nullable
+        // class reference's union box is owned by this read, and the
+        // undefined arm owns the unit box it was given — releasing twice
+        // frees the box before the writer reads it again.
         if (skip !== null) {
           B.br(skip);
           B.startBlock(skip);
-          if (read.release !== null) B.line(read.release);
         }
+        if (read.release !== null) B.line(read.release);
       }
     }
     this.putc(B, "%b", "125"); // '}'

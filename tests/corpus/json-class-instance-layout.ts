@@ -45,6 +45,18 @@ class Link {
   }
 }
 
+// A nullable class reference whose unit arm is `undefined`: when the field
+// holds an instance the writer builds (and releases) a union box for it, and
+// when it is undefined the field is dropped.
+class Tail {
+  label: string;
+  child: Tail | undefined;
+  constructor(label: string, child: Tail | undefined) {
+    this.label = label;
+    this.child = child;
+  }
+}
+
 class Maybe {
   a?: number;
   b: number | undefined;
@@ -150,6 +162,12 @@ try {
 // Nullable class references keep their own slots.
 const chain = new Link("a", new Link("b", null));
 console.log(JSON.stringify(chain));
+
+// Optional class references: the present field's union box is released once,
+// and the undefined-valued field is dropped.
+console.log(JSON.stringify(new Tail("a", new Tail("b", undefined))));
+console.log(JSON.stringify(new Tail("c", undefined)));
+console.log(JSON.stringify(new Tail("d", new Tail("e", new Tail("f", undefined)))));
 
 // undefined-valued own fields are dropped; null stays.
 console.log(JSON.stringify(new Maybe(1, undefined, undefined)));

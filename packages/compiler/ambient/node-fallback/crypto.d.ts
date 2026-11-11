@@ -101,6 +101,29 @@ declare module "crypto" {
       passphrase?: string | undefined;
     };
   }
+  export interface RSAPSSKeyPairKeyObjectOptions {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+    hashAlgorithm?: string | undefined;
+    mgf1HashAlgorithm?: string | undefined;
+    /* Node validates a number ("options.saltLength" must be of type number),
+       where @types/node declares a string. */
+    saltLength?: number | undefined;
+  }
+  export interface RSAPSSKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    modulusLength: number;
+    publicExponent?: number | undefined;
+    hashAlgorithm?: string | undefined;
+    mgf1HashAlgorithm?: string | undefined;
+    saltLength?: number | undefined;
+    publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
@@ -122,6 +145,18 @@ declare module "crypto" {
   export function generateKeyPairSync(
     type: "rsa",
     options: RSAKeyPairKeyObjectOptions,
+  ): KeyPairKeyObjectResult;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(
+    type: "rsa-pss",
+    options: RSAPSSKeyPairKeyObjectOptions,
   ): KeyPairKeyObjectResult;
   export function generateKeyPairSync(
     type: "ec",

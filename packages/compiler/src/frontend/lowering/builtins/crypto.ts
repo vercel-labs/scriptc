@@ -228,11 +228,14 @@ function dynArg(lowerer: Lowerer, node: ts.Expression | undefined, loc: SrcLoc):
   return node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
 }
 
-/** Node evaluates a surplus argument for its side effects, then drops it. */
-function dropArg(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrStmt {
+/** Node evaluates a surplus argument for its side effects, then drops it.
+ * Null when there is nothing to evaluate: a `undefined` or `null` literal
+ * has no side effect and no representable value to hold. */
+function dropArg(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrStmt | null {
   const value = lowerer.lowerExpr(node);
   // A call that throws (a `never` value) has no value to hold.
   if (value.type.kind === "void") return { kind: "exprStmt", expr: value, loc };
+  if (value.type.kind === "undefinedT" || value.type.kind === "nullT") return null;
   const dropped = lowerer.declareHiddenLocal("%cryptoDropped", value.type);
   return { kind: "varDecl", localId: dropped.id, init: value, loc };
 }
@@ -253,7 +256,8 @@ function dynCallArgs(
   for (let i = 0; i < Math.max(count, nodes.length); i++) {
     const node = nodes[i];
     if (i >= count) {
-      stmts.push(dropArg(lowerer, node!, loc));
+      const dropped = dropArg(lowerer, node!, loc);
+      if (dropped) stmts.push(dropped);
       continue;
     }
     const value = node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
@@ -311,7 +315,8 @@ function dynHashCall(
   for (let i = 0; i < Math.max(count, nodes.length); i++) {
     const node = nodes[i];
     if (i >= count) {
-      stmts.push(dropArg(lowerer, node!, loc));
+      const dropped = dropArg(lowerer, node!, loc);
+      if (dropped) stmts.push(dropped);
       continue;
     }
     const value = node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
@@ -378,14 +383,20 @@ export function lowerCryptoModuleCall(
   }
   if (bi.member === "getRandomValues") return lowerCryptoGetRandomValues(lowerer, expr);
   if (bi.member === "randomBytes") {
-    if (args.length === 1) return null;
-    if (args.length !== 2) {
-      lowerer.noLowering(
-        `crypto.randomBytes with ${args.length} arguments`,
-        expr,
-        "randomBytes(size) and randomBytes(size, callback) are supported",
-      );
+    const callbackType =
+      args.length === 2 ? lowerer.mapTypeOf(lowerer.typeOf(args[1]!)) : undefined;
+    // A missing or surplus argument, a size of another type, and a callback
+    // that does not fit (error, buffer) take Node's checks at run time; an
+    // explicit `undefined` callback selects the synchronous result.
+    if (
+      args.length < 1 ||
+      args.length > 2 ||
+      lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind !== "f64" ||
+      (args.length === 2 && (callbackType?.kind !== "func" || callbackType.params.length > 2))
+    ) {
+      return dynCall(lowerer, expr, 2, "crypto.randomBytesAny", DYN);
     }
+    if (args.length === 1) return null;
     return {
       kind: "libCall",
       fn: "crypto.randomBytesCb",
@@ -816,17 +827,24 @@ export function lowerCryptoModuleCall(
     };
   }
   if (bi.member === "randomInt") {
-    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
-      lowerer.noLowering(
-        `crypto.randomInt with ${args.length} arguments`,
-        expr,
-        "randomInt([min, ]max[, callback]) is supported",
-      );
-    }
-    const last = args[args.length - 1]!;
-    const lastType = lowerer.mapTypeOf(lowerer.typeOf(last));
+    const last = args[args.length - 1];
+    const lastType = last ? (lowerer.mapTypeOf(lowerer.typeOf(last)) ?? undefined) : undefined;
     const withCallback = args.length === 3 || (args.length === 2 && lastType?.kind === "func");
     const numbers = withCallback ? args.slice(0, -1) : args;
+    // A missing or surplus argument, a number of another type, and a
+    // callback position that is neither a function nor absent take Node's
+    // checks at run time.
+    const extra = args.length === 2 && lastType?.kind === "func" ? lastType.params.length : -1;
+    const third = args.length === 3 ? lastType : undefined;
+    if (
+      args.length < 1 ||
+      args.length > 3 ||
+      !cryptoNumberArgs(lowerer, numbers) ||
+      extra > 2 ||
+      (third !== undefined && (third.kind !== "func" || third.params.length > 2))
+    ) {
+      return dynCall(lowerer, expr, 3, "crypto.randomIntAny", DYN);
+    }
     const min =
       numbers.length === 1
         ? ({ kind: "numLit", value: 0, type: F64, loc } satisfies IrExpr)
@@ -839,7 +857,7 @@ export function lowerCryptoModuleCall(
     }
     const callback = errorFirstCallback(
       lowerer,
-      last,
+      last!,
       "crypto.randomInt",
       (value) => value.kind === "f64",
       "number",

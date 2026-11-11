@@ -11178,6 +11178,90 @@ double scr_crypto_random_int(double min, double max) { return scr_random_int_syn
 
 double scr_crypto_random_int_max(double max) { return scr_random_int_sync(0, max, false); }
 
+/* randomBytes and randomInt over any values: Node's checks in its order,
+ * then a Buffer or a number, or the callback with (null, value) in a later
+ * macrotask. */
+ScrDyn *scr_crypto_random_bytes_any(ScrDyn *size, ScrDyn *callback) {
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return NULL;
+  }
+  /* scr_crypto_random_bytes applies Node's range check, which comes before
+   * the callback's. */
+  ScrBytes *bytes = scr_crypto_random_bytes(size->v.num);
+  if (!bytes) return NULL;
+  if (callback->kind == SCR_DYN_UNDEF) return scr_dyn_new_buffer(bytes);
+  if (!scr_dyn_is_callable(callback)) {
+    scr_bytes_release(bytes);
+    scr_dyn_arg_type_fail("callback", "of type function", callback);
+    return NULL;
+  }
+#ifndef SCR_LIB
+  if (scr_crypto_defer_dyn_callback)
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), scr_dyn_new_null(),
+                                 scr_dyn_new_buffer(bytes));
+#endif
+  scr_bytes_release(bytes);
+  return (ScrDyn *)scr_dyn_undefined();
+}
+
+ScrDyn *scr_crypto_random_int_any(ScrDyn *first, ScrDyn *second, ScrDyn *third) {
+  ScrDyn *callback = NULL;
+  double min = 0, max = 0, range = 0, value = 0;
+  bool min_given = false;
+  /* Node reads randomInt([min, ]max[, callback]): an absent or undefined
+   * second argument leaves the one-argument form, a function there is the
+   * callback, and anything else is max. The three-argument form checks its
+   * callback before the numbers. */
+  if (second->kind == SCR_DYN_UNDEF) {
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", first);
+      return NULL;
+    }
+    max = first->v.num;
+  } else if (scr_dyn_is_callable(second)) {
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", first);
+      return NULL;
+    }
+    max = first->v.num;
+    callback = second;
+  } else {
+    min_given = true;
+    if (third->kind != SCR_DYN_UNDEF) {
+      if (!scr_dyn_is_callable(third)) {
+        scr_dyn_arg_type_fail("callback", "of type function", third);
+        return NULL;
+      }
+      callback = third;
+    }
+    if (first->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("min", "a safe integer", first);
+      return NULL;
+    }
+    if (second->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("max", "a safe integer", second);
+      return NULL;
+    }
+    min = first->v.num;
+    max = second->v.num;
+  }
+  if (!scr_crypto_random_int_check(min, max, min_given, &range)) return NULL;
+  for (;;) {
+    if (scr_random_int_left == 0) scr_crypto_random_int_refill();
+    if (scr_crypto_random_int_try(min, range, &value)) break;
+  }
+  if (!callback) return scr_dyn_new_num(value);
+#ifndef SCR_LIB
+  /* Node's randomInt callback receives undefined on success, where
+   * randomBytes' receives null. */
+  if (scr_crypto_defer_dyn_callback)
+    scr_crypto_defer_dyn_callback(scr_dyn_retain(callback), (ScrDyn *)scr_dyn_undefined(),
+                                 scr_dyn_new_num(value));
+#endif
+  return (ScrDyn *)scr_dyn_undefined();
+}
+
 /* ── randomUUID / randomUUIDv7 ─────────────────────────────────────── */
 
 static ScrStr *scr_uuid_string(unsigned char b[16], unsigned char version) {

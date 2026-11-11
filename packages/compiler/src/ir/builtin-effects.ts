@@ -1110,6 +1110,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.randomUUIDv7",
   "crypto.pbkdf2",
   "crypto.randomBytesCb",
+  "crypto.randomBytesAny",
+  "crypto.randomIntAny",
   "crypto.pbkdf2Cb",
   "crypto.hkdf",
   "crypto.hkdfCb",

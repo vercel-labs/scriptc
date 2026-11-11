@@ -3731,6 +3731,8 @@ function buildLibFnSignatures() {
     "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
     "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
     "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
+    "crypto.randomBytesAny": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAny": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
     "crypto.hkdf": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: DYN },
     "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },

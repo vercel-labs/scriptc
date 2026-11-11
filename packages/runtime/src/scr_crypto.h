@@ -63,6 +63,11 @@ double scr_crypto_random_fill_args(ScrBytes *view, bool typed_array, double offs
 void scr_crypto_random_int_refill(void);
 bool scr_crypto_random_int_check(double min, double max, bool min_given, double *range);
 bool scr_crypto_random_int_try(double min, double range, double *out);
+/* randomBytes(size[, callback]) and randomInt([min, ]max[, callback]) over
+ * any values; the callback forms deliver (null, value) in a later
+ * macrotask. */
+ScrDyn *scr_crypto_random_bytes_any(ScrDyn *size, ScrDyn *callback);
+ScrDyn *scr_crypto_random_int_any(ScrDyn *first, ScrDyn *second, ScrDyn *third);
 ScrStr *scr_crypto_random_uuid_opts(ScrDyn *options);
 ScrStr *scr_crypto_random_uuid_v7(ScrDyn *options);
 /* Hash and Hmac values as streams: the value's Transform (+1, created on

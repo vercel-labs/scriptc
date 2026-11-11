@@ -2589,6 +2589,9 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "crypto.randomBytesToString",
       "crypto.randomBytesCb",
       "crypto.randomBytesPromise",
+      // Node's own argument checks for the sizes, callbacks and surplus
+      // arguments the declared overloads do not describe.
+      "crypto.randomBytesAny",
     ],
     // Omitting size fills from offset through the rest of the Buffer and
     // uses a separate runtime entry point for Node's exact bounds checks.
@@ -2606,7 +2609,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     timingSafeEqual: ["crypto.timingSafeEqualDyn"],
     getRandomValues: ["crypto.getRandomValuesDyn"],
-    randomInt: ["crypto.randomIntMax", "crypto.randomIntCb", "crypto.randomIntPromise"],
+    randomInt: [
+      "crypto.randomIntMax",
+      "crypto.randomIntCb",
+      "crypto.randomIntPromise",
+      // Node's own checks for the bounds and callback forms the declared
+      // overloads do not describe.
+      "crypto.randomIntAny",
+    ],
     randomUUID: ["crypto.randomUUIDOpts"],
   },
   tty: {

@@ -6223,6 +6223,16 @@ function buildLibFnSignatures() {
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
     "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.publicEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.publicDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    /** The usage record (a fresh object), setEngine's checked-dynamic
+     * (engine[, flags]) form, and the deprecated crypto.fips read, which
+     * reports DEP0093 once per process. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
+    "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
+    "crypto.fipsGet": { argTypes: [], result: F64 },
     "crypto.createSign": { argTypes: [DYN], result: DYN },
     "crypto.createVerify": { argTypes: [DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array

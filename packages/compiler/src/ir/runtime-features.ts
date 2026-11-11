@@ -981,6 +981,13 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.secureHeapUsed",
+  "crypto.setEngine",
+  "crypto.fipsGet",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
@@ -1702,6 +1709,8 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      // crypto.fips reports DEP0093 once per process on its first read.
+      "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through

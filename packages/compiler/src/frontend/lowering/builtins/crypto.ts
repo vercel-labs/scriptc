@@ -7,7 +7,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
-import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES } from "../crypto-tables.js";
+import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES, CRYPTO_MACS } from "../crypto-tables.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import {
   BOOL,
@@ -833,14 +833,20 @@ export function lowerCryptoModuleCall(
     getCiphers: CRYPTO_CIPHERS,
     getHashes: CRYPTO_HASHES,
     getCurves: CRYPTO_CURVES,
+    getMacs: CRYPTO_MACS,
   };
   const list = own(LISTS, bi.member);
-  if (bi.member !== "getFips" && list === undefined) return null;
+  if (bi.member !== "getFips" && bi.member !== "secureHeapUsed" && list === undefined) return null;
   if (expr.arguments.nodes.length !== 0) {
     lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   if (bi.member === "getFips") {
     return { kind: "numLit", value: 0, type: F64, loc };
+  }
+  // A fresh object per call, like Node's: there is no secure heap here, so
+  // the totals are 0 and utilization is 0/0.
+  if (bi.member === "secureHeapUsed") {
+    return { kind: "libCall", fn: "crypto.secureHeapUsed", args: [], type: DYN, loc };
   }
   return {
     kind: "arrayLit",
@@ -1464,9 +1470,14 @@ function lowerPkiCall(
     ],
     sign: ["crypto.signOneshot", 3, 3, "sign(algorithm, data, key)"],
     verify: ["crypto.verifyOneshot", 4, 4, "verify(algorithm, data, key, signature)"],
+    publicEncrypt: ["crypto.publicEncrypt", 2, 2, "publicEncrypt(key, buffer)"],
+    privateDecrypt: ["crypto.privateDecrypt", 2, 2, "privateDecrypt(key, buffer)"],
+    privateEncrypt: ["crypto.privateEncrypt", 2, 2, "privateEncrypt(key, buffer)"],
+    publicDecrypt: ["crypto.publicDecrypt", 2, 2, "publicDecrypt(key, buffer)"],
     diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
     createSign: ["crypto.createSign", 1, 1, "createSign(algorithm)"],
     createVerify: ["crypto.createVerify", 1, 1, "createVerify(algorithm)"],
+    setEngine: ["crypto.setEngine", 1, 2, "setEngine(engine[, flags])"],
   };
   const form = forms[member];
   if (!form) return null;
@@ -1481,7 +1492,7 @@ function lowerPkiCall(
   // options position as the callback, as Node does.
   const values: IrExpr[] = [];
   for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
-  if (fn === "crypto.generateKeyPairCb")
+  if (fn === "crypto.generateKeyPairCb" || fn === "crypto.setEngine")
     return { kind: "libCall", fn, args: values, type: VOID, loc };
   const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
   const result = lowerer.mapTypeOf(lowerer.typeOf(expr));

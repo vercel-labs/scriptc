@@ -812,6 +812,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+      // crypto.fips is getFips() behind a once-per-process DEP0093
+      // deprecation report, which the runtime emits on the read.
+      if (bi.module === "crypto" && bi.member === "fips")
+        return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
       // `import { argv, execArgv } from "node:process"`: a data member of
       // the process module reads what `process.<member>` reads. `env` stays
       // out: the spelled read answers a snapshot record, and a write through

@@ -220,6 +220,37 @@ declare module "crypto" {
     key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
     signature: ScriptcBufferView,
   ): boolean;
+  /* RSA's public-key operations. The key is key material, a KeyObject, or
+   * an options object whose own `key` is either, with the padding and OAEP
+   * options beside it. */
+  export type KeyLike = string | Buffer | KeyObject;
+  export interface RsaPublicKey {
+    key: KeyLike;
+    padding?: number | undefined;
+  }
+  export interface RsaPrivateKey {
+    key: KeyLike;
+    passphrase?: string | undefined;
+    oaepHash?: string | undefined;
+    oaepLabel?: ScriptcBufferView | undefined;
+    padding?: number | undefined;
+  }
+  export function publicEncrypt(
+    key: RsaPublicKey | RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function publicDecrypt(
+    key: RsaPublicKey | RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function privateDecrypt(
+    privateKey: RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
+  export function privateEncrypt(
+    privateKey: RsaPrivateKey | KeyLike,
+    buffer: ScriptcBufferView | string,
+  ): Buffer;
   /* Sign and Verify are Writables: each write goes through update(), and
    * ending finishes them. */
   export class Sign extends Writable {
@@ -790,6 +821,22 @@ declare module "crypto" {
    * string[] literals of Node v24 answers, and constants (below) bakes
    * per member like http2.constants. */
   export function getFips(): 1 | 0;
+  /* Deprecated alias of getFips() (Node answers the number 0 here); each
+   * process reports DEP0093 once, on the first read. The exports object
+   * owns it as a getter, so only require() and a default import see it. */
+  export const fips: 0 | 1;
+  export function getMacs(): string[];
+  export interface SecureHeapUsage {
+    total: number;
+    used: number;
+    utilization: number;
+    min: number;
+  }
+  export function secureHeapUsed(): SecureHeapUsage;
+  /* OpenSSL 3 registers only the "dynamic" engine in a compiled binary:
+   * that id is accepted, and every other id is Node's
+   * ERR_CRYPTO_ENGINE_UNKNOWN. `flags` is Node's method mask. */
+  export function setEngine(engine: string, flags?: number): void;
   export function getCiphers(): string[];
   export type CipherMode =
     | "cbc"

@@ -23070,6 +23070,13 @@ export class Lowerer {
     if (bi.module === "crypto" && bi.member === "webcrypto") {
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     }
+    // crypto.fips is getFips() behind a once-per-process DEP0093 report:
+    // the exports object (require() or a default import) owns it as a
+    // getter. The ES module namespace does not export it — a TypeScript
+    // read there is refused by name, and a JavaScript read is undefined.
+    if (bi.module === "crypto" && bi.member === "fips") {
+      return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
+    }
     // Members that are global objects (`require("stream/web").ReadableStream
     // === globalThis.ReadableStream`) read in JavaScript sources as their
     // global spelling does.

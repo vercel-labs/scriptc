@@ -5963,6 +5963,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   )
     return DYN;
+  // crypto.secureHeapUsed's usage record is the runtime's own object (a
+  // fresh one per call), so it crosses as a checked-dynamic value too.
+  if (
+    isStdlibInterface("SecureHeapUsage") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
   // Filesystem options are data records. Keep their declared optional fields
   // instead of allowing arbitrary standard-library interfaces into records.
   if (

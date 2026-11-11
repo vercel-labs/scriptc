@@ -19771,6 +19771,13 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-roundtrip.ts",
           "tests/corpus/crypto-sign-pipe.ts",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
@@ -21028,8 +21035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getFips",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21077,8 +21087,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.getMacs",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21325,8 +21338,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21348,8 +21367,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.privateEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.privateEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21371,8 +21396,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicDecrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicDecrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21394,8 +21425,14 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.publicEncrypt"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.publicEncrypt",
+        "tests": [
+          "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-rsa-padding-errors.ts",
+          "tests/corpus/crypto-rsa-recover-padding.ts",
+          "tests/corpus/crypto-rsa-key-types.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21648,8 +21685,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.secureHeapUsed",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21671,8 +21711,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.setEngine",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21838,8 +21881,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.fips",
+        "tests": [
+          "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-namespace.mjs",
+          "tests/corpus/crypto-introspection.ts"
+        ]
       },
       "anchorSource": "exact"
     },

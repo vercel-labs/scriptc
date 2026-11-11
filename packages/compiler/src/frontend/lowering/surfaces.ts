@@ -1707,6 +1707,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
       sign: { fn: "crypto.signOneshot", params: [], result: DYN },
       verify: { fn: "crypto.verifyOneshot", params: [], result: DYN },
+      publicEncrypt: { fn: "crypto.publicEncrypt", params: [], result: DYN },
+      privateDecrypt: { fn: "crypto.privateDecrypt", params: [], result: DYN },
+      privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
+      publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
@@ -1741,6 +1745,11 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // Checked-dynamic arguments, the result converted to the call site's
       // type (lowerPrimeCall).
       getCipherInfo: { fn: "crypto.getCipherInfo", params: [], result: DYN },
+      // A fresh usage record per call; only libuv's secure heap would make
+      // it non-zero, and a compiled binary has none.
+      secureHeapUsed: { fn: "crypto.secureHeapUsed", params: [], result: DYN },
+      // Node's message and error for every engine but "dynamic".
+      setEngine: { fn: "crypto.setEngine", params: [], result: VOID },
       checkPrime: { fn: "crypto.checkPrimeCb", params: [], result: VOID },
       generatePrimeSync: { fn: "crypto.generatePrimeSync", params: [], result: DYN },
       generatePrime: { fn: "crypto.generatePrimeCb", params: [], result: VOID },
@@ -3664,14 +3673,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
   crypto: {
-    ...Object.fromEntries(
-      ["publicEncrypt", "publicDecrypt", "privateEncrypt", "privateDecrypt"].map((m) => [
-        m,
-        "RSA encryption has no lowering — the asymmetric crypto surface is " +
-          "RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, " +
-          "createSign, createVerify, createECDH, and createDiffieHellman",
-      ]),
-    ),
     setFips:
       "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
       "in a non-FIPS build — getFips() answers 0 here",

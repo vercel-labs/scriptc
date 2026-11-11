@@ -298,6 +298,21 @@ ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+/* RSA's public-key operations: the ciphertext, or the recovered message. */
+ScrDyn *scr_crypto_public_encrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_private_decrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_private_encrypt(ScrDyn *key, ScrDyn *buffer);
+ScrDyn *scr_crypto_public_decrypt(ScrDyn *key, ScrDyn *buffer);
+/* crypto.secureHeapUsed(): a fresh { total, used, utilization, min } record
+ * for a process with no secure heap (0, 0, NaN, 2). */
+ScrDyn *scr_crypto_secure_heap_used(void);
+/* crypto.setEngine(engine[, flags]): Node's checks, then the one engine a
+ * compiled binary registers is "dynamic"; every other id throws
+ * ERR_CRYPTO_ENGINE_UNKNOWN. Borrows both arguments. */
+void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags);
+/* The deprecated crypto.fips read: getFips() (0 here), reporting DEP0093
+ * once per process. */
+double scr_crypto_fips_get(void);
 /* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
  * with the callback, which receives it in a later macrotask. */
 ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);

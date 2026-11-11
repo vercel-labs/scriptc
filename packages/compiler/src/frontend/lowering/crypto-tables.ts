@@ -321,6 +321,21 @@ export const CRYPTO_HASHES: readonly string[] = [
   "ssl3-sha1",
 ];
 
+/** crypto.getMacs() — Node v24.22.1 provider MAC names, sorted. */
+export const CRYPTO_MACS: readonly string[] = [
+  "blake2bmac",
+  "blake2smac",
+  "cmac",
+  "gmac",
+  "hmac",
+  "kmac-128",
+  "kmac-256",
+  "kmac128",
+  "kmac256",
+  "poly1305",
+  "siphash",
+];
+
 /** crypto.getCurves() — Node v24.22.1 EC curve names. */
 export const CRYPTO_CURVES: readonly string[] = [
   "Oakley-EC2N-3",

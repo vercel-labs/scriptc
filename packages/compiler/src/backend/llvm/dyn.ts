@@ -5772,9 +5772,23 @@ export class LlDyn {
       for (const [kind, label] of labels) branches.push(`i32 ${kind}, label %${label}`);
       B.terminate(`switch i32 ${kd}, label %${done} [ ${branches.join(" ")} ]`);
       B.startBlock(labels.get(DYN_KIND.PROXY)!);
-      host.declare(`declare void @scr_dyn_proxy_unsupported(ptr)`);
-      B.line(`call void @scr_dyn_proxy_unsupported(ptr ${host.cstr("string conversion")})`);
-      B.br(done);
+      {
+        // String(p) / `${p}`: ToPrimitive through the Proxy's own traps, then
+        // ToString of the primitive. Null leaves the exception the conversion
+        // threw pending.
+        host.declare(`declare ptr @scr_dyn_proxy_to_string(ptr)`);
+        host.declare(`declare void @scr_str_release(ptr)`);
+        const text = B.tmp();
+        B.line(`${text} = call ptr @scr_dyn_proxy_to_string(ptr %d)`);
+        const converted = B.tmp();
+        B.line(`${converted} = icmp ne ptr ${text}, null`);
+        const lPut = B.newLabel("ds.px");
+        B.condBr(converted, lPut, done);
+        B.startBlock(lPut);
+        this.putScrStr(B, "%b", text);
+        B.line(`call void @scr_str_release(ptr ${text})`);
+        B.br(done);
+      }
       B.startBlock(labels.get(DYN_KIND.TYPED_REF)!);
       {
         host.declare(`declare ptr @scr_dyn_typed_ref_string_view(ptr)`);

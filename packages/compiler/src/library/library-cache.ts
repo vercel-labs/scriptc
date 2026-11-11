@@ -65,6 +65,9 @@ interface EarlyLibraryCacheStamp {
 export interface EarlyLibraryNativeFeatures {
   backend: "llvm";
   dynInvoke: boolean;
+  /** A native Proxy's inherited-member table (scr_dyn_invoke.c). Absent
+   * (false) otherwise. */
+  nativeProxy?: boolean;
   /** Buffer.prototype methods on checked-dynamic values (scr_bytes_dyn.c). */
   dynBuffer?: boolean;
   dynTier?: boolean;
@@ -143,6 +146,7 @@ export interface SemanticLibraryCacheHit {
 
 const BOOLEAN_NATIVE_KEYS = [
   "dynInvoke",
+  "nativeProxy",
   "regex",
   "assert",
   "inspect",

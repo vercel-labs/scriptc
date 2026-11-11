@@ -173,9 +173,19 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
     scr_dyn_release(materialized);
     return;
   }
-  case SCR_DYN_PROXY:
-    scr_dyn_proxy_unsupported("string conversion");
+  case SCR_DYN_PROXY: {
+    /* String concatenation and template spans convert through ToString
+     * (to_string); the message form has no Proxy rendering yet. */
+    if (!to_string) {
+      scr_dyn_proxy_unsupported("string conversion");
+      return;
+    }
+    ScrStr *text = scr_dyn_proxy_to_string(d);
+    if (!text) return;
+    scr_jb_write(b, text->data, text->len);
+    scr_str_release(text);
     return;
+  }
   }
 }
 
@@ -2490,11 +2500,11 @@ static bool dyn_array_prototype_defines(const ScrStr *key) {
 
 /* The inherited member `key` of `d` when its own chain does not define it,
  * or NULL (the read's undefined stands). */
-static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
+ScrDyn *scr_dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
   switch (d->kind) {
   case SCR_DYN_TYPED_REF: {
     ScrDyn *view = scr_dyn_typed_ref_materialize(d);
-    ScrDyn *member = view && !scr_exc_pending() ? dyn_inherited_member(view, key) : NULL;
+    ScrDyn *member = view && !scr_exc_pending() ? scr_dyn_inherited_member(view, key) : NULL;
     scr_dyn_release(view);
     return member;
   }
@@ -2574,7 +2584,7 @@ ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key) {
  * undefined read, the read otherwise. */
 ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read) {
   if (!read || read->kind != SCR_DYN_UNDEF) return read;
-  ScrDyn *member = dyn_inherited_member(d, key);
+  ScrDyn *member = scr_dyn_inherited_member(d, key);
   if (scr_exc_pending()) {
     scr_dyn_release(member);
     scr_dyn_release(read);
@@ -2583,6 +2593,15 @@ ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read)
   if (!member) return read;
   scr_dyn_release(read);
   return member;
+}
+
+/* Program startup: scr_json.c answers a computed read of an inherited name
+ * (and a trap-less Proxy's forwarded Get) through this table. A program
+ * that creates a native Proxy links this unit for it (nativeProxy), so the
+ * table is in place before %main; every other program keeps the undefined
+ * read the base unit answers. */
+__attribute__((constructor)) static void dyn_inherited_member_hook_install(void) {
+  scr_dyn_inherited_member_hook = scr_dyn_inherited_member;
 }
 
 /* Builtin global functions stored in JavaScript (the `var nextTick = typeof

@@ -121,6 +121,10 @@ export interface CcOptions {
    * compiles scr_dyn_invoke.c — the assert gating precedent, so
    * dispatch-free binaries keep their exact size class. */
   dynInvoke?: boolean;
+  /** The program creates a native Proxy (index.ts detects dyn.proxyNew
+   * libCalls on the IR): compiles scr_dyn_invoke.c, whose inherited-member
+   * table scr_json.c answers a computed key or a forwarded Get with. */
+  nativeProxy?: boolean;
   /** The program uses the diagnostics_channel surface (index.ts detects
    * dc.* libCalls on the IR): compiles scr_dc.c — pure data structure
    * over the checked-dynamic tree (no loop hooks, no install), cross-compiles everywhere.
@@ -536,6 +540,9 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** See CcOptions.nativeProxy: a native Proxy's inherited-member table
+   * (scr_dyn_invoke.c). */
+  nativeProxy?: boolean;
   /** Buffer.prototype methods on checked-dynamic values: scr_bytes_dyn.c,
    * with dynInvoke. */
   dynBuffer?: boolean;

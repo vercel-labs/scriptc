@@ -31,6 +31,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     assert: options.assert ?? false,
     inspect: options.inspect ?? false,
     dynInvoke: options.dynInvoke ?? false,
+    ...(options.nativeProxy === true ? { nativeProxy: true } : {}),
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
     ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),

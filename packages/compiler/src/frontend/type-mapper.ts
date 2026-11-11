@@ -8431,7 +8431,17 @@ function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | nul
     (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
   );
   if (!isLibAlias) return null;
-  const bound = viaSignature ? mapBoundSignatureAlias(arg, ctx) : resolveTypeParam(arg);
+  // `Awaited<this>` (`Promise.resolve(this)` in a method: the checker infers
+  // `Promise<Awaited<this>>`): the polymorphic `this` type is a type
+  // parameter no signature binds, but it names one checker type, the class
+  // instance the member belongs to. Awaited over a non-promise is the type
+  // itself, which the loop below answers.
+  const isThis = (arg as { isThisType?: boolean }).isThisType === true;
+  const bound = viaSignature
+    ? mapBoundSignatureAlias(arg, ctx)
+    : isThis
+      ? mapType(arg, ctx)
+      : resolveTypeParam(arg);
   if (!bound) return null;
   let r = bound;
   while (r.kind === "promise") r = r.inner;

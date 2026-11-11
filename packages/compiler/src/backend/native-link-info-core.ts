@@ -118,6 +118,12 @@ export interface NativeLinkFeatures {
   zstd?: boolean;
   assert: boolean;
   inspect: boolean;
+  /** A program that creates a native Proxy (`new Proxy`): the dyn-invoke
+   * unit carries the Object.prototype table scr_json.c answers a computed
+   * key or a forwarded Get with, and the checked-dynamic promise unit it
+   * settles through comes with it. Absent (false) for every other program,
+   * so their link identity is unchanged. */
+  nativeProxy?: boolean;
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;

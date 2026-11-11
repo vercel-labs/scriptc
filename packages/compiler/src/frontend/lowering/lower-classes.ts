@@ -1986,6 +1986,13 @@ function collectClassShapeDeferring(lowerer: Lowerer, decl: ts.ClassDeclaration)
   const symbol = lowerer.collectDeferring(
     () => declSymbolOf(lowerer, decl),
     () => {
+      // flushDeferred runs this collector again when a reference reaches
+      // the class. Another reference may have collected it in the meantime:
+      // the table then already holds its ClassInfo, and collecting again
+      // would replace the entry while pushing a second one onto the base's
+      // subclasses — both copies then reach the dynamic dispatch, which
+      // generates each %class.view helper twice (SC9001).
+      if (lowerer.classes.has(lowerer.classNamer(decl))) return;
       // A forward type reference can demand this class before collection
       // reaches its earlier base declaration. Collect that dependency first;
       // a later same-file base remains subject to the runtime order boundary.

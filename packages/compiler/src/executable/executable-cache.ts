@@ -108,6 +108,9 @@ export interface EarlyExecutableNativeFeatures {
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
+  /** A native Proxy's inherited-member table (scr_dyn_invoke.c). Absent
+   * (false) otherwise. */
+  nativeProxy?: boolean;
   dc: boolean;
   dynAsync: boolean;
   dynTier?: boolean;

@@ -1772,6 +1772,13 @@ const RUNTIME_FEATURE_RULES = {
   /** A builtin prototype method as a function value (String's trim family,
    * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
   builtinMethodValue: rule({ fns: ["dyn.builtinMethodValue"] }),
+  /** A program that creates a native Proxy (dyn.proxyNew): links the
+   * dyn-invoke unit, whose Object.prototype table answers the members a
+   * computed key or a trap-less Proxy's forwarded Get reads as functions
+   * (scr_dyn_inherited_member_hook), and the checked-dynamic promise unit
+   * that the invoke unit's promises settle through. Without them, those
+   * reads stay undefined exactly as before. */
+  nativeProxy: rule({ fns: ["dyn.proxyNew"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     scan: computedBufferMemberScan,
@@ -2521,6 +2528,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    nativeProxy: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,

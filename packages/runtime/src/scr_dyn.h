@@ -2042,6 +2042,21 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key);
 ScrStr *scr_dyn_typeof(const ScrDyn *d);
 /* Object.prototype.toString.call over the native checked-dynamic tree; +1. */
 ScrStr *scr_dyn_object_tag(const ScrDyn *d);
+/* The member `key` an ordinary object of `d`'s kind inherits from its
+ * builtin prototype (Object.prototype, Array.prototype, ...), or NULL when
+ * its own chain defines the name or nothing builtin does. +1. */
+ScrDyn *scr_dyn_inherited_member(const ScrDyn *d, const ScrStr *key);
+/* That table as scr_json.c reaches it: this unit installs the hook at
+ * startup when a program links it, and a JSON-only program keeps the
+ * undefined read. */
+extern ScrDyn *(*scr_dyn_inherited_member_hook)(const ScrDyn *d, const ScrStr *key);
+/* ToString of a native Proxy: ToPrimitive with the string hint runs
+ * through the Proxy's traps, as Node's does — @@toPrimitive first, then
+ * OrdinaryToPrimitive over 'toString' and 'valueOf', each member read with
+ * the get trap and called with the Proxy as `this`. Borrows; +1, or NULL
+ * with the exception pending (a trap threw, or no method answered a
+ * primitive). */
+ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy);
 /* Receiver-kind-dispatched toString() (Buffer-flavored bytes decode per
  * enc — utf8 default; strings/numbers/booleans/arrays/objects answer
  * JS-exactly; undefined/null throw the catchable TypeError). Borrows; +1. */

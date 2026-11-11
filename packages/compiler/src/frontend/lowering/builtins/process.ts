@@ -3276,6 +3276,10 @@ function withIgnoredArguments(
       );
     }
     const expr = lowerer.lowerExpr(extra);
+    // `null` and `undefined` lower to a bare unitLit: there is no effect to
+    // keep, and a bare unitLit is not a valid IR expression statement
+    // (SC9001). Every other surplus value still evaluates here.
+    if (expr.kind === "unitLit") continue;
     stmts.push({ kind: "exprStmt", expr, loc: expr.loc });
   }
   const result = build(staged);

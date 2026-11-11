@@ -1943,13 +1943,22 @@ static void scr_kill_unknown_signal_text(const char *text, size_t len) {
   free(msg);
 }
 
+/* A library archive has no such symbol: its program may not have selected
+ * the inspect unit, and the localization pass keeps every undefined
+ * reference global, so an optional runtime unit's symbol must not reach the
+ * archive's link surface (the embedder's link would carry a dangling
+ * scr_ prefix). The archive renders the plain String() form instead, the
+ * same narrowing the census reference above takes. */
+#if !defined(SCR_LIB)
 /* The %s rendering Node's message formatter gives the offending signal:
  * util.format's %s, which inspects an object without a custom toString.
  * The inspect unit renders it exactly when the program links that unit
  * (any program that prints does); a program without it keeps the plain
  * String() form. NULL with an exception pending when a hook throws. */
 extern ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth) __attribute__((weak));
+#endif
 static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
+#if !defined(SCR_LIB)
   /* util.format's %s inspects an object only when its toString is a
    * built-in one; a value carrying its own toString is converted through it
    * (Node prints what that method answers). The dynamic object model keeps
@@ -1965,6 +1974,7 @@ static ScrStr *scr_kill_signal_text(const ScrDyn *signal) {
     ScrStr *text = scr_insp_dyn_format_s((ScrDyn *)signal, 0);
     if (text != NULL || scr_exc_pending()) return text;
   }
+#endif
   return scr_dyn_string_coerce_js(signal);
 }
 

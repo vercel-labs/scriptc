@@ -14,11 +14,19 @@ const child = fork(childPath, [], {
 });
 
 console.log("parent connected", child.connected);
+// The parent and the child share the inherited stdout, so a line printed from
+// a channel handler races the child's own send-callback lines. The handler
+// lines are buffered and printed when the child exits, after its last write;
+// which lines print, and their order, is unchanged.
+const pending: string[] = [];
 child.once("message", (message: { connected: boolean; echo: string }) => {
-  console.log("reply", message.echo, message.connected);
+  pending.push(`reply ${message.echo} ${message.connected}`);
 });
 child.once("disconnect", () => {
-  console.log("parent disconnect", child.connected);
+  pending.push(`parent disconnect ${child.connected}`);
 });
-child.once("exit", (code) => console.log("parent exit", code));
+child.once("exit", (code) => {
+  for (const line of pending) console.log(line);
+  console.log("parent exit", code);
+});
 console.log("send", child.send({ kind: "ping" }));

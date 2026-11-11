@@ -119972,6 +119972,7 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-codec-params.ts",
           "tests/corpus/zlib-constants-object.ts",
           "tests/corpus/zlib-stream-classes.ts",
           "tests/corpus/zlib-typed-view-inputs.ts",
@@ -120460,10 +120461,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.BrotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120486,11 +120490,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.BrotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120949,11 +120955,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.ZstdCompress",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -120976,11 +120984,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.ZstdDecompress",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121030,10 +121040,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createBrotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createBrotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121056,11 +121069,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createBrotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createBrotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121321,10 +121336,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createZstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createZstdCompress",
         "tests": [
-          "tests/corpus/zstd-streams.ts"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121347,10 +121365,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.createZstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.createZstdDecompress",
         "tests": [
-          "tests/corpus/zstd-streams.ts"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121373,10 +121394,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121399,10 +121423,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompressSync",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121425,11 +121452,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121452,11 +121481,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompressSync",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122011,10 +122042,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompress",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122037,10 +122071,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompressSync",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122063,10 +122100,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompress",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122089,10 +122129,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompressSync",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122543,7 +122586,8 @@
         "status": "partial",
         "evidence": "compiler-feature:zlib.BrotliOptions",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122570,7 +122614,8 @@
         "evidence": "compiler-feature:zlib.ZstdOptions",
         "tests": [
           "tests/corpus/zstd-streams.ts",
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122616,10 +122661,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompress",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122642,10 +122690,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliCompressSync",
         "tests": [
-          "tests/corpus/7714-zlib-brotli-compress.cjs"
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
+          "tests/corpus/7715-zlib-brotli-decompress.cjs",
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122668,11 +122719,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompress",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122695,11 +122748,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.brotliDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.brotliDecompressSync",
         "tests": [
+          "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/7715-zlib-brotli-decompress.cjs",
-          "tests/corpus/7716-zlib-brotli.ts"
+          "tests/corpus/7716-zlib-brotli.ts",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123254,10 +123309,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompress",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123280,10 +123338,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdCompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdCompressSync",
         "tests": [
-          "tests/corpus/zstd-compress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123306,10 +123367,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompress",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompress",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123332,10 +123396,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.zlib.zstdDecompressSync",
+        "status": "supported",
+        "evidence": "compiler-feature:zlib.zlib.zstdDecompressSync",
         "tests": [
-          "tests/corpus/zstd-decompress.cjs"
+          "tests/corpus/zstd-streams.ts",
+          "tests/corpus/zstd-compress.cjs",
+          "tests/corpus/zstd-decompress.cjs",
+          "tests/corpus/zlib-codec-params.ts"
         ]
       },
       "anchorSource": "ancestor"

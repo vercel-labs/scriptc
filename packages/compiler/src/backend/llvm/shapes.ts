@@ -2111,13 +2111,19 @@ export function iterativeTeardownDefinitions(
  * runtime's depth-bounded worklist drives instead.
  *
  * A tree class with a single child field needs no list at all: the loop
- * follows the child. */
+ * follows the child.
+ *
+ * `units[i]` marks a child field of a nullable union with both unit arms
+ * (`C | null | undefined`): its `null` is the module's NULLABLE_NULL
+ * sentinel, not NULL, so the loop must skip that pointer as well as NULL
+ * rather than load a count word from it or free it. */
 export function treeTeardownDefinitions(
   host: ShapeHost,
   destroy: string,
   struct: string,
   fields: readonly number[],
   observers: FreeObservers,
+  units: readonly boolean[],
 ): string[] {
   host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const load = (i: number, index: number): string[] => [
@@ -2131,6 +2137,17 @@ export function treeTeardownDefinitions(
     `it.freed:`,
     `  %it.k = load ptr, ptr %sg.own`,
   ];
+  /** `flag` is true when child `value` is a node: not NULL (the unit arm
+   * every nullable form encodes) and, for `units[i]`, not the immortal
+   * null sentinel either. `tag` names the two comparisons. */
+  const nodeTest = (flag: string, tag: string, value: string, unit: boolean): string[] =>
+    unit
+      ? [
+          `  %${tag}.null = icmp ne ptr ${value}, null`,
+          `  %${tag}.unit = icmp ne ptr ${value}, ${NULLABLE_NULL}`,
+          `  ${flag} = and i1 %${tag}.null, %${tag}.unit`,
+        ]
+      : [`  ${flag} = icmp ne ptr ${value}, null`];
   /** `block` joins the segment: the tail's first word points at it, and an
    * empty segment takes it for both ends. The lines start in block `from`
    * and end in block `${name}.out`, which defines `%<name>.h` and
@@ -2185,7 +2202,7 @@ export function treeTeardownDefinitions(
       ...load(0, fields[0]!),
       ...free,
       ...chain("it.ch", "%it.k", "it.freed"),
-      `  %it.nn = icmp ne ptr %it.v0, null`,
+      ...nodeTest("%it.nn", "it.chk", "%it.v0", units[0]!),
       `  br i1 %it.nn, label %it.node, label %it.done`,
       ...done("%it.ch.h", "%it.ch.t"),
       ...wrappers,
@@ -2204,10 +2221,10 @@ export function treeTeardownDefinitions(
     ...load(0, f0),
     ...load(1, f1),
     ...free,
-    `  %it.v0n = icmp ne ptr %it.v0, null`,
+    ...nodeTest("%it.v0n", "it.t0", "%it.v0", units[0]!),
     `  br i1 %it.v0n, label %it.left, label %it.noleft`,
     `it.left:`,
-    `  %it.v1n = icmp ne ptr %it.v1, null`,
+    ...nodeTest("%it.v1n", "it.t1", "%it.v1", units[1]!),
     `  br i1 %it.v1n, label %it.two, label %it.one`,
     `it.two: ; the freed block becomes the entry for the second child`,
     `  %it.kn = icmp ne ptr %it.k, null`,
@@ -2224,7 +2241,7 @@ export function treeTeardownDefinitions(
     ...chain("it.one", "%it.k", "it.one"),
     `  br label %it.node`,
     `it.noleft:`,
-    `  %it.v1n2 = icmp ne ptr %it.v1, null`,
+    ...nodeTest("%it.v1n2", "it.t2", "%it.v1", units[1]!),
     `  br i1 %it.v1n2, label %it.only, label %it.leaf`,
     `it.only: ; the first child is empty: follow the second`,
     ...chain("it.only", "%it.k", "it.only"),
@@ -2249,13 +2266,13 @@ export function treeTeardownDefinitions(
     `  %one.f1 = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f1}`,
     `  %one.v1 = load ptr, ptr %one.f1`,
     ...emitObjectFree(host, false, observers),
-    `  %one.v0n = icmp ne ptr %one.v0, null`,
+    ...nodeTest("%one.v0n", "one.t0", "%one.v0", units[0]!),
     `  br i1 %one.v0n, label %one.r0, label %one.j0`,
     `one.r0:`,
     `  call void @scr_rc_destroy(ptr %one.v0, ptr @${destroy}_one)`,
     `  br label %one.j0`,
     `one.j0:`,
-    `  %one.v1n = icmp ne ptr %one.v1, null`,
+    ...nodeTest("%one.v1n", "one.t1", "%one.v1", units[1]!),
     `  br i1 %one.v1n, label %one.r1, label %one.j1`,
     `one.r1:`,
     `  call void @scr_rc_destroy(ptr %one.v1, ptr @${destroy}_one)`,

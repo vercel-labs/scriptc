@@ -31,72 +31,65 @@ compat-absent-http-members.ts:18:23 - error SC0001: Property 'signal' does not e
   17 |   // IncomingMessage: the abort signal.
   18 |   console.log(request.signal.aborted);
      |                       ^~~~~~
-  19 |   // OutgoingMessage: several headers at once, an arbitrary 1xx response,
+  19 |   // OutgoingMessage: an arbitrary 1xx response and the event behind
 
-compat-absent-http-members.ts:21:12 - error SC0001: Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?
+compat-absent-http-members.ts:21:12 - error SC0001: Property 'writeInformation' does not exist on type 'ServerResponse'.
 
-  20 |   // and the state and event behind write()'s result.
-  21 |   response.setHeaders(new Map([["x-a", "1"]]));
-     |            ^~~~~~~~~~
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
-
-compat-absent-http-members.ts:22:12 - error SC0001: Property 'writeInformation' does not exist on type 'ServerResponse'.
-
-  21 |   response.setHeaders(new Map([["x-a", "1"]]));
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+  20 |   // write()'s result.
+  21 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
      |            ^~~~~~~~~~~~~~~~
-  23 |   console.log(response.writableLength);
+  22 |   response.on("drain", () => {});
 
-compat-absent-http-members.ts:23:24 - error SC0001: Property 'writableLength' does not exist on type 'ServerResponse'.
+compat-absent-http-members.ts:22:15 - error SC0001: Argument of type '"drain"' is not assignable to parameter of type '"close" | "finish" | "prefinish"'.
 
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
-  23 |   console.log(response.writableLength);
-     |                        ^~~~~~~~~~~~~~
-  24 |   response.on("drain", () => {});
-
-compat-absent-http-members.ts:24:15 - error SC0001: Argument of type '"drain"' is not assignable to parameter of type '"close" | "finish" | "prefinish"'.
-
-  23 |   console.log(response.writableLength);
-  24 |   response.on("drain", () => {});
+  21 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+  22 |   response.on("drain", () => {});
      |               ^~~~~~~
-  25 |   response.end();
+  23 |   response.end();
 
-compat-absent-http-members.ts:27:20 - error SC0001: Property 'maxHeadersCount' does not exist on type 'Server'.
+compat-absent-http-members.ts:25:20 - error SC0001: Property 'maxHeadersCount' does not exist on type 'Server'.
 
-  26 | });
-  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+  24 | });
+  25 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
      |                    ^~~~~~~~~~~~~~~
-  28 | server.on("dropRequest", () => {});
+  26 | server.on("dropRequest", () => {});
 
-compat-absent-http-members.ts:27:44 - error SC0001: Property 'maxRequestsPerSocket' does not exist on type 'Server'.
+compat-absent-http-members.ts:25:44 - error SC0001: Property 'maxRequestsPerSocket' does not exist on type 'Server'.
 
-  26 | });
-  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+  24 | });
+  25 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
      |                                            ^~~~~~~~~~~~~~~~~~~~
-  28 | server.on("dropRequest", () => {});
+  26 | server.on("dropRequest", () => {});
 
-compat-absent-http-members.ts:28:11 - error SC0001: No overload matches this call.
+compat-absent-http-members.ts:26:11 - error SC0001: No overload matches this call.
   The last overload gave the following error.
     Argument of type '"dropRequest"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
 
-  27 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
-  28 | server.on("dropRequest", () => {});
+  25 | console.log(server.maxHeadersCount, server.maxRequestsPerSocket);
+  26 | server.on("dropRequest", () => {});
      |           ^~~~~~~~~~~~~
-  29 | await server[Symbol.asyncDispose]();
+  27 | await server[Symbol.asyncDispose]();
 
-compat-absent-http-members.ts:29:7 - error SC0001: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.
+compat-absent-http-members.ts:27:7 - error SC0001: Element implicitly has an 'any' type because expression of type 'unique symbol' can't be used to index type 'Server'.
   Property '[SymbolConstructor.asyncDispose]' does not exist on type 'Server'.
 
-  28 | server.on("dropRequest", () => {});
-  29 | await server[Symbol.asyncDispose]();
+  26 | server.on("dropRequest", () => {});
+  27 | await server[Symbol.asyncDispose]();
      |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
-  30 | 
+  28 | 
 
-compat-absent-http-members.ts:33:21 - error SC0001: Property 'maxHeadersCount' does not exist on type 'ClientRequest'.
+compat-absent-http-members.ts:32:21 - error SC0001: Property 'maxHeadersCount' does not exist on type 'ClientRequest'.
 
-  32 | const request = http.request({ host: "127.0.0.1", port: 1 });
-  33 | console.log(request.maxHeadersCount);
+  31 | const request = http.request({ host: "127.0.0.1", port: 1 });
+  32 | console.log(request.maxHeadersCount);
      |                     ^~~~~~~~~~~~~~~
+  33 | console.log(request.writableLength);
+
+compat-absent-http-members.ts:33:21 - error SC0001: Property 'writableLength' does not exist on type 'ClientRequest'.
+
+  32 | console.log(request.maxHeadersCount);
+  33 | console.log(request.writableLength);
+     |                     ^~~~~~~~~~~~~~
   34 | request.destroy();
 
 compat-absent-http-members.ts:37:6 - error SC0001: Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import("node:http")'.

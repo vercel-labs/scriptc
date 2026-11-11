@@ -56367,6 +56367,8 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/compat-http-set-headers.ts",
+          "tests/corpus/compat-http-writable-length.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
@@ -60379,10 +60381,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.outgoingMessage.setHeaders",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/compat-http-set-headers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60677,9 +60679,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.writableLength",
         "tests": [
+          "tests/corpus/compat-http-writable-length.ts",
           "tests/diagnostics/compat-absent-http-members.ts"
         ]
       },

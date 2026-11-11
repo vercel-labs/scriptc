@@ -2389,6 +2389,7 @@ function buildLibFnSignatures() {
     /** setHeader / appendHeader with a number, string or array value; the
      * stored value keeps its type for getHeader/getHeaders. MAY THROW. */
     "http.resSetHeaderDyn": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
+    "http.resSetHeaders": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resAppendHeader": { argTypes: [HTTPRES_T, STRING, DYN], result: VOID },
     "http.resWriteHead": { argTypes: [HTTPRES_T, F64], result: VOID },
     "http.resWriteHeadN": {
@@ -2415,6 +2416,7 @@ function buildLibFnSignatures() {
     "http.resCork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resUncork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableCorked": { argTypes: [HTTPRES_T], result: F64 },
+    "http.resWritableLength": { argTypes: [HTTPRES_T], result: F64 },
     "http.resWritableHighWaterMark": { argTypes: [HTTPRES_T], result: F64 },
     "http.resWritableObjectMode": { argTypes: [HTTPRES_T], result: BOOL },
     /** res.on("prefinish", cb): fires inside end(). Throws for the HTTP/2

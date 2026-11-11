@@ -30,6 +30,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Constants of the response's writable side (65536, false).
   "http.resWritableHighWaterMark",
   "http.resWritableObjectMode",
+  // scr_http_res_writable_length adds the response's buffered byte counts to
+  // the socket's pending count: it reads fields and runs no program code.
+  "http.resWritableLength",
   // A listener is added to the request's or the session's list, or dropped
   // when the request or session is past the event; no listener runs.
   "http.clientOnConnect",

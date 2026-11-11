@@ -4904,6 +4904,14 @@ export function lowerServerProperty(
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
     return { kind: "libCall", fn: "http.resWritableCorked", args: [receiver], type: F64, loc };
   }
+  if (
+    recvKind === "httpRes" &&
+    lowerer.isStdlibMember(expr) &&
+    expr.name.text === "writableLength"
+  ) {
+    const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+    return { kind: "libCall", fn: "http.resWritableLength", args: [receiver], type: F64, loc };
+  }
   if (recvKind === "httpRes" && lowerer.isStdlibMember(expr) && expr.name.text === "statusCode") {
     // 200 until assigned — Node's fresh-response default; the assignment
     // twin lives in lowerHttpResPropertyAssignment.
@@ -9429,6 +9437,26 @@ function lowerHttpResMethodCall(
       kind: "libCall",
       fn: "http.resSetHeader",
       args: [receiver, header, value],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "setHeaders") {
+    // Node returns the response; the statement form needs no value.
+    requireStatementPosition(lowerer, call, "res.setHeaders(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `setHeaders with ${args.length} arguments`,
+        call,
+        "the supported form is setHeaders(headers) with a Headers or a Map",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+    const headers = lowerer.lowerExpr(args[0]!);
+    return {
+      kind: "libCall",
+      fn: "http.resSetHeaders",
+      args: [receiver, lowerer.coerceToExpected(headers, DYN)],
       type: VOID,
       loc,
     };

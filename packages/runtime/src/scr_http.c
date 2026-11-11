@@ -1052,6 +1052,10 @@ struct ScrHttpRes {
   char *cork_buf;
   size_t cork_len, cork_cap;
   bool cork_wrote; /* a write() ran while corked: the flush sends a held head */
+  /* res.writableLength: the bytes of a head flushHeaders() sent while the
+   * response was corked. Node's corked socket still holds them until the
+   * uncork; here they already left, so the count is kept apart. */
+  size_t wl_corked_head;
   /* A write while corked commits the head (headersSent, Node's implicit
    * header) and holds its bytes here until the flush sends them first;
    * writeHead holds them here until the first write(), end() or
@@ -1487,6 +1491,74 @@ void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDy
   }
   if (valid) scr_http_res_insert_value(r, scr_http_res_drop_named(r, name), name, value, false);
   scr_dyn_release(value);
+}
+
+/* setHeaders(headers): setHeader for each entry of a Headers or a Map, in
+ * iteration order. Node collects the set-cookie entries (a Headers yields
+ * one per cookie) and sets them last as one array. */
+typedef struct {
+  ScrHttpRes *res;
+  ScrDyn *cookies; /* +1 once a set-cookie entry was seen */
+} ScrHttpSetHeaders;
+
+static void scr_http_res_set_headers_entry(ScrHttpSetHeaders *s, ScrStr *name /*borrowed*/,
+                                           ScrDyn *value /*borrowed*/) {
+  if (scr_exc_pending()) return;
+  if (name->len != 10 || memcmp(name->data, "set-cookie", 10) != 0) {
+    scr_http_res_set_header_dyn(s->res, name, value);
+    return;
+  }
+  if (s->cookies == NULL) s->cookies = scr_dyn_new_arr();
+  ScrDyn *plain = scr_http_header_value_plain(value);
+  if (plain->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < plain->v.arr.len; i++)
+      scr_dyn_arr_push(s->cookies, scr_dyn_retain(plain->v.arr.items[i]));
+    scr_dyn_release(plain);
+  } else {
+    scr_dyn_arr_push(s->cookies, plain);
+  }
+}
+
+static void scr_http_res_set_headers_pair(void *ctx, ScrStr *name, ScrStr *value) {
+  ScrDyn *boxed = scr_dyn_new_str(value);
+  scr_http_res_set_headers_entry(ctx, name, boxed);
+  scr_dyn_release(boxed);
+}
+
+/* The fetch unit's Headers walk, installed when that unit is linked (as the
+ * h2 ops are): a program without it has no Headers to pass. */
+static SCR_TL ScrHttpHeadersEach scr_http_headers_each = NULL;
+
+void scr_http_set_headers_each(ScrHttpHeadersEach each) { scr_http_headers_each = each; }
+
+void scr_http_res_set_headers(ScrHttpRes *r, ScrDyn *headers /*borrowed*/) {
+  if (!scr_http_res_headers_unsent(r, "set")) return;
+  ScrHttpSetHeaders s = {r, NULL};
+  if (scr_http_headers_each == NULL ||
+      !scr_http_headers_each(headers, &scr_http_res_set_headers_pair, &s)) {
+    if (headers->kind != SCR_DYN_HANDLE || headers->v.handle.tag != SCR_DYNH_MAP) {
+      scr_dyn_arg_type_fail("headers", "an instance of Headers or Map", headers);
+      return;
+    }
+    ScrMap *map = headers->v.handle.ptr;
+    for (size_t i = 0; i < map->nentries && !scr_exc_pending(); i++) {
+      if (!scr_map_entry_live(map, i)) continue;
+      ScrDyn *key = scr_map_dyn_key(map, (double)i);
+      ScrDyn *value = scr_map_dyn_value(map, (double)i);
+      if (key->kind == SCR_DYN_STR) scr_http_res_set_headers_entry(&s, key->v.str, value);
+      else scr_http_res_dyn_name_fail(r, key, "set");
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+    }
+  }
+  if (s.cookies != NULL) {
+    if (!scr_exc_pending()) {
+      ScrStr *name = scr_str_new("set-cookie", 10);
+      scr_http_res_set_header_dyn(r, name, s.cookies);
+      scr_str_release(name);
+    }
+    scr_dyn_release(s.cookies);
+  }
 }
 
 /* appendHeader(name, value): an absent header is set as given; an existing
@@ -2060,7 +2132,17 @@ void scr_http_res_flush_headers(ScrHttpRes *r) {
     free(head.data);
     return;
   }
-  if (!r->head_sent && !r->finished) scr_http_res_send_head(r, -1);
+  if (!r->head_sent && !r->finished) {
+    if (r->corked > 0 && r->h2_stream == NULL && r->sock != NULL) {
+      ScrHttpBuf head = {NULL, 0, 0};
+      if (!scr_http_res_build_head(r, -1, &head)) return;
+      scr_net_sock_write_native(r->sock, head.data, head.len);
+      r->wl_corked_head += head.len;
+      free(head.data);
+      return;
+    }
+    scr_http_res_send_head(r, -1);
+  }
 }
 
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
@@ -2078,6 +2160,26 @@ void scr_http_res_uncork(ScrHttpRes *r) {
 }
 
 double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
+
+/* res.writableLength, as Node 24.22 computes it: the chunks waiting for the
+ * uncork (write() corks until the next tick) as the ONE chunk they leave
+ * as, so their bytes plus that chunk's size line and two CRLFs, plus a head
+ * not yet sent; a fixed-length body's bytes as they are; and whatever the
+ * socket has not finished sending. A response that takes no body (HEAD,
+ * 1xx, 204, 304) ignores its writes and holds nothing. */
+double scr_http_res_writable_length(ScrHttpRes *r) {
+  double pending =
+      r->sock != NULL && !r->socket_detached ? scr_net_sock_writable_length(r->sock) : 0;
+  if (r->finished || r->no_body || r->h2_stream != NULL) return pending;
+  size_t held = r->cork_len;
+  if (held > 0 && r->chunked) {
+    size_t digits = 1;
+    for (size_t n = held; n >= 16; n >>= 4) digits++;
+    held += digits + 4;
+  }
+  if (r->cork_len > 0 || r->cork_wrote) held += r->held_head_len;
+  return pending + (double)(held + r->wl_corked_head);
+}
 
 /* res.writableHighWaterMark and res.writableObjectMode: Node's default
  * high-water mark of a byte stream (getDefaultHighWaterMark(), 64 KiB
@@ -2129,6 +2231,7 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
    * uncork() with no write while corked sends nothing. */
   bool wrote = r->cork_wrote;
   r->cork_wrote = false;
+  r->wl_corked_head = 0;
   if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) return;
   char *held = r->cork_buf;
   size_t held_len = r->cork_len;
@@ -7860,6 +7963,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
     return scr_dyn_new_handle(r->req_ref, SCR_DYNH_HTTP_REQ);
   }
   if (strcmp(key, "writableCorked") == 0) return scr_dyn_new_num(scr_http_res_writable_corked(r));
+  if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_res_writable_length(r));
   if (strcmp(key, "writableFinished") == 0) return scr_dyn_new_bool(scr_http_res_writable_finished(r));
   if (strcmp(key, "writableHighWaterMark") == 0) return scr_dyn_new_num(scr_http_res_writable_high_water_mark(r));
   if (strcmp(key, "writableObjectMode") == 0) return scr_dyn_new_bool(scr_http_res_writable_object_mode(r));
@@ -7867,7 +7971,7 @@ static ScrDyn *scr_http_dynh_res_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);
   {
     static const char *const known[] = { "chunkedEncoding", "sendDate",
-      "strictContentLength", "writableLength", "writableNeedDrain",
+      "strictContentLength", "writableNeedDrain",
       "errored", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("ServerResponse", key, NULL);

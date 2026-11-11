@@ -111,6 +111,7 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly writableLength: number;
     readonly writableHighWaterMark: number;
     readonly writableObjectMode: boolean;
     readonly destroyed: boolean;
@@ -125,6 +126,7 @@ declare module "http" {
     /* The value keeps its type: getHeader answers the number, string or
      * array that was set. */
     setHeader(name: string, value: number | string | readonly string[]): void;
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): void;
     appendHeader(name: string, value: string | readonly string[]): void;
     getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];

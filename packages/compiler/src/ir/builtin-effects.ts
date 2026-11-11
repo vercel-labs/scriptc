@@ -342,6 +342,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteHeadDyn",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
+  "http.resSetHeaders",
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",

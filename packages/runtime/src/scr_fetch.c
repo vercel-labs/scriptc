@@ -3097,6 +3097,22 @@ static bool sf_headers_is_set_cookie(const ScrStr *name) {
  * order, each with its combined value, except that every set-cookie value
  * is its own entry (in insertion order), as Node's Headers iterator yields
  * them. Cached until the next mutation; borrowed. */
+static ScrArr *sf_headers_sorted(SfHeaders *h);
+
+/* The entries iterating a Headers yields, in order, each name and value
+ * borrowed for the call. False when the value is not a Headers. Installed
+ * into the HTTP unit (res.setHeaders), which must link without this one. */
+static bool sf_headers_each(const ScrDyn *value,
+                            void (*visit)(void *ctx, ScrStr *name, ScrStr *value), void *ctx) {
+  if (value == NULL || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_FETCH_HEADERS)
+    return false;
+  ScrArr *sorted = sf_headers_sorted((SfHeaders *)value->v.handle.ptr);
+  size_t n = (size_t)scr_arr_len(sorted);
+  for (size_t i = 0; i + 1 < n; i += 2) visit(ctx, sf_pair_at(sorted, i), sf_pair_at(sorted, i + 1));
+  return true;
+}
+
 static ScrArr *sf_headers_sorted(SfHeaders *h) {
   if (h->sorted) return h->sorted;
   size_t count = 0;
@@ -7599,6 +7615,7 @@ void scr_fetch_install(void) {
   scr_dyn_handle_install(SCR_DYNH_FETCH_REQUEST, &sf_request_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_RESPONSE, &sf_response_ops);
   scr_dyn_handle_install(SCR_DYNH_FETCH_HEADERS, &sf_headers_ops);
+  scr_http_set_headers_each(&sf_headers_each);
   scr_dyn_handle_install(SCR_DYNH_WEB_TRANSFORM, &sf_transform_ops);
   scr_dyn_handle_install(SCR_DYNH_WEB_WRITABLE, &sf_writable_ops);
   scr_dyn_handle_install(SCR_DYNH_WEB_WRITER, &sf_writer_ops);

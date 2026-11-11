@@ -1544,6 +1544,11 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexFromGenSignal": "scr_stream_duplex_from_gen_signal",
   "stream.duplexFromAsyncFnSignal": "scr_stream_duplex_from_async_fn_signal",
   "fetch.readableFromWeb": "scr_stream_readable_from_web",
+  "stream.readableToWeb": "scr_stream_readable_to_web",
+  "stream.writableToWeb": "scr_stream_writable_to_web",
+  "stream.duplexToWeb": "scr_stream_duplex_to_web",
+  "stream.writableFromWeb": "scr_stream_writable_from_web",
+  "stream.duplexFromWeb": "scr_stream_duplex_from_web",
   "writable.writeEncoding": "scr_stream_write_encoding",
   "writable.setDefaultEncoding": "scr_stream_set_default_encoding",
   "stream.chunkDone": "scr_stream_chunk_done",
@@ -2271,6 +2276,14 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+  // The stream/web adapters drive their node streams and controllers
+  // through the tick and microtask queues, and the fromWeb forms park a
+  // fiber on the web stream's own promises.
+  "stream.readableToWeb",
+  "stream.writableToWeb",
+  "stream.duplexToWeb",
+  "stream.writableFromWeb",
+  "stream.duplexFromWeb",
   "stream.setWritev",
   "stream.setWritevDefault",
   "process.activeResources",

@@ -548,6 +548,12 @@ ScrClosure *scr_stream_finished_opts(ScrStream *s, ScrClosure *cb, ScrStreamErrI
 ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readable,
                                          double writable, bool on_error, ScrDyn *signal,
                                          ScrAbortAddFn add);
+/* eos with Node's kEosNodeSynchronousCallback: a stream that already
+ * settled what eos() waits for answers the callback before this returns
+ * (the web stream adapters). */
+ScrClosure *scr_stream_finished_opts_sync(ScrStream *s, ScrClosure *cb /*moves*/,
+                                          ScrStreamErrInv inv, double readable, double writable,
+                                          bool on_error, ScrDyn *signal, ScrAbortAddFn add);
 ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable, bool on_error,
                                  bool cleanup, ScrDyn *signal, ScrAbortAddFn add);
 /* stream/promises pipeline(...streams, { signal, end }): end false leaves
@@ -705,6 +711,16 @@ ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */
 ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, double hwm, ScrStr *encoding);
+/* The stream/web adapters of Node's internal/webstreams/adapters.js
+ * (scr_stream_web.c): the Readable/Writable/Duplex statics. The toWeb forms
+ * answer the +1 web stream or NULL with the error pending (Node's own
+ * validation messages and order); the fromWeb forms answer the +1 stream.
+ * `options` is borrowed and may be NULL for an omitted argument. */
+ScrDyn *scr_stream_readable_to_web(const ScrDyn *stream, const ScrDyn *options);
+ScrDyn *scr_stream_writable_to_web(const ScrDyn *stream);
+ScrDyn *scr_stream_duplex_to_web(const ScrDyn *stream, const ScrDyn *options);
+ScrStream *scr_stream_writable_from_web(const ScrDyn *writable_stream, const ScrDyn *options);
+ScrStream *scr_stream_duplex_from_web(const ScrDyn *pair, const ScrDyn *options);
 /* Duplex.from over an async function (the compiled stage takes the source
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */

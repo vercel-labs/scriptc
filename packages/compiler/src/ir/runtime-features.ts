@@ -286,6 +286,18 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tp.setTimeoutSignal",
 ]);
 
+/** The stream/web statics (scr_stream_web.c): Node's
+ * internal/webstreams/adapters.js. They build and read the web stream
+ * classes, so they link the web streams, stream, emitter and dyn-async
+ * units with their own. */
+const STREAM_WEB_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "stream.readableToWeb",
+  "stream.writableToWeb",
+  "stream.duplexToWeb",
+  "stream.writableFromWeb",
+  "stream.duplexFromWeb",
+]);
+
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.stdioStream",
@@ -307,6 +319,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+  ...STREAM_WEB_LIB_FNS,
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
@@ -1707,6 +1720,7 @@ const RUNTIME_FEATURE_RULES = {
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
+      ...STREAM_WEB_LIB_FNS,
       ...LEGACY_URL_LIB_FNS,
       "crypto.cipherNew",
       "webcrypto.encrypt",
@@ -1793,6 +1807,9 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // The adapters invoke the web stream classes' members: the readers'
+      // and writers' methods, and the streams' own getters.
+      ...STREAM_WEB_LIB_FNS,
       // scr_js_wrapper.c answers other values' tags through
       // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
       "wrapper.objectTag",
@@ -1819,9 +1836,17 @@ const RUNTIME_FEATURE_RULES = {
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
-   * stream objects (scr_stream_dyn.c). */
+   * stream objects (scr_stream_dyn.c). The stream/web statics take their
+   * stream argument as a checked-dynamic value, which this unit converts
+   * (scr_stream_dyn_native). */
   streamDyn: rule({
-    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+    fns: [
+      "stream.dynNative",
+      "stream.dynNativePipe",
+      "stream.pipeDyn",
+      "stream.unpipeDyn",
+      ...STREAM_WEB_LIB_FNS,
+    ],
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
@@ -1964,13 +1989,18 @@ const RUNTIME_FEATURE_RULES = {
       "util.debounce",
       "util.throttle",
       ...ABORT_SIGNAL_LIB_FNS,
+      // A web stream the adapters build watches its signal through this
+      // unit's listener, whichever direction built it.
+      ...STREAM_WEB_LIB_FNS,
     ],
     prefixes: ["event."],
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
-  webStreams: rule({ prefixes: ["webstream."] }),
+  webStreams: rule({ fns: [...STREAM_WEB_LIB_FNS], prefixes: ["webstream."] }),
+  /** The stream/web statics themselves (scr_stream_web.c). */
+  streamWeb: rule({ fns: [...STREAM_WEB_LIB_FNS] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
    * type as Node does. Every other program keeps the default fetch unit,
@@ -1978,7 +2008,7 @@ const RUNTIME_FEATURE_RULES = {
   webBodies: rule({ prefixes: ["blob."] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c). */
-  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
+  abortSignal: rule({ prefixes: ["abort.", "webstream."], fns: [...STREAM_WEB_LIB_FNS] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
@@ -2021,6 +2051,9 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // The stream/web adapters build and inspect the web stream classes,
+      // whose own unit formats through this one.
+      ...STREAM_WEB_LIB_FNS,
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -2223,7 +2256,10 @@ const RUNTIME_FEATURE_RULES = {
    * builds its Dirent there. */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb"],
+    // The web streams unit installs Symbol.asyncIterator and the
+    // well-known symbols its classes answer with, so the stream/web
+    // adapters link it rather than their call sites naming one.
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", ...STREAM_WEB_LIB_FNS],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2530,6 +2566,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mime: false,
     webBodies: false,
     webStreams: false,
+    streamWeb: false,
     abortSignal: false,
     utilTiming: false,
     mockTimers: false,

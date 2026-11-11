@@ -89614,9 +89614,9 @@
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/stream-readable-wrap.ts",
-          "tests/corpus/writable-error-callbacks.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -90201,10 +90201,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90227,10 +90227,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90253,10 +90254,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90305,10 +90306,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90331,10 +90333,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90871,10 +90874,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90897,10 +90900,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90923,10 +90927,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -90975,10 +90979,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.fromWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91001,10 +91006,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-web-from-web.ts",
+          "tests/corpus/stream-web-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"

@@ -258,6 +258,8 @@ declare module "stream" {
     static from(iterable: unknown, options?: ReadableOptions): Readable;
     /* stream.isDisturbed. */
     static isDisturbed(stream: unknown): boolean;
+    /* A web ReadableStream over the stream's events. */
+    static toWeb(streamReadable: Readable, options?: { type?: "bytes" }): ReadableStream;
     /* A Readable over a web ReadableStream's reader. */
     static fromWeb(
       readableStream: globalThis.ReadableStream,
@@ -406,6 +408,18 @@ declare module "stream" {
     [Symbol.asyncDispose](): Promise<void>;
     /* stream.isDisturbed (the classes inherit the module's functions). */
     static isDisturbed(stream: unknown): boolean;
+    /* A web WritableStream over the stream's writes, and the Writable over
+     * a web WritableStream's writer. */
+    static toWeb(streamWritable: Writable): globalThis.WritableStream;
+    static fromWeb(
+      writableStream: globalThis.WritableStream,
+      options?: {
+        decodeStrings?: boolean;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Writable;
     on(event: "drain" | "finish" | "close", listener: () => void): this;
     on(event: "error", listener: (err: Error) => void): this;
     on(event: "pipe" | "unpipe", listener: (src: Readable) => void): this;
@@ -443,6 +457,25 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* A ReadableWritablePair of web streams over the duplex's halves, and
+     * the Duplex over a pair of web streams. The pair is also declared as
+     * a ReadableStream so that `typeof Duplex` stays assignable to
+     * `typeof Readable`, as class values are. */
+    static toWeb(
+      duplex: Duplex,
+      options?: { readableType?: "bytes"; type?: "bytes" },
+    ): ReadableWritablePair & ReadableStream;
+    static fromWeb(
+      pair: ReadableWritablePair,
+      options?: {
+        allowHalfOpen?: boolean;
+        decodeStrings?: boolean;
+        encoding?: string;
+        highWaterMark?: number;
+        objectMode?: boolean;
+        signal?: AbortSignal;
+      },
+    ): Duplex;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);

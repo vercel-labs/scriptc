@@ -4599,6 +4599,38 @@ function validateFunction(
         );
       return true;
     }
+    if (
+      e.fn === "stream.readableToWeb" ||
+      e.fn === "stream.writableToWeb" ||
+      e.fn === "stream.duplexToWeb"
+    ) {
+      // Node's stream/web statics: (stream[, options]) → the web stream.
+      const arity = e.fn === "stream.writableToWeb" ? 1 : 2;
+      if (
+        e.args.length !== arity ||
+        e.args[0]?.type.kind !== "dyn" ||
+        (arity === 2 && e.args[1]?.type.kind !== "dyn") ||
+        e.type.kind !== "dyn"
+      )
+        err(
+          `libCall ${e.fn} must take (${arity === 2 ? "stream, options" : "stream"}) and return a web stream`,
+          e.loc,
+        );
+      return true;
+    }
+    if (e.fn === "stream.writableFromWeb" || e.fn === "stream.duplexFromWeb") {
+      // Writable.fromWeb(writableStream[, options]) / Duplex.fromWeb(pair[, options]).
+      const cls = e.fn === "stream.writableFromWeb" ? "%Writable" : "%Duplex";
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "dyn" ||
+        e.type.kind !== "object" ||
+        e.type.className !== cls
+      )
+        err(`libCall ${e.fn} must take (webStream, options) and return a ${cls.slice(1)}`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
         err(`libCall fetch.readerRead must return a promise of a read-result record`, e.loc);

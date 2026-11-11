@@ -4165,7 +4165,7 @@ static void scr_stream_dyn_release_v(void *p);
 static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv,
                                        ScrPromise *p, bool auto_cleanup, int readable,
                                        int writable, bool on_error, ScrDyn *signal,
-                                       ScrAbortAddFn add);
+                                       ScrAbortAddFn add, bool sync);
 
 /* callback(error, value) for pipelines that end in a function: cb owned
  * by the caller; value is the destination's value boxed (NULL: undefined)
@@ -4546,7 +4546,7 @@ static void scr_pipe_src_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
 /* eos(stream, { readable, writable }, cb) with Node's listeners. */
 static ScrClosure *scr_pipe_eos(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv, bool readable,
                                 bool writable) {
-  return scr_stream_eos_impl(s, cb, inv, NULL, false, readable, writable, true, NULL, NULL);
+  return scr_stream_eos_impl(s, cb, inv, NULL, false, readable, writable, true, NULL, NULL, false);
 }
 
 static void scr_pipe_abort(ScrStreamPipeCtx *ctx) {
@@ -6988,7 +6988,7 @@ static void scr_eos_cleanup_fn(ScrClosure *c) {
 static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv,
                                        ScrPromise *p, bool auto_cleanup, int readable,
                                        int writable, bool on_error, ScrDyn *signal,
-                                       ScrAbortAddFn add) {
+                                       ScrAbortAddFn add, bool sync) {
   ScrStreamState *st = s->st;
   static SCR_TL bool registered = false;
   if (!registered) {
@@ -7060,7 +7060,11 @@ static ScrClosure *scr_stream_eos_impl(ScrStream *s, ScrClosure *cb, ScrStreamEr
   }
   if (immediate) {
     e->immediate = result; /* moves */
-    scr_next_tick(scr_eos_closure_k((void *)&scr_eos_immediate_tick, e, true));
+    /* kEosNodeSynchronousCallback: the already-settled result is answered
+     * before eos() returns, so the caller observes it in the same tick
+     * (the web stream adapters build on it). */
+    if (sync) scr_eos_fire(e, e->immediate);
+    else scr_next_tick(scr_eos_closure_k((void *)&scr_eos_immediate_tick, e, true));
   } else {
     e->l_end = scr_eos_closure((void *)&scr_eos_onend, e);
     e->l_finish = scr_eos_closure((void *)&scr_eos_onfinish, e);
@@ -7089,7 +7093,16 @@ ScrClosure *scr_stream_finished_opts(ScrStream *s, ScrClosure *cb /*moves*/, Scr
                                      double readable, double writable, bool on_error,
                                      ScrDyn *signal, ScrAbortAddFn add) {
   return scr_stream_eos_impl(s, cb, inv, NULL, false, (int)readable, (int)writable, on_error,
-                             signal, add);
+                             signal, add, false);
+}
+
+/* The same with Node's kEosNodeSynchronousCallback: a stream that already
+ * settled what eos() waits for answers cb now, before returning. */
+ScrClosure *scr_stream_finished_opts_sync(ScrStream *s, ScrClosure *cb /*moves*/,
+                                          ScrStreamErrInv inv, double readable, double writable,
+                                          bool on_error, ScrDyn *signal, ScrAbortAddFn add) {
+  return scr_stream_eos_impl(s, cb, inv, NULL, false, (int)readable, (int)writable, on_error,
+                             signal, add, true);
 }
 
 ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readable,
@@ -7097,7 +7110,7 @@ ScrClosure *scr_stream_finished_opts_dyn(ScrStream *s, ScrDyn *cb, double readab
                                          ScrAbortAddFn add) {
   ScrClosure *c = scr_stream_dynopt_clo(cb, (void *)&scr_stream_finished_dyn_inv);
   return scr_stream_eos_impl(s, c, &scr_stream_finished_dyn_inv, NULL, false, (int)readable,
-                             (int)writable, on_error, signal, add);
+                             (int)writable, on_error, signal, add, false);
 }
 
 /* stream/promises finished(stream, options): cleanup removes the
@@ -7106,7 +7119,7 @@ ScrPromise *scr_sp_finished_opts(ScrStream *s, double readable, double writable,
                                  bool cleanup, ScrDyn *signal, ScrAbortAddFn add) {
   ScrPromise *p = scr_promise_new();
   ScrClosure *cleanup_fn = scr_stream_eos_impl(s, NULL, NULL, p, cleanup, (int)readable,
-                                               (int)writable, on_error, signal, add);
+                                               (int)writable, on_error, signal, add, false);
   if (cleanup_fn == NULL) {
     scr_promise_reject_pending(p);
     return p;

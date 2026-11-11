@@ -59140,7 +59140,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
         "verification": "test-backed"
       }
     },
@@ -59185,9 +59185,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59208,9 +59208,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59231,9 +59231,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59277,9 +59277,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59300,9 +59300,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59646,7 +59646,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
         "verification": "test-backed"
       }
     },
@@ -59691,9 +59691,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59714,9 +59714,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59737,9 +59737,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59783,9 +59783,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59806,9 +59806,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.",
+        "verification": "test-backed"
       }
     },
     {

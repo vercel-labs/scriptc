@@ -578,6 +578,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+  // The stream/web adapters validate their arguments and options with
+  // Node's messages at the call (ERR_INVALID_ARG_TYPE/_VALUE), and their
+  // listeners and callbacks run user code on the caller's stack.
+  "stream.readableToWeb",
+  "stream.writableToWeb",
+  "stream.duplexToWeb",
+  "stream.writableFromWeb",
+  "stream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",

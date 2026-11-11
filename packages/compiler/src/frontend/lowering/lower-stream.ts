@@ -2206,33 +2206,11 @@ export function lowerStreamStaticCall(
   const member = access.name.text;
   const loc = locOf(call);
   const cls = info.def.name;
-  // Readable.toWeb's type-option ladder (JS sources): a provably-invalid
-  // `type` throws Node's ERR_INVALID_ARG_VALUE before any web stream
-  // exists; valid shapes keep the fence — the web bridge has no lowering.
-  if (
-    member === "toWeb" &&
-    cls === "%Readable" &&
-    call.arguments.nodes.length === 2 &&
-    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-    ts.isObjectLiteralExpression(call.arguments.nodes[1]!)
-  ) {
-    for (const p of call.arguments.nodes[1]!.properties.nodes) {
-      if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type") {
-        const t = lowerer.typeOf(p.initializer);
-        if (t.isStringLiteralType() && t.value !== "bytes") {
-          lowerer.lowerExpr(call.arguments.nodes[0]!); // evaluation order (the stream argument)
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
-            lowerer.mapTypeOf(lowerer.typeOf(call)) ?? DYN,
-            loc,
-          );
-        }
-      }
-    }
+  if (member === "toWeb") return lowerStreamToWeb(lowerer, call, cls, loc);
+  if (member === "fromWeb") {
+    if (cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
+    return lowerStreamFromWeb(lowerer, call, cls, loc);
   }
-  if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2389,6 +2367,83 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     type: readable,
     loc,
   };
+}
+
+/** The stream/web statics' argument list: the arguments Node's adapters
+ * take, in an order-preserving form. An argument past the adapter's own is
+ * still evaluated (Node's function ignores it), and it is evaluated after
+ * the ones before it, so the earlier values ride hidden locals when an
+ * extra argument follows. */
+function streamWebArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  count: number,
+  loc: SrcLoc,
+): { args: IrExpr[]; stmts: IrStmt[] } {
+  const nodes = call.arguments.nodes;
+  if (nodes.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering("a stream/web adapter call with a spread argument", call);
+  }
+  const stmts: IrStmt[] = [];
+  const args: IrExpr[] = [];
+  const extras = Math.max(0, nodes.length - count);
+  for (let i = 0; i < count; i++) {
+    const node = nodes[i];
+    const value = node ? lowerer.lowerExprExpecting(node, DYN) : dynUndefinedExpr(loc);
+    if (extras === 0) {
+      args.push(value);
+      continue;
+    }
+    const local = lowerer.declareHiddenLocal("%streamWebArg", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    args.push(varRef(local.id, DYN, loc));
+  }
+  for (let i = count; i < nodes.length; i++) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(nodes[i]!), loc });
+  }
+  return { args, stmts };
+}
+
+/** Readable.toWeb, Writable.toWeb and Duplex.toWeb — the Transform and
+ * PassThrough classes inherit the duplex form (scr_stream_web.c). The
+ * stream and its options cross as checked-dynamic values: the options are
+ * validated and read with Node's own rules at the call, so any object the
+ * program passes behaves as it does in Node. The answer is the native web
+ * stream, a checked-dynamic value the surrounding typed use converts. */
+function lowerStreamToWeb(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  cls: string,
+  loc: SrcLoc,
+): IrExpr {
+  const fn: IrLibFn =
+    cls === "%Writable"
+      ? "stream.writableToWeb"
+      : cls === "%Readable"
+        ? "stream.readableToWeb"
+        : "stream.duplexToWeb";
+  const { args, stmts } = streamWebArgs(lowerer, call, fn === "stream.writableToWeb" ? 1 : 2, loc);
+  const result: IrExpr = { kind: "libCall", fn, args, type: DYN, loc };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: DYN, loc };
+}
+
+/** Writable.fromWeb(writableStream[, options]) and
+ * Duplex.fromWeb(pair[, options]) (scr_stream_web.c), which answer the node
+ * stream (a %Writable / %Duplex) over the web stream's writer and reader.
+ * The Transform and PassThrough classes inherit Duplex.fromWeb, which
+ * answers a Duplex. */
+function lowerStreamFromWeb(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  cls: string,
+  loc: SrcLoc,
+): IrExpr {
+  const writable = cls === "%Writable";
+  const fn: IrLibFn = writable ? "stream.writableFromWeb" : "stream.duplexFromWeb";
+  const type: IrType = { kind: "object", className: writable ? "%Writable" : "%Duplex" };
+  const { args, stmts } = streamWebArgs(lowerer, call, 2, loc);
+  const result: IrExpr = { kind: "libCall", fn, args, type, loc };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type, loc };
 }
 
 /** Readable.from(source, options), and for Duplex.from over an iterable

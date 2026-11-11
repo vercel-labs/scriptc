@@ -532,6 +532,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // The other stream/web adapters: the toWeb statics and the Writable and
+  // Duplex fromWeb directions (scr_stream_web.c). A program that also
+  // links the fetch unit reads its bodies' readers through that unit
+  // (SCR_STREAM_WEB_FETCH).
+  unit((u) => u.opts.streamWeb === true, "scr_stream_web.c"),
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
@@ -600,6 +605,10 @@ const RUNTIME_DEFINES: readonly {
   // scr_dyn_builtin_class.c's instanceof over the web streams unit's classes,
   // and scr_fetch.c's bodies of its streams.
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_stream_web.c (Duplex.fromWeb) reads a fetched body's reader through
+  // scr_fetch.c, which only a fetch program links; without it the readers
+  // are the web streams unit's own, through its bridge.
+  { define: "SCR_STREAM_WEB_FETCH", when: (opts) => opts.fetch },
   // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
   // as Content-Type when the request sets none.
   { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },

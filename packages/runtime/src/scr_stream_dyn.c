@@ -16,9 +16,9 @@ static bool scr_stream_dyn_within(const ScrVt *vt, const ScrVt *cls) {
 }
 
 /* The native stream a checked-dynamic value boxes (+1), when it has the
- * requested side (1 readable, 2 writable; Duplex, Transform and PassThrough
- * have both), or the stream of a stream handle, or NULL for any other
- * value. Never throws. */
+ * requested side (1 readable, 2 writable, 3 both — Node's isDuplex; Duplex,
+ * Transform and PassThrough have both), or the stream of a stream handle, or
+ * NULL for any other value. Never throws. */
 ScrStream *scr_stream_dyn_native(const ScrDyn *value, double side) {
   /* A Cipheriv or Decipheriv is a Transform. */
   if (value->kind == SCR_DYN_HANDLE) return scr_stream_of_handle(value);
@@ -34,8 +34,9 @@ ScrStream *scr_stream_dyn_native(const ScrDyn *value, double side) {
   bool duplex = scr_stream_dyn_within(vt, &scr_duplex_vt) ||
                 scr_stream_dyn_within(vt, &scr_transform_vt) ||
                 scr_stream_dyn_within(vt, &scr_passthrough_vt);
-  bool ok = duplex || (side == 1 ? scr_stream_dyn_within(vt, &scr_readable_vt)
-                                 : scr_stream_dyn_within(vt, &scr_writable_vt));
+  bool ok = side == 3 ? duplex
+                      : duplex || (side == 1 ? scr_stream_dyn_within(vt, &scr_readable_vt)
+                                             : scr_stream_dyn_within(vt, &scr_writable_vt));
   if (ok) return stream;
   value->v.typed_ref.release(stream);
   return NULL;

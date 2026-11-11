@@ -1317,6 +1317,13 @@ interface WritableStream<W = unknown> {
   close(): Promise<void>;
   getWriter(): WritableStreamDefaultWriter<W>;
 }
+/* A readable/writable pair of web streams (Duplex.toWeb's result,
+ * Duplex.fromWeb's argument): two web stream handles in a plain object, so
+ * a value of the type is a checked-dynamic object. */
+interface ReadableWritablePair<R = unknown, W = unknown> {
+  readonly readable: ReadableStream<R>;
+  readonly writable: WritableStream<W>;
+}
 /* Without a transformer, the identity transform: chunks written to
  * `writable` are read from `readable`, and a write completes when its chunk
  * is read. */

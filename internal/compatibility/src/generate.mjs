@@ -850,6 +850,13 @@ function publicDetail(tier) {
       return "Returns a connected Duplex pair whose sides carry the tested write, end, destroy, and option-validation behavior.";
     }
     if (
+      /^compiler-feature:stream\.stream\.(?:Readable|Writable|Duplex)\.(?:toWeb|fromWeb)$/.test(
+        source,
+      )
+    ) {
+      return "Adapts the node stream classes to web streams and web streams to node streams, with Node's argument and option validation and the same chunk flow, backpressure, and close and error reporting.";
+    }
+    if (
       source.startsWith("compiler-feature:stream.") ||
       source.startsWith("compiler-feature:webstreams.")
     ) {

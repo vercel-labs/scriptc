@@ -5203,6 +5203,18 @@ function buildLibFnSignatures() {
       argTypes: [DYN, { kind: "object", className: "%Duplex" }],
       result: { kind: "object", className: "%Duplex" },
     },
+    /** The stream/web statics (scr_stream_web.c): Node's
+     * internal/webstreams/adapters.js. The toWeb forms answer the web
+     * stream (+1); the fromWeb forms answer the node stream (+1, the IR
+     * expression names %Writable / %Duplex). `options` is checked and read
+     * with Node's own rules (a non-object throws ERR_INVALID_ARG_TYPE),
+     * so it crosses as a checked-dynamic value; the lowering passes Dyn
+     * undefined for an omitted argument. */
+    "stream.readableToWeb": { argTypes: [DYN, DYN], result: DYN },
+    "stream.writableToWeb": { argTypes: [DYN], result: DYN },
+    "stream.duplexToWeb": { argTypes: [DYN, DYN], result: DYN },
+    "stream.writableFromWeb": { argTypes: [DYN, DYN], result: VOID },
+    "stream.duplexFromWeb": { argTypes: [DYN, DYN], result: VOID },
     "stream.finished": { argTypes: [null, null], result: VOID },
     "stream.finishedDyn": { argTypes: [null, DYN], result: VOID },
     "stream.pipeline": { argTypes: [F64], result: VOID },

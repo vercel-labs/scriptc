@@ -119,6 +119,9 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   mime: boolean;
   largePages: boolean;
   webStreams: boolean;
+  /** The stream/web statics (Readable/Writable/Duplex toWeb and fromWeb):
+   * scr_stream_web.c. */
+  streamWeb: boolean;
   webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
@@ -417,6 +420,7 @@ export function effectiveRuntimeFeatures(
     mime: features.mime === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
+    streamWeb: features.streamWeb === true,
     webBodies: features.webBodies === true,
     abortSignal,
     utilTiming: features.utilTiming === true,

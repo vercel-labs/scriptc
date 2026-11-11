@@ -236,6 +236,7 @@ export const FETCH_AMBIENT_TYPES = [
   "TransformStreamDefaultController",
   "WritableStream",
   "WritableStreamDefaultWriter",
+  "ReadableWritablePair",
   "WritableStreamDefaultController",
   "CountQueuingStrategy",
   "ByteLengthQueuingStrategy",

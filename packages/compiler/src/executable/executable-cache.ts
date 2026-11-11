@@ -140,6 +140,8 @@ export interface EarlyExecutableNativeFeatures {
   eventsOnceSignal?: boolean;
   mime?: boolean;
   webStreams?: boolean;
+  /** The stream/web statics: scr_stream_web.c. Absent (false) otherwise. */
+  streamWeb?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;

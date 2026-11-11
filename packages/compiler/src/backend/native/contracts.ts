@@ -207,6 +207,9 @@ export interface CcOptions {
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** The stream/web statics (Readable/Writable/Duplex toWeb and fromWeb):
+   * compiles scr_stream_web.c. */
+  streamWeb?: boolean;
   /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
    * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
   webBodies?: boolean;

@@ -323,6 +323,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // The other stream/web adapters (Readable/Writable/Duplex toWeb and the
+  // Writable/Duplex fromWeb directions).
+  ["scr_stream_web.c", "streamWeb"],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -590,6 +593,16 @@ export function variantsFor(source) {
       id: "handle-classes-web-bodies",
       when: { webStreams: true, webBodies: true },
       defines: ["SCR_HANDLE_CLASSES", "SCR_WEB_BODIES"],
+    });
+  }
+  // A program that also links the fetch unit reads its bodies' readers
+  // through that unit, apart from the web stream bridge that the classes
+  // install; every other program keeps the default object, byte for byte.
+  if (source === "scr_stream_web.c") {
+    variants.push({
+      id: "fetch",
+      when: { nativeFetch: true },
+      defines: ["SCR_STREAM_WEB_FETCH"],
     });
   }
   // Programs with Node islands link the event loop with the Node island slot;

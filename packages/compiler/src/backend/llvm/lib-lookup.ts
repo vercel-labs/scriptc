@@ -17,8 +17,11 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
   host.usesTimers = true;
   host.toHeap(cb);
   return finishRuntimeCall(host, e, "scr_net_connect_lookup", [
-    ...args.map((arg) => abiValue(host, arg)),
+    ...args.slice(0, 3).map((arg) => abiValue(host, arg)),
     ptr("@" + symbol),
+    // the per-attempt budget (autoSelectFamilyAttemptTimeout), the dyn
+    // undefined when the options did not name one
+    ...(args[3] !== undefined ? [abiValue(host, args[3])] : []),
   ]);
 }
 

@@ -216,7 +216,8 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     symbol: "unixListenReachable",
     source: "types",
     scope: "program",
-    setBy: "a `.listen(path)` call with a string argument on a server or an untyped value",
+    setBy:
+      "a `.listen(path)` call with a string argument, or a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
     gates: "every `server.address()` checks for a socket path",
     narrower: "the server",
     tracked: null,

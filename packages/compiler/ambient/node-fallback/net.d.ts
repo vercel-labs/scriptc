@@ -43,6 +43,12 @@ declare module "net" {
     /* every byte the write paths accepted (buffered included — Node
      * counts those too; plaintext on TLS sockets). */
     readonly bytesWritten: number;
+    /* The unsent bytes (Node's deprecated writableLength alias); Node
+     * answers undefined before the socket has a handle. */
+    readonly bufferSize: number;
+    /* The "$ip:$port" strings a multi-address dial tried; Node's property
+     * is absent (undefined) when the dial took the single-address path. */
+    readonly autoSelectFamilyAttemptedAddresses: string[];
     /* write's callback runs once the data is flushed, with null; end's
      * once the socket finishes. */
     /* false when the bytes this write left unsent reach the 65536-byte
@@ -114,6 +120,16 @@ declare module "net" {
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
     ): void;
+    /* The happy-eyeballs dial's attempt events: (ip, port, family) per
+     * address tried; the failure carries the error too. */
+    on(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    on(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
+    ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "data", listener: (chunk: Buffer) => void): void;
     /* After setEncoding the chunk is a string. */
@@ -139,6 +155,14 @@ declare module "net" {
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
     ): void;
+    addListener(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    addListener(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
+    ): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     /* After setEncoding the chunk is a string. */
     once(event: "data", listener: (chunk: string) => void): void;
@@ -163,8 +187,19 @@ declare module "net" {
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
     ): void;
+    once(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    once(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
+    ): void;
   }
   export interface Server {
+    /* Node's `promisify(this.close)()`: the promise fulfills at 'close',
+     * at once for a server that never listened. */
+    [Symbol.asyncDispose](): Promise<void>;
     /* Whether the server keeps the event loop alive (ref'd by default). */
     ref(): void;
     unref(): void;
@@ -188,6 +223,11 @@ declare module "net" {
     listen(port?: number | string, host?: string, callback?: () => void): Server;
     /* A Unix-socket server; the socket file is removed when it closes. */
     listen(path: string, callback?: () => void): Server;
+    /* Adopt a socket bound at construction (net.BoundSocket): the server
+     * takes over the descriptor, reports its address, and the bound
+     * socket answers ERR_SOCKET_HANDLE_ADOPTED from then on. Its 'listening'
+     * callback fires once the server accepts. */
+    listen(handle: BoundSocket, callback?: () => void): Server;
     /* The explicit-interface bind: host is an IP literal (absent or
      * undefined = the host-less dual-stack any); ipv6Only sets IPV6_V6ONLY
      * and reusePort requests kernel connection distribution where Node
@@ -422,6 +462,30 @@ declare module "net" {
     static isBlockList(value: unknown): value is BlockList;
     static readonly PRIVATE_RANGES: readonly string[];
   }
+  /* The options a BoundSocket binds with: the TCP form takes port, host,
+   * ipv6Only and reusePort; path names a Unix socket (a leading '\0' is
+   * the Linux abstract namespace) and is mutually exclusive with them. */
+  export interface BoundSocketInitOptions {
+    port?: number | string;
+    /* A numeric IP address: net.BoundSocket does not resolve names. */
+    host?: string | null;
+    ipv6Only?: boolean;
+    reusePort?: boolean;
+    path?: string;
+  }
+  /* A socket bound at construction, adoptable by exactly one Server. The
+   * handle owns its descriptor until adoption; after it, or after close(),
+   * address(), fd() and close() throw ERR_SOCKET_HANDLE_ADOPTED, while
+   * [Symbol.dispose]() stays a no-op. */
+  export class BoundSocket {
+    constructor(options?: BoundSocketInitOptions);
+    /* The bound AddressInfo, or the path string for a Unix socket. */
+    address(): import("node:dgram").AddressInfo | string;
+    fd(): number;
+    close(): void;
+    readonly isPipe: boolean;
+    [Symbol.dispose](): void;
+  }
   /* Node's IPv4Reg and IPv6Reg tests: 4, 6, or 0 for isIP. */
   export function isIP(input: string): number;
   export function isIPv4(input: string): boolean;
@@ -455,6 +519,7 @@ declare module "net" {
       port: number;
       host?: string;
       autoSelectFamily?: boolean;
+      autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;
     },
     connectListener?: () => void,
@@ -464,6 +529,7 @@ declare module "net" {
       port: number;
       host?: string;
       autoSelectFamily?: boolean;
+      autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;
     },
     connectListener?: () => void,
@@ -479,6 +545,10 @@ declare module "net" {
    * like Node's. */
   export function getDefaultAutoSelectFamilyAttemptTimeout(): number;
   export function setDefaultAutoSelectFamilyAttemptTimeout(value: number): void;
+  /* The process-wide autoSelectFamily switch (true by default), which a
+   * connect defaulting to it consults. */
+  export function getDefaultAutoSelectFamily(): boolean;
+  export function setDefaultAutoSelectFamily(value: boolean): void;
 }
 
 declare module "node:net" {

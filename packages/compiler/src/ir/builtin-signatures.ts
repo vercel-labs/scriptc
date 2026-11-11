@@ -948,9 +948,15 @@ function buildLibFnSignatures() {
     "process.exiting": { argTypes: [], result: BOOL },
     /** net's process-wide happy-eyeballs attempt budget (Node's default
      * 250ms): one runtime double in the core unit, so reading/writing it
-     * never forces the net unit into the link. Never throw. */
+     * never forces the net unit into the link. setDefaultAutoSelectFamily
+     * throws Node's ERR_INVALID_ARG_TYPE for a non-boolean value. */
     "net.getAutoSelTimeout": { argTypes: [], result: F64 },
     "net.setAutoSelTimeout": { argTypes: [F64], result: VOID },
+    /** net.getDefaultAutoSelectFamily()/setDefaultAutoSelectFamily(value):
+     * Node's process-wide boolean (true by default). The value crosses as a
+     * dyn so the runtime can raise the same TypeError Node does. */
+    "net.getDefaultAutoSel": { argTypes: [], result: BOOL },
+    "net.setDefaultAutoSel": { argTypes: [DYN], result: VOID },
     /** realpath(3) with Node's error shape (syscall "lstat" in the message,
      * Node's own spelling for realpathSync failures). +1 fresh string. */
     "fs.realpathSync": { argTypes: [STRING], result: STRING },
@@ -2047,12 +2053,12 @@ function buildLibFnSignatures() {
      * divergence), and a lookup error surfaces as the deferred socket
      * 'error'. A synchronous throw INSIDE the lookup propagates out of the
      * connect call (may-throw seed). */
-    "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+    "net.connectLookup": { argTypes: [F64, STRING, null, DYN], result: NETSOCKET_T },
     /** connect({ host, port, lookup }) with a lookup of Node's own type, as
      * a checked-dynamic function: the runtime calls it with { hints, all:
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
-    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN, DYN], result: NETSOCKET_T },
     /** socket.write: Node's Writable answer — false when the writes not yet
      * completely sent, each counted in full, reach the 65536-byte
      * high-water mark ('drain' follows), and on an ended or closed socket. */
@@ -2747,6 +2753,17 @@ function buildLibFnSignatures() {
      * gets (err, address, family, host) once per resolved address, or once
      * with the lookup error, before the connect. */
     "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+    /** socket.on/once of the happy-eyeballs attempt events: the dyn
+     * listener gets (ip, port, family), plus the error for Failed. `which`
+     * is 0 (connectionAttempt), 1 (Failed) or 2 (Timeout). */
+    "net.sockOnAttempt": { argTypes: [NETSOCKET_T, DYN, F64, BOOL], result: VOID },
+    /** socket.bufferSize: the unsent bytes, or a dyn undefined before the
+     * socket has a handle (Node's deprecated writableLength alias). */
+    "net.sockBufferSize": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.autoSelectFamilyAttemptedAddresses: the "$ip:$port" strings
+     * of a multi-address dial, a dyn undefined when the dial took the
+     * single-address path. */
+    "net.sockAttemptedAddresses": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockOnWriteFlush": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -2772,7 +2789,22 @@ function buildLibFnSignatures() {
     "net.blockListNew": { argTypes: [DYN], result: DYN },
     "net.isBlockList": { argTypes: [DYN], result: BOOL },
     "net.blockListPrivateRanges": { argTypes: [], result: DYN },
+    /** net.BoundSocket: construction validates its options and binds;
+     * server.listen(bound[, cb]) adopts the bound descriptor. */
+    "net.boundSocketNew": { argTypes: [DYN], result: DYN },
+    "net.isBoundSocket": { argTypes: [DYN], result: BOOL },
+    "net.listenBound": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.listenBoundCb": {
+      argTypes: [NETSERVER_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+    /** server[Symbol.asyncDispose](): a void promise that fulfills at
+     * 'close' (at once for a server that never listened). */
+    "net.serverAsyncDispose": {
+      argTypes: [NETSERVER_T],
+      result: { kind: "promise", inner: VOID },
+    },
     "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
     /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out

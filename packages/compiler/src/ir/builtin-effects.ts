@@ -1140,6 +1140,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectAttempt",
   "net.connectOptsChk",
   "net.setAutoSelTimeout",
+  "net.setDefaultAutoSel",
   "error.argTypeThrow",
   "error.propTypeThrow",
   "array.foreignThrow",
@@ -1234,6 +1235,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen(port) and listen(path) on a server that is already listening
+  // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
+  // catchable), so every listen entry point can leave an exception.
+  "net.listen",
+  "net.listenPath",
+  "net.listenOpts",
+  "net.listenOptsReusePort",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",
@@ -1249,6 +1257,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",
+  // BoundSocket's option checks and bind errors, and listen(bound)'s
+  // already-listening and already-adopted errors (Node throws both
+  // synchronously).
+  "net.boundSocketNew",
+  "net.listenBound",
+  "net.listenBoundCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.

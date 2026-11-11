@@ -297,6 +297,11 @@ void scr_process_chdir(ScrStr *dir);
  * the core unit so the knob never links scr_net.c. Never throw. */
 double scr_net_get_autosel_timeout(void);
 void scr_net_set_autosel_timeout(double ms);
+/* net's process-wide autoSelectFamily default (true, Node's). The setter
+ * takes Node's validateBoolean over a checked-dynamic argument and throws
+ * ERR_INVALID_ARG_TYPE catchably. */
+bool scr_net_get_default_autosel(void);
+void scr_net_set_default_autosel(const ScrDyn *value);
 
 /* Synchronous fs, utf8-only (paths and contents are ScrStr bytes). All
  * ScrStr arguments are BORROWED; string/array results return +1. On

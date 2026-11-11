@@ -206,6 +206,26 @@ bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
 }
 
+static SCR_TL ScrDyn *scr_dispose_symbol;
+
+static void scr_dispose_symbol_cleanup(void) {
+  scr_dyn_release(scr_dispose_symbol);
+  scr_dispose_symbol = NULL;
+}
+
+/* Symbol.dispose, registered by the symbol unit when the program first
+ * names it, for handle classes outside that unit (a net.BoundSocket). */
+void scr_dyn_install_dispose_symbol(ScrDyn *key) {
+  if (scr_dispose_symbol) return;
+  scr_dispose_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_dispose_symbol_cleanup);
+}
+
+bool scr_dyn_is_dispose_symbol(const ScrDyn *key) {
+  return scr_dispose_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_dispose_symbol->v.symbol.value;
+}
+
 /* Symbol.for('nodejs.util.inspect.custom'), installed by the symbol unit
  * when the program creates it: the key util.inspect reads custom inspect
  * functions under. */

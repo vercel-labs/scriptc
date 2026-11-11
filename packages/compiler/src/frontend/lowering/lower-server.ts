@@ -63,6 +63,7 @@ import { conditionalSpreadOf, lowerDynObjectLiteral } from "./expressions/object
 import { resultIsDiscarded } from "./call-position.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { pairsSnapshotHelper } from "./pairs-snapshot.js";
+import { netBoundSocketValue } from "./builtins/net-address.js";
 
 const NARROW_DATA_HINT =
   "write/end take one string or one Uint8Array/Buffer value (narrow unions first)";
@@ -1329,8 +1330,8 @@ function lowerNetConnectOptions(
       autoSelect = true;
     } else if (key === "autoSelectFamilyAttemptTimeout") {
       // The attempt budget validates at runtime (Node's validateInt32-
-      // from-1 ladder) and is then inert — the single dial has nothing
-      // to time, the autoSelectFamily simplification's sibling.
+      // from-1 ladder, then the sub-10ms floor) and arms the per-address
+      // deadline of a multi-address dial.
       const raw = lowerVal();
       if (
         !(raw.type.kind === "dyn" || raw.kind === "unitLit" || lowerer.dynConvertible(raw.type))
@@ -1378,7 +1379,7 @@ function lowerNetConnectOptions(
       lowerer.noLowering(
         `${member} option '${key}'`,
         prop,
-        "port, host, autoSelectFamily, and lookup are the supported options",
+        "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
       );
     }
   }
@@ -1394,12 +1395,12 @@ function lowerNetConnectOptions(
     );
   }
   host ??= { kind: "strLit", value: "localhost", type: STRING, loc };
-  if (attempt !== null) {
-    if (lookup !== null || args.length !== 1) {
+  if (attempt !== null && lookup === null && dynLookup === null) {
+    if (args.length !== 1) {
       lowerer.noLowering(
-        `${member} with an autoSelectFamilyAttemptTimeout beside a lookup or connect listener`,
+        `${member} with an autoSelectFamilyAttemptTimeout and a connect listener`,
         expr,
-        "the validated-budget form is the bare options call — register listeners separately",
+        "register the listener separately: socket.once('connect', ...)",
       );
     }
     return {
@@ -1410,6 +1411,10 @@ function lowerNetConnectOptions(
       loc,
     };
   }
+  // A dial that may try several addresses carries its per-attempt budget
+  // (`autoSelectFamilyAttemptTimeout`) into the runtime; absent, the
+  // process-wide default stands.
+  const budget: IrExpr = attempt ?? dynUndefinedExpr(loc);
   if (dynLookup !== null) {
     if (args.length !== 1) {
       lowerer.noLowering(
@@ -1421,7 +1426,7 @@ function lowerNetConnectOptions(
     return {
       kind: "libCall",
       fn: "net.connectLookupDyn",
-      args: [port, host, dynLookup],
+      args: [port, host, dynLookup, budget],
       type: NETSOCKET_T,
       loc,
     };
@@ -1444,7 +1449,7 @@ function lowerNetConnectOptions(
     return {
       kind: "libCall",
       fn: "net.connectLookup",
-      args: [port, host, lookup],
+      args: [port, host, lookup, budget],
       type: NETSOCKET_T,
       loc,
     };
@@ -1962,6 +1967,33 @@ function lowerNetServerMethodCall(
         lowerOptionalListenCallback(lowerer, args[0]!, loc),
       ]);
     }
+    // listen(boundSocket[, cb]): a net.BoundSocket is adopted by the
+    // server (Node's handle transfer). Node's order: an already-listening
+    // server throws ERR_SERVER_ALREADY_LISTEN, the callback joins
+    // once('listening'), and only then is the bound handle consumed (a
+    // second adoption throws ERR_SOCKET_HANDLE_ADOPTED) — the runtime
+    // entry point runs that ladder and its errors are catchable.
+    if (netBoundSocketValue(lowerer, args[0]!)) {
+      if (args.length > 2) {
+        lowerer.noLowering(
+          `listen(boundSocket) with ${args.length} arguments`,
+          call,
+          "the supported form is listen(boundSocket[, callback]) — the socket carries its own port, host or path",
+        );
+      }
+      const bound = lowerer.lowerExprExpecting(args[0]!, DYN);
+      if (args.length === 1) return listenResult("net.listenBound", [receiver, bound]);
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "listen callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return listenResult("net.listenBoundCb", [receiver, bound, cb]);
+    }
     // An untyped first argument takes its port from net.listenPortDyn,
     // Node's normalizeArgs and validatePort at run time: 0 for a function,
     // undefined or null, the number of a port number or numeric string,
@@ -2062,6 +2094,41 @@ function lowerNetServerMethodCall(
     // false.
     // Every other key fences by name.
     if (ts.isObjectLiteralExpression(args[0]!)) {
+      // { handle: boundSocket }[, cb]: Node reads options.handle before any
+      // other option, so the rest of the object is not an option bag when
+      // the handle is a net.BoundSocket.
+      for (const prop of (args[0] as ts.ObjectLiteralExpression).properties.nodes) {
+        let handleValue: ts.Expression | null = null;
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          if (prop.name.text === "handle") handleValue = prop.name as ts.Expression;
+        } else if (
+          ts.isPropertyAssignment(prop) &&
+          (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+          prop.name.text === "handle"
+        ) {
+          handleValue = prop.initializer;
+        }
+        if (handleValue === null || !netBoundSocketValue(lowerer, handleValue)) continue;
+        if (args.length > 2) {
+          lowerer.noLowering(
+            `listen({ handle }) with ${args.length} arguments`,
+            call,
+            "the supported form is listen({ handle: boundSocket }[, callback])",
+          );
+        }
+        const bound = lowerer.lowerExprExpecting(handleValue, DYN);
+        if (args.length === 1) return listenResult("net.listenBound", [receiver, bound]);
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[1]!,
+          "listen callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return listenResult("net.listenBoundCb", [receiver, bound, cb]);
+      }
       let port: IrExpr | null = null;
       let host: IrExpr | null = null;
       let v6only: IrExpr | null = null;
@@ -3079,8 +3146,9 @@ function socketEncodingReachable(lowerer: Lowerer): boolean {
 
 /** Whether some server in the program may listen on a Unix socket: a
  * `.listen(x, ...)` call on a server (or an untyped value) whose first
- * argument is string-typed. Only then does address() check for the socket
- * path, so other programs keep the record-only lowering. */
+ * argument is string-typed or a net.BoundSocket (which may have been
+ * bound to a path). Only then does address() check for the socket path,
+ * so other programs keep the record-only lowering. */
 function unixListenReachable(lowerer: Lowerer): boolean {
   if (lowerer.unixListenReachable !== null) return lowerer.unixListenReachable;
   let reachable = false;
@@ -3093,10 +3161,11 @@ function unixListenReachable(lowerer: Lowerer): boolean {
       if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "listen") return undefined;
       const kind = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(callee.expression))?.kind;
       if (kind !== undefined && kind !== "netServer" && kind !== "dyn") return undefined;
-      const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(node.arguments.nodes[0]!));
+      const first = node.arguments.nodes[0]!;
+      const arg = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(first));
       // Only a string-typed argument lowers to listen(path) (an untyped
-      // one checks into a port).
-      if (arg?.kind === "string") reachable = true;
+      // one checks into a port); a BoundSocket may carry a path.
+      if (arg?.kind === "string" || netBoundSocketValue(lowerer, first)) reachable = true;
       return undefined;
     });
     if (reachable) break;
@@ -3736,6 +3805,29 @@ function lowerNetSocketMethodCall(
         loc,
       };
     }
+    if (
+      event === "connectionAttempt" ||
+      event === "connectionAttemptFailed" ||
+      event === "connectionAttemptTimeout"
+    ) {
+      // The happy-eyeballs attempt events: (ip, port, family) per dial
+      // attempt, plus the failure's error for connectionAttemptFailed. The
+      // listener crosses as a checked-dynamic function so its declared
+      // parameter types are checked against those values.
+      const which = event === "connectionAttempt" ? 0 : event === "connectionAttemptFailed" ? 1 : 2;
+      return {
+        kind: "libCall",
+        fn: "net.sockOnAttempt",
+        args: [
+          receiver,
+          lowerSocketDynListener(lowerer, args[1]!, `${event} listeners`),
+          { kind: "numLit", value: which, type: F64, loc },
+          once,
+        ],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "finish") {
       // Fires once when the FIN goes out — once either way (the event
       // happens at most once per socket).
@@ -3815,7 +3907,7 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "lookup", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(
@@ -4823,6 +4915,24 @@ export function lowerServerProperty(
     // true until the read half is done (peer FIN / destroy).
     const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
     return { kind: "libCall", fn: "net.sockReadable", args: [receiver], type: BOOL, loc };
+  }
+  if (
+    recvKind === "netSocket" &&
+    lowerer.isStdlibMember(expr) &&
+    (expr.name.text === "bufferSize" || expr.name.text === "autoSelectFamilyAttemptedAddresses")
+  ) {
+    // Node answers undefined before the socket has a handle (bufferSize)
+    // and on the single-address dial (attempted addresses) even though the
+    // declarations say number and string[]; the value crosses as a dyn and
+    // a use site's slot checks it.
+    const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+    return {
+      kind: "libCall",
+      fn: expr.name.text === "bufferSize" ? "net.sockBufferSize" : "net.sockAttemptedAddresses",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
   }
   if (
     recvKind === "netSocket" &&
@@ -9954,4 +10064,33 @@ function lowerHttpResMethodCall(
     "setHeader, appendHeader, getHeader, hasHeader, removeHeader, writeHead, writeContinue, writeProcessing, writeEarlyHints, setTimeout, write, end, destroy, response state reads, and on/once of close are the supported ServerResponse members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** `server[Symbol.asyncDispose]()`: Node's `promisify(this.close)()`, the
+ * promise of 'close' (fulfilled at once for a server that never listened).
+ * Null for other element-access calls. */
+export function lowerNetServerAsyncDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "netServer") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("net.Server[Symbol.asyncDispose] with arguments", call);
+  }
+  const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+  return {
+    kind: "libCall",
+    fn: "net.serverAsyncDispose",
+    args: [receiver],
+    type: { kind: "promise", inner: VOID },
+    loc: locOf(call),
+  };
 }

@@ -278,7 +278,8 @@ double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence);
 
 ScrStr *scr_net_blocking_lookup(ScrStr *host /*borrowed*/);
 ScrNetSocket *scr_net_connect_lookup(double port, ScrStr *host /*borrowed*/,
-                                      ScrClosure *lookup /*moves*/, void *answer_fn); /* +1 */
+                                      ScrClosure *lookup /*moves*/, void *answer_fn,
+                                      const ScrDyn *attempt /*borrowed, nullable*/); /* +1 */
 void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowed, nullable*/,
                             ScrArr *ips /*borrowed, nullable*/);
 /* write(): Node's Writable answer — false when the bytes the write left
@@ -315,7 +316,7 @@ bool scr_net_sock_readable(ScrNetSocket *s);
 /* The deferred dial (the http agent's maxSockets queue): the socket
  * registers "connecting" and buffers writes; dial_start runs the dial. */
 ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nullable*/); /* +1 */
-ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/, const ScrDyn *lookup /*borrowed*/); /* +1, NULL on throw */
+ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/, const ScrDyn *lookup /*borrowed*/, const ScrDyn *attempt /*borrowed, nullable*/); /* +1, NULL on throw */
 /* A client socket for the Unix socket at `path`, dialed now or (deferred)
  * by scr_net_sock_dial_start. A failure is the deferred 'error'. */
 ScrNetSocket *scr_net_connect_path(ScrStr *path /*borrowed*/, bool deferred); /* +1 */
@@ -346,6 +347,13 @@ ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
 bool scr_net_is_socket_address(const ScrDyn *value);
 ScrDyn *scr_net_block_list_new(const ScrDyn *args);
 bool scr_net_is_block_list(const ScrDyn *value);
+/* net.BoundSocket: construction validates its options and binds (TCP or a
+ * Unix-socket path); server.listen(bound[, cb]) adopts the descriptor. All
+ * +1, borrowed arguments; may throw. */
+ScrDyn *scr_net_bound_socket_new(const ScrDyn *args);
+bool scr_net_is_bound_socket(const ScrDyn *value);
+void scr_net_listen_bound(ScrNetServer *s, const ScrDyn *bound);
+void scr_net_listen_bound_cb(ScrNetServer *s, const ScrDyn *bound, ScrClosure *cb /*moves, nullable*/);
 ScrDyn *scr_net_block_list_private_ranges(void);
 /* server.dropMaxConnection: a stored value (+1 get, borrowed set). */
 ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s);
@@ -360,6 +368,31 @@ void scr_net_sock_on_close_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowe
 void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
 void scr_net_sock_on_finish_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
 ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, double delay_ms); /* +1 */
+/* socket.setKeepAlive({ enable, initialDelay, interval, count }): Node's
+ * option form — Boolean(enable), ~~(delay/1000) seconds, the optional
+ * interval (seconds) and count. False with the exception pending when a
+ * value's ToNumber throws. */
+bool scr_net_sock_set_keepalive_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed*/);
+/* socket.getTypeOfService() / setTypeOfService(tos): Node's 0..255
+ * integer ladder (throws), the cached value before a handle exists, and
+ * the ErrnoException of a failing getsockopt/setsockopt. The setter
+ * answers the socket (+1), Node's chaining. */
+double scr_net_sock_get_tos(ScrNetSocket *s);
+ScrNetSocket *scr_net_sock_set_tos(ScrNetSocket *s, double tos);
+/* socket.bufferSize: the unsent bytes of a socket with a handle, or
+ * undefined (NULL dyn) before one exists. */
+ScrDyn *scr_net_sock_buffer_size(ScrNetSocket *s); /* +1 */
+/* socket.autoSelectFamilyAttemptedAddresses: +1 array of "$ip:$port"
+ * under a multi-address dial, undefined (Node's absent property) before
+ * such a dial starts. */
+ScrDyn *scr_net_sock_attempted_addresses(ScrNetSocket *s); /* +1 */
+/* The happy-eyeballs attempt events ('connectionAttempt' = 0,
+ * 'connectionAttemptFailed' = 1, 'connectionAttemptTimeout' = 2). */
+void scr_net_sock_on_attempt(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/,
+                             double which, bool once);
+/* server[Symbol.asyncDispose](): resolves at once for a server that never
+ * listened, otherwise awaits the close. +1 promise. */
+ScrPromise *scr_net_server_async_dispose(ScrNetServer *s);
 void scr_net_sock_set_timeout_checked(ScrNetSocket *s, double ms);
 void scr_net_sock_set_timeout_cb(ScrNetSocket *s, double ms, ScrClosure *cb /*moves*/);
 double scr_net_is_ip(const ScrDyn *input);

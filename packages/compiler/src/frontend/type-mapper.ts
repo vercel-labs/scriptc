@@ -4661,12 +4661,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
-  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
-  // methods dispatch through the handle.
+  // node:net's SocketAddress, BlockList and BoundSocket (scr_net.c) and
+  // node:util's MIMEType and MIMEParams (scr_mime.c): native handles whose
+  // getters and methods dispatch through the handle.
   if (
     ((psym !== undefined && psymName === "SocketAddress") ||
       (psym !== undefined && psymName === "BlockList") ||
+      (psym !== undefined && psymName === "BoundSocket") ||
       (psym !== undefined && psymName === "MIMEType") ||
       (psym !== undefined && psymName === "MIMEParams")) &&
     psym.declarations.some(

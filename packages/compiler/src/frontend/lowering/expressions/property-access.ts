@@ -106,6 +106,7 @@ import {
   typeKey,
   unionContainerArmsOk,
   BYTES_ELEMENT_SIZE,
+  DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509PublicKey } from "../builtins/x509.js";
@@ -2206,6 +2207,26 @@ export function lowerPropertyAccessExpr(
   if (
     recvLowered.type.kind === "bytes" &&
     (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
+  // A checker-`any` receiver whose value is a typed HANDLE (`const ds: any
+  // = sock` adopts the socket's static kind): JavaScript's [[Get]] on the
+  // value, which the handle's checked-dynamic table answers — Node's own
+  // member read (a socket's `server`, a connection's `bufferSize`). The
+  // box shares the handle, so it needs no fresh-result restriction.
+  if (
+    (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0 &&
+    DYN_HANDLE_KINDS.has(recvLowered.type.kind)
   ) {
     return lowerer.maybeNarrow(
       {

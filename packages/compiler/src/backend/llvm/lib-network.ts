@@ -134,6 +134,28 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     ]);
   }
   const B = host.B;
+  if (e.fn === "net.listenBound" || e.fn === "net.listenBoundCb") {
+    // listen(boundSocket[, cb]): the server adopts the bound descriptor. The
+    // callback moves into the 'listening' list; the already-listening and
+    // already-adopted errors are synchronous and catchable.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.listenBoundCb") {
+      host.toHeap(args[2]!);
+      cb = args[2]!.name;
+    }
+    if (e.fn === "net.listenBoundCb") {
+      host.declare(`declare void @scr_net_listen_bound_cb(ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_net_listen_bound_cb(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+      );
+    } else {
+      host.declare(`declare void @scr_net_listen_bound(ptr, ptr)`);
+      B.line(`call void @scr_net_listen_bound(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    }
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.listenPath" || e.fn === "net.listenPathCb") {
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
@@ -144,8 +166,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.declare(`declare void @scr_net_listen_path(ptr, ptr, ptr)`);
     B.line(`call void @scr_net_listen_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`);
     // The callback joins the 'listening' list before the bind: a
-    // 'newListener' handler can throw out of the call.
-    if (e.fn === "net.listenPathCb") host.emitPendingCheck();
+    // 'newListener' handler can throw out of the call. A second listen on
+    // a listening server throws ERR_SERVER_ALREADY_LISTEN either way.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "net.connectOptsChk") {
@@ -178,7 +201,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     }
     host.declare(`declare void @scr_net_listen(ptr, double, ptr)`);
     B.line(`call void @scr_net_listen(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${cb})`);
-    if (e.fn === "net.listenCb") host.emitPendingCheck();
+    // A 'newListener' handler can throw out of the callback add, and a
+    // second listen throws ERR_SERVER_ALREADY_LISTEN.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (
@@ -221,7 +246,7 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
         .map((a) => `${host.llType(a.type)} ${a.name}`)
         .join(", ")}, ptr ${cb})`,
     );
-    if (withCallback) host.emitPendingCheck();
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.clientSignal") {

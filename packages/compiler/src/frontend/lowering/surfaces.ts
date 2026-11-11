@@ -2209,9 +2209,11 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // table entries have a home, and so the "recognized module, unlowered
     // member" fence wording applies.
     net: {
-      // The process-wide happy-eyeballs attempt budget: one runtime double
-      // in the core unit (never links scr_net.c by itself), default 250ms
-      // like Node's.
+      // The process-wide autoSelectFamily setting and its attempt-timeout
+      // budget: runtime state in the core unit (never links scr_net.c by
+      // itself), true and 250ms by default like Node's.
+      getDefaultAutoSelectFamily: { fn: "net.getDefaultAutoSel", params: [], result: BOOL },
+      setDefaultAutoSelectFamily: { fn: "net.setDefaultAutoSel", params: [DYN], result: VOID },
       getDefaultAutoSelectFamilyAttemptTimeout: {
         fn: "net.getAutoSelTimeout",
         params: [],

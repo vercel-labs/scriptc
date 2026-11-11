@@ -3733,6 +3733,23 @@ static SCR_TL double scr_net_autosel_timeout_ms = 250;
 
 double scr_net_get_autosel_timeout(void) { return scr_net_autosel_timeout_ms; }
 
+/* net's process-wide autoSelectFamily default (Node's
+ * getDefaultAutoSelectFamily pair, true like Node's). The connect paths
+ * read it when a dial resolves more than one address; the setter runs
+ * Node's validateBoolean over the checked-dynamic argument. */
+static SCR_TL bool scr_net_default_autosel = true;
+
+bool scr_net_get_default_autosel(void) { return scr_net_default_autosel; }
+
+void scr_net_set_default_autosel(const ScrDyn *value /*borrowed*/) {
+  if (value == NULL || value->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("value", "of type boolean",
+                          value != NULL ? value : scr_dyn_undefined());
+    return;
+  }
+  scr_net_default_autosel = value->v.b;
+}
+
 /* Node's setDefaultAutoSelectFamilyAttemptTimeout: validateInt32(value,
  * 'value', 1), then the sub-10ms floor (Node clamps small budgets to
  * 10ms). Throws ERR_OUT_OF_RANGE catchably. */

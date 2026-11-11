@@ -12,6 +12,7 @@
  */
 #include "scr_runtime.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -514,6 +515,16 @@ static bool scr_et_read_options(const ScrDyn *options, ScrEtOptions *out) {
 
 SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool *aborted) = NULL;
 
+/* The event type is coerced with String(), which a symbol has no form for:
+ * Node reports that as ERR_INVALID_ARG_TYPE with this message rather than
+ * the language's TypeError. */
+static bool scr_et_symbol_type_fail(const ScrDyn *type) {
+  if (type->kind != SCR_DYN_SYMBOL) return false;
+  static const char message[] = "Value is a Symbol and cannot be converted to a string.";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+  return true;
+}
+
 ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc) {
   if (argc < 2) {
     scr_et_type_error("The \"type\" and \"listener\" arguments must be specified", "ERR_MISSING_ARGS");
@@ -559,6 +570,7 @@ ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_
     scr_et_warn("AddEventListenerArgumentTypeWarning", message);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  if (scr_et_symbol_type_fail(args[0])) return NULL;
   ScrStr *type = scr_dyn_string_coerce_js(args[0]);
   if (!type) return NULL;
   unsigned flags = (opts.once ? SCR_ET_ONCE : 0) | (opts.capture ? SCR_ET_CAPTURE : 0) |
@@ -578,6 +590,7 @@ ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, si
   int valid = scr_et_listener_check(args[1]);
   if (valid < 0) return NULL;
   if (valid == 0) return scr_dyn_retain(scr_dyn_undefined());
+  if (scr_et_symbol_type_fail(args[0])) return NULL;
   ScrStr *type = scr_dyn_string_coerce_js(args[0]);
   if (!type) return NULL;
   /* `options?.capture === true`: a boolean options value reads no
@@ -1197,6 +1210,9 @@ static ScrDyn *scr_event_inspect_view(void *ptr) {
   return view;
 }
 
+/* An Event's members are prototype getters, so an event has no own
+ * enumerable property and JSON.stringify answers `{}`; class members and
+ * the CustomEvent detail stay behind their getters. */
 static const ScrDynHandleOps scr_event_ops = {
     .cls = "Event",
     .retain = scr_event_retain_v,
@@ -1205,6 +1221,7 @@ static const ScrDynHandleOps scr_event_ops = {
     .get = scr_event_get,
     .set = scr_event_set,
     .inspect_view = scr_event_inspect_view,
+    .json_empty_object = true,
 };
 
 static const ScrDynHandleOps scr_message_event_ops = {
@@ -1215,6 +1232,7 @@ static const ScrDynHandleOps scr_message_event_ops = {
     .get = scr_event_get,
     .set = scr_event_set,
     .inspect_view = scr_event_inspect_view,
+    .json_empty_object = true,
 };
 
 static const ScrDynHandleOps scr_custom_event_ops = {
@@ -1225,6 +1243,7 @@ static const ScrDynHandleOps scr_custom_event_ops = {
     .get = scr_event_get,
     .set = scr_event_set,
     .inspect_view = scr_event_inspect_view,
+    .json_empty_object = true,
 };
 
 /* ── EventTarget handles ───────────────────────────────────────────── */
@@ -2577,4 +2596,1227 @@ ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name) {
 /* events.once(target, name, { signal }) */
 ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal) {
   return scr_events_once_target_impl(target, name, signal);
+}
+
+/* ── events.on(emitter, name[, options]) ──────────────────────────────
+ * Node's lib/events.js `on`: the async iterator over a receiver's events.
+ *
+ * The iterator is a checked-dynamic object with Node's own members:
+ * next(), return(), throw(err), [Symbol.asyncIterator]() answering the
+ * object, and the Symbol.for('nodejs.watermarkData') object whose
+ * size/low/high/isPaused getters read the queue control. `for await` over
+ * it takes the generic async-iteration path, so the members behave as
+ * Node's methods of the same names do.
+ *
+ * Node's option ladder runs before the receiver is touched: the options
+ * object (an object; null, arrays, functions and primitives are refused),
+ * its `signal` (an object carrying an 'aborted' member; a pre-aborted one
+ * throws the AbortError carrying its reason), then the watermarks —
+ * integers from 1 to Number.MAX_SAFE_INTEGER, defaulting to 9007199254740991
+ * and 1. Both watermark spellings are read: the camelCase one first and,
+ * when it is nullish, the lowercase alias, which Node kept for backward
+ * compatibility.
+ *
+ * The receiver then picks the protocol: a callable `on` registers through
+ * an emitter (a NodeEventTarget through its own registry, a compiled
+ * emitter through the emitter table, any other value through its own on),
+ * a callable `addEventListener` through an EventTarget's listener core,
+ * and a receiver with neither is Node's ERR_INVALID_ARG_TYPE (null and
+ * undefined are the property-read TypeError instead, the read of `.on`
+ * coming first). Unless 'error' is the awaited name and `on` is the
+ * protocol, an 'error' listener follows; then the close names (from
+ * options.close, when its length is truthy) and last the abort listener,
+ * registered through the signal's addEventListener with `{ once: true }`.
+ *
+ * The watermark control is Node's: an event with no waiter counts in
+ * `size`, pauses the receiver through its own pause() once size exceeds
+ * the high watermark (a receiver without pause() throws, leaving the value
+ * out of the queue but counted), and next() resumes through resume() once
+ * size drops below the low watermark. Stored errors reject the oldest
+ * waiter or wait for the next next(); throw(err) takes an Error and is
+ * Node's ERR_INVALID_ARG_TYPE for anything else; close() disposes the
+ * abort listener first, removes the listeners last-registered first, and
+ * resolves every waiter with one done result.
+ *
+ * The state owns the receiver, the name and the signal; each registered
+ * listener reaches it through a link whose release clears the state's weak
+ * pointer to that listener, so a removal never compares a freed identity,
+ * and the iterator's members pin the state while they live. The abort
+ * listener's link is weak (the signal's own entry keeps the listener
+ * alive; it pins no state), and the state owns that listener so its
+ * disposal can reach it after the signal dropped it.
+ */
+
+#define SCR_EON_HIGH_DEFAULT 9007199254740991.0
+
+/* The iterator's own members pin the state through links with one of these
+ * slots; a registered listener's slot is always below st->nslots, so a
+ * link's release tells the two apart. */
+#define SCR_EON_MEMBER_NEXT (SIZE_MAX)
+#define SCR_EON_MEMBER_RETURN (SIZE_MAX - 1)
+#define SCR_EON_MEMBER_THROW (SIZE_MAX - 2)
+#define SCR_EON_MEMBER_ASYNC (SIZE_MAX - 3)
+#define SCR_EON_MEMBER_SIZE (SIZE_MAX - 4)
+#define SCR_EON_MEMBER_LOW (SIZE_MAX - 5)
+#define SCR_EON_MEMBER_HIGH (SIZE_MAX - 6)
+#define SCR_EON_MEMBER_PAUSED (SIZE_MAX - 7)
+#define SCR_EON_MEMBER_ABORT (SIZE_MAX - 8)
+
+enum { SCR_EON_REG_EMITTER, SCR_EON_REG_CORE, SCR_EON_REG_DYN };
+
+typedef struct ScrEonState ScrEonState;
+
+/* One registered listener as the state sees it: the value its list holds
+ * (an emitter entry keeps the checked-dynamic function, a target's core the
+ * same function, a dynamic receiver whatever its on() stored) and the key
+ * it was registered under. The value is borrowed — the link's release
+ * clears it — and the key is owned by the state. */
+typedef struct ScrEonSlot {
+  ScrDyn *dyn;
+  ScrClosure *clo;
+  ScrStr *name;
+} ScrEonSlot;
+
+typedef struct ScrEonLink {
+  size_t rc;
+  ScrEonState *st; /* owned unless `weak` */
+  size_t slot;
+  bool weak;
+} ScrEonLink;
+
+struct ScrEonState {
+  size_t rc;
+  ScrDyn *recv;           /* owned: the receiver */
+  ScrStr *name;           /* owned: the awaited event's registry key */
+  ScrDyn *signal;         /* owned; undefined without one */
+  ScrDyn *abort_listener; /* owned: the signal's 'abort' listener */
+  ScrEonLink *abort_link; /* owned, weak: that listener's link */
+  ScrDyn *error;          /* owned; the stored error, NULL when none */
+  ScrEmitter *em;         /* borrowed (REG_EMITTER) */
+  ScrEventTargetCore *core; /* borrowed (REG_CORE) */
+  int reg;
+  bool uses_on;         /* the protocol registers through `on` (symbol names kept) */
+  bool abort_disposable; /* the non-aborted arm ran: close() calls removeEventListener */
+  /* The typed registration, for a receiver compiled as an emitter: the
+   * compiler's boxers (the event tuple and 'error''s to a checked-dynamic
+   * argument array) and the adapter entry points built from them, which a
+   * typed emit invokes. NULL `adapter` is the checked-dynamic form, whose
+   * emits call the listener thunks. */
+  ScrClosure *boxer;       /* owned; NULL without one */
+  ScrClosure *error_boxer; /* owned */
+  void *adapter;           /* the closure's function pointer (the adapter) */
+  ScrEeInvoke inv;         /* the va_list shim that reaches it */
+  void *error_adapter;
+  ScrEeInvoke error_inv;
+  /* The receiver's own pause()/resume() as callable values (owned; NULL
+   * when it has none), which the watermark control calls with `recv` as
+   * `this`. A compiled emitter's methods are not reachable through its
+   * checked-dynamic view, which holds fields only, so the compiler hands
+   * them over; without them the members are read from `recv` as Node
+   * does. */
+  ScrDyn *pause_fn;
+  ScrDyn *resume_fn;
+  double high, low;
+  size_t size;
+  bool paused, finished;
+  ScrEonSlot *slots;
+  size_t nslots, cslots;
+  ScrDyn **events;
+  size_t ehead, elen, ecap;
+  ScrPromise **waiters;
+  size_t whead, wlen, wcap;
+};
+
+static void scr_eon_oom(void) { scr_trap("scriptc: out of memory in events.on\n"); }
+
+static void scr_eon_state_release(ScrEonState *st);
+static ScrDyn *scr_eon_finish(ScrEonState *st, ScrDyn *options);
+
+static void *scr_eon_state_retain(void *p) {
+  ((ScrEonState *)p)->rc++;
+  return p;
+}
+
+static void scr_eon_state_release_v(void *p) { scr_eon_state_release(p); }
+
+static void *scr_eon_link_retain(void *p) {
+  ((ScrEonLink *)p)->rc++;
+  return p;
+}
+
+static void scr_eon_link_release(void *p) {
+  ScrEonLink *link = p;
+  if (--link->rc > 0) return;
+  ScrEonState *st = link->st;
+  if (!link->weak && st != NULL) {
+    if (link->slot < st->nslots) {
+      st->slots[link->slot].dyn = NULL;
+      st->slots[link->slot].clo = NULL;
+    }
+    scr_eon_state_release(st);
+  }
+  free(link);
+}
+
+static ScrEonLink *scr_eon_link_new(ScrEonState *st, size_t slot, bool weak) {
+  ScrEonLink *link = calloc(1, sizeof *link);
+  if (!link) scr_eon_oom();
+  link->rc = 1;
+  link->st = st;
+  link->slot = slot;
+  link->weak = weak;
+  if (!weak) st->rc++;
+  return link;
+}
+
+static void scr_eon_state_release(ScrEonState *st) {
+  if (--st->rc > 0) return;
+  for (size_t i = 0; i < st->nslots; i++)
+    if (st->slots[i].name) scr_str_release(st->slots[i].name);
+  free(st->slots);
+  for (size_t i = 0; i < st->elen; i++) scr_dyn_release(st->events[(st->ehead + i) % st->ecap]);
+  free(st->events);
+  for (size_t i = 0; i < st->wlen; i++)
+    scr_promise_release(st->waiters[(st->whead + i) % st->wcap]);
+  free(st->waiters);
+  if (st->abort_listener) {
+    /* The listener may outlive the state in a signal's registry: its link
+     * stops reaching the state before either reference goes. */
+    if (st->abort_link) {
+      st->abort_link->st = NULL;
+      scr_eon_link_release(st->abort_link);
+    }
+    scr_dyn_release(st->abort_listener);
+  } else if (st->abort_link) {
+    scr_eon_link_release(st->abort_link);
+  }
+  if (st->error) scr_dyn_release(st->error);
+  if (st->pause_fn) scr_dyn_release(st->pause_fn);
+  if (st->resume_fn) scr_dyn_release(st->resume_fn);
+  if (st->boxer) scr_closure_release(st->boxer);
+  if (st->error_boxer) scr_closure_release(st->error_boxer);
+  scr_dyn_release(st->recv);
+  scr_str_release(st->name);
+  scr_dyn_release(st->signal);
+  free(st);
+}
+
+/* A native listener over a fresh link in `slot`; a weak link does not pin
+ * the state. `keep` takes the link's own reference when asked for. +1. */
+static ScrDyn *scr_eon_listener(ScrEonState *st, ScrDynThunk thunk, size_t slot, bool weak,
+                                uint32_t arity, const char *name, ScrEonLink **keep) {
+  ScrEonLink *link = scr_eon_link_new(st, slot, weak);
+  if (keep) *keep = scr_eon_link_retain(link);
+  ScrBox *box = scr_box_new_obj(&scr_eon_link_retain, &scr_eon_link_release, NULL);
+  scr_box_set_ref(box, link);
+  ScrClosure *clo = scr_closure_new((void *)thunk, 1);
+  clo->caps[0] = box;
+  return scr_dyn_new_func(clo, thunk, arity, "native:function", name);
+}
+
+/* The adapter closure a typed emit invokes: caps[0] holds the compiler's
+ * boxer (its tuple-to-arguments conversion), caps[1] the state the fire
+ * entry reads. `adapter` is the compiler's entry that calls the boxer and
+ * hands the array to scr_events_on_fire; `inv` the va_list shim in front of
+ * it. */
+static ScrClosure *scr_eon_adapter(void *adapter, ScrClosure *boxer, ScrEonState *st) {
+  ScrClosure *c = scr_closure_new(adapter, 2);
+  ScrBox *bx = scr_box_new(SCR_BOX_FUNC);
+  scr_box_set_ref(bx, scr_closure_retain(boxer));
+  c->caps[0] = bx;
+  ScrBox *sb = scr_box_new_obj(&scr_eon_state_retain, &scr_eon_state_release_v, NULL);
+  scr_box_set_ref(sb, scr_eon_state_retain(st));
+  c->caps[1] = sb;
+  return c;
+}
+
+/* The typed adapter of a listener whose Node form ignores the event's
+ * arguments (the close and abort listeners): the emit's tuple is left
+ * unread, and the listener thunk runs with none. */
+static void scr_eon_ignore_invoke(ScrClosure *cb, va_list ap) {
+  (void)ap;
+  ScrDyn *answer = ((ScrDynThunk)cb->fn)(cb, NULL, 0);
+  if (answer) scr_dyn_release(answer);
+}
+
+/* Get(object, key) over any checked-dynamic value, +1 (undefined when
+ * absent). A string and a Buffer answer their own `length`, a capsule reads
+ * its materialized view, a handle its key table; proxies and accessors run
+ * as they do anywhere else. NULL means the read threw. */
+static ScrDyn *scr_eon_prop(const ScrDyn *object, const char *key, size_t len) {
+  switch (object->kind) {
+  case SCR_DYN_STR:
+    if (len == 6 && memcmp(key, "length", 6) == 0)
+      return scr_dyn_new_num(scr_str_utf16_len(object->v.str));
+    break;
+  case SCR_DYN_BYTES:
+    if (len == 6 && memcmp(key, "length", 6) == 0)
+      return scr_dyn_new_num((double)object->v.bytes->len);
+    break;
+  case SCR_DYN_TYPED_REF: {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (!view) return NULL;
+    ScrDyn *value = scr_eon_prop(view, key, len);
+    scr_dyn_release(view);
+    return value;
+  }
+  case SCR_DYN_HANDLE: {
+    ScrStr *name = scr_str_new(key, len);
+    ScrDyn *value = scr_dyn_handle_key_get(object, name);
+    scr_str_release(name);
+    return value;
+  }
+  default:
+    break;
+  }
+  return scr_dyn_obj_read(object, key, len);
+}
+
+/* A member of the options dictionary (undefined without one). +1 or NULL. */
+static ScrDyn *scr_eon_opt(const ScrDyn *options, const char *key, size_t len) {
+  if (options == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_eon_prop(options, key, len);
+}
+
+/* The value of a registry key: a symbol key keeps its symbol, any other key
+ * is the string itself. +1. */
+static ScrDyn *scr_eon_key_value(const ScrStr *name) {
+  if (scr_str_is_symbol_key(name)) return scr_dyn_new_symbol(scr_str_symbol_key_sym(name));
+  return scr_dyn_new_str((ScrStr *)name);
+}
+
+/* The registry key of an event-name value: a symbol keeps its identity when
+ * the receiver registers through `on`, and is Node's ToString failure for
+ * the addEventListener protocol (whose type is `${type}`). +1 or NULL with
+ * the exception pending. */
+static ScrStr *scr_eon_name_key(const ScrDyn *value, bool symbol_ok) {
+  if (symbol_ok) return scr_emitter_name_dyn(value);
+  /* The EventTarget protocol's event type has no symbol form: the target
+   * coerces it with String(), and Node reports the symbol as this
+   * ERR_INVALID_ARG_TYPE rather than the language's TypeError. */
+  if (value->kind == SCR_DYN_SYMBOL) {
+    static const char message[] = "Value is a Symbol and cannot be converted to a string.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  return scr_dyn_string_coerce_js(value);
+}
+
+/* close[i] over any value (undefined when absent). +1 or NULL. */
+static ScrDyn *scr_eon_element(const ScrDyn *value, double index) {
+  ScrDyn *fast = scr_dyn_index_get(value, index);
+  if (fast == NULL && value->kind == SCR_DYN_STR) fast = scr_dyn_string_index_get(value, index);
+  if (fast == NULL && value->kind == SCR_DYN_BYTES) fast = scr_dyn_bytes_index_get(value, index);
+  if (fast != NULL) return fast;
+  char key[32];
+  size_t len = scr_f64_to_str(index, key);
+  return scr_eon_prop(value, key, len);
+}
+
+/* `i < close.length` after the truthiness test, as < coerces the length.
+ * False ends the loop — with the exception pending when the coercion threw
+ * (`below` also false). */
+static bool scr_eon_length_below(const ScrDyn *close, double index, bool *below) {
+  ScrDyn *length = scr_eon_prop(close, "length", 6);
+  if (!length) return false;
+  double count = 0;
+  bool ok = scr_dyn_number_coerce_js(length, &count);
+  scr_dyn_release(length);
+  if (!ok) return false;
+  *below = index < count;
+  return true;
+}
+
+/* The event's arguments as the wrapper's array. +1. */
+static ScrDyn *scr_eon_args(ScrDyn *const *args, size_t argc) {
+  ScrDyn *values = scr_dyn_new_arr();
+  for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(values, scr_dyn_retain(args[i]));
+  return values;
+}
+
+/* A typed boxer's array of the event's arguments as the checked-dynamic
+ * array the iterator's next value is (the boxer returns `any[]`, whose
+ * elements are borrowed). Moves `args`; +1. */
+static ScrDyn *scr_eon_boxed_args(ScrArr *args) {
+  size_t count = (size_t)scr_arr_len(args);
+  ScrDyn *values = scr_dyn_new_arr();
+  for (size_t i = 0; i < count; i++)
+    scr_dyn_arr_push(values, scr_arr_get_ref(args, (double)i));
+  scr_arr_release(args);
+  return values;
+}
+
+static void scr_eon_events_push(ScrEonState *st, ScrDyn *value /* moves */) {
+  if (st->elen == st->ecap) {
+    size_t cap = st->ecap ? st->ecap * 2 : 8;
+    ScrDyn **grown = malloc(cap * sizeof *grown);
+    if (!grown) {
+      scr_dyn_release(value);
+      scr_eon_oom();
+    }
+    for (size_t i = 0; i < st->elen; i++) grown[i] = st->events[(st->ehead + i) % st->ecap];
+    free(st->events);
+    st->events = grown;
+    st->ecap = cap;
+    st->ehead = 0;
+  }
+  st->events[(st->ehead + st->elen) % st->ecap] = value;
+  st->elen++;
+}
+
+static ScrDyn *scr_eon_events_shift(ScrEonState *st) {
+  ScrDyn *value = st->events[st->ehead];
+  st->ehead = st->ecap ? (st->ehead + 1) % st->ecap : 0;
+  st->elen--;
+  if (st->elen == 0) st->ehead = 0;
+  return value;
+}
+
+static void scr_eon_waiters_push(ScrEonState *st, ScrPromise *p /* moves */) {
+  if (st->wlen == st->wcap) {
+    size_t cap = st->wcap ? st->wcap * 2 : 4;
+    ScrPromise **grown = malloc(cap * sizeof *grown);
+    if (!grown) {
+      scr_promise_release(p);
+      scr_eon_oom();
+    }
+    for (size_t i = 0; i < st->wlen; i++) grown[i] = st->waiters[(st->whead + i) % st->wcap];
+    free(st->waiters);
+    st->waiters = grown;
+    st->wcap = cap;
+    st->whead = 0;
+  }
+  st->waiters[(st->whead + st->wlen) % st->wcap] = p;
+  st->wlen++;
+}
+
+static ScrPromise *scr_eon_waiters_shift(ScrEonState *st) {
+  ScrPromise *p = st->waiters[st->whead];
+  st->whead = st->wcap ? (st->whead + 1) % st->wcap : 0;
+  st->wlen--;
+  if (st->wlen == 0) st->whead = 0;
+  return p;
+}
+
+/* createIterResult(value, done): { value, done }. `value` borrowed. +1. */
+static ScrDyn *scr_eon_result(ScrDyn *value, bool done) {
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "value", 5, scr_dyn_retain(value));
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  return result;
+}
+
+/* PromiseResolve(result): a fulfilled promise of it. Moves `result`. +1. */
+static ScrDyn *scr_eon_resolved(ScrDyn *result) {
+  ScrPromise *p = scr_promise_new();
+  scr_promise_fulfill_ref(p, result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+/* PromiseReject(error): the error thrown into a fresh promise. Moves the
+ * error. +1. */
+static ScrDyn *scr_eon_rejected(ScrDyn *error) {
+  ScrPromise *p = scr_promise_new();
+  scr_dyn_throw(error);
+  scr_promise_reject_pending(p);
+  ScrDyn *out = scr_dyn_new_promise(p);
+  scr_promise_release(p);
+  return out;
+}
+
+/* Resolves a parked waiter with `result` (moved) and drops it. */
+static void scr_eon_settle(ScrPromise *p, ScrDyn *result) {
+  scr_promise_fulfill_ref(p, result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_promise_release(p);
+}
+
+/* emitter.pause() / emitter.resume(), read from the receiver as Node calls
+ * it: a receiver without the method throws Node's TypeError. When the
+ * compiler handed the method over (a compiled emitter), it is called with
+ * the receiver bound as `this`. */
+static void scr_eon_call(ScrEonState *st, ScrDyn *fn, const char *method, const char *what) {
+  if (fn != NULL) {
+    scr_dyn_this_push_dyn(st->recv);
+    ScrDyn *result = scr_dyn_call(fn, NULL, 0, what);
+    scr_dyn_this_pop();
+    if (result) scr_dyn_release(result);
+    return;
+  }
+  ScrDyn *result = scr_dyn_invoke(st->recv, method, NULL, 0, what);
+  if (result) scr_dyn_release(result);
+}
+
+static void scr_eon_pause(ScrEonState *st) {
+  scr_eon_call(st, st->pause_fn, "pause", "emitter.pause");
+}
+
+static void scr_eon_resume(ScrEonState *st) {
+  scr_eon_call(st, st->resume_fn, "resume", "emitter.resume");
+}
+
+/* throw new AbortError(undefined, { cause: signal.reason }). */
+static void scr_eon_throw_abort(const ScrDyn *signal) {
+  ScrDyn *reason = scr_eon_prop(signal, "reason", 6);
+  if (!reason) return;
+  ScrError *error = scr_error_abort(reason);
+  scr_dyn_release(reason);
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Which listener a registration carries: `form` picks the typed adapter a
+ * compiled emitter's typed emits invoke (the event form and 'error''s use
+ * the compiler's boxers, the close and abort listeners ignore the event's
+ * arguments). */
+enum { SCR_EON_LISTEN_EVENT, SCR_EON_LISTEN_ERROR, SCR_EON_LISTEN_IGNORE };
+
+/* Appends a slot and registers one listener of `name` (borrowed) through
+ * the state's protocol. The listener's link clears the slot when the list
+ * frees it. Answers the slot index, or SIZE_MAX with the exception
+ * pending. */
+static size_t scr_eon_register(ScrEonState *st, const ScrStr *name, ScrDynThunk thunk,
+                               uint32_t arity, const char *fn_name, int form) {
+  if (st->nslots == st->cslots) {
+    size_t cap = st->cslots ? st->cslots * 2 : 4;
+    ScrEonSlot *grown = realloc(st->slots, cap * sizeof *grown);
+    if (!grown) {
+      scr_eon_oom();
+      return SIZE_MAX;
+    }
+    st->slots = grown;
+    st->cslots = cap;
+  }
+  size_t index = st->nslots++;
+  ScrEonSlot *slot = &st->slots[index];
+  memset(slot, 0, sizeof *slot);
+  slot->name = scr_str_retain((ScrStr *)name);
+  ScrDyn *listener = scr_eon_listener(st, thunk, index, false, arity, fn_name, NULL);
+  if (st->reg == SCR_EON_REG_EMITTER) {
+    slot->clo = listener->v.fn.clo;
+    if (st->adapter == NULL) {
+      /* The checked-dynamic form: an untyped emit calls the thunk. */
+      scr_emitter_release(scr_emitter_on_flex(st->em, (ScrStr *)name, listener, false, false));
+    } else if (form == SCR_EON_LISTEN_IGNORE) {
+      /* The listener ignores the event's arguments, so its own closure is
+       * the typed adapter: it runs the thunk with none. */
+      scr_emitter_release(scr_emitter_on_dyn(st->em, (ScrStr *)name, listener,
+                                             scr_closure_retain(listener->v.fn.clo),
+                                             &scr_eon_ignore_invoke, false, false));
+    } else {
+      ScrClosure *boxer = st->boxer;
+      void *adapter = st->adapter;
+      ScrEeInvoke inv = st->inv;
+      if (form == SCR_EON_LISTEN_ERROR && st->error_boxer != NULL) {
+        boxer = st->error_boxer;
+        adapter = st->error_adapter;
+        inv = st->error_inv;
+      }
+      scr_emitter_release(scr_emitter_on_dyn(st->em, (ScrStr *)name, listener,
+                                             scr_eon_adapter(adapter, boxer, st), inv, false,
+                                             false));
+    }
+  } else if (st->reg == SCR_EON_REG_CORE) {
+    slot->dyn = listener;
+    bool duplicate;
+    (void)scr_et_append(st->core, (ScrStr *)name, listener, 0, &duplicate);
+  } else {
+    /* The dynamic receiver: the key it registers under, the flags the
+     * protocol takes, and the listener as its own function value. */
+    slot->dyn = listener;
+    ScrDyn *key = scr_eon_key_value(name);
+    ScrDyn *args[3] = {key, listener, scr_dyn_undefined()};
+    ScrDyn *result = scr_dyn_invoke(st->recv, st->uses_on ? "on" : "addEventListener", args,
+                                    st->uses_on ? 2 : 3,
+                                    st->uses_on ? "emitter.on" : "emitter.addEventListener");
+    if (result) scr_dyn_release(result);
+    scr_dyn_release(key);
+  }
+  scr_dyn_release(listener);
+  return scr_exc_pending() ? SIZE_MAX : index;
+}
+
+/* eventTargetAgnosticRemoveListener(receiver, name, listener) for one slot. */
+static void scr_eon_remove(ScrEonState *st, const ScrEonSlot *slot) {
+  if (st->reg == SCR_EON_REG_EMITTER) {
+    if (slot->clo == NULL || st->em == NULL) return;
+    scr_emitter_release(scr_emitter_off(st->em, slot->name, slot->clo));
+    return;
+  }
+  if (slot->dyn == NULL) return;
+  if (st->reg == SCR_EON_REG_CORE) {
+    if (st->core == NULL) return;
+    ScrDyn *type = scr_eon_key_value(slot->name);
+    ScrDyn *args[2] = {type, slot->dyn};
+    ScrDyn *result = scr_et_remove_listener(st->core, args, 2);
+    if (result) scr_dyn_release(result);
+    scr_dyn_release(type);
+    return;
+  }
+  ScrDyn *remove = scr_eon_prop(st->recv, "removeListener", 14);
+  bool event_listener = false;
+  if (remove && !scr_dyn_is_callable(remove)) {
+    scr_dyn_release(remove);
+    remove = NULL;
+  }
+  if (remove == NULL && !scr_exc_pending()) {
+    remove = scr_eon_prop(st->recv, "removeEventListener", 19);
+    if (remove && !scr_dyn_is_callable(remove)) {
+      scr_dyn_release(remove);
+      remove = NULL;
+    }
+    event_listener = true;
+  }
+  if (remove == NULL) {
+    if (!scr_exc_pending())
+      scr_dyn_arg_type_fail("emitter", "an instance of EventEmitter", st->recv);
+    return;
+  }
+  ScrDyn *key = scr_eon_key_value(slot->name);
+  ScrDyn *args[3] = {key, slot->dyn, scr_dyn_undefined()};
+  ScrDyn *result = scr_dyn_invoke(
+      st->recv, event_listener ? "removeEventListener" : "removeListener", args,
+      event_listener ? 3 : 2,
+      event_listener ? "emitter.removeEventListener" : "emitter.removeListener");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(key);
+  scr_dyn_release(remove);
+}
+
+/* closeHandler() as a promise: the abort listener disposes, the listeners
+ * leave last-registered first, and every waiter resolves with one done
+ * result. PromiseResolve(doneResult) (+1), or NULL with the exception
+ * pending. */
+static ScrDyn *scr_eon_close(ScrEonState *st) {
+  if (st->abort_disposable && st->abort_listener && st->signal->kind != SCR_DYN_UNDEF) {
+    ScrStr *abort = scr_str_new("abort", 5);
+    ScrDyn *key = scr_dyn_new_str(abort);
+    scr_str_release(abort);
+    ScrDyn *args[2] = {key, scr_dyn_retain(st->abort_listener)};
+    ScrDyn *result =
+        scr_dyn_invoke(st->signal, "removeEventListener", args, 2, "signal.removeEventListener");
+    if (result) scr_dyn_release(result);
+    scr_dyn_release(key);
+    scr_dyn_release(args[1]);
+    if (scr_exc_pending()) return NULL;
+  }
+  while (st->nslots > 0) {
+    ScrEonSlot slot = st->slots[--st->nslots];
+    st->slots[st->nslots].name = NULL;
+    scr_eon_remove(st, &slot);
+    if (slot.name) scr_str_release(slot.name);
+    if (scr_exc_pending()) return NULL;
+  }
+  st->finished = true;
+  st->paused = false;
+  ScrDyn *done = scr_eon_result(scr_dyn_undefined(), true);
+  while (st->wlen > 0) {
+    ScrPromise *p = scr_eon_waiters_shift(st);
+    scr_eon_settle(p, scr_dyn_retain(done));
+  }
+  return scr_eon_resolved(done);
+}
+
+/* errorHandler(err): the oldest waiter rejects, or the error waits for the
+ * next next(); either way the iterator closes. Moves `err`. */
+static bool scr_eon_on_error(ScrEonState *st, ScrDyn *err) {
+  if (st->wlen == 0) {
+    if (st->error) scr_dyn_release(st->error);
+    st->error = err;
+  } else {
+    ScrPromise *p = scr_eon_waiters_shift(st);
+    scr_dyn_throw(err);
+    scr_promise_reject_pending(p);
+    scr_promise_release(p);
+  }
+  ScrDyn *promise = scr_eon_close(st);
+  if (promise == NULL) return false;
+  scr_dyn_release(promise);
+  return true;
+}
+
+/* One event's value reaches the iterator: the oldest parked waiter takes
+ * it, or it counts in `size` and waits — pausing the receiver once size
+ * exceeds the high watermark. `value` moves in. */
+static void scr_eon_push(ScrEonState *st, ScrDyn *value) {
+  if (st->wlen == 0) {
+    st->size++;
+    if (!st->paused && (double)st->size > st->high) {
+      st->paused = true;
+      scr_eon_pause(st);
+    }
+    /* Node pushes after pause(): a throwing pause drops the value, and the
+     * count stays. */
+    if (scr_exc_pending()) scr_dyn_release(value);
+    else scr_eon_events_push(st, value);
+  } else {
+    ScrPromise *p = scr_eon_waiters_shift(st);
+    ScrDyn *result = scr_eon_result(value, false); /* borrows `value` */
+    scr_dyn_release(value);
+    scr_eon_settle(p, result);
+  }
+}
+
+/* The event fired: the wrapper's array goes to the oldest waiter, or counts
+ * in `size` and waits. The wrapper's own return value is undefined. */
+static ScrDyn *scr_eon_on_event(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  scr_eon_push(link->st, scr_eon_args(args, argc));
+  scr_eon_link_release(link);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_eon_error_listener(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  scr_eon_on_error(link->st, scr_dyn_retain(argc > 0 ? args[0] : scr_dyn_undefined()));
+  bool ok = !scr_exc_pending();
+  scr_eon_link_release(link);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+static ScrDyn *scr_eon_close_listener(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *promise = scr_eon_close(link->st);
+  bool ok = promise != NULL;
+  if (promise) scr_dyn_release(promise);
+  scr_eon_link_release(link);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+/* abortListener(): the AbortError carrying the signal's reason goes through
+ * errorHandler. */
+static ScrDyn *scr_eon_abort_listener_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrEonState *st = link->st;
+  if (st != NULL) {
+    ScrDyn *reason = scr_eon_prop(st->signal, "reason", 6);
+    if (reason) {
+      ScrError *error = scr_error_abort(reason);
+      ScrDyn *value = scr_dyn_from_error(error);
+      scr_error_release(error);
+      scr_eon_on_error(st, value);
+      scr_dyn_release(reason);
+    }
+  }
+  bool ok = !scr_exc_pending();
+  scr_eon_link_release(link);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+/* The pre-aborted arm's queueMicrotask(() => listener()). */
+static void scr_eon_abort_job(ScrClosure *job) {
+  ScrDyn *listener = scr_et_box_get(job, 0);
+  ScrDyn *result = scr_eon_abort_listener_thunk(listener->v.fn.clo, NULL, 0);
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(listener);
+}
+
+/* next(). +1 or NULL with the exception pending. */
+static ScrDyn *scr_eon_next(ScrEonState *st) {
+  if (st->size > 0) {
+    ScrDyn *value = scr_eon_events_shift(st);
+    st->size--;
+    if (st->paused && (double)st->size < st->low) {
+      scr_eon_resume(st);
+      if (scr_exc_pending()) {
+        scr_dyn_release(value);
+        return NULL;
+      }
+      st->paused = false;
+    }
+    ScrDyn *result = scr_eon_result(value, false);
+    scr_dyn_release(value);
+    return scr_eon_resolved(result);
+  }
+  if (st->error != NULL && scr_dyn_truthy(st->error)) {
+    ScrDyn *error = st->error;
+    st->error = NULL;
+    return scr_eon_rejected(error);
+  }
+  if (st->finished) return scr_eon_close(st);
+  ScrPromise *p = scr_promise_new();
+  scr_eon_waiters_push(st, p);
+  return scr_dyn_new_promise(p);
+}
+
+static ScrDyn *scr_eon_next_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *result = scr_eon_next(link->st);
+  scr_eon_link_release(link);
+  return result;
+}
+
+static ScrDyn *scr_eon_return_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *result = scr_eon_close(link->st);
+  scr_eon_link_release(link);
+  return result;
+}
+
+/* Node's `throw(err)` check, `err instanceof Error`: a value compiled from
+ * TypeScript crosses as the checked-dynamic error encoding (`%error`), or
+ * as a capsule whose materialized view is one, while a JavaScript-lane
+ * error keeps the built-in prototype. */
+static bool scr_eon_is_error(const ScrDyn *value) {
+  if (value == NULL) return false;
+  if (value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) != NULL) return true;
+  return scr_dyn_inherits_error_prototype(value) || scr_dyn_ref_is_error(value);
+}
+
+/* throw(err): an Error closes the iterator through errorHandler, though
+ * `next()` rejects whatever was stored; anything else is Node's
+ * ERR_INVALID_ARG_TYPE and the iterator is untouched. */
+static ScrDyn *scr_eon_throw_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *error = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (!scr_dyn_truthy(error) || !scr_eon_is_error(error))
+    scr_dyn_arg_type_fail("EventEmitter.AsyncIterator", "an instance of Error", error);
+  else
+    scr_eon_on_error(link->st, scr_dyn_retain(error));
+  bool ok = !scr_exc_pending();
+  scr_eon_link_release(link);
+  return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
+}
+
+static ScrDyn *scr_eon_async_iter(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)cb;
+  (void)args;
+  (void)argc;
+  return scr_dyn_this_get();
+}
+
+/* The watermark getters: no receiver, the state answers. */
+static ScrDyn *scr_eon_watermark(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrEonLink *link = scr_box_get_ref(cb->caps[0]);
+  ScrEonState *st = link->st;
+  ScrDyn *value;
+  switch (link->slot) {
+  case SCR_EON_MEMBER_LOW:
+    value = scr_dyn_new_num(st->low);
+    break;
+  case SCR_EON_MEMBER_HIGH:
+    value = scr_dyn_new_num(st->high);
+    break;
+  case SCR_EON_MEMBER_PAUSED:
+    value = scr_dyn_new_bool(st->paused);
+    break;
+  default:
+    value = scr_dyn_new_num((double)st->size);
+    break;
+  }
+  scr_eon_link_release(link);
+  return value;
+}
+
+/* The iterator object Node builds with its object literal: next, return,
+ * throw in insertion order, the async-iterator method and the watermark
+ * symbol. +1. */
+static ScrDyn *scr_eon_iterator(ScrEonState *st) {
+  ScrDyn *it = scr_dyn_new_obj();
+  scr_dyn_obj_set(it, "next", 4,
+                  scr_eon_listener(st, &scr_eon_next_thunk, SCR_EON_MEMBER_NEXT, false, 0, "next",
+                                   NULL));
+  scr_dyn_obj_set(it, "return", 6,
+                  scr_eon_listener(st, &scr_eon_return_thunk, SCR_EON_MEMBER_RETURN, false, 0,
+                                   "return", NULL));
+  scr_dyn_obj_set(it, "throw", 5,
+                  scr_eon_listener(st, &scr_eon_throw_thunk, SCR_EON_MEMBER_THROW, false, 1,
+                                   "throw", NULL));
+  ScrStr *async_name = scr_str_new("asyncIterator", 13);
+  ScrSym *async_sym = scr_sym_well_known(async_name);
+  scr_str_release(async_name);
+  if (async_sym != NULL) {
+    ScrDyn *key = scr_dyn_new_symbol(async_sym);
+    ScrDyn *method = scr_eon_listener(st, &scr_eon_async_iter, SCR_EON_MEMBER_ASYNC, false, 0,
+                                      "[Symbol.asyncIterator]", NULL);
+    scr_dyn_key_set_computed(it, key, method);
+    scr_dyn_release(method);
+    scr_dyn_release(key);
+    scr_sym_release(async_sym);
+  }
+  ScrStr *marks_name = scr_str_new("nodejs.watermarkData", 20);
+  ScrSym *marks_sym = scr_sym_for(marks_name);
+  scr_str_release(marks_name);
+  if (marks_sym != NULL) {
+    static const struct {
+      const char *name;
+      size_t len, slot;
+      const char *fn;
+    } rows[] = {
+        {"size", 4, SCR_EON_MEMBER_SIZE, "get size"},
+        {"low", 3, SCR_EON_MEMBER_LOW, "get low"},
+        {"high", 4, SCR_EON_MEMBER_HIGH, "get high"},
+        {"isPaused", 8, SCR_EON_MEMBER_PAUSED, "get isPaused"},
+    };
+    ScrDyn *marks = scr_dyn_new_obj();
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+      ScrDyn *getter =
+          scr_eon_listener(st, &scr_eon_watermark, rows[i].slot, false, 0, rows[i].fn, NULL);
+      scr_dyn_obj_set_accessor(marks, rows[i].name, rows[i].len, getter, NULL);
+    }
+    ScrDyn *key = scr_dyn_new_symbol(marks_sym);
+    scr_dyn_key_set_computed(it, key, marks);
+    scr_dyn_release(marks);
+    scr_dyn_release(key);
+    scr_sym_release(marks_sym);
+  }
+  return it;
+}
+
+static ScrDyn *scr_eon_abandon(ScrEonState *st) {
+  scr_eon_state_release(st);
+  return NULL;
+}
+
+/* The watermark ladder: validateInteger(value, name, 1). */
+static bool scr_eon_watermark_check(const ScrDyn *value, const char *name, double *out) {
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail(name, "of type number", value);
+    return false;
+  }
+  double number = value->v.num;
+  if (isfinite(number) && floor(number) == number && number >= 1 &&
+      number <= SCR_EON_HIGH_DEFAULT) {
+    *out = number;
+    return true;
+  }
+  char received[48];
+  scr_num_received(number, received);
+  char message[192];
+  int len = isfinite(number) && floor(number) == number
+      ? snprintf(message, sizeof message,
+                 "The value of \"%s\" is out of range. It must be >= 1 && <= 9007199254740991. "
+                 "Received %s",
+                 name, received)
+      : snprintf(message, sizeof message,
+                 "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
+                 received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* options.highWaterMark ?? options.highWatermark (the 'low' pair reads the
+ * same): the modern spelling wins, the lowercase one is the alias Node
+ * kept for backward compatibility, and a nullish primary falls through. */
+static ScrDyn *scr_eon_opt_alias(const ScrDyn *options, const char *key, size_t key_len,
+                                 const char *alias, size_t alias_len) {
+  ScrDyn *value = scr_eon_opt(options, key, key_len);
+  if (!value) return NULL;
+  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
+    scr_dyn_release(value);
+    value = scr_eon_opt(options, alias, alias_len);
+  }
+  return value;
+}
+
+/* The options ladder both entries share: validateObject(options, 'options'),
+ * options.signal (type-checked, then the pre-aborted AbortError) and the two
+ * watermarks in Node's order. Answers the state with recv/signal/high/low
+ * set (the event name and the protocol follow), or NULL with the exception
+ * pending. */
+/* The ladder's failure exit: drop the state, answer NULL. */
+static ScrEonState *scr_eon_begin_fail(ScrEonState *st) {
+  scr_eon_state_release(st);
+  return NULL;
+}
+
+static ScrEonState *scr_eon_begin(ScrDyn *recv, ScrDyn *options) {
+  /* An explicit undefined is the plain form (Node's options parameter is
+   * optional). */
+  if (options != NULL && options->kind == SCR_DYN_UNDEF) options = NULL;
+  /* validateObject(options, 'options'): null, an array, a function, or a
+   * primitive. */
+  if (options != NULL && (options->kind == SCR_DYN_NULL || options->kind == SCR_DYN_ARR ||
+                          !scr_dyn_is_object(options))) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  ScrDyn *signal = scr_eon_opt(options, "signal", 6);
+  if (!signal) return NULL;
+  ScrEonState *st = calloc(1, sizeof *st);
+  if (!st) {
+    scr_dyn_release(signal);
+    scr_eon_oom();
+  }
+  st->rc = 1;
+  st->recv = scr_dyn_retain(recv);
+  if (signal->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(signal);
+    st->signal = scr_dyn_retain(scr_dyn_undefined());
+  } else {
+    st->signal = signal;
+  }
+  st->high = SCR_EON_HIGH_DEFAULT;
+  st->low = 1;
+
+  /* validateAbortSignal(options.signal, 'options.signal'), then the
+   * pre-aborted AbortError. */
+  bool has_signal = st->signal->kind != SCR_DYN_UNDEF;
+  if (has_signal) {
+    /* validateAbortSignal: a nullish signal is not an AbortSignal (and the
+     * `in` probe below would throw its own TypeError on null). */
+    if (st->signal->kind == SCR_DYN_NULL || !scr_dyn_is_object(st->signal)) {
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", st->signal);
+      return scr_eon_begin_fail(st);
+    }
+    ScrStr *aborted_name = scr_str_new("aborted", 7);
+    bool carries = scr_dyn_in(st->signal, aborted_name);
+    scr_str_release(aborted_name);
+    if (scr_exc_pending()) return scr_eon_begin_fail(st);
+    if (!carries) {
+      scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", st->signal);
+      return scr_eon_begin_fail(st);
+    }
+    ScrDyn *aborted = scr_eon_prop(st->signal, "aborted", 7);
+    if (!aborted) return scr_eon_begin_fail(st);
+    bool early = scr_dyn_truthy(aborted);
+    scr_dyn_release(aborted);
+    if (early) {
+      scr_eon_throw_abort(st->signal);
+      return scr_eon_begin_fail(st);
+    }
+    /* option order: highWaterMark, then lowWaterMark */
+  }
+  ScrDyn *high = scr_eon_opt_alias(options, "highWaterMark", 13, "highWatermark", 13);
+  if (!high) return scr_eon_begin_fail(st);
+  if (high->kind != SCR_DYN_UNDEF && high->kind != SCR_DYN_NULL &&
+      !scr_eon_watermark_check(high, "options.highWaterMark", &st->high)) {
+    scr_dyn_release(high);
+    return scr_eon_begin_fail(st);
+  }
+  scr_dyn_release(high);
+  ScrDyn *low = scr_eon_opt_alias(options, "lowWaterMark", 12, "lowWatermark", 12);
+  if (!low) return scr_eon_begin_fail(st);
+  if (low->kind != SCR_DYN_UNDEF && low->kind != SCR_DYN_NULL &&
+      !scr_eon_watermark_check(low, "options.lowWaterMark", &st->low)) {
+    scr_dyn_release(low);
+    return scr_eon_begin_fail(st);
+  }
+  scr_dyn_release(low);
+  return st;
+}
+
+/* The awaited event's registry key, converted from the name value once the
+ * protocol is known: `on` keeps a symbol's identity, the addEventListener
+ * protocol has no symbol form. Answers false with the exception pending. */
+static bool scr_eon_name(ScrEonState *st, const ScrDyn *name) {
+  st->name = scr_eon_name_key(name, st->uses_on);
+  return st->name != NULL;
+}
+
+static ScrDyn *scr_events_on_impl(ScrEmitter *seed_emitter, ScrDyn *recv, ScrDyn *pause_fn,
+                                  ScrDyn *resume_fn, ScrDyn *name, ScrDyn *options) {
+  ScrEonState *st = scr_eon_begin(recv, options);
+  if (!st) return NULL;
+  if (pause_fn != NULL && pause_fn->kind != SCR_DYN_UNDEF)
+    st->pause_fn = scr_dyn_retain(pause_fn);
+  if (resume_fn != NULL && resume_fn->kind != SCR_DYN_UNDEF)
+    st->resume_fn = scr_dyn_retain(resume_fn);
+
+  /* The protocol, from the receiver's own members. */
+  if (seed_emitter != NULL) {
+    st->reg = SCR_EON_REG_EMITTER;
+    st->em = seed_emitter;
+    st->uses_on = true;
+  } else if (recv->kind == SCR_DYN_NULL || recv->kind == SCR_DYN_UNDEF) {
+    char message[96];
+    snprintf(message, sizeof message, "Cannot read properties of %s (reading 'on')",
+             recv->kind == SCR_DYN_NULL ? "null" : "undefined");
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    return scr_eon_abandon(st);
+  } else {
+    ScrDyn *on = scr_eon_prop(recv, "on", 2);
+    if (!on) return scr_eon_abandon(st);
+    bool has_on = scr_dyn_is_callable(on);
+    scr_dyn_release(on);
+    if (has_on) {
+      st->uses_on = true;
+      st->em = scr_et_helper_emitter(recv);
+      st->reg = st->em ? SCR_EON_REG_EMITTER : SCR_EON_REG_DYN;
+    } else {
+      ScrDyn *add = scr_eon_prop(recv, "addEventListener", 16);
+      if (!add) return scr_eon_abandon(st);
+      bool has_add = scr_dyn_is_callable(add);
+      scr_dyn_release(add);
+      if (!has_add) {
+        scr_dyn_arg_type_fail("emitter", "an instance of EventEmitter", recv);
+        return scr_eon_abandon(st);
+      }
+      st->core = scr_et_core_of(recv);
+      st->reg = st->core ? SCR_EON_REG_CORE : SCR_EON_REG_DYN;
+    }
+  }
+  if (!scr_eon_name(st, name)) return scr_eon_abandon(st);
+  return scr_eon_finish(st, options);
+}
+
+/* The registrations every entry makes, in Node's order — the event, the
+ * 'error' handler, the close names, the signal's abort listener — and the
+ * iterator itself. `options` is borrowed. Consumes the creator's reference
+ * to `st`; +1. */
+static ScrDyn *scr_eon_finish(ScrEonState *st, ScrDyn *options) {
+  ScrStr *name = st->name;
+  bool has_signal = st->signal->kind != SCR_DYN_UNDEF;
+
+  if (scr_eon_register(st, name, &scr_eon_on_event, 0, "", SCR_EON_LISTEN_EVENT) == SIZE_MAX)
+    return scr_eon_abandon(st);
+  bool error_name = name->len == 5 && memcmp(name->data, "error", 5) == 0;
+  if (!error_name && st->uses_on) {
+    ScrStr *error = scr_str_new("error", 5);
+    size_t slot =
+        scr_eon_register(st, error, &scr_eon_error_listener, 1, "errorHandler",
+                         SCR_EON_LISTEN_ERROR);
+    scr_str_release(error);
+    if (slot == SIZE_MAX) return scr_eon_abandon(st);
+  }
+
+  /* const closeEvents = options?.close; its names follow. */
+  ScrDyn *close = scr_eon_opt(options, "close", 5);
+  if (!close) return scr_eon_abandon(st);
+  if (close->kind != SCR_DYN_UNDEF && close->kind != SCR_DYN_NULL) {
+    ScrDyn *length = scr_eon_prop(close, "length", 6);
+    bool any = length != NULL && scr_dyn_truthy(length);
+    scr_dyn_release(length);
+    double index = 0;
+    while (any) {
+      bool below = false;
+      if (!scr_eon_length_below(close, index, &below) || !below) break;
+      ScrDyn *element = scr_eon_element(close, index);
+      if (!element) break;
+      ScrStr *key = scr_eon_name_key(element, st->uses_on);
+      scr_dyn_release(element);
+      if (!key) break;
+      size_t slot =
+          scr_eon_register(st, key, &scr_eon_close_listener, 0, "closeHandler",
+                           SCR_EON_LISTEN_IGNORE);
+      scr_str_release(key);
+      if (slot == SIZE_MAX) break;
+      index += 1.0;
+    }
+  }
+  scr_dyn_release(close);
+  if (scr_exc_pending()) return scr_eon_abandon(st);
+
+  /* const abortListenerDisposable = signal ? addAbortListener(signal,
+   * abortListener) : null; — the signal's aborted state is read again. */
+  if (has_signal) {
+    ScrDyn *aborted = scr_eon_prop(st->signal, "aborted", 7);
+    if (!aborted) return scr_eon_abandon(st);
+    bool late = scr_dyn_truthy(aborted);
+    scr_dyn_release(aborted);
+    /* The abort listener is not one of the close slots: its registration
+     * is the signal's, and its link stays weak. */
+    ScrDyn *listener = scr_eon_listener(st, &scr_eon_abort_listener_thunk,
+                                        SCR_EON_MEMBER_ABORT, true, 0, "abortListener",
+                                        &st->abort_link);
+    st->abort_listener = listener;
+    if (late) {
+      ScrClosure *job = scr_closure_new((void *)&scr_eon_abort_job, 1);
+      job->caps[0] = scr_et_dyn_box(listener);
+      scr_queue_microtask(job);
+    } else {
+      st->abort_disposable = true;
+      bool ignored = false;
+      ScrEventTargetCore *core =
+          scr_et_signal_core_fn ? scr_et_signal_core_fn(st->signal, &ignored) : NULL;
+      if (core != NULL) {
+        ScrStr *abort = scr_str_new("abort", 5);
+        bool duplicate;
+        (void)scr_et_append(core, abort, listener, SCR_ET_ONCE | SCR_ET_RESIST, &duplicate);
+        scr_str_release(abort);
+      } else {
+        ScrDyn *flags = scr_dyn_new_obj();
+        scr_dyn_obj_set(flags, "once", 4, scr_dyn_new_bool(true));
+        ScrStr *abort = scr_str_new("abort", 5);
+        ScrDyn *key = scr_dyn_new_str(abort);
+        scr_str_release(abort);
+        ScrDyn *args[3] = {key, listener, flags};
+        ScrDyn *result =
+            scr_dyn_invoke(st->signal, "addEventListener", args, 3, "signal.addEventListener");
+        if (result) scr_dyn_release(result);
+        scr_dyn_release(key);
+        scr_dyn_release(flags);
+      }
+      if (scr_exc_pending()) return scr_eon_abandon(st);
+    }
+  }
+
+  ScrDyn *iterator = scr_eon_iterator(st);
+  scr_eon_state_release(st); /* the creator's reference */
+  return iterator;
+}
+
+/* events.on(emitter, name[, options]) over a checked-dynamic receiver. */
+ScrDyn *scr_events_on(ScrDyn *recv, ScrDyn *name, ScrDyn *options) {
+  return scr_events_on_impl(NULL, recv, NULL, NULL, name, options);
+}
+
+/* events.on(emitter, name[, options]) over a receiver compiled as an
+ * emitter: its registry, with the checked-dynamic value for the protocol's
+ * other members and the compiler's pause()/resume() method values. */
+ScrDyn *scr_events_on_emitter(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                              ScrDyn *name, ScrDyn *options) {
+  return scr_events_on_impl(em, recv, pause_fn, resume_fn, name, options);
+}
+
+/* The typed registration a receiver compiled as an emitter needs: its typed
+ * emits invoke runtime-built adapters rather than the listeners' checked-
+ * dynamic thunks. `boxer`/`error_boxer` (the compiler's tuple-to-array
+ * conversions, +1 — consumed here) and the adapter entries built from them
+ * are what the main listener and the 'error' handler dispatch through; the
+ * close and abort listeners ignore the event's arguments and need none of
+ * them. `recv` is the emitter's checked-dynamic value (borrowed). */
+ScrDyn *scr_events_on_typed(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                            ScrDyn *name, ScrClosure *boxer, ScrClosure *error_boxer, void *adapter,
+                            ScrEeInvoke inv, void *error_adapter, ScrEeInvoke error_inv,
+                            ScrDyn *options) {
+  ScrEonState *st = scr_eon_begin(recv, options);
+  if (st == NULL) {
+    if (boxer) scr_closure_release(boxer);
+    if (error_boxer) scr_closure_release(error_boxer);
+    return NULL;
+  }
+  st->reg = SCR_EON_REG_EMITTER;
+  st->em = em;
+  st->uses_on = true;
+  if (pause_fn != NULL && pause_fn->kind != SCR_DYN_UNDEF)
+    st->pause_fn = scr_dyn_retain(pause_fn);
+  if (resume_fn != NULL && resume_fn->kind != SCR_DYN_UNDEF)
+    st->resume_fn = scr_dyn_retain(resume_fn);
+  st->boxer = boxer;
+  st->error_boxer = error_boxer;
+  st->adapter = adapter;
+  st->inv = inv;
+  st->error_adapter = error_adapter != NULL ? error_adapter : adapter;
+  st->error_inv = error_inv;
+  if (!scr_eon_name(st, name)) return scr_eon_abandon(st);
+  return scr_eon_finish(st, options);
+}
+
+/* The event adapter's tail: `args` is the boxed event arguments (+1, moves
+ * in) — the iterator's next value itself. */
+void scr_events_on_fire(ScrClosure *cb, ScrArr *args) {
+  ScrEonState *st = scr_box_get_ref(cb->caps[1]);
+  scr_eon_push(st, scr_eon_boxed_args(args));
+  scr_eon_state_release(st);
+}
+
+/* The 'error' adapter's tail: the boxed arguments (+1, moves in) carry the
+ * error the iterator rejects with. */
+void scr_events_on_error_fire(ScrClosure *cb, ScrArr *args) {
+  ScrEonState *st = scr_box_get_ref(cb->caps[1]);
+  ScrDyn *err = scr_arr_get_ref(args, 0);
+  scr_arr_release(args);
+  scr_eon_on_error(st, err);
+  scr_eon_state_release(st);
 }

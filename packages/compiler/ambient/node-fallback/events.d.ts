@@ -41,6 +41,35 @@ declare module "events" {
   }
   import internal = require("node:events");
   namespace EventEmitter {
+    /* The async iterator events.on answers. Node's AsyncIterator subclass
+     * over one event's argument tuples: next() resolves the next event's
+     * arguments (the iterator answers `{ value, done }`), return() ends the
+     * iteration, throwing one waiter with an Error ends it the way an
+     * 'error' emit does, and the iterator is its own async iterator. The
+     * class is Node's internal one, not an export: it stays private to this
+     * namespace so `import { EventEmitterAsyncIterator }` keeps failing
+     * the way it does in Node. */
+    class EventEmitterAsyncIterator {
+      next(): Promise<{ value: any; done: boolean }>;
+      return(): Promise<{ value: any; done: boolean }>;
+      throw(err: Error): Promise<{ value: any; done: boolean }>;
+      [Symbol.asyncIterator](): EventEmitterAsyncIterator;
+    }
+    /* Iterates one event's argument tuples until the iterator is closed, an
+     * 'error' arrives, `options.signal` aborts or one of `options.close`'s
+     * events is emitted. */
+    export function on(
+      emitter: EventEmitter | EventTarget,
+      eventName: string | symbol,
+      options?: {
+        signal?: AbortSignal;
+        close?: string[];
+        highWaterMark?: number;
+        highWatermark?: number;
+        lowWaterMark?: number;
+        lowWatermark?: number;
+      },
+    ): EventEmitterAsyncIterator;
     // The class under its own name, so `import { EventEmitter }` resolves
     // (the @types/node namespace-alias pattern).
     export { internal as EventEmitter };

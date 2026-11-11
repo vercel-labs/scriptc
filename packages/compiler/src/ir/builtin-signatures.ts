@@ -127,6 +127,29 @@ function buildLibFnSignatures() {
       argTypes: [DYN, STRING, DYN],
       result: { kind: "promise", inner: arrayOf(DYN) },
     },
+    /** events.on (scr_event_target.c): the async iterator over a
+     * receiver's events. `event.on` resolves the protocol at runtime
+     * (receiver, name and options as checked-dynamic values: the name
+     * crosses as the value the receiver's `on` receives, a symbol keeping
+     * its identity, and the options ladder runs in the runtime);
+     * `event.onEmitter` is the same for a receiver compiled as an emitter,
+     * whose registry it registers in directly; both take the receiver's
+     * pause() and resume() as values (undefined when the static class has
+     * none) because a compiled class's methods are not reachable through
+     * its checked-dynamic view. */
+    "event.on": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "event.onEmitter": {
+      argTypes: [null, DYN, DYN, DYN, DYN, DYN],
+      result: DYN,
+    },
+    /** events.on over a receiver compiled as an emitter: [emitter, receiver,
+     * pauseFn, resumeFn, name, boxer, errorBoxer, listenForError, options] —
+     * the boxers turn the event's tuple and 'error''s into the iterator's
+     * arguments array (scr_events_on_typed, beside scr_events_on). */
+    "events.onTyped": {
+      argTypes: [null, DYN, DYN, DYN, DYN, null, null, BOOL, DYN],
+      result: DYN,
+    },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },

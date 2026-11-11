@@ -29,13 +29,13 @@ async function inspectResponse(url: string): Promise<void> {
 }
 void inspectResponse;
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
- * typecheck under @types/node and fence with the module-qualified name —
- * calls and value reads alike. */
+ * typecheck under @types/node and fence by their name — calls, module
+ * member reads and the supported classes' statics alike. */
 import { openAsBlob } from "fs";
-import { EventEmitter, on } from "node:events";
+import { EventEmitter } from "node:events";
 import { win32 } from "path";
 openAsBlob("x");
-on(new EventEmitter(), "tick");
+console.log(EventEmitter.captureRejections);
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL
  * registry operations still fence by member name with the supported

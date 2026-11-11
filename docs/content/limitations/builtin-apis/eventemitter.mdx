@@ -19,4 +19,5 @@
   `EventEmitter.prototype.<method>.call(receiver, ...)` runs the method typed when `receiver` is statically an emitter instance; a receiver of type `any` runs the untyped method over its JavaScript `_events`, which does not reach a compiled emitter's listeners.
   The method is read from `EventEmitter.prototype` or from an emitter reached through a binding, a stored field, or a record entry; an accessor or a call on that path is unsupported, since skipping it would drop its effects.
   `events.once` accepts EventEmitter and stream instances with a literal event name and an optional object-literal `{ signal }`; a stream's `data` event, other options values, and EventTarget emitters are unsupported.
+  `events.on` lowers over an EventEmitter with a literal event name and over any other receiver through a checked-dynamic value, with the iterator's `close` names, `signal` aborts, 'error' handling and watermarks; a computed or meta event name on a compiled emitter is unsupported.
   Reading `defaultMaxListeners` through a CommonJS destructured or member binding (`const { defaultMaxListeners } = require("events")`) is unsupported.

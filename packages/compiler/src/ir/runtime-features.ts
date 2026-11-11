@@ -534,6 +534,12 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // A symbol event name's registry key (scr_str_symbol_key lives in the
   // string unit, but the emitter registry holds the symbol itself).
   "emitter.symName",
+  // events.on's iterator answers Symbol.asyncIterator and reads
+  // Symbol.for('nodejs.watermarkData'); a symbol event name keeps its
+  // symbol identity.
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   // The array-like unit reads a receiver's @@isConcatSpreadable through
   // scr_sym_well_known before it spreads that receiver's elements.
   "dyn.arrayLikeProtoCall",
@@ -1787,6 +1793,12 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // scr_event_target.c's events.on reads the receiver's pause() and
+      // resume() through scr_dyn_invoke when the compiler handed it no
+      // method value.
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
       // scr_js_wrapper.c answers other values' tags through
       // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
       "wrapper.objectTag",
@@ -1955,6 +1967,9 @@ const RUNTIME_FEATURE_RULES = {
       "event.targetSetMax",
       "event.onceTarget",
       "event.onceTargetSignal",
+      "event.on",
+      "event.onEmitter",
+      "events.onTyped",
     ],
     prefixes: ["emitter.", ...STREAM_LIB_PREFIXES],
   }),
@@ -1966,8 +1981,10 @@ const RUNTIME_FEATURE_RULES = {
         (c) => c.name === RUNTIME_EVENT_TARGET_CLASS || c.name === RUNTIME_EVENT_CLASS,
       ),
     // util.debounce and util.throttle register options.signal's listener.
+    // events.on's typed-emitter iterator lives in scr_event_target.c too.
     fns: [
       "events.addAbortListener",
+      "events.onTyped",
       "util.aborted",
       "util.debounce",
       "util.throttle",

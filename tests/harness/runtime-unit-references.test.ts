@@ -72,6 +72,17 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_ecdh.c -> scr_async_dyn.c": ["scr_emit_warning"],
   "scr_event_target.c -> scr_async_dyn.c": ["scr_dyn_new_promise", "scr_promise_resolve_dyn"],
+  // events.on reads a receiver's pause()/resume() through scr_dyn_invoke and
+  // builds symbol event keys through scr_symbol.c: both are reached only
+  // from its libCalls, which the dynInvoke and symbol features select. An
+  // AbortSignal alone links scr_event_target.c without them.
+  "scr_event_target.c -> scr_dyn_invoke.c": ["scr_dyn_invoke"],
+  "scr_event_target.c -> scr_symbol.c": [
+    "scr_dyn_new_symbol",
+    "scr_sym_for",
+    "scr_sym_release",
+    "scr_sym_well_known",
+  ],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
   // The checked-data writes with a mode, a flag or an options record

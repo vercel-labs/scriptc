@@ -43139,6 +43139,12 @@
           "tests/corpus/events-erased-emit-args.ts",
           "tests/corpus/events-module-helpers.ts",
           "tests/corpus/events-node-event-target-port.mjs",
+          "tests/corpus/events-on-event-target.ts",
+          "tests/corpus/events-on-iterator.ts",
+          "tests/corpus/events-on-node-event-target.ts",
+          "tests/corpus/events-on-options.ts",
+          "tests/corpus/events-on-signal-close.ts",
+          "tests/corpus/events-on-watermarks.ts",
           "tests/corpus/events-once-event-target.ts",
           "tests/corpus/events-once-node-event-target.ts",
           "tests/diagnostics/compat-absent-node-apis.ts"
@@ -45308,8 +45314,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:events"
+        "status": "partial",
+        "evidence": "compiler-dedicated:events.on",
+        "tests": [
+          "tests/corpus/events-on-iterator.ts",
+          "tests/corpus/events-on-event-target.ts",
+          "tests/corpus/events-on-node-event-target.ts",
+          "tests/corpus/events-on-options.ts",
+          "tests/corpus/events-on-signal-close.ts",
+          "tests/corpus/events-on-watermarks.ts"
+        ]
       },
       "anchorSource": "exact"
     },

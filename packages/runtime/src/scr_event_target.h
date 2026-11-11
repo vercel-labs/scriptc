@@ -142,6 +142,37 @@ ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
  * Never throw; +1, and every failure rejects the promise. */
 ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name);
 ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *signal);
+/* events.on(emitter, name, options): the async iterator over a receiver's
+ * events, resolved at runtime (`recv`: any value, with `options` undefined
+ * when not passed) or from a receiver compiled as an emitter (`em`, its
+ * registry, with `recv` for the protocol's other members and pause()/
+ * resume()). Both validate Node's options ladder and throw on a bad
+ * option, signal, watermark or receiver; +1.
+ *
+ * `pause_fn`/`resume_fn` are the receiver's own methods as callable values
+ * (NULL when it has none): a compiled emitter's methods are not reachable
+ * through `recv`'s checked-dynamic view, which holds fields only, so the
+ * compiler hands them over and the watermark control calls them with the
+ * receiver as `this`. Without them the runtime reads the members from
+ * `recv` as Node does. */
+ScrDyn *scr_events_on(ScrDyn *recv, ScrDyn *name, ScrDyn *options);
+ScrDyn *scr_events_on_emitter(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                              ScrDyn *name, ScrDyn *options);
+/* The same over a receiver compiled as an emitter whose typed emits invoke
+ * adapter closures: `boxer`/`error_boxer` are the compiler's conversions of
+ * the event's tuple and of 'error''s to a checked-dynamic argument array
+ * (+1, consumed), `adapter`/`inv` and `error_adapter`/`error_inv` the
+ * entries built from them (the closure's function pointer and its va_list
+ * shim). The close and abort listeners ignore the event's arguments. */
+ScrDyn *scr_events_on_typed(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                            ScrDyn *name, ScrClosure *boxer, ScrClosure *error_boxer,
+                            void *adapter, ScrEeInvoke inv, void *error_adapter,
+                            ScrEeInvoke error_inv, ScrDyn *options);
+/* The fire entries the compiler's adapter declarations reach: the boxed
+ * event arguments (moves in) become the iterator's next value, or reject
+ * it for 'error'. */
+void scr_events_on_fire(ScrClosure *cb, ScrArr *args);
+void scr_events_on_error_fire(ScrClosure *cb, ScrArr *args);
 /* timers/promises setTimeout(delay, value, options) and setImmediate(value,
  * options) with options.signal (an undefined signal takes the plain form):
  * `value` is the already-resolved promise of the resolve value, borrowed.

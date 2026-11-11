@@ -245,6 +245,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "event.targetListenerCountDyn",
   "event.targetGetMax",
   "event.targetSetMax",
+  // events.on validates its options, reads the receiver's protocol and
+  // registers listeners (a throwing 'newListener' listener runs inside).
+  "event.on",
+  "event.onEmitter",
+  "events.onTyped",
   "event.call",
   // events.once over an EventTarget or a NodeEventTarget: the receiver's own
   // once()/addEventListener() runs, and a bad receiver or signal throws

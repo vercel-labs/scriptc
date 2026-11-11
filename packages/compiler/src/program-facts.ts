@@ -615,12 +615,6 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
   scan(
-    "frontend/contract-types.ts#collectContractAnnotations",
-    2,
-    "prefilter",
-    "a file that never names the contract-type modules imports none of them",
-  ),
-  scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,
     "discovery",

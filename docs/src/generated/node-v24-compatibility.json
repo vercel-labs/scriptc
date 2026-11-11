@@ -1951,8 +1951,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Buffer, Blob and File are the same identities the globals name, and the module object exposes Node's keys in Node's order, its constants, and the documented functions through the module.",
         "verification": "test-backed"
       }
     },
@@ -2135,9 +2135,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Converts the id the way Node does and answers undefined; a compiled program cannot create a blob URL, so the registry is always empty and the lookup always misses.",
+        "verification": "test-backed"
       }
     },
     {
@@ -2250,8 +2250,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Builds Buffers from strings, arrays, ArrayBuffers, TypedArrays and DataViews with Node's argument validation; alloc and allocUnsafe answer zero-filled and uninitialised Buffers.",
         "verification": "test-backed"
       }
     },
@@ -2503,8 +2503,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Buffers are byte sequences with Node's indexing, slicing, comparisons and the documented instance methods.",
         "verification": "test-backed"
       }
     },
@@ -35758,9 +35758,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36402,9 +36402,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36448,9 +36448,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36678,9 +36678,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42980,9 +42980,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -83386,8 +83386,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.",
+        "status": "supported",
+        "detail": "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.",
         "verification": "test-backed"
       }
     },

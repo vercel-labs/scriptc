@@ -194,9 +194,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
   // the Worker env option compares against worker_threads.SHARE_ENV.
-  // The web stream unit brands its classes and async iteration with
-  // well-known symbols.
-  ["scr_symbol.c", any("symbol", "workers", "webStreams")],
+  ["scr_symbol.c", any("symbol", "workers")],
   ["scr_bigint_assert.c", all("assert", "bigint")],
   ["scr_qs.c", "qs"],
   // The legacy url unit lowercases and normalizes through the regex unit

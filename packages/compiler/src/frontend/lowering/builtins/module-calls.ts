@@ -34,7 +34,7 @@ import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } f
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { dynUndefinedExpr, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
@@ -102,6 +102,9 @@ export function lowerBuiltinModuleCall(
     return lowerProcessLoadEnvFile(lowerer, expr);
   if (bi.module === "buffer" && ["isAscii", "isUtf8", "transcode"].includes(bi.member)) {
     return lowerBufferEncodingCall(lowerer, expr, bi, fn, loc);
+  }
+  if (bi.module === "buffer" && bi.member === "resolveObjectURL") {
+    return lowerBufferResolveObjectURLCall(lowerer, expr, fn, loc);
   }
   if (bi.module === "fs" && bi.member === "glob")
     return lowerFsGlobCallbackCall(lowerer, expr, loc);
@@ -651,4 +654,24 @@ export function lowerBuiltinModuleCall(
     }
   }
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+}
+
+/** buffer.resolveObjectURL(id): Node converts the id with ToString and then
+ * looks it up in the blob registry URL.createObjectURL fills; an omitted id
+ * is ToString(undefined). A compiled program cannot create a blob URL, so
+ * the lookup always misses and the call is its own conversion — the
+ * conversion's errors (a Symbol, a throwing toString) are Node's. */
+function lowerBufferResolveObjectURLCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  fn: BuiltinModuleFn,
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length > 1)
+    lowerer.noLowering("resolveObjectURL with extra arguments", expr);
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering("resolveObjectURL with spread arguments", expr);
+  const arg = expr.arguments.nodes[0];
+  const text = arg ? lowerer.ensureString(lowerer.lowerExpr(arg), arg) : strLit("undefined", loc);
+  return { kind: "libCall", fn: fn.fn, args: [text], type: fn.result, loc };
 }

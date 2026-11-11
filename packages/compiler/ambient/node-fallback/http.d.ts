@@ -21,6 +21,10 @@ declare module "http" {
   export const maxHeaderSize: number;
   export interface Server extends NetServer {
     timeout: number;
+    /* The incoming header count cap (null = unset; 0 = no limit) and the
+     * per-connection request cap (0 = no limit). */
+    maxHeadersCount: number | null;
+    maxRequestsPerSocket: number;
     setTimeout(msecs: number, callback?: (socket: Socket) => void): this;
     closeAllConnections(): void;
     closeIdleConnections(): void;
@@ -248,6 +252,9 @@ declare module "http" {
     rawHeaders: string[];
   }
   export interface ClientRequest {
+    /* The response's incoming header count cap (null = unset; 0 = no
+     * limit). */
+    maxHeadersCount: number | null;
     readonly destroyed: boolean;
     readonly aborted: boolean;
     readonly socket: Socket;

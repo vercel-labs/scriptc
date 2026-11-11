@@ -5930,6 +5930,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // zlib.ZlibConstants (the zlib.constants object): a stdlib data
+  // interface of number constants, interned as a record so the object
+  // flows through variables, parameters, spread and Object.keys. Node
+  // builds the object from this list, so the declaration's order is its
+  // runtime insertion order. builtinConstantsValue interns the same fields
+  // for the value, so the shapes are one.
+  if (isStdlibInterface("ZlibConstants")) {
+    const fields: IrRecordField[] = [];
+    for (const property of checker.getPropertiesOfType(widened)) {
+      const memberType = mapType(checker.getTypeOfSymbol(property), ctx);
+      if (!memberType || memberType.kind !== "f64") return null;
+      fields.push({ name: ts.symbolName(property), type: memberType });
+    }
+    const order = fields.map((field) => field.name);
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
+  }
   // net's 'drop' payload: the record the runtime's address object checks
   // into, each optional field with its declared type.
   if (isStdlibInterface("DropArgument")) {

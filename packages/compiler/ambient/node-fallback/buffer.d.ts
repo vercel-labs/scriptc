@@ -7,6 +7,7 @@ declare module "buffer" {
   export function isAscii(input: ArrayBuffer | ScriptcBufferView): boolean;
   export function isUtf8(input: ArrayBuffer | ScriptcBufferView): boolean;
   export function transcode(source: Uint8Array, fromEncoding: string, toEncoding: string): Buffer;
+  export function resolveObjectURL(id: string): Blob | undefined;
   export function atob(data: string): string;
   export function btoa(data: string): string;
   export const kMaxLength: number;

@@ -2935,6 +2935,14 @@ bool scr_buffer_is_utf8(const ScrDyn *input) {
   return result;
 }
 
+/* buffer.resolveObjectURL(id) past the coercion: a compiled program cannot
+ * create a blob URL, so nothing is ever registered and Node's lookup
+ * misses. The argument is borrowed; the caller releases it. */
+ScrDyn *scr_buffer_resolve_object_url(ScrStr *id) {
+  (void)id;
+  return scr_dyn_undefined();
+}
+
 /* Node's ICU wrapper recognizes Buffer encoding aliases. Empty inputs return
  * before resolving either encoding. The four actual converter families are
  * implemented here without adding an ICU dependency to a native binary. */

@@ -125,7 +125,6 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // The module tables the compiler emits into a program that uses
   // WebAssembly (backend/llvm/wasm-modules.ts).
   "scr_wasm.c -> (the program)": ["scr_wasm_registry", "scr_wasm_untranslated"],
-  "scr_webstreams.c -> scr_inspect.c": ["scr_insp_dyn_format_s"],
 };
 
 interface Symbols {

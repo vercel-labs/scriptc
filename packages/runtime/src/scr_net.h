@@ -181,6 +181,17 @@ void scr_net_server_close_all_connections(ScrNetServer *s);
 void scr_net_server_close_idle_connections(ScrNetServer *s);
 ScrDyn *scr_net_server_max_connections_get(ScrNetServer *s); /* +1 */
 void scr_net_server_max_connections_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+/* http.Server's maxHeadersCount / maxRequestsPerSocket: ordinary writable
+ * properties of any value (the getters answer +1: null / 0 until set). The
+ * raw views are borrowed for the HTTP layer's numeric coercions (NULL =
+ * unset); the scalar setters back the static lowerings. */
+ScrDyn *scr_net_server_max_headers_count_get(ScrNetServer *s);
+void scr_net_server_max_headers_count_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+const ScrDyn *scr_net_server_max_headers_count_raw(const ScrNetServer *s);
+ScrDyn *scr_net_server_max_requests_per_socket_get(ScrNetServer *s);
+void scr_net_server_max_requests_per_socket_set(ScrNetServer *s,
+                                                const ScrDyn *value /*borrowed*/);
+const ScrDyn *scr_net_server_max_requests_per_socket_raw(const ScrNetServer *s);
 void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*borrowed*/);
 /* The REAL close behind `wrapper.close.bind(wrapper)` — never consults

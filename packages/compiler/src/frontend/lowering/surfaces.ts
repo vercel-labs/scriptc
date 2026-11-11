@@ -2074,6 +2074,12 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       isAscii: { fn: "buffer.isAscii", params: [DYN], result: BOOL },
       isUtf8: { fn: "buffer.isUtf8", params: [DYN], result: BOOL },
       transcode: { fn: "buffer.transcode", params: [DYN, DYN, DYN], result: BYTES_U8 },
+      // A blob: URL names a Blob that URL.createObjectURL registered. Node
+      // coerces the id with ToString before the lookup (a Symbol throws its
+      // conversion error), and an omitted id is ToString(undefined); a
+      // compiled program cannot create a blob URL, so the registry is empty
+      // and every lookup misses. The lowering converts the id.
+      resolveObjectURL: { fn: "buffer.resolveObjectURL", params: [DYN], result: DYN },
     },
     tty: {
       isatty: {
@@ -3321,6 +3327,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs.constants",
       fns: ["fs.constants"],
       note: "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined",
+    },
+    // buffer.constants as a value (the member reads bake as literals):
+    // { MAX_LENGTH, MAX_STRING_LENGTH } in Node's order, one identity.
+    {
+      id: "node-builtin.buffer.constants",
+      kind: "node-builtin",
+      name: "buffer.constants",
+      fns: [],
+      note: "MAX_LENGTH and MAX_STRING_LENGTH, the same numbers kMaxLength and kStringMaxLength answer; one object per process",
     },
   ];
 }

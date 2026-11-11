@@ -394,10 +394,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
   // The worker unit compares the env option against SHARE_ENV, its symbol
   // (scr_worker_events.c), so a worker program links the symbol unit even
-  // when nothing else in it uses symbols. The web stream unit brands its
-  // class members with well-known symbols, so every program linking it does
-  // the same.
-  unit((u) => u.opts.symbol || u.opts.workers || u.opts.webStreams === true, "scr_symbol.c"),
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async

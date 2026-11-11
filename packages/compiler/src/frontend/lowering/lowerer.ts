@@ -753,6 +753,7 @@ import {
   lowerBuiltinConstantsProperty,
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
+  builtinConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerPromiseStaticCall } from "./builtins/promises.js";
@@ -14513,6 +14514,9 @@ export class Lowerer {
     // record keeps its keys; the `"k" in r` sites answer through the view).
     if (programKeepsRecordSources(this, keyOrderFunctions)) this.recordSourcesPossible = true;
     applyKeyOrderWitnesses(this, keyOrderFunctions);
+    // A declared spread merge that kept the copy's own order holds a source
+    // view too, so the captures that consult one must be active for it.
+    if (this.keyOrder.keptDeclaredMerges > 0) this.recordSourcesPossible = true;
     // A kept width spread builds a record that holds undeclared keys, so the
     // captures that consult a kept source must be active for it too.
     if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
@@ -23070,6 +23074,10 @@ export class Lowerer {
     if (bi.module === "os" && bi.member === "constants") {
       return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
     }
+    // buffer.constants: the module's { MAX_LENGTH, MAX_STRING_LENGTH }
+    // record, one identity for every read.
+    if (bi.module === "buffer" && bi.member === "constants")
+      return builtinConstantsValue(this, "buffer", loc);
     // module.constants: the frozen object that holds compileCacheStatus.
     if (bi.module === "module" && bi.member === "constants") {
       return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
@@ -23099,6 +23107,12 @@ export class Lowerer {
     }
     // A bare `fs.constants` read (not one of the baked bits above).
     if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // `zlib.constants` and `buffer.constants` as values: the module's
+    // singleton record.
+    if (bi.member === "constants" && bi.module === "zlib")
+      return builtinConstantsValue(this, "zlib", loc);
+    if (bi.member === "constants" && bi.module === "buffer")
+      return builtinConstantsValue(this, "buffer", loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -23205,6 +23219,10 @@ export class Lowerer {
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
     if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if (module === "zlib" && member === "constants")
+      return builtinConstantsValue(this, "zlib", loc);
+    if (module === "buffer" && member === "constants")
+      return builtinConstantsValue(this, "buffer", loc);
     return null;
   }
 

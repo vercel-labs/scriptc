@@ -396,6 +396,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.buffer.constants",
+      "kind": "node-builtin",
+      "name": "buffer.constants",
+      "status": "static",
+      "note": "MAX_LENGTH and MAX_STRING_LENGTH, the same numbers kMaxLength and kStringMaxLength answer; one object per process"
+    },
+    {
       "id": "node-builtin.buffer.isAscii",
       "kind": "node-builtin",
       "name": "buffer.isAscii",
@@ -420,6 +427,12 @@
       "name": "buffer.kStringMaxLength",
       "status": "static",
       "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.buffer.resolveObjectURL",
+      "kind": "node-builtin",
+      "name": "buffer.resolveObjectURL",
+      "status": "static"
     },
     {
       "id": "node-builtin.buffer.transcode",

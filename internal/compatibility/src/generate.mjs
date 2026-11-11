@@ -699,6 +699,18 @@ function publicDetail(tier) {
     if (source === "compiler-feature:buffer.buffer.transcode") {
       return "Converts Buffer and Uint8Array inputs among ASCII, Latin-1, UTF-8, and UTF-16LE, including encoding aliases and conversion errors.";
     }
+    if (source === "compiler-feature:buffer.buffer.resolveObjectURL") {
+      return "Converts the id the way Node does and answers undefined; a compiled program cannot create a blob URL, so the registry is always empty and the lookup always misses.";
+    }
+    if (source === "compiler-feature:buffer.node:buffer") {
+      return "Buffer, Blob and File are the same identities the globals name, and the module object exposes Node's keys in Node's order, its constants, and the documented functions through the module.";
+    }
+    if (source === "compiler-feature:buffer.Buffer.from") {
+      return "Builds Buffers from strings, arrays, ArrayBuffers, TypedArrays and DataViews with Node's argument validation; alloc and allocUnsafe answer zero-filled and uninitialised Buffers.";
+    }
+    if (source === "compiler-feature:buffer.Buffer") {
+      return "Buffers are byte sequences with Node's indexing, slicing, comparisons and the documented instance methods.";
+    }
     if (
       /^compiler-feature:(?:buffer\.(?:Blob|File|blob\.\w+)|globals\.(?:Blob|File))$/.test(source)
     ) {
@@ -755,7 +767,7 @@ function publicDetail(tier) {
       return "ZstdCompress and ZstdDecompress are Transform streams over the zstd version Node bundles, with Node's parameters, dictionaries, pledged source sizes, flush kinds 0 to 2, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
-      return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";
+      return "Each zlib.constants member and its module-level copy reads as Node's value, and the constants object itself is one runtime value whose keys, key order and identity match Node's.";
     }
     if (source === "compiler-feature:url.URL") {
       return "Supports absolute inputs and relative inputs with string or URL bases; setters and some WHATWG parsing behavior remain unsupported.";

@@ -105,4 +105,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_record_reflects_static probes the kept-source table and the live
   // capsule table for the record's address: it reads no property.
   "record.reflectsStatic",
+  // The header-limit properties are plain storage: the getters retain the
+  // stored value (or answer null / 0) and the setters retain the new value
+  // and release the old one. No accessor, coercion or listener runs, and
+  // the HTTP layer reads the stored value when it parses a message.
+  "net.serverMaxHeadersCountGet",
+  "net.serverMaxHeadersCountSet",
+  "net.serverMaxRequestsPerSocketGet",
+  "net.serverMaxRequestsPerSocketSet",
+  "http.clientMaxHeadersCountGet",
+  "http.clientMaxHeadersCountSet",
 ]);

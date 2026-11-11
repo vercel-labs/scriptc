@@ -2724,6 +2724,7 @@
           "tests/corpus/1402-buffer-encodings.ts",
           "tests/corpus/1660-buffer-read-write-num.ts",
           "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts",
           "tests/corpus/2570-buffer-arg-validation.cjs",
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
@@ -2735,7 +2736,15 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/5973-buffer-concat-untyped.js",
+          "tests/corpus/6209-buffer-module-alias.cjs",
+          "tests/corpus/6868-buffer-from-untyped-array-buffer.cjs",
           "tests/corpus/7249-buffer-index-of-candidates.ts",
+          "tests/corpus/7527-buffer-from-array-buffer.ts",
+          "tests/corpus/7528-buffer-from-array-buffer.cjs",
+          "tests/corpus/7529-buffer-constructor.cjs",
+          "tests/corpus/7530-buffer-constructor.ts",
+          "tests/corpus/7533-buffer-value.cjs",
           "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs",
           "tests/corpus/8007-buffer-fill-swap-utf16le.ts",
           "tests/corpus/buffer-atob-btoa.js",
@@ -2748,10 +2757,13 @@
           "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/corpus/compat-buffer-instance-methods.ts",
           "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts",
           "tests/corpus/compat-buffer-search-needles.ts",
           "tests/corpus/compat-buffer-static-surface.ts",
           "tests/corpus/compat-buffer-undefined-offsets.mjs",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-node-buffer-module.cjs",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -2870,10 +2882,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.node:buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-node-buffer-module.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts",
+          "tests/corpus/6209-buffer-module-alias.cjs",
+          "tests/corpus/buffer-slowbuffer.cjs",
+          "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
+          "tests/corpus/buffer-to-json.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3110,8 +3130,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.buffer.resolveObjectURL",
+        "tests": [
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3241,10 +3265,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer.from",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-static-surface.ts",
+          "tests/corpus/7527-buffer-from-array-buffer.ts",
+          "tests/corpus/7528-buffer-from-array-buffer.cjs",
+          "tests/corpus/6868-buffer-from-untyped-array-buffer.cjs",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/5973-buffer-concat-untyped.js"
         ]
       },
       "anchorSource": "exact"
@@ -3607,10 +3636,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/7529-buffer-constructor.cjs",
+          "tests/corpus/7530-buffer-constructor.ts",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/2570-buffer-arg-validation.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -56583,7 +56615,11 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -57638,10 +57674,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-client-max-headers-count.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58392,10 +58428,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58446,10 +58484,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxRequestsPerSocket",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58716,10 +58756,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.'dropRequest'",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66053,6 +66095,7 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
@@ -66358,10 +66401,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:https.maxHeadersCount",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/https-server-max-headers-count.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -120205,6 +120248,7 @@
           "tests/corpus/8405-zlib-compressed-bytes.ts",
           "tests/corpus/8406-zlib-inflate-chunks.cjs",
           "tests/corpus/9437-zlib-input-of-several-kinds.ts",
+          "tests/corpus/zlib-constants-object.ts",
           "tests/corpus/zlib-stream-classes.ts",
           "tests/corpus/zlib-typed-view-inputs.ts",
           "tests/corpus/zstd-compress.cjs",
@@ -122347,11 +122391,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:zlib.zlib.constants",
         "tests": [
           "tests/corpus/5376-zlib-constants.cjs",
-          "tests/corpus/5374-zlib-stream-flush-params.ts"
+          "tests/corpus/5374-zlib-stream-flush-params.ts",
+          "tests/corpus/zlib-constants-object.ts"
         ]
       },
       "anchorSource": "exact"

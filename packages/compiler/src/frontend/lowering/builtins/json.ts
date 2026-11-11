@@ -1,4 +1,5 @@
 import { callbackTakesEveryArgument } from "../callback-arg.js";
+import { classJsonInstanceEligible } from "../class-json.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
@@ -173,6 +174,19 @@ export function lowerJsonMethodCall(
       value.type.kind === "object" &&
       lowerer.findMethodOn(lowerer.classes.get(value.type.className) ?? null, "toJSON") !== null &&
       lowerer.dynConvertible(value.type);
+    // A class instance the static layout describes exactly serializes from
+    // its slots, in the order the runtime walk lists them. The writer falls
+    // back to the runtime walk for one instance that took a dynamic
+    // property; every other instance keeps the runtime walk.
+    if (
+      value.type.kind === "object" &&
+      !toJsonClass &&
+      classJsonInstanceEligible(lowerer, value.type.className)
+    ) {
+      const node: IrExpr = { kind: "jsonStringify", value, type: STRING, loc };
+      if (indent !== "") node.indent = indent;
+      return node;
+    }
     // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
     // another typed array as an object keyed by index: the runtime walker
     // tells them apart by the box.

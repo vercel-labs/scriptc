@@ -433,6 +433,13 @@ import {
 import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import {
+  classJsonFields,
+  classJsonReadsLayout,
+  emitClassJsonBagHeld,
+  emitClassJsonDynWrite,
+  emitClassJsonFieldRead,
+} from "./class-json.js";
+import {
   isObjectArm,
   isPayloadTag,
   NULLABLE_ABSENT,
@@ -2946,6 +2953,16 @@ export class LlEmitter {
         this.usesTimers = true;
       },
       dynAbsentRef: () => this.dynAbsentRef(),
+      jsonClassFields: (className) => classJsonFields(this, className),
+      jsonClassFieldRead: (B, obj, className, field) =>
+        emitClassJsonFieldRead(this, B, obj, className, field),
+      jsonClassBagHeld: (B, obj, className) => emitClassJsonBagHeld(this, B, obj, className),
+      jsonClassReadsLayout: (className) => {
+        const meta = this.classMeta.get(className);
+        return meta !== undefined && classJsonReadsLayout(meta);
+      },
+      jsonClassDynWrite: (B, buf, obj, className) =>
+        emitClassJsonDynWrite(this, B, buf, obj, className),
       liveDynRefAdapter: (type) => this.liveDynRefAdapter(type),
       usesDynBuiltinStream: () => this.usesDynBuiltinStream,
       nodeIslands: () => this.nodeIslands,

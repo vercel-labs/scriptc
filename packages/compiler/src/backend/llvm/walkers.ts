@@ -57,6 +57,26 @@ export interface WalkerHost extends ShapeHost {
   /** `@`-ref of the optional checked-dynamic field slot's ABSENT marker
    * (an immortal ScrDyn, address-compared). */
   dynAbsentRef(): string;
+  /** The own enumerable properties JSON.stringify writes for an instance of
+   * the class, in layout order (class-json.ts classJsonFields). */
+  jsonClassFields(className: string): readonly { name: string; type: IrType }[];
+  /** Reads one of those fields from the instance `obj`: the value its
+   * writer takes, and the call that frees a temporary the read owns (or
+   * null when it borrows the slot). */
+  jsonClassFieldRead(
+    B: BlockBuilder,
+    obj: string,
+    className: string,
+    field: { name: string; type: IrType },
+  ): { value: string; release: string | null };
+  /** i1: the instance's property bag holds something past the layout, or
+   * null when the class has no bag. */
+  jsonClassBagHeld(B: BlockBuilder, obj: string, className: string): string | null;
+  /** Whether the class's layout describes its instances exactly (its
+   * jsonLayout flag and the class graph agree). */
+  jsonClassReadsLayout(className: string): boolean;
+  /** Writes the instance with the runtime walk, from its live capsule. */
+  jsonClassDynWrite(B: BlockBuilder, buf: string, obj: string, className: string): void;
 }
 
 const FN_ATTRS = "#0";
@@ -256,6 +276,9 @@ export class LlWalkers {
       case "record":
         this.emitRecordWriter(B, t.shapeId);
         break;
+      case "object":
+        this.emitClassWriter(B, t.className);
+        break;
       case "array":
         this.emitArrayWriter(B, t.elem, traceAdapter(this.host, t) !== null);
         break;
@@ -454,6 +477,112 @@ export class LlWalkers {
     if (cyclic) this.jbLeave(B);
   }
 
+  /** A class instance whose own properties the static layout describes
+   * exactly serializes from its slots, in the order the runtime walk lists
+   * them. The bag test runs first: an instance holding anything past the
+   * layout (a property taken through an untyped reference, a tracked
+   * class's field record, a deletion) keeps the runtime walk from its live
+   * capsule, which always answers. Any other class instance is written that
+   * way unconditionally. */
+  private emitClassWriter(B: BlockBuilder, className: string): void {
+    const host = this.host;
+    if (!host.jsonClassReadsLayout(className)) {
+      host.jsonClassDynWrite(B, "%b", "%v", className);
+      return;
+    }
+    const t: Extract<IrType, { kind: "object" }> = { kind: "object", className };
+    const fields = host.jsonClassFields(className);
+    const cyclic = traceAdapter(host, t) !== null;
+    const edgeable = (ft: IrType): boolean => cyclic && traceAdapter(host, ft) !== null;
+    const bag = host.jsonClassBagHeld(B, "%v", className);
+    if (bag !== null) {
+      const lFast = B.newLabel("jcl.f");
+      const lBag = B.newLabel("jcl.b");
+      B.condBr(bag, lBag, lFast);
+      B.startBlock(lBag);
+      host.jsonClassDynWrite(B, "%b", "%v", className);
+      B.terminate("ret void");
+      B.startBlock(lFast);
+    }
+    // CYCLE-CAPABLE instances bracket the walk exactly like records.
+    if (cyclic) this.jbEnter(B, false);
+    const droppable = fields.some((f) => undefinedArmTag(f.type, host.unionsById) >= 0);
+    this.putc(B, "%b", "123"); // '{'
+    if (!droppable) {
+      fields.forEach((f, i) => {
+        this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
+        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+        this.writeClassField(B, className, f);
+      });
+    } else {
+      const first = B.slot();
+      B.entryAllocas.push(`${first} = alloca i1`);
+      B.line(`store i1 true, ptr ${first}`);
+      const comma = (): void => {
+        const isf = B.tmp();
+        const lc = B.newLabel("jcl.c");
+        const lj = B.newLabel("jcl.j");
+        B.line(`${isf} = load i1, ptr ${first}`);
+        B.condBr(isf, lj, lc);
+        B.startBlock(lc);
+        this.putc(B, "%b", "44"); // ','
+        B.br(lj);
+        B.startBlock(lj);
+        B.line(`store i1 false, ptr ${first}`);
+      };
+      for (const f of fields) {
+        if (f.type.kind === "nullT") {
+          // A field that is always null contributes `null`, never a drop.
+          comma();
+          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+          this.puts(B, "%b", "null");
+          continue;
+        }
+        const read = host.jsonClassFieldRead(B, "%v", className, f);
+        const utag = undefinedArmTag(f.type, host.unionsById);
+        let skip: string | null = null;
+        if (utag >= 0 && f.type.kind === "union") {
+          // Undefined-valued field: dropped, like Node.
+          const tag = this.unionTag(B, read.value, f.type.unionId);
+          const isu = B.tmp();
+          B.line(`${isu} = icmp eq i32 ${tag}, ${utag}`);
+          const lw = B.newLabel("jcl.w");
+          skip = B.newLabel("jcl.s");
+          B.condBr(isu, skip, lw);
+          B.startBlock(lw);
+        }
+        comma();
+        this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+        this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`);
+        if (read.release !== null) B.line(read.release);
+        if (skip !== null) {
+          B.br(skip);
+          B.startBlock(skip);
+          if (read.release !== null) B.line(read.release);
+        }
+      }
+    }
+    this.putc(B, "%b", "125"); // '}'
+    if (cyclic) this.jbLeave(B);
+  }
+
+  /** Writes one class field: the read's value through its writer, and the
+   * temporary the read owns released after the write. */
+  private writeClassField(
+    B: BlockBuilder,
+    className: string,
+    f: { name: string; type: IrType },
+  ): void {
+    if (f.type.kind === "nullT") {
+      this.puts(B, "%b", "null");
+      return;
+    }
+    const read = this.host.jsonClassFieldRead(B, "%v", className, f);
+    this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`);
+    if (read.release !== null) B.line(read.release);
+  }
+
   /** A record copy linked to its source (IrModule.recordLinks) serializes
    * as its composed record, a record of the source's type with the copy's
    * values for the fields both declare. */
@@ -603,6 +732,11 @@ export class LlWalkers {
     if (traceAdapter(this.host, t) !== null) return true;
     switch (t.kind) {
       case "dyn":
+      case "object":
+        // A class instance written from its layout never calls user code,
+        // but an instance holding properties past the layout takes the
+        // runtime walk (toJSON, getters, BigInt), and the class may be
+        // circular.
         return true;
       case "array":
         return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);

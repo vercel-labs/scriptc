@@ -58,7 +58,7 @@ import { registerReplay } from "./emit-journal.js";
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
  * instance). The bridge releases it after boxing. */
-function nullableFieldUnion(
+export function nullableFieldUnion(
   host: LlvmEmitterContext,
   B: BlockBuilder,
   p: string,

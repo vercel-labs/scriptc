@@ -298,7 +298,7 @@ const newTargetInMethod = (node: ts.Node, _d: ts.Diagnostic): boolean => {
  * not model. */
 const discardedVoidNegation = (node: ts.Node): boolean => {
   // The diagnostic's span is the void-typed OPERAND (the call), so climb
-  // to the `!` that tests it, then out of any parentheses.
+  // to the `!` that tests it, then out of any further negations and parentheses.
   let operand: ts.Node = node;
   while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
     operand = operand.parent;
@@ -310,8 +310,15 @@ const discardedVoidNegation = (node: ts.Node): boolean => {
   )
     return false;
   let outer: ts.Node = negation;
-  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
-    outer = outer.parent;
+  while (outer.parent !== undefined) {
+    const parent = outer.parent;
+    if (
+      !ts.isParenthesizedExpression(parent) &&
+      !(ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken)
+    )
+      break;
+    outer = parent;
+  }
   return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
 };
 

@@ -325,6 +325,47 @@ test("JavaScript drops the diagnostic of a discarded negation of a void call", (
   ).toEqual([]);
 });
 
+test.for(["!!register();", "!!!register();", "!(!((register())));", "((!!(register())));"])(
+  "JavaScript drops the diagnostic of a discarded void-negation chain: %s",
+  (statement) => {
+    expect(
+      diagnostics(
+        `function register() { console.log("registered"); }\n${statement}`,
+        'import * as library from "./library.js"; console.log(library);',
+      ),
+    ).toEqual([]);
+  },
+);
+
+test.for([
+  "export const ok = !!register();",
+  "export const ok = !!!register();",
+  'if (!!register()) console.log("used");',
+  '!!register() && console.log("used");',
+])("a consumed void-negation chain keeps the named refusal: %s", (statement) => {
+  const kept = diagnostics(
+    `function register() { console.log("registered"); }\n${statement}`,
+    'import * as library from "./library.js"; console.log(library);',
+  );
+  expect(kept.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+test.for(["!!register();", "!!!register();"])(
+  "checked JavaScript and TypeScript keep a discarded void-negation chain diagnostic: %s",
+  (statement) => {
+    const source = `function register() { console.log("registered"); }\n${statement}`;
+    const main = 'import * as library from "./library.js"; console.log(library);';
+    expect(
+      diagnostics(`// @ts-check\n${source}`, main).some((d) => d.message.includes("truthiness")),
+    ).toBe(true);
+    expect(
+      diagnostics(source, main, "ts").some((d) =>
+        d.message.includes("cannot be tested for truthiness"),
+      ),
+    ).toBe(true);
+  },
+);
+
 test("a checked JavaScript file keeps the void-negation diagnostic", () => {
   // TS1345 is a `checkedJs: "enforce"` row: a project that asked tsc to check
   // its JavaScript keeps the refusal (named here by the code's triage row).

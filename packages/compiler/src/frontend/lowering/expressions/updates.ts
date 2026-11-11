@@ -277,10 +277,32 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // drops the boolean, so the operand evaluates once for its effects
       // and its own lowering answers. Reached only through the admitted
       // site (tsc-codes.ts), never by syntax. The site is the void-typed
-      // OPERAND, and the query names exactly that node: an admitted
+      // OPERAND. Walk only a chain of negations and parentheses, querying
+      // exactly each operand's span: an admitted
       // discarded negation nested inside this one (`!(() => { !voidCall();
       // return false; })()`) must not consume a boolean this negation reads.
-      if (lowerer.opinionAtNode(expr.operand, 1345)) return lowerer.lowerExpr(expr.operand);
+      // Search once, from the statement's outer negation. An independent
+      // site in an IIFE body must not make every enclosing prefix rescan it.
+      let statement: ts.Node = expr;
+      while (statement.parent !== undefined && ts.isParenthesizedExpression(statement.parent))
+        statement = statement.parent;
+      if (
+        statement.parent !== undefined &&
+        ts.isExpressionStatement(statement.parent) &&
+        lowerer.opinionAt(expr, 1345)
+      ) {
+        let operand = expr.operand;
+        for (;;) {
+          if (lowerer.opinionAtNode(operand, 1345)) return lowerer.lowerExpr(operand);
+          if (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+          else if (
+            ts.isPrefixUnaryExpression(operand) &&
+            operand.operator === ts.SyntaxKind.ExclamationToken
+          )
+            operand = operand.operand;
+          else break;
+        }
+      }
       // `!runtimeBuffer` over an alias of the Buffer global: Node always
       // defines Buffer (the condition twin is lowerCondition's).
       if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))

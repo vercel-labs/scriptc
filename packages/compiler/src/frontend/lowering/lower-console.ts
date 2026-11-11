@@ -847,6 +847,14 @@ export function lowerConsoleMethodCall(
       evaluateIgnored(lowerer, args, stmts, loc);
       return seq(stmts, { kind: "libCall", fn: "console.clear", args: [], type: VOID, loc }, loc);
     }
+    case "trace": {
+      // Node: `this.error(err.stack)` where the message is the util.format
+      // of the arguments, so the line is `Trace` alone without arguments
+      // and `Trace: <formatted>` otherwise, followed by the frames below
+      // this call.
+      const message = args.length === 0 ? strLit("", loc) : lowerRuntimeFormat(lowerer, args, loc);
+      return { kind: "libCall", fn: "console.trace", args: [message], type: VOID, loc };
+    }
     case "profile":
     case "profileEnd":
     case "timeStamp": {

@@ -147,7 +147,9 @@ export function lowerTimersPromisesSetInterval(
  * not name, so a user's own `Timeout` never matches. The handle maps to
  * f64, so the method calls below can't tell it from a plain number by IR
  * type alone; this is the discriminator. */
-function isTimerHandleTyped(
+/** Whether `node`'s static type is the standard library's Timeout or
+ * Immediate handle (the numeric timer id at run time). */
+export function isTimerHandleTyped(
   lowerer: Lowerer,
   node: ts.Expression,
   name: "Timeout" | "Immediate",

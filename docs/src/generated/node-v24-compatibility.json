@@ -10313,8 +10313,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Accepts the inspector-only calls and their arguments; without an inspector session they write nothing, as in Node.",
         "verification": "test-backed"
       }
     },
@@ -10336,8 +10336,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Accepts the inspector-only calls and their arguments; without an inspector session they write nothing, as in Node.",
         "verification": "test-backed"
       }
     },
@@ -10359,8 +10359,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Accepts the inspector-only calls and their arguments; without an inspector session they write nothing, as in Node.",
         "verification": "test-backed"
       }
     },
@@ -10405,8 +10405,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Writes Node's Assertion failed line to stderr only for a falsy value, with the remaining arguments formatted after it.",
         "verification": "test-backed"
       }
     },
@@ -10428,8 +10428,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Clears a terminal stdout the way Node does and writes nothing to a pipe or a dumb terminal.",
         "verification": "test-backed"
       }
     },
@@ -10451,8 +10451,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Keeps per-label counters and prints Node's label: count lines, reporting a missing label with Node's warning text.",
         "verification": "test-backed"
       }
     },
@@ -10474,8 +10474,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Keeps per-label counters and prints Node's label: count lines, reporting a missing label with Node's warning text.",
         "verification": "test-backed"
       }
     },
@@ -10497,8 +10497,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.",
         "verification": "test-backed"
       }
     },
@@ -10520,8 +10520,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "dir inspects one value with its options resolved at compile time (custom inspection off by default); dirxml prints its arguments the way log does.",
         "verification": "test-backed"
       }
     },
@@ -10543,8 +10543,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "dir inspects one value with its options resolved at compile time (custom inspection off by default); dirxml prints its arguments the way log does.",
         "verification": "test-backed"
       }
     },
@@ -10566,8 +10566,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.",
         "verification": "test-backed"
       }
     },
@@ -10589,8 +10589,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Prints group labels like log and indents the following output by two spaces per open group, including after embedded newlines.",
         "verification": "test-backed"
       }
     },
@@ -10612,8 +10612,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Prints group labels like log and indents the following output by two spaces per open group, including after embedded newlines.",
         "verification": "test-backed"
       }
     },
@@ -10635,8 +10635,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Prints group labels like log and indents the following output by two spaces per open group, including after embedded newlines.",
         "verification": "test-backed"
       }
     },
@@ -10658,8 +10658,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.",
         "verification": "test-backed"
       }
     },
@@ -10681,8 +10681,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.",
         "verification": "test-backed"
       }
     },
@@ -10704,8 +10704,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Renders arrays of records and plain objects as Node's bordered table, with the tested headers and index column.",
         "verification": "test-backed"
       }
     },
@@ -10727,8 +10727,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Times each label on the native monotonic clock and prints Node's label: <duration> lines, with Node's warning for a duplicate or missing label.",
         "verification": "test-backed"
       }
     },
@@ -10750,8 +10750,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Times each label on the native monotonic clock and prints Node's label: <duration> lines, with Node's warning for a duplicate or missing label.",
         "verification": "test-backed"
       }
     },
@@ -10773,8 +10773,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Times each label on the native monotonic clock and prints Node's label: <duration> lines, with Node's warning for a duplicate or missing label.",
         "verification": "test-backed"
       }
     },
@@ -10796,9 +10796,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Prints Node's Trace heading (Trace, or Trace: <formatted message>) and the frames below the call site; V8's module-loader frames have no native counterpart.",
+        "verification": "test-backed"
       }
     },
     {
@@ -10819,8 +10819,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Formats arguments with Node's util.format and writes them to stdout (log, info, debug) or stderr (error, warn), honoring a program's replacement of process.stdout.write or process.stderr.write.",
         "verification": "test-backed"
       }
     },
@@ -53616,9 +53616,9 @@
       "anchor": "event-beforeexit",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Runs the 'beforeExit' listeners each time the loop runs out of ref'd work, passing the code the process would exit with, and re-emits while a listener schedules ref'd work; an exit code set in a listener is the one a later emission and the process exit see.",
+        "verification": "test-backed"
       }
     },
     {
@@ -53634,8 +53634,8 @@
       "anchor": "event-disconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.",
         "verification": "test-backed"
       }
     },
@@ -53652,8 +53652,8 @@
       "anchor": "event-exit",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Runs the exit listeners in registration order when the program ends, passing the status it is leaving with; a listener that assigns process.exitCode selects the final status.",
         "verification": "test-backed"
       }
     },
@@ -53670,8 +53670,8 @@
       "anchor": "event-message",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.",
         "verification": "test-backed"
       }
     },
@@ -53693,9 +53693,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "A promise settled a second time reports its type, promise and value to the 'multipleResolves' listeners on the nextTick queued at that settle, warning DEP0160 once per process when a delivery reaches a listener.",
+        "verification": "test-backed"
       }
     },
     {
@@ -53711,9 +53711,9 @@
       "anchor": "event-rejectionhandled",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "A promise whose rejection was already reported reaches the 'rejectionHandled' listeners once with the promise when a handler is attached afterward.",
+        "verification": "test-backed"
       }
     },
     {
@@ -53747,8 +53747,8 @@
       "anchor": "event-uncaughtexception",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "An uncaught exception runs the monitor listeners first and then the uncaughtException listeners that keep the program alive; with no listener the error is reported and the program exits nonzero.",
         "verification": "test-backed"
       }
     },
@@ -53765,8 +53765,8 @@
       "anchor": "event-uncaughtexceptionmonitor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "An uncaught exception runs the monitor listeners first and then the uncaughtException listeners that keep the program alive; with no listener the error is reported and the program exits nonzero.",
         "verification": "test-backed"
       }
     },
@@ -53783,8 +53783,8 @@
       "anchor": "event-unhandledrejection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "An unhandled promise rejection reaches the listeners with the rejection value and the promise once the microtask queue drains, before the program's remaining work continues.",
         "verification": "test-backed"
       }
     },
@@ -53801,7 +53801,7 @@
       "anchor": "event-warning",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
         "verification": "test-backed"
       }
@@ -53837,8 +53837,8 @@
       "anchor": "signal-events",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Signal listeners keep the event loop alive and receive the signal's name and number; process.kill sends by name or number, and an unknown name throws ERR_UNKNOWN_SIGNAL.",
         "verification": "test-backed"
       }
     },
@@ -53873,8 +53873,8 @@
       "anchor": "processavailablememory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -53891,8 +53891,8 @@
       "anchor": "processchdirdirectory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads and changes the working directory, with chdir's string-only validation and the platform's ENOENT and ENOTDIR failures.",
         "verification": "test-backed"
       }
     },
@@ -53909,8 +53909,8 @@
       "anchor": "processconstrainedmemory",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -53927,8 +53927,8 @@
       "anchor": "processcpuusagepreviousvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Samples process or thread CPU time and subtracts a validated previous record, reading each field again after the clock sample the way Node's returned object literal does.",
         "verification": "test-backed"
       }
     },
@@ -53945,8 +53945,8 @@
       "anchor": "processcwd",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads and changes the working directory, with chdir's string-only validation and the platform's ENOENT and ENOTDIR failures.",
         "verification": "test-backed"
       }
     },
@@ -53963,8 +53963,8 @@
       "anchor": "processdisconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.",
         "verification": "test-backed"
       }
     },
@@ -53999,7 +53999,7 @@
       "anchor": "processemitwarningwarning-options",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
         "verification": "test-backed"
       }
@@ -54017,7 +54017,7 @@
       "anchor": "processemitwarningwarning-type-code-ctor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Emits string and Error warnings with types, codes, and details on the next tick, reporting to stderr before the 'warning' listeners run.",
         "verification": "test-backed"
       }
@@ -54058,8 +54058,8 @@
       "anchor": "processexitcode",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Ends the program with the exit status setter's conversions: integer strings parse, null and undefined clear the status, and an out-of-range or wrong-typed value throws Node's error catchably while the program keeps running.",
         "verification": "test-backed"
       }
     },
@@ -54145,8 +54145,8 @@
       "anchor": "processgetactiveresourcesinfo",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Lists the loop resources the native runtime models as live handles (armed and firing Timeout, Immediate and tick callbacks); resources it does not model as handles are absent, as SEMANTICS.md records.",
         "verification": "test-backed"
       }
     },
@@ -54163,7 +54163,7 @@
       "anchor": "processgetbuiltinmoduleid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -54181,8 +54181,8 @@
       "anchor": "processgetegid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54199,8 +54199,8 @@
       "anchor": "processgeteuid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54217,8 +54217,8 @@
       "anchor": "processgetgid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54235,8 +54235,8 @@
       "anchor": "processgetgroups",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54253,8 +54253,8 @@
       "anchor": "processgetuid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the process's user, group and supplementary group ids, ignoring surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54271,9 +54271,9 @@
       "anchor": "processhasuncaughtexceptioncapturecallback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "The capture callback is stored once per process, still runs uncaughtExceptionMonitor first, takes precedence over uncaughtException listeners, and a second callback throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54294,7 +54294,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Native monotonic clock supports tuple and bigint results, including stored JavaScript callable values.",
         "verification": "test-backed"
       }
@@ -54312,7 +54312,7 @@
       "anchor": "processhrtimebigint",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Native monotonic clock supports tuple and bigint results, including stored JavaScript callable values.",
         "verification": "test-backed"
       }
@@ -54330,9 +54330,9 @@
       "anchor": "processinitgroupsuser-extragroup",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54348,8 +54348,8 @@
       "anchor": "processkillpid-signal",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Sends numeric and named signals with Node's loose pid check, its argument coercions, and ERR_UNKNOWN_SIGNAL for an unknown name.",
         "verification": "test-backed"
       }
     },
@@ -54366,7 +54366,7 @@
       "anchor": "processloadenvfilepath",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -54384,8 +54384,8 @@
       "anchor": "processmemoryusage",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54402,8 +54402,8 @@
       "anchor": "processmemoryusagerss",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54425,8 +54425,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Queues the callback ahead of timers, forwards extra arguments, and reports a non-function callback with Node's synchronous type error.",
         "verification": "test-backed"
       }
     },
@@ -54448,9 +54448,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Reads the nodejs.ref / nodejs.unref symbol on the argument (running its getter), falls back to the ref / unref member, and calls a callable result with the argument as receiver; null, undefined, primitives and non-callable members are no-ops.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54466,8 +54466,8 @@
       "anchor": "processresourceusage",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54484,8 +54484,8 @@
       "anchor": "processsendmessage-sendhandle-options-callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.",
         "verification": "test-backed"
       }
     },
@@ -54502,9 +54502,9 @@
       "anchor": "processsetegidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54520,9 +54520,9 @@
       "anchor": "processseteuidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54538,9 +54538,9 @@
       "anchor": "processsetgidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54556,9 +54556,9 @@
       "anchor": "processsetgroupsgroups",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54574,9 +54574,9 @@
       "anchor": "processsetuidid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Validates ids as Node does (a uint32 number or a name string), throws ERR_UNKNOWN_CREDENTIAL for names that do not resolve, and answers the kernel's ErrnoException when the change is refused; the members are absent on Windows, as in Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54597,9 +54597,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54615,9 +54615,9 @@
       "anchor": "processsetuncaughtexceptioncapturecallbackfn",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "The capture callback is stored once per process, still runs uncaughtExceptionMonitor first, takes precedence over uncaughtException listeners, and a second callback throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54633,8 +54633,8 @@
       "anchor": "processthreadcpuusagepreviousvalue",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Samples process or thread CPU time and subtracts a validated previous record, reading each field again after the clock sample the way Node's returned object literal does.",
         "verification": "test-backed"
       }
     },
@@ -54656,8 +54656,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the mask and sets it from integers or octal strings with Node's uint32, octal-string and type errors.",
         "verification": "test-backed"
       }
     },
@@ -54674,8 +54674,8 @@
       "anchor": "processumaskmask",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the mask and sets it from integers or octal strings with Node's uint32, octal-string and type errors.",
         "verification": "test-backed"
       }
     },
@@ -54697,9 +54697,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Reads the nodejs.ref / nodejs.unref symbol on the argument (running its getter), falls back to the ref / unref member, and calls a callable result with the argument as receiver; null, undefined, primitives and non-callable members are no-ops.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54715,8 +54715,8 @@
       "anchor": "processuptime",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reports process memory, resource use, uptime and memory limits with Node's field shapes and ignored surplus arguments.",
         "verification": "test-backed"
       }
     },
@@ -54751,8 +54751,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers the compiled binary's architecture and platform in Node's own spellings, and process.version as `v` plus process.versions.node (the pinned compatibility release).",
         "verification": "test-backed"
       }
     },
@@ -54769,8 +54769,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the compiled binary's argument surface: argv keeps Node's positions in one mutable array, argv0 is the name the binary was invoked as, execPath its resolved path, and execArgv the runtime flags (empty for a compiled binary).",
         "verification": "test-backed"
       }
     },
@@ -54787,8 +54787,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the compiled binary's argument surface: argv keeps Node's positions in one mutable array, argv0 is the name the binary was invoked as, execPath its resolved path, and execArgv the runtime flags (empty for a compiled binary).",
         "verification": "test-backed"
       }
     },
@@ -54805,9 +54805,9 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "A forked child's process.channel is the channel object while connected, undefined when the process never had one, and null after process.disconnect(); ref() and unref() return undefined, and unref() lets the child exit with the channel open.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54823,9 +54823,9 @@
       "anchor": "processchannelref",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "A forked child's process.channel is the channel object while connected, undefined when the process never had one, and null after process.disconnect(); ref() and unref() return undefined, and unref() lets the child exit with the channel open.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54841,9 +54841,9 @@
       "anchor": "processchannelunref",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "A forked child's process.channel is the channel object while connected, undefined when the process never had one, and null after process.disconnect(); ref() and unref() return undefined, and unref() lets the child exit with the channel open.",
+        "verification": "test-backed"
       }
     },
     {
@@ -54877,8 +54877,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "A forked child's IPC channel answers process.send with its delivery result and callback error, reports process.connected around process.disconnect(), and delivers the 'message' and 'disconnect' events.",
         "verification": "test-backed"
       }
     },
@@ -54895,8 +54895,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Starts at 9229; a write converts with ToInt32, accepts 0 or 1024 to 65535, and throws ERR_OUT_OF_RANGE while keeping the previous value otherwise.",
         "verification": "test-backed"
       }
     },
@@ -54913,8 +54913,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The process.env proxy converts values and computed keys with Node's rules, reads a symbol key as undefined, and ignores a symbol key on writes and deletes.",
         "verification": "test-backed"
       }
     },
@@ -54931,8 +54931,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the compiled binary's argument surface: argv keeps Node's positions in one mutable array, argv0 is the name the binary was invoked as, execPath its resolved path, and execArgv the runtime flags (empty for a compiled binary).",
         "verification": "test-backed"
       }
     },
@@ -54949,8 +54949,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the compiled binary's argument surface: argv keeps Node's positions in one mutable array, argv0 is the name the binary was invoked as, execPath its resolved path, and execArgv the runtime flags (empty for a compiled binary).",
         "verification": "test-backed"
       }
     },
@@ -54967,8 +54967,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The setter converts with Node's rules (integer strings, wrapping, null and undefined clearing) and reports an out-of-range number or a non-convertible value with Node's catchable error; the getter reads the stored value.",
         "verification": "test-backed"
       }
     },
@@ -54985,8 +54985,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55003,8 +55003,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55021,8 +55021,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55044,8 +55044,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55062,8 +55062,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55080,8 +55080,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55103,8 +55103,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55126,8 +55126,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55149,8 +55149,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55172,8 +55172,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55195,8 +55195,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.",
         "verification": "test-backed"
       }
     },
@@ -55236,7 +55236,7 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.",
         "verification": "test-backed"
       }
@@ -55313,8 +55313,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the operating system's process id, or its parent's, as a positive integer.",
         "verification": "test-backed"
       }
     },
@@ -55331,8 +55331,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers the compiled binary's architecture and platform in Node's own spellings, and process.version as `v` plus process.versions.node (the pinned compatibility release).",
         "verification": "test-backed"
       }
     },
@@ -55349,8 +55349,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Reads the operating system's process id, or its parent's, as a positive integer.",
         "verification": "test-backed"
       }
     },
@@ -55367,8 +55367,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "One stable object with the compatibility target's name, LTS line and download URLs, built from the same release process.versions.node reports.",
         "verification": "test-backed"
       }
     },
@@ -55588,8 +55588,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reads as a boolean, false until setSourceMapsEnabled stores a validated boolean; other values throw ERR_INVALID_ARG_TYPE and leave the flag unchanged.",
         "verification": "test-backed"
       }
     },
@@ -55624,8 +55624,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reads a standard stream's descriptor number: 0 for stdin, 1 for stdout and 2 for stderr.",
         "verification": "test-backed"
       }
     },
@@ -55660,8 +55660,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reads a standard stream's descriptor number: 0 for stdin, 1 for stdout and 2 for stderr.",
         "verification": "test-backed"
       }
     },
@@ -55696,8 +55696,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Reads a standard stream's descriptor number: 0 for stdin, 1 for stdout and 2 for stderr.",
         "verification": "test-backed"
       }
     },
@@ -55714,7 +55714,7 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Program assignments silence or throw deprecation warnings; compiled binaries take no Node command-line flags.",
         "verification": "test-backed"
       }
@@ -55732,8 +55732,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The setter converts its value to a string with Node's ToString and the getter returns the title last written.",
         "verification": "test-backed"
       }
     },
@@ -55786,8 +55786,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Answers the compiled binary's architecture and platform in Node's own spellings, and process.version as `v` plus process.versions.node (the pinned compatibility release).",
         "verification": "test-backed"
       }
     },
@@ -55804,8 +55804,8 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "One stable object whose node entry is the pinned compatibility release and whose openssl entry says crypto is available; build components a compiled binary does not link (v8, uv, modules and the rest) are absent, and entries the program defines itself persist.",
         "verification": "test-backed"
       }
     },

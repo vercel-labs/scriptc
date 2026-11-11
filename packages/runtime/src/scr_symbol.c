@@ -943,3 +943,55 @@ ScrDyn *scr_disposable_stack_new(void) {
   scr_ds_release(s);
   return out;
 }
+
+/* process.ref/process.unref — node:internal/process/per_thread's two
+ * helpers. They take any value and look up the Refable protocol's symbol
+ * key (Symbol.for('nodejs.ref') / 'nodejs.unref') first, falling back to a
+ * plain `ref`/`unref` member when the symbol property is falsy; a callable
+ * winner runs with the value as `this` and no arguments, and null or
+ * undefined (and a value with neither member) do nothing. Defined here
+ * because the key is the global symbol registry's, which this unit owns. */
+static void scr_process_ref_toggle(ScrDyn *maybe, const char *key_name, const char *member) {
+  if (maybe->kind == SCR_DYN_NULL || maybe->kind == SCR_DYN_UNDEF) return;
+  /* A typed capsule (a native object or class instance handed to this
+   * dynamic call) keeps its members in the native layout, not in a dynamic
+   * member table: read them the way a dynamic program sees it, through the
+   * materialized view, which carries the record's fields and its class's
+   * methods. */
+  ScrDyn *target = maybe;
+  if (maybe->kind == SCR_DYN_TYPED_REF) {
+    target = scr_dyn_typed_ref_materialize(maybe);
+    if (target == NULL) return; /* the view's conversion threw */
+  }
+  ScrStr *key = scr_str_new(key_name, strlen(key_name));
+  ScrSym *sym = scr_sym_for(key);
+  scr_str_release(key);
+  ScrDyn *sym_key = scr_dyn_new_symbol(sym);
+  ScrDyn *fn = scr_dyn_symbol_key_get(target, sym_key, true);
+  scr_dyn_release(sym_key);
+  if (fn == NULL) {
+    /* a throwing getter left its exception pending */
+    if (target != maybe) scr_dyn_release(target);
+    return;
+  }
+  if (!scr_dyn_truthy(fn)) {
+    scr_dyn_release(fn);
+    fn = scr_dyn_obj_read(target, member, strlen(member));
+    if (fn == NULL) {
+      if (target != maybe) scr_dyn_release(target);
+      return;
+    }
+  }
+  if (scr_dyn_is_callable(fn)) {
+    scr_dyn_this_push_dyn(target);
+    ScrDyn *result = scr_dyn_call(fn, NULL, 0, member);
+    scr_dyn_this_pop();
+    scr_dyn_release(result);
+  }
+  scr_dyn_release(fn);
+  if (target != maybe) scr_dyn_release(target);
+}
+
+void scr_process_ref(ScrDyn *maybe) { scr_process_ref_toggle(maybe, "nodejs.ref", "ref"); }
+
+void scr_process_unref(ScrDyn *maybe) { scr_process_ref_toggle(maybe, "nodejs.unref", "unref"); }

@@ -318,6 +318,31 @@ void scr_process_off_unhandled_rejection(ScrDyn *fn);
  * the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
+/* process.setUncaughtExceptionCaptureCallback/…hasUncaughtExceptionCapture-
+ * Callback: the capture callback replaces the 'uncaughtException'
+ * listeners for every uncaught exception (monitors still run first), and
+ * has… reports whether one is set. The setter validates like Node
+ * (ERR_INVALID_ARG_TYPE for a non-function, …ALREADY_SET when one is
+ * active, null clears). */
+bool scr_process_has_uncaught_capture(void);
+void scr_process_set_uncaught_capture(ScrDyn *fn);
+/* process.on/once/off('multipleResolves', fn): the third rejection-event
+ * registry (scr_async_dyn.c). A resolution or rejection that arrives at a
+ * promise which already resolved is reported as ('resolve' | 'reject',
+ * promise, value) — delivered on a nextTick queued at that settle, exactly
+ * Node's resolveErrorResolve/resolveErrorReject — and the first delivery
+ * that reaches a listener emits DEP0160 once per process. Throws Node's
+ * ERR_INVALID_ARG_TYPE for a non-function listener. */
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once);
+void scr_process_off_multiple_resolves(ScrDyn *fn);
+/* The settle-time hook the registration above installs (NULL while no
+ * listener is registered): `type` 0 = resolve / 1 = reject names the settle
+ * that lost, `value` is what it passed, +1 and owned by the hook.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value);
+/* Reports the value an exception cell carries as a losing settle (the
+ * executor-throw-after-settle path). Runtime-internal. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell);
 /* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */

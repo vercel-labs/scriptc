@@ -27,13 +27,8 @@ console.log(performance.timeOrigin);
 const observer = new PerformanceObserver(() => {});
 observer.observe({ entryTypes: ["mark"] });
 
-// process: source maps, the capture callback, finalization and ref counting.
-process.setSourceMapsEnabled(true);
-console.log(process.hasUncaughtExceptionCaptureCallback());
-process.setUncaughtExceptionCaptureCallback(() => {});
+// process: finalization registration.
 process.finalization.register({ n: 1 }, () => {});
-process.ref(timer);
-process.unref(timer);
 
 // module: loader hooks and package lookup.
 register("./hooks.mjs", import.meta.url);

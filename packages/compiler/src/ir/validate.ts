@@ -4626,7 +4626,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "process.envGet") {
+    if (e.fn === "process.envGet" || e.fn === "process.envGetDyn") {
       // Result is the module's interned `string | undefined` union.
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
@@ -5491,6 +5491,8 @@ function validateFunction(
     if (
       e.fn === "process.onExit" ||
       e.fn === "process.offExit" ||
+      e.fn === "process.onBeforeExit" ||
+      e.fn === "process.offBeforeExit" ||
       e.fn === "stdin.onData" ||
       e.fn === "stdin.onError" ||
       e.fn === "stdin.onReadable"

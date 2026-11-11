@@ -1692,6 +1692,12 @@ struct ScrChildStream {
   bool eof;
   bool close_wait;
   bool capture;
+  /* process.channel.ref()/unref(): the IPC reader's explicit ref state.
+   * Node's Control refs/unrefs the handle directly, so an explicit call
+   * overrides the listener-driven state (unref lets the process exit with
+   * the channel open; ref keeps it alive with no listener at all). */
+  bool chan_ref;
+  bool chan_unref;
   ScrStr *encoding;
   double dec_pending;
   uint8_t *capture_data;
@@ -1903,7 +1909,21 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->h != NULL && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->h != NULL && (s->n_data > 0 || s->capture || s->close_wait);
+  return !s->eof && s->h != NULL && !s->chan_unref &&
+         (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* process.channel.ref()/unref(): the explicit ref state (see the struct).
+ * The watching counter follows the transition; this arm's sleep polls the
+ * registry, so nothing else to arm. */
+static void scr_child_stream_chan_state(ScrChildStream *s, bool ref) {
+  if (s == NULL) return;
+  bool was_watching = scr_child_stream_watching(s);
+  s->chan_ref = ref;
+  s->chan_unref = !ref;
+  bool now_watching = scr_child_stream_watching(s);
+  if (!was_watching && now_watching) scr_child_streams_watching++;
+  else if (was_watching && !now_watching) scr_child_streams_watching--;
 }
 
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -4744,6 +4764,9 @@ struct ScrChildStream {
   bool eof; /* 'end' delivered (or the stream never opened) */
   bool close_wait;
   bool capture;
+  /* process.channel.ref()/unref(): see the Windows arm's fields. */
+  bool chan_ref;
+  bool chan_unref;
   ScrStr *encoding;
   double dec_pending;
   uint8_t *capture_data;
@@ -5200,7 +5223,31 @@ static bool scr_child_stream_watching(const ScrChildStream *s) {
   if (s->flow.state != SCR_CHILD_FLOW_NONE)
     return !s->eof && s->fd >= 0 && (s->capture || s->flow.len < SCR_CHILD_FLOW_HWM);
 #endif
-  return !s->eof && s->fd >= 0 && (s->n_data > 0 || s->capture || s->close_wait);
+  return !s->eof && s->fd >= 0 && !s->chan_unref &&
+         (s->n_data > 0 || s->capture || s->close_wait || s->chan_ref);
+}
+
+/* process.channel.ref()/unref(): the explicit ref state (see the struct).
+ * Becoming watched registers the reader with the child poll; losing the
+ * last watcher dearms it, the listener-removal path's bookkeeping. */
+static void scr_child_stream_chan_state(ScrChildStream *s, bool ref) {
+  if (s == NULL) return;
+  SCR_IF_ISLAND(s, return);
+  bool was_watching = scr_child_stream_watching(s);
+  s->chan_ref = ref;
+  s->chan_unref = !ref;
+  bool now_watching = scr_child_stream_watching(s);
+  if (!was_watching && now_watching) {
+    scr_child_streams_watching++;
+    scr_child_stream_arm(s);
+  } else if (was_watching && !now_watching) {
+    scr_child_streams_watching--;
+    scr_child_stream_dearm(s);
+    if (s->uncounted) {
+      s->uncounted = false;
+      scr_children_unwatched--;
+    }
+  }
 }
 
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -8548,8 +8595,13 @@ static void scr_ipc_fire_send_callbacks(ScrIpc *ipc) {
     scr_als_ctx_release(snapshot[i].ctx);
   }
   free(snapshot);
-  scr_str_release(ipc->send_error);
-  ipc->send_error = NULL;
+  /* A callback can queue another send on the closed channel, which sets a
+   * fresh send_error for a later pass; it belongs to those queued callbacks,
+   * not to the snapshot just delivered. */
+  if (ipc->n_send == 0) {
+    scr_str_release(ipc->send_error);
+    ipc->send_error = NULL;
+  }
 }
 
 static void scr_ipc_fire_disconnect_in(ScrIpc *ipc);
@@ -8759,6 +8811,58 @@ void scr_process_ipc_on_message(ScrClosure *cb, ScrIpcMessageFn fn,
 }
 void scr_process_ipc_on_disconnect(ScrClosure *cb, bool once) {
   scr_ipc_add_disconnect(scr_process_ipc, cb, once);
+}
+
+/* process.channel — Node's Control in a forked child: the cached object
+ * with ref()/unref() while the channel is open, undefined in a process
+ * that never had one, and null once it is gone (local or remote
+ * disconnect), exactly Node's three states. The methods reach the
+ * channel's reader stream, whose explicit ref state overrides the
+ * listener-driven keep-alive. One object per process (the same on every
+ * read, like Node's); the unit's atexit cleanup releases it. */
+static SCR_TL ScrDyn *scr_channel_object;
+
+static void scr_channel_object_cleanup(void) {
+  scr_dyn_release(scr_channel_object);
+  scr_channel_object = NULL;
+}
+
+static ScrDyn *scr_channel_ref_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  /* A disconnected channel is closed: ref/unref on a captured object are
+   * no-ops (uv_ref on a closed handle), and process.channel itself reads
+   * null. */
+  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+    scr_child_stream_chan_state(scr_process_ipc->reader, true);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_channel_unref_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  if (scr_process_ipc != NULL && scr_process_ipc->connected)
+    scr_child_stream_chan_state(scr_process_ipc->reader, false);
+  return scr_dyn_undefined();
+}
+
+ScrDyn *scr_process_channel_value(void) {
+  if (scr_process_ipc == NULL) return scr_dyn_undefined();
+  if (!scr_process_ipc->connected) return scr_dyn_new_null();
+  if (scr_channel_object == NULL) {
+    ScrDyn *object = scr_dyn_new_obj();
+    scr_dyn_obj_set(object, "ref", 3,
+                    scr_dyn_new_func(scr_closure_new(NULL, 0), scr_channel_ref_thunk, 0,
+                                     "()", "ref"));
+    scr_dyn_obj_set(object, "unref", 5,
+                    scr_dyn_new_func(scr_closure_new(NULL, 0), scr_channel_unref_thunk, 0,
+                                     "()", "unref"));
+    scr_channel_object = object;
+    scr_atexit(scr_channel_object_cleanup);
+  }
+  return scr_dyn_retain(scr_channel_object);
 }
 
 static SCR_TL const ScrChildStreamOps *scr_child_stream_ops;

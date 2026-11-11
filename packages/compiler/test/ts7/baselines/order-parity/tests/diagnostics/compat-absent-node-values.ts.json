@@ -25,7 +25,7 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "message": "Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 63 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
     "start": 624,
@@ -36,7 +36,7 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 63 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
     "start": 645,
@@ -47,7 +47,7 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "message": "Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 63 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
     "start": 706,
@@ -58,7 +58,7 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.",
+   "message": "Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 63 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
     "start": 749,

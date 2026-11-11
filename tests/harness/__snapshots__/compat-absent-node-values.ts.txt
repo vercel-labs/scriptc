@@ -14,7 +14,7 @@ compat-absent-node-values.ts:10:10 - error SC0001: Property 'setResolveSnapshotP
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setResolveSnapshotPath' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-values.ts:13:21 - error SC0001: Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-values.ts:13:21 - error SC0001: Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   12 | // process: the entry module object, finalization callbacks and abort.
   13 | console.log(process.mainModule);
@@ -23,7 +23,7 @@ compat-absent-node-values.ts:13:21 - error SC0001: Property 'mainModule' does no
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-values.ts:14:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-values.ts:14:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   13 | console.log(process.mainModule);
   14 | process.finalization.registerBeforeExit({ n: 1 }, () => {});
@@ -32,7 +32,7 @@ compat-absent-node-values.ts:14:9 - error SC0001: Property 'finalization' does n
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-values.ts:15:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-values.ts:15:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   14 | process.finalization.registerBeforeExit({ n: 1 }, () => {});
   15 | process.finalization.unregister({ n: 1 });
@@ -41,7 +41,7 @@ compat-absent-node-values.ts:15:9 - error SC0001: Property 'finalization' does n
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-values.ts:16:9 - error SC0001: Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-values.ts:16:9 - error SC0001: Property 'abort' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   15 | process.finalization.unregister({ n: 1 });
   16 | process.abort();

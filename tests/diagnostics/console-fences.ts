@@ -1,12 +1,9 @@
-// The global console's honest fences: trace (its stack frames name
-// Node's own module loader), tables over Map and Set values, console.dir
-// over a Buffer (custom inspection off) or with options that do not
-// resolve at compile time, assert forms whose output would depend on a
+// The global console's honest fences: tables over Map and Set values,
+// console.dir over a Buffer (custom inspection off) or with options that do
+// not resolve at compile time, assert forms whose output would depend on a
 // runtime format string or on skipped argument evaluation, and
 // inspector-only members with object arguments. Every reached site
 // terminates in a named diagnostic.
-console.trace("where");
-
 console.table(new Map([["k", 1]]));
 console.table(new Set([1, 2]));
 

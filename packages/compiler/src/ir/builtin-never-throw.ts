@@ -27,6 +27,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "nodeIsland.intrinsic",
   // Emitted as the constant false; there is no runtime call.
   "sea.isSea",
+  // scr_console_trace joins an already formatted string with the captured
+  // frames and writes it as the global console's error output, which
+  // discards the error of a patched process.stderr.write (Node's
+  // ignoreErrors); the heading is the only program value it reads.
+  "console.trace",
   // scr_dyn_new_promise retains the promise and allocates its box.
   "weakMap.promiseKey",
   // scr_resolve_adopt queues a job; a promise resolved with itself is
@@ -56,6 +61,17 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "stream.childFlowing",
   // Builds the flags object once from constants and retains it.
   "process.features",
+  // scr_cpu_usage_field reads the number cpuDynPrepare just stored; the
+  // validation already ran, so the read cannot raise.
+  "process.cpuDynField",
+  // The capture-callback flag and the two process flags are plain reads
+  // of thread-local state; no allocation and no program code runs.
+  "process.hasUncaughtCapture",
+  "process.debugPort",
+  "process.sourceMapsEnabled",
+  // Reads the fork channel registry and answers undefined, null or the
+  // retained Control object; a plain process has no channel.
+  "process.channel",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a

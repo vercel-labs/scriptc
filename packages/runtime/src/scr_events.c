@@ -1931,6 +1931,116 @@ void scr_exit_thunk_code(ScrClosure *cb, double code) {
   ((void (*)(ScrClosure *, double))cb->fn)(cb, code);
 }
 
+/* ── the process 'beforeExit' event ───────────────────────────────────
+ * Emitted by the loop each time it runs out of ref'd work (scr_async.c
+ * calls through scr_process_before_exit_hook), with process.exitCode as
+ * the argument — 0 while unset, exactly Node's integer. Node re-enters
+ * the loop when the listeners scheduled more work and emits again at the
+ * next exhaustion; a listener that schedules only nextTicks or microtasks
+ * does not cause another emission (they run in the emit's own checkpoint,
+ * then the loop's liveness test still fails). `once` entries leave the
+ * registry before their callback runs (Node's onceWrapper), and the
+ * emission walks a snapshot of the list (EventEmitter clones a
+ * multi-listener list), so one an earlier listener removed still runs
+ * this time while one added now waits for the next exhaustion. A throwing
+ * listener leaves its exception pending for the loop's ordinary uncaught
+ * path, exactly a macrotask throw. The event is main-thread-only, like
+ * Node's: a worker's loop does not emit it. */
+
+typedef struct {
+  ScrClosure *cb; /* owned */
+  void (*fn)(ScrClosure *cb, double code); /* adapter: 0-param or (code) */
+  bool once;
+} ScrBeforeExitListener;
+
+static SCR_TL ScrBeforeExitListener *scr_bx_ls = NULL;
+static SCR_TL size_t scr_bx_n = 0, scr_bx_cap = 0;
+
+/* Hands the closure reference of entry i to the caller (for an `off` or a
+ * fired `once` entry). */
+static ScrClosure *scr_bx_take(size_t i) {
+  ScrClosure *cb = scr_bx_ls[i].cb;
+  memmove(scr_bx_ls + i, scr_bx_ls + i + 1, (scr_bx_n - i - 1) * sizeof *scr_bx_ls);
+  scr_bx_n--;
+  return cb;
+}
+
+/* Listeners a program leaves registered at exit are Node-legitimate (the
+ * event simply never fires again); release them with the rest of the
+ * unit's exit-time cleanup or the RC audit counts them as leaks. */
+static void scr_bx_drop(void) {
+  for (size_t i = 0; i < scr_bx_n; i++) {
+    if (scr_bx_ls[i].cb != NULL) scr_closure_release(scr_bx_ls[i].cb);
+  }
+  free(scr_bx_ls);
+  scr_bx_ls = NULL;
+  scr_bx_n = scr_bx_cap = 0;
+}
+
+bool scr_run_before_exit_listeners(double code) {
+  if (scr_bx_n == 0) return false;
+  size_t n = scr_bx_n;
+  ScrBeforeExitListener *snap = malloc(n * sizeof *snap);
+  if (!snap) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_bx_ls[i];
+    snap[i].cb = scr_closure_retain(scr_bx_ls[i].cb);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].once) {
+      /* The wrapper drops itself first, so a listener re-added by this
+       * callback survives and an `off` from it finds the entry gone. The
+       * snapshot still calls it (EventEmitter's cloned list), holding its
+       * own reference. */
+      for (size_t j = 0; j < scr_bx_n; j++) {
+        if (scr_bx_ls[j].once && scr_bx_ls[j].cb != NULL &&
+            scr_closure_identity_equal(scr_bx_ls[j].cb, snap[i].cb)) {
+          scr_closure_release(scr_bx_take(j));
+          break;
+        }
+      }
+    }
+    snap[i].fn(snap[i].cb, code);
+    if (scr_exc_pending()) break; /* the loop reports it as a macrotask throw */
+  }
+  for (size_t i = 0; i < n; i++) scr_closure_release(snap[i].cb);
+  free(snap);
+  return true;
+}
+
+void scr_process_on_before_exit(ScrClosure *cb /*moves*/,
+                                void (*fn)(ScrClosure *, double), bool once) {
+  if (scr_bx_n == scr_bx_cap) {
+    scr_bx_cap = scr_bx_cap ? scr_bx_cap * 2 : 2;
+    ScrBeforeExitListener *grown = realloc(scr_bx_ls, scr_bx_cap * sizeof *scr_bx_ls);
+    if (!grown) scr_events_oom();
+    scr_bx_ls = grown;
+  }
+  scr_bx_ls[scr_bx_n++] = (ScrBeforeExitListener){cb, fn, once};
+}
+
+/* process.prependListener("beforeExit", cb): the same listener in FRONT
+ * of the registry's existing entries, Node's EventEmitter order. */
+void scr_process_prepend_before_exit(ScrClosure *cb /*moves*/,
+                                     void (*fn)(ScrClosure *, double)) {
+  size_t before = scr_bx_n;
+  scr_process_on_before_exit(cb, fn, false);
+  if (scr_bx_n != before + 1) return;
+  ScrBeforeExitListener entry = scr_bx_ls[scr_bx_n - 1];
+  memmove(scr_bx_ls + 1, scr_bx_ls, (scr_bx_n - 1) * sizeof *scr_bx_ls);
+  scr_bx_ls[0] = entry;
+}
+
+void scr_process_off_before_exit(ScrClosure *cb /*borrowed*/) {
+  for (size_t i = 0; i < scr_bx_n; i++) {
+    if (scr_bx_ls[i].cb == NULL) continue;
+    if (scr_closure_identity_equal(scr_bx_ls[i].cb, cb)) {
+      scr_closure_release(scr_bx_take(i));
+      return;
+    }
+  }
+}
+
 /* The runtime-provided stdin data adapters. */
 void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk) {
   (void)chunk;
@@ -1978,8 +2088,16 @@ static int scr_events_pollfds(int out[2]) {
 
 /* The atexit half of the 'exit' event: normal termination reports the
  * abnormal-exit hint (0 unless the uncaught/unhandled reporters noted 1 —
- * exactly when main returns 1). */
-static void scr_exit_atexit(void) { scr_run_exit_listeners((double)scr_exit_code_hint_get()); }
+ * exactly when main returns 1). Node reads process.exitCode after the
+ * listeners have run, so a listener that assigns it selects the status the
+ * process leaves with; when that happens the run finishes through the normal
+ * exit sequence, whose _Exit carries the listener's status. */
+static void scr_exit_atexit(void) {
+  double code = (double)scr_exit_code_hint_get();
+  scr_run_exit_listeners(code);
+  int final = scr_exit_code_hint_get();
+  if (final != (int)code && scr_context_is_main()) scr_process_exit((double)final);
+}
 
 /* Exit-time registry cleanup: listeners a program leaves registered at
  * exit are Node-legitimate, not leaks — signal handlers for the process's
@@ -1990,6 +2108,7 @@ static void scr_exit_atexit(void) { scr_run_exit_listeners((double)scr_exit_code
  * a clean heap. */
 static void scr_events_cleanup_atexit(void) {
   if (scr_context_is_main()) scr_sig_cleanup();
+  scr_bx_drop();
   scr_stdin_settle_done();
   scr_stdin_drop_listeners();
   scr_stdin_drop_held();
@@ -2015,5 +2134,6 @@ void scr_events_install(void) {
   scr_loop_set_events(&scr_events_pending, &scr_events_watching, &scr_events_dispatch,
                        &scr_events_pollfds);
   scr_process_exit_hook = &scr_run_exit_listeners;
+  scr_process_before_exit_hook = &scr_run_before_exit_listeners;
   scr_stdin_destroy_hook = &scr_stdin_destroy;
 }

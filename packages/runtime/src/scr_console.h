@@ -69,6 +69,10 @@ ScrStr *scr_console_time_end(ScrStr *label);
 ScrStr *scr_console_time_log(ScrStr *label);
 void scr_console_group(double delta);
 void scr_console_clear(void);
+/* console.trace: `Trace[: message]` on stderr followed by the call frames
+ * captured below this call. An empty message prints the bare heading.
+ * Borrows message. */
+void scr_console_trace(ScrStr *message);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
 ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);

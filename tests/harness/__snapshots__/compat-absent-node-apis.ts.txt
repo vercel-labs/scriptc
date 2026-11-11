@@ -88,14 +88,14 @@ compat-absent-node-apis.ts:26:25 - error SC0001: Property 'timeOrigin' does not 
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'timeOrigin' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-apis.ts:31:9 - error SC0001: Property 'setSourceMapsEnabled' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:31:9 - error SC0001: Property 'setSourceMapsEnabled' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   30 | // process: source maps, the capture callback, finalization and ref counting.
   31 | process.setSourceMapsEnabled(true);
      |         ^~~~~~~~~~~~~~~~~~~~
   32 | console.log(process.hasUncaughtExceptionCaptureCallback());
 
-compat-absent-node-apis.ts:32:21 - error SC0001: Property 'hasUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:32:21 - error SC0001: Property 'hasUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   31 | process.setSourceMapsEnabled(true);
   32 | console.log(process.hasUncaughtExceptionCaptureCallback());
@@ -104,7 +104,7 @@ compat-absent-node-apis.ts:32:21 - error SC0001: Property 'hasUncaughtExceptionC
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'hasUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-apis.ts:33:9 - error SC0001: Property 'setUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:33:9 - error SC0001: Property 'setUncaughtExceptionCaptureCallback' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   32 | console.log(process.hasUncaughtExceptionCaptureCallback());
   33 | process.setUncaughtExceptionCaptureCallback(() => {});
@@ -113,7 +113,7 @@ compat-absent-node-apis.ts:33:9 - error SC0001: Property 'setUncaughtExceptionCa
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'setUncaughtExceptionCaptureCallback' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-apis.ts:34:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:34:9 - error SC0001: Property 'finalization' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   33 | process.setUncaughtExceptionCaptureCallback(() => {});
   34 | process.finalization.register({ n: 1 }, () => {});
@@ -122,7 +122,7 @@ compat-absent-node-apis.ts:34:9 - error SC0001: Property 'finalization' does not
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'finalization' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-apis.ts:35:9 - error SC0001: Property 'ref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:35:9 - error SC0001: Property 'ref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   34 | process.finalization.register({ n: 1 }, () => {});
   35 | process.ref(timer);
@@ -131,7 +131,7 @@ compat-absent-node-apis.ts:35:9 - error SC0001: Property 'ref' does not exist on
 
   hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'ref' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
 
-compat-absent-node-apis.ts:36:9 - error SC0001: Property 'unref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 49 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:36:9 - error SC0001: Property 'unref' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 50 more ...; disconnect(): void; }'.
 
   35 | process.ref(timer);
   36 | process.unref(timer);

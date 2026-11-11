@@ -678,6 +678,11 @@ struct ScrNetSocket {
    * getsockopt-less moments, applied once a handle exists. */
   bool tos_set;
   double tos;
+  /* setKeepAlive's state (Node's kSetKeepAlive*): cached the same way, the
+   * delays and the interval in whole seconds and 0 for a knob the program
+   * never set. */
+  bool ka_set, ka_enable;
+  int ka_delay_s, ka_interval_s, ka_count;
   struct ScrNetLookupEv *lookup_evs;
   ScrNetLs data_ls, end_ls, close_ls, err_ls, conn_ls, timeout_ls, readable_ls;
   /* Writable backpressure: a user write answered false (the bytes it left
@@ -1890,6 +1895,7 @@ static void scr_net_sock_dial_next(ScrNetSocket *s);
 static void scr_net_sock_connected(ScrNetSocket *s);
 static void scr_net_sock_tunnel_pump(ScrNetSocket *s);
 static void scr_net_sock_apply_tos(ScrNetSocket *s);
+static void scr_net_keepalive_apply(ScrNetSocket *s);
 static void scr_net_attempt_queue(ScrNetSocket *s, int which, const char *ip, int family,
                                   const char *err);
 static void scr_net_attempt_fire(ScrNetSocket *s);
@@ -1944,6 +1950,7 @@ static void scr_net_sock_connect_done(ScrNetSocket *s) {
     s->dial_err = NULL;
   }
   scr_net_sock_apply_tos(s); /* Node's afterConnect re-applies a cached TOS */
+  if (s->ka_set) scr_net_keepalive_apply(s); /* and a cached setKeepAlive */
   if (s->tunnel != NULL) {
     /* TCP to the proxy is up: the CONNECT exchange runs first */
     scr_net_sock_touch(s);
@@ -4159,29 +4166,30 @@ ScrNetSocket *scr_net_sock_set_nodelay(ScrNetSocket *s, bool enable) {
   return scr_net_sock_retain(s);
 }
 
+/* socket.setNoDelay(enable) with the argument as the program wrote it:
+ * Node's `Boolean(enable === undefined ? true : enable)` — a missing or
+ * undefined argument means true. ToBoolean never runs program code, so
+ * there is no pending-exception case. */
+ScrNetSocket *scr_net_sock_set_nodelay_dyn(ScrNetSocket *s, const ScrDyn *enable) {
+  bool on = enable == NULL || enable->kind == SCR_DYN_UNDEF || scr_dyn_truthy(enable);
+  return scr_net_sock_set_nodelay(s, on);
+}
+
+/* socket.setKeepAlive(enable, delay): caches the state (Node's
+ * kSetKeepAlive*) and applies it to a live descriptor; called before the
+ * handle exists, afterConnect applies it. The delay is truncated to whole
+ * seconds (~~), so a sub-second delay leaves TCP_KEEPIDLE alone. */
 void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms) {
-  if (s->fd < 0) return;
-  int value = enable ? 1 : 0;
-  setsockopt(s->fd, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof value);
-  if (!enable || !(delay_ms > 0) || !isfinite(delay_ms)) return;
-  int seconds = (int)fmin((double)INT_MAX, fmax(1.0, floor(delay_ms / 1000.0)));
-#if defined(TCP_KEEPIDLE)
-  setsockopt(s->fd, IPPROTO_TCP, TCP_KEEPIDLE, &seconds, sizeof seconds);
-#elif defined(TCP_KEEPALIVE)
-  setsockopt(s->fd, IPPROTO_TCP, TCP_KEEPALIVE, &seconds, sizeof seconds);
-#endif
+  s->ka_set = true;
+  s->ka_enable = enable;
+  double seconds = delay_ms > 0 && isfinite(delay_ms) ? trunc(delay_ms / 1000.0) : 0;
+  s->ka_delay_s = seconds < 1 ? 0 : seconds > 2147483647.0 ? 2147483647 : (int)seconds;
+  scr_net_keepalive_apply(s);
 }
 
-/* socket.setKeepAlive(enable, initialDelay) as the program calls it:
- * answers the socket (+1), Node's chaining. */
-ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, double delay_ms) {
-  scr_net_sock_set_keepalive(s, enable, delay_ms);
-  return scr_net_sock_retain(s);
-}
-
-/* The interval/count knobs of setKeepAlive's options form: TCP_KEEPINTVL
- * and TCP_KEEPCNT where the platform has them (best-effort, like Node's
- * libuv call). Seconds, already truncated by the caller. */
+/* setKeepAlive's interval/count knobs: TCP_KEEPINTVL and TCP_KEEPCNT where
+ * the platform has them (best-effort, like Node's libuv call). Seconds,
+ * already truncated by the caller; 0 leaves the kernel's value alone. */
 static void scr_net_keepalive_tuning(ScrNetSocket *s, int interval_s, int count) {
   if (s->fd < 0) return;
 #if defined(TCP_KEEPINTVL)
@@ -4193,6 +4201,25 @@ static void scr_net_keepalive_tuning(ScrNetSocket *s, int interval_s, int count)
 #endif
 }
 
+/* setKeepAlive's cached state on a live descriptor: SO_KEEPALIVE, the
+ * initial delay as TCP_KEEPIDLE when the program named a positive one, and
+ * the interval/count knobs. A call before the handle exists takes effect
+ * here from afterConnect, as Node's does. */
+static void scr_net_keepalive_apply(ScrNetSocket *s) {
+  if (s->fd < 0) return;
+  int value = s->ka_enable ? 1 : 0;
+  setsockopt(s->fd, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof value);
+  if (!s->ka_enable) return;
+  if (s->ka_delay_s > 0) {
+#if defined(TCP_KEEPIDLE)
+    setsockopt(s->fd, IPPROTO_TCP, TCP_KEEPIDLE, &s->ka_delay_s, sizeof s->ka_delay_s);
+#elif defined(TCP_KEEPALIVE)
+    setsockopt(s->fd, IPPROTO_TCP, TCP_KEEPALIVE, &s->ka_delay_s, sizeof s->ka_delay_s);
+#endif
+  }
+  scr_net_keepalive_tuning(s, s->ka_interval_s, s->ka_count);
+}
+
 /* ~~(ms / 1000) over a value ToNumber may have made NaN or infinite:
  * truncate toward zero, answer 0 for the non-finite cases (as ~~ does). */
 static int scr_net_keepalive_seconds(double ms) {
@@ -4200,6 +4227,13 @@ static int scr_net_keepalive_seconds(double ms) {
   double s = trunc(ms / 1000.0);
   if (!(s > 0)) return 0;
   return s > 2147483647.0 ? 2147483647 : (int)s;
+}
+
+/* The count knob: passed through as a number, and ignored by the tuning
+ * call unless it is a positive finite one, as libuv does. */
+static int scr_net_keepalive_count(double n) {
+  if (!isfinite(n) || !(n > 0)) return 0;
+  return n > 2147483647.0 ? 2147483647 : (int)n;
 }
 
 /* socket.setKeepAlive(options): Node's object form — enable =
@@ -4220,14 +4254,48 @@ bool scr_net_sock_set_keepalive_opts(ScrNetSocket *s, const ScrDyn *options /*bo
   if (has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) return false;
   bool has_count = count != NULL && count->kind != SCR_DYN_UNDEF;
   if (has_count && !scr_dyn_number_coerce_js(count, &count_n)) return false;
+  /* Node keeps the last values on the socket (undefined interval/count
+   * included) and applies the whole set, here and again at afterConnect. */
+  s->ka_interval_s = has_interval ? scr_net_keepalive_seconds(interval_ms) : 0;
+  s->ka_count = has_count ? scr_net_keepalive_count(count_n) : 0;
   int delay_s = scr_net_keepalive_seconds(delay_ms);
   scr_net_sock_set_keepalive(s, on, (double)delay_s * 1000.0);
-  if (!on || s->fd < 0) return true;
-  scr_net_keepalive_tuning(s, has_interval ? scr_net_keepalive_seconds(interval_ms) : 0,
-                           has_count && isfinite(count_n) && count_n > 0
-                               ? (count_n > 2147483647.0 ? 2147483647 : (int)count_n)
-                               : 0);
   return true;
+}
+
+/* socket.setKeepAlive([enable][, initialDelay][, interval][, count]) as the
+ * program calls it (Node's positional form, and the object form when the
+ * first argument is an object). Boolean(enable); initialDelay and interval
+ * are milliseconds truncated to whole seconds (~~) with interval applied
+ * only when it is not undefined; count is passed through raw. The ToNumber
+ * coercions run the value's hooks, so NULL with the exception pending is
+ * the answer when one throws. Answers the socket (+1), Node's chaining. */
+ScrNetSocket *scr_net_sock_set_keepalive_args_ret(ScrNetSocket *s, const ScrDyn *enable,
+                                                   const ScrDyn *delay, const ScrDyn *interval,
+                                                   const ScrDyn *count) {
+  /* Node's object form: `enable !== null && typeof enable === 'object'` —
+   * arrays and handles take this path too, their unnamed members reading as
+   * undefined. */
+  if (enable != NULL && enable->kind != SCR_DYN_NULL && scr_dyn_is_object(enable)) {
+    if (!scr_net_sock_set_keepalive_opts(s, enable)) return NULL;
+    return scr_net_sock_retain(s);
+  }
+  bool on = enable != NULL && enable->kind != SCR_DYN_UNDEF && scr_dyn_truthy(enable);
+  double delay_ms = 0;
+  if (delay != NULL && delay->kind != SCR_DYN_UNDEF &&
+      !scr_dyn_number_coerce_js(delay, &delay_ms))
+    return NULL;
+  bool has_interval = interval != NULL && interval->kind != SCR_DYN_UNDEF;
+  double interval_ms = 0;
+  if (has_interval && !scr_dyn_number_coerce_js(interval, &interval_ms)) return NULL;
+  bool has_count = count != NULL && count->kind != SCR_DYN_UNDEF;
+  double count_n = 0;
+  if (has_count && !scr_dyn_number_coerce_js(count, &count_n)) return NULL;
+  s->ka_interval_s = has_interval ? scr_net_keepalive_seconds(interval_ms) : 0;
+  s->ka_count = has_count ? scr_net_keepalive_count(count_n) : 0;
+  int delay_s = scr_net_keepalive_seconds(delay_ms);
+  scr_net_sock_set_keepalive(s, on, (double)delay_s * 1000.0);
+  return scr_net_sock_retain(s);
 }
 
 /* The socket's address family from getsockname (IP_TOS vs IPV6_TCLASS);
@@ -6730,6 +6798,23 @@ void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/) {
   s->dec_pending = 0;
 }
 
+/* setEncoding([encoding]) for an untyped argument: a missing or undefined
+ * encoding means utf8 (StringDecoder's default), a string goes through the
+ * decoder's table, and any other value is Node's argument TypeError. */
+void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/) {
+  if (enc == NULL || enc->kind == SCR_DYN_UNDEF) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    scr_net_sock_set_encoding(s, utf8);
+    scr_str_release(utf8);
+    return;
+  }
+  if (enc->kind == SCR_DYN_STR) {
+    scr_net_sock_set_encoding(s, enc->v.str);
+    return;
+  }
+  scr_dyn_arg_type_fail("encoding", "of type string", enc);
+}
+
 /* pipe(dst): every arrived chunk forwards to dst; src EOF end()s dst
  * (Node's default). Also arms the read side — a pipe is a consumer. */
 void scr_net_sock_pipe(ScrNetSocket *src, ScrNetSocket *dst) {
@@ -7880,8 +7965,7 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
   }
   if (strcmp(method, "setNoDelay") == 0) {
     /* setNoDelay([enable]) — missing/undefined means true, Node */
-    bool enable = argc == 0 || args[0]->kind == SCR_DYN_UNDEF || scr_dyn_truthy(args[0]);
-    scr_net_sock_release(scr_net_sock_set_nodelay(s, enable));
+    scr_net_sock_release(scr_net_sock_set_nodelay_dyn(s, argc > 0 ? args[0] : NULL));
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "destroySoon") == 0) {
@@ -7915,17 +7999,15 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "setKeepAlive") == 0) {
-    /* setKeepAlive(options): Node's object form — `enable !== null &&
-     * typeof enable === 'object'`, so arrays and handles take this path
-     * too (their unnamed members read as undefined). */
-    if (argc > 0 && args[0]->kind != SCR_DYN_NULL && scr_dyn_is_object(args[0])) {
-      if (!scr_net_sock_set_keepalive_opts(s, args[0])) return NULL;
-      return scr_dyn_retain(self);
-    }
-    bool enable = argc > 0 && scr_dyn_truthy(args[0]);
-    double delay = 0;
-    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) scr_dyn_number_coerce_js(args[1], &delay);
-    scr_net_sock_set_keepalive(s, enable, delay);
+    /* setKeepAlive([enable][, initialDelay][, interval][, count]) — the
+     * object form when enable is an object, the positional form
+     * otherwise. */
+    const ScrDyn *undef = scr_dyn_undefined();
+    ScrNetSocket *out = scr_net_sock_set_keepalive_args_ret(
+        s, argc > 0 ? args[0] : undef, argc > 1 ? args[1] : undef,
+        argc > 2 ? args[2] : undef, argc > 3 ? args[3] : undef);
+    if (out == NULL) return NULL;
+    scr_net_sock_release(out);
     return scr_dyn_retain(self);
   }
   if (strcmp(method, "setTypeOfService") == 0) {
@@ -7962,12 +8044,10 @@ static ScrDyn *scr_net_dynh_sock_invoke(void *h, ScrDyn *self, const char *metho
     return scr_dyn_new_num(tos);
   }
   if (strcmp(method, "setEncoding") == 0) {
-    const ScrDyn *enc = argc > 0 ? args[0] : scr_dyn_undefined();
-    if (enc->kind != SCR_DYN_STR) {
-      scr_dyn_arg_type_fail("encoding", "of type string", enc);
-      return NULL;
-    }
-    scr_net_sock_set_encoding(s, enc->v.str);
+    /* setEncoding([encoding]): a missing or undefined encoding means utf8
+     * (StringDecoder's default), any other encoding name goes through the
+     * decoder's table. */
+    scr_net_sock_set_encoding_dyn(s, argc > 0 ? args[0] : scr_dyn_undefined());
     if (scr_exc_pending()) return NULL;
     return scr_dyn_retain(self);
   }

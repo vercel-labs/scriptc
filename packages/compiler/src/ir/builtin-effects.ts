@@ -361,6 +361,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
   "net.sockSetEncoding",
+  "net.sockSetEncodingDyn",
+  // setKeepAlive's positional coercions and its object form run ToNumber
+  // (~~), which calls a value's valueOf/toString.
+  "net.sockSetKeepAlive",
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",

@@ -74411,6 +74411,8 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-drop.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
+          "tests/corpus/net-socket-chaining-dyn.cjs",
+          "tests/corpus/net-socket-chaining.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
@@ -75031,10 +75033,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Server",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75129,10 +75133,12 @@
       "anchor": "servergetconnectionscallback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.getConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75290,10 +75296,12 @@
       "anchor": "serverref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.ref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75311,10 +75319,12 @@
       "anchor": "serverunref",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.server.unref",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75332,10 +75342,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.listening",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75353,10 +75365,12 @@
       "anchor": "class-netserver",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.maxConnections",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -75395,10 +75409,12 @@
       "anchor": "event-close",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75416,10 +75432,12 @@
       "anchor": "event-connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connection'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75459,10 +75477,12 @@
       "anchor": "event-listening",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'listening'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75501,10 +75521,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.net.Socket",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75850,10 +75872,12 @@
       "anchor": "socketsetkeepalive",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75892,10 +75916,12 @@
       "anchor": "socketsetkeepaliveenable-initialdelay-interval-count",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setKeepAlive",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -75913,10 +75939,12 @@
       "anchor": "socketsetnodelaynodelay",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.socket.setNoDelay",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76100,10 +76128,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesRead",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76121,10 +76151,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.bytesWritten",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76142,10 +76174,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.connecting",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76163,10 +76197,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.destroyed",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76206,10 +76242,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.localPort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76271,10 +76309,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remoteAddress",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76314,10 +76354,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.remotePort",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76379,10 +76421,12 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.readyState",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -76400,10 +76444,12 @@
       "anchor": "event-close_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'close'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76421,10 +76467,12 @@
       "anchor": "event-connect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'connect'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76505,10 +76553,12 @@
       "anchor": "event-data",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'data'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76548,10 +76598,12 @@
       "anchor": "event-end",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'end'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -76569,10 +76621,12 @@
       "anchor": "event-error_1",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:net.'error'",
         "tests": [
-          "tests/corpus/compat-net-server-socket.ts"
+          "tests/corpus/compat-net-server-socket.ts",
+          "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-chaining-dyn.cjs"
         ]
       },
       "anchorSource": "exact"

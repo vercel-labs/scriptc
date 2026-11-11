@@ -12,16 +12,19 @@
  * firing once connections drain; socket write/end/destroy/pipe and the
  * data/end/close/error/connect/drain events (on and once — listeners
  * take at most the declared parameter). write returns Node's
- * backpressure boolean; end returns void here (Node returns the socket);
- * on/once return void (chaining is fenced). connect's host is a numeric IP or "localhost" (pinned to
- * 127.0.0.1 — SEMANTICS.md); every failure is the async 'error' event,
+ * backpressure boolean; end, destroy, setEncoding, setTimeout and the
+ * socket-option setters answer the socket (Node's chaining); on/once return
+ * void (chaining is fenced). connect's host is a numeric IP or "localhost"
+ * (pinned to 127.0.0.1 — SEMANTICS.md); every failure is the async 'error'
+ * event,
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
 declare module "net" {
   export interface Socket {
-    /* Whether the socket keeps the event loop alive (ref'd by default). */
-    ref(): void;
-    unref(): void;
+    /* Whether the socket keeps the event loop alive (ref'd by default).
+     * Both chain, Node's shape. */
+    ref(): Socket;
+    unref(): Socket;
     readonly remoteAddress: string | undefined;
     /* The peer's fields are cached at first read, like remoteAddress; the
      * local ones are undefined while connecting and after close. */
@@ -58,9 +61,10 @@ declare module "net" {
     readonly writableLength: number;
     /* a write answered false and 'drain' has not fired yet */
     readonly writableNeedDrain: boolean;
-    end(callback?: () => void): void;
-    end(data: string | Uint8Array, callback?: () => void): void;
-    destroy(): void;
+    end(callback?: () => void): Socket;
+    end(data: string | Uint8Array, callback?: () => void): Socket;
+    /* An explicit destroy only; the error payload form is not lowered. */
+    destroy(): Socket;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is
      * the buffer); resume flows — and discards without listeners, so
      * 'end' stays reachable. Both chain, Node's shape. */
@@ -68,8 +72,21 @@ declare module "net" {
     resume(): Socket;
     /* TCP_NODELAY on the live fd; missing means true. Chains. */
     setNoDelay(noDelay?: boolean): Socket;
-    /* SO_KEEPALIVE with the initial delay in ms. Chains. */
-    setKeepAlive(enable?: boolean, initialDelay?: number): Socket;
+    /* SO_KEEPALIVE with the initial delay in ms; interval and count tune
+     * the probes. A trailing `enable` object is Node's options form
+     * ({ enable, initialDelay, interval, count }). Chains. */
+    setKeepAlive(
+      enable?: boolean,
+      initialDelay?: number,
+      interval?: number,
+      count?: number,
+    ): Socket;
+    setKeepAlive(options: {
+      enable?: boolean;
+      initialDelay?: number;
+      interval?: number;
+      count?: number;
+    }): Socket;
     /* end() now, destroy once the FIN actually flushed. */
     destroySoon(): void;
     /* An RST instead of a FIN; a connecting socket resets once it
@@ -77,16 +94,17 @@ declare module "net" {
     resetAndDestroy(): Socket;
     /* The local address, or {} while connecting and once destroyed. */
     address(): AddressInfo | {};
-    /* setEncoding('utf8'): 'data' delivers strings — the IncomingMessage
-     * twin's contract. */
-    setEncoding(encoding: string): void;
+    /* setEncoding([encoding]): 'data' delivers strings — the IncomingMessage
+     * twin's contract. A missing encoding is 'utf8'. Chains. */
+    setEncoding(encoding?: string): Socket;
     /* socket→socket, and socket→response (the extended-CONNECT bridge
      * leg: raw chunks become response body writes; EOF ends it). */
     pipe(
       destination: Socket | import("http").ServerResponse | import("http2").Http2ServerResponse,
     ): void;
-    /* The callback is a once('timeout') listener (removed again by 0). */
-    setTimeout(ms: number, callback?: () => void): void;
+    /* The callback is a once('timeout') listener (removed again by 0).
+     * Chains. */
+    setTimeout(ms: number, callback?: () => void): Socket;
     /* The paused-mode demux surface: once('readable') + read(1) +
      * unshift — read answers exactly n buffered bytes or null. */
     read(size?: number): Buffer | null;
@@ -200,9 +218,10 @@ declare module "net" {
     /* Node's `promisify(this.close)()`: the promise fulfills at 'close',
      * at once for a server that never listened. */
     [Symbol.asyncDispose](): Promise<void>;
-    /* Whether the server keeps the event loop alive (ref'd by default). */
-    ref(): void;
-    unref(): void;
+    /* Whether the server keeps the event loop alive (ref'd by default).
+     * Both chain, Node's shape. */
+    ref(): Server;
+    unref(): Server;
     readonly listening: boolean;
     /* Connections past this many are closed with a 'drop' event;
      * undefined (the default) or null lifts the cap. */
@@ -241,7 +260,7 @@ declare module "net" {
       },
       callback?: () => void,
     ): Server;
-    close(callback?: () => void): void;
+    close(callback?: () => void): Server;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
      * stance). */

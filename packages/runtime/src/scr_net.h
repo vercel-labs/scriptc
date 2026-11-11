@@ -97,6 +97,9 @@ ScrNetServer *scr_net_sock_server(ScrNetSocket *s);
  * supported yet" Error;
  * unknown names throw Node's ERR_UNKNOWN_ENCODING. May throw. */
 void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/);
+/* The untyped form: a missing or undefined encoding means utf8, a non-string
+ * is Node's argument TypeError. May throw. */
+void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/);
 bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
@@ -307,6 +310,9 @@ ScrNetSocket *scr_net_sock_pause(ScrNetSocket *s);            /* +1: chaining */
 ScrNetSocket *scr_net_sock_resume(ScrNetSocket *s);           /* +1: chaining */
 void scr_net_sock_hold(ScrNetSocket *s, bool hold); /* protocol read hold (not pause) */
 ScrNetSocket *scr_net_sock_set_nodelay(ScrNetSocket *s, bool enable); /* +1: chaining */
+/* socket.setNoDelay(enable) with the argument as written: missing or
+ * undefined means true (Node's Boolean(enable === undefined ? true : it)). */
+ScrNetSocket *scr_net_sock_set_nodelay_dyn(ScrNetSocket *s, const ScrDyn *enable /*borrowed*/);
 void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms);
 void scr_net_sock_destroy_soon(ScrNetSocket *s);
 void scr_net_sock_on_finish(ScrNetSocket *s, ScrClosure *cb /*moves*/);
@@ -367,7 +373,14 @@ void scr_net_sock_on_ready(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
 void scr_net_sock_on_close_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
 void scr_net_sock_on_finish_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
-ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, double delay_ms); /* +1 */
+/* socket.setKeepAlive([enable][, initialDelay][, interval][, count]):
+ * Node's positional form (its object form when enable is an object) —
+ * Boolean(enable), milliseconds truncated to seconds, interval only when
+ * not undefined, count passed through. Answers the socket (+1), or NULL
+ * with the exception pending when a ToNumber throws. */
+ScrNetSocket *scr_net_sock_set_keepalive_args_ret(ScrNetSocket *s, const ScrDyn *enable,
+                                                  const ScrDyn *delay, const ScrDyn *interval,
+                                                  const ScrDyn *count); /* +1 */
 /* socket.setKeepAlive({ enable, initialDelay, interval, count }): Node's
  * option form — Boolean(enable), ~~(delay/1000) seconds, the optional
  * interval (seconds) and count. False with the exception pending when a

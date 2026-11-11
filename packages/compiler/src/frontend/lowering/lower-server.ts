@@ -101,6 +101,18 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
   );
 }
 
+/** Whether a chaining call's receiver answer is thrown away at this site.
+ * A plain statement is; a concise arrow body is only when the arrow itself
+ * answers void/undefined — `() => server.close(cb)` can hand the server to
+ * the caller that returns it (store.run's R), and then the value is used. */
+function chainingResultDiscarded(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  if (ts.isExpressionStatement(call.parent)) return true;
+  if (!ts.isArrowFunction(call.parent)) return false;
+  const arrowT = lowerer.mapTypeOf(lowerer.typeOf(call.parent));
+  if (arrowT === null || arrowT.kind !== "func") return true;
+  return arrowT.ret.kind === "void" || arrowT.ret.kind === "undefinedT";
+}
+
 function lowerExactReusePort(lowerer: Lowerer, value: IrExpr, node: ts.Node): IrExpr {
   const loc = locOf(node);
   const falseValue = (): IrExpr => boolLit(false, loc);
@@ -1826,7 +1838,7 @@ function lowerNetServerMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     const cb = lowerSocketDynListener(lowerer, args[0]!, "getConnections callbacks");
-    if (resultIsDiscarded(call)) {
+    if (chainingResultDiscarded(lowerer, call)) {
       return {
         kind: "libCall",
         fn: "net.serverGetConnections",
@@ -1866,7 +1878,8 @@ function lowerNetServerMethodCall(
         : null;
     const fn: IrLibFn = cb === null ? "http.serverSetTimeout" : "http.serverSetTimeoutCb";
     const callArgs = cb === null ? [receiver, ms] : [receiver, ms, cb];
-    if (resultIsDiscarded(call)) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+    if (chainingResultDiscarded(lowerer, call))
+      return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
     return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
   }
   if (name === "closeAllConnections" || name === "closeIdleConnections") {
@@ -2387,7 +2400,6 @@ function lowerNetServerMethodCall(
       : listenResult("net.listenCb", [receiver, port, cb]);
   }
   if (name === "close") {
-    requireStatementPosition(lowerer, call, "server.close(...)");
     if (args.length > 1) {
       lowerer.noLowering(
         `close with ${args.length} arguments`,
@@ -2396,9 +2408,11 @@ function lowerNetServerMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
-    if (args.length === 0) {
-      return { kind: "libCall", fn: "net.serverClose", args: [receiver], type: VOID, loc };
-    }
+    const closeResult = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr =>
+      chainingResultDiscarded(lowerer, call)
+        ? { kind: "libCall", fn, args: callArgs, type: VOID, loc }
+        : receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
+    if (args.length === 0) return closeResult("net.serverClose", [receiver]);
     if (
       lowerer.checker
         .getCallSignatures(lowerer.typeOf(args[0]!))
@@ -2406,13 +2420,10 @@ function lowerNetServerMethodCall(
     ) {
       // close((err) => ...): undefined once the server closes, or Node's
       // ERR_SERVER_NOT_RUNNING when it was not listening.
-      return {
-        kind: "libCall",
-        fn: "net.serverCloseDyn",
-        args: [receiver, lowerSocketDynListener(lowerer, args[0]!, "close callbacks")],
-        type: VOID,
-        loc,
-      };
+      return closeResult("net.serverCloseDyn", [
+        receiver,
+        lowerSocketDynListener(lowerer, args[0]!, "close callbacks"),
+      ]);
     }
     const { cb } = lowerCallbackArg(
       lowerer,
@@ -2423,7 +2434,7 @@ function lowerNetServerMethodCall(
       "use ()",
       [],
     );
-    return { kind: "libCall", fn: "net.serverCloseCb", args: [receiver, cb], type: VOID, loc };
+    return closeResult("net.serverCloseCb", [receiver, cb]);
   }
   if (name === "addContext" || name === "setSecureContext") {
     // tls.Server's SNI table and default context (scr_tls.c): addContext
@@ -2974,16 +2985,14 @@ function lowerNetServerMethodCall(
     };
   }
   if ((name === "ref" || name === "unref") && args.length === 0) {
-    // Whether the server keeps the event loop alive.
-    requireStatementPosition(lowerer, call, `server.${name}()`);
+    // Whether the server keeps the event loop alive; answers the server,
+    // Node's chaining.
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
-    return {
-      kind: "libCall",
-      fn: "net.serverSetRef",
-      args: [receiver, boolLit(name === "ref", loc)],
-      type: VOID,
-      loc,
-    };
+    const callArgs = [receiver, boolLit(name === "ref", loc)];
+    if (chainingResultDiscarded(lowerer, call)) {
+      return { kind: "libCall", fn: "net.serverSetRef", args: callArgs, type: VOID, loc };
+    }
+    return receiverReturningCall(lowerer, "net.serverSetRef", callArgs, NETSERVER_T, loc);
   }
   if (name === "address") {
     // The full AddressInfo record (the dgram.address materialization).
@@ -3217,21 +3226,22 @@ function lowerNetSocketMethodCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if ((name === "ref" || name === "unref") && args.length === 0) {
-    // Whether the socket keeps the event loop alive.
-    requireStatementPosition(lowerer, call, `socket.${name}()`);
-    const receiver = lowerer.lowerExpr(access.expression);
-    return {
-      kind: "libCall",
-      fn: "net.sockSetRef",
-      args: [receiver, boolLit(name === "ref", loc)],
-      type: VOID,
-      loc,
-    };
+    // Whether the socket keeps the event loop alive; answers the socket,
+    // Node's chaining.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const callArgs = [receiver, boolLit(name === "ref", loc)];
+    if (chainingResultDiscarded(lowerer, call)) {
+      return { kind: "libCall", fn: "net.sockSetRef", args: callArgs, type: VOID, loc };
+    }
+    return receiverReturningCall(lowerer, "net.sockSetRef", callArgs, NETSOCKET_T, loc);
   }
   if (name === "write" || name === "end") {
-    // write() answers Node's backpressure boolean; end() stays a statement
-    if (name === "end") requireStatementPosition(lowerer, call, `socket.${name}(...)`);
-    const resultT = name === "write" ? BOOL : VOID;
+    // write() answers Node's backpressure boolean; end() answers the
+    // socket (Node's chaining).
+    const resultOf = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr =>
+      name === "write"
+        ? { kind: "libCall", fn, args: callArgs, type: BOOL, loc }
+        : receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
     // write(chunk, encoding) — the two-argument encoding form: 'buffer'
     // beside a string chunk is Writable's encoding check (a synchronous
     // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
@@ -3286,13 +3296,7 @@ function lowerNetSocketMethodCall(
         loc,
       });
       const dataNode = args.length === 2 ? args[0]! : null;
-      let main: IrExpr = {
-        kind: "libCall",
-        fn: "net.sockEnd",
-        args: [receiver()],
-        type: VOID,
-        loc,
-      };
+      let main: IrExpr = resultOf("net.sockEnd", [receiver()]);
       if (dataNode !== null) {
         const data = lowerer.lowerExpr(dataNode);
         const fn: IrLibFn | null =
@@ -3316,7 +3320,7 @@ function lowerNetSocketMethodCall(
             NARROW_DATA_HINT,
           );
         }
-        main = { kind: "libCall", fn, args: [receiver(), data], type: resultT, loc };
+        main = resultOf(fn, [receiver(), data]);
       }
       const cb = lowerer.lowerExpr(last);
       let register: IrExpr;
@@ -3337,22 +3341,34 @@ function lowerNetSocketMethodCall(
           loc,
         };
       }
-      if (resultT.kind === "void") {
-        stmts.push({ kind: "exprStmt", expr: main, loc });
-        return { kind: "seqExpr", stmts, result: register, type: VOID, loc };
+      if (name === "write") {
+        // write(data, cb): the data is written, the callback registered,
+        // and the backpressure answer is the value.
+        const okLocal = lowerer.declareHiddenLocal("%sockWriteOk", BOOL);
+        stmts.push(
+          { kind: "varDecl", localId: okLocal.id, init: main, loc },
+          { kind: "exprStmt", expr: register, loc },
+        );
+        return {
+          kind: "seqExpr",
+          stmts,
+          result: { kind: "varRef", localId: okLocal.id, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
       }
-      // write(data, cb): the data is written, the callback registered, and
-      // the write's answer is the value
-      const okLocal = lowerer.declareHiddenLocal("%sockWriteOk", BOOL);
+      // end(data?, cb): the data is written, the finish listener
+      // registers, and the socket is the answer.
+      const sockRet = lowerer.declareHiddenLocal("%sockEndRet", NETSOCKET_T);
       stmts.push(
-        { kind: "varDecl", localId: okLocal.id, init: main, loc },
+        { kind: "varDecl", localId: sockRet.id, init: main, loc },
         { kind: "exprStmt", expr: register, loc },
       );
       return {
         kind: "seqExpr",
         stmts,
-        result: { kind: "varRef", localId: okLocal.id, type: BOOL, loc },
-        type: BOOL,
+        result: { kind: "varRef", localId: sockRet.id, type: NETSOCKET_T, loc },
+        type: NETSOCKET_T,
         loc,
       };
     }
@@ -3369,22 +3385,22 @@ function lowerNetSocketMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     if (args.length === 0) {
-      return { kind: "libCall", fn: "net.sockEnd", args: [receiver], type: VOID, loc };
+      return resultOf("net.sockEnd", [receiver]);
     }
     const data = lowerer.lowerExpr(args[0]!);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "net.sockWrite" : "net.sockEndStr";
-      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
+      return resultOf(fn, [receiver, data]);
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes";
-      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
+      return resultOf(fn, [receiver, data]);
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload (a helper's parameter): the runtime
       // dispatches STR/BYTES and throws Node's chunk TypeError otherwise.
       const fn: IrLibFn = name === "write" ? "net.sockWriteDyn" : "net.sockEndDyn";
-      return { kind: "libCall", fn, args: [receiver, data], type: resultT, loc };
+      return resultOf(fn, [receiver, data]);
     }
     lowerer.noLowering(
       `${name} of '${lowerer.fmt(data.type)}' data`,
@@ -3393,7 +3409,8 @@ function lowerNetSocketMethodCall(
     );
   }
   if (name === "destroy") {
-    requireStatementPosition(lowerer, call, "socket.destroy()");
+    // The error payload form is not lowered yet; the plain destroy answers
+    // the socket, Node's chaining.
     if (args.length !== 0) {
       lowerer.noLowering(
         `destroy with ${args.length} arguments`,
@@ -3402,24 +3419,44 @@ function lowerNetSocketMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    return { kind: "libCall", fn: "net.sockDestroy", args: [receiver], type: VOID, loc };
+    if (chainingResultDiscarded(lowerer, call)) {
+      return { kind: "libCall", fn: "net.sockDestroy", args: [receiver], type: VOID, loc };
+    }
+    return receiverReturningCall(lowerer, "net.sockDestroy", [receiver], NETSOCKET_T, loc);
   }
   if (name === "setEncoding") {
-    // The req twin: utf8 flips 'data' delivery to strings.
-    requireStatementPosition(lowerer, call, "socket.setEncoding(...)");
-    if (args.length !== 1) {
+    // The req twin: a string encoding flips 'data' delivery to strings;
+    // a missing encoding is 'utf8' (StringDecoder's default). Answers the
+    // socket, Node's chaining.
+    if (args.length > 1) {
       lowerer.noLowering(
         `setEncoding with ${args.length} arguments`,
         call,
-        "the supported form is setEncoding(encoding)",
+        "the supported form is setEncoding([encoding])",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    const enc = lowerer.lowerExprExpecting(args[0]!, STRING);
-    return { kind: "libCall", fn: "net.sockSetEncoding", args: [receiver, enc], type: VOID, loc };
+    const argT = args.length === 0 ? null : lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    let fn: IrLibFn = "net.sockSetEncoding";
+    let enc: IrExpr;
+    if (args.length === 0 || argT?.kind === "string") {
+      enc = args.length === 0 ? strLit("utf8", loc) : lowerer.lowerExprExpecting(args[0]!, STRING);
+    } else {
+      // An untyped, explicit-undefined, optional or plainly wrong encoding:
+      // the runtime applies Node's missing-means-utf8 default and throws its
+      // argument TypeError for a non-string, as StringDecoder does.
+      fn = "net.sockSetEncodingDyn";
+      enc = lowerer.lowerExprExpecting(args[0]!, DYN);
+    }
+    const callArgs = [receiver, enc];
+    if (chainingResultDiscarded(lowerer, call)) {
+      return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+    }
+    return receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
   }
   if (name === "setTimeout") {
-    requireStatementPosition(lowerer, call, "socket.setTimeout(...)");
+    // The idle timeout (< 0 or NaN disables it); Node answers the socket, its
+    // chaining.
     if (args.length !== 1 && args.length !== 2) {
       lowerer.noLowering(
         `setTimeout with ${args.length} arguments`,
@@ -3441,40 +3478,38 @@ function lowerNetSocketMethodCall(
         "use ()",
         [],
       );
-      return {
-        kind: "libCall",
-        fn: "net.sockSetTimeoutCb",
-        args: [receiver, ms, cb],
-        type: VOID,
+      return receiverReturningCall(
+        lowerer,
+        "net.sockSetTimeoutCb",
+        [receiver, ms, cb],
+        NETSOCKET_T,
         loc,
-      };
+      );
     }
-    return { kind: "libCall", fn: "net.sockSetTimeout", args: [receiver, ms], type: VOID, loc };
+    return receiverReturningCall(lowerer, "net.sockSetTimeout", [receiver, ms], NETSOCKET_T, loc);
   }
   if (name === "setKeepAlive") {
-    // SO_KEEPALIVE plus the initial delay (whole seconds, at least 1);
-    // Node's defaults are false and 0. Answers the socket.
-    if (args.length > 2) {
+    // SO_KEEPALIVE plus the tuning knobs, coerced as Node's
+    // node::TCPWrap::SetKeepAlive does: Boolean(enable), ~~(delay/1000)
+    // seconds, and interval/count only when not undefined. Missing arguments
+    // are undefined, and an options object takes its fields instead. Answers
+    // the socket, Node's chaining.
+    if (args.length > 4) {
       lowerer.noLowering(
         `setKeepAlive with ${args.length} arguments`,
         call,
-        "the form is setKeepAlive(enable?, initialDelay?)",
+        "the form is setKeepAlive(enable?, initialDelay?, interval?, count?)",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    const enable: IrExpr =
-      args.length >= 1 ? lowerer.lowerExprExpecting(args[0]!, BOOL) : boolLit(false, loc);
-    const delay: IrExpr =
-      args.length === 2
-        ? lowerer.lowerExprExpecting(args[1]!, F64)
-        : { kind: "numLit", value: 0, type: F64, loc };
-    return {
-      kind: "libCall",
-      fn: "net.sockSetKeepAlive",
-      args: [receiver, enable, delay],
-      type: NETSOCKET_T,
-      loc,
-    };
+    const callArgs: IrExpr[] = [receiver];
+    for (let i = 0; i < 4; i++) {
+      const arg = args[i];
+      callArgs.push(
+        arg === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(arg, DYN),
+      );
+    }
+    return { kind: "libCall", fn: "net.sockSetKeepAlive", args: callArgs, type: NETSOCKET_T, loc };
   }
   if (name === "pause" || name === "resume") {
     // Flow control (the struct's flag comments in scr_net.c): pause holds
@@ -3500,7 +3535,7 @@ function lowerNetSocketMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     const enable: IrExpr =
-      args.length === 1 ? lowerer.lowerExprExpecting(args[0]!, BOOL) : boolLit(true, loc);
+      args.length === 1 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
     return {
       kind: "libCall",
       fn: "net.sockSetNoDelay",

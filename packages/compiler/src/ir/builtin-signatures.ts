@@ -2576,6 +2576,9 @@ function buildLibFnSignatures() {
     "net.sockSetTimeout": { argTypes: [NETSOCKET_T, F64], result: VOID },
     /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings throw the "not supported yet" Error, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
     "net.sockSetEncoding": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+    /** The untyped argument: a missing or undefined encoding means utf8, a
+     * non-string throws Node's argument TypeError (may throw). */
+    "net.sockSetEncodingDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "http.reqSetEncoding": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "net.sockOnTimeout": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2721,7 +2724,9 @@ function buildLibFnSignatures() {
      * the read half ends. */
     "net.sockPause": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
-    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
+    /** setNoDelay(enable): the argument as written (undefined means true);
+     * answers the socket. */
+    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
@@ -2741,7 +2746,13 @@ function buildLibFnSignatures() {
     "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
-    "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+    /** setKeepAlive(enable, initialDelay, interval, count): the arguments
+     * as written (a missing one is the dyn undefined value); answers the
+     * socket. */
+    "net.sockSetKeepAlive": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, DYN],
+      result: NETSOCKET_T,
+    },
     "net.sockOnReady": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,

@@ -6139,6 +6139,71 @@ static void scr_stream_rl_off(ScrStream *s, const char *name, ScrClosure *cb) {
   scr_str_release(n);
 }
 
+/* A terminal interface's 'resize' listener on a stream output. Node adds
+ * it at construction and removes it at close; the entry here holds the
+ * closure the stream's emitter owns, so close can remove that exact
+ * registration. */
+typedef struct ScrRlResizeHook {
+  ScrStream *s;
+  double id;
+  ScrDyn *cb; /* +1: the interface's refresh listener */
+  struct ScrRlResizeHook *next;
+} ScrRlResizeHook;
+
+static SCR_TL ScrRlResizeHook *scr_rl_resize_hooks = NULL;
+
+static void scr_stream_rl_hooks_free(void);
+
+static void scr_stream_rl_atexit_once(void) {
+  static SCR_TL bool registered = false;
+  if (registered) return;
+  registered = true;
+  scr_atexit(scr_stream_rl_hooks_free);
+}
+
+/* The refresh listener is a function value, as Node's onresize is: an
+ * untyped emit('resize') calls it the way it calls the program's own
+ * listeners. */
+static ScrDyn *scr_stream_rl_resize_thunk(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  scr_rl_resize(scr_stream_rl_id(cb));
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+static void scr_stream_rl_watch_resize(void *sv, double id, bool on) {
+  ScrStream *s = (ScrStream *)sv;
+  ScrStr *name = scr_str_new("resize", 6);
+  for (ScrRlResizeHook *h = scr_rl_resize_hooks; h; h = h->next) {
+    if (h->s != s || h->id != id) continue;
+    if (!on) {
+      scr_emitter_release(scr_emitter_off_dyn((ScrEmitter *)s, name, h->cb));
+      for (ScrRlResizeHook **at = &scr_rl_resize_hooks; *at; at = &(*at)->next) {
+        if (*at != h) continue;
+        *at = h->next;
+        break;
+      }
+      scr_dyn_release(h->cb);
+      free(h);
+    }
+    scr_str_release(name);
+    return;
+  }
+  if (on) {
+    scr_stream_rl_atexit_once();
+    ScrRlResizeHook *h = calloc(1, sizeof *h);
+    if (!h) scr_stream_oom();
+    ScrClosure *clo = scr_stream_rl_listener((void *)&scr_stream_rl_resize_thunk, id);
+    h->s = s;
+    h->id = id;
+    h->cb = scr_dyn_new_func(clo, scr_stream_rl_resize_thunk, 0, "", "refreshLine");
+    h->next = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h;
+    scr_emitter_release(scr_emitter_on_flex((ScrEmitter *)s, name, h->cb, false, false));
+  }
+  scr_str_release(name);
+}
+
 static void scr_stream_rl_pause(void *s) { scr_stream_release(scr_stream_pause(s)); }
 static void scr_stream_rl_resume(void *s) { scr_stream_release(scr_stream_resume(s)); }
 static void scr_stream_rl_write(void *s, ScrStr *text) { scr_stream_write_str(s, text, NULL); }
@@ -6201,7 +6266,7 @@ static const ScrRlIo scr_stream_rl_io = {
     &scr_stream_rl_write,          &scr_stream_rl_write_cb, &scr_stream_rl_on_event,
     &scr_stream_rl_off_event,      &scr_stream_rl_listener_count,
     &scr_stream_rl_emit2,          &scr_stream_rl_retain,   &scr_stream_rl_drop_data,
-    &scr_stream_rl_release,
+    &scr_stream_rl_release,        &scr_stream_rl_watch_resize,
 };
 
 /* readline.emitKeypressEvents(stream, interface) */
@@ -6213,6 +6278,11 @@ static void scr_stream_rl_hooks_free(void) {
   while (scr_rl_hooks) {
     ScrRlHook *h = scr_rl_hooks;
     scr_rl_hooks = h->next;
+    free(h);
+  }
+  while (scr_rl_resize_hooks) {
+    ScrRlResizeHook *h = scr_rl_resize_hooks;
+    scr_rl_resize_hooks = h->next;
     free(h);
   }
 }
@@ -6250,11 +6320,7 @@ double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double
                           out ? scr_stream_retain(out) : NULL, out_stdout, crlf_delay, prompt,
                           signal, add);
   if (in == NULL) return id;
-  static SCR_TL bool registered = false;
-  if (!registered) {
-    registered = true;
-    scr_atexit(scr_stream_rl_hooks_free);
-  }
+  scr_stream_rl_atexit_once();
   ScrRlHook *h = calloc(1, sizeof *h);
   if (!h) scr_stream_oom();
   h->s = in;

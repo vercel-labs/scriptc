@@ -839,6 +839,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.cursor",
   "rl.cursorPos",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.history",
   "rl.isPromises",
   "rl.isTerminal",

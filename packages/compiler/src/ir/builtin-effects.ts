@@ -746,6 +746,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "rl.promptWith",
   "rl.setPromptDyn",
   "rl.getPrompt",
+  "rl.getPromptDyn",
   "rl.cursorPos",
   "rl.inputFromDyn",
   "rl.outputFromDyn",

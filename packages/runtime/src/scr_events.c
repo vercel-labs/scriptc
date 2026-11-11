@@ -1356,6 +1356,14 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
 #endif
 }
 
+/* The listener a readline terminal interface keeps on a process output:
+ * a function value of the runtime's own, in the same list the program's
+ * listeners use, so a resize fires them all in registration order. */
+void scr_stdio_resize_listen(double fd, ScrDyn *listener, bool remove) {
+  if (fd != 1 && fd != 2) return;
+  scr_stdio_resize_listener(&scr_stdio_streams[fd == 2 ? 2 : 1], listener, remove, false);
+}
+
 /* stream.write(chunk[, encoding][, callback]) on a process output stream:
  * Node's Writable.write validation, then a synchronous descriptor write.
  * Returns +1 (true/false) or NULL with an exception pending.

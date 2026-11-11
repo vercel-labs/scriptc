@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readline-prompt-values.cjs"
+ ],
+ "diags": []
+}

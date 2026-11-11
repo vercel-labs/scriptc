@@ -6254,8 +6254,10 @@ function buildLibFnSignatures() {
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },
     "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
     "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.verifyOneshotCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
     "crypto.publicEncrypt": { argTypes: [DYN, DYN], result: DYN },
     "crypto.privateDecrypt": { argTypes: [DYN, DYN], result: DYN },
     "crypto.privateEncrypt": { argTypes: [DYN, DYN], result: DYN },
@@ -6266,8 +6268,8 @@ function buildLibFnSignatures() {
     "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
     "crypto.fipsGet": { argTypes: [], result: F64 },
-    "crypto.createSign": { argTypes: [DYN], result: DYN },
-    "crypto.createVerify": { argTypes: [DYN], result: DYN },
+    "crypto.createSign": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.createVerify": { argTypes: [DYN, DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
      * result (map and filter of a Buffer return a Buffer). */
     "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },

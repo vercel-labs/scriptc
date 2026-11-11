@@ -1567,6 +1567,12 @@
  },
  {
   "file": "scr_pki.c",
+  "function": "sp_encode",
+  "message": "encoding that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_pki.c",
   "function": "sp_stream_fence",
   "message": "This Sign or Verify stream member has no lowering when called through an untyped value",
   "code": "SC2020"

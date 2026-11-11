@@ -11398,14 +11398,19 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
   const ScrKeyObject *key = h;
   if (strcmp(method, "export") == 0) return scr_key_object_export(key, argc ? args[0] : NULL);
   if (strcmp(method, "equals") == 0) {
+    ScrDyn *undefined = NULL;
+    const ScrDyn *other_value = argc ? args[0] : (undefined = scr_dyn_undefined());
     size_t len;
-    const unsigned char *other = argc ? scr_key_object_bytes(args[0], &len) : NULL;
+    const unsigned char *other = scr_key_object_bytes(other_value, &len);
     if (!other) {
-      ScrDyn *undefined = scr_dyn_undefined();
-      scr_key_object_type_fail("otherKeyObject", argc ? args[0] : undefined);
-      scr_dyn_release(undefined);
-      return NULL;
+      /* Another KeyObject (a private or public key) is never equal to a
+       * secret key; anything else is the argument error. */
+      bool key_object = scr_crypto_is_key_object(other_value);
+      if (!key_object) scr_key_object_type_fail("otherKeyObject", other_value);
+      if (undefined) scr_dyn_release(undefined);
+      return key_object ? scr_dyn_new_bool(false) : NULL;
     }
+    if (undefined) scr_dyn_release(undefined);
     bool equal = len == key->len;
     unsigned char diff = 0;
     for (size_t i = 0; equal && i < len; i++) diff |= other[i] ^ key->data[i];
@@ -11468,9 +11473,9 @@ static void scr_key_object_install(void) {
   scr_dyn_handle_install(SCR_DYNH_KEY_OBJECT, &scr_key_object_ops);
 }
 
-/* createSecretKey(key[, encoding]): a string decodes with a string
- * encoding (UTF-8 otherwise); views, ArrayBuffers and SharedArrayBuffers
- * are copied. */
+/* createSecretKey(key[, encoding]): a string decodes as Buffer.from does
+ * (a non-string encoding, one that is not a known name, or "buffer" reads
+ * as UTF-8); views, ArrayBuffers and SharedArrayBuffers are copied. */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   if (key->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(key);
@@ -11481,10 +11486,18 @@ ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding) {
   }
   ScrBytes *bytes;
   if (key->kind == SCR_DYN_STR) {
-    bool named = encoding->kind == SCR_DYN_STR;
-    ScrStr *utf8 = named ? NULL : scr_str_new("utf8", 4);
-    bytes = scr_bytes_from_str_checked(key->v.str, named ? encoding->v.str : utf8);
+    const ScrStr *name = encoding->kind == SCR_DYN_STR ? encoding->v.str : NULL;
+    ScrStr *normalized = NULL;
+    if (name && (name->len == 0 || (name->len == 6 && memcmp(name->data, "buffer", 6) == 0))) name = NULL;
+    if (name) {
+      normalized = scr_bytes_normalize_encoding(name);
+      if (!normalized) return NULL;
+      name = normalized;
+    }
+    ScrStr *utf8 = name ? NULL : scr_str_new("utf8", 4);
+    bytes = scr_bytes_from_str(key->v.str, name ? name : utf8);
     if (utf8) scr_str_release(utf8);
+    if (normalized) scr_str_release(normalized);
   } else if (key->kind == SCR_DYN_BYTES || scr_buffer_storage_is(key)) {
     bytes = scr_bytes_buffer_source(key);
   } else {

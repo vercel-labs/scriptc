@@ -195,6 +195,7 @@ declare module "crypto" {
     padding?: number | undefined;
     saltLength?: number | undefined;
     dsaEncoding?: "der" | "ieee-p1363" | undefined;
+    context?: ScriptcBufferView | undefined;
   }
   export interface SignPrivateKeyInput extends PrivateKeyInput, SigningOptions {}
   export interface SignKeyObjectInput extends SigningOptions {
@@ -214,12 +215,25 @@ declare module "crypto" {
     data: ScriptcBufferView,
     key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
   ): Buffer;
+  export function sign(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | SignKeyObjectInput | SignPrivateKeyInput,
+    callback: (err: Error | null, signature: Buffer) => void,
+  ): void;
   export function verify(
     algorithm: string | null | undefined,
     data: ScriptcBufferView,
     key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
     signature: ScriptcBufferView,
   ): boolean;
+  export function verify(
+    algorithm: string | null | undefined,
+    data: ScriptcBufferView,
+    key: KeyObject | string | Buffer | VerifyKeyObjectInput | VerifyPublicKeyInput,
+    signature: ScriptcBufferView,
+    callback: (err: Error | null, result: boolean) => void,
+  ): void;
   /* RSA's public-key operations. The key is key material, a KeyObject, or
    * an options object whose own `key` is either, with the padding and OAEP
    * options beside it. */
@@ -279,10 +293,13 @@ declare module "crypto" {
       signatureEncoding?: BinaryToTextEncoding,
     ): boolean;
   }
-  export function createSign(algorithm: string): Sign;
-  export function createVerify(algorithm: string): Verify;
+  export function createSign(algorithm: string, options?: import("stream").WritableOptions): Sign;
+  export function createVerify(
+    algorithm: string,
+    options?: import("stream").WritableOptions,
+  ): Verify;
   export function createSecretKey(key: ScriptcBufferView | ArrayBufferLike): KeyObject;
-  export function createSecretKey(key: string, encoding: BufferEncoding): KeyObject;
+  export function createSecretKey(key: string, encoding?: BufferEncoding): KeyObject;
   export function generateKeySync(type: "hmac" | "aes", options: { length: number }): KeyObject;
   export function generateKey(
     type: "hmac" | "aes",
@@ -295,7 +312,7 @@ declare module "crypto" {
   export function randomUUID(options?: RandomUUIDOptions): string;
   export function randomUUIDv7(options?: RandomUUIDOptions): string;
   export function randomBytes(size: number): Buffer;
-  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "binary";
+  export type BinaryToTextEncoding = "base64" | "base64url" | "hex" | "latin1" | "binary";
   export type CharacterEncoding = "utf8" | "utf-8" | "utf16le" | "utf-16le" | "latin1";
   export type LegacyCharacterEncoding = "ascii" | "binary" | "ucs2" | "ucs-2";
   export type Encoding = BinaryToTextEncoding | CharacterEncoding | LegacyCharacterEncoding;

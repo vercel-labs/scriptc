@@ -331,6 +331,11 @@ ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);
 ScrDyn *scr_crypto_verify_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature);
+/* crypto.sign and crypto.verify with a callback: the argument errors
+ * throw, the operation's error reaches the callback in a later macrotask. */
+void scr_crypto_sign_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *callback);
+void scr_crypto_verify_oneshot_async(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key, ScrDyn *signature,
+                                     ScrDyn *callback);
 /* RSA's public-key operations: the ciphertext, or the recovered message. */
 ScrDyn *scr_crypto_public_encrypt(ScrDyn *key, ScrDyn *buffer);
 ScrDyn *scr_crypto_private_decrypt(ScrDyn *key, ScrDyn *buffer);
@@ -349,8 +354,8 @@ double scr_crypto_fips_get(void);
 /* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
  * with the callback, which receives it in a later macrotask. */
 ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);
-ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
-ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
+ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm, ScrDyn *options);
+ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm, ScrDyn *options);
 bool scr_crypto_is_asymmetric_key(const ScrDyn *value);
 const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
 /* X509Certificate fields (scr_x509.c): raw decodes the constructor's input (+1 Buffer,

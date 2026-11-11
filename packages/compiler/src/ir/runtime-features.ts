@@ -980,7 +980,9 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.generateKeyPairSync",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
   "crypto.publicEncrypt",
   "crypto.privateDecrypt",
   "crypto.privateEncrypt",
@@ -1723,6 +1725,8 @@ const RUNTIME_FEATURE_RULES = {
       "crypto.fipsGet",
       "crypto.generateKeyPairCb",
       "crypto.generateKeyPairSync",
+      "crypto.signOneshotCb",
+      "crypto.verifyOneshotCb",
       // existsSync's DEP0187 report (scr_fs_exists_dyn.c) defers through
       // this unit's warning queue.
       "fs.existsSyncValue",

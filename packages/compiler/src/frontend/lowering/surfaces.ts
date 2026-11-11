@@ -1701,8 +1701,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
-      createSign: { fn: "crypto.createSign", params: [DYN], result: DYN },
-      createVerify: { fn: "crypto.createVerify", params: [DYN], result: DYN },
+      createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
+      createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
       generateKeyPair: { fn: "crypto.generateKeyPairCb", params: [], result: VOID },
       sign: { fn: "crypto.signOneshot", params: [], result: DYN },

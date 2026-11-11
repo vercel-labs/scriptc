@@ -831,7 +831,7 @@ export function lowerCryptoModuleCall(
   const prime = lowerPrimeCall(lowerer, expr, bi.member, args, loc);
   if (prime) return prime;
   if (bi.member === "createSecretKey") {
-    if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
+    if (args.length > 2 || args.some(ts.isSpreadElement))
       lowerer.noLowering(
         `crypto.createSecretKey with ${args.length} arguments`,
         expr,
@@ -840,7 +840,10 @@ export function lowerCryptoModuleCall(
     return {
       kind: "libCall",
       fn: "crypto.createSecretKey",
-      args: [lowerer.lowerExprExpecting(args[0]!, DYN), dynArg(lowerer, args[1], loc)],
+      args: [
+        args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynArg(lowerer, undefined, loc),
+        dynArg(lowerer, args[1], loc),
+      ],
       type: DYN,
       loc,
     };
@@ -1616,34 +1619,64 @@ function lowerPkiCall(
       3,
       "generateKeyPair(type, [options,] callback)",
     ],
-    sign: ["crypto.signOneshot", 3, 3, "sign(algorithm, data, key)"],
-    verify: ["crypto.verifyOneshot", 4, 4, "verify(algorithm, data, key, signature)"],
+    sign: ["crypto.signOneshot", 3, 4, "sign(algorithm, data, key[, callback])"],
+    verify: ["crypto.verifyOneshot", 4, 5, "verify(algorithm, data, key, signature[, callback])"],
     publicEncrypt: ["crypto.publicEncrypt", 2, 2, "publicEncrypt(key, buffer)"],
     privateDecrypt: ["crypto.privateDecrypt", 2, 2, "privateDecrypt(key, buffer)"],
     privateEncrypt: ["crypto.privateEncrypt", 2, 2, "privateEncrypt(key, buffer)"],
     publicDecrypt: ["crypto.publicDecrypt", 2, 2, "publicDecrypt(key, buffer)"],
     diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
-    createSign: ["crypto.createSign", 1, 1, "createSign(algorithm)"],
-    createVerify: ["crypto.createVerify", 1, 1, "createVerify(algorithm)"],
+    createSign: ["crypto.createSign", 0, 2, "createSign(algorithm[, options])"],
+    createVerify: ["crypto.createVerify", 0, 2, "createVerify(algorithm[, options])"],
     setEngine: ["crypto.setEngine", 1, 2, "setEngine(engine[, flags])"],
   };
   const form = forms[member];
   if (!form) return null;
-  const [fn, min, max, supported] = form;
+  const [baseFn, min, max, supported] = form;
   if (args.length < min || args.length > max)
     lowerer.noLowering(
       `crypto.${member} with ${args.length} arguments`,
       expr,
       `${supported} is supported`,
     );
+  // One-shot helpers take an optional trailing callback, which selects the
+  // asynchronous entry point. Node treats an explicit undefined as no
+  // callback and answers synchronously, so the literal undefined stays on
+  // the synchronous entry point.
+  const callbackIndex = member === "sign" ? 3 : member === "verify" ? 4 : -1;
+  const callbackArg = callbackIndex >= 0 ? args[callbackIndex] : undefined;
+  const literalUndefined =
+    callbackArg !== undefined &&
+    callbackArg.kind === ts.SyntaxKind.Identifier &&
+    callbackArg.getText() === "undefined";
+  let fn: IrLibFn = baseFn;
+  if (member === "sign" && args.length === 4 && !literalUndefined) fn = "crypto.signOneshotCb";
+  if (member === "verify" && args.length === 5 && !literalUndefined) fn = "crypto.verifyOneshotCb";
   // generateKeyPair(type, callback): the runtime reads a function in the
   // options position as the callback, as Node does.
   const values: IrExpr[] = [];
-  for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
-  if (fn === "crypto.generateKeyPairCb" || fn === "crypto.setEngine")
+  const valueCount = literalUndefined
+    ? callbackIndex
+    : fn === "crypto.signOneshot"
+      ? 3
+      : fn === "crypto.verifyOneshot"
+        ? 4
+        : max;
+  for (let i = 0; i < valueCount; i++) values.push(dynArg(lowerer, args[i], loc));
+  if (
+    fn === "crypto.generateKeyPairCb" ||
+    fn === "crypto.signOneshotCb" ||
+    fn === "crypto.verifyOneshotCb" ||
+    fn === "crypto.setEngine"
+  )
     return { kind: "libCall", fn, args: values, type: VOID, loc };
   const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
-  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const callType = lowerer.typeOf(expr);
+  /* A literal undefined callback fails overload resolution (the checker
+   * types the call never); it was rewritten to the synchronous entry point,
+   * whose result stays checked-dynamic. */
+  if ((callType.flags & ts.TypeFlags.Never) !== 0) return call;
+  const result = lowerer.mapTypeOf(callType);
   // diffieHellman's callback form answers undefined.
   if (result === null || result.kind === "dyn" || result.kind === "void") return call;
   return lowerer.coerceInto(expr, call, result);

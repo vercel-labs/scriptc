@@ -19776,10 +19776,16 @@
           "tests/corpus/crypto-rsa-padding-errors.ts",
           "tests/corpus/crypto-rsa-recover-padding.ts",
           "tests/corpus/crypto-rsa-roundtrip.ts",
+          "tests/corpus/crypto-secret-key-inputs.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-options.ts",
           "tests/corpus/crypto-sign-pipe.ts",
           "tests/corpus/crypto-sign-writable.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-write-encoding.ts",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/corpus/node-crypto-cipher-aad-state.cjs",
           "tests/corpus/node-crypto-cipher-key-arguments.cjs",
           "tests/corpus/node-crypto-hash-arguments.cjs",
@@ -20499,6 +20505,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20556,6 +20567,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20579,11 +20595,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.createSecretKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20617,6 +20634,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20651,6 +20673,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20754,11 +20781,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKey",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20792,6 +20820,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20826,6 +20859,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -20849,11 +20887,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:crypto.generateKeySync",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21783,6 +21822,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -21844,6 +21888,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23814,11 +23863,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:KeyObject",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23841,11 +23891,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.equals",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23868,11 +23919,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:keyObject.export",
         "tests": [
           "tests/corpus/5445-crypto-secret-key-objects.ts",
-          "tests/corpus/5446-crypto-secret-key-errors.js"
+          "tests/corpus/5446-crypto-secret-key-errors.js",
+          "tests/corpus/crypto-secret-key-inputs.ts"
         ]
       },
       "anchorSource": "exact"
@@ -23929,6 +23981,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -23963,6 +24020,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24120,6 +24182,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24154,6 +24221,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24188,6 +24260,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24222,6 +24299,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24256,6 +24338,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },
@@ -24290,6 +24377,11 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-sign-write-after-end.ts",
           "tests/corpus/crypto-sign-pipe.ts",
+          "tests/corpus/crypto-sign-options.ts",
+          "tests/corpus/crypto-sign-option-types.mjs",
+          "tests/corpus/crypto-sign-async-errors.ts",
+          "tests/corpus/crypto-sign-async-arguments.mjs",
+          "tests/corpus/crypto-signer-encodings.ts",
           "tests/fixtures/node-types/keys.ts"
         ]
       },

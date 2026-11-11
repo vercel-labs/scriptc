@@ -60082,8 +60082,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60105,8 +60105,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60128,8 +60128,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60151,8 +60151,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60174,8 +60174,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60197,8 +60197,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60220,8 +60220,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60243,8 +60243,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60266,8 +60266,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60289,8 +60289,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60312,8 +60312,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60335,8 +60335,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -60358,8 +60358,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -60381,8 +60381,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -60404,8 +60404,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -60427,8 +60427,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -60450,8 +60450,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -60473,8 +60473,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61117,8 +61117,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61140,8 +61140,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61163,8 +61163,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61186,8 +61186,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61209,8 +61209,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61232,8 +61232,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61255,8 +61255,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61278,8 +61278,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61301,8 +61301,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61324,8 +61324,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61347,8 +61347,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61370,8 +61370,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Reports Node's value for the readable or writable state at the point it is read: construction in byte and object mode, buffered and consumed chunks, end(), 'finish', destroy(), and the error the stream carries.",
         "verification": "test-backed"
       }
     },
@@ -61393,8 +61393,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61416,8 +61416,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61439,8 +61439,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61462,8 +61462,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61485,8 +61485,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61508,8 +61508,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61531,8 +61531,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61945,8 +61945,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },
@@ -61968,8 +61968,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Fires once per lifecycle step with Node's order and arguments, from byte-mode, object-mode and transform streams, including a failed write, an aborted read, and a destroyed stream.",
         "verification": "test-backed"
       }
     },

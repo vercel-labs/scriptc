@@ -8329,6 +8329,21 @@ const char *scr_dyn_specific_type(const ScrDyn *cb, char *detail, size_t cap) {
       bool keys = false;
       for (size_t i = 0; i < cb->v.obj.len && !keys; i++) keys = scr_dyn_obj_dict_entries(cb)[i].enumerable;
       d = keys ? "[Object: null prototype]" : "[Object: null prototype] {}";
+    } else if (scr_dyn_obj_get(cb, "%error", 6) != NULL) {
+      /* Node names the constructor of an error value, so its view reports
+       * the error class rather than "Object". */
+      ScrError *err = scr_errdyn_err_of(cb);
+      if (err != NULL && err->vt == &scr_error_vts[SCR_ERR_DOMEX]) {
+        d = "an instance of DOMException";
+      } else if (err != NULL) {
+        ScrStr *name = scr_error_default_name(err);
+        snprintf(detail, cap, "an instance of %.*s", (int)name->len, name->data);
+        scr_str_release(name);
+        d = detail;
+      } else {
+        d = "an instance of Error";
+      }
+      scr_error_release(err);
     } else {
       d = "an instance of Object";
     }

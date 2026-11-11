@@ -8579,10 +8579,10 @@ static void scr_stream_emit_readable_now(ScrStream *s) {
   }
   st->r.need_readable = st->r.flowing != 1 && !st->r.ended &&
                         st->r.length <= st->r.hwm;
+  /* Node's emitReadable_ only flows; endReadable() is reached from read()
+   * when it asks past the EOF. A paused stream with a 'readable' listener
+   * therefore stays open until its consumer reads, even after EOF. */
   scr_stream_flow(s);
-  if (!scr_exc_pending() && st->r.ended && st->r.length == 0) {
-    scr_stream_end_readable(s);
-  }
 }
 
 /* ── tick dispatch ────────────────────────────────────────────────────── */

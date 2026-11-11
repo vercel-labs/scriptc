@@ -4363,6 +4363,33 @@ ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
       if (match) return scr_str_new(match, strlen(match));
     }
   }
+  ScrStr *message = scr_insp_unknown_encoding_message(enc);
+  if (!message) return NULL;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(message);
+  return NULL;
+}
+
+/* The ERR_UNKNOWN_ENCODING message for a value that never names an
+ * encoding: `Unknown encoding: %s`, the value rendered as util.format
+ * renders an argument (so a Buffer's contents, a class's String, an
+ * object's inspection). +1, or NULL with the exception pending when the
+ * rendering calls program code that throws. scr_stream.c, which may be
+ * linked without this unit, reaches it through a weak reference. */
+ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) {
+  /* format's %s prints String(value) for a value whose class has a
+   * built-in toString: a Buffer and a numeric typed array do (their
+   * contents), a DataView does not (Node inspects it). */
+  if (enc->kind == SCR_DYN_BYTES && !enc->v.bytes->is_data_view) {
+    ScrStr *text = scr_dyn_string_coerce_js(enc);
+    if (!text) return NULL;
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "Unknown encoding: ");
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+    return scr_jb_finish(&b);
+  }
   ScrStr *format = scr_str_new("Unknown encoding: %s", 20);
   ScrDyn *args[2] = {scr_dyn_new_str(format), (ScrDyn *)enc};
   scr_str_release(format);
@@ -4370,10 +4397,7 @@ ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
   scr_insp_format_defaults(&options, "new StringDecoder");
   ScrStr *message = scr_insp_format(args, 2, &options);
   scr_dyn_release(args[0]);
-  if (!message) return NULL;
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
-  scr_str_release(message);
-  return NULL;
+  return message;
 }
 
 /* The formatter over arguments that are all strings, numbers, booleans,

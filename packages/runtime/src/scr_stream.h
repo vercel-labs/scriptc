@@ -312,14 +312,24 @@ bool scr_stream_push_str(ScrStream *s, ScrStr *str);
 /* push(chunk, enc): the per-call literal encoding (canonical); overrides
  * the stream's defaultEncoding. Borrows both. */
 bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
+/* push(chunk, encoding) with both values as checked-dynamic values, as
+ * Node's method dispatches them by type. Borrows both. */
+bool scr_stream_push_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding);
 /* The defaultEncoding option's push side: how push(string) decodes chunks
  * (Buffer.from(chunk, enc)). Canonical literal, never "utf8". Receiver
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+/* unshift(chunk, enc): the per-call literal encoding (canonical). The chunk
+ * is read with it, then converted to the stream's decoder encoding. Borrows
+ * all three. */
+bool scr_stream_unshift_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+/* unshift(chunk, encoding) with both values as checked-dynamic values, as
+ * Node's method dispatches them by type. Borrows both. */
+bool scr_stream_unshift_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -469,6 +479,11 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s,
                            ScrClosure *cb /*moves*/); /* recv +1 */
 void scr_stream_cork(ScrStream *s);
 void scr_stream_uncork(ScrStream *s);
+/* The error the write/end completion running its callback published (Node's
+ * error-first callback argument), as a checked-dynamic value: +1, null when
+ * that completion had none. Callbacks that run outside a completion read
+ * null. */
+ScrDyn *scr_stream_cb_error_dyn(void);
 
 #ifdef SCR_STREAM_WRITE_ERRORS
 /* An error-first write callback: wraps the user's zero-argument closure
@@ -763,12 +778,16 @@ ScrStream *scr_stream_option_values(ScrStream *s, struct ScrDyn *decode_strings,
 void scr_stream_set_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_write_encoding(ScrStream *s, ScrStr *enc);
 ScrStream *scr_stream_set_default_encoding(ScrStream *s, struct ScrDyn *enc);
-/* setEncoding(enc) with an encoding known only at run time (the
- * Readable.from options' form): a falsy value installs no decoder
- * (Node's `if (options.encoding)`), a name the decoder does not know
- * throws ERR_UNKNOWN_ENCODING, and readableEncoding answers the spelling
- * as given. Borrows enc; answers the stream (+1), or NULL with the
- * exception pending. */
+/* setEncoding(enc) with an encoding of any type: Node's StringDecoder
+ * argument — null, undefined and "" are utf8, an encoding name in any
+ * case installs its canonical decoder, anything else throws
+ * ERR_UNKNOWN_ENCODING formatted with %s. Borrows enc; answers the stream
+ * (+1), or NULL with the exception pending. */
+ScrStream *scr_stream_set_encoding_value(ScrStream *s, struct ScrDyn *enc);
+/* The Readable.from `encoding` option: a falsy value installs no decoder
+ * (Node's `if (options.encoding)`), and a truthy one installs the decoder
+ * while readableEncoding answers the spelling as given. Borrows enc;
+ * answers the stream (+1), or NULL with the exception pending. */
 ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, struct ScrDyn *enc);
 ScrDyn *scr_stream_done_dyn_c(ScrClosure *clo, ScrDyn *const *args, size_t argc);
 /* The native state's extra operations: view adds its members to the

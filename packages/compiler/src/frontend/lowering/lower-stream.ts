@@ -7499,8 +7499,11 @@ export function lowerStreamMethodCall(
       const probed = tryLowerExpression(lowerer, node);
       if (probed?.type.kind === "string") return "string";
       if (probed?.type.kind === "bytes" && probed.type.elem === "u8") return "bytes";
-      if (probed?.type.kind === "dyn") return "dyn";
       if (probed?.type.kind === "nullT") return "null";
+      // any other probed value (a number, record, array, class instance or
+      // void) is a checked-dynamic chunk, which the runtime dispatches by
+      // tag; a function has no lowering, as below.
+      if (probed !== null && probed.type.kind !== "func") return "dyn";
     }
     // Any other value is a checked-dynamic chunk: one entry on an
     // object-mode side, Node's chunk type error on a byte-mode one
@@ -7529,14 +7532,13 @@ export function lowerStreamMethodCall(
       lowerer.noLowering(
         `${member} with ${args.length} arguments`,
         call,
-        'the supported forms are (chunk) and (chunk, "utf8")',
+        "the supported forms are (chunk) and (chunk, encoding)",
       );
     }
     // push(chunk, enc) with a LITERAL encoding: the per-call decode
     // (Buffer.from(chunk, enc)) — an explicit encoding (utf8 included)
     // overrides the stream's defaultEncoding; unknown literals throw
-    // Node's ERR_UNKNOWN_ENCODING when the push evaluates. unshift keeps
-    // the utf8-only fence below.
+    // Node's ERR_UNKNOWN_ENCODING when the push evaluates.
     if (member === "push" && args[1] !== undefined && chunkKind(args[0]!) === "string") {
       const t = lowerer.typeOf(args[1]!);
       if (t.isStringLiteralType()) {
@@ -7561,6 +7563,45 @@ export function lowerStreamMethodCall(
         };
       }
     }
+    if (member === "unshift" && args[1] !== undefined) {
+      // unshift(chunk, enc): the chunk is read with the literal encoding
+      // (Buffer.from), then converted to the decoder's encoding. An
+      // encoding known only at run time dispatches by dyn tag, where a
+      // falsy value keeps the stream's defaultEncoding, a non-string one
+      // reads as utf8, and an unknown name throws ERR_UNKNOWN_ENCODING.
+      const encT = lowerer.typeOf(args[1]!);
+      if (encT.isStringLiteralType() && chunkKind(args[0]!) === "string") {
+        const canonical = knownBufEncoding(encT.value);
+        if (canonical === undefined) {
+          return nodeThrowExpr(
+            1,
+            "ERR_UNKNOWN_ENCODING",
+            `Unknown encoding: ${encT.value}`,
+            BOOL,
+            loc,
+          );
+        }
+        const receiver = streamReceiverExpr(lowerer, access.expression);
+        const chunk = lowerer.lowerExprExpecting(args[0]!, STRING);
+        return {
+          kind: "libCall",
+          fn: "readable.unshiftStrEnc",
+          args: [receiver, chunk, strLit(canonical, loc)],
+          type: BOOL,
+          loc,
+        };
+      }
+      const receiver = streamReceiverExpr(lowerer, access.expression);
+      const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);
+      const encoding = lowerer.lowerExprExpecting(args[1]!, DYN);
+      return {
+        kind: "libCall",
+        fn: "readable.unshiftDynEnc",
+        args: [receiver, chunk, encoding],
+        type: BOOL,
+        loc,
+      };
+    }
     checkUtf8Encoding(lowerer, member, args[1]);
     const kind = chunkKind(args[0]!);
     if ((kind === "null" || kind === "union" || kind === "dyn") && member === "unshift") {
@@ -7572,7 +7613,7 @@ export function lowerStreamMethodCall(
         kind: "libCall",
         fn: "readable.unshiftDyn",
         args: [receiver, chunk],
-        type: VOID,
+        type: BOOL,
         loc,
       };
     }
@@ -7621,7 +7662,7 @@ export function lowerStreamMethodCall(
       kind: "libCall",
       fn,
       args: [receiver, chunk],
-      type: member === "push" ? BOOL : VOID,
+      type: BOOL, // push and unshift both answer Node's canPushMore
       loc,
     };
   }
@@ -8128,20 +8169,60 @@ export function lowerStreamMethodCall(
 
   if (member === "setEncoding") {
     requireSide(readableSide, "setEncoding");
-    if (args.length !== 1) {
-      lowerer.noLowering(
-        `setEncoding with ${args.length} arguments`,
-        call,
-        "one literal encoding is the supported form",
-      );
-    }
-    const enc = bufEncoding(lowerer, "setEncoding", args[0]!);
+    if (args.length !== 1) lowerer.noLowering(`setEncoding with ${args.length} arguments`, call);
     const receiver = streamReceiverExpr(lowerer, access.expression);
+    const encT = lowerer.typeOf(args[0]!);
+    if (encT.isStringLiteralType()) {
+      const enc = knownBufEncoding(encT.value);
+      if (enc !== undefined) {
+        return {
+          kind: "libCall",
+          fn: "readable.setEncoding",
+          args: [receiver, strLit(enc, loc)],
+          type: receiver.type,
+          loc,
+        };
+      }
+    }
+    // Any other value is Node's StringDecoder argument: null, undefined and
+    // '' name utf8, an encoding name in any ASCII case installs its
+    // canonical decoder, and anything else throws ERR_UNKNOWN_ENCODING with
+    // the value formatted as util.format's %s does. The receiver evaluates
+    // first, then the encoding, as the call does.
+    const receiverType = receiver.type;
+    const receiverLocal = lowerer.declareHiddenLocal("%setEncodingReceiver", receiverType);
+    const encodingLocal = lowerer.declareHiddenLocal("%setEncodingName", STRING);
+    const textual = (type: ts.Type): boolean => {
+      if (type.isUnionType()) return ts.constituentTypes(type).every(textual);
+      return (
+        (type.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0
+      );
+    };
     return {
-      kind: "libCall",
-      fn: "readable.setEncoding",
-      args: [receiver, strLit(enc, loc)],
-      type: receiver.type,
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+        {
+          kind: "varDecl",
+          localId: encodingLocal.id,
+          init: {
+            kind: "libCall",
+            fn: textual(encT) ? "strdec.encoding" : "strdec.encodingValue",
+            args: [lowerer.lowerExprExpecting(args[0]!, DYN)],
+            type: STRING,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: {
+        kind: "libCall",
+        fn: "readable.setEncoding",
+        args: [varRef(receiverLocal.id, receiverType, loc), varRef(encodingLocal.id, STRING, loc)],
+        type: receiverType,
+        loc,
+      },
+      type: receiverType,
       loc,
     };
   }

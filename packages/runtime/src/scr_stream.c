@@ -1497,6 +1497,26 @@ bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d) {
   }
 }
 
+/* push(chunk, encoding) with both values known at run time: Node's
+ * readableAddChunkPushByteMode — the encoding reads only for a string chunk,
+ * a falsy one keeps the stream's defaultEncoding, and one that is not a
+ * string names no encoding Buffer.from reads (it falls back to utf8). */
+bool scr_stream_push_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding) {
+  if (chunk->kind != SCR_DYN_STR || (s->st->has_r && s->st->r.object_entries) ||
+      !scr_dyn_truthy(encoding))
+    return scr_stream_push_dyn(s, chunk);
+  ScrStr *canonical = NULL;
+  if (encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0) {
+    canonical = scr_bytes_normalize_encoding(encoding->v.str);
+    if (!canonical) return false;
+  } else {
+    canonical = scr_str_new("utf8", 4);
+  }
+  bool more = scr_stream_push_str_enc(s, chunk->v.str, canonical);
+  scr_str_release(canonical);
+  return more;
+}
+
 static bool scr_stream_write_value(ScrStream *s, ScrDyn *v, ScrClosure *cb);
 
 bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb) {
@@ -2414,10 +2434,12 @@ static void scr_stream_do_write_inner(ScrStream *s, ScrBytes *chunk /*moves*/, S
   st->w.wsync = false;
 }
 
-#ifdef SCR_STREAM_WRITE_ERRORS
-/* The error the next user write callback receives (borrowed; NULL is
- * success, Node's null). Set immediately around each user write-callback
- * call below; read by the error-first wrapper scr_stream_ecb_fire. */
+/* The error the next user write (or end) callback receives (borrowed; NULL
+ * is success, Node's null). Set immediately around each user callback call
+ * below; read by the error-first wrappers scr_stream_ecb_fire and
+ * scr_stream_dyn_wcb_fire. Unconditional: a checked-dynamic write callback
+ * (scr_stream_dyn_call) needs it in builds that use no compiled write
+ * callback. */
 static SCR_TL ScrError *scr_stream_cb_error = NULL;
 #define SCR_WCB_CALL(cb, err)                                  \
   do {                                                         \
@@ -2426,6 +2448,14 @@ static SCR_TL ScrError *scr_stream_cb_error = NULL;
     ((void (*)(ScrClosure *))(cb)->fn)(cb);                    \
     scr_stream_cb_error = scr_wcb_saved;                       \
   } while (0)
+/* The error the completion running its callback published, as the
+ * callback's argument (Node's error-first write/end callback): +1. A
+ * wrapper callback reads it while the completion's macro has it set; a
+ * completion with no error answers null. */
+ScrDyn *scr_stream_cb_error_dyn(void) {
+  return scr_stream_cb_error ? scr_dyn_from_error(scr_stream_cb_error) : scr_dyn_new_null();
+}
+
 /* The errorBuffer/destroyed-afterWrite form: the stream's own error, or
  * the fresh ERR_STREAM_DESTROYED Node passes (owned around the call). */
 #define SCR_WCB_CALL_ERROF(cb, st)                                              \
@@ -2438,6 +2468,7 @@ static SCR_TL ScrError *scr_stream_cb_error = NULL;
     scr_error_release(scr_wcb_err);                                             \
   } while (0)
 
+#ifdef SCR_STREAM_WRITE_ERRORS
 /* An error-first user callback behind the zero-argument write-callback ABI:
  * caps[0] holds the user's closure, caps[1] the compiler-built adapter
  * (ScrFsRenameFn: (cb, err-or-NULL) — NULL is Node's null). */
@@ -2462,10 +2493,25 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
   scr_box_set_ref(w->caps[1], (void *)fn);
   return w;
 }
-#else
-#define SCR_WCB_CALL(cb, err) ((void (*)(ScrClosure *))(cb)->fn)(cb)
-#define SCR_WCB_CALL_ERROF(cb, st) SCR_WCB_CALL(cb, NULL)
 #endif
+
+/* A checked-dynamic write/end callback behind the same zero-argument ABI:
+ * caps[0] holds the dyn FUNCTION, called with the Error the completion
+ * published (or null). */
+static void scr_stream_dyn_wcb_fire(ScrClosure *wrapper) {
+  ScrDyn *fn = (ScrDyn *)scr_box_get_ref(wrapper->caps[0]);
+  ScrDyn *arg = scr_stream_cb_error ? scr_dyn_from_error(scr_stream_cb_error) : scr_dyn_new_null();
+  ScrDyn *result = scr_dyn_call(fn, &arg, 1, "callback");
+  scr_dyn_release(result);
+  scr_dyn_release(arg);
+  scr_dyn_release(fn); /* scr_box_get_ref returned +1 */
+}
+static ScrClosure *scr_stream_dyn_wcb_wrap(const ScrDyn *cb) {
+  ScrClosure *w = scr_closure_new((void *)scr_stream_dyn_wcb_fire, 1);
+  w->caps[0] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+  scr_box_set_ref(w->caps[0], scr_dyn_retain((ScrDyn *)cb));
+  return w;
+}
 
 /* errorBuffer: once destroyed, the buffered writes' callbacks and the
  * end(cb) callbacks run (Node passes them ERR_STREAM_DESTROYED or the
@@ -2492,7 +2538,8 @@ static void scr_stream_error_buffer(ScrStream *s) {
     ScrClosure *cb = st->w.end_cbs[0];
     memmove(st->w.end_cbs, st->w.end_cbs + 1, (st->w.end_cbs_n - 1) * sizeof *st->w.end_cbs);
     st->w.end_cbs_n--;
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* Node hands an end callback that a destroy cut off the stream's error */
+    SCR_WCB_CALL(cb, st->errored);
     scr_closure_release(cb);
   }
 }
@@ -7275,26 +7322,84 @@ ScrStream *scr_stream_write_encoding(ScrStream *s, ScrStr *enc) {
   return scr_stream_retain(s);
 }
 
-/* setDefaultEncoding(encoding): the name lowercased, a known encoding or
- * ERR_UNKNOWN_ENCODING (thrown); answers the stream (+1). */
-ScrStream *scr_stream_set_default_encoding(ScrStream *s, ScrDyn *enc) {
-  ScrStr *raw = enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str) : scr_dyn_string_coerce_js(enc);
-  ScrStr *lower = raw;
-  if (enc->kind == SCR_DYN_STR) {
-    char *buf = malloc(raw->len ? raw->len : 1);
-    if (!buf) scr_stream_oom();
-    for (size_t i = 0; i < raw->len; i++) {
-      char c = raw->data[i];
-      buf[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
-    }
-    lower = scr_str_new(buf, raw->len);
-    free(buf);
-    scr_str_release(raw);
+/* An object's toString the program defined, as an own or inherited
+ * function property. */
+static bool scr_stream_custom_to_string(ScrDyn *value) {
+  if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *member = scr_dyn_obj_read(value, "toString", 8);
+  bool custom = member && member->kind == SCR_DYN_FUNC;
+  scr_dyn_release(member);
+  return custom;
+}
+
+/* The inspect unit's ERR_UNKNOWN_ENCODING text for a value that is not an
+ * encoding name (scr_insp_unknown_encoding_message). The reference is weak:
+ * this unit is linked into every program that uses streams, while the
+ * inspect unit is not, and a binary without it keeps the String() fallback
+ * below. */
+ScrStr *scr_insp_unknown_encoding_message(const ScrDyn *enc) __attribute__((weak));
+
+/* ERR_UNKNOWN_ENCODING formats the encoding with util.format's %s: a
+ * number as JS ToString, a Buffer or an object with a built-in toString as
+ * String(value), other objects as util.inspect at depth 0. A function has
+ * no lowering. Always throws. */
+static void scr_stream_unknown_encoding(const ScrDyn *encoding) {
+  ScrDyn *value = (ScrDyn *)encoding;
+  if (value->kind == SCR_DYN_FUNC) {
+    static const char message[] =
+        "An encoding that is a function has no lowering; pass the encoding name as a string";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return;
   }
+  ScrStr *message;
+  if (scr_insp_unknown_encoding_message) {
+    message = scr_insp_unknown_encoding_message(value);
+    /* NULL: the rendering called program code that threw. */
+    if (!message) return;
+  } else {
+    ScrStr *text;
+    if (value->kind == SCR_DYN_NUM) {
+      char buf[40];
+      size_t n = scr_f64_to_str(value->v.num, buf);
+      text = scr_str_new(buf, n);
+    } else {
+      text = scr_dyn_string_coerce_js(value);
+    }
+    if (!text) return;
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "Unknown encoding: ");
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+    message = scr_jb_finish(&b);
+  }
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(message);
+}
+
+/* setDefaultEncoding(encoding): Node lowercases a string and takes it when
+ * Buffer.isEncoding knows the name; every other value — including null and
+ * undefined, which setEncoding reads as utf8 — throws ERR_UNKNOWN_ENCODING
+ * (Node's Buffer.isEncoding typeof gate). Borrows enc; answers the stream
+ * +1, or NULL with the exception pending. */
+ScrStream *scr_stream_set_default_encoding(ScrStream *s, ScrDyn *enc) {
+  if (enc->kind != SCR_DYN_STR) {
+    scr_stream_unknown_encoding(enc);
+    return NULL;
+  }
+  ScrStr *raw = enc->v.str;
+  char *buf = malloc(raw->len ? raw->len : 1);
+  if (!buf) scr_stream_oom();
+  for (size_t i = 0; i < raw->len; i++) {
+    char c = raw->data[i];
+    buf[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+  }
+  ScrStr *lower = scr_str_new(buf, raw->len);
+  free(buf);
   ScrStr *canonical = scr_bytes_normalize_encoding(lower);
   if (canonical == NULL) {
     scr_str_release(lower);
-    return scr_stream_retain(s);
+    return NULL;
   }
   scr_str_release(canonical);
   if (s->st->has_w) scr_stream_store_default_enc(s->st, lower);
@@ -7302,27 +7407,58 @@ ScrStream *scr_stream_set_default_encoding(ScrStream *s, ScrDyn *enc) {
   return scr_stream_retain(s);
 }
 
-/* setEncoding(enc) with a run-time value: Node's `if (options.encoding)`
- * skips a falsy value, the spelling as given is what readableEncoding
- * answers, and a name StringDecoder rejects throws ERR_UNKNOWN_ENCODING
- * (scr_bytes_normalize_encoding's ladder, which coerces non-strings as
- * getEncodingOps does). Borrows enc; answers the stream +1, or NULL with
- * the exception pending. */
-ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, ScrDyn *enc) {
-  if (enc == NULL || !scr_dyn_truthy(enc)) return scr_stream_retain(s);
-  ScrStr *raw =
-      enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str) : scr_dyn_string_coerce_js(enc);
-  if (raw == NULL) return NULL;
-  ScrStr *canonical = scr_bytes_normalize_encoding(raw);
-  if (canonical == NULL) {
+/* setEncoding(enc) with an encoding of any type, Node's StringDecoder
+ * argument: null, undefined and "" read as utf8, a Buffer encoding name in
+ * any ASCII case as its canonical name (what readableEncoding answers, as
+ * setEncoding overwrites the option's spelling), and everything else throws
+ * ERR_UNKNOWN_ENCODING formatted with %s. An empty Buffer names no encoding,
+ * as Buffer.isEncoding(non-string) refuses it. Borrows enc; answers the
+ * stream +1, or NULL with the exception pending. */
+ScrStream *scr_stream_set_encoding_value(ScrStream *s, ScrDyn *enc) {
+  ScrStr *canonical;
+  if (enc == NULL || enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) {
+    canonical = scr_str_new("utf8", 4);
+  } else if (enc->kind == SCR_DYN_STR) {
+    canonical = enc->v.str->len == 0 ? scr_str_new("utf8", 4)
+                                     : scr_bytes_normalize_encoding(enc->v.str);
+  } else if (enc->kind == SCR_DYN_BYTES) {
+    ScrStr *raw = scr_dyn_string_coerce_js(enc);
+    if (raw == NULL) return NULL;
+    if (raw->len == 0) {
+      scr_str_release(raw);
+      scr_stream_unknown_encoding(enc);
+      return NULL;
+    }
+    canonical = scr_bytes_normalize_encoding(raw);
     scr_str_release(raw);
+  } else {
+    scr_stream_unknown_encoding(enc);
     return NULL;
   }
-  scr_stream_release(scr_stream_set_encoding(s, canonical));
-  scr_stream_release(scr_stream_set_encoding_name(s, raw));
+  if (canonical == NULL) return NULL;
+  ScrStream *ret = scr_stream_set_encoding(s, canonical);
   scr_str_release(canonical);
+  return ret;
+}
+
+/* The `encoding` option of Readable.from: Node's state constructor installs
+ * a StringDecoder for a truthy value and keeps the spelling as
+ * `state.encoding` (what readableEncoding answers), so a falsy value — null,
+ * undefined, "" — installs no decoder. An unknown name throws
+ * ERR_UNKNOWN_ENCODING as setEncoding does. Borrows enc; answers the stream
+ * +1, or NULL with the exception pending. */
+ScrStream *scr_stream_set_encoding_dyn(ScrStream *s, ScrDyn *enc) {
+  if (enc == NULL || !scr_dyn_truthy(enc)) return scr_stream_retain(s);
+  ScrStream *ret = scr_stream_set_encoding_value(s, enc);
+  if (ret == NULL) return NULL;
+  ScrStr *raw = enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str) : scr_dyn_string_coerce_js(enc);
+  if (raw == NULL) {
+    scr_stream_release(ret);
+    return NULL;
+  }
+  scr_stream_release(scr_stream_set_encoding_name(s, raw));
   scr_str_release(raw);
-  return scr_stream_retain(s);
+  return ret;
 }
 
 /* Whether a defaultEncoding option value is the default: null, undefined,
@@ -7473,20 +7609,23 @@ bool scr_stream_push_view(ScrStream *s, ScrBytes *chunk) {
   return scr_stream_add_chunk(s, chunk, false);
 }
 
+/* Node's Buffer.from(chunk, encoding) for a string chunk, with the utf8
+ * default when the stream has no default encoding of its own (NULL). */
+static ScrBytes *scr_stream_encode_str(const ScrStr *str, const ScrStr *enc) {
+  if (enc != NULL) return scr_bytes_from_str(str, enc);
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
+  memcpy(b->data, str->data, str->len);
+  if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
+  return b;
+}
+
 bool scr_stream_push_str(ScrStream *s, ScrStr *str) {
   /* object mode: the string is one whole entry, not converted */
   if (s->st->has_r && s->st->r.object_entries)
     return scr_stream_add_entry(s, scr_str_retain(str), SCR_ENTRY_STR) > 0;
+  /* Node: Buffer.from(chunk, state.defaultEncoding). */
   ScrStr *enc = s->st->has_r ? s->st->r.push_enc : NULL;
-  ScrBytes *b;
-  if (enc != NULL) {
-    /* Node: Buffer.from(chunk, state.defaultEncoding). */
-    b = scr_bytes_from_str(str, enc);
-  } else {
-    b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
-    memcpy(b->data, str->data, str->len);
-    if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
-  }
+  ScrBytes *b = scr_stream_encode_str(str, enc);
   scr_stream_buffer(b);
   bool ret = scr_stream_add_chunk(s, b, false);
   scr_bytes_release(b);
@@ -7564,51 +7703,144 @@ static bool scr_stream_unshift_after_end(ScrStream *s) {
   return true;
 }
 
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
+/* Node's canPushMore: below the high-water mark (or empty) and not ended. */
+static inline bool scr_stream_can_push_more(ScrStreamState *st) {
+  return st->has_r && !st->r.ended &&
+         (st->r.length < st->r.hwm || st->r.length == 0);
+}
+
+/* A part-read head must be whole before an entry goes in front of it: the
+ * remainder takes the front slot instead. */
+static void scr_stream_unshift_make_head_whole(ScrStreamState *st) {
+  if (st->r.head_off == 0) return;
+  void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
+  scr_stream_rbuf_push(st, rest, scr_stream_rkind(st), true);
+}
+
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
   /* A byte-mode stream drops a chunk that adds nothing before the 'end'
    * check, as readableAddChunkUnshiftByteMode returns early for one. */
-  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return;
-  if (scr_stream_unshift_after_end(s)) return;
-  if (st->r.head_off > 0) {
-    /* materialize the part-read head so the front slot is whole */
-    void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
-    scr_stream_rbuf_push(st, rest, scr_stream_rkind(st), true);
-  }
-  scr_stream_add_chunk(s, chunk, true);
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0))
+    return scr_stream_can_push_more(st);
+  if (scr_stream_unshift_after_end(s)) return scr_stream_can_push_more(st);
+  if (st->destroyed || st->errored) return false; /* Node's readableAddChunkUnshiftValue */
+  scr_stream_unshift_make_head_whole(st);
+  return scr_stream_add_chunk(s, chunk, true);
 }
 
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
-  if (s->st->has_r && s->st->r.object_entries) {
+/* A string chunk of unshift() on a byte-mode stream, Node's
+ * readableAddChunkUnshiftByteMode conversion:
+ *   encoding ||= state.defaultEncoding;
+ *   if (state.encoding !== encoding) {
+ *     if (state.encoding) chunk = Buffer.from(chunk, encoding).toString(state.encoding);
+ *     else chunk = Buffer.from(chunk, encoding);
+ *   }
+ * `def` is the encoding the chunk is read with (NULL is the utf8 default).
+ * The decoder is not fed: the converted string is buffered as is, so a held
+ * partial multibyte tail stays held. The name comparison is between canonical
+ * names, so a defaultEncoding spelled 'HEX' takes the kept-string path here
+ * where Node round-trips it. */
+static bool scr_stream_unshift_str_conv(ScrStream *s, ScrStr *str, const ScrStr *def) {
+  ScrStreamState *st = s->st;
+  const ScrStr *dec = st->has_r && st->r.encoded ? st->r.enc : NULL;
+  bool same = dec != NULL && (def == NULL ? (dec->len == 4 && memcmp(dec->data, "utf8", 4) == 0)
+                                          : (dec->len == def->len && memcmp(dec->data, def->data, dec->len) == 0));
+  ScrStr *text = NULL;
+  ScrBytes *b = NULL;
+  if (same) {
+    text = scr_str_retain(str); /* already in the buffer's encoding */
+  } else {
+    b = scr_stream_encode_str(str, def);
+    if (dec != NULL) {
+      text = scr_bytes_to_str(b, dec);
+      scr_bytes_release(b);
+      b = NULL;
+    }
+  }
+  bool empty = text != NULL ? text->len == 0 : b->len == 0;
+  if (empty) {
+    scr_str_release(text);
+    if (b != NULL) scr_bytes_release(b);
+    return scr_stream_can_push_more(st); /* nothing to add: Node answers, even after 'end' */
+  }
+  if (scr_stream_unshift_after_end(s)) {
+    scr_str_release(text);
+    if (b != NULL) scr_bytes_release(b);
+    return scr_stream_can_push_more(st);
+  }
+  if (st->destroyed || st->errored) {
+    scr_str_release(text);
+    if (b != NULL) scr_bytes_release(b);
+    return false; /* Node's readableAddChunkUnshiftValue */
+  }
+  if (text != NULL) {
+    scr_stream_unshift_make_head_whole(st);
+    scr_stream_rbuf_push(st, text, SCR_ENTRY_STR, true);
+    if (st->r.need_readable) scr_stream_emit_readable_nt(s);
+    scr_stream_settle_next(s);
+    return scr_stream_can_push_more(st);
+  }
+  scr_stream_buffer(b);
+  bool ret = scr_stream_unshift(s, b);
+  scr_bytes_release(b);
+  return ret;
+}
+
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
+  ScrStreamState *st = s->st;
+  if (st->has_r && st->r.object_entries) {
     /* object mode: the string itself goes to the front */
     ScrDyn *v = scr_dyn_new_str(str);
-    scr_stream_unshift_dyn(s, v);
+    bool ret = scr_stream_unshift_dyn(s, v);
     scr_dyn_release(v);
-    return;
+    return ret;
   }
-  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
-  memcpy(b->data, str->data, str->len);
-  if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
-  scr_stream_buffer(b);
-  scr_stream_unshift(s, b);
-  scr_bytes_release(b);
+  return scr_stream_unshift_str_conv(s, str, st->has_r ? st->r.push_enc : NULL);
+}
+
+bool scr_stream_unshift_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc) {
+  if (s->st->has_r && s->st->r.object_entries) {
+    /* object mode: the encoding does not apply */
+    return scr_stream_unshift_str(s, str);
+  }
+  return scr_stream_unshift_str_conv(s, str, enc);
+}
+
+bool scr_stream_unshift_dyn_enc(ScrStream *s, const ScrDyn *chunk, const ScrDyn *encoding) {
+  bool object = s->st->has_r && s->st->r.object_entries;
+  if (chunk->kind != SCR_DYN_STR || object || !scr_dyn_truthy(encoding))
+    return scr_stream_unshift_dyn(s, chunk); /* the encoding applies to a string chunk only */
+  /* `encoding ||= state.defaultEncoding`: a falsy argument keeps the
+   * stream's default. Any other value that is not a string names no
+   * encoding Buffer.from reads (it falls back to utf8); an unknown string
+   * throws ERR_UNKNOWN_ENCODING. */
+  ScrStr *def = NULL;
+  if (encoding->kind == SCR_DYN_STR && encoding->v.str->len > 0) {
+    def = scr_bytes_normalize_encoding(encoding->v.str);
+    if (!def) return false;
+  }
+  bool more = scr_stream_unshift_str_conv(s, chunk->v.str, def);
+  if (def) scr_str_release(def);
+  return more;
 }
 
 /* unshift(value): null is the end of the stream (Node's onEofChunk); an
  * object-mode stream takes any other value as one entry at the front; a
  * byte-mode stream takes Buffers and strings, ignores undefined and
  * reports another value as push does. Borrows d. */
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
   ScrStreamState *st = s->st;
   if (d->kind == SCR_DYN_NULL) {
     scr_stream_push_null(s);
-    return;
+    return false;
   }
   bool object = st->has_r && st->r.object_entries;
   if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
                   (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
-    return; /* nothing to add: Node answers without complaint, even after 'end' */
-  if (scr_stream_unshift_after_end(s)) return;
+    return scr_stream_can_push_more(st); /* nothing to add: Node answers without complaint, even after 'end' */
+  if (scr_stream_unshift_after_end(s)) return scr_stream_can_push_more(st);
+  if (st->destroyed || st->errored) return false; /* Node's readableAddChunkUnshiftValue */
   if (object) {
     void *entry;
     ScrEntryKind kind;
@@ -7626,17 +7858,16 @@ void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
     scr_stream_rbuf_push(st, entry, kind, true);
     if (st->r.need_readable) scr_stream_emit_readable_nt(s);
     scr_stream_settle_next(s);
-    return;
+    return scr_stream_can_push_more(st);
   }
   if (d->kind == SCR_DYN_BYTES) {
     ScrBytes *b = scr_bytes_raw_view(d->v.bytes);
-    scr_stream_unshift(s, b);
+    bool ret = scr_stream_unshift(s, b);
     scr_bytes_release(b);
-  } else if (d->kind == SCR_DYN_STR) {
-    scr_stream_unshift_str(s, d->v.str);
-  } else {
-    scr_stream_push_dyn(s, d);
+    return ret;
   }
+  if (d->kind == SCR_DYN_STR) return scr_stream_unshift_str(s, d->v.str);
+  return scr_stream_push_dyn(s, d);
 }
 
 static void scr_stream_listener_error(ScrClosure *adapter, ScrError *error) {
@@ -7929,11 +8160,10 @@ static bool scr_stream_write_chunk_desc(ScrStream *s, ScrBytes *chunk /*borrowed
         ? scr_stream_mkerr("ERR_STREAM_WRITE_AFTER_END", "write after end")
         : scr_stream_mkerr("ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
     if (cb) {
-#ifdef SCR_STREAM_WRITE_ERRORS
+      /* the error reaches the callback through the tick in every build: a
+       * checked-dynamic callback (scr_stream_dyn_wcb_wrap) reads it even
+       * when the program lowers no error-first compiled one */
       scr_st_tick(s, SCR_ST_WCB_ERR, scr_error_retain(e), cb);
-#else
-      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb);
-#endif
     }
     scr_stream_error_or_destroy(s, e);
     scr_error_release(e);
@@ -8862,7 +9092,8 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         ScrClosure *cb = st->w.end_cbs[0];
         memmove(st->w.end_cbs, st->w.end_cbs + 1, (st->w.end_cbs_n - 1) * sizeof *st->w.end_cbs);
         st->w.end_cbs_n--;
-        ((void (*)(ScrClosure *))cb->fn)(cb);
+        /* Node's finishMaybe passes the stream's error (null when clean) */
+        SCR_WCB_CALL(cb, st->errored);
         scr_closure_release(cb);
         if (scr_exc_pending()) break;
       }
@@ -9297,20 +9528,7 @@ static ScrStr *scr_stream_dyn_event_name(const ScrDyn *value) {
 static ScrDyn *scr_stream_dyn_push(ScrStream *stream, ScrDyn *const *args, size_t argc) {
   ScrDyn *chunk = argc ? args[0] : scr_dyn_undefined();
   ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
-  if (chunk->kind == SCR_DYN_STR && encoding->kind == SCR_DYN_STR) {
-    ScrStr *canonical = scr_bytes_normalize_encoding(encoding->v.str);
-    if (!canonical) return NULL;
-    bool more = scr_stream_push_str_enc(stream, chunk->v.str, canonical);
-    scr_str_release(canonical);
-    return scr_dyn_new_bool(more);
-  }
-  if (chunk->kind == SCR_DYN_UNDEF && !(stream->st->has_r && stream->st->r.object_entries)) {
-    ScrStr *empty = scr_str_new("", 0);
-    bool more = scr_stream_push_str(stream, empty);
-    scr_str_release(empty);
-    return scr_dyn_new_bool(more);
-  }
-  bool more = scr_stream_push_dyn(stream, chunk);
+  bool more = scr_stream_push_dyn_enc(stream, chunk, encoding);
   return scr_exc_pending() ? NULL : scr_dyn_new_bool(more);
 }
 
@@ -9322,21 +9540,8 @@ static ScrDyn *scr_stream_dyn_push(ScrStream *stream, ScrDyn *const *args, size_
 static ScrDyn *scr_stream_dyn_unshift(ScrStream *stream, ScrDyn *const *args, size_t argc) {
   ScrDyn *chunk = argc ? args[0] : scr_dyn_undefined();
   ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
-  if (chunk->kind == SCR_DYN_STR && encoding->kind == SCR_DYN_STR &&
-      !(stream->st->has_r && stream->st->r.object_entries)) {
-    ScrStr *canonical = scr_bytes_normalize_encoding(encoding->v.str);
-    if (!canonical) return NULL;
-    ScrBytes *b = scr_stream_buffer(scr_bytes_from_str(chunk->v.str, canonical));
-    scr_str_release(canonical);
-    scr_stream_unshift(stream, b);
-    scr_bytes_release(b);
-  } else {
-    scr_stream_unshift_dyn(stream, chunk);
-  }
+  bool more = scr_stream_unshift_dyn_enc(stream, chunk, encoding);
   if (scr_exc_pending()) return NULL;
-  ScrStreamState *st = stream->st;
-  bool more = chunk->kind != SCR_DYN_NULL && st->has_r && !st->destroyed && !st->errored &&
-    !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
   return scr_dyn_new_bool(more);
 }
 
@@ -9417,13 +9622,22 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     scr_stream_release(returned);
   } else if (!strcmp(method, "isPaused")) result = scr_dyn_new_bool(scr_stream_is_paused(stream));
   else if (!strcmp(method, "setEncoding")) {
-    if (first->kind != SCR_DYN_STR) scr_dyn_arg_type_fail("encoding", "of type string", first);
-    else scr_stream_release(scr_stream_set_encoding(stream, first->v.str));
+    ScrStream *returned = scr_stream_set_encoding_value(stream, first);
+    if (returned) scr_stream_release(returned);
   } else if (!strcmp(method, "write")) {
-    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) {
-      static const char message[] = "Native stream method values with write encodings or callbacks have no lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    } else result = scr_dyn_new_bool(scr_stream_write_dyn(stream, first, NULL));
+    /* write(chunk[, encoding][, callback]): a function in the encoding slot
+     * is the callback (Node's shift); a callback that is not a function is
+     * ignored. */
+    ScrDyn *encoding = NULL;
+    ScrDyn *cbDyn = NULL;
+    if (argc > 1 && args[1]->kind == SCR_DYN_FUNC) cbDyn = args[1];
+    else {
+      if (argc > 1) encoding = args[1];
+      if (argc > 2 && args[2]->kind == SCR_DYN_FUNC) cbDyn = args[2];
+    }
+    ScrClosure *cb = cbDyn ? scr_stream_dyn_wcb_wrap(cbDyn) : NULL;
+    bool more = scr_stream_write_enc(stream, first, encoding, cb);
+    if (!scr_exc_pending()) result = scr_dyn_new_bool(more);
   } else if (!strcmp(method, "close")) {
     /* fs.ReadStream / fs.WriteStream close() */
     if (argc > 0 && first->kind != SCR_DYN_UNDEF) {
@@ -9433,16 +9647,27 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
       stream->st->native_ops->close(stream);
     }
   } else if (!strcmp(method, "end")) {
-    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) {
-      static const char message[] = "Native stream method values with end encodings or callbacks have no lowering";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    } else if (first->kind == SCR_DYN_UNDEF || first->kind == SCR_DYN_NULL) {
-      scr_stream_release(scr_stream_end(stream, NULL, NULL, NULL));
-    } else if (first->kind == SCR_DYN_STR) {
-      scr_stream_release(scr_stream_end(stream, NULL, first->v.str, NULL));
-    } else if (first->kind == SCR_DYN_BYTES) {
-      scr_stream_release(scr_stream_end(stream, first->v.bytes, NULL, NULL));
-    } else scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
+    /* Writable.prototype.end: a function chunk is the callback (with no chunk
+     * or encoding), and a function encoding is the callback; the chunk is
+     * written as an ordinary write before the stream ends. */
+    ScrDyn *chunk = first;
+    ScrDyn *encoding = argc > 1 ? args[1] : NULL;
+    ScrDyn *cbDyn = NULL;
+    if (chunk->kind == SCR_DYN_FUNC) {
+      cbDyn = chunk;
+      chunk = scr_dyn_undefined();
+      encoding = NULL;
+    } else if (encoding && encoding->kind == SCR_DYN_FUNC) {
+      cbDyn = encoding;
+      encoding = NULL;
+    } else if (argc > 2 && args[2]->kind == SCR_DYN_FUNC) cbDyn = args[2];
+    if (chunk->kind != SCR_DYN_UNDEF && chunk->kind != SCR_DYN_NULL) {
+      scr_stream_write_enc(stream, chunk, encoding, NULL);
+      if (scr_exc_pending()) return NULL;
+    }
+    /* the wrapper MOVES into the stream, as an emitted end callback does */
+    ScrClosure *cb = cbDyn ? scr_stream_dyn_wcb_wrap(cbDyn) : NULL;
+    scr_stream_release(scr_stream_end(stream, NULL, NULL, cb));
   } else if (!strcmp(method, "destroy")) {
     /* Node tests `if (err)`: a falsy reason destroys without an error. */
     ScrError *error = scr_dyn_truthy(first) ? scr_error_from_dyn(first) : NULL;

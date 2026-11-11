@@ -74,7 +74,8 @@ export interface NativeLinkFeatures {
    * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
-   * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+   * SCR_STREAM_WRITE_ERRORS build of the stream unit, which compiles the
+   * adapter handing that callback the completion's error. */
   streamWriteErrors?: boolean;
   /** The program holds a process output stream as a value, so it can
    * replace the stream's write method. With Node islands it links

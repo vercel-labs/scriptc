@@ -160,7 +160,8 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
    * JavaScript source resizes, grows or detaches an ArrayBuffer. */
   mutableBuffers?: boolean;
   /** The program's write completion callbacks take the error argument:
-   * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+   * the SCR_STREAM_WRITE_ERRORS build of the stream unit, whose adapter
+   * hands them the completion's error. */
   streamWriteErrors: boolean;
   /** The program holds a process output stream as a value: with Node
    * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of

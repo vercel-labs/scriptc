@@ -2176,7 +2176,9 @@ const RUNTIME_FEATURE_RULES = {
   urlIdna: rule({ prefixes: URL_PREFIXES, types: ["url"] }),
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
-   * publishes the error the adapter delivers. */
+   * compiles the adapter that hands it the completion's error. A
+   * checked-dynamic callback needs no adapter — the tick publishes the
+   * error to it in every build. */
   streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
   /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
    * and compose() in every form, a call of a member named pipe or unpipe

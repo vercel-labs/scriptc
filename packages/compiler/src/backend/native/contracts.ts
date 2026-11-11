@@ -294,8 +294,11 @@ export interface CcOptions {
   /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
    * stdin.isRaw and server.off (the dyn-async and net units). */
   processExtras?: boolean;
-  /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
-   * write completion callback receives (error-taking write callbacks). */
+  /** SCR_STREAM_WRITE_ERRORS: the stream unit compiles the adapter behind
+   * the zero-argument callback ABI that passes the completion's error to a
+   * compiled error-first write callback. The error itself is published to
+   * every write completion callback through the tick, so a checked-dynamic
+   * one reads it in any build. */
   streamWriteErrors?: boolean;
   /** The program holds a process output stream as a value. With
    * `nodeIsland` it compiles scr_node_island_stdio.c and defines

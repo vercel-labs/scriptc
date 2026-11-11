@@ -89568,6 +89568,9 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
           "tests/corpus/2100-stream-default-hwm.ts",
@@ -89608,13 +89611,16 @@
           "tests/corpus/stream-default-high-water-mark.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/stream-pipeline-stream-list.ts",
           "tests/corpus/stream-readable-from-options.ts",
+          "tests/corpus/stream-readable-methods.ts",
           "tests/corpus/stream-readable-state.ts",
           "tests/corpus/stream-readable-wrap.ts",
           "tests/corpus/stream-state-edge-behaviors.ts",
           "tests/corpus/stream-web-from-web.ts",
           "tests/corpus/stream-web-to-web.ts",
+          "tests/corpus/stream-writable-methods.ts",
           "tests/corpus/stream-writable-state.ts",
           "tests/corpus/writable-error-callbacks.ts"
         ]
@@ -90420,18 +90426,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.read",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -90457,18 +90462,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.push",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -91132,18 +91136,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:writable.cork",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -91169,10 +91172,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable.destroy",
         "tests": [
-          "tests/corpus/2897-child-stdin-destroy.ts"
+          "tests/corpus/2897-child-stdin-destroy.ts",
+          "tests/corpus/stream-writable-methods.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91195,18 +91199,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:writable.end",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -91232,18 +91235,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:writable.setDefaultEncoding",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -91269,18 +91271,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:writable.uncork",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -91335,18 +91336,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:writable.write",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92017,18 +92017,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.destroy",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92054,18 +92053,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.isPaused",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92091,18 +92089,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.pause",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92128,18 +92125,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.pipe",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92165,18 +92161,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.read",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92202,18 +92197,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.resume",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92239,18 +92233,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.setEncoding",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92276,18 +92269,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.unpipe",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -92313,18 +92305,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.unshift",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -93888,18 +93879,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.push",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -94174,18 +94164,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.read",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"
@@ -94211,18 +94200,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:readable.push",
         "tests": [
+          "tests/corpus/stream-readable-methods.ts",
+          "tests/corpus/stream-writable-methods.ts",
+          "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
-          "tests/corpus/1814-stream-pipeline.cjs",
-          "tests/corpus/5302-stream-promises-options.ts",
-          "tests/corpus/5303-stream-finished-callback-opts.cjs",
-          "tests/corpus/5425-pipeline-generator-stage.ts",
-          "tests/corpus/5428-pipeline-generator-stages.cjs",
-          "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/1692-stream-pipe.ts",
+          "tests/corpus/1693-stream-pipe-backpressure.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts"

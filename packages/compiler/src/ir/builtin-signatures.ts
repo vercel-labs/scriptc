@@ -5319,9 +5319,18 @@ function buildLibFnSignatures() {
     "readable.pushNull": { argTypes: [null], result: BOOL },
     "readable.pushU": { argTypes: [null, null], result: BOOL },
     "readable.pushDyn": { argTypes: [null, DYN], result: BOOL },
-    "readable.unshift": { argTypes: [null, BYTES_U8], result: VOID },
-    "readable.unshiftDyn": { argTypes: [null, DYN], result: VOID },
-    "readable.unshiftStr": { argTypes: [null, STRING], result: VOID },
+    /** unshift answers Node's canPushMore, as push does. */
+    "readable.unshift": { argTypes: [null, BYTES_U8], result: BOOL },
+    "readable.unshiftStr": { argTypes: [null, STRING], result: BOOL },
+    /** unshift(value[, encoding]): the chunk and the encoding dispatch by
+     * dyn tag (a falsy encoding keeps the stream's defaultEncoding, a
+     * non-string one reads as utf8, an unknown name throws). */
+    "readable.unshiftDyn": { argTypes: [null, DYN], result: BOOL },
+    "readable.unshiftDynEnc": { argTypes: [null, DYN, DYN], result: BOOL },
+    /** unshift(chunk, enc) with a literal encoding (the canonical name): the
+     * chunk is read with it, then converted to the stream's decoder
+     * encoding, as readableAddChunkUnshiftByteMode does. */
+    "readable.unshiftStrEnc": { argTypes: [null, STRING, STRING], result: BOOL },
     "stream.onDyn": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
     "readable.readDyn": { argTypes: [null, DYN], result: DYN },
     "readable.read": { argTypes: [null, F64], result: VOID },

@@ -996,29 +996,6 @@ static ScrDyn *bcs_construct(int kind, ScrDyn *self, ScrDyn *const *args, size_t
 
 /* ── prototype methods ──────────────────────────────────────────────── */
 
-/* Node's encoding names, canonical; NULL with ERR_UNKNOWN_ENCODING. */
-static ScrStr *bcs_encoding(const ScrDyn *value) {
-  static const struct { const char *from, *to; } map[] = {
-    {"utf8", "utf8"}, {"utf-8", "utf8"}, {"hex", "hex"}, {"base64", "base64"},
-    {"base64url", "base64url"}, {"latin1", "latin1"}, {"binary", "latin1"},
-    {"ascii", "ascii"}, {"utf16le", "utf16le"}, {"utf-16le", "utf16le"},
-    {"ucs2", "utf16le"}, {"ucs-2", "utf16le"},
-  };
-  ScrStr *raw = value->kind == SCR_DYN_STR ? scr_str_retain(value->v.str) : scr_dyn_string_coerce_js(value);
-  if (!raw) return NULL;
-  for (size_t i = 0; i < sizeof map / sizeof *map; i++) {
-    if (bcs_is(raw, map[i].from)) {
-      scr_str_release(raw);
-      return scr_str_new(map[i].to, strlen(map[i].to));
-    }
-  }
-  char message[128];
-  snprintf(message, sizeof message, "Unknown encoding: %.*s", (int)(raw->len < 64 ? raw->len : 64), raw->data);
-  scr_str_release(raw);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, message, strlen(message), "ERR_UNKNOWN_ENCODING");
-  return NULL;
-}
-
 enum {
   BCS_M_PUSH, BCS_M_UNSHIFT, BCS_M_READ, BCS_M_SET_ENCODING, BCS_M_PAUSE, BCS_M_RESUME,
   BCS_M_IS_PAUSED, BCS_M_PIPE, BCS_M_UNPIPE, BCS_M_DESTROY, BCS_M_WRITE, BCS_M_END,
@@ -1036,21 +1013,10 @@ static void bcs_callback_fire(ScrClosure *closure) {
   ScrDyn *fn = scr_box_get_ref(closure->caps[BCS_L_FN]);
   ScrDyn *self = scr_box_get_ref(closure->caps[BCS_L_SELF]);
   ScrStream *s = scr_box_get_ref(closure->caps[BCS_CB_STREAM]);
-  ScrError *err = scr_stream_errored(s);
-  ScrDyn *arg;
-  if (err) {
-    arg = scr_dyn_from_error(err);
-    scr_error_release(err);
-  } else if (scr_stream_prop(s, "destroyed") != 0) {
-    ScrStr *message = scr_str_new("Cannot call write after a stream was destroyed", 46);
-    ScrError *destroyed = scr_error_new(SCR_ERR_ERROR, message);
-    scr_str_release(message);
-    scr_error_set_code(destroyed, "ERR_STREAM_DESTROYED");
-    arg = scr_dyn_from_error(destroyed);
-    scr_error_release(destroyed);
-  } else {
-    arg = scr_dyn_new_null();
-  }
+  /* the argument is the error the completion running this callback chose
+   * (the stream's own, Node's fresh ERR_STREAM_DESTROYED, or null), not the
+   * stream's state, which a later destroy may have changed */
+  ScrDyn *arg = scr_stream_cb_error_dyn();
   scr_stream_release(s);
   ScrDyn *result = bcs_apply(fn, self, &arg, 1, "callback");
   if (result) scr_dyn_release(result);
@@ -1277,54 +1243,21 @@ static ScrDyn *bcs_method_call(ScrClosure *closure, ScrDyn *const *args, size_t 
   ScrDyn *first = bcs_arg(args, argc, 0);
   switch (method) {
   case BCS_M_PUSH:
-  case BCS_M_UNSHIFT: {
-    ScrDyn *encoding = bcs_arg(args, argc, 1);
-    if (method == BCS_M_PUSH && first->kind == SCR_DYN_STR && encoding->kind == SCR_DYN_STR) {
-      ScrStr *canonical = bcs_encoding(encoding);
-      if (canonical) {
-        result = scr_dyn_new_bool(scr_stream_push_str_enc(s, first->v.str, canonical));
-        scr_str_release(canonical);
-      }
-    } else if (method == BCS_M_PUSH) {
-      if (first->kind == SCR_DYN_UNDEF) {
-        ScrStr *empty = scr_str_new("", 0);
-        result = scr_dyn_new_bool(scr_stream_push_str(s, empty));
-        scr_str_release(empty);
-      } else {
-        result = scr_dyn_new_bool(scr_stream_push_dyn(s, first));
-      }
-    } else if (first->kind == SCR_DYN_STR) {
-      scr_stream_unshift_str(s, first->v.str);
-      result = bcs_undefined();
-    } else if (first->kind == SCR_DYN_BYTES) {
-      ScrBytes *bytes = scr_bytes_raw_view(first->v.bytes);
-      scr_stream_unshift(s, bytes);
-      scr_bytes_release(bytes);
-      result = bcs_undefined();
-    } else if (first->kind == SCR_DYN_NULL) {
-      scr_stream_push_null(s);
-      result = bcs_undefined();
-    } else if (first->kind == SCR_DYN_UNDEF) {
-      /* a byte-mode stream drops undefined, an object-mode one takes it */
-      scr_stream_unshift_dyn(s, first);
-      result = bcs_undefined();
-    } else {
-      scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
-    }
+    /* Readable.prototype.push(chunk[, encoding]) */
+    result = scr_dyn_new_bool(scr_stream_push_dyn_enc(s, first, bcs_arg(args, argc, 1)));
     break;
-  }
+  case BCS_M_UNSHIFT:
+    /* Readable.prototype.unshift(chunk[, encoding]) */
+    result = scr_dyn_new_bool(scr_stream_unshift_dyn_enc(s, first, bcs_arg(args, argc, 1)));
+    break;
   case BCS_M_READ:
     result = scr_stream_read_dyn(s, first);
     break;
-  case BCS_M_SET_ENCODING: {
-    ScrStr *canonical = bcs_encoding(first->kind == SCR_DYN_UNDEF ? scr_dyn_undefined() : first);
-    if (canonical) {
-      scr_stream_release(scr_stream_set_encoding(s, canonical));
-      scr_str_release(canonical);
-      result = scr_dyn_retain(self);
-    }
+  case BCS_M_SET_ENCODING:
+    scr_stream_release(scr_stream_set_encoding_value(s, first));
+    if (scr_exc_pending()) break;
+    result = scr_dyn_retain(self);
     break;
-  }
   case BCS_M_PAUSE:
     scr_stream_release(scr_stream_pause(s));
     result = scr_dyn_retain(self);
@@ -1398,17 +1331,17 @@ static void bcs_method(ScrDyn *prototype, const char *name, int method, uint32_t
 
 enum {
   BCS_P_READABLE, BCS_P_READABLE_ENDED, BCS_P_READABLE_LENGTH, BCS_P_READABLE_HWM,
-  BCS_P_READABLE_OBJECT_MODE, BCS_P_READABLE_FLOWING, BCS_P_WRITABLE, BCS_P_WRITABLE_ENDED,
-  BCS_P_WRITABLE_FINISHED, BCS_P_WRITABLE_LENGTH, BCS_P_WRITABLE_HWM, BCS_P_WRITABLE_NEED_DRAIN,
-  BCS_P_WRITABLE_CORKED, BCS_P_WRITABLE_OBJECT_MODE, BCS_P_DESTROYED, BCS_P_CLOSED, BCS_P_ERRORED,
-  BCS_P_COUNT
+  BCS_P_READABLE_OBJECT_MODE, BCS_P_READABLE_FLOWING, BCS_P_READABLE_ENCODING, BCS_P_WRITABLE,
+  BCS_P_WRITABLE_ENDED, BCS_P_WRITABLE_FINISHED, BCS_P_WRITABLE_LENGTH, BCS_P_WRITABLE_HWM,
+  BCS_P_WRITABLE_NEED_DRAIN, BCS_P_WRITABLE_CORKED, BCS_P_WRITABLE_OBJECT_MODE, BCS_P_DESTROYED,
+  BCS_P_CLOSED, BCS_P_ERRORED, BCS_P_COUNT
 };
 
 static const char *const bcs_property_names[BCS_P_COUNT] = {
   "readable", "readableEnded", "readableLength", "readableHighWaterMark", "readableObjectMode",
-  "readableFlowing", "writable", "writableEnded", "writableFinished", "writableLength",
-  "writableHighWaterMark", "writableNeedDrain", "writableCorked", "writableObjectMode",
-  "destroyed", "closed", "errored",
+  "readableFlowing", "readableEncoding", "writable", "writableEnded", "writableFinished",
+  "writableLength", "writableHighWaterMark", "writableNeedDrain", "writableCorked",
+  "writableObjectMode", "destroyed", "closed", "errored",
 };
 
 static ScrDyn *bcs_flowing(ScrStream *s) {
@@ -1437,6 +1370,13 @@ static ScrDyn *bcs_getter_call(ScrClosure *closure, ScrDyn *const *args, size_t 
   switch (property) {
   case BCS_P_READABLE_FLOWING:
     return bcs_flowing(s);
+  case BCS_P_READABLE_ENCODING: {
+    ScrStr *encoding = scr_stream_readable_encoding(s);
+    if (!encoding) return scr_dyn_new_null();
+    ScrDyn *value = scr_dyn_new_str(encoding);
+    scr_str_release(encoding);
+    return value;
+  }
   case BCS_P_ERRORED:
     return bcs_errored(s);
   case BCS_P_READABLE_LENGTH:
@@ -1614,6 +1554,7 @@ static void bcs_prototype(int kind, ScrDyn *prototype) {
     bcs_method(prototype, "unpipe", BCS_M_UNPIPE, 1);
     bcs_method(prototype, "wrap", BCS_M_WRAP, 1);
     for (int p = BCS_P_READABLE; p <= BCS_P_READABLE_FLOWING; p++) bcs_accessor(prototype, p);
+    bcs_accessor(prototype, BCS_P_READABLE_ENCODING);
     bcs_accessor(prototype, BCS_P_DESTROYED);
     bcs_accessor(prototype, BCS_P_CLOSED);
     bcs_accessor(prototype, BCS_P_ERRORED);

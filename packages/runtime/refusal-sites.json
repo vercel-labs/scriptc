@@ -1723,6 +1723,12 @@
  },
  {
   "file": "scr_stream.c",
+  "function": "scr_stream_unknown_encoding",
+  "message": "An encoding that is a function has no lowering; pass the encoding name as a string",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
   "function": "scr_stream_read_str_fence",
   "message": "read() on a stream with an encoding set is not supported yet (consume 'data' events, which deliver strings)",
   "code": "SC2020"
@@ -1748,19 +1754,7 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_call",
-  "message": "Native stream method values with write encodings or callbacks have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_stream.c",
-  "function": "scr_stream_dyn_call",
   "message": "Native stream method values with close callbacks have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_stream.c",
-  "function": "scr_stream_dyn_call",
-  "message": "Native stream method values with end encodings or callbacks have no lowering",
   "code": "SC2020"
  },
  {

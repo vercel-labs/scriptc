@@ -81,7 +81,8 @@ export interface EarlyExecutableNativeFeatures {
   fsBytesWrites?: boolean;
   strdecDyn?: boolean;
   processExtras?: boolean;
-  /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
+  /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS
+   * compiles their error-first adapter. */
   streamWriteErrors?: boolean;
   /** A process output stream held as a value: with Node islands,
    * SCR_NODE_ISLAND_STDIO and scr_node_island_stdio.c. */

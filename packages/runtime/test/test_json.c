@@ -950,9 +950,84 @@ static void test_class_test_walk(void) {
   scr_dyn_release(parent);
 }
 
+/* Node's determineSpecificType tail for a string: the value's own text, cut
+ * to 25 UTF-16 units and an ellipsis past the 28th, single-quoted as it
+ * stands unless it holds a single quote (then its JSON string form). The
+ * text is a counted byte run that also ends in a NUL, because some callers
+ * render it with %s: a copy cut to the caller's buffer must not leave an
+ * unterminated tail for them to read past. */
+static void specific_type_text_tests(void) {
+  char xs[41];
+  memset(xs, 'x', 40);
+  xs[40] = '\0';
+  ScrStr *source = scr_str_new(xs, 40);
+  ScrDyn *value = scr_dyn_new_str(source);
+  scr_str_release(source);
+
+  char detail[256];
+  char want[256];
+  size_t dlen = 0;
+  int want_len = snprintf(want, sizeof want, "type string ('%.*s...')", 25, xs);
+  check(want_len == 44, "a long tail is 25 units and an ellipsis");
+
+  memset(detail, 0xAA, sizeof detail);
+  const char *d = scr_dyn_specific_type_len(value, detail, sizeof detail, &dlen);
+  check(d == detail && dlen == (size_t)want_len && memcmp(detail, want, dlen) == 0,
+        "a long tail prints the value's own text");
+  check(detail[dlen] == '\0' && strlen(detail) == dlen, "a long tail ends in a NUL");
+
+  /* The same text in a buffer too small to hold it: the copy keeps cap - 1
+   * bytes and still ends in a NUL the %s readers stop at. */
+  memset(detail, 0xAA, sizeof detail);
+  d = scr_dyn_specific_type_len(value, detail, 32, &dlen);
+  check(d == detail && dlen == 31 && memcmp(detail, want, 31) == 0, "a cut tail keeps cap - 1 bytes");
+  check(detail[31] == '\0', "a cut tail ends in a NUL");
+  scr_dyn_release(value);
+
+  /* A single quote selects the JSON string form, whose escapes are Node's. */
+  source = scr_str_new("a'b", 3);
+  value = scr_dyn_new_str(source);
+  scr_str_release(source);
+  memset(detail, 0xAA, sizeof detail);
+  d = scr_dyn_specific_type_len(value, detail, sizeof detail, &dlen);
+  const char *json_want = "type string (\"a'b\")";
+  check(dlen == strlen(json_want) && memcmp(detail, json_want, dlen) == 0 && detail[dlen] == '\0',
+        "a single quote takes the JSON string form");
+  scr_dyn_release(value);
+
+  /* Without one, the value's bytes are the tail, NULs included. */
+  source = scr_str_new("a\0b", 3);
+  value = scr_dyn_new_str(source);
+  scr_str_release(source);
+  memset(detail, 0xAA, sizeof detail);
+  d = scr_dyn_specific_type_len(value, detail, sizeof detail, &dlen);
+  const char raw_want[] = "type string ('a\0b')";
+  check(dlen == sizeof raw_want - 1 && memcmp(detail, raw_want, dlen) == 0,
+        "control bytes stay in the tail");
+  check(detail[dlen] == '\0', "a tail holding NULs still ends in one");
+  scr_dyn_release(value);
+
+  /* The JSON form of escaped control units is longer than the smallest
+   * callers' buffers (64 bytes): the copy is cut there and terminated, so a
+   * %s reader stops inside the buffer instead of running into the stack. */
+  char escaped[25];
+  memset(escaped, '\0', 24);
+  escaped[24] = '\'';
+  source = scr_str_new(escaped, sizeof escaped);
+  value = scr_dyn_new_str(source);
+  scr_str_release(source);
+  char small[64];
+  memset(small, 0xAA, sizeof small);
+  d = scr_dyn_specific_type(value, small, sizeof small);
+  check(d == small && strlen(small) == sizeof small - 1, "an over-long JSON tail fills the buffer");
+  check(small[sizeof small - 1] == '\0', "an over-long JSON tail ends in a NUL");
+  scr_dyn_release(value);
+}
+
 int main(void) {
   test_class_values();
   scr_init();
+  specific_type_text_tests();
   test_primitive_owners();
   test_copy_property_descriptors();
   test_class_view_accessors();

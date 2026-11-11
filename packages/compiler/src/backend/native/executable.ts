@@ -246,9 +246,20 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       : [],
   ),
   unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
-  unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
+  // scr_webstreams.c renders ERR_ARG_NOT_ITERABLE through the inspector.
   unit(
-    (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
+    (u) => u.opts.inspect || u.opts.webStreams === true,
+    "scr_inspect.c",
+    "scr_console_native.c",
+  ),
+  // A web stream's pull fan-out calls into source algorithms as values.
+  unit(
+    (u) =>
+      u.opts.dynInvoke ||
+      u.opts.workers ||
+      u.nativeFetch ||
+      u.opts.nodeIsland === true ||
+      u.opts.webStreams === true,
     "scr_dyn_invoke.c",
   ),
   // Buffer.prototype methods called on checked-dynamic values.
@@ -279,8 +290,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // invariant. Every other program keeps the default bytes objects and
   // links no part of the unit.
   unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
+  // A pipe-to abort registers through the event target's addAbortListener.
   unit(
-    (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
+    (u) =>
+      u.opts.eventTarget ||
+      u.nativeFetch ||
+      u.opts.abortSignal === true ||
+      u.opts.webStreams === true,
     "scr_event_target.c",
   ),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
@@ -303,9 +319,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynAsync, "scr_perf.c"),
   // perf_hooks event-loop metrics, only for programs that read them.
   unit((u) => u.opts.perfLoop, "scr_perf_loop.c"),
-  // Blob and File (every blob.* call selects dynAsync, whose unit boxes
-  // their reads as dyn promises).
-  unit((u) => u.opts.dynAsync, "scr_blob.c"),
+  // Blob and File (any blob.* call). The unit answers stream() and
+  // textStream() through the web stream unit's over-readers, which the
+  // scan selects with it, and boxes its reads as dyn promises.
+  unit((u) => u.opts.blob === true, "scr_blob.c"),
   // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
   // objects also serve the native fetch's gzip decoder — spread exactly once.
   unitArgs((u) =>
@@ -363,7 +380,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
   unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
-  unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
+  // A web stream's pipe-to abort builds its controller through the signal
+  // unit (scr_abort.c, or the fetch unit's copy).
+  unit(
+    (u) => (u.opts.abortSignal === true || u.opts.webStreams === true) && !u.nativeFetch,
+    "scr_abort.c",
+  ),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or

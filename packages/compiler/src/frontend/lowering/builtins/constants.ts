@@ -142,16 +142,21 @@ export function builtinConstantBindingOf(lowerer: Lowerer, ident: ts.Identifier)
   return builtinConstLit(value, locOf(ident));
 }
 
-/** `zlib.constants` as a VALUE: the object Node's module answers — one
+/** `<module>.constants` as a VALUE: the object Node's module answers — one
  * singleton per program, built on first use with the same table every
  * member read bakes (lowerBuiltinConstantsProperty), so identity,
  * `typeof`, `Object.keys`, spread and `JSON.stringify` see Node's object
- * rather than a fresh literal per use. The record is the `ZlibConstants`
- * shape the type mapper interns for the declared interface (the fields
- * match one for one); the members stay baked literals where the program
- * spells them, and the keys keep Node's insertion order (the table's). */
-export function zlibConstantsValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
-  const keys = Object.keys(ZLIB_CONSTANTS);
+ * rather than a fresh literal per use. The record is the shape the type
+ * mapper interns for the declared interface (the fields match one for
+ * one); the members stay baked literals where the program spells them,
+ * and the keys keep Node's insertion order (the table's). */
+export function builtinConstantsValue(
+  lowerer: Lowerer,
+  module: "buffer" | "zlib",
+  loc: SrcLoc,
+): IrExpr {
+  const table = BUILTIN_CONSTANTS_TABLES[module]!.table;
+  const keys = Object.keys(table);
   const type: IrType & { kind: "record" } = {
     kind: "record",
     shapeId: lowerer.shapes.intern(
@@ -163,17 +168,17 @@ export function zlibConstantsValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
       keys,
     ),
   };
-  const name = keyedHelperName(lowerer, "%builtin.zlib.constants", type.shapeId);
+  const name = keyedHelperName(lowerer, `%builtin.${module}.constants`, type.shapeId);
   if (lowerer.liftedFnNamed(name) === undefined) {
     const shape = lowerer.shapes.get(type.shapeId);
     const declared = new Set((shape?.fields ?? []).map((field) => field.name));
     if (declared.size !== keys.length || keys.some((key) => !declared.has(key)))
       throw new InternalCompilerError(
-        "zlib.constants table and the ZlibConstants record shape disagree",
+        `${module}.constants table and the constants record shape disagree`,
       );
     const fields = keys.map((name) => ({
       name,
-      value: builtinConstLit(ZLIB_CONSTANTS[name]!, loc),
+      value: builtinConstLit(table[name]!, loc),
     }));
     // Node inserts the keys in table order and Object.keys observes it:
     // the literal carries the order.
@@ -184,7 +189,7 @@ export function zlibConstantsValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     const storage = `%g.${name}`;
     const ready = `${storage}%ready`;
     lowerer.globalsList.push(
-      { id: storage, name: "zlib.constants", type, mutable: true },
+      { id: storage, name: `${module}.constants`, type, mutable: true },
       { id: ready, name: "%ready", type: BOOL, mutable: true },
     );
     const body: IrStmt[] = [

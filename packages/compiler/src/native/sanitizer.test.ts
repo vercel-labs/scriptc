@@ -41,6 +41,7 @@ const features = {
   eventsOnceSignal: false,
   mime: false,
   largePages: false,
+  blob: false,
   webStreams: false,
   webBodies: false,
   abortSignal: false,

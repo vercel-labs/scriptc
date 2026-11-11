@@ -1508,6 +1508,29 @@ export function lowerBytesMethodCall(
     // end stays omitted (2 intrinsic args) — the emitter supplies the
     // receiver's length, because EXPLICIT negative ends clamp to empty
     // in Node and no in-band sentinel can represent "omitted" safely.
+    if (
+      nArgs > 1 &&
+      (needsNodeDefaulting(lowerer, call.arguments.nodes[1]) ||
+        needsNodeDefaulting(lowerer, call.arguments.nodes[2]))
+    ) {
+      // Node's toString clamps a start/end that is undefined (and converts a
+      // value the checker only knows as `number | undefined`) when the call
+      // runs; the checked-dynamic method runs that conversion.
+      return {
+        kind: "dynCheck",
+        value: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          type: DYN,
+          loc,
+        },
+        type: STRING,
+        loc,
+      };
+    }
     if (nArgs > 1) {
       const start = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64);
       if (nArgs === 3) {
@@ -1551,8 +1574,19 @@ export function lowerBytesMethodCall(
     if (nArgs < required || nArgs > required + 1) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
-    const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+    // The offset defaults to 0 for an omitted *or* undefined argument, and
+    // the value must be a BigInt; anything else (an untyped offset from
+    // JavaScript) takes the checked-dynamic method, which runs Node's
+    // argument validation at runtime.
     const offsetNode = call.arguments.nodes[required];
+    const offsetTyped =
+      offsetNode === undefined || lowerer.mapTypeOf(lowerer.typeOf(offsetNode))?.kind === "f64";
+    const valueTyped =
+      !write || lowerer.mapTypeOf(lowerer.typeOf(call.arguments.nodes[0]!))?.kind === "bigint";
+    if (!offsetTyped || !valueTyped) {
+      return dynNumericCall(lowerer, call, access, name, receiverIr, loc, write ? F64 : BIGINT_T);
+    }
+    const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     const offset: IrExpr = offsetNode
       ? lowerer.lowerExprExpecting(offsetNode, F64)
       : { kind: "numLit", value: 0, type: F64, loc };
@@ -1625,6 +1659,11 @@ export function lowerBytesMethodCall(
     if (nArgs !== required) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
+    // A non-number argument (an undefined offset, a string byteLength from
+    // untyped JavaScript) takes the checked-dynamic method: Node validates
+    // both slots, and a read's undefined offset is its ERR_INVALID_ARG_TYPE.
+    if (!numericArguments(lowerer, call))
+      return dynNumericCall(lowerer, call, access, name, receiverIr, loc);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     const kind: IrExpr = { kind: "strLit", value: varKind, type: STRING, loc };
     const args = [kind, ...call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, F64))];
@@ -1999,6 +2038,17 @@ function kindOrUndefinedArgument(
   return t?.kind === kind || (t !== undefined && t !== null && isUnitType(t));
 }
 
+/** Whether an optional argument can leave Node's own defaulting to the call:
+ * a statically undefined argument, an untyped one, or a union (such as
+ * `number | undefined`). Node tests every optional slot with `=== undefined`,
+ * so the checked-dynamic Buffer method — which runs Node's argument ladder —
+ * answers an explicit undefined exactly as an omitted argument. */
+function needsNodeDefaulting(lowerer: Lowerer, arg: ts.Expression | undefined): boolean {
+  if (arg === undefined) return false;
+  const t = lowerer.mapTypeOf(lowerer.typeOf(arg));
+  return t === null || t.kind === "dyn" || t.kind === "union" || t.kind === "void" || isUnitType(t);
+}
+
 /** Whether every argument of a numeric read/write is statically a number. */
 function numericArguments(lowerer: Lowerer, call: ts.CallExpression): boolean {
   return call.arguments.nodes.every((a) => lowerer.mapTypeOf(lowerer.typeOf(a))?.kind === "f64");
@@ -2014,6 +2064,7 @@ function dynNumericCall(
   name: string,
   receiverIr: IrType,
   loc: SrcLoc,
+  result: IrType = F64,
 ): IrExpr {
   const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
   return {
@@ -2027,7 +2078,7 @@ function dynNumericCall(
       type: DYN,
       loc,
     },
-    type: F64,
+    type: result,
     loc,
   };
 }
@@ -2169,6 +2220,28 @@ function lowerBufferInstanceMethod(
     }
     const resultT = name === "includes" ? BOOL : F64;
     const vT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    // A byteOffset that may be undefined takes Node's default there (the
+    // whole search), and a needle the checker only knows as a union picks
+    // its arm when the call runs; both are the checked-dynamic method.
+    const needleKnown =
+      vT?.kind === "f64" || vT?.kind === "string" || (vT?.kind === "bytes" && vT.elem === "u8");
+    if (!needleKnown || needsNodeDefaulting(lowerer, offNode)) {
+      const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+      return {
+        kind: "dynCheck",
+        value: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          type: DYN,
+          loc,
+        },
+        type: resultT,
+        loc,
+      };
+    }
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
     const off = offNode ? lowerer.lowerExprExpecting(offNode, F64) : undefined;
     if (vT?.kind === "f64") {
@@ -2292,10 +2365,10 @@ function lowerBufferInstanceMethod(
     // boolean, an encoding beside a number): Node's _fill reads the kind
     // each argument has when the call runs, and so does the
     // checked-dynamic Buffer method, which answers the receiver.
-    const untyped = (i: number): boolean => {
-      const t = argIrKind(i);
-      return t === null || t.kind === "dyn";
-    };
+    // An explicitly undefined offset or end belongs there as well: Node
+    // defaults an undefined offset to the whole buffer and an undefined end
+    // to its length, after the encoding choice.
+    const untyped = (i: number): boolean => needsNodeDefaulting(lowerer, args[i]);
     if (
       !(
         vT?.kind === "string" ||
@@ -2372,9 +2445,14 @@ function lowerBufferInstanceMethod(
     // Node's copyImpl accepts any ArrayBuffer view as the target and
     // measures every offset in bytes over it, so a target of another
     // element type runs as the checked-dynamic method, which re-views it
-    // over its bytes before the copy.
+    // over its bytes before the copy. An offset that may be undefined
+    // reaches Node's own defaulting there too (undefined targetStart and
+    // sourceStart are 0, undefined sourceEnd is the source's length).
     const targetIr = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-    if (targetIr?.kind === "bytes" && targetIr.elem !== "u8") {
+    if (
+      (targetIr?.kind === "bytes" && targetIr.elem !== "u8") ||
+      call.arguments.nodes.slice(1).some((a) => needsNodeDefaulting(lowerer, a))
+    ) {
       const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
       return {
         kind: "dynCheck",
@@ -2456,6 +2534,26 @@ function lowerBufferInstanceMethod(
       idxNodes = idxNodes.slice(0, -1);
     }
     if (idxNodes.length > 2) lowerer.noLowering(`.write with ${nArgs} arguments`, call);
+    if (idxNodes.some((a) => needsNodeDefaulting(lowerer, a))) {
+      // An offset that may be undefined selects Node's first branch, which
+      // writes utf8 over the whole buffer and ignores the encoding argument;
+      // the checked-dynamic method runs that branch.
+      const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+      return {
+        kind: "dynCheck",
+        value: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          type: DYN,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+    }
     // write reads an empty encoding as utf8 and throws on any other name
     // Node does not know, after the offset and length validate.
     const enc = encNode
@@ -2930,20 +3028,33 @@ function lowerBufferStaticValue(
               ? value.type
               : checkerIr
             : checkerIr;
-        // JS callback storage can be native DYN even when the checker
-        // reports any (or a narrowed Buffer). Dispatch on its actual ABI.
-        if (value.type.kind === "dyn") {
-          const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, value, args[1], loc);
+        // The run-time form: dispatch on the value's kind, with Node's
+        // conversion for a string, a u8 view or an array, its TypeError for
+        // everything else, and the encoding argument's own conversions.
+        const dynSource = (src: IrExpr): IrExpr => {
+          const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, src, args[1], loc);
           if (runtimeEncoding) return runtimeEncoding;
           const encName = args[1] ? bufEncoding(lowerer, "Buffer.from", args[1]) : "utf8";
           const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
           return {
             kind: "libCall",
             fn: "buffer.poolFromDyn",
-            args: [value, enc],
+            args: [src, enc],
             type: BYTES_U8,
             loc,
           };
+        };
+        // JS callback storage can be native DYN even when the checker
+        // reports any (or a narrowed Buffer). Dispatch on its actual ABI.
+        if (value.type.kind === "dyn") return dynSource(value);
+        // A record value the checker types (an object literal, or a variable
+        // of an interface type) is only a Buffer source at run time: the
+        // run-time form reads `{type: "Buffer", data}` and array-like
+        // objects, and throws Node's TypeError for the other shapes. A deep
+        // copy (dynFrom) keeps it a plain dynamic object; a live reference
+        // would hand the runtime an opaque record.
+        if (value.type.kind === "record" && lowerer.dynConvertible(value.type)) {
+          return dynSource({ kind: "dynFrom", value, type: DYN, loc });
         }
         if (srcIr?.kind === "string") {
           const s = lowerer.coerceInto(argNode, value, STRING);
@@ -3046,7 +3157,25 @@ function lowerBufferStaticValue(
             };
           }
         }
+        // Anything else that converts to a dynamic value (a number, a
+        // boolean, null, undefined) is still no Buffer source: the run-time
+        // conversion reads its kind and throws Node's first-argument error
+        // before it ever reads the encoding.
+        if (lowerer.dynConvertible(value.type)) {
+          return dynSource({ kind: "dynFrom", value, type: DYN, loc });
+        }
       }
+    }
+    // No argument at all: the run-time conversion receives undefined and
+    // throws the first-argument error, as Node's does.
+    if (args.length === 0) {
+      return {
+        kind: "libCall",
+        fn: "buffer.poolFromDyn",
+        args: [dynUndefinedExpr(loc), { kind: "strLit", value: "utf8", type: STRING, loc }],
+        type: BYTES_U8,
+        loc,
+      };
     }
     lowerer.noLowering(
       "Buffer.from with this argument shape",
@@ -3172,6 +3301,20 @@ function lowerBufferStaticValue(
       lowerer.noLowering(`Buffer.concat with ${args.length} arguments`, call);
     }
     const argNode = args[0]!;
+    if (args.length === 2 && needsNodeDefaulting(lowerer, args[1])) {
+      // Node's concat treats an undefined totalLength as the sum of the
+      // parts; the entry reads that arm (and the list's shape) at run time.
+      const list = lowerer.lowerExpr(argNode);
+      const value: IrExpr =
+        list.type.kind === "dyn" ? list : { kind: "dynFrom", value: list, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "buffer.concatLenDynOpt",
+        args: [value, lowerer.lowerExprExpecting(args[1]!, DYN)],
+        type: BYTES_U8,
+        loc,
+      };
+    }
     let list: IrExpr;
     if (ts.isArrayLiteralExpression(argNode) && !argNode.elements.nodes.some(ts.isSpreadElement)) {
       const elems = argNode.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, BYTES_U8));

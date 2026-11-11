@@ -128,6 +128,8 @@ function buildLibFnSignatures() {
     "blob.text": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
     "blob.bytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },
     "blob.arrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "blob.stream": { argTypes: [DYN], result: DYN },
+    "blob.textStream": { argTypes: [DYN], result: DYN },
     "blob.is": { argTypes: [DYN, F64], result: BOOL },
     /** WebAssembly (scr_wasm.c): modules translated at build time
      * (wasm/translate.ts), found at run time by the SHA-256 of their bytes.
@@ -3817,6 +3819,7 @@ function buildLibFnSignatures() {
      * negative/non-integer total (may-throw seed). */
     "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
     "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
+    "buffer.concatLenDynOpt": { argTypes: [DYN, DYN], result: BYTES_U8 },
     // The checked-dynamic compare/equals validators (Node's argument
     // ladders over dyn-boxed invalid-input probes).
     /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —
@@ -6279,6 +6282,12 @@ function buildLibFnSignatures() {
     "buffer.isAscii": { argTypes: [DYN], result: BOOL },
     "buffer.isUtf8": { argTypes: [DYN], result: BOOL },
     "buffer.transcode": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
+    /** buffer.resolveObjectURL(id): the id arrives already converted (the
+     * ToString can throw for a Symbol, before the call). A compiled program
+     * registers no blob URLs — URL.createObjectURL has no lowering — so
+     * Node's lookup always misses and the answer is undefined. Borrowed
+     * argument; never throws. */
+    "buffer.resolveObjectURL": { argTypes: [STRING], result: DYN },
     /** The fs option forms and friends (scr_lib.c), all throwing catchably
      * like the rest of sync fs. mkdirRecursiveSync is Node's recursive
      * algorithm (try mkdir, EEXIST-dir is fine, ENOENT creates the parent

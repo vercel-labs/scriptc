@@ -208,6 +208,9 @@ export interface NativeLinkFeatures {
   /** `--large-pages`: scr_text_pages.c, which moves the executable's code
    * onto transparent huge pages at startup. Absent (false) without it. */
   largePages?: boolean;
+  /** Blob and File: scr_blob.c. Absent (false) for programs without a
+   * blob.* call. */
+  blob?: boolean;
   /** Web streams in checked-dynamic code: scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;

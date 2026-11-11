@@ -559,6 +559,7 @@ void *scr_string_decoder_from_dyn(const ScrDyn *d, const struct ScrDynPath *path
 bool scr_buffer_is_ascii(const ScrDyn *input);
 bool scr_buffer_is_utf8(const ScrDyn *input);
 ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const ScrDyn *to);
+ScrDyn *scr_buffer_resolve_object_url(ScrStr *id);
 ScrBytes *scr_bytes_buffer_source(const ScrDyn *value);
 ScrBytes *scr_text_decoder_input(const ScrDyn *value, double encoding, const ScrDyn *state, bool stream);
 bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name);
@@ -651,6 +652,9 @@ extern struct ScrDyn *(*scr_bytes_buffer_member_fn)(const struct ScrDyn *value, 
  * Buffer.prototype methods by name (RuntimeFeatures dynBufferMembers). */
 void scr_bytes_buffer_members_install(void);
 ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
+/* Buffer.concat(list, totalLength?) with a total that may be undefined:
+ * undefined is the sum of the parts — Node's default. */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const struct ScrDyn *list, const struct ScrDyn *total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
 void scr_buffer_pool_reset(void);

@@ -699,6 +699,26 @@ function publicDetail(tier) {
     if (source === "compiler-feature:buffer.buffer.transcode") {
       return "Converts Buffer and Uint8Array inputs among ASCII, Latin-1, UTF-8, and UTF-16LE, including encoding aliases and conversion errors.";
     }
+    if (source === "compiler-feature:buffer.buffer.resolveObjectURL") {
+      return "Converts the id the way Node does and answers undefined; a compiled program cannot create a blob URL, so the registry is always empty and the lookup always misses.";
+    }
+    if (source === "compiler-feature:buffer.node:buffer") {
+      return "Buffer, Blob and File are the same identities the globals name, and the module object exposes Node's keys in Node's order, its constants, and the documented functions through the module.";
+    }
+    if (source === "compiler-feature:buffer.Buffer.from") {
+      return "Builds Buffers from strings, arrays, ArrayBuffers, TypedArrays and DataViews with Node's argument validation; alloc and allocUnsafe answer zero-filled and uninitialised Buffers.";
+    }
+    if (source === "compiler-feature:buffer.Buffer") {
+      return "Buffers are byte sequences with Node's indexing, slicing, comparisons and the documented instance methods.";
+    }
+    if (source === "compiler-feature:globals.Buffer") {
+      return "The global binding is node:buffer's Buffer constructor: its static constructors and the documented instance methods run through the global name, and JavaScript reads the same value from globalThis and the module.";
+    }
+    if (
+      /^compiler-feature:(?:buffer\.(?:Blob|File|blob\.\w+)|globals\.(?:Blob|File))$/.test(source)
+    ) {
+      return "Immutable byte sequences with Node's part concatenation, type normalization, slice, arrayBuffer, bytes, text readers, byte and text streams, structured cloning and MessageChannel transfer; File adds name and lastModified.";
+    }
     if (source === "compiler-feature:util.textEncoder.encodeInto") {
       return "Writes complete UTF-8 characters into Uint8Array or Buffer views and reports UTF-16 units read and bytes written.";
     }

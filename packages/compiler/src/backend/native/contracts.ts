@@ -204,6 +204,9 @@ export interface CcOptions {
   mime?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
+  /** Blob and File (any blob.* call): compiles scr_blob.c, whose streams
+   * read through the web stream unit's over-readers. */
+  blob?: boolean;
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;

@@ -98,11 +98,14 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
-  ["scr_inspect.c", "inspect"],
-  ["scr_console_native.c", "inspect"],
+  // scr_webstreams.c formats ReadableStream.from's non-iterable argument
+  // through the inspector, so a program linking the web stream unit links
+  // the inspect unit too.
+  ["scr_inspect.c", any("inspect", "webStreams")],
+  ["scr_console_native.c", any("inspect", "webStreams")],
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
-  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland", "webStreams")],
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
@@ -136,7 +139,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // fact arms it at the top of %main (arrayBuffer.armMutable); every other
   // program keeps the base units' hooks NULL and links no registry.
   ["scr_js_buffers.c", "mutableBuffers"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
+  // A web stream's pipe-to abort registers through the event target's
+  // addAbortListener.
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal", "webStreams")],
   [
     "scr_async_dyn.c",
     any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
@@ -159,8 +164,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_wrapper.c", "primitiveWrapper"],
   // %Iterator% and %Iterator.prototype% as values.
   ["scr_js_iterator.c", "iteratorProto"],
-  // Blob and File box their reads as dyn promises through scr_async_dyn.c.
-  ["scr_blob.c", "dynAsync"],
+  // Blob and File box their reads as dyn promises through scr_async_dyn.c,
+  // and their streams read through scr_webstreams.c (selected with them).
+  ["scr_blob.c", "blob"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],

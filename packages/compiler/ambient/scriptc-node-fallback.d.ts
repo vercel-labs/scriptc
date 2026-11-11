@@ -1050,7 +1050,10 @@ interface BufferConstructor {
   poolSize: number;
   concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
   isBuffer(obj: unknown): obj is Buffer;
-  byteLength(input: string | Uint8Array, encoding?: BufferEncoding): number;
+  byteLength(
+    input: string | ScriptcBufferView | ArrayBuffer | SharedArrayBuffer,
+    encoding?: BufferEncoding,
+  ): number;
   isEncoding(encoding: string): boolean;
 }
 declare var Buffer: BufferConstructor;

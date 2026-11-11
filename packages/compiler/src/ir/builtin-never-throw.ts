@@ -115,6 +115,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_buffer_resolve_object_url ignores the id and answers undefined: the
+  // registry is always empty because a compiled program cannot create a
+  // blob URL. The ToString that can throw (a Symbol, a throwing toString)
+  // runs in the lowering, before the call.
+  "buffer.resolveObjectURL",
   // scr_text_encode_into_str writes the two counts of the typed encodeInto
   // into the slots the compiler allocated: the walk runs no program code, a
   // destination that is not a u8 byte view ends the process at the entry's

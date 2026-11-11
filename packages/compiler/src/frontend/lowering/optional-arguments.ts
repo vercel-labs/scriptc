@@ -1,8 +1,8 @@
 import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesAssertionsSatisfies } from "../outer-expressions.js";
-import type { IrExpr, IrType, SrcLoc } from "../../ir/ir.js";
+import type { IrExpr, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../ir/ir.js";
-import { nodeThrowExpr, numLit, strLit } from "../../ir/build.js";
+import { nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 
@@ -105,13 +105,95 @@ export function lowerOptionalArgument(
   if (undefinedArg) return defaultAfterUndefined(undefinedArg, defaultValue);
   const value = lowerer.lowerExpr(node);
   if (value.type.kind === "union") {
-    const def = lowerer.unions.get(value.type.unionId);
+    const unionId = value.type.unionId;
+    const def = lowerer.unions.get(unionId);
+    // The union carries undefined (an optional slot) and one present arm of
+    // the expected type. An iterated tuple's element type models absence as
+    // both null and undefined, and that extra arm cannot hold a present
+    // value, so the present arm is the only other one that does. A union
+    // whose present arms are anything else keeps the strict conversion
+    // below.
+    const undefinedTag = def?.arms.findIndex((arm) => arm.kind === "undefinedT") ?? -1;
+    const rest = def?.arms.filter((arm) => !isUnitType(arm)) ?? [];
     if (
-      def?.arms.length === 2 &&
-      def.arms.some((arm) => arm.kind === "undefinedT") &&
-      def.arms.some((arm) => typeEquals(arm, expected))
+      def !== undefined &&
+      undefinedTag >= 0 &&
+      rest.length === 1 &&
+      typeEquals(rest[0]!, expected)
     ) {
-      return { kind: "nullish", left: value, right: defaultValue, type: expected, loc: value.loc };
+      const nullTag = def.arms.findIndex((arm) => arm.kind === "nullT");
+      if (nullTag < 0) {
+        return {
+          kind: "nullish",
+          left: value,
+          right: defaultValue,
+          type: expected,
+          loc: value.loc,
+        };
+      }
+      // Only undefined is an omitted slot: a supplied null is a value, and
+      // Node converts it like any other (ToString(null) is "null",
+      // ToNumber(null) is 0). The null arm of an iterated tuple's element
+      // type holds nothing, so the conversion is what Node would do anyway.
+      const nullValue =
+        expected.kind === "string"
+          ? strLit("null", value.loc)
+          : expected.kind === "f64"
+            ? numLit(0, value.loc)
+            : null;
+      if (nullValue !== null) {
+        const presentTag = def.arms.findIndex((arm) => typeEquals(arm, expected))!;
+        // Both readings inspect the value's tag, so evaluate it once.
+        const stmts: IrStmt[] = [];
+        let subject = value;
+        if (value.kind !== "varRef") {
+          const local = lowerer.declareHiddenLocal("%optionalSlot", value.type);
+          stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
+          subject = varRef(local.id, value.type, value.loc);
+        }
+        const supplied: IrExpr = {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId,
+            tag: nullTag,
+            negated: false,
+            value: subject,
+            type: BOOL,
+            loc: value.loc,
+          },
+          then: nullValue,
+          else_: {
+            kind: "unionNarrow",
+            unionId,
+            tag: presentTag,
+            value: subject,
+            type: expected,
+            loc: value.loc,
+          },
+          type: expected,
+          loc: value.loc,
+        };
+        const result: IrExpr = {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId,
+            tag: undefinedTag,
+            negated: false,
+            value: subject,
+            type: BOOL,
+            loc: value.loc,
+          },
+          then: defaultValue,
+          else_: supplied,
+          type: expected,
+          loc: value.loc,
+        };
+        return stmts.length === 0
+          ? result
+          : { kind: "seqExpr", stmts, result, type: expected, loc: value.loc };
+      }
     }
   }
   return lowerer.coerceInto(node, value, expected);

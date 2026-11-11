@@ -118,6 +118,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   eventsOnceSignal: boolean;
   mime: boolean;
   largePages: boolean;
+  blob: boolean;
   webStreams: boolean;
   webBodies: boolean;
   abortSignal: boolean;
@@ -416,6 +417,7 @@ export function effectiveRuntimeFeatures(
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
     largePages: features.largePages === true,
+    blob: features.blob === true,
     webStreams: features.webStreams === true,
     webBodies: features.webBodies === true,
     abortSignal,

@@ -48,7 +48,6 @@ const KNOWN: Record<string, Known> = {
   // `strict.strict === strict` compares the assert module's `strict` member,
   // a function value with no lowering, with the module itself.
   "assert-shims": { run: "SC1100" },
-  "buffer-shims": { run: "SC2020" },
   "bytes-exit": { island: true },
   // chalk 4 compiles natively; the colour models convert through
   // color-convert, required inside a function of ansi-styles and shipped

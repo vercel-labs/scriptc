@@ -139,6 +139,7 @@ export interface EarlyExecutableNativeFeatures {
   arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  blob?: boolean;
   webStreams?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;

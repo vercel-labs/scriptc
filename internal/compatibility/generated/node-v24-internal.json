@@ -2723,6 +2723,9 @@
         "tests": [
           "tests/corpus/1402-buffer-encodings.ts",
           "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts",
+          "tests/corpus/2570-buffer-arg-validation.cjs",
           "tests/corpus/2902-bigint-bytes.ts",
           "tests/corpus/2904-bigint-errors.ts",
           "tests/corpus/5285-blob-construct.ts",
@@ -2733,9 +2736,34 @@
           "tests/corpus/5530-buffer-pool.ts",
           "tests/corpus/5531-buffer-pool-first-slab.ts",
           "tests/corpus/5532-buffer-pool-first-slab-untyped.mjs",
+          "tests/corpus/5973-buffer-concat-untyped.js",
+          "tests/corpus/6209-buffer-module-alias.cjs",
+          "tests/corpus/6868-buffer-from-untyped-array-buffer.cjs",
+          "tests/corpus/7249-buffer-index-of-candidates.ts",
+          "tests/corpus/7527-buffer-from-array-buffer.ts",
+          "tests/corpus/7528-buffer-from-array-buffer.cjs",
+          "tests/corpus/7529-buffer-constructor.cjs",
+          "tests/corpus/7530-buffer-constructor.ts",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts",
+          "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/buffer-slowbuffer.cjs",
           "tests/corpus/buffer-to-json.ts",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
+          "tests/corpus/compat-blob-streams.ts",
+          "tests/corpus/compat-buffer-copy-offsets.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts",
+          "tests/corpus/compat-buffer-search-needles.ts",
+          "tests/corpus/compat-buffer-static-surface.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
           "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-node-buffer-module.cjs",
           "tests/corpus/node24-buffer-encoding-errors.ts",
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/fixtures/node-types/blob-file.ts",
@@ -2854,10 +2882,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.node:buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-node-buffer-module.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts",
+          "tests/corpus/2380-buffer-module-named-import.ts",
+          "tests/corpus/6209-buffer-module-alias.cjs",
+          "tests/corpus/buffer-slowbuffer.cjs",
+          "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
+          "tests/corpus/buffer-to-json.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2955,13 +2991,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.buffer.SlowBuffer",
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.SlowBuffer",
         "tests": [
-          "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts",
-          "tests/corpus/2902-bigint-bytes.ts",
-          "tests/corpus/2904-bigint-errors.ts"
+          "tests/corpus/buffer-slowbuffer.cjs",
+          "tests/corpus/compat-buffer-static-surface.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2984,10 +3018,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.atob",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/buffer-atob-btoa.js"
         ]
       },
       "anchorSource": "exact"
@@ -3010,10 +3045,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.btoa",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/buffer-atob-btoa.js"
         ]
       },
       "anchorSource": "exact"
@@ -3036,11 +3072,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.isAscii",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3064,11 +3101,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.isUtf8",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3092,8 +3130,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "partial",
+        "evidence": "compiler-feature:buffer.buffer.resolveObjectURL",
+        "tests": [
+          "tests/corpus/compat-buffer-resolve-object-url.cjs",
+          "tests/corpus/compat-buffer-resolve-object-url.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3115,11 +3157,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer.transcode",
         "tests": [
           "tests/corpus/node24-buffer-encoding.ts",
           "tests/corpus/node24-buffer-encoding-errors.ts",
+          "tests/corpus/compat-buffer-encoding-checks.ts",
           "tests/fixtures/node-types/text-encoding.ts"
         ]
       },
@@ -3169,13 +3212,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.buffer.kMaxLength",
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.kMaxLength",
         "tests": [
-          "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1660-buffer-read-write-num.ts",
-          "tests/corpus/2902-bigint-bytes.ts",
-          "tests/corpus/2904-bigint-errors.ts"
+          "tests/corpus/buffer-slowbuffer.cjs",
+          "tests/corpus/buffer-to-json.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -3224,10 +3265,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer.from",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-static-surface.ts",
+          "tests/corpus/7527-buffer-from-array-buffer.ts",
+          "tests/corpus/7528-buffer-from-array-buffer.cjs",
+          "tests/corpus/6868-buffer-from-untyped-array-buffer.cjs",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/5973-buffer-concat-untyped.js"
         ]
       },
       "anchorSource": "exact"
@@ -3296,11 +3342,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Blob",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
           "tests/fixtures/node-types/blob-file.ts"
         ]
       },
@@ -3324,8 +3372,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.Blob",
+        "tests": [
+          "tests/corpus/compat-blob-message-channel.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3440,8 +3491,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.stream",
+        "tests": [
+          "tests/corpus/compat-blob-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3494,8 +3548,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:buffer"
+        "status": "supported",
+        "evidence": "compiler-feature:buffer.blob.textStream",
+        "tests": [
+          "tests/corpus/compat-blob-streams.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -3579,10 +3636,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.Buffer",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/7529-buffer-constructor.cjs",
+          "tests/corpus/7530-buffer-constructor.ts",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/2570-buffer-arg-validation.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -3605,10 +3665,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.compare",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3631,10 +3692,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.copy",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-copy-offsets.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3657,7 +3722,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.entries",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -3683,10 +3748,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.equals",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3709,10 +3775,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.fill",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-copy-offsets.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3735,10 +3805,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.includes",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-search-needles.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/7249-buffer-index-of-candidates.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3761,10 +3834,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.indexOf",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-search-needles.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/7249-buffer-index-of-candidates.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3787,7 +3863,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.keys",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -3813,10 +3889,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.lastIndexOf",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-search-needles.ts",
+          "tests/corpus/1663-buffer-compare-search-fill.ts",
+          "tests/corpus/7249-buffer-index-of-candidates.ts"
         ]
       },
       "anchorSource": "exact"
@@ -3947,10 +4026,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readDoubleBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -3973,10 +4056,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readDoubleLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -3999,10 +4086,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readFloatBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4025,10 +4116,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readFloatLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4051,10 +4146,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readInt8",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4077,10 +4176,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readInt16BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4103,10 +4206,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readInt16LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4129,10 +4236,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readInt32BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4155,10 +4266,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readInt32LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4181,10 +4296,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readIntBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4207,10 +4326,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readIntLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4233,10 +4356,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUInt8",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4259,10 +4386,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUInt16BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4285,10 +4416,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUInt16LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4311,10 +4446,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUInt32BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4337,10 +4476,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUInt32LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4363,10 +4506,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUIntBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4389,10 +4536,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.readUIntLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4415,10 +4566,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.subarray",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/1402-buffer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4441,10 +4594,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.slice",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/1402-buffer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4467,10 +4622,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.swap16",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4493,10 +4649,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.swap32",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4519,10 +4676,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.swap64",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4571,10 +4729,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.toString",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/1402-buffer-encodings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4597,7 +4757,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.values",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -4623,10 +4783,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.write",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-copy-offsets.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/8007-buffer-fill-swap-utf16le.ts"
         ]
       },
       "anchorSource": "exact"
@@ -4757,10 +4921,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeDoubleBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4783,10 +4951,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeDoubleLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4809,10 +4981,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeFloatBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4835,10 +5011,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeFloatLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4861,10 +5041,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeInt8",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4887,10 +5071,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeInt16BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4913,10 +5101,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeInt16LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4939,10 +5131,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeInt32BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4965,10 +5161,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeInt32LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -4991,10 +5191,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeIntBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5017,10 +5221,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeIntLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5043,10 +5251,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUInt8",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5069,10 +5281,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUInt16BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5095,10 +5311,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUInt16LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5121,10 +5341,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUInt32BE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5147,10 +5371,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUInt32LE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5173,10 +5401,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUIntBE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5199,10 +5431,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.writeUIntLE",
         "tests": [
-          "tests/corpus/compat-buffer-instance-methods.ts"
+          "tests/corpus/compat-buffer-instance-methods.ts",
+          "tests/corpus/compat-buffer-optional-slots.ts",
+          "tests/corpus/compat-buffer-undefined-offsets.mjs",
+          "tests/corpus/1660-buffer-read-write-num.ts",
+          "tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -5225,7 +5461,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.poolSize",
         "tests": [
           "tests/corpus/5530-buffer-pool.ts",
@@ -5253,7 +5489,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -5279,7 +5515,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buffer",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -5305,7 +5541,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.byteOffset",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -5331,7 +5567,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.length",
         "tests": [
           "tests/corpus/compat-buffer-instance-methods.ts"
@@ -5357,10 +5593,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.buf.parent",
         "tests": [
-          "tests/corpus/compat-core-members.mjs"
+          "tests/corpus/compat-core-members.mjs",
+          "tests/corpus/compat-buffer-instance-methods.ts"
         ]
       },
       "anchorSource": "exact"
@@ -5383,11 +5620,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:buffer.File",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5288-blob-validation.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
           "tests/fixtures/node-types/blob-file.ts"
         ]
       },
@@ -53769,15 +54008,22 @@
           "tests/corpus/6294-webcrypto-js-values.mjs",
           "tests/corpus/6295-jose-hs256/main.mjs",
           "tests/corpus/6331-jose-root-entry/main.ts",
+          "tests/corpus/7309-globalthis-buffer-aliases.ts",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/7534-buffer-prototype-members.cjs",
           "tests/corpus/7735-untyped-headers-iterators.js",
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
           "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-message-channel.ts",
+          "tests/corpus/compat-blob-streams.ts",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
+          "tests/corpus/compat-global-buffer.ts",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
@@ -53804,6 +54050,7 @@
           "tests/diagnostics/compat-absent-lowerings.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
+          "tests/fixtures/node-types/global-buffer.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
           "tests/harness/project-config.test.ts"
@@ -54089,14 +54336,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.Blob",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
           "tests/corpus/5288-blob-validation.js",
-          "tests/corpus/5290-blob-dynamic.js"
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-streams.ts",
+          "tests/corpus/compat-blob-message-channel.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54145,11 +54395,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.Buffer",
         "tests": [
+          "tests/corpus/compat-global-buffer.ts",
+          "tests/corpus/7533-buffer-value.cjs",
+          "tests/corpus/7534-buffer-prototype-members.cjs",
+          "tests/corpus/7309-globalthis-buffer-aliases.ts",
           "tests/corpus/1402-buffer-encodings.ts",
-          "tests/corpus/1403-buffer-fs.ts"
+          "tests/corpus/1403-buffer-fs.ts",
+          "tests/fixtures/node-types/global-buffer.ts",
+          "tests/harness/project-config.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -54497,14 +54753,17 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.File",
         "tests": [
           "tests/corpus/5285-blob-construct.ts",
           "tests/corpus/5286-blob-readers.ts",
           "tests/corpus/5287-blob-inspect.ts",
           "tests/corpus/5288-blob-validation.js",
-          "tests/corpus/5290-blob-dynamic.js"
+          "tests/corpus/5290-blob-dynamic.js",
+          "tests/corpus/compat-blob-file.ts",
+          "tests/corpus/compat-blob-streams.ts",
+          "tests/corpus/compat-blob-message-channel.ts"
         ]
       },
       "anchorSource": "exact"
@@ -85194,11 +85453,19 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/2917-builtin-callable-widths.ts",
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/2460-qs-parse-grammar.ts",
+          "tests/corpus/2461-qs-parse-options.ts",
+          "tests/corpus/2462-qs-stringify.ts",
+          "tests/corpus/2463-qs-escape-unescape.ts",
+          "tests/corpus/2464-qs-require-forms.cjs",
+          "tests/corpus/5838-qs-stringify-bigint.ts",
+          "tests/corpus/5842-qs-parse-null-prototype.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js"
         ]
       },
       "anchorSource": "chapter"
@@ -85221,11 +85488,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.decode",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.decode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2460-qs-parse-grammar.ts",
+          "tests/corpus/2461-qs-parse-options.ts",
+          "tests/corpus/5842-qs-parse-null-prototype.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/2464-qs-require-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85248,11 +85518,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.encode",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.encode",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2462-qs-stringify.ts",
+          "tests/corpus/5838-qs-stringify-bigint.ts",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js",
+          "tests/corpus/2464-qs-require-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85275,11 +85548,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.escape",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.escape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2463-qs-escape-unescape.ts",
+          "tests/corpus/querystring-runtime-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -85302,11 +85575,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.parse",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.parse",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2460-qs-parse-grammar.ts",
+          "tests/corpus/2461-qs-parse-options.ts",
+          "tests/corpus/5842-qs-parse-null-prototype.ts",
+          "tests/corpus/querystring-runtime-values.js",
+          "tests/corpus/2464-qs-require-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85329,11 +85605,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.stringify",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.stringify",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2462-qs-stringify.ts",
+          "tests/corpus/5838-qs-stringify-bigint.ts",
+          "tests/corpus/querystring-stringify-live-records.ts",
+          "tests/corpus/querystring-stringify-live-values.js",
+          "tests/corpus/2464-qs-require-forms.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -85356,11 +85635,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.querystring.unescape",
+        "status": "supported",
+        "evidence": "compiler-feature:querystring.querystring.unescape",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2463-qs-escape-unescape.ts",
+          "tests/corpus/querystring-runtime-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -94375,13 +94654,15 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
+          "tests/corpus/8233-string-decoder-values.cjs",
           "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
-          "tests/corpus/node24-string-decoder.ts"
+          "tests/corpus/node24-string-decoder.ts",
+          "tests/corpus/string-decoder-untyped-values.js"
         ]
       },
       "anchorSource": "chapter"
@@ -94404,13 +94685,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:StringDecoder",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
-          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
+          "tests/corpus/8233-string-decoder-values.cjs",
+          "tests/corpus/string-decoder-untyped-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -94433,13 +94716,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:stringDecoder.end",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
-          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
+          "tests/corpus/8233-string-decoder-values.cjs",
+          "tests/corpus/string-decoder-untyped-values.js"
         ]
       },
       "anchorSource": "exact"
@@ -94462,13 +94747,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:stringDecoder.write",
         "tests": [
           "tests/corpus/1662-string-decoder-encodings.ts",
           "tests/corpus/node24-string-decoder.ts",
           "tests/corpus/5882-string-decoder-runtime-encoding.ts",
-          "tests/corpus/8428-string-decoder-dynamic-chunks.ts"
+          "tests/corpus/8428-string-decoder-dynamic-chunks.ts",
+          "tests/corpus/8233-string-decoder-values.cjs",
+          "tests/corpus/string-decoder-untyped-values.js"
         ]
       },
       "anchorSource": "exact"

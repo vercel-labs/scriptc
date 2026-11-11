@@ -5934,7 +5934,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // interface of number constants, interned as a record so the object
   // flows through variables, parameters, spread and Object.keys. Node
   // builds the object from this list, so the declaration's order is its
-  // runtime insertion order. zlibConstantsValue interns the same fields
+  // runtime insertion order. builtinConstantsValue interns the same fields
   // for the value, so the shapes are one.
   if (isStdlibInterface("ZlibConstants")) {
     const fields: IrRecordField[] = [];

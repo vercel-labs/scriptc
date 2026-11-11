@@ -7054,7 +7054,12 @@ bool scr_fetch_web_is(const ScrDyn *value, const ScrStr *name) {
 }
 
 bool scr_fetch_stream_is(const ScrDyn *value) {
-  return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_WEB_STREAM;
+  if (!value || value->kind != SCR_DYN_HANDLE) return false;
+  /* A body stream under the fetch tier, or any ReadableStream the web
+   * stream unit made: Node's `instanceof ReadableStream` answers true for
+   * both. */
+  ScrDynHandleTag tag = value->v.handle.tag;
+  return tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WS_READABLE;
 }
 ScrDyn *scr_fetch_function(void) {
   if (!sf_fetch_function_value) {

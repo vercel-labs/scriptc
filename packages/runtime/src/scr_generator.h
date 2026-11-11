@@ -265,6 +265,10 @@ typedef struct ScrWebStreamSource {
  * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
  * reference moves in; the stream releases it when it goes away. */
 ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* The same stream as a byte stream (type "bytes"), so its reader takes
+ * BYOB reads: chunks must be Buffer, TypedArray or DataView values and
+ * non-empty, as Node's byte sources answer them. */
+ScrDyn *scr_webstream_readable_over_bytes(const ScrWebStreamSource *source, void *ctx);
 /* Installs the web stream classes (webstream.install): a program whose
  * JavaScript uses a ReadableStream member the fetch unit's streams lack
  * calls it at startup, which links the classes that fetch bodies then

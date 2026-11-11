@@ -2964,8 +2964,15 @@ static void scr_eon_events_push(ScrEonState *st, ScrDyn *value /* moves */) {
   st->elen++;
 }
 
+/* The queue's oldest value. The queue can be shorter than the count: a
+ * pause() that throws drops the event it just counted (scr_eon_push), as in
+ * Node, whose FixedQueue.shift() then answers null for the missing entry.
+ * That is what next() takes as the value once the real entries run out.
+ * +1 (a fresh null when the queue is empty). */
 static ScrDyn *scr_eon_events_shift(ScrEonState *st) {
+  if (st->elen == 0) return scr_dyn_new_null();
   ScrDyn *value = st->events[st->ehead];
+  st->events[st->ehead] = NULL;
   st->ehead = st->ecap ? (st->ehead + 1) % st->ecap : 0;
   st->elen--;
   if (st->elen == 0) st->ehead = 0;

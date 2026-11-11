@@ -435,18 +435,24 @@ interface LinkFeatureRequirement {
  * the whole story on Windows, whose pack link keeps a selected object's
  * functions together: scr_event_target.c and scr_events_once_signal.c call
  * into the emitter unit from functions a target-only program reaches, so
- * every feature that selects them requires `emitter`. */
+ * every feature that selects them requires `emitter`. The same holds for
+ * the symbol unit: scr_event_target.c's `events.on` iterator builds symbol
+ * keys and reads Symbol.asyncIterator and the watermark symbol through
+ * scr_symbol.c, and its object keeps those functions when Windows links
+ * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "http2", requires: ["http", "net"] },
   // scr_event_target.c holds the events-module helpers over an EventTarget
   // or a NodeEventTarget and the `events.on`/`events.once` target paths;
   // they answer NodeEventTarget receivers through the emitter unit's
-  // registry. The unit is selected by eventTarget (a compiled EventTarget
-  // subclass, util.debounce/throttle, an abort.* call), by abortSignal and
-  // by nativeFetch, so each of those requires the emitter with it.
-  { feature: "eventTarget", requires: ["emitter"] },
-  { feature: "abortSignal", requires: ["emitter"] },
-  { feature: "fetch", requires: ["emitter"] },
+  // registry and the iterator's symbol reads through the symbol unit. The
+  // unit is selected by eventTarget (a compiled EventTarget subclass,
+  // util.debounce/throttle, an abort.* call), by abortSignal and by
+  // nativeFetch, so each of those requires the emitter and the symbol with
+  // it.
+  { feature: "eventTarget", requires: ["emitter", "symbol"] },
+  { feature: "abortSignal", requires: ["emitter", "symbol"] },
+  { feature: "fetch", requires: ["emitter", "symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
 ];

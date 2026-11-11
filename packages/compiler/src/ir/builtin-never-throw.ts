@@ -115,4 +115,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "net.serverMaxRequestsPerSocketSet",
   "http.clientMaxHeadersCountGet",
   "http.clientMaxHeadersCountSet",
+  // scr_text_encode_into_str writes the two counts of the typed encodeInto
+  // into the slots the compiler allocated: the walk runs no program code, a
+  // destination that is not a u8 byte view ends the process at the entry's
+  // own check, and running out of memory ends it too. The call reports no
+  // error the emitter could deliver.
+  "text.encodeIntoStr",
 ]);

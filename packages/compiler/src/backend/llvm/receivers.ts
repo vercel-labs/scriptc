@@ -9,7 +9,7 @@ import {
   isRefCounted,
 } from "../../ir/ir.js";
 import type { LlValue } from "./expr-context.js";
-import { guardedValue } from "./borrowed-receivers.js";
+import { guardedValue, stabilizedValue } from "./borrowed-receivers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { llvmQuoted } from "../literals.js";
 import { emitBorrowedArrayRead, emitProjectedArrayRead } from "./local-array-reads.js";
@@ -47,6 +47,13 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     // Throwing guards run in place, exactly as the sequence emits them.
     for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
     return emitter.emitReadReceiver(guarded);
+  }
+  const stabilized = stabilizedValue(emitter, e);
+  if (stabilized !== null) {
+    // The stabilized read runs in place; its stable local keeps the read's
+    // pointer, so the projection of it lends the same owner.
+    for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
+    return emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
   }
   if (e.kind === "varRef") {
     emitter.materializeSplitLocal(e.localId);
@@ -240,7 +247,11 @@ export function canBorrowCallArgument(emitter: LlEmitter, value: IrExpr): boolea
     return emitter.canBorrowCallArgument(value.value);
   if (value.kind === "seqExpr") {
     const guarded = guardedValue(value);
-    return guarded !== null && emitter.canBorrowCallArgument(guarded);
+    if (guarded !== null) return emitter.canBorrowCallArgument(guarded);
+    // A stabilized read (`const %propertyRecv = <read>; p!`) lends its
+    // projection: the local holds the read's pointer for the whole scope, so
+    // the projection needs no count of its own.
+    return stabilizedValue(emitter, value) !== null;
   }
   // A nullable-union wrap reinterprets its payload pointer; an immortal
   // unit constant needs no owner at all.
@@ -334,7 +345,8 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
       return emitter.canBorrowReceiver(e.then) && emitter.canBorrowReceiver(e.else_);
     case "seqExpr": {
       const guarded = guardedValue(e);
-      return guarded !== null && emitter.canBorrowReceiver(guarded);
+      if (guarded !== null) return emitter.canBorrowReceiver(guarded);
+      return stabilizedValue(emitter, e) !== null;
     }
     // The runtime always sets a pending exception; its unreachable
     // typed dummy is null and owns no receiver.

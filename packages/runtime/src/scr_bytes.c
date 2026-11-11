@@ -2862,7 +2862,36 @@ static uint32_t scr_bytes_next_cp(const uint8_t *in, size_t n, size_t *ip) {
 }
 
 /* encodeInto consumes complete Unicode scalars while counting UTF-16 units.
- * Borrow the destination so writes through a subarray retain their aliasing. */
+ * Borrow the destination so writes through a subarray retain their aliasing.
+ * Both entry points share this walk: the checked-dynamic one below, and the
+ * statically typed one the compiler emits for a string into a Uint8Array. */
+static void scr_text_encode_into_core(const ScrStr *text, ScrBytes *dest, size_t *read, size_t *written) {
+  size_t nread = 0, nwritten = 0;
+  size_t limit = text->len < dest->len ? text->len : dest->len;
+  while (nwritten < limit) {
+    size_t ascii = scr_bytes_ascii_prefix((const uint8_t *)text->data + nwritten, limit - nwritten);
+    nwritten += ascii;
+    nread += ascii;
+    if (nwritten == limit) break;
+    size_t end = nwritten;
+    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
+    if (end > dest->len) break;
+    nread += cp > 0xffff ? 2 : 1;
+    nwritten = end;
+  }
+  if (nwritten) {
+    uint8_t *out = dest->shared ? scr_bytes_scratch(nwritten) : dest->data;
+    memcpy(out, text->data, nwritten);
+    if (!text->ascii) scr_wtf8_to_utf8((char *)out, nwritten);
+    if (dest->shared) {
+      scr_shared_store(dest->data, out, nwritten);
+      free(out);
+    }
+  }
+  *read = nread;
+  *written = nwritten;
+}
+
 ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
   if (source->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("src", "of type string", source);
@@ -2872,34 +2901,26 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     scr_dyn_arg_type_fail("dest", "an instance of Uint8Array", destination);
     return NULL;
   }
-  const ScrStr *text = source->v.str;
-  ScrBytes *dest = destination->v.bytes;
   size_t read = 0, written = 0;
-  size_t limit = text->len < dest->len ? text->len : dest->len;
-  while (written < limit) {
-    size_t ascii = scr_bytes_ascii_prefix((const uint8_t *)text->data + written, limit - written);
-    written += ascii;
-    read += ascii;
-    if (written == limit) break;
-    size_t end = written;
-    uint32_t cp = scr_bytes_next_cp((const uint8_t *)text->data, text->len, &end);
-    if (end > dest->len) break;
-    read += cp > 0xffff ? 2 : 1;
-    written = end;
-  }
-  if (written) {
-    uint8_t *out = dest->shared ? scr_bytes_scratch(written) : dest->data;
-    memcpy(out, text->data, written);
-    if (!text->ascii) scr_wtf8_to_utf8((char *)out, written);
-    if (dest->shared) {
-      scr_shared_store(dest->data, out, written);
-      free(out);
-    }
-  }
+  scr_text_encode_into_core(source->v.str, destination->v.bytes, &read, &written);
   ScrDyn *result = scr_dyn_new_obj();
   scr_dyn_obj_set(result, "read", 4, scr_dyn_new_num((double)read));
   scr_dyn_obj_set(result, "written", 7, scr_dyn_new_num((double)written));
   return result;
+}
+
+/* The typed form: the call site's string and Uint8Array arrive as their own
+ * representations, so nothing is boxed into a ScrDyn and the result goes
+ * straight into the two slots the compiler allocated. */
+void scr_text_encode_into_str(const ScrStr *text, ScrBytes *dest, double *read, double *written) {
+  /* The compiler lowers this form only for a statically typed Uint8Array
+   * destination; a DataView or a narrower element type is unreachable. */
+  if (dest->elem != SCR_BYTES_U8 || dest->is_data_view)
+    scr_trap("TextEncoder.encodeInto requires a Uint8Array destination");
+  size_t nread = 0, nwritten = 0;
+  scr_text_encode_into_core(text, dest, &nread, &nwritten);
+  *read = (double)nread;
+  *written = (double)nwritten;
 }
 
 static ScrBytes *scr_buffer_validation_input(const ScrDyn *input) {

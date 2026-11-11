@@ -42,6 +42,7 @@ import { cycTypeDescriptor, emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
+import { NULLABLE_NULL } from "./nullable-unions.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
 import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
@@ -1470,15 +1471,29 @@ export function emitClassShapes(
                 struct,
                 refFields.map((f) => f.index),
                 "weak",
+                refFields.map((f) => host.nullableUnions.mayHoldNullSentinel(f.type)),
               )
             : destroyDefinitions(destroy, destroyBody, false, null)),
         ``,
       );
+      // A tree value of a two-unit nullable union (`C | null | undefined`)
+      // reaches this release as the immortal null sentinel, which carries no
+      // count word to recognise it by (a counted instance's -1 count is how
+      // its release skips). NULL is `undefined` in that union, so the
+      // sentinel is the only other value that is not an instance.
+      const sentinelArm = host.nullableUnions.classMayBeNullSentinel(cls.name);
       defs.push(
         `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (a tree: destroy the subtree)`,
         `entry:`,
         `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %done, label %free`,
+        `  br i1 %isnull, label %done, label %${sentinelArm ? "notunit" : "free"}`,
+        ...(sentinelArm
+          ? [
+              `notunit: ; the null arm of a two-unit nullable union`,
+              `  %isunit = icmp eq ptr %o, ${NULLABLE_NULL}`,
+              `  br i1 %isunit, label %done, label %free`,
+            ]
+          : []),
         `free:`,
         budgeted
           ? `  call void @scr_rc_destroy(ptr %o, ptr @${destroy})`

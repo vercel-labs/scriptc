@@ -7,11 +7,12 @@
  * variable and class field types, and the class markers (Acyclic,
  * ProgramLifetime) in heritage clauses. The IR-side checks live in
  * ir/contract-check.ts. */
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { locOf } from "./program.js";
+import { resolveProjectModule } from "./resolve.js";
 import * as ts from "./ts7/adapter.js";
 import { type HeritageElement, isHeritageElement } from "./heritage-elements.js";
 
@@ -103,7 +104,13 @@ export function contractLocKey(loc: SrcLoc): string {
  * declaration (reported instead of dropping the contract). */
 type MarkerResolution =
   | { kind: "marker"; marker: ContractMarker }
-  | { kind: "unresolved"; name: string };
+  | {
+      kind: "unresolved";
+      name: string;
+      /** The module the annotation's binding is imported from, when it is
+       * known; the contract module otherwise. */
+      module?: string;
+    };
 
 /** The marker a type reference names when its name is a named or namespace
  * import binding of @scriptc/types (`import type { Int32 } from
@@ -166,14 +173,9 @@ function symbolAt(checker: ts.TypeChecker, node: ts.Node): ts.Symbol | undefined
  * specifier. */
 function importedFrom(decl: ts.Node): { module: string; member: string } | null {
   if (!ts.isImportSpecifier(decl) && !ts.isExportSpecifier(decl)) return null;
-  const holder = decl.parent?.parent;
-  const statement = holder !== undefined && ts.isImportClause(holder) ? holder.parent : holder;
-  if (
-    statement === undefined ||
-    (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement))
-  )
-    return null;
-  const moduleSpecifier = statement.moduleSpecifier;
+  const statement = importStatementOf(decl);
+  if (statement === null) return null;
+  const moduleSpecifier = (statement as ts.ImportDeclaration).moduleSpecifier;
   if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) return null;
   return { module: moduleSpecifier.text, member: decl.propertyName?.text ?? decl.name.text };
 }
@@ -228,21 +230,25 @@ function markerNamed(
     // going, and only the package's declaration ends it.
     current = current.flags & ts.SymbolFlags.Alias ? aliasOf(checker, current) : undefined;
   }
-  // The name is imported from the contract module, but following the alias
-  // stopped short: report it rather than treating the annotation as ordinary.
+  // The name is imported from the contract module — or from a module that
+  // does not resolve at all, so the chain cannot reach the package — but
+  // following the alias stopped short: report it rather than treating the
+  // annotation as ordinary.
   const decl = symbol.declarations?.[0] ?? ident;
   const imported = importedFrom(decl);
+  const resolves = importResolves(checker, decl);
   if (
     imported !== null &&
     MARKERS.has(imported.member) &&
-    imported.module === markerModule(imported.member)
+    (imported.module === markerModule(imported.member) || !resolves)
   )
-    return { kind: "unresolved", name: imported.member };
+    return { kind: "unresolved", name: imported.member, module: imported.module };
   // A namespace import names its member where the annotation is written
   // (`S.Immutable<T>`), not at an import specifier.
   if (qualified && member !== undefined && MARKERS.has(member)) {
-    if (namespaceImportModule(decl) === markerModule(member))
-      return { kind: "unresolved", name: member };
+    const module = namespaceImportModule(decl);
+    if (module === markerModule(member) || !resolves)
+      return { kind: "unresolved", name: member, ...(module === null ? {} : { module }) };
   }
   return null;
 }
@@ -270,10 +276,17 @@ function aliasOf(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol | undefi
 
 /** Files whose written annotations can name a contract marker: those that
  * import the contract modules, and those that import or re-export from a
- * module that does. A relative import that does not resolve to a program
- * file is walked too (the module may re-export the markers from a
- * declaration file). */
-function contractFiles(files: readonly ts.SourceFile[]): Set<ts.SourceFile> {
+ * module that does. Every specifier the program resolved is followed —
+ * relative paths, tsconfig `paths` and `baseUrl` aliases, package imports
+ * and package exports — not only relative ones, because an alias carries the
+ * marker just as a relative path does. A specifier that does not resolve to
+ * a program module is walked too: the module may re-export the markers from
+ * a declaration file, and a marker whose import cannot be followed is
+ * reported rather than skipped. */
+function contractFiles(
+  checker: ts.TypeChecker,
+  files: readonly ts.SourceFile[],
+): Set<ts.SourceFile> {
   const byPath = new Map<string, ts.SourceFile>();
   for (const sf of files) byPath.set(resolve(sf.fileName), sf);
   const importers = new Map<ts.SourceFile, ts.SourceFile[]>();
@@ -293,8 +306,7 @@ function contractFiles(files: readonly ts.SourceFile[]): Set<ts.SourceFile> {
         add(sf);
         continue;
       }
-      if (!specifier.startsWith(".")) continue;
-      const target = resolveInline(sf.fileName, specifier, byPath);
+      const target = resolvedModuleFile(checker, sf, statement, specifier, byPath);
       if (target === undefined) add(sf);
       else importers.set(target, [...(importers.get(target) ?? []), sf]);
     }
@@ -306,6 +318,67 @@ function contractFiles(files: readonly ts.SourceFile[]): Set<ts.SourceFile> {
   return found;
 }
 
+/** The program file a module specifier names. The checker's module symbol is
+ * the program's own answer, so it covers tsconfig `paths` and `baseUrl`,
+ * package imports, package self-references and package exports alike; the
+ * shared resolver answers a specifier the checker has no module symbol for.
+ * Undefined when the specifier names no file among `files`: a declaration
+ * module the program never lowers, or a specifier that does not resolve. */
+function resolvedModuleFile(
+  checker: ts.TypeChecker,
+  from: ts.SourceFile,
+  statement: ts.Node,
+  specifier: string,
+  byPath: ReadonlyMap<string, ts.SourceFile>,
+): ts.SourceFile | undefined {
+  const moduleSpecifier =
+    ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)
+      ? statement.moduleSpecifier
+      : undefined;
+  const symbol = moduleSpecifier !== undefined ? symbolAt(checker, moduleSpecifier) : undefined;
+  for (const decl of symbol?.declarations ?? []) {
+    if (!ts.isSourceFile(decl)) continue;
+    const target = byPath.get(resolve(decl.fileName));
+    if (target !== undefined) return target;
+  }
+  const answer = resolveProjectModule(from.fileName, specifier);
+  return answer === null ? undefined : byPath.get(resolve(answer));
+}
+
+/** The import or export declaration a named binding belongs to, or null when
+ * the declaration is neither. */
+function importStatementOf(decl: ts.Node): ts.Node | null {
+  if (!ts.isImportSpecifier(decl) && !ts.isExportSpecifier(decl)) return null;
+  const holder = decl.parent?.parent;
+  const statement = holder !== undefined && ts.isImportClause(holder) ? holder.parent : holder;
+  return statement !== undefined &&
+    (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
+    ? statement
+    : null;
+}
+
+/** The declaration a namespace import binds (`import type * as S from "..."`),
+ * or null when the declaration is not one. */
+function namespaceImportStatement(decl: ts.Node): ts.Node | null {
+  const clause = decl.parent;
+  if (clause === undefined || !ts.isImportClause(clause)) return null;
+  const statement = clause.parent;
+  return statement !== undefined && ts.isImportDeclaration(statement) ? statement : null;
+}
+
+/** Whether the module a binding is imported from resolves: the checker knows
+ * its module symbol, or the shared resolver names a file for it. */
+function importResolves(checker: ts.TypeChecker, decl: ts.Node): boolean {
+  const statement =
+    importStatementOf(decl) ?? (ts.isNamespaceImport(decl) ? namespaceImportStatement(decl) : null);
+  if (statement === null) return true;
+  const moduleSpecifier = (statement as ts.ImportDeclaration).moduleSpecifier;
+  if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) return true;
+  if (symbolAt(checker, moduleSpecifier) !== undefined) return true;
+  const from = decl.getSourceFile().fileName;
+  return resolveProjectModule(from, moduleSpecifier.text) !== null;
+}
+
 function moduleSpecifierOf(statement: ts.Node): string | null {
   if (
     (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
@@ -314,30 +387,6 @@ function moduleSpecifierOf(statement: ts.Node): string | null {
   )
     return statement.moduleSpecifier.text;
   return null;
-}
-
-/** The program file a relative specifier names, without touching the file
- * system: the program's own modules are already in `byPath`. */
-function resolveInline(
-  fromFile: string,
-  specifier: string,
-  byPath: ReadonlyMap<string, ts.SourceFile>,
-): ts.SourceFile | undefined {
-  const base = resolve(dirname(fromFile), specifier);
-  const stems = [base, base.replace(/\.(?:m|c)?js$/, "")];
-  const candidates: string[] = [];
-  for (const stem of stems) {
-    candidates.push(stem);
-    for (const ext of [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"])
-      candidates.push(stem + ext);
-    for (const ext of [".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs"])
-      candidates.push(`${stem}/index${ext}`);
-  }
-  for (const candidate of candidates) {
-    const sf = byPath.get(candidate);
-    if (sf !== undefined) return sf;
-  }
-  return undefined;
 }
 
 function nameText(node: ts.Node | undefined): string {
@@ -377,7 +426,7 @@ export function collectContractAnnotations(
     ts.SyntaxKind.TypeReference,
     ts.SyntaxKind.ExpressionWithTypeArguments,
   ]);
-  const interesting = contractFiles(files);
+  const interesting = contractFiles(checker, files);
   for (const sf of files) {
     if (!interesting.has(sf)) continue;
     ts.walkPreorder(
@@ -391,7 +440,7 @@ export function collectContractAnnotations(
             : null;
         if (resolution === null) return;
         if (resolution.kind === "unresolved") {
-          out.diagnostics.push(unresolvedMarker(node, resolution.name));
+          out.diagnostics.push(unresolvedMarker(node, resolution.name, resolution.module));
           return;
         }
         const marker = resolution.marker;
@@ -415,11 +464,11 @@ export function collectContractAnnotations(
 /** A marker the compiler could not trace back to the package: the contract
  * cannot be checked, so say so instead of compiling as if it were never
  * written. */
-function unresolvedMarker(node: ts.Node, name: string): ScrDiagnostic {
+function unresolvedMarker(node: ts.Node, name: string, module?: string): ScrDiagnostic {
   return contractDiag(
     "SC7006",
     locOf(node),
-    `the ${name} contract here cannot be checked: '${name}' is imported from ${markerModule(name)} but the import does not resolve to the package's declaration`,
+    `the ${name} contract here cannot be checked: '${name}' is imported from ${module ?? markerModule(name)} but the import does not resolve to the package's declaration`,
     "import the marker directly from @scriptc/types, or through a module that re-exports it and resolves",
   );
 }

@@ -108,16 +108,52 @@ function samePlace(a: IrExpr, b: IrExpr): boolean {
   return false;
 }
 
-/** Visit every `varRef` that makes up the value of `e`. Statements inside a
- * `seqExpr` are skipped: they run for their effect, and a write there is
- * checked as a use of the local, not folded into the value. */
-function eachVarRef(e: IrExpr, visit: (ref: IrExpr) => void): void {
-  const expr = (x: IrExpr): boolean => {
-    if (x.kind === "varRef") visit(x);
-    if (x.kind === "seqExpr") return expr(x.result);
-    return everyExprChild(x, expr, () => false);
-  };
-  expr(e);
+/** Visit the `varRef`s that a stored value carries into the container
+ * without handing them to other code: the value itself and the structural
+ * slots a construction puts it in (array and record literals, Map and Set
+ * seeds, and the wrappers that pass a value through unchanged). A call's
+ * arguments are deliberately not visited: the callee may keep them, so
+ * `out.push(stash(out))` is an escape of `out`, not part of the stored
+ * value. */
+function storedReads(e: IrExpr, visit: (ref: IrExpr) => void): void {
+  switch (e.kind) {
+    case "varRef":
+      visit(e);
+      return;
+    case "arrayLit":
+      for (const elem of e.elems) storedReads(elem, visit);
+      return;
+    case "recordLit":
+      for (const field of e.fields) storedReads(field.value, visit);
+      return;
+    case "mapNew":
+      for (const pair of e.seed ?? []) {
+        storedReads(pair.key, visit);
+        storedReads(pair.value, visit);
+      }
+      return;
+    case "setNew":
+      if (e.seed !== undefined) storedReads(e.seed, visit);
+      return;
+    case "upcast":
+    case "downcast":
+    case "unionWrap":
+    case "unionRetype":
+    case "unionNarrow":
+      storedReads(e.value, visit);
+      return;
+    case "ternary":
+      storedReads(e.then, visit);
+      storedReads(e.else_, visit);
+      return;
+    // `(stmts..., value)` runs its statements for their effect — each is
+    // checked as a use on its own — and stores `result`.
+    case "seqExpr":
+      storedReads(e.result, visit);
+      return;
+    default:
+      return;
+  }
 }
 
 function baseName(file: string): string {
@@ -1450,8 +1486,10 @@ class ImmutableContracts {
       // (`%pushTarget.0 = out`) that is the write target. A temporary whose
       // every use is one of the allowed positions is the array itself, so
       // naming it is not an escape. A value stored into a candidate is now
-      // part of that candidate, so a read that builds the value is not an
-      // escape either. Both add to `allowed`, so they reach a fixpoint.
+      // part of that candidate, so a read that structurally builds the value
+      // is not an escape either — but the arguments of a call inside the
+      // value are handed to code that may keep them, so they stay escapes.
+      // Both add to `allowed`, so they reach a fixpoint.
       for (let grew = true; grew;) {
         grew = false;
         for (const id of temporaries) {
@@ -1468,7 +1506,7 @@ class ImmutableContracts {
         for (const store of stores) {
           if (candidateOf(store.target) === null) continue;
           for (const value of store.values)
-            eachVarRef(value, (ref) => {
+            storedReads(value, (ref) => {
               if (allowed.has(ref)) return;
               allowed.add(ref);
               grew = true;

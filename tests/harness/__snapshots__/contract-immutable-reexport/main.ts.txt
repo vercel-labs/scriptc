@@ -1,44 +1,53 @@
-contract-immutable-reexport/main.ts:17:3 - error SC7004: 'rows[0]!.push(3)' writes to a value that may be Immutable ('rows' may be an Immutable value passed to 'grow' at main.ts:20:1)
+contract-immutable-reexport/main.ts:20:3 - error SC7004: 'rows[0]!.push(3)' writes to a value that may be Immutable ('rows' may be an Immutable value passed to 'grow' at main.ts:23:1)
 
-  16 | function grow(rows: number[][]): void {
-  17 |   rows[0]!.push(3);
+  19 | function grow(rows: number[][]): void {
+  20 |   rows[0]!.push(3);
      |   ^~~~~~~~~~~~~~~~
-  18 | }
+  21 | }
 
   hint: Immutable values cannot be written through any reference; copy the value before changing it
 
-contract-immutable-reexport/main.ts:21:1 - error SC7004: '(IDS as number[]).push(4)' writes to a value that may be Immutable (from 'IDS')
+contract-immutable-reexport/main.ts:24:1 - error SC7004: '(IDS as number[]).push(4)' writes to a value that may be Immutable (from 'IDS')
 
-  20 | grow(ROWS as number[][]);
-  21 | (IDS as number[]).push(4);
+  23 | grow(ROWS as number[][]);
+  24 | (IDS as number[]).push(4);
      | ^~~~~~~~~~~~~~~~~~~~~~~~~
-  22 | (TAGS as string[]).push("c");
+  25 | (TAGS as string[]).push("c");
 
   hint: Immutable values cannot be written through any reference; copy the value before changing it
 
-contract-immutable-reexport/main.ts:22:1 - error SC7004: '(TAGS as string[]).push("c")' writes to a value that may be Immutable (from 'TAGS')
+contract-immutable-reexport/main.ts:25:1 - error SC7004: '(TAGS as string[]).push("c")' writes to a value that may be Immutable (from 'TAGS')
 
-  21 | (IDS as number[]).push(4);
-  22 | (TAGS as string[]).push("c");
+  24 | (IDS as number[]).push(4);
+  25 | (TAGS as string[]).push("c");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  23 | (CODES as number[]).push(7);
+  26 | (CODES as number[]).push(7);
 
   hint: Immutable values cannot be written through any reference; copy the value before changing it
 
-contract-immutable-reexport/main.ts:23:1 - error SC7004: '(CODES as number[]).push(7)' writes to a value that may be Immutable (from 'CODES')
+contract-immutable-reexport/main.ts:26:1 - error SC7004: '(CODES as number[]).push(7)' writes to a value that may be Immutable (from 'CODES')
 
-  22 | (TAGS as string[]).push("c");
-  23 | (CODES as number[]).push(7);
+  25 | (TAGS as string[]).push("c");
+  26 | (CODES as number[]).push(7);
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | (NAMES as string[]).push("z");
+  27 | (NAMES as string[]).push("z");
 
   hint: Immutable values cannot be written through any reference; copy the value before changing it
 
-contract-immutable-reexport/main.ts:24:1 - error SC7004: '(NAMES as string[]).push("z")' writes to a value that may be Immutable (from 'NAMES')
+contract-immutable-reexport/main.ts:27:1 - error SC7004: '(NAMES as string[]).push("z")' writes to a value that may be Immutable (from 'NAMES')
 
-  23 | (CODES as number[]).push(7);
-  24 | (NAMES as string[]).push("z");
+  26 | (CODES as number[]).push(7);
+  27 | (NAMES as string[]).push("z");
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  25 | console.log(ROWS.length, IDS.length, TAGS.length, CODES.length, NAMES.length);
+  28 | (SPANS as number[]).push(9);
+
+  hint: Immutable values cannot be written through any reference; copy the value before changing it
+
+contract-immutable-reexport/main.ts:28:1 - error SC7004: '(SPANS as number[]).push(9)' writes to a value that may be Immutable (from 'SPANS')
+
+  27 | (NAMES as string[]).push("z");
+  28 | (SPANS as number[]).push(9);
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  29 | console.log(ROWS.length, IDS.length, TAGS.length, CODES.length, NAMES.length, SPANS.length);
 
   hint: Immutable values cannot be written through any reference; copy the value before changing it

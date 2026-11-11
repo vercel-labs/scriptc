@@ -1,8 +1,17 @@
-contract-immutable-import-unresolved/main.ts:6:13 - error SC7006: the Immutable contract here cannot be checked: 'Immutable' is imported from @scriptc/types but the import does not resolve to the package's declaration
+contract-immutable-import-unresolved/main.ts:8:13 - error SC7006: the Immutable contract here cannot be checked: 'Immutable' is imported from @scriptc/types but the import does not resolve to the package's declaration
 
-  5 | 
-  6 | const ROWS: Immutable<number[]> = [1, 2];
+  7 | 
+  8 | const ROWS: Immutable<number[]> = [1, 2];
     |             ^~~~~~~~~~~~~~~~~~~
-  7 | (ROWS as number[]).push(3);
+  9 | (ROWS as number[]).push(3);
+
+  hint: import the marker directly from @scriptc/types, or through a module that re-exports it and resolves
+
+contract-immutable-import-unresolved/main.ts:10:13 - error SC7006: the Immutable contract here cannot be checked: 'Immutable' is imported from @scriptc/types but the import does not resolve to the package's declaration
+
+   9 | (ROWS as number[]).push(3);
+  10 | const TAGS: Package.Immutable<string[]> = ["a"];
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | (TAGS as string[]).push("b");
 
   hint: import the marker directly from @scriptc/types, or through a module that re-exports it and resolves

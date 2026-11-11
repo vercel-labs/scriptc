@@ -108,6 +108,18 @@ function samePlace(a: IrExpr, b: IrExpr): boolean {
   return false;
 }
 
+/** Visit every `varRef` that makes up the value of `e`. Statements inside a
+ * `seqExpr` are skipped: they run for their effect, and a write there is
+ * checked as a use of the local, not folded into the value. */
+function eachVarRef(e: IrExpr, visit: (ref: IrExpr) => void): void {
+  const expr = (x: IrExpr): boolean => {
+    if (x.kind === "varRef") visit(x);
+    if (x.kind === "seqExpr") return expr(x.result);
+    return everyExprChild(x, expr, () => false);
+  };
+  expr(e);
+}
+
 function baseName(file: string): string {
   const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
   return slash >= 0 ? file.slice(slash + 1) : file;
@@ -1122,6 +1134,18 @@ const ARR_COPIES = new Set([
   "concatSpread",
   "toSortedPrimitive",
 ]);
+/** Array intrinsics that move their evaluated arguments into the receiver's
+ * element storage: appends, splice insertions and a fill value. Each stored
+ * value becomes part of the receiver, so it must itself be fresh for the
+ * receiver to stay fresh. */
+const ARR_STORES: ReadonlySet<string> = new Set([
+  "push",
+  "unshift",
+  "pushSpread",
+  "unshiftSpread",
+  "spliceInsert",
+  "fill",
+]);
 const COLLECTION_COPIES = new Set(["clone", "keySet", "valueSet"]);
 /** Expression kinds whose result is the same value as their child. */
 const PASS_THROUGH = new Set<IrExpr["kind"]>([
@@ -1326,35 +1350,11 @@ class ImmutableContracts {
         range !== null && range !== undefined && range.min >= 0 && range.max <= MAX_ARRAY_INDEX
       );
     };
-    walk(fn.body, {
-      stmt: (s) => {
-        if (s.kind === "return" && s.value?.kind === "varRef") allowed.add(s.value);
-        if ((s.kind === "fieldSet" || s.kind === "recordSet") && s.obj.kind === "varRef")
-          allowed.add(s.obj);
-        if (s.kind === "bytesSet" && s.arr.kind === "varRef") allowed.add(s.arr);
-        if (
-          (s.kind === "arraySet" || s.kind === "arraySetUndefined") &&
-          s.arr.kind === "varRef" &&
-          arrayIndex(s.arr, s.index)
-        )
-          allowed.add(s.arr);
-      },
-      expr: (e) => {
-        if (
-          (e.kind === "arrIntrinsic" || e.kind === "mapIntrinsic" || e.kind === "setIntrinsic") &&
-          e.receiver.kind === "varRef"
-        )
-          allowed.add(e.receiver);
-        if ((e.kind === "arrayGet" || e.kind === "arrayHas") && e.arr.kind === "varRef")
-          allowed.add(e.arr);
-        if ((e.kind === "fieldGet" || e.kind === "recordGet") && e.obj.kind === "varRef")
-          allowed.add(e.obj);
-      },
-    });
-    // `out.push(v)` reaches the array through a compiler temporary
-    // (`%pushTarget.0 = out`) that is the write target. A temporary whose
-    // every use is one of the allowed positions is the array itself, so
-    // naming it is not an escape.
+    // Every write that puts a value into a container: element writes,
+    // field writes, appends and insertions, and Map/Set entries. The values
+    // become part of the container, so a local that receives one only stays
+    // fresh when the value is fresh too.
+    const stores: { target: IrExpr; values: readonly IrExpr[] }[] = [];
     const uses = new Map<string, IrExpr[]>();
     const inits = new Map<string, IrExpr>();
     const temporaries = new Set(fn.locals.filter((l) => l.source === undefined).map((l) => l.id));
@@ -1362,26 +1362,119 @@ class ImmutableContracts {
       stmt: (s) => {
         if (s.kind === "varDecl" && s.init !== undefined && s.init !== null)
           inits.set(s.localId, s.init);
+        if (s.kind === "arraySet") stores.push({ target: s.arr, values: [s.value] });
+        if (s.kind === "fieldSet" || s.kind === "recordSet")
+          stores.push({ target: s.obj, values: [s.value] });
       },
       expr: (e) => {
-        if (e.kind !== "varRef") return;
-        const list = uses.get(e.localId);
-        if (list === undefined) uses.set(e.localId, [e]);
-        else list.push(e);
+        if (e.kind === "varRef") {
+          const list = uses.get(e.localId);
+          if (list === undefined) uses.set(e.localId, [e]);
+          else list.push(e);
+          return;
+        }
+        if (e.kind === "arrIntrinsic" && ARR_STORES.has(e.method))
+          stores.push({ target: e.receiver, values: e.args });
+        else if (e.kind === "mapIntrinsic" && e.method === "set")
+          stores.push({ target: e.receiver, values: e.args.slice(0, 2) });
+        else if (e.kind === "setIntrinsic" && e.method === "add")
+          stores.push({ target: e.receiver, values: e.args.slice(0, 1) });
       },
     });
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const id of temporaries) {
-        const init = inits.get(id);
-        if (init === undefined || init.kind !== "varRef" || allowed.has(init)) continue;
-        if (!(uses.get(id) ?? []).every((use) => allowed.has(use))) continue;
-        allowed.add(init);
-        changed = true;
+    // A store target is a local the store reaches directly or through its
+    // own storage (`box.items`, `rows[0]`), or through a compiler temporary
+    // (`%pushTarget.0 = out`, then a push on the temporary). Resolve the
+    // chain back to the local the value becomes part of.
+    const aliases = new Map<string, string>();
+    const candidateOf = (target: IrExpr): string | null => {
+      let targetExpr: IrExpr = target;
+      for (let steps = 0; steps < 12; steps++) {
+        if (
+          targetExpr.kind === "fieldGet" ||
+          targetExpr.kind === "recordGet" ||
+          targetExpr.kind === "arrayGet"
+        ) {
+          targetExpr = targetExpr.kind === "arrayGet" ? targetExpr.arr : targetExpr.obj;
+          continue;
+        }
+        if (targetExpr.kind !== "varRef") return null;
+        const init = inits.get(targetExpr.localId);
+        if (temporaries.has(targetExpr.localId) && init !== undefined) {
+          targetExpr = init;
+          continue;
+        }
+        let id = targetExpr.localId;
+        for (let hops = 0; hops < 8; hops++) {
+          const alias = aliases.get(id);
+          if (alias === undefined) break;
+          id = alias;
+        }
+        return candidates.has(id) ? id : null;
       }
-    }
+      return null;
+    };
     for (let changed = true; changed;) {
       changed = false;
+      // The positions in which a local does not escape: reads through its
+      // own array, map or set, writes into its own storage, and returns.
+      // Rebuilt every round because the stored-value rule below depends on
+      // which locals are still candidates.
+      allowed.clear();
+      aliases.clear();
+      walk(fn.body, {
+        stmt: (s) => {
+          if (s.kind === "return" && s.value?.kind === "varRef") allowed.add(s.value);
+          if ((s.kind === "fieldSet" || s.kind === "recordSet") && s.obj.kind === "varRef")
+            allowed.add(s.obj);
+          if (s.kind === "bytesSet" && s.arr.kind === "varRef") allowed.add(s.arr);
+          if (
+            (s.kind === "arraySet" || s.kind === "arraySetUndefined") &&
+            s.arr.kind === "varRef" &&
+            arrayIndex(s.arr, s.index)
+          )
+            allowed.add(s.arr);
+        },
+        expr: (e) => {
+          if (
+            (e.kind === "arrIntrinsic" || e.kind === "mapIntrinsic" || e.kind === "setIntrinsic") &&
+            e.receiver.kind === "varRef"
+          )
+            allowed.add(e.receiver);
+          if ((e.kind === "arrayGet" || e.kind === "arrayHas") && e.arr.kind === "varRef")
+            allowed.add(e.arr);
+          if ((e.kind === "fieldGet" || e.kind === "recordGet") && e.obj.kind === "varRef")
+            allowed.add(e.obj);
+        },
+      });
+      // `out.push(v)` reaches the array through a compiler temporary
+      // (`%pushTarget.0 = out`) that is the write target. A temporary whose
+      // every use is one of the allowed positions is the array itself, so
+      // naming it is not an escape. A value stored into a candidate is now
+      // part of that candidate, so a read that builds the value is not an
+      // escape either. Both add to `allowed`, so they reach a fixpoint.
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const id of temporaries) {
+          if (aliases.has(id)) continue;
+          const init = inits.get(id);
+          if (init === undefined || init.kind !== "varRef") continue;
+          if (!(uses.get(id) ?? []).every((use) => allowed.has(use))) continue;
+          aliases.set(id, init.localId);
+          if (!allowed.has(init)) {
+            allowed.add(init);
+            grew = true;
+          }
+        }
+        for (const store of stores) {
+          if (candidateOf(store.target) === null) continue;
+          for (const value of store.values)
+            eachVarRef(value, (ref) => {
+              if (allowed.has(ref)) return;
+              allowed.add(ref);
+              grew = true;
+            });
+        }
+      }
       walk(fn.body, {
         stmt: (s) => {
           const value = s.kind === "varDecl" ? s.init : s.kind === "assign" ? s.value : undefined;
@@ -1401,6 +1494,18 @@ class ImmutableContracts {
             changed = true;
         },
       });
+      // A stored value that is not a primitive, a fresh construction or a
+      // value the program declared Immutable leaves the receiver reachable
+      // from the value's other references, so the receiver stops being
+      // fresh: `shared[0]!` pushed into a new array is a shared object.
+      const declared = (e: IrExpr): boolean => this.declaredImmutable(fn, e);
+      for (const store of stores) {
+        const id = candidateOf(store.target);
+        if (id === null) continue;
+        if (store.values.every((value) => this.fresh(value, candidates, declared))) continue;
+        candidates.delete(id);
+        changed = true;
+      }
     }
     return candidates;
   }

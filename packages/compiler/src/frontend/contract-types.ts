@@ -213,8 +213,15 @@ function markerNamed(
     }
     const module = contractModuleOfFile(decl.getSourceFile().fileName);
     if (module !== null) {
-      const name = qualified ? member : ts.symbolName(current);
-      if (name === undefined || !MARKERS.has(name) || markerModule(name) !== module) return null;
+      // An export alias (`export type { Immutable as Frozen }`) names the
+      // declaration it aliases; follow it so the marker is read from the
+      // declaration, not from the spelling the annotation used.
+      if (current.flags & ts.SymbolFlags.Alias) {
+        current = aliasOf(checker, current);
+        continue;
+      }
+      const name = ts.symbolName(current);
+      if (!MARKERS.has(name) || markerModule(name) !== module) return null;
       return { kind: "marker", marker: name as ContractMarker };
     }
     // A local or library declaration: only another alias keeps the chain
@@ -223,14 +230,34 @@ function markerNamed(
   }
   // The name is imported from the contract module, but following the alias
   // stopped short: report it rather than treating the annotation as ordinary.
-  const imported = importedFrom(symbol.declarations?.[0] ?? ident);
+  const decl = symbol.declarations?.[0] ?? ident;
+  const imported = importedFrom(decl);
   if (
     imported !== null &&
     MARKERS.has(imported.member) &&
     imported.module === markerModule(imported.member)
   )
     return { kind: "unresolved", name: imported.member };
+  // A namespace import names its member where the annotation is written
+  // (`S.Immutable<T>`), not at an import specifier.
+  if (qualified && member !== undefined && MARKERS.has(member)) {
+    if (namespaceImportModule(decl) === markerModule(member))
+      return { kind: "unresolved", name: member };
+  }
   return null;
+}
+
+/** The module a namespace import binding names (`import type * as S from
+ * "..."`), or null when the declaration is not one. */
+function namespaceImportModule(decl: ts.Node): string | null {
+  if (!ts.isNamespaceImport(decl)) return null;
+  const clause = decl.parent;
+  if (clause === undefined || !ts.isImportClause(clause)) return null;
+  const statement = clause.parent;
+  if (statement === undefined || !ts.isImportDeclaration(statement)) return null;
+  const moduleSpecifier = statement.moduleSpecifier;
+  if (moduleSpecifier === undefined || !ts.isStringLiteral(moduleSpecifier)) return null;
+  return moduleSpecifier.text;
 }
 
 function aliasOf(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol | undefined {

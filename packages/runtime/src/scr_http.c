@@ -271,6 +271,11 @@ struct ScrHttpReq {
   bool received;  /* the whole body arrived (req.complete) */
   bool body_seen; /* body bytes arrived */
   bool destroyed; /* req.destroy()/the teardown ran — req.destroyed */
+  /* A client response whose connection returned to its agent: Node's
+   * responseKeepAlive detaches the socket from the message (res.socket
+   * reads null) so destroying the message cannot tear down the freed
+   * socket. The field itself stays for the teardown paths. */
+  bool sock_detached;
   /* req.headers as untyped code reads it: built on the first read and
    * kept (+1), so writes to it persist as on Node's cached object */
   struct ScrDyn *headers_view;
@@ -7542,6 +7547,19 @@ static void scr_http_client_response_done(ScrHttpConn *conn) {
    * -2 = the connection closes, -1 = reusable with no Keep-Alive timeout
    * hint, otherwise the hint in milliseconds */
   double keep_alive_hint = res != NULL ? scr_http_response_keep_alive(res, c) : -2;
+  /* Node registers its own 'end' listener on the response before the
+   * caller can, and responseKeepAlive marks the socket free from there:
+   * `req.destroyed = true` is set WHILE the response ends, so a caller
+   * reading it inside the response's 'end' sees true whenever the exchange
+   * leaves a reusable socket — the writable side finished, nothing
+   * aborted, and an agent that keeps connections alive. A -2 verdict (the
+   * connection closes) leaves the flag false until the socket's close
+   * settles the request. */
+  if (res != NULL && !res->aborted && !c->aborted && c->writable_finished && !c->one_shot &&
+      c->agent != NULL && scr_http_agent_keeps_alive(c->agent) && keep_alive_hint != -2) {
+    c->destroyed = true;
+    res->sock_detached = true;
+  }
   if (res) {
     res->received = true;
     scr_http_req_retain(res);
@@ -8270,7 +8288,12 @@ static double scr_http_response_keep_alive(ScrHttpReq *res, const struct ScrHttp
  * name is full. Answers whether the socket was kept. */
 static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientReq *c, double hint) {
   ScrHttpAgent *ag = c->agent;
-  if (ag == NULL || !ag->keep_alive || ag->destroyed || c->destroyed || c->aborted) return false;
+  /* c->destroyed is already true here for a reusable exchange: Node's
+   * responseKeepAlive sets req.destroyed while the response ends and the
+   * agent still takes the socket back, so the flag is not a reason to
+   * skip pooling (a request torn down by the caller never reaches this
+   * point: its exchange settles through the teardown path). */
+  if (ag == NULL || !ag->keep_alive || ag->destroyed || c->aborted) return false;
   if (hint == -2 || !c->ended || conn->len != 0 || scr_http_client_has_header_value(c, "connection", "close"))
     return false;
   if (c->agent_ent == NULL) return false;
@@ -9075,6 +9098,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     return d;
   }
   if (strcmp(key, "socket") == 0 || strcmp(key, "connection") == 0) {
+    if (r->sock_detached) return scr_dyn_new_null(); /* Node's responseKeepAlive */
     ScrNetSocket *s = scr_http_req_socket(r);
     if (!s) return NULL;
     ScrDyn *d = scr_dyn_new_handle(s, SCR_DYNH_NET_SOCKET);

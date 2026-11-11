@@ -56370,6 +56370,11 @@
           "tests/corpus/http-agent-connection-hooks.ts",
           "tests/corpus/http-agent-total-sockets.ts",
           "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-client-request-abort.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-client-request-destroy.ts",
+          "tests/corpus/http-client-request-reuse.ts",
+          "tests/corpus/http-client-request-state.ts",
           "tests/corpus/http-header-values.ts",
           "tests/corpus/http-incoming-message-destroy.ts",
           "tests/corpus/http-incoming-signal.ts",
@@ -56377,6 +56382,7 @@
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-request-write-after-end-uncaught.ts",
+          "tests/corpus/http-response-cork.ts",
           "tests/corpus/http-response-write-after-end-uncaught.ts",
           "tests/corpus/http-response-write-forms.ts",
           "tests/corpus/http-server-async-dispose.ts",
@@ -56879,10 +56885,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.abort",
         "tests": [
-          "tests/corpus/2988-http-static-client-abort.ts"
+          "tests/corpus/2988-http-static-client-abort.ts",
+          "tests/corpus/http-client-request-abort.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56905,14 +56912,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.cork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56991,11 +57000,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.destroyed",
         "tests": [
           "tests/corpus/2978-http-static-client-timeout.ts",
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-destroy.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57018,14 +57029,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.flushHeaders",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57317,14 +57330,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.uncork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57375,10 +57390,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.aborted",
         "tests": [
-          "tests/corpus/2988-http-static-client-abort.ts"
+          "tests/corpus/2988-http-static-client-abort.ts",
+          "tests/corpus/http-client-request-abort.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57401,10 +57417,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.connection",
         "tests": [
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57427,10 +57445,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.finished",
         "tests": [
-          "tests/corpus/2975-http-static-client-controls.ts"
+          "tests/corpus/2975-http-static-client-controls.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57479,10 +57499,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.path",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57505,10 +57527,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.method",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57531,10 +57555,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.host",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57557,10 +57583,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.protocol",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57583,10 +57611,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.reusedSocket",
         "tests": [
-          "tests/corpus/2975-http-static-client-controls.ts"
+          "tests/corpus/2975-http-static-client-controls.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57609,10 +57639,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.socket",
         "tests": [
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57635,10 +57667,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57661,10 +57695,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -57687,10 +57723,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'abort'",
         "tests": [
-          "tests/corpus/2988-http-static-client-abort.ts"
+          "tests/corpus/2988-http-static-client-abort.ts",
+          "tests/corpus/http-client-request-abort.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57713,10 +57750,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'close'",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts"
+          "tests/corpus/2981-http-static-events.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-destroy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57793,10 +57832,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57846,10 +57887,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'response'",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts"
+          "tests/corpus/2981-http-static-events.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-destroy.ts"
         ]
       },
       "anchorSource": "exact"
@@ -57872,10 +57915,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'socket'",
         "tests": [
-          "tests/corpus/2986-http-static-client-socket-finish.ts"
+          "tests/corpus/2986-http-static-client-socket-finish.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-client-request-reuse.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58182,10 +58227,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.listening",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -58643,14 +58690,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.addTrailers",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58673,14 +58722,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.cork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58731,14 +58782,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.flushHeaders",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58953,14 +59006,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.uncork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59146,10 +59201,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.connection",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59198,10 +59254,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.headersSent",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59224,10 +59282,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.req",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59250,10 +59309,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.sendDate",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59276,10 +59336,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.socket",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59302,10 +59363,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.statusCode",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59328,10 +59391,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.statusMessage",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59354,10 +59418,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.strictContentLength",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59380,10 +59445,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59406,10 +59473,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/2957-http-static-response-controls.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59592,10 +59660,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.complete",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59670,14 +59740,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.headersDistinct",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59700,10 +59772,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.httpVersion",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59726,10 +59800,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.method",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59778,14 +59854,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.rawTrailers",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59860,10 +59938,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.statusCode",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59912,14 +59992,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.trailers",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59942,14 +60024,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.trailersDistinct",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59972,10 +60056,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.url",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60077,14 +60163,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.addTrailers",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60134,14 +60222,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.cork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60218,14 +60308,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.flushHeaders",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60489,14 +60581,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.uncork",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60574,10 +60668,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.headersSent",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60627,14 +60723,16 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableCorked",
         "tests": [
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
           "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/fixtures/server/cases/http-trailers/main.ts",
+          "tests/corpus/http-client-request-cork.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60657,10 +60755,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/2955-http-static-state.ts",
+          "tests/corpus/http-client-request-state.ts",
+          "tests/corpus/http-response-cork.ts"
         ]
       },
       "anchorSource": "ancestor"

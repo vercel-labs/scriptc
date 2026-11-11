@@ -9121,6 +9121,10 @@ function lowerHttpClientMethodCall(
     requireStatementPosition(lowerer, call, "request.destroy(err)");
     const receiver = lowerer.lowerExpr(access.expression);
     const err = lowerer.lowerExpr(args[0]!);
+    // destroy(undefined) is destroy(): there is no payload to report.
+    if (isUnitType(err.type)) {
+      return { kind: "libCall", fn: "http.clientDestroy", args: [receiver], type: VOID, loc };
+    }
     if (err.type.kind !== "object") {
       lowerer.noLowering(
         `destroy with a '${lowerer.fmt(err.type)}' argument`,

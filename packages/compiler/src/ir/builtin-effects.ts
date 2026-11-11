@@ -792,6 +792,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
+  // The typed promisify's custom protocol: a truthy non-function throws
+  // ERR_INVALID_ARG_TYPE, and defining the key can throw on a non-extensible
+  // function.
+  "util.promisifyCustom",
+  "util.promisifyMark",
   "util.debuglog",
   // The URI codecs throw the spec's URIError: decoding on bad hex/invalid
   // UTF-8 octets, encoding (and querystring.escape) on a lone surrogate.

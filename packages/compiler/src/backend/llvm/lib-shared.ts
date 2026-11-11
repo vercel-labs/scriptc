@@ -151,6 +151,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "mime.is": "scr_mime_is",
   "util.callbackify": "scr_util_callbackify",
   "util.promisifyDyn": "scr_util_promisify",
+  "util.promisifyCustom": "scr_util_promisify_custom",
+  "util.promisifyMark": "scr_util_promisify_mark",
   "util.debuglog": "scr_util_debuglog",
   "util.typeIs": "scr_dyn_util_type_is",
   "util.typeValue": "scr_dyn_util_type_value",

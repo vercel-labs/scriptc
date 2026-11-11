@@ -208,6 +208,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   // util.promisify over an untyped function creates dyn promises and calls.
   ["scr_util_promisify.c", all("utilPromisify", "dynAsync", "dynInvoke")],
+  // The custom-function protocol both promisify lowerings share.
+  ["scr_util_promisify_custom.c", "utilPromisify"],
   // Untyped EventEmitter and stream constructor values call listeners
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.

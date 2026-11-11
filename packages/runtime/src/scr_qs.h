@@ -111,6 +111,13 @@ struct ScrDyn *scr_util_transferable_abort_controller(void);
 void scr_util_set_trace_sig_int(struct ScrDyn *enable);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
+/* util.promisify's custom protocol (scr_util_promisify_custom.c): the
+ * truthy original[util.promisify.custom] function (+1, marked with the
+ * key), the undefined value (+1) when the property is absent or falsy, and
+ * the wrapper's marking helper (answers the same wrapper, +1). Both answer
+ * NULL with a coded exception pending on failure. */
+struct ScrDyn *scr_util_promisify_custom(struct ScrDyn *original);
+struct ScrDyn *scr_util_promisify_mark(struct ScrDyn *wrapper, struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);
 
 /* Node/libuv system error utilities. Arguments are checked without coercion;

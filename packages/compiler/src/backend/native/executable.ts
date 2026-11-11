@@ -393,6 +393,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // util.promisify over an untyped function: dyn promises and calls.
   unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  // util.promisify's custom protocol, which the typed lowering reads over
+  // the boxed function; both lowerings share it.
+  unit((u) => u.opts.utilPromisify === true, "scr_util_promisify_custom.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&

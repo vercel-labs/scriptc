@@ -80,50 +80,6 @@ static ScrDyn *up_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   return result;
 }
 
-/* util.promisify.custom, as Node reads it: the registered
- * Symbol.for('nodejs.util.promisify.custom') (+1). NULL when the program
- * has no symbol support, where the property cannot exist. */
-static ScrDyn *up_custom_key(void) {
-  if (!scr_sym_for_fn) return NULL;
-  ScrStr *name = scr_str_new("nodejs.util.promisify.custom", 28);
-  ScrSym *symbol = scr_sym_for_fn(name);
-  scr_str_release(name);
-  ScrDyn *key = scr_dyn_new_symbol(symbol);
-  scr_sym_release(symbol);
-  return key;
-}
-
-/* target[key] = value as a non-writable, non-enumerable, configurable data
- * property (Node's ObjectDefineProperty descriptor for the custom key). */
-static bool up_define_custom(ScrDyn *target, ScrDyn *key, ScrDyn *value) {
-  ScrDyn *descriptor = scr_dyn_new_obj();
-  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
-  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(false));
-  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
-  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
-  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
-  scr_dyn_release(descriptor);
-  if (!defined) return false;
-  scr_dyn_release(defined);
-  return true;
-}
-
-/* Node's validateFunction over the custom property: "The
- * \"util.promisify.custom\" property must be of type function. Received
- * ..." as ERR_INVALID_ARG_TYPE. */
-static void up_custom_type_fail(const ScrDyn *custom) {
-  char received[256];
-  const ScrDyn *value = custom ? custom : scr_dyn_undefined();
-  const char *tail = scr_dyn_specific_type(value, received, sizeof received);
-  ScrJsonBuf message;
-  scr_jb_init(&message);
-  scr_jb_puts(&message, "The \"util.promisify.custom\" property must be of type function. Received ");
-  scr_jb_puts(&message, tail);
-  ScrStr *text = scr_jb_finish(&message);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_TYPE");
-  scr_str_release(text);
-}
-
 /* util.promisify(original), Node's promisify outside the typed lowerings:
  * a truthy `original[util.promisify.custom]` IS the answer (it must be a
  * function, and takes the custom key itself); otherwise the wrapper calls
@@ -140,35 +96,13 @@ ScrDyn *scr_util_promisify(ScrDyn *original) {
     scr_dyn_arg_type_fail("original", "of type function", original);
     return NULL;
   }
-  ScrDyn *key = up_custom_key();
-  if (key) {
-    /* Node reads the property twice — once for the `if (original[k])`
-     * test, then for the value it validates and answers — and a falsy
-     * value is read once. A getter sees exactly that many reads. */
-    ScrDyn *probe = scr_dyn_reflect_get(original, key, original); /* +1, or NULL */
-    bool truthy = probe != NULL && scr_dyn_truthy(probe);
-    scr_dyn_release(probe);
-    if (scr_exc_pending()) {
-      scr_dyn_release(key);
-      return NULL;
-    }
-    if (truthy) {
-      ScrDyn *custom = scr_dyn_reflect_get(original, key, original); /* +1, or NULL */
-      if (scr_exc_pending()) {
-        scr_dyn_release(custom);
-        scr_dyn_release(key);
-        return NULL;
-      }
-      if (!custom || !scr_dyn_is_callable(custom)) up_custom_type_fail(custom);
-      else if (!up_define_custom(custom, key, custom)) {
-        /* the define's exception is pending */
-      }
-      scr_dyn_release(key);
-      if (!scr_exc_pending()) return custom;
-      scr_dyn_release(custom);
-      return NULL;
-    }
+  ScrDyn *custom = scr_util_promisify_custom(original);
+  if (scr_exc_pending()) {
+    scr_dyn_release(custom);
+    return NULL;
   }
+  if (scr_dyn_truthy(custom)) return custom;
+  scr_dyn_release(custom);
   ScrClosure *closure = scr_closure_new(NULL, 1);
   closure->caps[0] = up_box(scr_dyn_retain(original));
   ScrDyn *wrapper = scr_dyn_new_func(closure, up_call, 0, "native:util.promisify", "");
@@ -180,30 +114,17 @@ ScrDyn *scr_util_promisify(ScrDyn *original) {
       ScrDyn *applied = scr_dyn_set_prototype(wrapper, prototype);
       scr_dyn_release(prototype);
       if (!applied) {
-        scr_dyn_release(key);
         scr_dyn_release(wrapper);
         return NULL;
       }
       scr_dyn_release(applied);
     }
   }
-  if (key && !up_define_custom(wrapper, key, wrapper)) {
-    scr_dyn_release(key);
+  ScrDyn *marked = scr_util_promisify_mark(wrapper, original);
+  if (marked == NULL) {
     scr_dyn_release(wrapper);
     return NULL;
   }
-  scr_dyn_release(key);
-  ScrDyn *descriptors = scr_dyn_get_own_property_descriptors(original);
-  if (!descriptors) {
-    scr_dyn_release(wrapper);
-    return NULL;
-  }
-  ScrDyn *defined = scr_dyn_define_props(wrapper, descriptors);
-  scr_dyn_release(descriptors);
-  if (!defined) {
-    scr_dyn_release(wrapper);
-    return NULL;
-  }
-  scr_dyn_release(defined);
+  scr_dyn_release(marked);
   return wrapper;
 }

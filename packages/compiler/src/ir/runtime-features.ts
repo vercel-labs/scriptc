@@ -2254,10 +2254,13 @@ const RUNTIME_FEATURE_RULES = {
   }),
   tls: rule({ prefixes: ["tls.", "https.", "http2."], types: ["secureCtx"] }),
   tlsCa: rule({ prefixes: ["tlsca."] }),
-  /** util.promisify over an untyped function (scr_util_promisify.c): its
-   * promises go through the dyn-async unit and its calls through the
-   * dyn-invoke unit. */
-  utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
+  /** util.promisify's custom protocol (scr_util_promisify_custom.c), in both
+   * lowerings: the untyped one (scr_util_promisify.c) reads it through the
+   * dyn-async and dyn-invoke units, and the typed one runs it over the
+   * boxed function before it builds its static wrapper. */
+  utilPromisify: rule({
+    fns: ["util.promisifyDyn", "util.promisifyCustom", "util.promisifyMark"],
+  }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
   /** A BigInt typed-array constructor read as a value (BigInt64Array,

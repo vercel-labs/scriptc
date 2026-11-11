@@ -1524,6 +1524,12 @@ function buildLibFnSignatures() {
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
     "util.promisifyDyn": { argTypes: [DYN], result: DYN },
+    /** The custom-function protocol the typed promisify lowering runs over
+     * the boxed original: the custom function (+1), or the undefined value
+     * (+1) when absent or falsy; the static wrapper's marking by the same
+     * key takes the wrapper and the original (+1, the same wrapper). */
+    "util.promisifyCustom": { argTypes: [DYN], result: DYN },
+    "util.promisifyMark": { argTypes: [DYN, DYN], result: DYN },
     "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
     "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
     "util.typeValue": { argTypes: [DYN, STRING], result: DYN },

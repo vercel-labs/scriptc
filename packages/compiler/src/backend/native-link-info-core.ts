@@ -223,6 +223,8 @@ export interface NativeLinkFeatures {
   utilTiming?: boolean;
   /** util.markPromiseAsHandled: scr_util_mark_handled.c. */
   utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;

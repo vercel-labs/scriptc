@@ -5936,6 +5936,41 @@ export function lowerUtilModuleCall(
       // Node ignores surplus arguments; they are still evaluated.
       return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
     }
+    case "setTraceSigInt": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.setTraceSigInt with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Node reads no argument; every one is evaluated and dropped.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
     case "inherits":
     case "deprecate":
     case "callbackify":

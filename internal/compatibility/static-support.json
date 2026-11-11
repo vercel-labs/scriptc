@@ -873,6 +873,7 @@
     { "symbols": ["util.markPromiseAsHandled"], "status": "supported", "evidence": ["tests/corpus/util-mark-promise-handled.ts", "tests/corpus/util-mark-promise-handled-args.cjs"] },
     { "symbols": ["util.transferableAbortSignal"], "status": "supported", "evidence": ["tests/corpus/util-transferable-abort.ts", "tests/corpus/util-transferable-abort-args.cjs"] },
     { "symbols": ["util.transferableAbortController"], "status": "supported", "evidence": ["tests/corpus/util-transferable-abort.ts", "tests/corpus/util-transferable-abort-args.cjs"] },
+    { "symbols": ["util.setTraceSigInt"], "status": "supported", "evidence": ["tests/corpus/util-set-trace-sigint.ts", "tests/corpus/util-set-trace-sigint-args.cjs"] },
     { "symbols": ["util.debounce"], "status": "supported", "evidence": ["tests/corpus/7710-util-debounce.cjs", "tests/corpus/7712-util-debounce-throttle.ts", "tests/corpus/util-timing-function-shape.ts"] },
     { "symbols": ["util.throttle"], "status": "supported", "evidence": ["tests/corpus/7711-util-throttle.cjs", "tests/corpus/7712-util-debounce-throttle.ts", "tests/corpus/util-timing-function-shape.ts"] },
     { "symbols": ["util.parseArgs", "parseArgs"], "status": "supported", "evidence": ["tests/corpus/2678-util-parseargs.ts", "tests/corpus/node24-parseargs.js"] },

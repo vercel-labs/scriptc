@@ -105173,6 +105173,8 @@
           "tests/corpus/util-mark-promise-handled-args.cjs",
           "tests/corpus/util-mark-promise-handled.ts",
           "tests/corpus/util-mime-object-view.ts",
+          "tests/corpus/util-set-trace-sigint-args.cjs",
+          "tests/corpus/util-set-trace-sigint.ts",
           "tests/corpus/util-system-errors.ts",
           "tests/corpus/util-text-codecs.ts",
           "tests/corpus/util-timing-function-shape.ts",
@@ -106561,8 +106563,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-dedicated:util.setTraceSigInt",
+        "tests": [
+          "tests/corpus/util-set-trace-sigint.ts",
+          "tests/corpus/util-set-trace-sigint-args.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

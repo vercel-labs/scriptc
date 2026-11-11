@@ -123,4 +123,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).
   "util.transferableAbortController",
+  // scr_util_set_trace_sig_int reads no argument and answers undefined; it
+  // has no observable effect in a compiled program (the hook it toggles
+  // feeds Node's --trace-sigint diagnostics).
+  "util.setTraceSigInt",
 ]);

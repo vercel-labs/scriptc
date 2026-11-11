@@ -29,6 +29,9 @@ declare module "util" {
   export function transferableAbortSignal(signal: AbortSignal): AbortSignal;
   /** Creates an AbortController whose signal is marked transferable. */
   export function transferableAbortController(): AbortController;
+  /** Toggles SIGINT tracing (the --trace-sigint hook). The argument is
+   * evaluated but never read or coerced; the call answers undefined. */
+  export function setTraceSigInt(enable: boolean): void;
   export function styleText(
     format: string | readonly string[],
     text: string,

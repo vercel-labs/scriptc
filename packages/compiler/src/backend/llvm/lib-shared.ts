@@ -138,6 +138,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.markPromiseAsHandled": "scr_util_mark_promise_as_handled",
   "util.transferableAbortSignal": "scr_util_transferable_abort_signal",
   "util.transferableAbortController": "scr_util_transferable_abort_controller",
+  "util.setTraceSigInt": "scr_util_set_trace_sig_int",
   "util.debounce": "scr_util_debounce",
   "util.throttle": "scr_util_throttle",
   "webstream.class": "scr_webstream_class",

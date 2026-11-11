@@ -1991,6 +1991,9 @@ const RUNTIME_FEATURE_RULES = {
    * argument check through the checked-dynamic description, so the
    * dyn-async unit comes with it. */
   utilMarkPromiseAsHandled: rule({ fns: ["util.markPromiseAsHandled"] }),
+  /** util.setTraceSigInt (scr_util_trace_sigint.c): a no-op for compiled
+   * programs, kept behind its own unit so nothing else links it. */
+  utilTraceSigInt: rule({ fns: ["util.setTraceSigInt"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
@@ -2542,6 +2545,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     abortSignal: false,
     utilTiming: false,
     utilMarkPromiseAsHandled: false,
+    utilTraceSigInt: false,
     mockTimers: false,
     net: false,
     netLookup: false,

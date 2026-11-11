@@ -3111,6 +3111,12 @@
       "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
     },
     {
+      "id": "node-builtin.util.setTraceSigInt",
+      "kind": "node-builtin",
+      "name": "util.setTraceSigInt",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.stripVTControlCharacters",
       "kind": "node-builtin",
       "name": "util.stripVTControlCharacters",

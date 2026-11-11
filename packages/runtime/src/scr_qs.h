@@ -106,6 +106,9 @@ void scr_util_mark_promise_as_handled(struct ScrDyn *promise);
  * ERR_INVALID_ARG_TYPE throw, and an ordinary AbortController (+1). */
 struct ScrDyn *scr_util_transferable_abort_signal(struct ScrDyn *signal);
 struct ScrDyn *scr_util_transferable_abort_controller(void);
+/* util.setTraceSigInt(enable) (scr_util_trace_sigint.c): no observable
+ * effect in a compiled program; the argument is not read. */
+void scr_util_set_trace_sig_int(struct ScrDyn *enable);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);

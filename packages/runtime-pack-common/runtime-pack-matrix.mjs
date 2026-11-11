@@ -188,6 +188,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // util.markPromiseAsHandled boxes and describes its argument through the
   // checked-dynamic units.
   ["scr_util_mark_handled.c", all("utilMarkPromiseAsHandled", "dynAsync")],
+  ["scr_util_trace_sigint.c", "utilTraceSigInt"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
   // the Worker env option compares against worker_threads.SHARE_ENV.

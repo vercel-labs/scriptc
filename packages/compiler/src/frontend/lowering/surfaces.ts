@@ -1902,6 +1902,14 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: DYN,
         valueParams: exactValueParams(),
       },
+      // Node reads no argument and answers undefined; the argument (and any
+      // surplus) is still evaluated.
+      setTraceSigInt: {
+        fn: "util.setTraceSigInt",
+        params: [DYN],
+        result: VOID,
+        valueParams: exactValueParams(DYN),
+      },
       parseArgs: { fn: "util.parseArgs", params: [DYN], result: DYN },
       aborted: {
         fn: "util.aborted",

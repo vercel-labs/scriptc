@@ -107,6 +107,7 @@ export function executableLinkFeatures(
       : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
+    ...(features.utilTraceSigInt ? { utilTraceSigInt: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.fsPathValue ? { fsPathValue: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),

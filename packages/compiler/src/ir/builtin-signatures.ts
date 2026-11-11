@@ -1504,6 +1504,7 @@ function buildLibFnSignatures() {
     "util.markPromiseAsHandled": { argTypes: [DYN], result: VOID },
     "util.transferableAbortSignal": { argTypes: [DYN], result: DYN },
     "util.transferableAbortController": { argTypes: [], result: DYN },
+    "util.setTraceSigInt": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },

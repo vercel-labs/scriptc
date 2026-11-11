@@ -24,6 +24,9 @@ beforeAll(async () => {
     bin,
     join(testDir, "test_inspect.c"),
     join(testDir, "../src/scr_inspect.c"),
+    // The inspect color/style tables the static rendering and styleText
+    // share (scr_inspect.c reads them through scr_util_style.h).
+    join(testDir, "../src/scr_util_style.c"),
     // scr_insp_dyn drives the layout engine through parsed JSON trees;
     // the JSON module and its dependencies join the link (scr_closure.c:
     // releasing a dyn tree releases SCR_DYN_FUNC boxes' closures).

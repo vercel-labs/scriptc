@@ -214,7 +214,23 @@ bool scr_util_terminal_colors(void) {
       scr_jb_puts(&message, "The '"); scr_jb_puts(&message, disabled);
       scr_jb_puts(&message, "' env is ignored due to the 'FORCE_COLOR' env being set.");
       ScrStr *text = scr_jb_finish(&message);
-      scr_emit_warning("Warning", NULL, text);
+      /* process.emitWarning's delivery: the 'warning' listeners (or the
+       * program's emitWarning replacement) when the process-warning unit is
+       * linked, otherwise Node's default report. The hook keeps this unit
+       * free of the dyn-async unit that inspect programs do not link. */
+      if (scr_warning_emit_hook) {
+        scr_warning_emit_hook("Warning", NULL, text);
+      } else {
+        scr_stdout_settle();
+        fflush(stdout);
+        fprintf(stderr, "(node:%ld) Warning: %.*s\n", (long)scr_process_pid(), (int)text->len,
+                text->data);
+        if (!scr_warning_trace_hint_shown) {
+          scr_warning_trace_hint_shown = true;
+          fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n",
+                stderr);
+        }
+      }
       scr_str_release(text); warned = true;
     }
     return enabled;

@@ -90,6 +90,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // scr_module_namespace_copy_value retains the module's namespace object,
+  // marks it as one and records it: no program code runs, and allocation
+  // failure ends the process.
+  "module.namespaceCopy",
   // scr_http_server_off drops the last entry of the event's listener list
   // that stands for the function; a function that is not in the list, or a
   // closed server, leaves the list as it is. No 'removeListener' event runs.

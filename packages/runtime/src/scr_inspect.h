@@ -127,6 +127,22 @@ ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc);
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);
 bool scr_insp_format_specifies_dyn(ScrDyn *first);
+/* Reads a styleType's SGR pair from inspect.colors and inspect.styles as
+ * the program left them (scr_inspect.c's insp_style_pair). The inspect
+ * value's creation stores it, so only a program that read util.inspect as
+ * a value — the one that can have replaced either table — loads the live
+ * tables; every other rendering uses the built-in codes. The slot has
+ * external linkage so a static rendering's call stays indirect and its
+ * object keeps no reference to the reader. NULL until then. */
+extern SCR_TL bool (*scr_insp_style_pair_hook)(const char *type, size_t len, ScrStr **open,
+                                               ScrStr **close);
+/* Copies the values a program put on util.inspect.defaultOptions over the
+ * built-in defaults (scr_inspect.c's insp_apply_default_options). The
+ * defaults object's creation stores it, so only a program that read
+ * defaultOptions — which is the only way its values can be there — loads
+ * the object reader; every other rendering keeps the constants. As above,
+ * the slot's external linkage keeps the call indirect. NULL until then. */
+extern SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
 /* format's %s over a dyn value: strings verbatim, numbers and bigints by
  * their formatNumber/formatBigInt spellings, an object whose toString the
  * program owns as String(value), and everything else inspected at depth 0

@@ -172,6 +172,13 @@ static SCR_TL bool g_colors;
  * never read it as a value cannot have replaced them. */
 static SCR_TL ScrDyn *g_inspect_function;
 
+/* scr_insp_style_pair_hook (scr_inspect.h): insp_inspect_value stores
+ * insp_style_pair in it together with g_inspect_function. A rendering that
+ * colors reads it per leaf; with no util.inspect value the built-in codes
+ * alone answer, and a static rendering links no live-table reader. */
+SCR_TL bool (*scr_insp_style_pair_hook)(const char *type, size_t len, ScrStr **open,
+                                        ScrStr **close);
+
 typedef enum {
   INSP_SPECIAL,
   INSP_NUMBER,
@@ -236,7 +243,7 @@ static void insp_style_emit(InspBuf *b, const ScrStr *code) {
 }
 
 static void insp_style_open(InspBuf *b, InspStyle style) {
-  if (!g_inspect_function) {
+  if (!scr_insp_style_pair_hook) {
     char code[8];
     int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][0]);
     ib_bytes(b, code, (size_t)n);
@@ -251,7 +258,7 @@ static void insp_style_open(InspBuf *b, InspStyle style) {
 }
 
 static void insp_style_close(InspBuf *b, InspStyle style) {
-  if (!g_inspect_function) {
+  if (!scr_insp_style_pair_hook) {
     char code[8];
     int n = snprintf(code, sizeof code, "\x1b[%um", insp_style_codes[style][1]);
     ib_bytes(b, code, (size_t)n);
@@ -269,7 +276,7 @@ static void insp_style_close(InspBuf *b, InspStyle style) {
 static ScrStr *insp_styled(ScrStr *text, InspStyle style) {
   if (!g_colors) return text;
   InspBuf b = {0};
-  if (!g_inspect_function) {
+  if (!scr_insp_style_pair_hook) {
     insp_style_open(&b, style);
     ib_str(&b, text);
     insp_style_close(&b, style);
@@ -3063,6 +3070,25 @@ static size_t insp_call_depth(void) { return g_ncall_saved; }
  * used (the built-in tables below are Node's defaults then). */
 static ScrDyn *insp_inspect_member(const char *key);
 
+/* Raises Node's property-read TypeError for a null or undefined inspect
+ * table: "Cannot read properties of <null|undefined> (reading '<name>')".
+ * The message is built at its full length because `name` is whatever the
+ * program wrote into the style tables — a fixed buffer would answer a
+ * truncated message whose throw length still counted the full name, copying
+ * the bytes past the buffer into the error text. */
+static void insp_throw_property_read(const ScrDyn *table, const char *name, size_t len) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Cannot read properties of ");
+  scr_jb_puts(&b, table->kind == SCR_DYN_NULL ? "null" : "undefined");
+  scr_jb_puts(&b, " (reading '");
+  scr_jb_write(&b, name, len);
+  scr_jb_puts(&b, "')");
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg(SCR_ERR_TYPE, message->data, message->len);
+  scr_str_release(message);
+}
+
 /* A color pair's `code` member as Node's template interpolation renders
  * it: ToString, so a number is its digits and a missing member is
  * "undefined". null (rather than undefined) throws the property read's
@@ -3079,10 +3105,9 @@ static ScrStr *insp_color_component(const ScrDyn *pair, double index) {
     return text;
   }
   if (pair->kind == SCR_DYN_NULL) {
-    char message[96];
-    int n = snprintf(message, sizeof message, "Cannot read properties of null (reading '%.0f')",
-                     index);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    char index_text[32];
+    int n = snprintf(index_text, sizeof index_text, "%.0f", index);
+    insp_throw_property_read(pair, index_text, (size_t)n);
     return NULL;
   }
   ScrDyn *value = NULL;
@@ -3122,10 +3147,7 @@ static bool insp_style_pair(const char *type, size_t len, ScrStr **open, ScrStr 
   styles = insp_table_view(styles);
   if (!styles) return false;
   if (styles->kind == SCR_DYN_NULL || styles->kind == SCR_DYN_UNDEF) {
-    char message[96];
-    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading '%.*s')",
-                     styles->kind == SCR_DYN_NULL ? "null" : "undefined", (int)len, type);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    insp_throw_property_read(styles, type, len);
     scr_dyn_release(styles);
     return false;
   }
@@ -3146,11 +3168,7 @@ static bool insp_style_pair(const char *type, size_t len, ScrStr **open, ScrStr 
   ScrDyn *colors = insp_inspect_member("colors");
   if (colors) colors = insp_table_view(colors);
   if (colors && (colors->kind == SCR_DYN_NULL || colors->kind == SCR_DYN_UNDEF)) {
-    char message[96];
-    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading '%.*s')",
-                     colors->kind == SCR_DYN_NULL ? "null" : "undefined", (int)name->len,
-                     name->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    insp_throw_property_read(colors, name->data, name->len);
     scr_dyn_release(colors);
     scr_str_release(name);
     return false;
@@ -3180,7 +3198,7 @@ static bool insp_style_pair(const char *type, size_t len, ScrStr **open, ScrStr 
  * built-in defaults otherwise. The built-ins also cover regexp (red) and
  * module (underline), which only a custom styles table names. */
 static bool insp_style_pair_any(const char *type, size_t len, ScrStr **open, ScrStr **close) {
-  if (g_inspect_function) return insp_style_pair(type, len, open, close);
+  if (scr_insp_style_pair_hook) return scr_insp_style_pair_hook(type, len, open, close);
   static const struct {
     const char *name;
     unsigned open, close;
@@ -3253,6 +3271,7 @@ static bool insp_own_stylize(const ScrDyn *value, bool colors) {
 static void insp_inspect_function_cleanup(void) {
   scr_dyn_release(g_inspect_function);
   g_inspect_function = NULL;
+  scr_insp_style_pair_hook = NULL;
 }
 
 /* util.inspect's own members: custom is the custom-inspect symbol, colors
@@ -3320,11 +3339,20 @@ static ScrDyn *insp_default_options_object(void) {
   return sealed;
 }
 
+static void insp_apply_default_options(ScrInspFormatOptions *o);
+
 static SCR_TL ScrDyn *g_inspect_default_options;
+
+/* scr_insp_apply_defaults_hook (scr_inspect.h): insp_default_options stores
+ * insp_apply_default_options in it when the program first reads
+ * util.inspect.defaultOptions. A rendering that never did keeps the
+ * built-in defaults and links no reader of the object. */
+SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
 
 static void insp_default_options_cleanup(void) {
   scr_dyn_release(g_inspect_default_options);
   g_inspect_default_options = NULL;
+  scr_insp_apply_defaults_hook = NULL;
 }
 
 /* The defaults object, built on first access. Borrowed; NULL with the
@@ -3334,6 +3362,7 @@ static ScrDyn *insp_default_options(void) {
     ScrDyn *o = insp_default_options_object();
     if (!o) return NULL;
     g_inspect_default_options = o;
+    scr_insp_apply_defaults_hook = insp_apply_default_options;
     scr_atexit(insp_default_options_cleanup);
   }
   return g_inspect_default_options;
@@ -3438,6 +3467,7 @@ static ScrDyn *insp_inspect_value(void) {
     scr_dyn_obj_set(table, "colors", 6, insp_color_table());
     scr_dyn_obj_set(table, "styles", 6, insp_style_table());
     scr_dyn_release(table);
+    scr_insp_style_pair_hook = insp_style_pair;
   }
   return scr_dyn_retain(g_inspect_function);
 }
@@ -4458,7 +4488,7 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface) {
   o->user_options = NULL;
   /* Only a program that touched util.inspect.defaultOptions created the
    * object; until then the built-in defaults above are Node's own. */
-  if (g_inspect_default_options) insp_apply_default_options(o);
+  if (scr_insp_apply_defaults_hook) scr_insp_apply_defaults_hook(o);
 }
 
 /* inspect(value, options) at the given depth, compact and colors, with

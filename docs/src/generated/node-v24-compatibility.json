@@ -82259,7 +82259,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82282,7 +82282,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82305,7 +82305,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82328,7 +82328,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82351,7 +82351,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82374,7 +82374,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82397,7 +82397,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82443,7 +82443,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82466,7 +82466,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82489,7 +82489,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82512,7 +82512,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82535,7 +82535,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
         "verification": "test-backed"
       }
@@ -82604,8 +82604,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82673,8 +82673,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82696,8 +82696,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82719,8 +82719,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82742,8 +82742,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82765,8 +82765,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82788,8 +82788,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82811,8 +82811,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82972,8 +82972,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -82995,8 +82995,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83018,8 +83018,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83041,8 +83041,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83064,8 +83064,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83087,8 +83087,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83110,8 +83110,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83133,8 +83133,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83156,8 +83156,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83179,8 +83179,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83202,8 +83202,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83225,8 +83225,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83248,8 +83248,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83271,8 +83271,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83410,7 +83410,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation.",
+        "detail": "Options are validated with Node's rules for flush, finishFlush, chunkSize, windowBits, level, memLevel, strategy, dictionary, maxOutputLength and rejectGarbageAfterEnd; the info option and the largest chunkSize values are not supported yet.",
         "verification": "test-backed"
       }
     },
@@ -83570,8 +83570,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83593,8 +83593,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83616,8 +83616,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83639,8 +83639,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83662,8 +83662,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83685,8 +83685,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83708,8 +83708,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83731,8 +83731,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83754,8 +83754,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83777,8 +83777,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83800,8 +83800,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83823,8 +83823,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83846,8 +83846,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },
@@ -83869,8 +83869,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "The zlib one-shot compressors and decompressors take strings, Buffers, TypedArrays, DataViews and ArrayBuffers, validate options with Node's rules and return Buffers; the callback forms settle on the worker pool, and crc32 validates its uint32 seed.",
         "verification": "test-backed"
       }
     },

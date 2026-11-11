@@ -89608,9 +89608,13 @@
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts",
           "tests/corpus/fs-stream-erased-open-listener.ts",
+          "tests/corpus/stream-compose-forms.ts",
           "tests/corpus/stream-default-high-water-mark.ts",
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/stream-methods-constructor-functions.cjs",
           "tests/corpus/stream-pipeline-stream-list.ts",
           "tests/corpus/stream-readable-from-options.ts",
@@ -89964,7 +89968,8 @@
         "evidence": "compiler-feature:stream.stream.compose",
         "tests": [
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/stream-compose-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90625,7 +90630,8 @@
         "evidence": "compiler-feature:stream.stream.compose",
         "tests": [
           "tests/corpus/5342-stream-compose.ts",
-          "tests/corpus/5343-stream-compose-edges.ts"
+          "tests/corpus/5343-stream-compose-edges.ts",
+          "tests/corpus/stream-compose-forms.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91307,9 +91313,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -92370,6 +92377,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -92394,9 +92402,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/compat-stream-getters.mjs",
           "tests/corpus/compat-stream-getters.ts",
           "tests/corpus/compat-stream-async-dispose.mjs",
@@ -92426,6 +92435,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable.compose",
         "tests": [
+          "tests/corpus/stream-compose-forms.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -92453,6 +92463,7 @@
         "status": "partial",
         "evidence": "compiler-feature:stream.readable.iterator",
         "tests": [
+          "tests/corpus/stream-iteration-forms.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/2861-readable-iterator-close.ts"
         ]
@@ -93377,9 +93388,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.allowHalfOpen",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -93429,9 +93441,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform.destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93620,9 +93633,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._construct",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93647,9 +93662,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._write",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -93673,9 +93690,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._writev",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93700,9 +93719,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93727,9 +93748,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.writable._final",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -93799,9 +93822,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._construct",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -93826,9 +93851,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._read",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -93852,9 +93879,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readable._destroy",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-state.mjs",
           "tests/corpus/compat-stream-state.ts"
         ]
@@ -94007,10 +94036,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.PassThrough",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-compose-forms.ts",
+          "tests/corpus/compat-stream-classes.ts",
+          "tests/corpus/compat-stream-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94033,9 +94064,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._flush",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },
@@ -94059,9 +94092,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.transform._transform",
         "tests": [
+          "tests/corpus/stream-implementer-hooks.ts",
+          "tests/corpus/stream-implementer-hooks-js.cjs",
           "tests/corpus/compat-stream-classes.ts"
         ]
       },

@@ -2791,9 +2791,11 @@ static void scr_stream_finish_maybe(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (!st->w.ending || st->w.writing || st->w.head < st->w.n || st->w.finished ||
       st->destroyed || st->w.finish_scheduled || st->w.final_pending || st->flush_pending ||
-      st->constructing) {
+      st->constructing || st->errored != NULL) {
     /* a pending _final/_flush callback holds the finish (Node's
-     * pendingcb), as does a construction in progress */
+     * pendingcb), as does a construction in progress; a failed write or
+     * an earlier error keeps the stream from finishing at all (Node's
+     * needFinish reads kErrored) */
     return;
   }
   if (!st->w.prefinished && st->flush_on_prefinish) {
